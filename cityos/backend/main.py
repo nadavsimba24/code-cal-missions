@@ -28,6 +28,13 @@ except Exception:
 app = FastAPI(title="CODE-CAL MISSIONS", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+@app.middleware("http")
+async def no_cache_html(request, call_next):
+    resp = await call_next(request)
+    if "text/html" in resp.headers.get("content-type", ""):
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "cityos.db")
 engine = init_db(f"sqlite:///{DB_PATH}")
 
