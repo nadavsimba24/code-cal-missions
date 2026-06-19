@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CODE-CAL MISSIONS — ניהול משימות עירוני</title>
+<link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ===== monday.com "Vibe" inspired design system ===== */
+:root{
+  --bg:#f6f7fb; --surface:#ffffff; --board-bg:#ffffff;
+  --text:#323338; --text-muted:#676879; --text-light:#9699a6;
+  --border:#e6e9ef; --border-strong:#d0d4e4; --row-hover:#f5f6f8;
+  /* monday primary is BLUE (no purple) */
+  --primary:#0073ea; --primary-hover:#0060b9; --primary-soft:#cce5ff;
+  /* monday status palette */
+  --green:#00c875; --green-d:#00a866;
+  --orange:#fdab3d; --yellow:#ffcb00;
+  --red:#e2445c; --red-d:#bb3354;
+  --blue:#579bfc; --dark-blue:#0086c0;
+  --grey:#c4c4c4; --dark-grey:#808080;
+  --sidebar-w:240px; --header-h:48px;
+  --radius:8px; --shadow:0 4px 16px rgba(29,42,68,.12);
+  --shadow-sm:0 2px 6px rgba(29,42,68,.08);
+  --font:'Figtree','Rubik','Heebo','Segoe UI',system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--text);direction:rtl;overflow:hidden;font-size:14px}
+#app{display:flex;height:100vh}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#d0d4e4;border-radius:6px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ===== Sidebar ===== */
+#sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
+.sb-logo{height:var(--header-h);display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border);font-weight:800;font-size:17px}
+.sb-logo .dot{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff;font-size:13px}
+.sb-search{padding:10px 12px}
+.sb-search input{width:100%;border:1px solid var(--border-strong);border-radius:6px;padding:7px 10px;font-size:13px;background:var(--bg)}
+.sb-section{padding:6px 12px;font-size:11px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin-top:6px;display:flex;justify-content:space-between;align-items:center}
+.sb-section i{cursor:pointer}
+.sb-list{flex:1;overflow-y:auto;padding:0 8px}
+.sb-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--text);font-size:14px;white-space:nowrap;overflow:hidden}
+.sb-item:hover{background:var(--row-hover)}
+.sb-item.active{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
+.sb-item .ic{width:22px;text-align:center;font-size:15px;flex-shrink:0}
+.sb-item .cnt{margin-inline-start:auto;font-size:11px;color:var(--text-light);background:var(--bg);padding:1px 7px;border-radius:10px}
+.sb-foot{border-top:1px solid var(--border);padding:8px}
+
+/* ===== Main ===== */
+#main{flex:1;display:flex;flex-direction:column;min-width:0}
+#appbar{height:var(--header-h);background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;padding:0 16px}
+#appbar .ab-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px}
+#appbar .ab-spacer{flex:1}
+.icon-btn{width:34px;height:34px;border-radius:7px;display:grid;place-items:center;color:var(--text-muted);font-size:15px}
+.icon-btn:hover{background:var(--row-hover);color:var(--text)}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:7px;font-weight:600;font-size:13px;transition:.12s}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:var(--primary-hover)}
+.btn-ghost{color:var(--text-muted)}
+.btn-ghost:hover{background:var(--row-hover);color:var(--text)}
+.btn-ai{background:linear-gradient(120deg,#0073ea,#00c875);color:#fff}
+.btn-ai:hover{filter:brightness(1.05)}
+
+/* board header */
+#boardhead{background:var(--surface);padding:14px 22px 0;border-bottom:1px solid var(--border)}
+#boardhead .bh-top{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+#boardhead h1{font-size:22px;font-weight:800;display:flex;align-items:center;gap:10px}
+#boardhead .bh-desc{color:var(--text-muted);font-size:13px;font-weight:400}
+.tabs{display:flex;gap:4px}
+.tab{display:flex;align-items:center;gap:7px;padding:9px 14px;font-size:14px;color:var(--text-muted);border-bottom:3px solid transparent;font-weight:600;border-radius:6px 6px 0 0}
+.tab:hover{background:var(--row-hover)}
+.tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+
+/* toolbar */
+#toolbar{background:var(--surface);display:flex;align-items:center;gap:8px;padding:9px 22px;border-bottom:1px solid var(--border)}
+.tb-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:6px;font-size:13px;color:var(--text-muted)}
+.tb-btn:hover{background:var(--row-hover);color:var(--text)}
+.tb-sep{width:1px;height:22px;background:var(--border)}
+
+#view{flex:1;overflow:auto;padding:18px 22px;position:relative}
+
+/* ===== Table / board view ===== */
+.group{margin-bottom:22px}
+.group-head{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;margin-bottom:6px;cursor:pointer}
+.group-head .caret{transition:.15s;font-size:12px}
+.group-head.collapsed .caret{transform:rotate(-90deg)}
+.tbl{width:100%;border-collapse:separate;border-spacing:0;background:var(--surface);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-sm)}
+.tbl th{font-size:12px;color:var(--text-muted);font-weight:600;text-align:right;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap}
+.tbl td{padding:0;border-bottom:1px solid var(--border);border-inline-start:1px solid var(--border);font-size:14px;height:40px}
+.tbl tr:hover td{background:var(--row-hover)}
+.tbl .c-item{font-weight:500;padding:8px 12px;min-width:280px;border-inline-start:4px solid var(--gcolor,var(--primary))}
+.tbl .cell{padding:6px 10px;text-align:center}
+.pill{display:inline-flex;align-items:center;justify-content:center;width:100%;min-width:96px;height:30px;border-radius:4px;color:#fff;font-weight:600;font-size:12.5px;padding:0 8px}
+.prio{min-width:80px}
+.avatars{display:flex;justify-content:center}
+.av{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:700;border:2px solid #fff;margin-inline-start:-8px}
+.av:first-child{margin:0}
+.add-row td{padding:8px 12px;color:var(--text-muted);font-size:13px;cursor:pointer;border-inline-start:4px solid transparent}
+.add-row:hover td{color:var(--primary)}
+.battery{display:flex;height:8px;width:140px;border-radius:5px;overflow:hidden;border:1px solid var(--border)}
+.battery span{height:100%}
+.tag{display:inline-block;background:var(--bg);border:1px solid var(--border-strong);border-radius:11px;padding:1px 9px;font-size:11px;color:var(--text-muted);margin:1px}
+
+/* ===== Kanban ===== */
+.kanban{display:flex;gap:14px;align-items:flex-start;height:100%}
+.kcol{background:var(--bg);border-radius:10px;width:280px;min-width:280px;display:flex;flex-direction:column;max-height:100%}
+.kcol-head{padding:11px 13px;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;border-top:4px solid var(--kc,var(--grey));border-radius:10px 10px 0 0}
+.kcol-head .cnt{margin-inline-start:auto;color:var(--text-light);font-weight:600}
+.kcol-body{padding:8px;overflow-y:auto;flex:1;min-height:40px}
+.kcard{background:var(--surface);border-radius:8px;padding:11px;box-shadow:var(--shadow-sm);margin-bottom:8px;cursor:grab;border:1px solid var(--border)}
+.kcard:hover{box-shadow:var(--shadow)}
+.kcard .kt{font-weight:600;margin-bottom:8px;font-size:13.5px;line-height:1.35}
+.kcard .kmeta{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.kcard .sm-pill{font-size:11px;height:22px;min-width:auto;width:auto;padding:0 8px}
+.sortable-ghost{opacity:.4}
+
+/* ===== KPIs + dashboard ===== */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:18px}
+.kpi{background:var(--surface);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow-sm);border:1px solid var(--border)}
+.kpi .lbl{color:var(--text-muted);font-size:13px;margin-bottom:6px;display:flex;align-items:center;gap:7px}
+.kpi .val{font-size:30px;font-weight:800}
+.kpi .ic{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;color:#fff;font-size:15px}
+.cards-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}
+.card{background:var(--surface);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow-sm);border:1px solid var(--border)}
+.card h3{font-size:15px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.card canvas{max-height:260px}
+
+/* map */
+#map{position:absolute;inset:18px 22px;border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-sm)}
+
+/* calendar */
+.cal{background:var(--surface);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow-sm)}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cal-dow{text-align:center;font-size:12px;color:var(--text-muted);font-weight:700;padding:6px}
+.cal-cell{min-height:92px;border:1px solid var(--border);border-radius:7px;padding:5px;font-size:12px}
+.cal-cell .d{color:var(--text-light);font-weight:700;font-size:11px}
+.cal-cell.today{border-color:var(--primary);background:var(--primary-soft)}
+.cal-ev{font-size:10.5px;color:#fff;border-radius:4px;padding:2px 5px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ===== AI slideover ===== */
+#ai-panel{position:fixed;top:0;left:0;height:100vh;width:420px;max-width:92vw;background:var(--surface);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(-110%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
+#ai-panel.open{transform:translateX(0)}
+.ai-head{padding:16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.ai-head .gicon{width:32px;height:32px;border-radius:9px;background:linear-gradient(120deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff}
+.ai-tabs{display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid var(--border)}
+.ai-tab{padding:7px 12px;border-radius:6px;font-size:13px;color:var(--text-muted);font-weight:600}
+.ai-tab.active{background:var(--primary-soft);color:var(--primary-hover)}
+.ai-body{flex:1;overflow-y:auto;padding:14px}
+.ai-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ai-act{border:1px solid var(--border);border-radius:9px;padding:13px;text-align:center;font-size:13px;font-weight:600;color:var(--text)}
+.ai-act:hover{border-color:var(--primary);background:var(--primary-soft);color:var(--primary-hover)}
+.ai-act i{display:block;font-size:19px;margin-bottom:7px;color:var(--primary)}
+.msg{padding:10px 13px;border-radius:11px;margin-bottom:10px;font-size:13.5px;line-height:1.5;max-width:90%}
+.msg.user{background:var(--primary);color:#fff;margin-inline-start:auto;border-bottom-right-radius:3px}
+.msg.bot{background:var(--bg);border:1px solid var(--border);border-bottom-left-radius:3px;white-space:pre-wrap}
+.ai-input{padding:12px;border-top:1px solid var(--border);display:flex;gap:8px}
+.ai-input input{flex:1;border:1px solid var(--border-strong);border-radius:8px;padding:10px}
+.agent-card{border:1px solid var(--border);border-radius:9px;padding:12px;margin-bottom:9px}
+.agent-card .nm{font-weight:700}
+.agent-card .rl{font-size:12px;color:var(--text-muted)}
+
+/* ===== Terminal world (Claude-Code style) ===== */
+#term{position:fixed;inset:0;background:#0d1117;z-index:250;display:none;flex-direction:column;font-family:'JetBrains Mono','Fira Code',ui-monospace,Consolas,monospace}
+#term.open{display:flex}
+.term-bar{height:38px;background:#161b22;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid #30363d;color:#8b949e;font-size:12px}
+.term-dot{width:12px;height:12px;border-radius:50%}
+.term-out{flex:1;overflow-y:auto;padding:16px 18px;color:#c9d1d9;font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+.term-out div{margin:1px 0}
+.term-out .ok{color:#3fb950}.term-out .err{color:#f85149}.term-out .mut{color:#8b949e}.term-out .acc{color:#58a6ff}.term-out .warn{color:#d29922}
+.term-inbar{display:flex;gap:8px;padding:10px 18px;border-top:1px solid #30363d;background:#0d1117;align-items:center}
+.term-prompt{color:#3fb950;flex-shrink:0;font-weight:700}
+.term-in{flex:1;background:none;border:none;color:#c9d1d9;font-family:inherit;font-size:13.5px;outline:none}
+.term-model{background:#161b22;border:1px solid #30363d;color:#58a6ff;border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12px}
+
+/* overlay/modal/toast */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:150;display:none}
+.overlay.open{display:block}
+.modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--surface);border-radius:12px;box-shadow:var(--shadow);z-index:160;width:560px;max-width:94vw;max-height:88vh;overflow:auto;display:none}
+.modal.open{display:block}
+.modal h2{padding:18px 20px;border-bottom:1px solid var(--border);font-size:17px}
+.modal .mbody{padding:20px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;font-weight:600;margin-bottom:5px}
+.field input,.field select,.field textarea{width:100%;border:1px solid var(--border-strong);border-radius:7px;padding:9px;font-family:inherit}
+.modal .mfoot{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-start;gap:10px}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);background:#323338;color:#fff;padding:12px 20px;border-radius:9px;z-index:300;transition:.3s;font-weight:600;font-size:13px}
+#toast.show{transform:translateX(-50%) translateY(0)}
+.empty{text-align:center;color:var(--text-light);padding:60px 20px}
+.empty i{font-size:40px;margin-bottom:14px;opacity:.5;display:block}
+.spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:sp 1s linear infinite;margin:50px auto}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="sb-logo" style="font-size:15px"><span class="dot"><i class="fa-solid fa-rocket"></i></span> CODE-CAL MISSIONS</div>
+    <div class="sb-search"><input id="sb-search" placeholder="חיפוש..."></div>
+    <div class="sb-section">סביבת עבודה</div>
+    <div class="sb-item active"><span class="ic"><i class="fa-solid fa-building-columns"></i></span> עיריית הוד השרון</div>
+    <div class="sb-section">לוחות <i class="fa-solid fa-plus" title="לוח חדש"></i></div>
+    <div class="sb-list" id="board-list"></div>
+    <div class="sb-foot">
+      <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
+      <div class="sb-item"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main id="main">
+    <div id="appbar">
+      <div class="ab-title"><i class="fa-solid fa-table-cells-large" style="color:var(--primary)"></i> מרכז העבודה</div>
+      <div class="ab-spacer"></div>
+      <button class="icon-btn" title="התראות"><i class="fa-regular fa-bell"></i></button>
+      <button class="icon-btn" title="עזרה"><i class="fa-regular fa-circle-question"></i></button>
+      <button class="btn" style="background:#0d1117;color:#3fb950" onclick="Term.open()"><i class="fa-solid fa-terminal"></i> טרמינל</button>
+      <button class="btn btn-ai" onclick="AI.open()"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>
+      <div class="av" style="background:var(--primary)">שׁ</div>
+    </div>
+
+    <div id="boardhead">
+      <div class="bh-top">
+        <h1 id="bh-title"><span class="spin" style="width:18px;height:18px;margin:0"></span></h1>
+        <span class="bh-desc" id="bh-desc"></span>
+      </div>
+      <div class="tabs" id="tabs"></div>
+    </div>
+
+    <div id="toolbar">
+      <button class="btn btn-primary" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> פריט חדש</button>
+      <div class="tb-sep"></div>
+      <button class="tb-btn"><i class="fa-solid fa-magnifying-glass"></i> חיפוש</button>
+      <button class="tb-btn"><i class="fa-regular fa-user"></i> אדם</button>
+      <button class="tb-btn"><i class="fa-solid fa-filter"></i> סינון</button>
+      <button class="tb-btn"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</button>
+      <button class="tb-btn" onclick="openForms()"><i class="fa-solid fa-file-lines"></i> טפסים</button>
+      <div style="flex:1"></div>
+      <button class="tb-btn" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
+    </div>
+
+    <div id="view"><div class="spin"></div></div>
+  </main>
+</div>
+
+<!-- AI slideover -->
+<div id="ai-panel">
+  <div class="ai-head">
+    <span class="gicon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+    <div><div style="font-weight:800">CODE-CAL Agent</div><div style="font-size:12px;color:var(--text-muted)">מופעל ע"י DeepSeek</div></div>
+    <button class="icon-btn" style="margin-inline-start:auto" onclick="AI.close()"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+  <div class="ai-tabs">
+    <div class="ai-tab active" data-ait="chat" onclick="AI.tab('chat')">עוזר</div>
+    <div class="ai-tab" data-ait="actions" onclick="AI.tab('actions')">פעולות AI</div>
+    <div class="ai-tab" data-ait="agents" onclick="AI.tab('agents')">סוכנים</div>
+  </div>
+  <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted)">
+    <i class="fa-solid fa-microchip" style="color:var(--primary)"></i> מודל מקומי
+    <select id="ai-model" onchange="MODEL.name=this.value" style="margin-inline-start:auto;border:1px solid var(--border-strong);border-radius:6px;padding:4px 8px;font-family:inherit"></select>
+  </div>
+  <div class="ai-body" id="ai-body"></div>
+  <div class="ai-input" id="ai-input-wrap">
+    <input id="ai-input" placeholder="שאל את הסוכן..." onkeydown="if(event.key==='Enter')AI.send()">
+    <button class="btn btn-primary" onclick="AI.send()"><i class="fa-solid fa-paper-plane"></i></button>
+  </div>
+</div>
+
+<!-- Terminal world -->
+<div id="term">
+  <div class="term-bar">
+    <span class="term-dot" style="background:#ff5f56"></span><span class="term-dot" style="background:#ffbd2e"></span><span class="term-dot" style="background:#27c93f"></span>
+    <span style="margin-inline-start:10px">code-cal missions — terminal</span>
+    <span style="margin-inline-start:auto;cursor:pointer" onclick="Term.close()"><i class="fa-solid fa-xmark"></i> יציאה ל-GUI</span>
+  </div>
+  <div class="term-out" id="term-out"></div>
+  <div class="term-inbar">
+    <select class="term-model" id="term-model" title="מודל מקומי" onchange="MODEL.name=this.value"></select>
+    <span class="term-prompt">codecal ❯</span>
+    <input class="term-in" id="term-in" dir="auto" autocomplete="off" spellcheck="false" onkeydown="Term.key(event)">
+  </div>
+</div>
+
+<div class="overlay" id="overlay" onclick="closeModals()"></div>
+<div class="modal" id="modal"></div>
+<div id="toast"></div>
+
+<script>
+/* ============ monday-style constants ============ */
+const STATUS = {
+  backlog:{he:'מצבור',c:'#9699a6'}, todo:{he:'לביצוע',c:'#c4c4c4'},
+  in_progress:{he:'בתהליך',c:'#fdab3d'}, review:{he:'בבדיקה',c:'#579bfc'},
+  done:{he:'הושלם',c:'#00c875'}, cancelled:{he:'בוטל',c:'#e2445c'},
+  on_hold:{he:'בהמתנה',c:'#808080'},
+};
+const PRIORITY = {
+  low:{he:'נמוכה',c:'#579bfc'}, medium:{he:'בינונית',c:'#5559df'},
+  high:{he:'גבוהה',c:'#fdab3d'}, critical:{he:'קריטית',c:'#e2445c'},
+  emergency:{he:'חירום',c:'#bb3354'},
+};
+const VIEWS = [
+  {id:'table',he:'טבלה ראשית',ic:'fa-table-list'},
+  {id:'kanban',he:'קנבן',ic:'fa-columns'},
+  {id:'dashboard',he:'דאשבורד',ic:'fa-chart-pie'},
+  {id:'calendar',he:'לוח שנה',ic:'fa-calendar-days'},
+  {id:'map',he:'מפה',ic:'fa-map-location-dot'},
+];
+const api = async (p,o)=>{const r=await fetch(p,o);if(!r.ok)throw new Error(p+' '+r.status);return r.json();};
+const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const initials = n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('');
+const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
+const st = {boards:[], board:null, view:'table', users:[]};
+
+/* ============ boot ============ */
+async function boot(){
+  try{
+    st.boards = await api('/api/boards');
+    try{st.users = await api('/api/users');}catch(e){st.users=[];}
+    renderSidebar();
+    if(st.boards.length){ await openBoard(st.boards[0].id); }
+    else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות עדיין</div></div>';
+  }catch(e){
+    document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-plug-circle-xmark"></i><div>השרת לא זמין</div><div style="font-size:12px">'+esc(e.message)+'</div></div>';
+  }
+}
+function renderSidebar(){
+  document.getElementById('board-list').innerHTML = st.boards.map(b=>`
+    <div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" onclick="openBoard(${b.id})">
+      <span class="ic">${b.icon||'📋'}</span>
+      <span style="overflow:hidden;text-overflow:ellipsis">${esc(b.name)}</span>
+      <span class="cnt">${b.task_count||0}</span>
+    </div>`).join('');
+}
+async function openBoard(id){
+  st.view='table';
+  document.getElementById('view').innerHTML='<div class="spin"></div>';
+  st.board = await api('/api/boards/'+id);
+  renderSidebar();
+  document.getElementById('bh-title').innerHTML = `${st.board.icon||'📋'} ${esc(st.board.name)}`;
+  document.getElementById('bh-desc').textContent = st.board.department_name||'';
+  renderTabs();
+  renderView();
+}
+function renderTabs(){
+  document.getElementById('tabs').innerHTML = VIEWS.map(v=>`
+    <div class="tab ${st.view===v.id?'active':''}" onclick="setView('${v.id}')"><i class="fa-solid ${v.ic}"></i> ${v.he}</div>`).join('');
+}
+function setView(v){st.view=v;renderTabs();renderView();}
+
+/* ============ views ============ */
+function renderView(){
+  const el=document.getElementById('view');
+  el.innerHTML='';
+  ({table:vTable,kanban:vKanban,dashboard:vDashboard,calendar:vCalendar,map:vMap}[st.view]||vTable)(el);
+}
+function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
+function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;return pill(STATUS,t.status);}
+function avatars(arr){if(!arr||!arr.length)return '<span style="color:var(--text-light)">—</span>';
+  return '<div class="avatars">'+arr.slice(0,3).map(a=>`<span class="av" title="${esc(a.name)}">${esc(initials(a.name))}</span>`).join('')+'</div>';}
+const fdate = d=>d?new Date(d).toLocaleDateString('he-IL',{day:'2-digit',month:'short'}):'<span style="color:var(--text-light)">—</span>';
+
+function groupsOf(){
+  const gs = (st.board.groups||[]).slice();
+  const tasks = st.board.tasks||[];
+  if(!gs.length) return [{id:null,name:'פריטים',color:'#0073ea',tasks}];
+  const out = gs.map(g=>({...g,tasks:tasks.filter(t=>t.group_id===g.id)}));
+  const orphan = tasks.filter(t=>!t.group_id || !gs.some(g=>g.id===t.group_id));
+  if(orphan.length) out.push({id:null,name:'ללא קבוצה',color:'#c4c4c4',tasks:orphan});
+  return out;
+}
+
+function vTable(el){
+  const groups=groupsOf();
+  if(!(st.board.tasks||[]).length){el.innerHTML='<div class="empty"><i class="fa-regular fa-rectangle-list"></i><div>אין פריטים בלוח</div><button class="btn btn-primary" style="margin-top:14px" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> הוסף פריט</button></div>';return;}
+  el.innerHTML = groups.map(g=>{
+    const col=g.color||'#0073ea';
+    const rows=g.tasks.map(t=>`
+      <tr>
+        <td class="c-item" style="--gcolor:${col}">${esc(t.title)}</td>
+        <td class="cell">${avatars(t.assignees)}</td>
+        <td class="cell">${statusPill(t)}</td>
+        <td class="cell">${pill(PRIORITY,t.priority)}</td>
+        <td class="cell">${fdate(t.due_date)}</td>
+        <td class="cell">${(t.tags||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>'}</td>
+      </tr>`).join('');
+    return `<div class="group">
+      <div class="group-head"><i class="fa-solid fa-caret-down caret" style="color:${col}"></i><span style="color:${col}">${esc(g.name)}</span><span style="color:var(--text-light);font-weight:400">${g.tasks.length}</span></div>
+      <table class="tbl">
+        <thead><tr><th style="border-inline-start:4px solid ${col}">פריט</th><th>אחראים</th><th>סטטוס</th><th>עדיפות</th><th>תאריך יעד</th><th>תגיות</th></tr></thead>
+        <tbody>${rows}
+          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="6">+ הוסף פריט</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:6px">${battery(g.tasks)}</div>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.group-head').forEach(h=>h.onclick=()=>{h.classList.toggle('collapsed');const t=h.nextElementSibling;t.style.display=t.style.display==='none'?'':'none';});
+}
+function battery(tasks){
+  if(!tasks.length)return '';
+  const by={};tasks.forEach(t=>by[t.status]=(by[t.status]||0)+1);
+  const total=tasks.length;
+  return '<div class="battery">'+Object.entries(by).map(([s,n])=>`<span title="${STATUS[s]?STATUS[s].he:s}: ${n}" style="width:${n/total*100}%;background:${STATUS[s]?STATUS[s].c:'#c4c4c4'}"></span>`).join('')+'</div>';
+}
+
+function vKanban(el){
+  const cols=Object.keys(STATUS);
+  const tasks=st.board.tasks||[];
+  el.innerHTML='<div class="kanban">'+cols.map(s=>{
+    const ts=tasks.filter(t=>t.status===s);
+    return `<div class="kcol"><div class="kcol-head" style="--kc:${STATUS[s].c}">${STATUS[s].he}<span class="cnt">${ts.length}</span></div>
+      <div class="kcol-body" data-status="${s}">${ts.map(kcard).join('')}</div></div>`;
+  }).join('')+'</div>';
+  el.querySelectorAll('.kcol-body').forEach(body=>{
+    new Sortable(body,{group:'kanban',animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
+      const id=ev.item.dataset.id, status=ev.to.dataset.status;
+      try{await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+        const t=tasks.find(x=>x.id==id);if(t)t.status=status;toast('עודכן ל'+STATUS[status].he);
+        el.querySelectorAll('.kcol').forEach(c=>{const b=c.querySelector('.kcol-body');c.querySelector('.cnt').textContent=b.children.length;});
+      }catch(e){toast('שגיאה בעדכון');}
+    }});
+  });
+}
+function kcard(t){return `<div class="kcard" data-id="${t.id}">
+  <div class="kt">${esc(t.title)}</div>
+  <div class="kmeta"><span class="pill sm-pill" style="background:${PRIORITY[t.priority]?PRIORITY[t.priority].c:'#c4c4c4'}">${PRIORITY[t.priority]?PRIORITY[t.priority].he:t.priority}</span>
+  ${avatars(t.assignees)}</div></div>`;}
+
+async function vDashboard(el){
+  el.innerHTML='<div class="spin"></div>';
+  let d={},ins={boards:[]};
+  try{d=await api('/api/dashboard');}catch(e){}
+  try{ins=await api('/api/viz/board-insights');}catch(e){}
+  el.innerHTML=`
+    <div class="kpis">
+      ${kpi('סה"כ משימות',d.total_tasks||0,'fa-list-check','#0073ea')}
+      ${kpi('באיחור',d.overdue_tasks||0,'fa-triangle-exclamation','#e2445c')}
+      ${kpi('פניות תושבים פתוחות',d.citizen_requests_open||0,'fa-headset','#fdab3d')}
+      ${kpi('היתרים בהמתנה',d.permits_pending||0,'fa-stamp','#00c875')}
+    </div>
+    <div class="cards-grid">
+      <div class="card"><h3><i class="fa-solid fa-chart-pie" style="color:var(--primary)"></i> פילוח סטטוסים</h3><canvas id="ch-status"></canvas></div>
+      <div class="card"><h3><i class="fa-solid fa-chart-simple" style="color:var(--primary)"></i> פילוח עדיפויות</h3><canvas id="ch-prio"></canvas></div>
+      <div class="card"><h3><i class="fa-solid fa-gauge-high" style="color:var(--primary)"></i> אחוז השלמה לפי לוח</h3><canvas id="ch-boards"></canvas></div>
+    </div>`;
+  const sd=d.tasks_by_status||{}, pd=d.tasks_by_priority||{};
+  new Chart(ch('ch-status'),{type:'doughnut',data:{labels:Object.keys(sd).map(k=>STATUS[k]?STATUS[k].he:k),datasets:[{data:Object.values(sd),backgroundColor:Object.keys(sd).map(k=>STATUS[k]?STATUS[k].c:'#c4c4c4')}]},options:{plugins:{legend:{position:'bottom'}}}});
+  new Chart(ch('ch-prio'),{type:'bar',data:{labels:Object.keys(pd).map(k=>PRIORITY[k]?PRIORITY[k].he:k),datasets:[{data:Object.values(pd),backgroundColor:Object.keys(pd).map(k=>PRIORITY[k]?PRIORITY[k].c:'#c4c4c4'),borderRadius:6}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+  new Chart(ch('ch-boards'),{type:'bar',data:{labels:ins.boards.map(b=>b.board_name),datasets:[{label:'% השלמה',data:ins.boards.map(b=>b.completion_rate),backgroundColor:'#0073ea',borderRadius:6}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,max:100}}}});
+}
+function ch(id){return document.getElementById(id).getContext('2d');}
+function kpi(l,v,ic,c){return `<div class="kpi"><div class="lbl"><span class="ic" style="background:${c}"><i class="fa-solid ${ic}"></i></span>${l}</div><div class="val">${v}</div></div>`;}
+
+function vCalendar(el){
+  const now=new Date(),y=now.getFullYear(),m=now.getMonth();
+  const first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate();
+  const tasks=(st.board.tasks||[]).filter(t=>t.due_date);
+  const dow=['א','ב','ג','ד','ה','ו','ש'];
+  let cells='';
+  for(let i=0;i<first;i++)cells+='<div></div>';
+  for(let d=1;d<=days;d++){
+    const evs=tasks.filter(t=>{const dt=new Date(t.due_date);return dt.getDate()===d&&dt.getMonth()===m;});
+    cells+=`<div class="cal-cell ${d===now.getDate()?'today':''}"><div class="d">${d}</div>`+
+      evs.slice(0,3).map(t=>`<div class="cal-ev" style="background:${STATUS[t.status]?STATUS[t.status].c:'#0073ea'}">${esc(t.title)}</div>`).join('')+'</div>';
+  }
+  el.innerHTML=`<div class="cal"><h3 style="margin-bottom:14px">${now.toLocaleDateString('he-IL',{month:'long',year:'numeric'})}</h3>
+    <div class="cal-grid">${dow.map(x=>`<div class="cal-dow">${x}</div>`).join('')}${cells}</div></div>`;
+}
+
+async function vMap(el){
+  el.innerHTML='<div id="map"></div>';
+  const map=new maplibregl.Map({container:'map',style:'https://demotiles.maplibre.org/style.json',center:[34.89,32.15],zoom:12});
+  map.addControl(new maplibregl.NavigationControl());
+  const add=(t,lng,lat,c)=>{const e=document.createElement('div');e.style.cssText=`width:16px;height:16px;border-radius:50%;background:${c};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)`;new maplibregl.Marker({element:e}).setLngLat([lng,lat]).setPopup(new maplibregl.Popup().setText(t)).addTo(map);};
+  (st.board.tasks||[]).forEach(t=>{if(t.location_lat&&t.location_lng)add(t.title,t.location_lng,t.location_lat,STATUS[t.status]?STATUS[t.status].c:'#0073ea');});
+  try{const s=await api('/api/transport/stops');s.features.forEach(f=>add(f.properties.name,f.geometry.coordinates[0],f.geometry.coordinates[1],'#00c875'));}catch(e){}
+  try{const a=await api('/api/infrastructure/assets');a.features.forEach(f=>add(f.properties.name,f.geometry.coordinates[0],f.geometry.coordinates[1],'#fdab3d'));}catch(e){}
+}
+
+/* ============ new item + forms ============ */
+function openNewItem(group){
+  showModal(`<h2>פריט חדש</h2><div class="mbody">
+    <div class="field"><label>שם הפריט</label><input id="ni-title" placeholder="מה צריך לעשות?"></div>
+    <div class="field"><label>עדיפות</label><select id="ni-prio">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select></div>
+    <div class="field"><label>תיאור</label><textarea id="ni-desc" rows="3"></textarea></div>
+  </div><div class="mfoot"><button class="btn btn-primary" onclick="saveItem(${group===undefined||group===null?'null':group})">צור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+}
+async function saveItem(group){
+  const title=document.getElementById('ni-title').value.trim();if(!title){toast('צריך שם');return;}
+  await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,group_id:group,title,priority:document.getElementById('ni-prio').value,description:document.getElementById('ni-desc').value})});
+  closeModals();toast('הפריט נוצר');await openBoard(st.board.id);
+}
+async function openForms(){
+  let tpls={templates:[]};try{tpls=await api('/api/forms/templates');}catch(e){}
+  showModal(`<h2>טפסים עירוניים</h2><div class="mbody">${tpls.templates.map(t=>`<div class="ai-act" style="text-align:right;margin-bottom:10px" onclick="loadForm('${t.id}')"><i class="fa-solid fa-file-lines" style="display:inline;margin-inline-end:8px"></i> ${esc(t.name)} <span style="color:var(--text-light);font-size:12px">(${t.fields_count} שדות)</span></div>`).join('')||'<div class="empty">אין טפסים</div>'}</div>`);
+}
+async function loadForm(id){
+  const f=await api('/api/forms/templates/'+id);
+  window._formFields=f.fields.map(x=>x.id);
+  showModal(`<h2>${esc(f.name)}</h2><div class="mbody">${f.fields.map(fl=>`
+    <div class="field"><label>${esc(fl.label)}${fl.required?' *':''}</label>
+    ${fl.type==='textarea'?`<textarea id="f-${fl.id}" rows="3"></textarea>`:
+      fl.type==='select'?`<select id="f-${fl.id}">${(fl.options||[]).map(o=>`<option>${esc(o)}</option>`).join('')}</select>`:
+      `<input id="f-${fl.id}" type="${(fl.type==='file'||fl.type==='location')?'text':fl.type}" ${(fl.type==='file'||fl.type==='location')?'placeholder="(דמו)"':''}>`}</div>`).join('')}
+  </div><div class="mfoot"><button class="btn btn-primary" onclick="submitForm('${id}')">שלח</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+}
+async function submitForm(id){
+  const data={};(window._formFields||[]).forEach(i=>{const e=document.getElementById('f-'+i);if(e)data[i]=e.value;});
+  await api('/api/forms/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_id:id,form_data:data})});
+  closeModals();toast('הטופס נשלח ונוצרה משימה');
+}
+
+/* ============ AI (monday-AI style) ============ */
+const AI = {
+  tabName:'chat', history:[],
+  open(){document.getElementById('ai-panel').classList.add('open');loadModels().then(()=>{const s=document.getElementById('ai-model');if(s)s.innerHTML=modelOptions();});this.render();},
+  close(){document.getElementById('ai-panel').classList.remove('open');},
+  tab(t){this.tabName=t;document.querySelectorAll('.ai-tab').forEach(x=>x.classList.toggle('active',x.dataset.ait===t));document.getElementById('ai-input-wrap').style.display=t==='chat'?'flex':'none';this.render();},
+  render(){
+    const b=document.getElementById('ai-body');
+    if(this.tabName==='chat'){
+      b.innerHTML=this.history.length?this.history.map(m=>`<div class="msg ${m.role}">${esc(m.text)}</div>`).join(''):
+        `<div class="empty" style="padding:30px"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i><div>שאל אותי כל דבר על הלוח</div></div>`;
+      b.scrollTop=b.scrollHeight;
+    } else if(this.tabName==='actions'){
+      const acts=[['summarize','סיכום הלוח','fa-list'],['prioritize','המלצת עדיפויות','fa-arrow-up-wide-short'],['generate','הצעת משימות','fa-lightbulb'],['risks','זיהוי סיכונים','fa-triangle-exclamation'],['draft','ניסוח הודעה','fa-pen'],['categorize','קטלוג פניות','fa-tags'],['train','אימון מודל מקומי','fa-graduation-cap'],['terminal','מצב טרמינל','fa-terminal']];
+      b.innerHTML='<div class="ai-actions">'+acts.map(a=>`<div class="ai-act" onclick="AI.quick('${a[0]}')"><i class="fa-solid ${a[2]}"></i>${a[1]}</div>`).join('')+'</div>';
+    } else {
+      b.innerHTML='<div class="spin"></div>';this.loadAgents();
+    }
+  },
+  async loadAgents(){
+    const b=document.getElementById('ai-body');
+    try{const r=await api('/api/swarm/agents');
+      b.innerHTML=r.agents.map(a=>`<div class="agent-card"><div class="nm"><i class="fa-solid fa-robot" style="color:var(--primary)"></i> ${esc(a.name)}</div><div class="rl">${esc(a.role)}</div><button class="btn btn-ghost" style="margin-top:8px;padding:5px 10px" onclick="AI.runAgent('${a.id}')">הפעל</button></div>`).join('')||'<div class="empty">אין סוכנים</div>';
+    }catch(e){b.innerHTML='<div class="empty">סוכנים לא זמינים</div>';}
+  },
+  async runAgent(id){this.tab('chat');this.add('user','הפעלת סוכן: '+id);this.add('bot','חושב...');const r=await this.callSwarm(id,'נתח את הלוח הנוכחי ותן המלצות');this.history.pop();this.add('bot',r);},
+  ctx(){if(!st.board)return '';const t=st.board.tasks||[];return `לוח: ${st.board.name}. ${t.length} משימות. סטטוסים: ${t.map(x=>STATUS[x.status]?STATUS[x.status].he:x.status).join(', ').slice(0,400)}`;},
+  add(role,text){this.history.push({role,text});if(this.tabName!=='chat')this.tab('chat');else this.render();},
+  async send(){const i=document.getElementById('ai-input');const q=i.value.trim();if(!q)return;i.value='';this.add('user',q);this.add('bot','חושב...');const r=await this.callAI(q);this.history.pop();this.add('bot',r);},
+  async quick(kind){
+    if(kind==='train'){this.close();Train.open(st.board&&st.board.id);return;}
+    if(kind==='terminal'){this.close();Term.open();return;}
+    const prompts={summarize:'סכם את מצב הלוח: מה הושלם, מה תקוע, ומה דחוף.',prioritize:'אילו משימות כדאי לתעדף קודם ולמה?',generate:'הצע 5 משימות נוספות רלוונטיות ללוח.',risks:'זהה סיכונים ומשימות באיחור.',draft:'נסח עדכון סטטוס קצר לצוות על הלוח.',categorize:'קטלג את הפניות לפי נושא.'};
+    this.open();this.tab('chat');this.add('user',prompts[kind]||kind);this.add('bot','חושב...');const r=await this.callAI(prompts[kind]||kind);this.history.pop();this.add('bot',r);
+  },
+  async callAI(prompt){try{const r=await api('/api/ai/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,context:this.ctx(),model:MODEL.name})});return r.response||'אין תשובה';}catch(e){return 'ה-AI לא זמין כרגע (נדרש מודל מקומי פעיל).';}},
+  async callSwarm(agent,task){try{const r=await api('/api/swarm/think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent,task,context:this.ctx(),mode:'single'})});return (r.result||r.response||JSON.stringify(r)).toString().slice(0,2000);}catch(e){return 'הסוכן לא זמין כרגע.';}},
+};
+
+/* ============ local LLM models ============ */
+const MODEL = {name:'gemma4-coder', list:[], loaded:false};
+async function loadModels(){
+  if(MODEL.loaded)return;
+  try{const r=await api('/api/ai/models');MODEL.list=r.models||[];if(r.default)MODEL.name=r.default;else if(MODEL.list[0])MODEL.name=MODEL.list[0].name;MODEL.loaded=true;}catch(e){}
+}
+function modelOptions(){return MODEL.list.length?MODEL.list.map(m=>`<option value="${esc(m.name)}" ${m.name===MODEL.name?'selected':''}>${esc(m.name)}${m.size?' · '+esc(m.size):''}</option>`).join(''):`<option>${esc(MODEL.name)} (לא זמין)</option>`;}
+
+/* ============ Terminal world (Claude-Code style) ============ */
+const BANNER =
+"   ___ _ _        ___  ___\n"+
+"  / __(_) |_ _  _/ _ \\/ __|\n"+
+" | (__| |  _| || | (_) \\__ \\\n"+
+"  \\___|_|\\__|\\_, |\\___/|___/\n"+
+"            |__/   terminal · v0.1";
+const Term = {
+  hist:[], hi:0, _init:false,
+  async open(){document.getElementById('term').classList.add('open');document.getElementById('term-in').focus();
+    if(!this._init){this._init=true;await loadModels();document.getElementById('term-model').innerHTML=modelOptions();
+      this.print(BANNER,'acc');this.print('CODE-CAL MISSIONS — כל היכולות של המערכת בשורת פקודה. הקלד help.','mut');this.print('');}
+  },
+  close(){document.getElementById('term').classList.remove('open');},
+  print(t,cls){const o=document.getElementById('term-out');const d=document.createElement('div');if(cls)d.className=cls;d.textContent=(t==null?'':t);o.appendChild(d);o.scrollTop=o.scrollHeight;},
+  key(e){const i=e.target;
+    if(e.key==='Enter'){const v=i.value.trim();i.value='';if(v){this.hist.push(v);this.hi=this.hist.length;}this.run(v);}
+    else if(e.key==='ArrowUp'){if(this.hi>0){this.hi--;i.value=this.hist[this.hi]||'';}}
+    else if(e.key==='ArrowDown'){if(this.hi<this.hist.length-1){this.hi++;i.value=this.hist[this.hi]||'';}else{this.hi=this.hist.length;i.value='';}}
+  },
+  async run(line){if(!line)return;this.print('codecal ❯ '+line);
+    const parts=line.split(/\s+/);const cmd=parts[0];const rest=parts.slice(1);const arg=rest.join(' ');
+    const fn=this['cmd_'+cmd];
+    try{if(fn)await fn.call(this,arg,rest);else this.print('פקודה לא מוכרת: '+cmd+' (help)','err');}
+    catch(e){this.print('שגיאה: '+e.message,'err');}
+  },
+  cmd_help(){this.print(
+`פקודות:
+  help                 עזרה
+  boards               רשימת לוחות
+  open <id>            פתיחת לוח
+  tasks [status]       משימות בלוח הנוכחי
+  add "כותרת"          יצירת משימה
+  move <id> <status>   שינוי סטטוס
+  dashboard            מדדים
+  permits | requests | users | agents
+  models               מודלים מקומיים זמינים
+  model <name>         בחירת מודל פעיל
+  ai <שאלה>            שאילתה למודל המקומי
+  train [board_id]     הכנת דאטהסט אימון (מקומי בלבד)
+  clear | gui`,'mut');},
+  cmd_clear(){document.getElementById('term-out').innerHTML='';},
+  cmd_gui(){this.close();},
+  async cmd_boards(){(await api('/api/boards')).forEach(b=>this.print(`  [${b.id}] ${b.icon||''} ${b.name}  (${b.task_count})`));},
+  async cmd_open(a){if(!a)return this.print('שימוש: open <id>','warn');await openBoard(+a);this.print(`✓ ${st.board.name} — ${(st.board.tasks||[]).length} משימות`,'ok');},
+  cmd_tasks(a){if(!st.board)return this.print('פתח לוח: open <id>','warn');let t=st.board.tasks||[];if(a)t=t.filter(x=>x.status===a);if(!t.length)return this.print('אין משימות','mut');t.forEach(x=>{const lbl=(x.custom_fields&&x.custom_fields.status_label)||(STATUS[x.status]&&STATUS[x.status].he)||x.status;this.print(`  #${x.id}  [${lbl}]  ${x.title}`);});},
+  async cmd_add(a){if(!st.board)return this.print('פתח לוח קודם','warn');const title=a.replace(/^["']|["']$/g,'');if(!title)return this.print('שימוש: add "כותרת"','warn');await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,title})});this.print('✓ נוצרה: '+title,'ok');await openBoard(st.board.id);},
+  async cmd_move(a,rest){const id=rest[0],status=rest[1];if(!id||!status)return this.print('שימוש: move <id> <status>','warn');await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});this.print(`✓ #${id} → ${status}`,'ok');},
+  async cmd_dashboard(){const d=await api('/api/dashboard');this.print(`  משימות:${d.total_tasks}  באיחור:${d.overdue_tasks}  פניות:${d.citizen_requests_open}  היתרים:${d.permits_pending}`);this.print('  '+JSON.stringify(d.tasks_by_status),'mut');},
+  async cmd_permits(){const p=await api('/api/permits');if(!p.length)return this.print('אין','mut');p.forEach(x=>this.print(`  ${x.permit_number||x.id} ${x.applicant_name||''} — ${x.status}`));},
+  async cmd_requests(){const r=await api('/api/citizen-requests');if(!r.length)return this.print('אין','mut');r.forEach(x=>this.print(`  #${x.id} ${x.title} — ${x.status}`));},
+  async cmd_users(){(await api('/api/users')).forEach(u=>this.print(`  ${u.name} (${u.role})`));},
+  async cmd_agents(){(await api('/api/swarm/agents')).agents.forEach(a=>this.print(`  ${a.name} — ${a.role}`));},
+  async cmd_models(){await loadModels();document.getElementById('term-model').innerHTML=modelOptions();if(!MODEL.list.length)return this.print('אין מודלים מקומיים (ollama לא זמין/לא מותקן)','warn');MODEL.list.forEach(m=>this.print(`  ${m.name===MODEL.name?'*':' '} ${m.name}  ${m.size||''}`,m.name===MODEL.name?'acc':null));},
+  cmd_model(a){if(!a)return this.print('מודל פעיל: '+MODEL.name,'mut');MODEL.name=a;const s=document.getElementById('term-model');if([...s.options].some(o=>o.value===a))s.value=a;this.print('✓ מודל פעיל: '+a,'ok');},
+  async cmd_ai(a){if(!a)return this.print('שימוש: ai <שאלה>','warn');this.print('… חושב ('+MODEL.name+')','mut');const r=await api('/api/ai/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:a,context:AI.ctx(),model:MODEL.name})});this.print(r.response||'אין תשובה',r.success?null:'err');},
+  cmd_train(a){Train.open(a?+a:(st.board&&st.board.id));},
+};
+
+/* ============ Training (local-only, with disclaimer) ============ */
+const Train = {
+  open(boardId){
+    showModal(`<h2><i class="fa-solid fa-graduation-cap" style="color:var(--primary)"></i> אימון מודל מקומי</h2>
+    <div class="mbody">
+      <div style="background:#fff8e6;border:1px solid #fdab3d;border-radius:8px;padding:13px;font-size:13px;line-height:1.65;margin-bottom:16px">
+        <b><i class="fa-solid fa-shield-halved"></i> דיסקליימר פרטיות</b><br>
+        המידע מהלוחות שלך ישמש לאימון <b>המודלים המקומיים שלך בלבד</b>. הנתונים נשארים על המחשב שלך — אינם נשלחים לענן או לצד שלישי.
+      </div>
+      <div class="field"><label>מקור נתונים לאימון</label><select id="tr-board"><option value="">כל הלוחות</option>${st.boards.map(b=>`<option value="${b.id}" ${b.id===boardId?'selected':''}>${esc(b.name)}</option>`).join('')}</select></div>
+      <label style="display:flex;gap:8px;font-size:13px;align-items:flex-start;line-height:1.5"><input type="checkbox" id="tr-ok" style="width:auto;margin-top:3px"> אני מאשר/ת שהמידע ישמש לאימון המודלים המקומיים שלי בלבד</label>
+    </div>
+    <div class="mfoot"><button class="btn btn-primary" onclick="Train.start()"><i class="fa-solid fa-play"></i> הכן דאטהסט אימון</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+  },
+  async start(){
+    if(!document.getElementById('tr-ok').checked){toast('יש לאשר את הדיסקליימר');return;}
+    const bid=document.getElementById('tr-board').value;
+    try{const r=await api('/api/ai/train',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:bid?+bid:null,confirm:true})});
+      closeModals();toast(`דאטהסט מוכן: ${r.examples} דוגמאות (מקומי בלבד)`);
+      if(document.getElementById('term').classList.contains('open')){Term.print(`✓ דאטהסט אימון מוכן: ${r.examples} דוגמאות → ${r.file}`,'ok');Term.print(r.disclaimer,'warn');}
+    }catch(e){toast('הכנת הדאטהסט נכשלה');}
+  },
+};
+
+/* ============ modal helpers ============ */
+function showModal(html){const m=document.getElementById('modal');m.innerHTML=html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
+function closeModals(){document.getElementById('modal').classList.remove('open');document.getElementById('overlay').classList.remove('open');}
+
+boot();
+</script>
+</body>
+</html>
