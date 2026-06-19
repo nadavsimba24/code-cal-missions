@@ -7,7 +7,7 @@
 <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
 <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="sortable.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -365,8 +365,26 @@ function renderView(){
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;return pill(STATUS,t.status);}
-function avatars(arr){if(!arr||!arr.length)return '<span style="color:var(--text-light)">—</span>';
+function avatars(arr){if(!arr||!arr.length)return '<span style="color:var(--text-light)" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span>';
   return '<div class="avatars">'+arr.slice(0,3).map(a=>`<span class="av" title="${esc(a.name)}">${esc(initials(a.name))}</span>`).join('')+'</div>';}
+function findTask(id){return ((st.board&&st.board.tasks)||[]).find(t=>t.id==id);}
+function openPeople(id){
+  const t=findTask(id); if(!t)return;
+  const cur=new Set((t.assignees||[]).map(a=>a.id));
+  showModal(`<h2><i class="fa-solid fa-user-plus" style="color:var(--primary)"></i> אחראים — ${esc(t.title)}</h2>
+  <div class="mbody">${(st.users||[]).map(u=>`
+    <label style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:7px;cursor:pointer">
+      <input type="checkbox" style="width:auto" ${cur.has(u.id)?'checked':''} onchange="togglePerson(${id},${u.id},this.checked)">
+      <span class="av" style="background:var(--primary);margin:0">${esc(initials(u.name))}</span>
+      <span>${esc(u.name)}</span><span style="color:var(--text-light);font-size:12px;margin-inline-start:auto">${esc(u.role||'')}</span>
+    </label>`).join('')||'<div class="empty">אין משתמשים</div>'}</div>
+  <div class="mfoot"><button class="btn btn-primary" onclick="closeModals();renderView()">סיום</button></div>`);
+}
+async function togglePerson(taskId,userId,add){
+  try{const r=await api('/api/tasks/'+taskId+'/assignees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,action:add?'add':'remove'})});
+    const t=findTask(taskId); if(t)t.assignees=r.assignees; toast(add?'נוסף אחראי':'הוסר אחראי');
+  }catch(e){toast('שגיאה בשיוך');}
+}
 const fdate = d=>d?new Date(d).toLocaleDateString('he-IL',{day:'2-digit',month:'short'}):'<span style="color:var(--text-light)">—</span>';
 
 function groupsOf(){
@@ -387,7 +405,7 @@ function vTable(el){
     const rows=g.tasks.map(t=>`
       <tr>
         <td class="c-item" style="--gcolor:${col}">${esc(t.title)}</td>
-        <td class="cell">${avatars(t.assignees)}</td>
+        <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(${t.id})">${avatars(t.assignees)}</td>
         <td class="cell">${statusPill(t)}</td>
         <td class="cell">${pill(PRIORITY,t.priority)}</td>
         <td class="cell">${fdate(t.due_date)}</td>
@@ -421,6 +439,7 @@ function vKanban(el){
     return `<div class="kcol"><div class="kcol-head" style="--kc:${STATUS[s].c}">${STATUS[s].he}<span class="cnt">${ts.length}</span></div>
       <div class="kcol-body" data-status="${s}">${ts.map(kcard).join('')}</div></div>`;
   }).join('')+'</div>';
+  if(!window.Sortable){toast('גרירה לא זמינה (Sortable לא נטען) — לחץ על אווטאר לשיוך');return;}
   el.querySelectorAll('.kcol-body').forEach(body=>{
     new Sortable(body,{group:'kanban',animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
       const id=ev.item.dataset.id, status=ev.to.dataset.status;
@@ -434,7 +453,7 @@ function vKanban(el){
 function kcard(t){return `<div class="kcard" data-id="${t.id}">
   <div class="kt">${esc(t.title)}</div>
   <div class="kmeta"><span class="pill sm-pill" style="background:${PRIORITY[t.priority]?PRIORITY[t.priority].c:'#c4c4c4'}">${PRIORITY[t.priority]?PRIORITY[t.priority].he:t.priority}</span>
-  ${avatars(t.assignees)}</div></div>`;}
+  <span onclick="event.stopPropagation();openPeople(${t.id})" style="cursor:pointer" title="אחראים">${avatars(t.assignees)}</span></div></div>`;}
 
 async function vDashboard(el){
   el.innerHTML='<div class="spin"></div>';
@@ -492,12 +511,14 @@ function openNewItem(group){
   showModal(`<h2>פריט חדש</h2><div class="mbody">
     <div class="field"><label>שם הפריט</label><input id="ni-title" placeholder="מה צריך לעשות?"></div>
     <div class="field"><label>עדיפות</label><select id="ni-prio">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select></div>
+    <div class="field"><label>אחראים</label><div style="display:flex;flex-wrap:wrap;gap:7px">${(st.users||[]).map(u=>`<label style="display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--border-strong);border-radius:20px;padding:4px 11px;cursor:pointer"><input type="checkbox" class="ni-asg" value="${u.id}" style="width:auto">${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:13px">אין משתמשים</span>'}</div></div>
     <div class="field"><label>תיאור</label><textarea id="ni-desc" rows="3"></textarea></div>
   </div><div class="mfoot"><button class="btn btn-primary" onclick="saveItem(${group===undefined||group===null?'null':group})">צור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
 }
 async function saveItem(group){
   const title=document.getElementById('ni-title').value.trim();if(!title){toast('צריך שם');return;}
-  await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,group_id:group,title,priority:document.getElementById('ni-prio').value,description:document.getElementById('ni-desc').value})});
+  const assignee_ids=[...document.querySelectorAll('.ni-asg:checked')].map(x=>+x.value);
+  await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,group_id:group,title,priority:document.getElementById('ni-prio').value,description:document.getElementById('ni-desc').value,assignee_ids})});
   closeModals();toast('הפריט נוצר');await openBoard(st.board.id);
 }
 async function openForms(){

@@ -217,9 +217,32 @@ def create_task(data: dict):
             location_lng=data.get("location_lng"),
             address=data.get("address"),
         )
+        ids = data.get("assignee_ids") or []
+        if ids:
+            task.assignees = db.query(User).filter(User.id.in_(ids)).all()
         db.add(task)
         db.commit()
         return {"id": task.id, "status": "created"}
+
+@app.post("/api/tasks/{task_id}/assignees")
+def task_assignees(task_id: int, data: dict):
+    """Add or remove a user from a task (monday-style people column)."""
+    with Session(engine) as db:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        user = db.query(User).filter(User.id == data.get("user_id")).first()
+        if not user:
+            raise HTTPException(404, "user not found")
+        if data.get("action") == "remove":
+            if user in task.assignees:
+                task.assignees.remove(user)
+        else:
+            if user not in task.assignees:
+                task.assignees.append(user)
+        db.commit()
+        return {"assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
+                              for u in task.assignees]}
 
 @app.post("/api/tasks/{task_id}/move")
 def move_task(task_id: int, data: dict):
