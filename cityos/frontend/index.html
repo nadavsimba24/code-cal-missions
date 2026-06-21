@@ -230,6 +230,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 #gis-overlay-controls{display:flex;gap:8px;flex-wrap:wrap}
 #gis-overlay-controls .btn{font-size:12px;padding:6px 10px}
 #gis-spinner{padding:20px;text-align:center;color:var(--text-muted);display:none}
+.gis-basemaps{display:flex;flex-wrap:wrap;gap:5px}
+.basemap-btn{padding:6px 11px;border:1px solid var(--border-strong);border-radius:6px;font-size:12px;font-weight:500;background:var(--bg);cursor:pointer;transition:.12s;font-family:inherit;white-space:nowrap}
+.basemap-btn:hover{border-color:var(--primary);color:var(--primary)}
+.basemap-btn.active{background:var(--primary);color:#fff;border-color:var(--primary)}
 .gis-toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#323338;color:#fff;padding:10px 18px;border-radius:9px;z-index:300;font-weight:600;font-size:13px;opacity:0;transition:.3s}
 .gis-toast.show{opacity:1}
 </style>
@@ -542,10 +546,13 @@ async function vMap(el){
   window._map=map;
 }
 async function vGis(el){
-  el.innerHTML='<div id="gis-container"><div id="gis-map-wrap"><div id="gis-map"></div></div><div id="gis-panel"><div class="gis-header"><i class="fa-solid fa-globe"></i> ניתוח שטח</div><div class="gis-section"><label>📁 קובץ DEM (GeoTIFF)</label><div class="gis-drop" id="gis-drop"><input type="file" id="gis-file" accept=".tif,.tiff" hidden><p>גרור קובץ לכאן או לחץ לבחירה</p></div><div id="gis-file-info" style="display:none"></div></div><div class="gis-section"><label>🔧 כלי ניתוח</label><select id="gis-tool" class="gis-select" onchange="GIS.ready()"><option value="">בחר כלי...</option><option value="hillshade">Hillshade — הצללת שטח</option><option value="slope">Slope — שיפוע במעלות</option><option value="aspect">Aspect — כיוון שיפוע</option></select></div><div id="gis-spinner"><i class="fa-solid fa-spinner fa-spin"></i> מנתח...</div><button class="btn btn-primary" id="gis-run" disabled onclick="GIS.run()"><i class="fa-solid fa-play"></i> הפעל ניתוח</button><div id="gis-result" style="display:none"><h4><i class="fa-solid fa-check-circle" style="color:var(--green)"></i> תוצאה</h4><div id="gis-overlay-controls"><button class="btn btn-ghost" onclick="GIS.toggleOverlay()"><i class="fa-solid fa-eye"></i> הצג/הסתר</button><button class="btn btn-ghost" onclick="GIS.download()"><i class="fa-solid fa-download"></i> הורד COG</button></div></div><div class="gis-section" style="border-bottom:none"><label>🛰️ שכבת רקע</label><button class="btn btn-ghost" id="gis-sat-btn" onclick="GIS.toggleSatellite()" style="width:100%;justify-content:center"><i class="fa-solid fa-satellite"></i> תצלום לוויין</button></div></div></div>';
+  el.innerHTML='<div id="gis-container"><div id="gis-map-wrap"><div id="gis-map"></div></div><div id="gis-panel"><div class="gis-header"><i class="fa-solid fa-globe"></i> ניתוח שטח</div><div class="gis-section"><label>📁 קובץ DEM (GeoTIFF)</label><div class="gis-drop" id="gis-drop"><input type="file" id="gis-file" accept=".tif,.tiff" hidden><p>גרור קובץ לכאן או לחץ לבחירה</p></div><div id="gis-file-info" style="display:none"></div></div><div class="gis-section"><label>🔧 כלי ניתוח</label><select id="gis-tool" class="gis-select" onchange="GIS.ready()"><option value="">בחר כלי...</option><option value="hillshade">Hillshade — הצללת שטח</option><option value="slope">Slope — שיפוע במעלות</option><option value="aspect">Aspect — כיוון שיפוע</option></select></div><div id="gis-spinner"><i class="fa-solid fa-spinner fa-spin"></i> מנתח...</div><button class="btn btn-primary" id="gis-run" disabled onclick="GIS.run()"><i class="fa-solid fa-play"></i> הפעל ניתוח</button><div id="gis-result" style="display:none"><h4><i class="fa-solid fa-check-circle" style="color:var(--green)"></i> תוצאה</h4><div id="gis-overlay-controls"><button class="btn btn-ghost" onclick="GIS.toggleOverlay()"><i class="fa-solid fa-eye"></i> הצג/הסתר</button><button class="btn btn-ghost" onclick="GIS.download()"><i class="fa-solid fa-download"></i> הורד COG</button></div></div><div class="gis-section" style="border-bottom:none"><label>🗺️ מפת רקע</label><div class="gis-basemaps" id="gis-basemaps"></div><div style="margin-top:6px;font-size:11px;color:var(--text-light)" id="gis-bm-attr"></div></div></div></div>';
   const map=new maplibregl.Map({container:'gis-map',style:'https://demotiles.maplibre.org/style.json',center:[34.89,32.15],zoom:12});
   map.addControl(new maplibregl.NavigationControl());
   window._map=map;
+  GIS._initBasemaps();
+  document.getElementById('gis-bm-attr').textContent=GIS._BASEMAPS.osm.attr;
+  map.on('load',()=>{GIS._addBasemapLayers();});
   const drop=document.getElementById('gis-drop');
   const fi=document.getElementById('gis-file');
   drop.onclick=()=>fi.click();
@@ -556,8 +563,42 @@ async function vGis(el){
 }
 
 /* ============ GIS Analysis (geolibre-rust WASM) ============ */
-let GIS_satellite = false;
 const GIS = {
+  _BASEMAPS:{
+    osm:{name:'רחובות',url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'© OpenStreetMap contributors',esri:false},
+    satellite:{name:'לוויין',url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',attr:'© Esri — World Imagery',esri:true},
+    topo:{name:'טופו',url:'https://tile.opentopomap.org/{z}/{x}/{y}.png',attr:'© OpenTopoMap contributors',esri:false},
+    'carto-light':{name:'CartoDB בהיר',url:'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',attr:'© CARTO © OpenStreetMap',esri:false},
+    'carto-dark':{name:'CartoDB כהה',url:'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',attr:'© CARTO © OpenStreetMap',esri:false},
+    'govmap-ortho':{name:'GovMap צילום',url:'https://tiles.govmap.gov.il/ortho/{z}/{y}/{x}.jpg',attr:'© GovMap ישראל — תצלומי אוויר',esri:false},
+    'esri-topo':{name:'Esri טופו',url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',attr:'© Esri — World Topo Map',esri:true},
+  },
+  _bmActive:'osm',
+  _initBasemaps(){
+    const c=document.getElementById('gis-basemaps');
+    c.innerHTML=Object.entries(this._BASEMAPS).map(([k,v])=>`<button class="basemap-btn${k==='osm'?' active':''}" data-bm="${k}" onclick="GIS.selectBasemap('${k}')">${v.name}</button>`).join('');
+  },
+  _addBasemapLayers(){
+    const map=window._map;if(!map)return;
+    Object.entries(this._BASEMAPS).forEach(([id,bm]) => {
+      const sid='bm-'+id;
+      if(map.getSource(sid))return;
+      const tileUrl=bm.esri?bm.url.replace('{z}/{y}/{x}','{z}/{y}/{x}'):bm.url;
+      map.addSource(sid,{type:'raster',tiles:[bm.url],tileSize:256,attribution:bm.attr});
+      map.addLayer({id:'bm-layer-'+id,type:'raster',source:sid,layout:{visibility:id==='osm'?'visible':'none'}});
+    });
+  },
+  selectBasemap(id){
+    if(!this._BASEMAPS[id])return;
+    this._bmActive=id;
+    document.querySelectorAll('.basemap-btn').forEach(b=>b.classList.toggle('active',b.dataset.bm===id));
+    document.getElementById('gis-bm-attr').textContent=this._BASEMAPS[id].attr;
+    const map=window._map;if(!map)return;
+    Object.keys(this._BASEMAPS).forEach(k=>{
+      const lay='bm-layer-'+k;
+      if(map.getLayer(lay))map.setLayoutProperty(lay,'visibility',k===id?'visible':'none');
+    });
+  },
   file:null, result:null, overlayId:null, running:false,
   loadFile(f){this.file=f;
     const info=document.getElementById('gis-file-info');info.style.display='flex';
@@ -584,13 +625,12 @@ const GIS = {
     }catch(e){toast('שגיאה: '+e.message);console.error(e);}
     finally{this.running=false;btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-play"></i> הפעל ניתוח';document.getElementById('gis-spinner').style.display='none';}
   },
-  async initTool(mod){},
   async showResult(tool){
     const out=this.result.files['output.tif'];if(!out){toast('לא נמצא פלט');return;}
     const wasmMod=await import('geolibre-wasm');
     const reader=new wasmMod.GeoTiffReader(out);
     const w=reader.width,h=reader.height,gt=reader.geo_transform();
-    const band=reader.read_band_f64(0);reader.free();
+    const band=reader.read_band_f64(0);
     let mn=Infinity,mx=-Infinity;
     for(let i=0;i<band.length;i++){const v=band[i];if(v<mn)mn=v;if(v>mx)mx=v;}
     const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
@@ -608,17 +648,6 @@ const GIS = {
     document.getElementById('gis-result').style.display='block';
     document.getElementById('gis-result').querySelector('h4').innerHTML='<i class="fa-solid fa-check-circle"></i> ניתוח הושלם — '+document.getElementById('gis-tool').selectedOptions[0].text;
     toast('ניתוח הושלם ✓');
-  },
-  toggleSatellite(){
-    const map=window._map;if(!map)return;GIS_satellite=!GIS_satellite;
-    if(GIS_satellite){
-      if(!map.getSource('satellite')){
-        map.addSource('satellite',{type:'raster',tiles:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}'],tileSize:256,attribution:'Esri'});
-        map.addLayer({id:'satellite-layer',type:'raster',source:'satellite'},'Road labels');
-      }
-      map.setLayoutProperty('satellite-layer','visibility','visible');
-    } else {map.setLayoutProperty('satellite-layer','visibility','none');}
-    document.getElementById('gis-sat-btn').classList.toggle('active');
   },
   toggleOverlay(){if(!this.overlayId||!window._map)return;
     const lay=window._map.getLayer(this.overlayId);if(!lay)return;
