@@ -12,6 +12,15 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "geolibre-wasm": "/wasm/geolibre_wasm.js",
+    "geolibre-wasm/tools": "/wasm/tools.mjs",
+    "@bjorn3/browser_wasi_shim": "/wasm/wasi_shim.js"
+  }
+}
+</script>
 <style>
 /* ===== monday.com "Vibe" inspired design system ===== */
 :root{
@@ -199,6 +208,30 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .empty i{font-size:40px;margin-bottom:14px;opacity:.5;display:block}
 .spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:sp 1s linear infinite;margin:50px auto}
 @keyframes sp{to{transform:rotate(360deg)}}
+
+/* ── GIS Analysis ── */
+#gis-container{display:flex;height:100%;gap:0;overflow:hidden}
+#gis-map-wrap{flex:1;min-width:0}
+#gis-map{width:100%;height:100%}
+#gis-panel{width:330px;min-width:330px;background:var(--surface);border-inline-start:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.gis-header{padding:14px 16px;font-weight:700;font-size:15px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.gis-header i{color:var(--primary)}
+.gis-section{padding:12px 16px;border-bottom:1px solid var(--border)}
+.gis-section label{display:block;font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px}
+.gis-drop{border:2px dashed var(--border-strong);border-radius:8px;padding:20px;text-align:center;cursor:pointer;transition:.15s;font-size:13px;color:var(--text-muted)}
+.gis-drop:hover{border-color:var(--primary);background:var(--primary-soft)}
+.gis-drop p{margin:0}
+.gis-select{width:100%;padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;background:var(--bg);color:var(--text)}
+#gis-file-info{display:flex;align-items:center;gap:8px;margin-top:8px;padding:6px 10px;background:var(--bg);border-radius:6px;font-size:13px}
+#gis-run{width:calc(100% - 32px);margin:12px 16px}
+#gis-run:disabled{opacity:.5;cursor:not-allowed}
+#gis-result{margin:0 16px 16px;padding:12px;background:var(--bg);border-radius:8px;border:1px solid var(--border)}
+#gis-result h4{font-size:13px;margin:0 0 10px;color:var(--green);display:flex;align-items:center;gap:6px}
+#gis-overlay-controls{display:flex;gap:8px;flex-wrap:wrap}
+#gis-overlay-controls .btn{font-size:12px;padding:6px 10px}
+#gis-spinner{padding:20px;text-align:center;color:var(--text-muted);display:none}
+.gis-toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#323338;color:#fff;padding:10px 18px;border-radius:9px;z-index:300;font-weight:600;font-size:13px;opacity:0;transition:.3s}
+.gis-toast.show{opacity:1}
 </style>
 </head>
 <body>
@@ -213,6 +246,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
       <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
+      <div class="sb-item" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
     </div>
   </aside>
@@ -314,6 +348,7 @@ const VIEWS = [
   {id:'dashboard',he:'דאשבורד',ic:'fa-chart-pie'},
   {id:'calendar',he:'לוח שנה',ic:'fa-calendar-days'},
   {id:'map',he:'מפה',ic:'fa-map-location-dot'},
+  {id:'gis',he:'ניתוח שטח',ic:'fa-globe'},
 ];
 const api = async (p,o)=>{const r=await fetch(p,o);if(!r.ok)throw new Error(p+' '+r.status);return r.json();};
 const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -361,7 +396,7 @@ function setView(v){st.view=v;renderTabs();renderView();}
 function renderView(){
   const el=document.getElementById('view');
   el.innerHTML='';
-  ({table:vTable,kanban:vKanban,dashboard:vDashboard,calendar:vCalendar,map:vMap}[st.view]||vTable)(el);
+  ({table:vTable,kanban:vKanban,dashboard:vDashboard,calendar:vCalendar,map:vMap,gis:vGis}[st.view]||vTable)(el);
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;return pill(STATUS,t.status);}
@@ -504,7 +539,103 @@ async function vMap(el){
   (st.board.tasks||[]).forEach(t=>{if(t.location_lat&&t.location_lng)add(t.title,t.location_lng,t.location_lat,STATUS[t.status]?STATUS[t.status].c:'#0073ea');});
   try{const s=await api('/api/transport/stops');s.features.forEach(f=>add(f.properties.name,f.geometry.coordinates[0],f.geometry.coordinates[1],'#00c875'));}catch(e){}
   try{const a=await api('/api/infrastructure/assets');a.features.forEach(f=>add(f.properties.name,f.geometry.coordinates[0],f.geometry.coordinates[1],'#fdab3d'));}catch(e){}
+  window._map=map;
 }
+async function vGis(el){
+  el.innerHTML='<div id="gis-container"><div id="gis-map-wrap"><div id="gis-map"></div></div><div id="gis-panel"><div class="gis-header"><i class="fa-solid fa-globe"></i> ניתוח שטח</div><div class="gis-section"><label>📁 קובץ DEM (GeoTIFF)</label><div class="gis-drop" id="gis-drop"><input type="file" id="gis-file" accept=".tif,.tiff" hidden><p>גרור קובץ לכאן או לחץ לבחירה</p></div><div id="gis-file-info" style="display:none"></div></div><div class="gis-section"><label>🔧 כלי ניתוח</label><select id="gis-tool" class="gis-select" onchange="GIS.ready()"><option value="">בחר כלי...</option><option value="hillshade">Hillshade — הצללת שטח</option><option value="slope">Slope — שיפוע במעלות</option><option value="aspect">Aspect — כיוון שיפוע</option></select></div><div id="gis-spinner"><i class="fa-solid fa-spinner fa-spin"></i> מנתח...</div><button class="btn btn-primary" id="gis-run" disabled onclick="GIS.run()"><i class="fa-solid fa-play"></i> הפעל ניתוח</button><div id="gis-result" style="display:none"><h4><i class="fa-solid fa-check-circle" style="color:var(--green)"></i> תוצאה</h4><div id="gis-overlay-controls"><button class="btn btn-ghost" onclick="GIS.toggleOverlay()"><i class="fa-solid fa-eye"></i> הצג/הסתר</button><button class="btn btn-ghost" onclick="GIS.download()"><i class="fa-solid fa-download"></i> הורד COG</button></div></div><div class="gis-section" style="border-bottom:none"><label>🛰️ שכבת רקע</label><button class="btn btn-ghost" id="gis-sat-btn" onclick="GIS.toggleSatellite()" style="width:100%;justify-content:center"><i class="fa-solid fa-satellite"></i> תצלום לוויין</button></div></div></div>';
+  const map=new maplibregl.Map({container:'gis-map',style:'https://demotiles.maplibre.org/style.json',center:[34.89,32.15],zoom:12});
+  map.addControl(new maplibregl.NavigationControl());
+  window._map=map;
+  const drop=document.getElementById('gis-drop');
+  const fi=document.getElementById('gis-file');
+  drop.onclick=()=>fi.click();
+  drop.ondragover=e=>{e.preventDefault();drop.style.borderColor='var(--primary)';};
+  drop.ondragleave=()=>{drop.style.borderColor='';};
+  drop.ondrop=e=>{e.preventDefault();GIS.loadFile(e.dataTransfer.files[0]);};
+  fi.onchange=e=>{if(e.target.files[0])GIS.loadFile(e.target.files[0]);};
+}
+
+/* ============ GIS Analysis (geolibre-rust WASM) ============ */
+let GIS_satellite = false;
+const GIS = {
+  file:null, result:null, overlayId:null, running:false,
+  loadFile(f){this.file=f;
+    const info=document.getElementById('gis-file-info');info.style.display='flex';
+    info.innerHTML=`<span class="tag">${esc(f.name)}</span><span style="color:var(--text-light);font-size:12px">${(f.size/1024/1024).toFixed(2)} MB</span>`;
+    document.getElementById('gis-drop').querySelector('p').textContent='✓ נבחר קובץ';
+    document.getElementById('gis-drop').style.borderColor='var(--green)';
+    this.ready();
+  },
+  ready(){document.getElementById('gis-run').disabled=!(this.file&&document.getElementById('gis-tool').value);},
+  async run(){
+    const tool=document.getElementById('gis-tool').value;
+    if(!this.file||!tool||this.running)return;
+    this.running=true;
+    const btn=document.getElementById('gis-run');
+    btn.disabled=true;btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> מנתח...';
+    document.getElementById('gis-spinner').style.display='block';
+    try{
+      const mod=await import('geolibre-wasm/tools');
+      await mod.initTools('/wasm/geolibre-cli.wasm');
+      const bytes=new Uint8Array(await this.file.arrayBuffer());
+      const result=await mod.runTool(tool,{args:GIS_args(tool),input:{'input.tif':bytes}});
+      if(result.exitCode!==0&&result.exitCode!==null)throw new Error((result.stdout||[]).slice(-3).join(' ')||'Tool failed');
+      this.result=result;await this.showResult(tool);
+    }catch(e){toast('שגיאה: '+e.message);console.error(e);}
+    finally{this.running=false;btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-play"></i> הפעל ניתוח';document.getElementById('gis-spinner').style.display='none';}
+  },
+  async initTool(mod){},
+  async showResult(tool){
+    const out=this.result.files['output.tif'];if(!out){toast('לא נמצא פלט');return;}
+    const wasmMod=await import('geolibre-wasm');
+    const reader=new wasmMod.GeoTiffReader(out);
+    const w=reader.width,h=reader.height,gt=reader.geo_transform();
+    const band=reader.read_band_f64(0);reader.free();
+    let mn=Infinity,mx=-Infinity;
+    for(let i=0;i<band.length;i++){const v=band[i];if(v<mn)mn=v;if(v>mx)mx=v;}
+    const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+    const ctx=canvas.getContext('2d');const img=ctx.createImageData(w,h);
+    for(let i=0;i<band.length;i++){
+      const v=Math.round(((band[i]-mn)/(mx-mn||1))*255);
+      img.data[i*4]=v<128?v+128:255;img.data[i*4+1]=v<128?0:v-128;img.data[i*4+2]=255-(v>128?255:v);img.data[i*4+3]=255;
+    }
+    ctx.putImageData(img,0,0);
+    if(this.overlayId&&window._map&&window._map.getLayer(this.overlayId)){window._map.removeLayer(this.overlayId);window._map.removeSource(this.overlayId);}
+    this.overlayId='gis-ov-'+Date.now();
+    const coords=[[gt[0],gt[3]],[gt[0]+gt[1]*w,gt[3]],[gt[0]+gt[1]*w,gt[3]+gt[5]*h],[gt[0],gt[3]+gt[5]*h]];
+    window._map.addSource(this.overlayId,{type:'canvas',canvas,coordinates:coords});
+    window._map.addLayer({id:this.overlayId,type:'raster',source:this.overlayId,paint:{'raster-opacity':0.65}});
+    document.getElementById('gis-result').style.display='block';
+    document.getElementById('gis-result').querySelector('h4').innerHTML='<i class="fa-solid fa-check-circle"></i> ניתוח הושלם — '+document.getElementById('gis-tool').selectedOptions[0].text;
+    toast('ניתוח הושלם ✓');
+  },
+  toggleSatellite(){
+    const map=window._map;if(!map)return;GIS_satellite=!GIS_satellite;
+    if(GIS_satellite){
+      if(!map.getSource('satellite')){
+        map.addSource('satellite',{type:'raster',tiles:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{x}/{y}'],tileSize:256,attribution:'Esri'});
+        map.addLayer({id:'satellite-layer',type:'raster',source:'satellite'},'Road labels');
+      }
+      map.setLayoutProperty('satellite-layer','visibility','visible');
+    } else {map.setLayoutProperty('satellite-layer','visibility','none');}
+    document.getElementById('gis-sat-btn').classList.toggle('active');
+  },
+  toggleOverlay(){if(!this.overlayId||!window._map)return;
+    const lay=window._map.getLayer(this.overlayId);if(!lay)return;
+    const v=window._map.getLayoutProperty(this.overlayId,'visibility');
+    window._map.setLayoutProperty(this.overlayId,'visibility',v==='none'?'visible':'none');
+  },
+  download(){if(!this.result||!this.result.files['output.tif'])return;
+    const blob=new Blob([this.result.files['output.tif']],{type:'image/tiff'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='analysis.tif';a.click();
+  },
+};
+function GIS_args(tool){
+  const base=['--input=/work/input.tif','--output=/work/output.tif'];
+  const m={hillshade:['--azimuth=315','--altitude=45'],slope:['--units=degrees'],aspect:[],'render_raster_png':['--colormap=viridis'],'spectral_index':['--index=ndvi']};
+  return[...base,...(m[tool]||[])];
+}
+/* ============ end GIS ============ */
 
 /* ============ new item + forms ============ */
 function openNewItem(group){
