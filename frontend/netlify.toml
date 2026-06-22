@@ -1,0 +1,23 @@
+[build]
+  publish = "."
+
+# ⚠️ IMPORTANT: After deploying your backend (to Railway, Render, or a VPS),
+# replace the URL below with your actual backend URL.
+# The frontend runs on Netlify, the backend serves the API.
+# This is called a "reverse proxy" — no CORS issues.
+[[redirects]]
+  from = "/api/*"
+  to = "https://YOUR-BACKEND-PROJECT.up.railway.app/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/wasm/*"
+  to = "/wasm/:splat"
+  status = 200
+
+# SPA fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

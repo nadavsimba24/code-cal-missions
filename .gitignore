@@ -1,0 +1,18 @@
+# secrets — NEVER commit
+.env
+*.key
+
+# python / venv
+venv/
+__pycache__/
+*.pyc
+
+# runtime / generated
+*.db
+server.log
+data/training/
+*.bak
+frontend/index.html.old
+frontend/index.html.bak
+frontend/*.pre-monday.*.bak
+node_modules/
