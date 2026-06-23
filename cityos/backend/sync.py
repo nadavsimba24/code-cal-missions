@@ -50,8 +50,10 @@ def check_invariants():
         ("פונט Figtree", "Figtree" in idx), ("פונט Rubik", "Rubik" in idx),
         ("טרמינל", 'id="term"' in idx),
         ("שם CODE-CAL MISSIONS ב-backend", "CODE-CAL MISSIONS" in main),
-        ("סוכן DeepSeek", "deepseek" in main),
+        ("סוכן DeepSeek (קרמר)", "kremer" in main and "deepseek" in main),
+        ("סוכן Gemini (איליין)", "elaine" in main and "gemini" in main),
         ("מפתח DEEPSEEK ב-.env", "DEEPSEEK_API_KEY=sk-" in env),
+        ("מפתח GEMINI ב-.env", "GEMINI_API_KEY=AIzaSy" in env),
     ]
     ok = True
     for name, passed in checks:
