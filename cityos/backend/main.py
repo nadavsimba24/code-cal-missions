@@ -578,61 +578,709 @@ def graph_context():
 
 # ── AI Assistant ─────────────────────────────────────────────────────
 
+# ── Tool Definitions ────────────────────────────────────────────────
+
+AI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_boards",
+            "description": "רשימת כל הלוחות (boards) במערכת",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_board",
+            "description": "קבלת פרטי לוח לפי ID",
+            "parameters": {
+                "type": "object",
+                "properties": {"board_id": {"type": "integer", "description": "מזהה הלוח"}},
+                "required": ["board_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_projects",
+            "description": "רשימת פרויקטים (ניתן לסנן לפי department_id)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "department_id": {"type": "integer", "description": "מזהה אגף (אופציונלי)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_board",
+            "description": "יצירת לוח חדש במערכת",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "שם הלוח"},
+                    "department_id": {"type": "integer", "description": "מזהה האגף (השתמש ב-1 כברירת מחדל)"},
+                    "description": {"type": "string", "description": "תיאור הלוח"},
+                    "icon": {"type": "string", "description": "אימוג'י ללוח, ברירת מחדל 📋"},
+                    "color": {"type": "string", "description": "צבע לוח. מותר: #0073ea, #00c875, #fdab3d, #e2445c, #579bfc, #c4c4c4"},
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_group",
+            "description": "יצירת עמודה/קבוצה בלוח",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "board_id": {"type": "integer", "description": "מזהה הלוח"},
+                    "name": {"type": "string", "description": "שם הקבוצה/עמודה"},
+                    "position": {"type": "integer", "description": "מיקום (0 = ראשון)"},
+                    "color": {"type": "string", "description": "צבע"},
+                    "task_status": {"type": "string", "description": "סטטוס: backlog/todo/in_progress/review/done/cancelled/on_hold"},
+                },
+                "required": ["board_id", "name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_task",
+            "description": "יצירת משימה חדשה בלוח",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "board_id": {"type": "integer", "description": "מזהה הלוח"},
+                    "group_id": {"type": "integer", "description": "מזהה הקבוצה/עמודה"},
+                    "title": {"type": "string", "description": "כותרת המשימה"},
+                    "description": {"type": "string", "description": "תיאור המשימה"},
+                    "priority": {"type": "string", "enum": ["low", "medium", "high", "critical", "emergency"], "description": "עדיפות"},
+                    "status": {"type": "string", "enum": ["backlog", "todo", "in_progress", "review", "done", "cancelled", "on_hold"], "description": "סטטוס"},
+                    "due_date": {"type": "string", "description": "תאריך יעד בפורמט ISO"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "תגיות"},
+                },
+                "required": ["board_id", "group_id", "title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_task",
+            "description": "עדכון משימה קיימת",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "מזהה המשימה"},
+                    "title": {"type": "string"},
+                    "status": {"type": "string", "enum": ["backlog", "todo", "in_progress", "review", "done", "cancelled", "on_hold"]},
+                    "priority": {"type": "string", "enum": ["low", "medium", "high", "critical", "emergency"]},
+                    "due_date": {"type": "string"},
+                    "description": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["task_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_task",
+            "description": "מחיקת משימה (ארכון)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "מזהה המשימה למחיקה"}
+                },
+                "required": ["task_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_departments",
+            "description": "רשימת כל האגפים במערכת",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_users",
+            "description": "רשימת כל המשתמשים במערכת",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_project",
+            "description": "יצירת פרויקט חדש במסגרת תוכנית העבודה",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "שם הפרויקט"},
+                    "department_id": {"type": "integer", "description": "מזהה האגף"},
+                    "work_plan_id": {"type": "integer", "description": "מזהה תוכנית עבודה, ברירת מחדל 1"},
+                    "planned_budget": {"type": "number", "description": "תקציב מתוכנן"},
+                    "status": {"type": "string", "enum": ["draft", "planning", "in_progress", "completed", "cancelled", "on_hold"]},
+                    "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                    "manager_name": {"type": "string", "description": "שם מנהל הפרויקט (יחפש משתמש לפי שם)"}
+                },
+                "required": ["name", "department_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project_detail",
+            "description": "קבלת פרטי פרויקט מלאים (עם שלבים, תקציב, KPI, אישורים)",
+            "parameters": {
+                "type": "object",
+                "properties": {"project_id": {"type": "integer"}},
+                "required": ["project_id"]
+            }
+        }
+    },
+]
+
+
+def execute_ai_tool(name: str, args: dict) -> str:
+    """Execute an AI tool by name with the given arguments. Returns a descriptive Hebrew result string."""
+    from datetime import datetime, timezone
+
+    if name == "list_boards":
+        with Session(engine) as db:
+            boards = db.query(Board).filter(Board.is_archived == False).all()
+            if not boards:
+                return "❌ לא נמצאו לוחות במערכת."
+            lines = []
+            for b in boards:
+                dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
+                task_count = db.query(Task).filter(Task.board_id == b.id).count()
+                lines.append(f"  🆔 {b.id} | {b.icon or '📋'} **{b.name}** | אגף: {dept_name} | {task_count} משימות")
+            return "📋 **כל הלוחות במערכת:**\n" + "\n".join(lines)
+
+    elif name == "get_board":
+        board_id = args.get("board_id")
+        with Session(engine) as db:
+            b = db.query(Board).filter(Board.id == board_id).first()
+            if not b:
+                return f"❌ לוח {board_id} לא נמצא."
+            dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
+            groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
+            tasks = db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False).all()
+            lines = [
+                f"📋 **{b.name}**",
+                f"   תיאור: {b.description or 'אין תיאור'}",
+                f"   אגף: {dept_name}",
+                f"   סוג: {b.board_type.value if hasattr(b.board_type, 'value') else b.board_type}",
+                f"   צבע: {b.color}",
+                f"   סה״כ משימות: {len(tasks)}",
+            ]
+            if groups:
+                lines.append(f"   **עמודות ({len(groups)})**:")
+                for g in groups:
+                    g_tasks = [t for t in tasks if t.group_id == g.id]
+                    lines.append(f"      • {g.name} ({len(g_tasks)} משימות)")
+            return "\n".join(lines)
+
+    elif name == "list_projects":
+        dept_id = args.get("department_id")
+        with Session(engine) as db:
+            q = db.query(Project)
+            if dept_id:
+                q = q.filter(Project.department_id == dept_id)
+            projects = q.order_by(Project.id).all()
+            if not projects:
+                return "❌ לא נמצאו פרויקטים."
+            lines = []
+            for p in projects:
+                dept_name = db.query(Department.name).filter(Department.id == p.department_id).scalar() or ""
+                s = p.status.value if hasattr(p.status, 'value') else p.status
+                lines.append(f"  🆔 {p.id} | **{p.name}** | אגף: {dept_name} | סטטוס: {s} | תקציב: ₪{p.planned_budget or 0:,}")
+            return "📋 **כל הפרויקטים:**\n" + "\n".join(lines)
+
+    elif name == "create_board":
+        name = args.get("name", "לוח חדש")
+        dept_id = args.get("department_id", 1)
+        description = args.get("description", "")
+        icon = args.get("icon", "📋")
+        color = args.get("color", "#0073ea")
+        with Session(engine) as db:
+            b = Board(
+                name=name,
+                description=description,
+                department_id=dept_id,
+                board_type=BoardType.KANBAN,
+                icon=icon,
+                color=color,
+            )
+            db.add(b)
+            db.flush()
+
+            # Create default groups
+            g1 = Group(board_id=b.id, name="לתכנון", position=0, color="#579bfc", task_status=TaskStatus.BACKLOG)
+            g2 = Group(board_id=b.id, name="בתהליך", position=1, color="#fdab3d", task_status=TaskStatus.IN_PROGRESS)
+            g3 = Group(board_id=b.id, name="הושלם", position=2, color="#00c875", task_status=TaskStatus.DONE)
+            db.add_all([g1, g2, g3])
+            db.commit()
+            db.refresh(b)
+            return f"✅ לוח '{name}' נוצר בהצלחה (מזהה: {b.id}) עם 3 עמודות ברירת מחדל."
+
+    elif name == "create_group":
+        board_id = args.get("board_id")
+        name = args.get("name", "קבוצה חדשה")
+        position = args.get("position", 0)
+        color = args.get("color", "#c4c4c4")
+        task_status_str = args.get("task_status", "todo")
+        try:
+            task_status = TaskStatus(task_status_str)
+        except ValueError:
+            task_status = TaskStatus.TODO
+        with Session(engine) as db:
+            board = db.query(Board).filter(Board.id == board_id).first()
+            if not board:
+                return f"❌ לוח {board_id} לא נמצא."
+            g = Group(
+                board_id=board_id,
+                name=name,
+                position=position,
+                color=color,
+                task_status=task_status,
+            )
+            db.add(g)
+            db.commit()
+            db.refresh(g)
+            return f"✅ עמודה '{name}' נוצרה בלוח {board_id} (מזהה: {g.id})."
+
+    elif name == "create_task":
+        board_id = args.get("board_id")
+        group_id = args.get("group_id")
+        title = args.get("title", "משימה חדשה")
+        description = args.get("description", "")
+        priority_str = args.get("priority", "medium")
+        status_str = args.get("status", "todo")
+        due_date_str = args.get("due_date")
+        tags = args.get("tags", [])
+        try:
+            priority = Priority(priority_str)
+        except ValueError:
+            priority = Priority.MEDIUM
+        try:
+            status = TaskStatus(status_str)
+        except ValueError:
+            status = TaskStatus.TODO
+        due_date = None
+        if due_date_str:
+            try:
+                due_date = datetime.fromisoformat(due_date_str)
+            except Exception:
+                pass
+        with Session(engine) as db:
+            board = db.query(Board).filter(Board.id == board_id).first()
+            if not board:
+                return f"❌ לוח {board_id} לא נמצא."
+            if group_id:
+                g = db.query(Group).filter(Group.id == group_id).first()
+                if not g:
+                    return f"❌ עמודה {group_id} לא נמצאה."
+            t = Task(
+                board_id=board_id,
+                group_id=group_id,
+                title=title,
+                description=description,
+                priority=priority,
+                status=status,
+                due_date=due_date,
+                tags=tags,
+            )
+            db.add(t)
+            db.commit()
+            db.refresh(t)
+            due_str = f" (יעד: {due_date_str})" if due_date_str else ""
+            return f"✅ משימה '{title}' נוצרה בהצלחה{due_str} (מזהה: {t.id})."
+
+    elif name == "update_task":
+        task_id = args.get("task_id")
+        with Session(engine) as db:
+            t = db.query(Task).filter(Task.id == task_id).first()
+            if not t:
+                return f"❌ משימה {task_id} לא נמצאה."
+            changed = []
+            for field in ["title", "description", "due_date"]:
+                if field in args:
+                    old_val = getattr(t, field)
+                    if field == "due_date" and args[field]:
+                        try:
+                            setattr(t, field, datetime.fromisoformat(args[field]))
+                        except Exception:
+                            pass
+                    else:
+                        setattr(t, field, args[field])
+                    if old_val != getattr(t, field):
+                        changed.append(field)
+            if "status" in args:
+                try:
+                    ns = TaskStatus(args["status"])
+                    t.status = ns
+                    changed.append("status")
+                except ValueError:
+                    pass
+            if "priority" in args:
+                try:
+                    np = Priority(args["priority"])
+                    t.priority = np
+                    changed.append("priority")
+                except ValueError:
+                    pass
+            if "tags" in args:
+                t.tags = args["tags"]
+                changed.append("tags")
+            for c in changed:
+                db.add(AuditLog(
+                    entity_type="task", entity_id=task_id,
+                    action="update", field_name=c,
+                    new_value=str(getattr(t, c)),
+                ))
+            db.commit()
+            if changed:
+                return f"✅ משימה {task_id} עודכנה בהצלחה. שדות שהשתנו: {', '.join(changed)}."
+            return f"ℹ️ לא בוצעו שינויים במשימה {task_id}."
+
+    elif name == "delete_task":
+        task_id = args.get("task_id")
+        with Session(engine) as db:
+            t = db.query(Task).filter(Task.id == task_id).first()
+            if not t:
+                return f"❌ משימה {task_id} לא נמצאה."
+            t.is_archived = True
+            db.add(AuditLog(
+                entity_type="task", entity_id=task_id,
+                action="archive", field_name="is_archived",
+                new_value="True",
+            ))
+            db.commit()
+            return f"✅ משימה '{t.title}' (מזהה: {task_id}) אורכבה בהצלחה."
+
+    elif name == "list_departments":
+        with Session(engine) as db:
+            depts = db.query(Department).all()
+            if not depts:
+                return "❌ לא נמצאו אגפים במערכת."
+            lines = []
+            for d in depts:
+                proj_count = db.query(Project).filter(Project.department_id == d.id).count()
+                lines.append(f"  🆔 {d.id} | **{d.name}** | קוד: {d.code or '-'} | {proj_count} פרויקטים")
+            return "🏢 **כל האגפים:**\n" + "\n".join(lines)
+
+    elif name == "list_users":
+        with Session(engine) as db:
+            users = db.query(User).all()
+            if not users:
+                return "❌ לא נמצאו משתמשים במערכת."
+            lines = []
+            for u in users:
+                dept_name = db.query(Department.name).filter(Department.id == u.department_id).scalar() or ""
+                lines.append(f"  🆔 {u.id} | **{u.name}** | תפקיד: {u.role or '-'} | אגף: {dept_name}")
+            return "👥 **כל המשתמשים:**\n" + "\n".join(lines)
+
+    elif name == "create_project":
+        name = args.get("name", "פרויקט חדש")
+        dept_id = args.get("department_id")
+        work_plan_id = args.get("work_plan_id", 1)
+        planned_budget = args.get("planned_budget", 0)
+        status_str = args.get("status", "draft")
+        priority_str = args.get("priority", "medium")
+        manager_name = args.get("manager_name")
+        with Session(engine) as db:
+            dept = db.query(Department).filter(Department.id == dept_id).first()
+            if not dept:
+                dept_id = 1
+            manager_id = None
+            if manager_name:
+                user = db.query(User).filter(User.name.ilike(f"%{manager_name}%")).first()
+                if user:
+                    manager_id = user.id
+            try:
+                p_status = ProjectStatus(status_str)
+            except ValueError:
+                p_status = ProjectStatus.DRAFT
+            try:
+                p_priority = Priority(priority_str)
+            except ValueError:
+                p_priority = Priority.MEDIUM
+            p = Project(
+                work_plan_id=work_plan_id,
+                department_id=dept_id,
+                name=name,
+                planned_budget=planned_budget,
+                status=p_status,
+                priority=p_priority,
+                manager_id=manager_id,
+            )
+            db.add(p)
+            db.commit()
+            db.refresh(p)
+            mgr_text = f" (מנהל: {manager_name})" if manager_id else ""
+            return f"✅ פרויקט '{name}' נוצר בהצלחה{mgr_text} (מזהה: {p.id})."
+
+    elif name == "get_project_detail":
+        project_id = args.get("project_id")
+        with Session(engine) as db:
+            p = db.query(Project).filter(Project.id == project_id).first()
+            if not p:
+                return f"❌ פרויקט {project_id} לא נמצא."
+            dept_name = db.query(Department.name).filter(Department.id == p.department_id).scalar() or ""
+            mgr_name = ""
+            if p.manager_id:
+                u = db.query(User).filter(User.id == p.manager_id).first()
+                if u:
+                    mgr_name = u.name
+            s = p.status.value if hasattr(p.status, 'value') else p.status
+            pri = p.priority.value if hasattr(p.priority, 'value') else p.priority
+            steps = db.query(ProjectStep).filter(ProjectStep.project_id == p.id).order_by(ProjectStep.position).all()
+            budget_items = db.query(BudgetLineItem).filter(BudgetLineItem.project_id == p.id).all()
+            kpis = db.query(KPI).filter(KPI.project_id == p.id).all()
+            lines = [
+                f"📊 **{p.name}** (מזהה: {p.id})",
+                f"   אגף: {dept_name}",
+                f"   מנהל: {mgr_name or 'לא הוגדר'}",
+                f"   סטטוס: {s} | עדיפות: {pri}",
+                f"   התקדמות: {p.progress_percentage or 0}%",
+                f"   תקציב: מתוכנן ₪{p.planned_budget or 0:,} | מאושר ₪{p.approved_budget or 0:,} | בפועל ₪{p.actual_budget or 0:,}",
+                f"   תאריכים: {p.start_date.strftime('%d/%m/%Y') if p.start_date else '?'} → {p.end_date.strftime('%d/%m/%Y') if p.end_date else '?'}",
+            ]
+            if steps:
+                lines.append(f"   **שלבים ({len(steps)})**:")
+                for st in steps:
+                    lines.append(f"      • {st.name} - {st.progress or 0}% ({st.status})")
+            if kpis:
+                lines.append(f"   **KPI ({len(kpis)})**:")
+                for k in kpis:
+                    ach = round(k.actual / max(k.target, 1) * 100, 1)
+                    lines.append(f"      • {k.name}: {k.actual}/{k.target} {k.unit or ''} ({ach}%)")
+            if budget_items:
+                lines.append(f"   **תקציב לפי סעיף ({len(budget_items)})**:")
+                for bi in budget_items:
+                    bt = bi.item_type.value if hasattr(bi.item_type, 'value') else bi.item_type
+                    lines.append(f"      • {bi.name or bt}: מאושר ₪{bi.approved_amount or 0:,} | בפועל ₪{bi.actual_amount or 0:,}")
+            return "\n".join(lines)
+
+    return f"❌ פונקציה '{name}' לא מוכרת."
+
+
 @app.post("/api/ai/query")
 def ai_query(data: dict):
-    """CODE-CAL MISSIONS agent — DeepSeek (cloud) by default, or a local Ollama model."""
+    """CODE-CAL MISSIONS agent — DeepSeek (cloud) with tool calling, Gemini fallback, or local Ollama."""
     import subprocess
     prompt = data.get("prompt", "")
     context = data.get("context", "")
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
     gemini_key = os.environ.get("GEMINI_API_KEY")
     model = data.get("model") or ("kremer" if deepseek_key else "gemma4-coder")
-    system = "You are CODE-CAL MISSIONS, a municipal workflow assistant for an Israeli city. Answer concisely and helpfully in Hebrew."
 
     # Model alias mapping: kremer = DeepSeek, elaine = Gemini
     model_internal = model.lower()
 
+    system = """אתה CODE-CAL MISSIONS, עוזר עירוני חכם לניהול תוכניות עבודה ותקציב.
+אתה יכול לשוחח עם המשתמש בעברית וגם לבצע פעולות במערכת באמצעות tools.
+
+הכללים:
+1. כשמשתמש מבקש ליצור/לעדכן/למחוק משהו - השתמש ב-tools המתאימים
+2. כשמשתמש שואל שאלה - ענה מידע מהמערכת
+3. תמיד אשר למשתמש אחרי ביצוע פעולה
+4. כשאתה יוצר לוח חדש, צור גם קבוצות (עמודות) מתאימות: "לתכנון" (backlog), "בתהליך" (in_progress), "הושלם" (done)
+5. צור משימות עם תאריכי יעד רלוונטיים
+6. דבר בעברית תמיד
+7. השתמש באימוג'ים במידה
+8. אם אתה לא יודע איזה department_id או board_id - השתמש ברשימה קודם"""
+
     if model_internal == "kremer":
-        # Use DeepSeek (kremer)
+        # DeepSeek with tool calling
         if not deepseek_key:
             return {"response": "קרמר לא זמין כרגע (מפתח חסר).", "success": False, "model": model}
         try:
             import httpx
+            messages = [
+                {"role": "system", "content": system},
+            ]
+            user_msg = prompt
+            if context:
+                user_msg = f"הקשר: {context}\n\n{user_msg}"
+            messages.append({"role": "user", "content": user_msg})
+
             r = httpx.post(
                 "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {deepseek_key}"},
-                json={"model": "deepseek-chat", "temperature": 0.7, "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"הקשר: {context}\n\nשאלה: {prompt}"},
-                ]},
+                headers={"Authorization": f"Bearer {deepseek_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "temperature": 0.7,
+                    "messages": messages,
+                    "tools": AI_TOOLS,
+                    "tool_choice": "auto",
+                },
                 timeout=60,
             )
             r.raise_for_status()
-            txt = r.json()["choices"][0]["message"]["content"].strip()
-            return {"response": txt or "לא התקבלה תשובה", "success": True, "model": model, "provider": "kremer"}
+            resp_data = r.json()
+            choice = resp_data["choices"][0]
+            msg = choice["message"]
+
+            tool_calls = msg.get("tool_calls", [])
+            executed = []
+            tool_results = []
+
+            if tool_calls:
+                max_rounds = 5
+                rounds = 0
+                final_text = ""
+
+                while rounds < max_rounds:
+                    rounds += 1
+                    # Execute each tool call
+                    for tc in tool_calls:
+                        fn_name = tc["function"]["name"]
+                        try:
+                            fn_args = json.loads(tc["function"]["arguments"])
+                        except Exception:
+                            fn_args = {}
+                        result_text = execute_ai_tool(fn_name, fn_args)
+                        tool_results.append({
+                            "tool_call_id": tc.get("id", ""),
+                            "function_name": fn_name,
+                            "arguments": fn_args,
+                            "result": result_text,
+                        })
+                        executed.append({
+                            "name": fn_name,
+                            "arguments": fn_args,
+                            "result": result_text,
+                        })
+
+                    # Send results back to the model
+                    messages.append(msg)
+                    for tr in tool_results:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tr["tool_call_id"],
+                            "content": tr["result"],
+                        })
+
+                    r2 = httpx.post(
+                        "https://api.deepseek.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {deepseek_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "deepseek-chat",
+                            "temperature": 0.7,
+                            "messages": messages,
+                            "tools": AI_TOOLS,
+                            "tool_choice": "auto",
+                        },
+                        timeout=60,
+                    )
+                    r2.raise_for_status()
+                    resp_data2 = r2.json()
+                    msg = resp_data2["choices"][0]["message"]
+                    tool_calls = msg.get("tool_calls", [])
+                    tool_results = []
+
+                    if not tool_calls:
+                        # No more tools to call
+                        final_text = msg.get("content", "").strip()
+                        break
+
+                    final_text = msg.get("content", "") or ""
+
+                return {
+                    "response": final_text or "הפעולות בוצעו בהצלחה.",
+                    "success": True,
+                    "tool_calls": executed,
+                    "model": model,
+                    "provider": "kremer",
+                }
+
+            # No tool calls — just a regular chat response
+            txt = msg.get("content", "").strip()
+            return {
+                "response": txt or "לא התקבלה תשובה",
+                "success": True,
+                "tool_calls": [],
+                "model": model,
+                "provider": "kremer",
+            }
+
         except Exception as e:
-            return {"response": f"קרמר לא זמין: {str(e)[:200]}", "success": False, "model": model}
+            return {"response": f"קרמר לא זמין: {str(e)[:200]}", "success": False, "model": model, "tool_calls": []}
 
     if model_internal == "elaine":
-        # Use Gemini (elaine)
+        # Gemini (elaine) — no tool calling, just Q&A
         if not gemini_key:
-            return {"response": "איליין לא זמינה כרגע (מפתח חסר).", "success": False, "model": model}
-        try:
-            import httpx, json as _json
-            # Gemini 2.0 Flash
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}"
-            body = {"contents": [{"parts": [{"text": f"{system}\n\nהקשר: {context}\n\nשאלה: {prompt}"}]}]}
-            r = httpx.post(url, json=body, timeout=60)
-            r.raise_for_status()
-            data_r = r.json()
-            candidates = data_r.get("candidates", [])
-            if candidates:
-                txt = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                return {"response": txt.strip() or "לא התקבלה תשובה", "success": True, "model": model, "provider": "elaine"}
-            return {"response": "איליין לא החזירה תוכן.", "success": True, "model": model, "provider": "elaine"}
-        except Exception as e:
-            return {"response": f"איליין לא זמינה: {str(e)[:200]}", "success": False, "model": model}
+            return {"response": "איליין לא זמינה כרגע (מפתח חסר).", "success": False, "model": model, "tool_calls": []}
+        import httpx, time
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}"
+        combined = prompt
+        if context:
+            combined = f"הקשר: {context}\n\n{prompt}"
+        body = {"contents": [{"parts": [{"text": f"{system}\n\n{combined}"}]}]}
+        max_retries = 3
+        last_error = ""
+        for attempt in range(max_retries):
+            try:
+                r = httpx.post(url, json=body, timeout=60)
+                if r.status_code == 429 and attempt < max_retries - 1:
+                    wait = 2 ** (attempt + 1)
+                    last_error = f"rate limited (429), retrying in {wait}s"
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                data_r = r.json()
+                candidates = data_r.get("candidates", [])
+                if candidates:
+                    txt = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    return {"response": txt.strip() or "לא התקבלה תשובה", "success": True, "tool_calls": [], "model": model, "provider": "elaine"}
+                return {"response": "איליין לא החזירה תוכן.", "success": True, "tool_calls": [], "model": model, "provider": "elaine"}
+            except Exception as e:
+                if "429" in str(e) and attempt < max_retries - 1:
+                    wait = 2 ** (attempt + 1)
+                    last_error = str(e)[:100]
+                    time.sleep(wait)
+                    continue
+                last_error = str(e)[:200]
+                break
+        # Fallback to DeepSeek (kremer) if available
+        if deepseek_key:
+            try:
+                import httpx
+                r = httpx.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {deepseek_key}"},
+                    json={"model": "deepseek-chat", "temperature": 0.7, "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": f"הקשר: {context}\n\nשאלה: {prompt}"},
+                    ]},
+                    timeout=60,
+                )
+                r.raise_for_status()
+                txt = r.json()["choices"][0]["message"]["content"].strip()
+                return {"response": txt or "לא התקבלה תשובה", "success": True, "model": "kremer", "fallback": True, "provider": "kremer", "tool_calls": []}
+            except Exception:
+                pass
+        return {"response": f"איליין לא זמינה (מוגבל): {last_error}", "success": False, "model": model, "tool_calls": []}
 
+    # Local Ollama models — no tool calling
     full_prompt = f"{system}\n\nContext: {context}\n\nQuestion: {prompt}\n\nAnswer:"
     try:
         result = subprocess.run(
@@ -640,9 +1288,10 @@ def ai_query(data: dict):
             capture_output=True, text=True, timeout=120,
             env={**os.environ, "OLLAMA_NUM_THREADS": "8"},
         )
-        return {"response": result.stdout.strip() or "לא התקבלה תשובה", "success": True, "model": model, "provider": "ollama"}
+        return {"response": result.stdout.strip() or "לא התקבלה תשובה", "success": True, "tool_calls": [], "model": model, "provider": "ollama"}
     except Exception as e:
-        return {"response": f"AI מקומי לא זמין: {str(e)}", "success": False, "model": model}
+        return {"response": f"AI מקומי לא זמין: {str(e)}", "success": False, "model": model, "tool_calls": []}
+
 
 @app.get("/api/ai/models")
 def ai_models():
