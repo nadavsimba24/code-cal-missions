@@ -921,6 +921,7 @@ function openNewItem(group){
   showModal(`<h2>פריט חדש</h2><div class="mbody">
     <div class="field"><label>שם הפריט</label><input id="ni-title" placeholder="מה צריך לעשות?"></div>
     <div class="field"><label>עדיפות</label><select id="ni-prio">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select></div>
+    <div class="field"><label>תאריך יעד</label><input type="date" id="ni-due" style="padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%"></div>
     <div class="field"><label>אחראים</label><div style="display:flex;flex-wrap:wrap;gap:7px">${(st.users||[]).map(u=>`<label style="display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--border-strong);border-radius:20px;padding:4px 11px;cursor:pointer"><input type="checkbox" class="ni-asg" value="${u.id}" style="width:auto">${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:13px">אין משתמשים</span>'}</div></div>
     <div class="field"><label>תיאור</label><textarea id="ni-desc" rows="3"></textarea></div>
   </div><div class="mfoot"><button class="btn btn-primary" onclick="saveItem(${group===undefined||group===null?'null':group})">צור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
@@ -928,7 +929,9 @@ function openNewItem(group){
 async function saveItem(group){
   const title=document.getElementById('ni-title').value.trim();if(!title){toast('צריך שם');return;}
   const assignee_ids=[...document.querySelectorAll('.ni-asg:checked')].map(x=>+x.value);
-  await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,group_id:group,title,priority:document.getElementById('ni-prio').value,description:document.getElementById('ni-desc').value,assignee_ids})});
+  const dueVal=document.getElementById('ni-due').value;
+  const dueDate=dueVal?new Date(dueVal+'T12:00:00').toISOString():null;
+  await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,group_id:group,title,priority:document.getElementById('ni-prio').value,due_date:dueDate,description:document.getElementById('ni-desc').value,assignee_ids})});
   closeModals();toast('הפריט נוצר');await openBoard(st.board.id);
 }
 async function openForms(){
