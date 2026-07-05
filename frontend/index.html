@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CODE-CAL MISSIONS — ניהול משימות עירוני</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/><path d='M32 38 L39 49 L30 45 Z' fill='%23d6ecff'/></svg>">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/></svg>">
 <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
 <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
@@ -11,7 +13,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&family=Heebo:wght@400;500;600;700;800&family=Assistant:wght@400;500;600;700;800&family=Noto+Sans+Hebrew:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script type="importmap">
 {
   "imports": {
@@ -40,6 +42,17 @@
   --shadow-sm:0 2px 6px rgba(29,42,68,.08);
   --font:'Figtree','Rubik','Heebo','Segoe UI',system-ui,sans-serif;
 }
+/* ===== dark theme (שינוי תצוגה) ===== */
+:root[data-theme="dark"]{
+  --bg:#12141c; --surface:#1b1e27; --board-bg:#1b1e27;
+  --text:#e6e8ef; --text-muted:#9aa0b0; --text-light:#6b7080;
+  --border:#2a2e3a; --border-strong:#3a3f4d; --row-hover:#232733;
+  --primary-soft:#1e3050;
+  --shadow:0 6px 22px rgba(0,0,0,.45); --shadow-sm:0 2px 8px rgba(0,0,0,.35);
+}
+:root[data-theme="dark"] .pill{color:#fff}
+:root[data-theme="dark"] .av{border-color:var(--surface)}
+:root[data-theme="dark"] img,:root[data-theme="dark"] .tbl{color-scheme:dark}
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%}
 body{font-family:var(--font);background:var(--bg);color:var(--text);direction:rtl;overflow:hidden;font-size:14px}
@@ -55,11 +68,16 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .sb-logo .dot{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff;font-size:13px}
 .sb-search{padding:10px 12px}
 .sb-search input{width:100%;border:1px solid var(--border-strong);border-radius:6px;padding:7px 10px;font-size:13px;background:var(--bg)}
+.sb-search input:disabled{opacity:.55;cursor:not-allowed}
 .sb-section{padding:6px 12px;font-size:11px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin-top:6px;display:flex;justify-content:space-between;align-items:center}
 .sb-section i{cursor:pointer}
 .sb-list{flex:1;overflow-y:auto;padding:0 8px}
 .sb-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--text);font-size:14px;white-space:nowrap;overflow:hidden}
 .sb-item:hover{background:var(--row-hover)}
+.sb-item.disabled{opacity:.5;cursor:not-allowed;pointer-events:auto}
+.sb-item.disabled:hover{background:transparent}
+.sb-item.disabled .ic i{color:var(--text-light)!important}
+.sb-soon{margin-inline-start:auto;font-size:9px;font-weight:700;color:var(--text-light);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:1px 7px;letter-spacing:.3px;flex-shrink:0}
 .sb-item.active{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .sb-item .ic{width:22px;text-align:center;font-size:15px;flex-shrink:0}
 .sb-item .cnt{margin-inline-start:auto;font-size:11px;color:var(--text-light);background:var(--bg);padding:1px 7px;border-radius:10px}
@@ -72,6 +90,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 #appbar .ab-spacer{flex:1}
 .icon-btn{width:34px;height:34px;border-radius:7px;display:grid;place-items:center;color:var(--text-muted);font-size:15px}
 .icon-btn:hover{background:var(--row-hover);color:var(--text)}
+.icon-btn:disabled{opacity:.35;cursor:not-allowed}
+.icon-btn:disabled:hover{background:transparent;color:var(--text-muted)}
 .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:7px;font-weight:600;font-size:13px;transition:.12s}
 .btn-primary{background:var(--primary);color:#fff}
 .btn-primary:hover{background:var(--primary-hover)}
@@ -85,16 +105,73 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 #boardhead .bh-top{display:flex;align-items:center;gap:12px;margin-bottom:10px}
 #boardhead h1{font-size:22px;font-weight:800;display:flex;align-items:center;gap:10px}
 #boardhead .bh-desc{color:var(--text-muted);font-size:13px;font-weight:400}
-.tabs{display:flex;gap:4px}
-.tab{display:flex;align-items:center;gap:7px;padding:9px 14px;font-size:14px;color:var(--text-muted);border-bottom:3px solid transparent;font-weight:600;border-radius:6px 6px 0 0}
+#boardhead .board-name.editable{cursor:text;border-radius:6px;padding:1px 5px;margin-inline-start:-5px}
+#boardhead .board-name.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
+#boardhead .bt-icon.editable{cursor:pointer;border-radius:7px;padding:0 4px;transition:.12s}
+#boardhead .bt-icon.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
+.cell-pop.board-icon-pop{padding:10px}
+.board-icon-pop .icon-grid{gap:6px}
+.tabs{display:flex;gap:4px;align-items:center}
+.tab{display:flex;align-items:center;gap:7px;padding:9px 14px;font-size:14px;color:var(--text-muted);border-bottom:3px solid transparent;font-weight:600;border-radius:6px 6px 0 0;cursor:pointer}
 .tab:hover{background:var(--row-hover)}
 .tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+.tab-add-wrap{position:relative}
+.tab-add{width:30px;height:30px;border-radius:6px;color:var(--text-light);display:grid;place-items:center;font-size:13px;margin-inline-start:2px}
+.tab-add:hover{background:var(--row-hover);color:var(--primary)}
+.tab-add-wrap.open .tab-add{background:var(--primary-soft);color:var(--primary-hover)}
+.tab-pop{display:none;position:absolute;top:calc(100% + 4px);inset-inline-start:0;min-width:210px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:8px;z-index:120}
+.tab-add-wrap.open .tab-pop{display:block}
+.tab-pop .pop-row.locked{opacity:.7;cursor:default}
+.icon-grid{display:flex;flex-wrap:wrap;gap:7px}
+.icon-sw{width:38px;height:38px;border-radius:9px;border:1.5px solid var(--border-strong);background:var(--surface);font-size:19px;cursor:pointer;display:grid;place-items:center;transition:.1s}
+.icon-sw:hover{border-color:var(--text-light)}
+.icon-sw.sel{border-color:var(--primary);background:var(--primary-soft);transform:scale(1.05)}
 
 /* toolbar */
-#toolbar{background:var(--surface);display:flex;align-items:center;gap:8px;padding:9px 22px;border-bottom:1px solid var(--border)}
-.tb-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:6px;font-size:13px;color:var(--text-muted)}
+#toolbar{background:var(--surface);display:flex;align-items:center;gap:7px;padding:9px 22px;border-bottom:1px solid var(--border)}
+.tb-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:6px;font-size:13px;color:var(--text-muted);white-space:nowrap}
 .tb-btn:hover{background:var(--row-hover);color:var(--text)}
-.tb-sep{width:1px;height:22px;background:var(--border)}
+.tb-sep{width:1px;height:22px;background:var(--border);margin:0 3px}
+/* inline search */
+.tb-search{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border-strong);border-radius:7px;padding:0 10px;height:34px;width:210px;transition:border-color .12s,box-shadow .12s,width .15s}
+.tb-search:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);width:240px}
+.tb-search i{color:var(--text-light);font-size:13px}
+.tb-search input{flex:1;border:none;background:none;font-family:inherit;font-size:13px;color:var(--text);padding:0;width:100%}
+.tb-search input:focus{outline:none}
+.tb-search .tb-q-clear{display:none;color:var(--text-light);font-size:12px;width:18px;height:18px;border-radius:50%}
+.tb-search .tb-q-clear:hover{background:var(--border);color:var(--text)}
+.tb-search .tb-q-clear.show{display:grid;place-items:center}
+/* dropdown controls */
+.tb-ctl{position:relative}
+.tb-ctl.on .tb-btn{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
+.tb-badge{display:none;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--primary);color:#fff;font-size:11px;font-weight:700;align-items:center;justify-content:center}
+.tb-ctl.on .tb-badge{display:inline-flex}
+.tb-ctl.open .tb-btn{background:var(--row-hover);color:var(--text)}
+.tb-pop{display:none;position:absolute;top:calc(100% + 6px);inset-inline-start:0;min-width:230px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:10px;z-index:120}
+.tb-ctl.open .tb-pop{display:block}
+.pop-title{font-size:11px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:4px 2px 7px}
+.pop-title:not(:first-child){margin-top:12px;border-top:1px solid var(--border);padding-top:11px}
+.pop-chips{display:flex;flex-wrap:wrap;gap:6px}
+.pop-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:20px;font-size:12.5px;font-weight:600;border:1.5px solid var(--border-strong);color:var(--text-muted);background:var(--surface)}
+.pop-chip:hover{border-color:var(--text-light)}
+.pop-chip .dot{width:9px;height:9px;border-radius:50%}
+.pop-chip.sel{border-color:var(--c,var(--primary));background:color-mix(in srgb,var(--c,var(--primary)) 12%,transparent);color:var(--text)}
+.pop-row{display:flex;align-items:center;gap:9px;padding:6px 7px;border-radius:6px;cursor:pointer;font-size:13px}
+.pop-row:hover{background:var(--row-hover)}
+.pop-row input{width:auto;accent-color:var(--primary)}
+.pop-row .av{width:26px;height:26px;font-size:11px;flex-shrink:0;margin:0}
+.pop-people{max-height:240px;overflow-y:auto}
+/* combined filter+sort panel */
+.tb-pop-wide{min-width:290px;max-height:74vh;overflow-y:auto;padding:0}
+.arr-head{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;padding:12px 14px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1}
+.arr-head i{color:var(--primary)}
+.tb-pop-wide .arr-sec{padding:10px 14px;border-bottom:1px solid var(--border)}
+.tb-pop-wide .arr-sec .pop-title{margin:0 0 8px;border:none;padding:0;display:flex;align-items:center;gap:6px}
+.tb-pop-wide .pop-people{max-height:150px}
+.arr-foot{padding:10px 14px;position:sticky;bottom:0;background:var(--surface)}
+.tb-clear{display:none;color:var(--red);font-weight:600}
+.tb-clear.show{display:inline-flex}
+.tb-clear:hover{background:#fdebed;color:var(--red-d)}
 
 #view{flex:1;overflow:auto;padding:18px 22px;position:relative}
 
@@ -103,25 +180,127 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .group-head{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;margin-bottom:6px;cursor:pointer}
 .group-head .caret{transition:.15s;font-size:12px}
 .group-head.collapsed .caret{transform:rotate(-90deg)}
+.group-head .g-drag{font-size:13px;color:var(--text-light);cursor:grab;opacity:.45;transition:.12s;padding:4px 3px;border-radius:5px;margin-inline-end:-4px}
+.group:hover .g-drag{opacity:.8}
+.group-head .g-drag:hover{opacity:1;background:var(--row-hover);color:var(--text)}
+.group-head .g-drag:active{cursor:grabbing}
+.group.drag-chosen{box-shadow:var(--shadow);border-radius:8px}
+.group.sortable-drag .group-head .g-name{color:var(--text)!important}
+.group-head .g-count{color:var(--text-light);font-weight:400;font-size:13px}
+.group-head .g-menu-btn{margin-inline-start:4px;width:26px;height:26px;border-radius:6px;color:var(--text-light);opacity:0;transition:.12s;display:grid;place-items:center;font-size:14px}
+.group:hover .g-menu-btn{opacity:1}
+.group-head .g-menu-btn:hover{background:var(--row-hover);color:var(--text)}
+.sortable-ghost .group-head{opacity:.4}
+.add-group-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border:1.5px dashed var(--border-strong);border-radius:9px;color:var(--text-muted);font-weight:600;font-size:13.5px;background:var(--surface);transition:.12s}
+.add-group-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
+.color-grid{display:flex;flex-wrap:wrap;gap:9px}
+.color-sw{width:30px;height:30px;border-radius:50%;border:2px solid transparent;cursor:pointer;position:relative;transition:transform .1s}
+.color-sw:hover{transform:scale(1.12)}
+.color-sw.sel::after{content:'\2713';position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px;font-weight:800;text-shadow:0 1px 2px rgba(0,0,0,.35)}
 .tbl{width:100%;border-collapse:separate;border-spacing:0;background:var(--surface);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-sm)}
 .tbl th{font-size:12px;color:var(--text-muted);font-weight:600;text-align:right;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap}
 .tbl td{padding:0;border-bottom:1px solid var(--border);border-inline-start:1px solid var(--border);font-size:14px;height:40px}
 .tbl tr:hover td{background:var(--row-hover)}
-.tbl .c-item{font-weight:500;padding:8px 12px;min-width:280px;border-inline-start:4px solid var(--gcolor,var(--primary))}
+.tbl .c-item{font-weight:500;padding:6px 12px;min-width:280px;border-inline-start:4px solid var(--gcolor,var(--primary));vertical-align:middle}
 .tbl .cell{padding:6px 10px;text-align:center}
 .pill{display:inline-flex;align-items:center;justify-content:center;width:100%;min-width:96px;height:30px;border-radius:4px;color:#fff;font-weight:600;font-size:12.5px;padding:0 8px}
 .prio{min-width:80px}
-.avatars{display:flex;justify-content:center}
-.av{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:700;border:2px solid #fff;margin-inline-start:-8px}
+.avatars{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;height:28px}
+.av-add{display:inline-flex;align-items:center;justify-content:center;color:var(--text-light);font-size:16px}
+.av-more{background:var(--text-light)!important;font-size:10px}
+.av{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:inline-grid;place-items:center;font-size:11px;font-weight:700;border:2px solid var(--surface);margin-inline-start:-8px;flex-shrink:0;box-sizing:border-box}
 .av:first-child{margin:0}
 .add-row td{padding:8px 12px;color:var(--text-muted);font-size:13px;cursor:pointer;border-inline-start:4px solid transparent}
 .add-row:hover td{color:var(--primary)}
+/* sub-items (תת-פריטים) */
+.tbl .c-item .ci-flex{display:flex;align-items:center;gap:8px;min-height:28px}
+.sub-toggle{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;flex-shrink:0;transition:.12s}
+.sub-toggle:hover{background:var(--row-hover);color:var(--text)}
+.sub-toggle i{transition:transform .15s}
+.sub-toggle.open i{transform:rotate(-90deg)}
+.sub-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:11px;padding:1px 8px;font-weight:600;margin-inline-start:auto}
+.tbl tr.subrow td{background:var(--bg)}
+.tbl tr.subrow:hover td{background:var(--row-hover)}
+.tbl .c-sub{padding-inline-start:30px;font-weight:400;color:var(--text)}
+.sub-twig{width:14px;height:14px;border-inline-start:2px solid var(--border-strong);border-bottom:2px solid var(--border-strong);border-end-start-radius:5px;display:inline-block;margin-inline-end:8px;flex-shrink:0;margin-bottom:4px}
+.sub-del{margin-inline-start:auto;color:var(--text-light);opacity:0;transition:.12s;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px}
+.subrow:hover .sub-del{opacity:1}
+.sub-del:hover{background:#fdebed;color:var(--red)}
+.status-clik{cursor:pointer;display:inline-block;width:100%}
+.subrow.subadd td{color:var(--text-muted);cursor:pointer;font-size:13px}
+.subrow.subadd:hover td{color:var(--primary)}
+/* custom columns */
+.tbl th.th-custom,.tbl th.th-add{position:relative}
+.th-wrap{display:inline-flex;align-items:center;gap:5px}
+.th-menu{opacity:0;color:var(--text-light);width:18px;height:18px;border-radius:4px;font-size:11px;transition:.12s}
+.tbl th.th-custom:hover .th-menu{opacity:1}
+.th-menu:hover{background:var(--row-hover);color:var(--text)}
+.th-add{width:42px}
+.th-add-wrap{position:relative;display:inline-block}
+.th-add-btn{width:26px;height:26px;border-radius:6px;color:var(--text-light);display:grid;place-items:center;font-size:12px}
+.th-add-btn:hover{background:var(--primary-soft);color:var(--primary-hover)}
+.cell-custom{padding:4px 8px!important;text-align:center;position:relative;min-width:120px}
+.cc-inp{width:100%;border:1px solid transparent;background:transparent;font-family:inherit;font-size:13px;color:var(--text);text-align:center;border-radius:5px;padding:5px 6px}
+.cc-inp:hover{border-color:var(--border)}
+.cc-inp:focus{outline:none;border-color:var(--primary);background:var(--surface)}
+.cc-date{cursor:pointer;color:var(--text-muted)}
+.rating{display:inline-flex;gap:3px;color:var(--yellow);font-size:14px;cursor:pointer}
+.rating .fa-regular{color:var(--border-strong)}
+.rating i:hover{transform:scale(1.18)}
+.pill-empty{background:transparent!important;color:var(--text-light);border:1px dashed var(--border-strong);min-width:auto;width:auto;padding:0 14px}
+.tl-bar{display:flex;align-items:center;justify-content:center;height:28px;border-radius:14px;background:linear-gradient(90deg,#0073ea,#00c875);color:#fff;font-size:12px;font-weight:600;padding:0 12px;min-width:120px;box-shadow:var(--shadow-sm)}
+.tl-txt{white-space:nowrap}
+/* in-cell popovers */
+.cell-pop{position:absolute;top:calc(100% + 4px);inset-inline-start:50%;transform:translateX(50%);background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:7px;z-index:130;min-width:150px;display:flex;flex-direction:column;gap:5px}
+.cell-pop.cell-pop-fixed{position:fixed;top:auto;left:auto;right:auto;inset-inline-start:auto;inset-inline-end:auto;transform:none;z-index:250;max-height:min(60vh,360px);overflow-y:auto}
+.cell-pop-opt{color:#fff;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:600;text-align:center}
+.cell-pop-opt:hover{filter:brightness(1.06)}
+.cell-pop-clear{background:var(--bg)!important;color:var(--text-muted)!important;border:1px solid var(--border)}
+.cell-pop-opt2{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;font-size:13px;color:var(--text)}
+.cell-pop-opt2:hover{background:var(--row-hover)}
+.col-add-pop{min-width:230px;inset-inline-start:auto;inset-inline-end:0;transform:none}
+.coltype{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;text-align:right}
+.coltype:hover{background:var(--row-hover)}
+.coltype i{width:18px;color:var(--primary);font-size:14px}
+.coltype span{display:flex;flex-direction:column;line-height:1.3}
+.coltype small{color:var(--text-light);font-size:11px}
+.col-add-pop{max-height:340px;overflow-y:auto}
+/* checkbox */
+.cc-check{width:18px;height:18px;accent-color:var(--green);cursor:pointer}
+/* people/dropdown list popovers */
+.list-pop{min-width:200px;max-height:260px;overflow-y:auto;align-items:stretch}
+.pl-opt,.dd-opt{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:6px;font-size:13px;color:var(--text);text-align:start}
+.pl-opt:hover,.dd-opt:hover{background:var(--row-hover)}
+.pl-opt.sel,.dd-opt.sel{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
+.dd-opt{justify-content:space-between}
+.pl-opt .fa-check,.dd-opt .fa-check{color:var(--green)}
+/* files */
+.cell-custom .file-chip{display:inline-flex;align-items:center;gap:3px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;padding:2px 6px;font-size:11px;margin:1px}
+.cell-custom .file-chip a{color:var(--primary);display:inline-flex;align-items:center;gap:4px}
+.file-x{cursor:pointer;color:var(--text-light);font-size:10px}
+.file-x:hover{color:var(--red)}
+.file-add{width:24px;height:24px;border-radius:6px;border:1px dashed var(--border-strong);color:var(--text-light);font-size:11px;margin-inline-start:3px}
+.file-add:hover{border-color:var(--primary);color:var(--primary)}
+/* accounts */
+.acct-chip{display:inline-flex;align-items:center;gap:5px;background:var(--primary-soft);color:var(--primary-hover);border-radius:14px;padding:3px 11px;font-size:12.5px;font-weight:600}
+/* formula */
+.formula-val{font-weight:700;color:var(--dark-blue);font-variant-numeric:tabular-nums}
+/* inline editing of built-in columns */
+.tbl td.edit-cell{position:relative;cursor:pointer}
+.tbl td.edit-cell:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1.5px var(--primary-soft)}
+.item-title.editable{cursor:pointer;border-radius:4px;padding:1px 3px}
+.item-title.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
+.title-edit{border:1px solid var(--primary);border-radius:5px;padding:3px 6px;font-family:inherit;font-size:14px;font-weight:500;min-width:200px;box-shadow:0 0 0 3px var(--primary-soft);outline:none}
+.tag-edit{display:flex;flex-wrap:wrap;gap:5px}
 .battery{display:flex;height:8px;width:140px;border-radius:5px;overflow:hidden;border:1px solid var(--border)}
 .battery span{height:100%}
 .tag{display:inline-block;background:var(--bg);border:1px solid var(--border-strong);border-radius:11px;padding:1px 9px;font-size:11px;color:var(--text-muted);margin:1px}
 
 /* ===== Kanban ===== */
 .kanban{display:flex;gap:14px;align-items:flex-start;height:100%}
+/* trailing spacer so the last column isn't clipped flush against the
+   scroll-container edge (flexbox ignores end-padding at scroll end) */
+.kanban::after{content:'';flex:0 0 14px;align-self:stretch}
 .kcol{background:var(--bg);border-radius:10px;width:280px;min-width:280px;display:flex;flex-direction:column;max-height:100%}
 .kcol-head{padding:11px 13px;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;border-top:4px solid var(--kc,var(--grey));border-radius:10px 10px 0 0}
 .kcol-head .cnt{margin-inline-start:auto;color:var(--text-light);font-weight:600}
@@ -149,6 +328,18 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
 /* calendar */
 .cal{background:var(--surface);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow-sm)}
+.cal-head{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.cal-head h3{margin:0;font-size:17px}
+.cal-nav{display:flex;align-items:center;gap:5px}
+.cal-navbtn{width:32px;height:32px;border-radius:7px;border:1px solid var(--border-strong);color:var(--text-muted);display:grid;place-items:center;font-size:12px;background:var(--surface)}
+.cal-navbtn:hover{background:var(--row-hover);color:var(--primary);border-color:var(--primary)}
+.cal-today{border:1px solid var(--border-strong);border-radius:7px;padding:6px 14px;font-size:13px;font-weight:600;color:var(--text-muted);background:var(--surface)}
+.cal-today:hover{background:var(--row-hover);color:var(--text)}
+.cal-today.cur{border-color:var(--primary);color:var(--primary-hover);background:var(--primary-soft)}
+.cal-more{font-size:10px;color:var(--text-muted);margin-top:2px;font-weight:600}
+.cal-ev{cursor:pointer}
+.cal-ev:hover{filter:brightness(1.08)}
+.cal-empty{text-align:center;color:var(--text-light);padding:18px;font-size:13px;margin-top:8px;border-top:1px solid var(--border)}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
 .cal-dow{text-align:center;font-size:12px;color:var(--text-muted);font-weight:700;padding:6px}
 .cal-cell{min-height:92px;border:1px solid var(--border);border-radius:7px;padding:5px;font-size:12px}
@@ -174,6 +365,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .msg.bot{background:var(--bg);border:1px solid var(--border);border-bottom-left-radius:3px;white-space:pre-wrap}
 .ai-input{padding:12px;border-top:1px solid var(--border);display:flex;gap:8px}
 .ai-input input{flex:1;border:1px solid var(--border-strong);border-radius:8px;padding:10px}
+.ai-input input:disabled{background:var(--bg);color:var(--text-light);cursor:not-allowed}
+.ai-input button:disabled{opacity:.4;cursor:not-allowed}
+.ai-offline{display:flex;align-items:flex-start;gap:10px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:10px;padding:11px 13px;font-size:13px;font-weight:600;margin-bottom:14px}
+.ai-offline i{color:#ea580c;font-size:16px;margin-top:1px}
+:root[data-theme="dark"] .ai-offline{background:#2a1c10;border-color:#7c3a12;color:#fdba74}
 .agent-card{border:1px solid var(--border);border-radius:9px;padding:12px;margin-bottom:9px}
 .agent-card .nm{font-weight:700}
 .agent-card .rl{font-size:12px;color:var(--text-muted)}
@@ -202,6 +398,69 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .field label{display:block;font-size:13px;font-weight:600;margin-bottom:5px}
 .field input,.field select,.field textarea{width:100%;border:1px solid var(--border-strong);border-radius:7px;padding:9px;font-family:inherit}
 .modal .mfoot{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-start;gap:10px}
+.btn-danger{background:var(--red);color:#fff}
+.btn-danger:hover{background:var(--red-d)}
+/* confirmation dialog */
+.modal.confirm-modal{width:400px}
+.confirm-box{padding:26px 24px 20px;text-align:center}
+.confirm-ic{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-size:23px;margin:0 auto 14px;background:var(--primary-soft);color:var(--primary)}
+.confirm-ic.danger{background:#fdebed;color:var(--red)}
+.confirm-msg{font-size:15px;font-weight:600;color:var(--text)}
+.confirm-note{font-size:13px;color:var(--text-muted);margin-top:7px}
+.confirm-actions{display:flex;gap:10px;justify-content:center;margin-top:20px}
+.confirm-actions .btn{min-width:104px;justify-content:center}
+/* ===== personal profile card ===== */
+.modal.profile-modal{width:380px;overflow:hidden}
+.av.av-click,.avatars .av{cursor:pointer;transition:transform .1s}
+.av.av-click:hover{transform:scale(1.12);z-index:2;box-shadow:0 0 0 2px var(--primary)}
+.pf-head{display:flex;align-items:center;gap:14px;padding:22px;background:linear-gradient(135deg,var(--pf,#0073ea),#0086c0);color:#fff}
+.pf-av{width:60px;height:60px;border-radius:50%;background:rgba(255,255,255,.22);display:grid;place-items:center;font-size:22px;font-weight:800;border:2px solid rgba(255,255,255,.55);flex-shrink:0}
+img.pf-av{object-fit:cover;background:#fff}
+.pf-av-btn{position:relative;padding:0;background:none;border:none;cursor:pointer;flex-shrink:0;border-radius:50%}
+.pf-av-btn:hover .pf-av{filter:brightness(.85)}
+.pf-av-cam{position:absolute;inset-inline-end:-2px;bottom:-2px;width:24px;height:24px;border-radius:50%;background:#fff;color:var(--primary);display:grid;place-items:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.3);border:1.5px solid var(--primary)}
+.pf-av-btn:hover .pf-av-cam{background:var(--primary);color:#fff}
+.av img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+.pf-name{font-size:19px;font-weight:800;line-height:1.2}
+.pf-role{font-size:13px;opacity:.92;margin-top:3px}
+.pf-body{padding:16px 22px 4px}
+.pf-row{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--text);padding:7px 0}
+.pf-row i{width:18px;color:var(--text-light);text-align:center;font-size:14px}
+.pf-row a{color:var(--primary);text-decoration:none}
+.pf-row a:hover{text-decoration:underline}
+.pf-sec{font-size:11px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:14px 0 9px;border-top:1px solid var(--border);padding-top:13px}
+.pf-stats{display:flex;flex-wrap:wrap;gap:6px}
+.pf-stat-chip{color:#fff;border-radius:12px;padding:3px 11px;font-size:12px;font-weight:600}
+.pf-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
+.pf-row.pf-toggle{justify-content:space-between}
+.pf-row.pf-toggle>span{display:flex;align-items:center;gap:11px}
+.pf-row.pf-sub{padding-block:4px;padding-inline-start:16px}
+.pf-row.pf-sub>span{color:var(--text-muted);font-size:13px}
+.pf-row.pf-sub i{font-size:12px}
+.switch.sm{width:38px;height:22px}
+.switch{position:relative;display:inline-block;width:42px;height:24px;flex-shrink:0}
+.switch input{opacity:0;width:0;height:0}
+.switch .slider{position:absolute;inset:0;background:var(--border-strong);border-radius:24px;transition:.2s;cursor:pointer}
+.switch .slider::before{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:3px;inset-inline-start:3px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.switch input:checked+.slider{background:var(--green)}
+.switch input:checked+.slider::before{transform:translateX(-18px)}
+.switch input:disabled+.slider{opacity:.5;cursor:not-allowed}
+/* ===== login screen ===== */
+#login{position:fixed;inset:0;background:linear-gradient(135deg,#0073ea,#00c875);z-index:400;display:none;align-items:center;justify-content:center;padding:20px}
+#login.open{display:flex}
+.login-box{background:var(--surface);border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.32);width:390px;max-width:94vw;padding:28px;max-height:90vh;overflow:auto}
+.login-logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;justify-content:center}
+.login-logo .dot{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff;font-size:15px}
+.login-sub{text-align:center;color:var(--text-muted);font-size:13px;margin:9px 0 20px}
+.login-users{display:flex;flex-direction:column;gap:8px}
+.login-user{display:flex;align-items:center;gap:12px;padding:11px 14px;border:1px solid var(--border);border-radius:11px;background:var(--surface);text-align:start;transition:.12s}
+.login-user:hover{border-color:var(--primary);background:var(--primary-soft);transform:translateY(-1px)}
+.login-user .av{width:38px;height:38px;font-size:14px;margin:0;flex-shrink:0}
+.lu-info{display:flex;flex-direction:column;flex:1;min-width:0}
+.lu-name{font-weight:700;font-size:14px}
+.lu-role{font-size:12px;color:var(--text-light)}
+.login-user>i{color:var(--text-light)}
+.login-user:hover>i{color:var(--primary)}
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);background:#323338;color:#fff;padding:12px 20px;border-radius:9px;z-index:300;transition:.3s;font-weight:600;font-size:13px}
 #toast.show{transform:translateX(-50%) translateY(0)}
 .empty{text-align:center;color:var(--text-light);padding:60px 20px}
@@ -316,6 +575,144 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .wp-detail-panel h3{font-size:15px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .subsection{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:12px}
 
+/* ===== "פועל בתור" switcher ===== */
+.me-btn{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border-radius:20px}
+.me-btn:hover{background:var(--row-hover)}
+.me-btn .av{width:30px;height:30px;margin:0;font-size:12px}
+.me-btn .me-name{font-size:13px;font-weight:600;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#ctl-me{position:relative}
+#ctl-me .tb-pop{top:calc(100% + 8px)}
+
+/* ===== item chat button ===== */
+.chat-btn{margin-inline-start:auto;display:inline-flex;align-items:center;gap:4px;color:var(--text-light);font-size:12px;padding:3px 7px;border-radius:12px;opacity:0;transition:.12s}
+.tbl tr:hover .chat-btn{opacity:1}
+.chat-btn.has{opacity:1;color:var(--primary);background:var(--primary-soft);font-weight:600}
+.chat-btn:hover{background:var(--row-hover);color:var(--primary)}
+
+/* ===== conversation slideover ===== */
+.chat-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:190;display:none}
+.chat-overlay.open{display:block}
+#chat-panel{position:fixed;top:0;left:0;height:100vh;width:460px;max-width:96vw;background:var(--bg);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(-110%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
+#chat-panel.open{transform:translateX(0)}
+.chat-head{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface);border-bottom:1px solid var(--border)}
+.chat-title{font-weight:800;font-size:16px}
+.chat-sub{font-size:12.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 8px}
+.chat-tab{flex:1;text-align:center;padding:11px 6px;font-size:13px;font-weight:600;color:var(--text-muted);border-bottom:3px solid transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px}
+.chat-tab:hover{background:var(--row-hover)}
+.chat-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+.chat-body{flex:1;overflow-y:auto;display:flex;flex-direction:column}
+/* conversation list + composer */
+.chat-list{flex:1;overflow-y:auto;padding:14px}
+.cmt{display:flex;gap:10px;margin-bottom:16px}
+.cmt .av{width:34px;height:34px;font-size:12px;flex-shrink:0;margin:0}
+.cmt-main{flex:1;min-width:0}
+.cmt-head{display:flex;align-items:center;gap:7px;font-size:13px;flex-wrap:wrap}
+.cmt-role{font-size:11px;color:var(--text-light);background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:0 7px}
+.cmt-time{font-size:11px;color:var(--text-light);margin-inline-start:auto}
+.cmt-body{background:var(--surface);border:1px solid var(--border);border-radius:10px;border-start-start-radius:2px;padding:9px 12px;margin-top:5px;font-size:13.5px;line-height:1.55;word-break:break-word}
+.cmt-body .bullet{position:relative;padding-inline-start:16px}
+.cmt-body .bullet::before{content:'•';position:absolute;inset-inline-start:2px;color:var(--primary)}
+.cmt-body .chk{display:flex;align-items:flex-start;gap:7px;cursor:pointer}
+.cmt-body .chk input{margin-top:3px;accent-color:var(--green)}
+.cmt-body .chk.done span{text-decoration:line-through;color:var(--text-light)}
+.cmt-body a{color:var(--primary);text-decoration:underline}
+.cmt-body .mention{color:var(--primary);font-weight:600;background:var(--primary-soft);border-radius:4px;padding:0 3px}
+.cmt-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.cmt-actions{display:flex;gap:4px;margin-top:5px}
+.cmt-actions button{font-size:12px;color:var(--text-muted);padding:3px 8px;border-radius:6px;display:inline-flex;align-items:center;gap:5px}
+.cmt-actions button:hover{background:var(--row-hover);color:var(--text)}
+.cmt-actions button.liked{color:var(--primary);font-weight:600}
+.cmt-replies{margin-top:12px;padding-inline-start:12px;border-inline-start:2px solid var(--border)}
+.cmt-reply{margin-bottom:12px}
+.cmt-reply .av{width:28px;height:28px;font-size:11px}
+.chat-noperm{padding:14px;text-align:center;color:var(--text-muted);font-size:13px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:8px}
+.chat-noperm i{color:var(--text-light)}
+.composer{background:var(--surface);border-top:1px solid var(--border);padding:10px 12px}
+.reply-ctx{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:6px;padding:5px 9px;margin-bottom:7px;display:flex;align-items:center;gap:7px}
+.comp-tools{display:flex;gap:2px;margin-bottom:6px}
+.comp-tools button{width:30px;height:30px;border-radius:6px;color:var(--text-muted);position:relative}
+.comp-tools button:hover{background:var(--row-hover);color:var(--primary)}
+.composer textarea{width:100%;border:1px solid var(--border-strong);border-radius:8px;padding:9px;font-family:inherit;font-size:13.5px;resize:vertical;min-height:52px}
+.composer textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+.comp-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.comp-foot{display:flex;justify-content:flex-start;margin-top:8px}
+.chat-float{inset-inline-start:0;inset-inline-end:auto;transform:none;bottom:calc(100% + 6px);top:auto;max-height:230px;overflow-y:auto;min-width:190px}
+.chat-float button{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;width:100%;text-align:start}
+.chat-float button:hover{background:var(--row-hover)}
+.chat-float .av{width:24px;height:24px;font-size:10px}
+.emoji-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:2px}
+.emoji-grid button{font-size:18px;padding:5px;width:auto}
+/* files tab */
+.files-list{padding:12px}
+.file-row{display:flex;align-items:center;gap:11px;padding:11px 12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;margin-bottom:8px;color:var(--text)}
+.file-row:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
+.fr-name{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fr-meta{font-size:11.5px;color:var(--text-light)}
+/* logs tab */
+.log-filters{display:flex;gap:8px;padding:11px 12px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:2}
+.log-filters select,.log-filters input{border:1px solid var(--border-strong);border-radius:6px;padding:6px 8px;font-family:inherit;font-size:12.5px}
+.log-filters select{flex:1}
+.logs-list{padding:10px 12px}
+.log-row{display:flex;align-items:flex-start;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border)}
+.log-ic{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:12px;flex-shrink:0;background:var(--primary-soft);color:var(--primary)}
+.log-ic.comment{background:#e6f7ef;color:var(--green-d)}
+.log-ic.undo{background:#fdebed;color:var(--red)}
+.log-txt{font-size:13px;line-height:1.5}
+.log-time{font-size:11px;color:var(--text-light);margin-top:2px}
+.log-old{color:var(--text-light);text-decoration:line-through}
+.log-new{color:var(--green-d);font-weight:600}
+.log-undo{font-size:11.5px;color:var(--red);border:1px solid var(--border-strong);border-radius:6px;padding:3px 8px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+.log-undo:hover{background:#fdebed;border-color:var(--red)}
+/* board members / permissions */
+.bh-perm{font-size:12px;font-weight:600;color:var(--primary);background:var(--primary-soft);border-radius:7px;padding:5px 11px;display:inline-flex;align-items:center;gap:6px;vertical-align:middle;margin-inline-start:6px}
+.bh-perm:hover{background:var(--primary);color:#fff}
+.mem-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--border)}
+.mem-row .av{width:32px;height:32px;font-size:12px;margin:0;flex-shrink:0}
+.mem-row select{border:1px solid var(--border-strong);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12.5px}
+.mem-del{width:30px;height:30px;border-radius:6px;color:var(--text-light)}
+.mem-del:hover{background:#fdebed;color:var(--red)}
+.mem-add{display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+.mem-add select{flex:1;border:1px solid var(--border-strong);border-radius:7px;padding:8px;font-family:inherit;font-size:13px}
+.perm-badge{font-size:12px;font-weight:600;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:3px 11px}
+.modal .mbody{max-height:60vh;overflow-y:auto}
+/* form builder */
+.fb-row{display:flex;align-items:center;gap:10px;padding:9px 8px;border:1px solid var(--border);border-radius:8px;margin-bottom:7px;background:var(--surface)}
+.fb-drag{color:var(--text-light);cursor:grab}
+.fb-drag.locked{opacity:.25;cursor:not-allowed}
+.fb-info{flex:1;min-width:0}
+.fb-label{font-weight:600;font-size:13.5px}
+.fb-type{font-size:11px;color:var(--text-light)}
+.fb-constraint{display:flex;align-items:center;gap:4px}
+.fb-constraint input{border:1px solid var(--border-strong);border-radius:5px;padding:4px 6px;font-family:inherit;font-size:11.5px;width:120px}
+.fb-tog{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted);white-space:nowrap;cursor:pointer}
+.fb-tog input{accent-color:var(--primary)}
+/* form fill */
+.ff-multi{display:flex;flex-wrap:wrap;gap:6px}
+.ff-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border-strong);border-radius:18px;padding:4px 11px;font-size:12.5px;cursor:pointer}
+.ff-chip:has(input:checked){border-color:var(--primary);background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
+.ff-chip.tag-on{border-color:var(--primary);background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
+.ff-chip input{accent-color:var(--primary)}
+/* settings modal */
+.set-sec{margin-bottom:20px}
+.set-label{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.set-label i{color:var(--primary)}
+.set-fonts{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+.set-font{border:1.5px solid var(--border-strong);border-radius:9px;padding:10px 12px;text-align:start;font-size:14px;font-weight:600;color:var(--text);display:flex;flex-direction:column;gap:2px;background:var(--surface)}
+.set-font span{font-size:12px;color:var(--text-light);font-weight:400}
+.set-font:hover{border-color:var(--text-light)}
+.set-font.sel{border-color:var(--primary);background:var(--primary-soft)}
+.set-themes{display:flex;gap:10px}
+.set-theme{flex:1;border:1.5px solid var(--border-strong);border-radius:10px;padding:12px;font-weight:600;font-size:13px;display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--surface);color:var(--text)}
+.set-theme.sel{border-color:var(--primary);background:var(--primary-soft)}
+.th-prev{width:100%;height:42px;border-radius:7px;overflow:hidden;display:flex;border:1px solid var(--border)}
+.th-prev span{display:block}
+.th-prev.light{background:#f6f7fb}.th-prev.light span:first-child{width:34%;background:#fff;border-inline-end:1px solid #e6e9ef}.th-prev.light span:last-child{flex:1;background:#fff;margin:6px;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.th-prev.dark{background:#12141c}.th-prev.dark span:first-child{width:34%;background:#1b1e27;border-inline-end:1px solid #2a2e3a}.th-prev.dark span:last-child{flex:1;background:#1b1e27;margin:6px;border-radius:4px}
+.set-bgs{display:flex;flex-wrap:wrap;gap:10px}
+.set-bg{width:40px;height:40px;border-radius:10px;border:2px solid var(--border-strong);cursor:pointer;display:grid;place-items:center;color:var(--primary);font-size:14px}
+.set-bg.sel{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+
 </style>
 </head>
 <body>
@@ -323,23 +720,23 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
   <!-- Sidebar -->
   <aside id="sidebar">
     <div class="sb-logo" style="font-size:15px"><span class="dot"><i class="fa-solid fa-rocket"></i></span> CODE-CAL MISSIONS</div>
-    <div class="sb-search"><input id="sb-search" placeholder="חיפוש..."></div>
+    <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
     <div class="sb-section">סביבת עבודה</div>
-    <div class="sb-item active"><span class="ic"><i class="fa-solid fa-building-columns"></i></span> עיריית הוד השרון</div>
-    <div class="sb-section">לוחות <i class="fa-solid fa-plus" title="לוח חדש"></i></div>
+    <div class="sb-item active" onclick="Workspace.open()" title="ניהול הזמנות והרשאות סביבה"><span class="ic"><i class="fa-solid fa-building-columns"></i></span> עיריית הוד השרון<i class="fa-solid fa-user-gear" style="margin-inline-start:auto;font-size:12px;color:var(--text-light)"></i></div>
+    <div class="sb-section">לוחות <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש (מנהל מערכת בלבד)" onclick="newBoardQuick()"></i></div>
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
       <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
       <div class="sb-item" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
-      <div class="sb-item"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
+      <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
     </div>
     <!-- ===== Work Plan & Budget ===== -->
     <div class="sb-section" style="margin-top:12px">תוכנית עבודה ותקציב 2026</div>
-    <div class="sb-item" onclick="setView('workplan')"><span class="ic"><i class="fa-solid fa-calendar-days" style="color:var(--primary)"></i></span> תוכנית עבודה</div>
-    <div class="sb-item" onclick="setView('budget')"><span class="ic"><i class="fa-solid fa-shekel-sign" style="color:var(--green)"></i></span> תקציב</div>
-    <div class="sb-item" onclick="setView('approvals')"><span class="ic"><i class="fa-solid fa-check-circle" style="color:var(--orange)"></i></span> אישורים</div>
+    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-calendar-days"></i></span> תוכנית עבודה<span class="sb-soon">בקרוב</span></div>
+    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-shekel-sign"></i></span> תקציב<span class="sb-soon">בקרוב</span></div>
+    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-check-circle"></i></span> אישורים<span class="sb-soon">בקרוב</span></div>
     <div class="sb-item" onclick="setView('gantt')"><span class="ic"><i class="fa-solid fa-chart-gantt" style="color:var(--blue)"></i></span> תצוגת Gantt</div>
-    <div class="sb-item" onclick="setView('ceo-enhanced')"><span class="ic"><i class="fa-solid fa-chart-simple" style="color:var(--red)"></i></span> דשבורד מנכ"ל</div>
+    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-chart-simple"></i></span> דשבורד מנכ"ל<span class="sb-soon">בקרוב</span></div>
   </aside>
 
   <!-- Main -->
@@ -347,11 +744,12 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
     <div id="appbar">
       <div class="ab-title"><i class="fa-solid fa-table-cells-large" style="color:var(--primary)"></i> מרכז העבודה</div>
       <div class="ab-spacer"></div>
-      <button class="icon-btn" title="התראות"><i class="fa-regular fa-bell"></i></button>
-      <button class="icon-btn" title="עזרה"><i class="fa-regular fa-circle-question"></i></button>
-      <button class="btn" style="background:#0d1117;color:#3fb950" onclick="Term.open()"><i class="fa-solid fa-terminal"></i> טרמינל</button>
+      <button class="icon-btn" title="התראות — בקרוב" disabled><i class="fa-regular fa-bell"></i></button>
       <button class="btn btn-ai" onclick="AI.open()"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>
-      <div class="av" style="background:var(--primary)">שׁ</div>
+      <div class="tb-ctl" id="ctl-me">
+        <button class="me-btn" onclick="togglePop('me')" title="פועל בתור"><span class="av" id="me-av" style="background:var(--primary)">?</span><span class="me-name" id="me-name"></span><i class="fa-solid fa-chevron-down" style="font-size:10px;color:var(--text-light)"></i></button>
+        <div class="tb-pop" id="pop-me" style="inset-inline-start:auto;inset-inline-end:0"></div>
+      </div>
     </div>
 
     <div id="boardhead">
@@ -365,11 +763,16 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
     <div id="toolbar">
       <button class="btn btn-primary" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> פריט חדש</button>
       <div class="tb-sep"></div>
-      <button class="tb-btn"><i class="fa-solid fa-magnifying-glass"></i> חיפוש</button>
-      <button class="tb-btn"><i class="fa-regular fa-user"></i> אדם</button>
-      <button class="tb-btn"><i class="fa-solid fa-filter"></i> סינון</button>
-      <button class="tb-btn"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</button>
-      <button class="tb-btn" onclick="openForms()"><i class="fa-solid fa-file-lines"></i> טפסים</button>
+      <div class="tb-search">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
+        <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="tb-ctl" id="ctl-arrange">
+        <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון ומיון <span class="tb-badge" id="badge-arrange"></span></button>
+        <div class="tb-pop tb-pop-wide" id="pop-arrange"></div>
+      </div>
+      <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
       <div style="flex:1"></div>
       <button class="tb-btn" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
     </div>
@@ -419,12 +822,41 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
 <div class="overlay" id="overlay" onclick="closeModals()"></div>
 <div class="modal" id="modal"></div>
+
+<!-- Item conversation slideover -->
+<div class="chat-overlay" id="chat-overlay" onclick="Chat.close()"></div>
+<div id="chat-panel">
+  <div class="chat-head">
+    <button class="icon-btn" onclick="Chat.close()" title="סגור"><i class="fa-solid fa-xmark"></i></button>
+    <div style="flex:1;min-width:0">
+      <div class="chat-title" id="chat-title">שיחה</div>
+      <div class="chat-sub" id="chat-sub"></div>
+    </div>
+    <button class="bh-perm" id="chat-perm" style="display:none" onclick="ItemPerms.open(Chat.taskId)"><i class="fa-solid fa-user-lock"></i> הרשאות</button>
+  </div>
+  <div class="chat-tabs">
+    <div class="chat-tab active" data-tab="chat" onclick="Chat.tab('chat')"><i class="fa-regular fa-comments"></i> שיחה</div>
+    <div class="chat-tab" data-tab="files" onclick="Chat.tab('files')"><i class="fa-solid fa-paperclip"></i> קבצים</div>
+    <div class="chat-tab" data-tab="logs" onclick="Chat.tab('logs')"><i class="fa-solid fa-clock-rotate-left"></i> לוגים</div>
+  </div>
+  <div class="chat-body" id="chat-body"></div>
+</div>
+
+<!-- Login screen (no real auth yet — pick who you are) -->
+<div id="login">
+  <div class="login-box">
+    <div class="login-logo"><span class="dot"><i class="fa-solid fa-rocket"></i></span> CODE-CAL MISSIONS</div>
+    <div class="login-sub">בחר משתמש להתחברות</div>
+    <div id="login-users" class="login-users"></div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
 /* ============ monday-style constants ============ */
 const STATUS = {
-  backlog:{he:'מצבור',c:'#9699a6'}, todo:{he:'לביצוע',c:'#c4c4c4'},
+  backlog:{he:'בתכנון',c:'#9699a6'}, todo:{he:'לביצוע',c:'#c4c4c4'},
   in_progress:{he:'בתהליך',c:'#fdab3d'}, review:{he:'בבדיקה',c:'#579bfc'},
   done:{he:'הושלם',c:'#00c875'}, cancelled:{he:'בוטל',c:'#e2445c'},
   on_hold:{he:'בהמתנה',c:'#808080'},
@@ -437,6 +869,7 @@ const PRIORITY = {
 const VIEWS = [
   {id:'table',he:'טבלה ראשית',ic:'fa-table-list'},
   {id:'kanban',he:'קנבן',ic:'fa-columns'},
+  {id:'gantt',he:'גאנט',ic:'fa-chart-gantt'},
   {id:'dashboard',he:'דאשבורד',ic:'fa-chart-pie'},
   {id:'ceo',he:'מנכ"ל',ic:'fa-building-columns'},
   {id:'calendar',he:'לוח שנה',ic:'fa-calendar-days'},
@@ -447,43 +880,219 @@ const api = async (p,o)=>{const r=await fetch(p,o);if(!r.ok)throw new Error(p+' 
 const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const initials = n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('');
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
-const st = {boards:[], board:null, view:'table', users:[]};
+const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, openSubs:new Set()};
 
 /* ============ boot ============ */
 async function boot(){
+  Settings.load();
   try{
-    st.boards = await api('/api/boards');
     try{st.users = await api('/api/users');}catch(e){st.users=[];}
-    renderSidebar();
-    if(st.boards.length){ await openBoard(st.boards[0].id); }
-    else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות עדיין</div></div>';
+    try{st.depts = await api('/api/departments');}catch(e){st.depts=[];}
+    await loadWsMembers();
+    // no real auth yet: restore the last logged-in user, otherwise show login
+    const savedId=parseInt(localStorage.getItem('cc_uid')||'',10);
+    const saved=(st.users||[]).find(u=>u.id===savedId);
+    if(saved){ st.me=saved; renderMe(); await enterApp(); }
+    else{ Auth.showLogin(); }
   }catch(e){
     document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-plug-circle-xmark"></i><div>השרת לא זמין</div><div style="font-size:12px">'+esc(e.message)+'</div></div>';
   }
+}
+async function enterApp(){
+  await loadBoards();
+  if(st.boards.length){ await openBoard(st.boards[0].id); }
+  else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
+}
+const Auth = {
+  showLogin(){
+    const box=document.getElementById('login-users');
+    box.innerHTML=(st.users||[]).map(u=>`
+      <button class="login-user" onclick="Auth.login(${u.id})">
+        <span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span>
+        <span class="lu-info"><span class="lu-name">${esc(u.name)}</span><span class="lu-role">${esc(ROLE_HE[u.role]||u.role)}</span></span>
+        <i class="fa-solid fa-arrow-left"></i>
+      </button>`).join('')||'<div class="empty" style="padding:20px">אין משתמשים</div>';
+    document.getElementById('login').classList.add('open');
+  },
+  async login(id){
+    const u=(st.users||[]).find(x=>x.id===id); if(!u)return;
+    st.me=u; localStorage.setItem('cc_uid',id);
+    document.getElementById('login').classList.remove('open');
+    renderMe(); await enterApp();
+    toast('שלום, '+u.name);
+  },
+  logout(){
+    closePops();
+    askConfirm('להתנתק מהמערכת?',()=>{
+      localStorage.removeItem('cc_uid');
+      st.me=null; st.board=null; st.boards=[];
+      try{closeModals();AI.close();Chat.close();Term&&Term.close&&Term.close();}catch(e){}
+      renderSidebar();
+      document.getElementById('bh-title').textContent='';
+      document.getElementById('bh-desc').textContent='';
+      document.getElementById('tabs').innerHTML='';
+      document.getElementById('view').innerHTML='';
+      Auth.showLogin();
+    },{title:'התנתקות',confirmText:'התנתק',icon:'fa-right-from-bracket',danger:false});
+  },
+};
+async function loadBoards(){
+  try{ st.boards = await api('/api/boards'+(meId()?'?user_id='+meId():'')); }catch(e){ st.boards=[]; }
+  renderSidebar();
 }
 function renderSidebar(){
   document.getElementById('board-list').innerHTML = st.boards.map(b=>`
     <div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" onclick="openBoard(${b.id})">
       <span class="ic">${b.icon||'📋'}</span>
       <span style="overflow:hidden;text-overflow:ellipsis">${esc(b.name)}</span>
-      <span class="cnt">${b.task_count||0}</span>
-    </div>`).join('');
+      <span class="cnt" title="${b.task_count||0} פריטים בלוח (לא כולל תת-פריטים)">${b.task_count||0}</span>
+    </div>`).join('')||'<div style="padding:14px;color:var(--text-light);font-size:12px;text-align:center">אין לוחות שהוזמנת אליהם</div>';
 }
 async function openBoard(id){
-  st.view='table';
+  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); }
+  st.filters={q:'',people:[],status:'',priority:'',sort:''};
+  const qi=document.getElementById('tb-q'); if(qi)qi.value='';
+  closePops();
   document.getElementById('view').innerHTML='<div class="spin"></div>';
-  st.board = await api('/api/boards/'+id);
+  try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); }
+  catch(e){ document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-lock"></i><div>אין לך גישה ללוח זה</div></div>'; return; }
   renderSidebar();
-  document.getElementById('bh-title').innerHTML = `${st.board.icon||'📋'} ${esc(st.board.name)}`;
-  document.getElementById('bh-desc').textContent = st.board.department_name||'';
+  renderBoardHead();
+  document.getElementById('bh-desc').textContent = '';
   renderTabs();
+  refreshToolbar();
   renderView();
 }
+function renderBoardHead(){
+  if(!st.board)return;
+  const canEdit=st.board.my_role==='admin'||st.board.my_role==='editor';
+  document.getElementById('bh-title').innerHTML =
+    `<span class="bt-icon${canEdit?' editable':''}" ${canEdit?'onclick="editBoardIcon(event)" title="שנה אייקון"':''}>${st.board.icon||'📋'}</span> `+
+    `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
+    (st.board.my_role==='admin'?`<button class="bh-perm" onclick="Members.open()" title="חברים והרשאות"><i class="fa-solid fa-user-shield"></i> הרשאות</button>`:'');
+}
+function editBoardIcon(e){
+  e.stopPropagation();
+  const html=`<div class="icon-grid" style="max-width:236px">`+
+    BOARD_ICONS.map(ic=>`<button type="button" class="icon-sw ${ic===st.board.icon?'sel':''}" onclick="setBoardIcon('${ic}')">${ic}</button>`).join('')+`</div>`;
+  openCellPop(e.currentTarget,html,'board-icon-pop');
+}
+async function setBoardIcon(ic){
+  closeCellPops();
+  try{ await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({icon:ic})}); st.board.icon=ic; }
+  catch(err){ toast('שגיאה בעדכון אייקון'); return; }
+  const b=(st.boards||[]).find(x=>x.id===st.board.id); if(b)b.icon=ic;
+  renderBoardHead(); renderSidebar(); toast('האייקון עודכן');
+}
+function startBoardRename(){
+  const span=document.querySelector('#bh-title .board-name'); if(!span)return;
+  const cur=st.board.name;
+  const inp=document.createElement('input');
+  inp.className='title-edit'; inp.value=cur;
+  inp.style.cssText='font-size:22px;font-weight:800;min-width:220px';
+  span.replaceWith(inp); inp.focus(); inp.select();
+  let done=false;
+  const commit=async()=>{
+    if(done)return; done=true;
+    const v=(inp.value||'').trim()||cur;
+    if(v!==cur){
+      try{ const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({name:v})}); st.board.name=(r&&r.name)||v; }
+      catch(e){ toast('שגיאה בעדכון שם'); }
+    }
+    const b=(st.boards||[]).find(x=>x.id===st.board.id); if(b)b.name=st.board.name;
+    renderBoardHead(); renderSidebar();
+  };
+  inp.addEventListener('blur',commit);
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();inp.blur();}else if(e.key==='Escape'){inp.value=cur;inp.blur();}});
+}
+const VIEW_META=Object.fromEntries(VIEWS.map(v=>[v.id,v]));
+function boardViews(){
+  const v=(st.board&&st.board.views)||['table'];
+  return v.filter(id=>VIEW_META[id]);
+}
 function renderTabs(){
-  document.getElementById('tabs').innerHTML = VIEWS.map(v=>`
-    <div class="tab ${st.view===v.id?'active':''}" onclick="setView('${v.id}')"><i class="fa-solid ${v.ic}"></i> ${v.he}</div>`).join('');
+  const enabled=boardViews();
+  if(!enabled.includes(st.view))st.view='table';
+  const tabs=enabled.map(id=>{const v=VIEW_META[id];
+    return `<div class="tab ${st.view===id?'active':''}" onclick="setView('${id}')"><i class="fa-solid ${v.ic}"></i> ${v.he}</div>`;}).join('');
+  document.getElementById('tabs').innerHTML = tabs +
+    `<div class="tab" onclick="openForms()"><i class="fa-solid fa-file-lines"></i> טפסים</div>
+     <div class="tab-add-wrap" id="tab-add-wrap">
+       <button class="tab-add" title="הוסף/הסר תצוגה" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>
+       <div class="tab-pop" id="tab-pop"></div>
+     </div>`;
 }
 function setView(v){st.view=v;renderTabs();renderView();}
+function toggleAddView(e){
+  e.stopPropagation();
+  const w=document.getElementById('tab-add-wrap');
+  if(w.classList.toggle('open'))renderAddViewPop();
+}
+function renderAddViewPop(){
+  const enabled=new Set(boardViews());
+  const pop=document.getElementById('tab-pop'); if(!pop)return;
+  pop.innerHTML='<div class="pop-title">תצוגות בלוח</div>'+VIEWS.map(v=>{
+    const on=enabled.has(v.id), locked=v.id==='table';
+    return `<label class="pop-row ${locked?'locked':''}">
+      <input type="checkbox" ${on?'checked':''} ${locked?'disabled':''} onchange="toggleBoardView('${v.id}',this.checked)">
+      <i class="fa-solid ${v.ic}" style="width:16px;color:var(--text-light)"></i><span>${v.he}</span>
+      ${locked?'<i class="fa-solid fa-lock" style="margin-inline-start:auto;color:var(--text-light);font-size:11px"></i>':''}
+    </label>`;}).join('');
+}
+document.addEventListener('click',e=>{if(!e.target.closest('#tab-add-wrap')){const w=document.getElementById('tab-add-wrap');if(w)w.classList.remove('open');}});
+async function toggleBoardView(id,on){
+  if(id==='table')return;
+  let views=boardViews().slice();
+  if(on){if(!views.includes(id))views.push(id);}
+  else{views=views.filter(x=>x!==id);if(st.view===id)st.view='table';}
+  try{
+    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({views})});
+    st.board.views=r.views;
+    renderTabs();
+    const w=document.getElementById('tab-add-wrap');if(w){w.classList.add('open');renderAddViewPop();}
+    renderView();
+    toast(on?'תצוגה נוספה':'תצוגה הוסרה');
+  }catch(e){toast('שגיאה בעדכון תצוגות');}
+}
+
+/* ============ new board (לוח חדש) ============ */
+const BOARD_ICONS=['📋','🏗️','🚌','📊','🌳','🏢','💡','🚦','📁','🗺️','🧾','⚙️','🚧','🏛️','📅','🔧'];
+function openNewBoard(){
+  window._nbIcon='📋';
+  showModal(`<h2>לוח חדש</h2><div class="mbody">
+    <div class="field"><label>שם הלוח</label><input id="nb-name" placeholder="לדוגמה: תחזוקת מבני ציבור" onkeydown="if(event.key==='Enter')createBoard()"></div>
+    <div class="field"><label>אייקון</label><div class="icon-grid" id="nb-icons">${BOARD_ICONS.map((ic,i)=>`<button type="button" class="icon-sw ${i===0?'sel':''}" data-ic="${ic}" onclick="pickBoardIcon('${ic}')">${ic}</button>`).join('')}</div></div>
+    <div class="field"><label>אגף</label><select id="nb-dept"><option value="">טוען…</option></select></div>
+    <div style="font-size:12.5px;color:var(--text-light);margin-top:4px"><i class="fa-solid fa-circle-info"></i> הלוח ייפתח עם תצוגת טבלה ראשית בלבד. תצוגות נוספות אפשר להוסיף דרך כפתור ה־＋ שליד הלשוניות.</div>
+  </div><div class="mfoot"><button class="btn btn-primary" onclick="createBoard()">צור לוח</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+  api('/api/departments').then(ds=>{const s=document.getElementById('nb-dept');if(s)s.innerHTML=(ds||[]).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')||'<option value="">—</option>';}).catch(()=>{const s=document.getElementById('nb-dept');if(s)s.innerHTML='<option value="">—</option>';});
+  setTimeout(()=>{const n=document.getElementById('nb-name');if(n)n.focus();},30);
+}
+function pickBoardIcon(ic){window._nbIcon=ic;document.querySelectorAll('#nb-icons .icon-sw').forEach(b=>b.classList.toggle('sel',b.dataset.ic===ic));}
+async function createBoard(){
+  const name=(document.getElementById('nb-name').value||'').trim();if(!name){toast('צריך שם ללוח');return;}
+  const dept=document.getElementById('nb-dept').value;
+  try{
+    const r=await api('/api/boards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,icon:window._nbIcon,department_id:dept?+dept:null,user_id:meId()})});
+    closeModals();toast('הלוח נוצר');
+    st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
+    await openBoard(r.id);
+  }catch(e){toast('שגיאה ביצירת לוח');}
+}
+/* Quick create: one click on the "+" → a blank default board (empty, 3 groups),
+   creator becomes its admin, it lands at the bottom of the list and opens ready
+   for inline rename. */
+async function newBoardQuick(){
+  if(!isSysAdmin()){ toast('רק מנהל מערכת יכול ליצור לוח חדש'); return; }
+  try{
+    const r=await api('/api/boards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'לוח חדש',icon:'📋',user_id:meId()})});
+    st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
+    renderSidebar();
+    await openBoard(r.id);
+    toast('לוח חדש נוצר — הקלד שם');
+    setTimeout(startBoardRename,180);
+  }catch(e){toast('שגיאה ביצירת לוח');}
+}
 
 /* ============ views ============ */
 function renderView(){
@@ -493,9 +1102,98 @@ function renderView(){
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;return pill(STATUS,t.status);}
-function avatars(arr){if(!arr||!arr.length)return '<span style="color:var(--text-light)" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span>';
-  return '<div class="avatars">'+arr.slice(0,3).map(a=>`<span class="av" title="${esc(a.name)}">${esc(initials(a.name))}</span>`).join('')+'</div>';}
+function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span class="av-add" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span></span>';
+  return '<span class="avatars">'+arr.slice(0,3).map(a=>`<span class="av av-click" title="${esc(a.name)} — הצג פרופיל" onclick="event.stopPropagation();Profile.open(${a.id})">${a.avatar_url?`<img src="${esc(a.avatar_url)}" alt="">`:esc(initials(a.name))}</span>`).join('')+(arr.length>3?`<span class="av av-more">+${arr.length-3}</span>`:'')+'</span>';}
 function findTask(id){return ((st.board&&st.board.tasks)||[]).find(t=>t.id==id);}
+/* ===== personal profile card (click a user's avatar) ===== */
+const Profile = {
+  async open(userId){
+    const u=(st.users||[]).find(x=>x.id===userId); if(!u){toast('משתמש לא נמצא');return;}
+    if(!st.depts||!st.depts.length){try{st.depts=await api('/api/departments');}catch(e){st.depts=[];}}
+    const dept=(st.depts||[]).find(d=>d.id===u.department_id);
+    const deptColor=dept?dept.color:'#0073ea';
+    const wsm=(st.wsMembers||[]).find(m=>m.user_id===userId);
+    const wsRole=wsm?WSROLE_HE[wsm.role]:null;
+    // tasks assigned to this user in the current board, grouped by status
+    const tasks=((st.board&&st.board.tasks)||[]).filter(t=>(t.assignees||[]).some(a=>a.id===userId));
+    const byStatus={}; tasks.forEach(t=>{byStatus[t.status]=(byStatus[t.status]||0)+1;});
+    const chips=Object.entries(byStatus).map(([s,n])=>`<span class="pf-stat-chip" style="background:${STATUS[s]?STATUS[s].c:'#c4c4c4'}">${esc(STATUS[s]?STATUS[s].he:s)} · ${n}</span>`).join('')
+      ||'<span style="color:var(--text-light);font-size:12.5px">אין משימות משויכות בלוח זה</span>';
+    const avInner=u.avatar_url?`<img class="pf-av" src="${esc(u.avatar_url)}" alt="">`:`<span class="pf-av">${esc(initials(u.name))}</span>`;
+    const canEditAv=(userId===meId()||isSysAdmin());
+    const avHtml=canEditAv?`<button class="pf-av-btn" onclick="Profile.pickAvatar(${userId})" title="לחץ להעלאת תמונה">${avInner}<span class="pf-av-cam"><i class="fa-solid fa-camera"></i></span></button>`:avInner;
+    const sysRole=(ROLE_HE[u.role]||u.role)+(wsRole?` · ${wsRole}`:'');
+    const emailOn=u.email_notifications!==false;
+    const np=u.notif_prefs||{};
+    const subDis=(canEditAv&&emailOn)?'':'disabled';
+    showModal(`
+      <div class="pf-head" style="--pf:${deptColor}">
+        ${avHtml}
+        <div><div class="pf-name">${esc(u.name)}${userId===meId()?' <span style="font-weight:400;opacity:.85">(אתה)</span>':''}</div><div class="pf-role">${esc(u.title||ROLE_HE[u.role]||'')}</div></div>
+      </div>
+      <div class="pf-body">
+        <div class="pf-row"><i class="fa-solid fa-building"></i> ${dept?`<span class="pf-dot" style="background:${deptColor}"></span> ${esc(dept.name)}`:'ללא אגף'}</div>
+        <div class="pf-row"><i class="fa-solid fa-id-badge"></i> ${esc(sysRole)}</div>
+        <div class="pf-sec">פרטי קשר</div>
+        <div class="pf-row"><i class="fa-regular fa-envelope"></i> ${u.email?`<a href="mailto:${esc(u.email)}">${esc(u.email)}</a>`:'—'}</div>
+        <div class="pf-row"><i class="fa-solid fa-phone"></i> ${u.phone?`<a href="tel:${esc(u.phone)}" style="direction:ltr;display:inline-block">${esc(u.phone)}</a>`:'—'}</div>
+        <div class="pf-sec">העדפות התראה</div>
+        <div class="pf-row pf-toggle"><span><i class="fa-regular fa-envelope"></i> התראות במייל</span>
+          <label class="switch"><input type="checkbox" ${emailOn?'checked':''} ${canEditAv?'':'disabled'} onchange="Profile.setNotify(${userId},this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="pf-row pf-toggle pf-sub"><span><i class="fa-solid fa-at"></i> כשמתייגים אותי</span>
+          <label class="switch"><input type="checkbox" ${np.mention!==false?'checked':''} ${subDis} onchange="Profile.setPref(${userId},'mention',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="pf-row pf-toggle pf-sub"><span><i class="fa-solid fa-arrows-rotate"></i> שינוי סטטוס בפריט</span>
+          <label class="switch"><input type="checkbox" ${np.status!==false?'checked':''} ${subDis} onchange="Profile.setPref(${userId},'status',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="pf-row pf-toggle pf-sub"><span><i class="fa-solid fa-user-plus"></i> שיוך אליי כאחראי</span>
+          <label class="switch"><input type="checkbox" ${np.assign!==false?'checked':''} ${subDis} onchange="Profile.setPref(${userId},'assign',this.checked)"><span class="slider"></span></label>
+        </div>
+        <div class="pf-sec">משימות בלוח "${esc((st.board&&st.board.name)||'')}" · ${tasks.length}</div>
+        <div class="pf-stats">${chips}</div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+    document.getElementById('modal').classList.add('profile-modal');
+  },
+  pickAvatar(userId){
+    const inp=document.createElement('input');
+    inp.type='file'; inp.accept='image/*';
+    inp.onchange=()=>{ if(inp.files&&inp.files[0]) this.uploadAvatar(userId,inp.files[0]); };
+    inp.click();
+  },
+  async uploadAvatar(userId,file){
+    if(file.size>4*1024*1024){ toast('התמונה גדולה מדי (עד 4MB)'); return; }
+    toast('מעלה תמונה…');
+    try{
+      const fd=new FormData(); fd.append('file',file);
+      const up=await api('/api/upload',{method:'POST',body:fd});
+      await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({avatar_url:up.url,actor_id:meId()})});
+      const u=(st.users||[]).find(x=>x.id===userId); if(u)u.avatar_url=up.url;
+      if(st.me&&st.me.id===userId)st.me.avatar_url=up.url;
+      toast('התמונה עודכנה');
+      this.open(userId); renderMe(); renderView();
+    }catch(e){ toast(String(e.message||'').includes('403')?'אפשר להחליף רק את התמונה שלך':'שגיאה בהעלאת תמונה'); }
+  },
+  async setNotify(userId,on){
+    try{
+      await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({email_notifications:on,actor_id:meId()})});
+      const u=(st.users||[]).find(x=>x.id===userId); if(u)u.email_notifications=on;
+      if(st.me&&st.me.id===userId)st.me.email_notifications=on;
+      toast(on?'התראות מייל הופעלו':'התראות מייל כובו');
+      this.open(userId);   // refresh so the sub-preferences enable/disable
+    }catch(e){ toast('שגיאה בעדכון ההעדפה'); }
+  },
+  async setPref(userId,key,on){
+    try{
+      await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({notif_prefs:{[key]:on},actor_id:meId()})});
+      const apply=o=>{ if(o) o.notif_prefs={...(o.notif_prefs||{}),[key]:on}; };
+      apply((st.users||[]).find(x=>x.id===userId));
+      if(st.me&&st.me.id===userId)apply(st.me);
+      toast('ההעדפה עודכנה');
+    }catch(e){ toast('שגיאה בעדכון ההעדפה'); }
+  }
+};
 function openPeople(id){
   const t=findTask(id); if(!t)return;
   const cur=new Set((t.assignees||[]).map(a=>a.id));
@@ -515,9 +1213,306 @@ async function togglePerson(taskId,userId,add){
 }
 const fdate = d=>d?new Date(d).toLocaleDateString('he-IL',{day:'2-digit',month:'short'}):'<span style="color:var(--text-light)">—</span>';
 
+/* ===== board filtering / search / sort ===== */
+function applyFilters(tasks){
+  const f=st.filters; let out=(tasks||[]).slice();
+  if(f.q){const q=f.q.trim().toLowerCase();
+    out=out.filter(t=>(t.title||'').toLowerCase().includes(q)
+      || (t.description||'').toLowerCase().includes(q)
+      || (t.tags||[]).some(x=>String(x).toLowerCase().includes(q))
+      || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q)));}
+  if(f.people.length)out=out.filter(t=>(t.assignees||[]).some(a=>f.people.includes(a.id)));
+  if(f.status)out=out.filter(t=>t.status===f.status);
+  if(f.priority)out=out.filter(t=>t.priority===f.priority);
+  if(f.sort){
+    const pr={emergency:0,critical:1,high:2,medium:3,low:4};
+    const cmp={
+      due:(a,b)=>(a.due_date||'9999-99-99').localeCompare(b.due_date||'9999-99-99'),
+      priority:(a,b)=>(pr[a.priority]??9)-(pr[b.priority]??9),
+      title:(a,b)=>(a.title||'').localeCompare(b.title||'','he'),
+    }[f.sort];
+    if(cmp)out.sort(cmp);
+  }
+  return out;
+}
+function filtersActive(){const f=st.filters;return !!(f.q||f.people.length||f.status||f.priority||f.sort);}
+function noMatchHTML(){return '<div class="empty"><i class="fa-solid fa-filter-circle-xmark"></i><div>אין פריטים שתואמים את הסינון</div><button class="btn btn-primary" style="margin-top:14px" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button></div>';}
+
+function setSearch(v){st.filters.q=v;const i=document.getElementById('tb-q');if(i&&i.value!==v)i.value=v;refreshToolbar();renderView();}
+function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:''};const i=document.getElementById('tb-q');if(i)i.value='';closePops();refreshToolbar();renderView();}
+function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
+function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
+document.addEventListener('click',e=>{if(!e.target.closest('.tb-ctl'))closePops();});
+/* ===== current user ("פועל בתור") ===== */
+function meId(){return st.me&&st.me.id;}
+function withMe(body){return JSON.stringify({...(body||{}),user_id:meId()});}
+function canComment(){
+  const r=st.board&&st.board.my_role;
+  if(!r)return false;              // not a member of this board
+  if(r==='viewer')return false;    // view-only at board level
+  if(st.board.view_only)return r==='admin';
+  return true;
+}
+/* ===== board members & permissions (ניהול הרשאות ברמת הלוח) ===== */
+const BROLE_HE={admin:'ניהול',editor:'עריכה',viewer:'צפייה בלבד'};
+const WSROLE_HE={admin:'מנהל סביבה',member:'חבר',viewer:'צפייה בלבד'};
+const IPERM_HE={'':'ברירת מחדל (לפי לוח)',view:'צפייה בלבד',edit:'עריכה',delete:'עריכה + מחיקה',none:'חסום (מוסתר)'};
+const CPERM_HE={'':'ברירת מחדל (לפי לוח)',view:'צפייה בלבד',edit:'עריכה',none:'מוסתר'};
+
+/* ===== environment members (הזמנה לסביבה) ===== */
+const Workspace = {
+  async open(){
+    let d={members:[],available:[]}; try{ d=await api('/api/workspace/members'); }catch(e){}
+    this.data=d;
+    const meRole=(d.members.find(m=>m.user_id===meId())||{}).role;
+    this.isAdmin=meRole==='admin';
+    showModal(`<h2><i class="fa-solid fa-building-columns" style="color:var(--primary)"></i> סביבת עבודה — הזמנות והרשאות</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> ניהול המשתמשים ברמת הסביבה. תפקיד הסביבה משמש כברירת מחדל בעת הוספה ללוחות.${this.isAdmin?'':' <b>רק מנהל סביבה יכול לערוך.</b>'}</div>
+        <div id="ws-list">${this.listHTML()}</div>
+        ${this.isAdmin?`<div class="mem-add">
+          <select id="ws-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כולם בסביבה —</option>'}</select>
+          <select id="ws-role"><option value="member">חבר</option><option value="viewer">צפייה בלבד</option><option value="admin">מנהל סביבה</option></select>
+          <button class="btn btn-primary" onclick="Workspace.add()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-user-plus"></i> הזמן</button>
+        </div>`:''}
+      </div><div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+  },
+  listHTML(){
+    return this.data.members.map(m=>`<div class="mem-row">
+      <span class="av" style="background:var(--primary)">${esc(initials(m.name))}</span>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
+      ${this.isAdmin?`<select onchange="Workspace.setRole(${m.user_id},this.value)">${['admin','member','viewer'].map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${WSROLE_HE[r]}</option>`).join('')}</select>
+      <button class="mem-del" title="הסר מהסביבה" onclick="Workspace.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>`:`<span class="perm-badge">${WSROLE_HE[m.role]}</span>`}
+    </div>`).join('');
+  },
+  async refresh(){ let d={members:[],available:[]}; try{ d=await api('/api/workspace/members'); }catch(e){} this.data=d;
+    st.wsMembers=d.members||[]; updateNewBoardBtn();
+    const l=document.getElementById('ws-list'); if(l)l.innerHTML=this.listHTML();
+    const s=document.getElementById('ws-user'); if(s)s.innerHTML=d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כולם בסביבה —</option>'; },
+  async add(){ const uid=+document.getElementById('ws-user').value, role=document.getElementById('ws-role').value; if(!uid){toast('בחר משתמש');return;}
+    try{ await api('/api/workspace/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('הוזמן לסביבה'); this.refresh(); }catch(e){toast('רק מנהל סביבה יכול להזמין');} },
+  async setRole(uid,role){ try{ await api('/api/workspace/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('התפקיד עודכן'); this.refresh(); }catch(e){toast('שגיאה');this.refresh();} },
+  remove(uid){ askConfirm('להסיר את המשתמש מהסביבה?',async()=>{ try{ await api('/api/workspace/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר'); this.refresh(); }catch(e){toast('לא ניתן להסיר');} },{title:'הסרה מהסביבה',confirmText:'הסר'}); },
+};
+
+/* ===== item-level permissions (הרשאות פריט) ===== */
+const ItemPerms = {
+  open(taskId){
+    const t=findAnyTask(taskId); if(!t)return; this.tid=taskId;
+    const perms=t.permissions||{};
+    showModal(`<h2><i class="fa-solid fa-user-lock" style="color:var(--primary)"></i> הרשאות פריט — ${esc(t.title)}</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> הרשאה פר-משתמש שדורסת את תפקיד-הלוח <b>עבור פריט זה בלבד</b>. "ברירת מחדל" = לפי תפקיד הלוח.</div>
+        ${(st.users||[]).map(u=>`<div class="mem-row">
+          <span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span>
+          <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
+          <select onchange="ItemPerms.set(${u.id},this.value)">${Object.entries(IPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
+        </div>`).join('')}
+      </div><div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">סגור</button></div>`);
+  },
+  async set(uid,perm){
+    try{ const r=await api('/api/tasks/'+this.tid+'/permissions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,perm:perm||null})});
+      const t=findAnyTask(this.tid); if(t)t.permissions=r.permissions; toast('ההרשאה עודכנה'); }
+    catch(e){ toast('רק מנהל לוח יכול לקבוע הרשאות פריט'); }
+  },
+};
+
+/* ===== column-level permissions (הרשאות עמודה) ===== */
+const ColPerms = {
+  open(colId){
+    const c=customColumns().find(x=>x.id===colId); if(!c)return; this.cid=colId;
+    const perms=c.perms||{};
+    showModal(`<h2><i class="fa-solid fa-user-lock" style="color:var(--primary)"></i> הרשאות עמודה — ${esc(c.title)}</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> הרשאה פר-משתמש על העמודה. "מוסתר" מסתיר את הערכים מהמשתמש.</div>
+        ${(st.users||[]).map(u=>`<div class="mem-row">
+          <span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span>
+          <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
+          <select onchange="ColPerms.set(${u.id},this.value)">${Object.entries(CPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
+        </div>`).join('')}
+      </div><div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">סגור</button></div>`);
+  },
+  async set(uid,perm){
+    try{ const r=await api('/api/boards/'+st.board.id+'/columns/'+this.cid+'/permissions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,perm:perm||null})});
+      st.board.columns=r.columns; toast('הרשאת העמודה עודכנה'); }
+    catch(e){ toast('רק מנהל לוח יכול לקבוע הרשאות עמודה'); }
+  },
+};
+const Members = {
+  async open(){
+    if(!st.board)return;
+    let d={members:[],available:[]}; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
+    this.data=d;
+    showModal(`<h2><i class="fa-solid fa-user-shield" style="color:var(--primary)"></i> חברים והרשאות — ${esc(st.board.name)}</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> רק חברי הלוח רואים אותו. מנהל לוח מנהל הזמנות והרשאות. גישת אדמין אינה גלובלית — לוחות שלא הוזמנת אליהם אינם נראים.</div>
+        <div id="mem-list">${this.listHTML()}</div>
+        <div class="mem-add">
+          <select id="mem-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כל המשתמשים כבר חברים —</option>'}</select>
+          <select id="mem-role"><option value="editor">עריכה</option><option value="viewer">צפייה בלבד</option><option value="admin">מנהל לוח</option></select>
+          <button class="btn btn-primary" onclick="Members.add()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-plus"></i> הזמן</button>
+        </div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button>
+        <button class="btn btn-danger" style="margin-inline-start:auto" onclick="Members.deleteBoard()"><i class="fa-solid fa-trash"></i> מחק לוח</button>
+      </div>`);
+  },
+  deleteBoard(){
+    const b=st.board; if(!b)return;
+    askConfirm(`למחוק את הלוח "${b.name}"?`,async()=>{
+      try{
+        await api('/api/boards/'+b.id+'?user_id='+meId(),{method:'DELETE'});
+        closeModals(); toast('הלוח נמחק');
+        st.board=null;
+        st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
+        renderSidebar();
+        if(st.boards.length){ await openBoard(st.boards[0].id); }
+        else{ document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות</div></div>'; }
+      }catch(e){ toast('רק מנהל הלוח יכול למחוק'); }
+    },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
+  },
+  listHTML(){
+    return this.data.members.map(m=>`<div class="mem-row">
+      <span class="av" style="background:var(--primary)">${esc(initials(m.name))}</span>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
+      <select onchange="Members.setRole(${m.user_id},this.value)">${['admin','editor','viewer'].map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${BROLE_HE[r]}</option>`).join('')}</select>
+      <button class="mem-del" title="הסר מהלוח" onclick="Members.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>
+    </div>`).join('');
+  },
+  async refresh(){ let d={members:[],available:[]}; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){} this.data=d;
+    const l=document.getElementById('mem-list'); if(l)l.innerHTML=this.listHTML();
+    const s=document.getElementById('mem-user'); if(s)s.innerHTML=d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— הכל חברים —</option>';
+  },
+  async add(){
+    const uid=+document.getElementById('mem-user').value, role=document.getElementById('mem-role').value;
+    if(!uid){toast('בחר משתמש');return;}
+    try{ await api('/api/boards/'+st.board.id+'/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('נוסף ללוח'); this.refresh(); }
+    catch(e){ toast('רק מנהל לוח יכול להזמין'); }
+  },
+  async setRole(uid,role){
+    try{ await api('/api/boards/'+st.board.id+'/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('ההרשאה עודכנה'); this.refresh(); }
+    catch(e){ toast(String(e.message||'').includes('400')?'חייב להישאר מנהל אחד':'רק מנהל לוח יכול לשנות'); this.refresh(); }
+  },
+  remove(uid){
+    askConfirm('להסיר את המשתמש מהלוח? הוא לא יראה יותר את הלוח.',async()=>{
+      try{ await api('/api/boards/'+st.board.id+'/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר מהלוח'); this.refresh(); }
+      catch(e){ toast('לא ניתן להסיר'); }
+    },{title:'הסרת חבר',confirmText:'הסר'});
+  },
+};
+
+/* ===== display settings (פונט / תצוגה / רקע) ===== */
+const FONTS=[
+  {id:'figtree',he:'ברירת מחדל',css:"'Figtree','Rubik','Heebo',sans-serif"},
+  {id:'heebo',he:'Heebo',css:"'Heebo',sans-serif"},
+  {id:'rubik',he:'Rubik',css:"'Rubik',sans-serif"},
+  {id:'assistant',he:'Assistant',css:"'Assistant',sans-serif"},
+  {id:'noto',he:'Noto עברית',css:"'Noto Sans Hebrew',sans-serif"},
+  {id:'system',he:'מערכת',css:"system-ui,'Segoe UI',Arial,sans-serif"},
+];
+const BGS=[
+  {id:'default',he:'ברירת מחדל',c:'#f6f7fb'},{id:'white',he:'לבן',c:'#ffffff'},
+  {id:'blue',he:'תכלת',c:'#eaf2fb'},{id:'green',he:'ירקרק',c:'#eaf6ef'},
+  {id:'warm',he:'חמים',c:'#faf5ee'},{id:'lav',he:'לבנדר',c:'#f1eefb'},{id:'slate',he:'אפרפר',c:'#eceef3'},
+];
+const Settings={
+  data:{font:'figtree',theme:'light',bg:'default'},
+  load(){ try{ Object.assign(this.data,JSON.parse(localStorage.getItem('cc_settings')||'{}')); }catch(e){} this.apply(); },
+  save(){ try{ localStorage.setItem('cc_settings',JSON.stringify(this.data)); }catch(e){} },
+  apply(){
+    const root=document.documentElement;
+    const f=FONTS.find(x=>x.id===this.data.font)||FONTS[0];
+    root.style.setProperty('--font',f.css);
+    root.setAttribute('data-theme',this.data.theme);
+    if(this.data.theme==='dark'){ root.style.removeProperty('--bg'); }   // dark palette controls --bg
+    else{ const b=BGS.find(x=>x.id===this.data.bg)||BGS[0]; root.style.setProperty('--bg',b.c); }
+  },
+  set(k,v){ this.data[k]=v; this.apply(); this.save(); this.render(); },
+  reset(){ this.data={font:'figtree',theme:'light',bg:'default'}; this.apply(); this.save(); this.render(); },
+  open(){ this.render(); },
+  render(){
+    const d=this.data;
+    showModal(`<h2><i class="fa-solid fa-sliders" style="color:var(--primary)"></i> הגדרות תצוגה</h2>
+    <div class="mbody">
+      <div class="set-sec"><div class="set-label"><i class="fa-solid fa-font"></i> פונט</div>
+        <div class="set-fonts">${FONTS.map(f=>`<button class="set-font ${d.font===f.id?'sel':''}" style="font-family:${f.css}" onclick="Settings.set('font','${f.id}')">${esc(f.he)}<span>אבגד שלום · Aa 123</span></button>`).join('')}</div></div>
+      <div class="set-sec"><div class="set-label"><i class="fa-solid fa-circle-half-stroke"></i> תצוגה</div>
+        <div class="set-themes">
+          <button class="set-theme ${d.theme==='light'?'sel':''}" onclick="Settings.set('theme','light')"><span class="th-prev light"><span></span><span></span></span> בהיר</button>
+          <button class="set-theme ${d.theme==='dark'?'sel':''}" onclick="Settings.set('theme','dark')"><span class="th-prev dark"><span></span><span></span></span> כהה</button>
+        </div></div>
+      <div class="set-sec"><div class="set-label"><i class="fa-solid fa-fill-drip"></i> רקע ${d.theme==='dark'?'<span style="font-size:11px;color:var(--text-light);font-weight:400">— זמין במצב בהיר</span>':''}</div>
+        <div class="set-bgs">${BGS.map(b=>`<button class="set-bg ${d.theme!=='dark'&&d.bg===b.id?'sel':''}" title="${esc(b.he)}" style="background:${b.c}" ${d.theme==='dark'?'disabled style="opacity:.4;background:'+b.c+'"':''} onclick="Settings.set('bg','${b.id}')">${d.theme!=='dark'&&d.bg===b.id?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')}</div></div>
+    </div>
+    <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">סגור</button><button class="btn btn-ghost" onclick="Settings.reset()">איפוס</button></div>`);
+  },
+};
+
+const ROLE_HE={admin:'מנהל מערכת',manager:'מנהל',member:'חבר צוות',viewer:'צפייה בלבד'};
+async function loadWsMembers(){ try{ const d=await api('/api/workspace/members'); st.wsMembers=d.members||[]; }catch(e){ st.wsMembers=[]; } }
+function isSysAdmin(){ const m=(st.wsMembers||[]).find(x=>x.user_id===meId()); return !!m && m.role==='admin'; }
+function updateNewBoardBtn(){
+  const btn=document.getElementById('new-board-btn'); if(!btn)return;
+  btn.style.display=isSysAdmin()?'':'none';
+}
+function renderMe(){
+  const u=st.me; if(!u)return;
+  const av=document.getElementById('me-av'),nm=document.getElementById('me-name');
+  if(av)av.innerHTML=u.avatar_url?`<img src="${esc(u.avatar_url)}" alt="">`:esc(initials(u.name)); if(nm)nm.textContent=u.name;
+  updateNewBoardBtn();
+}
+async function setMe(id){
+  st.me=(st.users||[]).find(u=>u.id===id)||st.me; renderMe(); closePops();
+  await loadBoards();
+  if(st.board && st.boards.some(b=>b.id===st.board.id)){ await openBoard(st.board.id); }
+  else if(st.boards.length){ st.board=null; await openBoard(st.boards[0].id); }
+  else{ st.board=null; document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-lock"></i><div>אין לך גישה ללוחות</div></div>'; }
+  if(Chat.taskId)Chat.close();
+  toast('פועל בתור '+(st.me&&st.me.name));
+}
+function renderPop(name){
+  if(name==='me'){
+    const el=document.getElementById('pop-me'); if(!el)return;
+    el.innerHTML=(st.me?`<button class="pop-row" style="width:100%;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:5px" onclick="closePops();Profile.open(${meId()})" title="הצג פרופיל אישי">
+        <span class="av" style="background:var(--primary);width:34px;height:34px;font-size:12px">${esc(initials(st.me.name))}</span>
+        <span style="flex:1;text-align:start"><div style="font-weight:700">${esc(st.me.name)}</div><div style="font-size:11px;color:var(--text-light)">${esc(st.me.title||ROLE_HE[st.me.role]||'')} · הצג פרופיל</div></span>
+        <i class="fa-solid fa-chevron-left" style="color:var(--text-light);font-size:11px"></i>
+      </button>`:'')+'<div class="pop-title">פועל בתור</div><div class="pop-people">'+(st.users||[]).map(u=>`<label class="pop-row" onclick="setMe(${u.id})"><span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span><span style="flex:1">${esc(u.name)}<div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></span>${meId()===u.id?'<i class="fa-solid fa-check" style="color:var(--green)"></i>':''}</label>`).join('')+'</div>'
+      +'<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px"><button class="pop-row" style="width:100%;color:var(--red);font-weight:600" onclick="Auth.logout()"><span style="width:26px;text-align:center"><i class="fa-solid fa-right-from-bracket"></i></span> התנתק</button></div>';
+    return;
+  }
+  if(name!=='arrange')return;
+  const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
+  const sChips=Object.entries(STATUS).map(([k,v])=>`<button class="pop-chip ${f.status===k?'sel':''}" style="--c:${v.c}" onclick="setStatusFilter('${k}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
+  const pChips=Object.entries(PRIORITY).map(([k,v])=>`<button class="pop-chip ${f.priority===k?'sel':''}" style="--c:${v.c}" onclick="setPriorityFilter('${k}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
+  const people=(st.users||[]).map(u=>`<label class="pop-row"><input type="checkbox" ${f.people.includes(u.id)?'checked':''} onchange="toggleFilterPerson(${u.id},this.checked)"><span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span><span>${esc(u.name)}</span></label>`).join('')||'<div style="padding:8px;color:var(--text-light);font-size:13px">אין משתמשים</div>';
+  const sortOpts=[['','ללא מיון','fa-ban'],['due','תאריך יעד','fa-calendar-day'],['priority','עדיפות','fa-flag'],['title','שם (א-ת)','fa-arrow-down-a-z']];
+  const sort=sortOpts.map(([k,he,ic])=>`<label class="pop-row"><input type="radio" name="sortby" ${(f.sort||'')===k?'checked':''} onchange="setSort('${k}')"><i class="fa-solid ${ic}" style="width:16px;color:var(--text-light)"></i><span>${he}</span></label>`).join('');
+  el.innerHTML=`
+    <div class="arr-head"><i class="fa-solid fa-sliders"></i> סינון ומיון</div>
+    <div class="arr-sec"><div class="pop-title"><i class="fa-regular fa-user"></i> אדם</div><div class="pop-people">${people}</div></div>
+    <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-filter"></i> סינון לפי סטטוס</div><div class="pop-chips">${sChips}</div></div>
+    <div class="arr-sec"><div class="pop-title">סינון לפי עדיפות</div><div class="pop-chips">${pChips}</div></div>
+    <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</div>${sort}</div>
+    <div class="arr-foot"><button class="btn btn-ghost" style="color:var(--red);width:100%;justify-content:center" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button></div>`;
+}
+function reArrange(){const c=document.getElementById('ctl-arrange');if(c&&c.classList.contains('open'))renderPop('arrange');}
+function toggleFilterPerson(id,on){const p=st.filters.people,i=p.indexOf(id);if(on&&i<0)p.push(id);if(!on&&i>=0)p.splice(i,1);refreshToolbar();reArrange();renderView();}
+function setStatusFilter(s){st.filters.status=st.filters.status===s?'':s;refreshToolbar();reArrange();renderView();}
+function setPriorityFilter(s){st.filters.priority=st.filters.priority===s?'':s;refreshToolbar();reArrange();renderView();}
+function setSort(s){st.filters.sort=s||'';refreshToolbar();reArrange();renderView();}
+function refreshToolbar(){
+  const f=st.filters;
+  const total=(f.people.length||0)+(f.status?1:0)+(f.priority?1:0)+(f.sort?1:0);
+  const c=document.getElementById('ctl-arrange');
+  if(c){c.classList.toggle('on',!!total);const b=document.getElementById('badge-arrange');if(b)b.textContent=total||'';}
+  const qc=document.getElementById('tb-q-clear'); if(qc)qc.classList.toggle('show',!!f.q);
+  const cl=document.getElementById('tb-clear'); if(cl)cl.classList.toggle('show',filtersActive());
+}
+
 function groupsOf(){
   const gs = (st.board.groups||[]).slice();
-  const tasks = st.board.tasks||[];
+  const tasks = applyFilters(st.board.tasks||[]);
   if(!gs.length) return [{id:null,name:'פריטים',color:'#0073ea',tasks}];
   const out = gs.map(g=>({...g,tasks:tasks.filter(t=>t.group_id===g.id)}));
   const orphan = tasks.filter(t=>!t.group_id || !gs.some(g=>g.id===t.group_id));
@@ -526,31 +1521,55 @@ function groupsOf(){
 }
 
 function vTable(el){
-  const groups=groupsOf();
   if(!(st.board.tasks||[]).length){el.innerHTML='<div class="empty"><i class="fa-regular fa-rectangle-list"></i><div>אין פריטים בלוח</div><button class="btn btn-primary" style="margin-top:14px" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> הוסף פריט</button></div>';return;}
+  const groups=groupsOf();
+  if(!groups.reduce((n,g)=>n+g.tasks.length,0)){el.innerHTML=noMatchHTML();return;}
   el.innerHTML = groups.map(g=>{
     const col=g.color||'#0073ea';
-    const rows=g.tasks.map(t=>`
-      <tr>
-        <td class="c-item" style="--gcolor:${col}">${esc(t.title)}</td>
-        <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(${t.id})">${avatars(t.assignees)}</td>
-        <td class="cell">${statusPill(t)}</td>
-        <td class="cell">${pill(PRIORITY,t.priority)}</td>
-        <td class="cell">${fdate(t.due_date)}</td>
-        <td class="cell">${(t.tags||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>'}</td>
-      </tr>`).join('');
-    return `<div class="group">
-      <div class="group-head"><i class="fa-solid fa-caret-down caret" style="color:${col}"></i><span style="color:${col}">${esc(g.name)}</span><span style="color:var(--text-light);font-weight:400">${g.tasks.length}</span></div>
+    const rows=g.tasks.map(t=>itemRow(t,col)).join('');
+    const real=g.id!==null;
+    const head=real
+      ? `<div class="group-head" data-gid="${g.id}">
+          <i class="fa-solid fa-grip-vertical g-drag" title="גרור לשינוי מיקום"></i>
+          <i class="fa-solid fa-caret-down caret" style="color:${col}"></i>
+          <span class="g-name" style="color:${col}">${esc(g.name)}</span>
+          <span class="g-count">${g.tasks.length}</span>
+          <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
+        </div>`
+      : `<div class="group-head">
+          <i class="fa-solid fa-caret-down caret" style="color:${col}"></i>
+          <span class="g-name" style="color:${col}">${esc(g.name)}</span>
+          <span class="g-count">${g.tasks.length}</span>
+        </div>`;
+    return `<div class="group" ${real?'':'data-orphan="1"'}>
+      ${head}
       <table class="tbl">
-        <thead><tr><th style="border-inline-start:4px solid ${col}">פריט</th><th>אחראים</th><th>סטטוס</th><th>עדיפות</th><th>תאריך יעד</th><th>תגיות</th></tr></thead>
+        <thead><tr><th style="border-inline-start:4px solid ${col}">פריט</th><th>אחראים</th><th>סטטוס</th><th>עדיפות</th><th>תאריך יעד</th><th>תגיות</th>${colHeaders()}</tr></thead>
         <tbody>${rows}
-          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="6">+ הוסף פריט</td></tr>
+          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()}">+ הוסף פריט</td></tr>
         </tbody>
       </table>
       <div style="margin-top:6px">${battery(g.tasks)}</div>
     </div>`;
-  }).join('');
-  el.querySelectorAll('.group-head').forEach(h=>h.onclick=()=>{h.classList.toggle('collapsed');const t=h.nextElementSibling;t.style.display=t.style.display==='none'?'':'none';});
+  }).join('') + `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`;
+  el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
+    if(e.target.closest('.g-menu-btn')||e.target.closest('.g-drag'))return;
+    h.classList.toggle('collapsed');const t=h.nextElementSibling;t.style.display=t.style.display==='none'?'':'none';
+  });
+  if(window.Sortable){
+    new Sortable(el,{handle:'.g-drag',draggable:'.group',filter:'[data-orphan]',
+      forceFallback:true,fallbackTolerance:3,animation:150,
+      chosenClass:'drag-chosen',ghostClass:'sortable-ghost',dragClass:'sortable-drag',
+      onMove:evt=>!evt.related.hasAttribute('data-orphan'),
+      onEnd:async()=>{
+        const ids=[...el.querySelectorAll('.group-head[data-gid]')].map(h=>+h.dataset.gid);
+        if(!ids.length)return;
+        try{await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids})});
+          toast('מיקום הקבוצה עודכן');
+          (st.board.groups||[]).forEach(gr=>{const i=ids.indexOf(gr.id);if(i>=0)gr.position=i;});
+        }catch(e){toast('שגיאה בשמירת המיקום');renderView();}
+      }});
+  }
 }
 function battery(tasks){
   if(!tasks.length)return '';
@@ -559,9 +1578,471 @@ function battery(tasks){
   return '<div class="battery">'+Object.entries(by).map(([s,n])=>`<span title="${STATUS[s]?STATUS[s].he:s}: ${n}" style="width:${n/total*100}%;background:${STATUS[s]?STATUS[s].c:'#c4c4c4'}"></span>`).join('')+'</div>';
 }
 
+/* ============ items + sub-items (פריט / תת-פריט) ============ */
+function itemRow(t,col){
+  const subs=t.subtasks||[];
+  const cnt=subs.length;
+  const open=st.openSubs.has(t.id);
+  const tagcell=(arr)=>(arr||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>';
+  const parent=`
+    <tr>
+      <td class="c-item" style="--gcolor:${col}"><div class="ci-flex">
+        <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
+        <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
+        ${cnt?`<span class="sub-badge" title="${cnt} תת-פריטים"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
+        <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
+      </div></td>
+      <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(${t.id})">${avatars(t.assignees)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',STATUS)">${statusPill(t)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',PRIORITY)">${pill(PRIORITY,t.priority)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${t.id})">${fdate(t.due_date)}</td>
+      <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>
+      ${customCells(t)}
+    </tr>`;
+  const disp=open?'table-row':'none';
+  const subRows=subs.map(s=>`
+    <tr class="subrow" data-parent="${t.id}" style="display:${disp}">
+      <td class="c-item c-sub"><div class="ci-flex"><span class="sub-twig"></span><span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
+        <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
+        <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button></div></td>
+      <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(${s.id})">${avatars(s.assignees)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${s.id},'status',STATUS)">${statusPill(s)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${s.id},'priority',PRIORITY)">${pill(PRIORITY,s.priority)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${s.id})">${fdate(s.due_date)}</td>
+      <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${s.id})">${tagcell(s.tags)}</td>
+      ${customCells(s)}
+    </tr>`).join('');
+  const addSub=`<tr class="subrow subadd" data-parent="${t.id}" style="display:${disp}"><td class="c-sub" colspan="${totalCols()}" onclick="addSubItem(${t.id})"><span class="sub-twig"></span>+ הוסף תת-פריט</td></tr>`;
+  return parent+subRows+addSub;
+}
+
+/* ============ custom columns (עמודות מותאמות, בהשראת Monday) ============ */
+const COLUMN_TYPES=[
+  {type:'status',he:'סטטוס',ic:'fa-circle-half-stroke',desc:'תווית צבעונית'},
+  {type:'text',he:'טקסט',ic:'fa-font',desc:'טקסט חופשי'},
+  {type:'people',he:'אנשים',ic:'fa-user-group',desc:'שיוך משתמשים'},
+  {type:'dropdown',he:'רשימה נפתחת',ic:'fa-list-check',desc:'בחירה מרשימת אפשרויות'},
+  {type:'date',he:'תאריך',ic:'fa-calendar-day',desc:'תאריך בודד'},
+  {type:'files',he:'קבצים',ic:'fa-paperclip',desc:'העלאת קבצים'},
+  {type:'accounts',he:'חשבונות',ic:'fa-building',desc:'חשבון/לקוח מקושר'},
+  {type:'timeline',he:'ציר זמן',ic:'fa-timeline',desc:'טווח תאריכים (התחלה–סיום)'},
+  {type:'checkbox',he:'תיבת סימון',ic:'fa-square-check',desc:'סימון כן/לא'},
+  {type:'formula',he:'נוסחה',ic:'fa-calculator',desc:'חישוב מעמודות אחרות'},
+  {type:'number',he:'מספר',ic:'fa-hashtag',desc:'ערך מספרי'},
+  {type:'rating',he:'דירוג',ic:'fa-star',desc:'דירוג בכוכבים'},
+];
+const STATUS_OPTS=[
+  {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
+  {label:'תקוע',color:'#e2445c'},{label:'הושלם',color:'#00c875'},
+];
+const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
+  people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה'};
+function customColumns(){return (st.board&&st.board.columns)||[];}
+function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
+/* Board vocabulary of tags = every tag already used across the board's items.
+   Non-admins pick from this list; only the board admin may create new tags. */
+function boardTags(){
+  const s=new Set();
+  ((st.board&&st.board.tasks)||[]).forEach(t=>{(t.tags||[]).forEach(x=>s.add(x)); (t.subtasks||[]).forEach(su=>(su.tags||[]).forEach(x=>s.add(x)));});
+  return [...s].sort((a,b)=>a.localeCompare(b,'he'));
+}
+function totalCols(){return 6+customColumns().length+(isBoardAdmin()?1:0);}
+function colHeaders(){
+  const admin=isBoardAdmin();
+  return customColumns().map(c=>{
+    const m=COLUMN_TYPES.find(x=>x.type===c.type)||{ic:'fa-table-columns'};
+    // the column menu (rename/options/delete) is a board-admin action only
+    const menu=admin?`<button class="th-menu" title="עמודה" onclick="colMenu(event,'${c.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
+    return `<th class="th-custom"><span class="th-wrap"><i class="fa-solid ${m.ic}" style="color:var(--text-light);font-size:11px"></i> ${esc(c.title)}${menu}</span></th>`;
+  }).join('') + (admin?`<th class="th-add"><div class="th-add-wrap" id="thadd-${Math.random().toString(36).slice(2,7)}"><button class="th-add-btn" title="הוסף עמודה" onclick="addColMenu(event)"><i class="fa-solid fa-plus"></i></button></div></th>`:'');
+}
+function cellValue(t,colId){return (t.custom_fields||{})[colId];}
+function customCells(t){
+  return customColumns().map(c=>{
+    const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
+    if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
+    if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
+    if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
+    if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
+    if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v)}</span></td>`;
+    if(c.type==='timeline')return `<td class="cell cell-custom"><div onclick="openTimeline(${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
+    if(c.type==='checkbox')return `<td class="cell cell-custom"><input type="checkbox" class="cc-check" ${v?'checked':''} onchange="setCell(${id},'${c.id}',this.checked?true:null)"></td>`;
+    if(c.type==='people')  return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="peopleCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${peopleDisp(v)}</span></td>`;
+    if(c.type==='dropdown')return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="dropdownCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${dropdownDisp(v)}</span></td>`;
+    if(c.type==='files')   return `<td class="cell cell-custom">${filesDisp(v,id,c.id)}</td>`;
+    if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
+    if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
+    return `<td class="cell cell-custom">—</td>`;
+  }).join('') + `<td class="cell"></td>`;
+}
+/* people column */
+function peopleDisp(ids){
+  const users=(Array.isArray(ids)?ids:[]).map(uid=>(st.users||[]).find(u=>u.id===uid)).filter(Boolean);
+  if(!users.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>';
+  return '<div class="avatars">'+users.slice(0,3).map(u=>`<span class="av" title="${esc(u.name)}">${esc(initials(u.name))}</span>`).join('')+(users.length>3?`<span class="av" style="background:var(--text-light)">+${users.length-3}</span>`:'')+'</div>';
+}
+function buildPeoplePop(pop,taskId,colId){
+  const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];
+  pop.innerHTML=(st.users||[]).map(u=>`<button class="pl-opt ${vals.includes(u.id)?'sel':''}" onclick="togglePeopleCell(event,${taskId},'${colId}',${u.id})"><span class="av" style="background:var(--primary);margin:0">${esc(initials(u.name))}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${vals.includes(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||'<div style="padding:6px;color:var(--text-light);font-size:12px">אין משתמשים</div>';
+}
+function peopleCellMenu(e,taskId,colId){
+  e.stopPropagation();
+  const pop=openCellPop(e.currentTarget,'','list-pop'); buildPeoplePop(pop,taskId,colId);
+}
+function togglePeopleCell(e,taskId,colId,uid){
+  e.stopPropagation();
+  const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();
+  const i=arr.indexOf(uid);if(i>=0)arr.splice(i,1);else arr.push(uid);
+  setCell(taskId,colId,arr.length?arr:null);
+  const pop=e.target&&e.target.closest('.cell-pop'); if(!pop||!pop._anchor)return;
+  const disp=pop._anchor.querySelector('.cell-disp'); if(disp)disp.innerHTML=peopleDisp(arr);
+  buildPeoplePop(pop,taskId,colId);
+}
+/* dropdown column */
+function dropdownDisp(vals){
+  vals=Array.isArray(vals)?vals:[];
+  return vals.length?vals.map(x=>`<span class="tag">${esc(x)}</span>`).join(''):'<span style="color:var(--text-light)">—</span>';
+}
+function buildDropdownPop(pop,taskId,colId){
+  const col=customColumns().find(c=>c.id===colId);const opts=(col&&col.options)||[];
+  const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];
+  // only the board admin may add new options; everyone else just selects
+  const addBtn=isBoardAdmin()?`<button class="cell-pop-opt2" onclick="addDropdownOption(event,'${colId}')"><i class="fa-solid fa-plus"></i> אפשרות חדשה</button>`:'';
+  pop.innerHTML=(opts.length?opts.map((o,i)=>`<button class="dd-opt ${vals.includes(o)?'sel':''}" onclick="toggleDropdown(event,${taskId},'${colId}',${i})">${esc(o)}${vals.includes(o)?' <i class="fa-solid fa-check"></i>':''}</button>`).join(''):'<div style="padding:6px;color:var(--text-light);font-size:12px">'+(isBoardAdmin()?'אין אפשרויות עדיין':'אין אפשרויות — פנה למנהל הלוח')+'</div>')+addBtn;
+}
+function dropdownCellMenu(e,taskId,colId){
+  e.stopPropagation();
+  const pop=openCellPop(e.currentTarget,'','list-pop'); buildDropdownPop(pop,taskId,colId);
+}
+function toggleDropdown(e,taskId,colId,optIdx){
+  e.stopPropagation();
+  const col=customColumns().find(c=>c.id===colId);const o=(col.options||[])[optIdx];if(o==null)return;
+  const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();
+  const i=arr.indexOf(o);if(i>=0)arr.splice(i,1);else arr.push(o);
+  setCell(taskId,colId,arr.length?arr:null);
+  const pop=e.target&&e.target.closest('.cell-pop'); if(!pop||!pop._anchor)return;
+  const disp=pop._anchor.querySelector('.cell-disp'); if(disp)disp.innerHTML=dropdownDisp(arr);
+  buildDropdownPop(pop,taskId,colId);
+}
+async function addDropdownOption(e,colId){
+  e.stopPropagation();
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך אפשרויות');return;}
+  const name=prompt('אפשרות חדשה:');if(!name||!name.trim())return;
+  const cols=customColumns().map(c=>c.id===colId?{...c,options:[...(c.options||[]),name.trim()]}:c);
+  closeCellPops();await saveColumns(cols);
+}
+/* files column */
+function filesDisp(files,taskId,colId){
+  files=Array.isArray(files)?files:[];
+  const chips=files.map((f,i)=>`<span class="file-chip"><a href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><i class="fa-solid fa-paperclip"></i> ${esc(f.name.length>10?f.name.slice(0,9)+'…':f.name)}</a><i class="fa-solid fa-xmark file-x" onclick="removeFile(event,${taskId},'${colId}',${i})"></i></span>`).join('');
+  return chips+`<button class="file-add" title="העלה קובץ" onclick="uploadFileCell(${taskId},'${colId}')"><i class="fa-solid fa-plus"></i></button>`;
+}
+function uploadFileCell(taskId,colId){
+  const inp=document.createElement('input');inp.type='file';
+  inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
+    const fd=new FormData();fd.append('file',f);
+    try{const r=await fetch('/api/upload',{method:'POST',body:fd});if(!r.ok)throw 0;const data=await r.json();
+      const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();arr.push(data);
+      await setCell(taskId,colId,arr);renderView();toast('הקובץ הועלה');
+    }catch(e){toast('שגיאה בהעלאת הקובץ');}
+  };
+  inp.click();
+}
+async function removeFile(e,taskId,colId,idx){
+  e.preventDefault();e.stopPropagation();
+  const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();arr.splice(idx,1);
+  await setCell(taskId,colId,arr.length?arr:null);renderView();
+}
+/* accounts column */
+function accountCell(taskId,colId){
+  const v=(findAnyTask(taskId).custom_fields||{})[colId]||{};
+  const ds='padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%';
+  showModal(`<h2>חשבון מקושר</h2><div class="mbody">
+    <div class="field"><label>שם החשבון / לקוח</label><input id="ac-label" value="${esc(v.label||'')}" style="${ds}"></div>
+    <div class="field"><label>קישור (אופציונלי)</label><input id="ac-url" value="${esc(v.url||'')}" placeholder="https://" style="${ds}"></div>
+  </div><div class="mfoot"><button class="btn btn-primary" onclick="saveAccount(${taskId},'${colId}')">שמור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button><div style="flex:1"></div><button class="btn btn-ghost" style="color:var(--red)" onclick="saveAccount(${taskId},'${colId}',true)">נקה</button></div>`);
+  setTimeout(()=>{const n=document.getElementById('ac-label');if(n)n.focus();},30);
+}
+async function saveAccount(taskId,colId,clear){
+  let val=null;
+  if(!clear){const l=(document.getElementById('ac-label').value||'').trim();const u=(document.getElementById('ac-url').value||'').trim();if(l)val={label:l,url:u||undefined};}
+  await setCell(taskId,colId,val);closeModals();renderView();
+}
+/* formula column — safe arithmetic over {ColumnTitle} references */
+function safeEval(s){
+  if(!/^[0-9+\-*/().\s]*$/.test(s))throw new Error('bad');
+  let i=0;const skip=()=>{while(/\s/.test(s[i]))i++;};
+  function expr(){let v=term();skip();while(s[i]==='+'||s[i]==='-'){const op=s[i++];const r=term();v=op==='+'?v+r:v-r;skip();}return v;}
+  function term(){let v=fac();skip();while(s[i]==='*'||s[i]==='/'){const op=s[i++];const r=fac();v=op==='*'?v*r:v/r;skip();}return v;}
+  function fac(){skip();if(s[i]==='('){i++;const v=expr();skip();if(s[i]===')')i++;return v;}if(s[i]==='-'){i++;return -fac();}let n='';while(/[0-9.]/.test(s[i]))n+=s[i++];return parseFloat(n||'0');}
+  return expr();
+}
+function evalFormula(col,t){
+  if(!col.formula)return null;
+  let ex=col.formula;
+  customColumns().forEach(c=>{
+    if(c.id===col.id)return;
+    const tok='{'+c.title+'}';
+    if(ex.indexOf(tok)>=0){
+      const val=cellValue(t,c.id);let n=0;
+      if(c.type==='checkbox')n=val?1:0; else n=parseFloat(val)||0;
+      ex=ex.split(tok).join('('+n+')');
+    }
+  });
+  try{const r=safeEval(ex);return (r==null||isNaN(r)||!isFinite(r))?null:(Math.round(r*100)/100);}catch(e){return null;}
+}
+function findAnyTask(id){
+  for(const t of (st.board.tasks||[])){ if(t.id==id)return t; for(const s of (t.subtasks||[])) if(s.id==id)return s; }
+  return null;
+}
+async function setCell(taskId,colId,value){
+  const t=findAnyTask(taskId);
+  if(t && !canEditCol(t,colId)){ toast('אין לך הרשאת עריכה לעמודה זו'); return; }
+  if(t){t.custom_fields=t.custom_fields||{}; if(value==null||value==='')delete t.custom_fields[colId]; else t.custom_fields[colId]=value;}
+  try{await api('/api/tasks/'+taskId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({custom_fields:{[colId]:(value===''?null:value)}})});}
+  catch(e){toast('שגיאה בשמירת הערך');}
+}
+
+/* ===== inline editing of built-in columns (סטטוס/עדיפות/תאריך/תגיות/כותרת) ===== */
+function canEdit(){ return canComment(); }  // board members who aren't view-only
+function itemPerm(t){ return (t&&t.my_perm)||'edit'; }
+function canEditItem(t){ const p=itemPerm(t); return p==='edit'||p==='delete'; }
+function canDeleteItem(t){ return itemPerm(t)==='delete'; }
+function canEditCol(t,colId){ if(!canEditItem(t))return false; const cp=(t&&t.col_perms||{})[colId]; return cp?cp==='edit':true; }
+async function setField(id,field,value){
+  const t=findAnyTask(id); if(t)t[field]=value;
+  // mirror the backend auto-move: a top-level item whose status changes jumps to
+  // the group matching that status (e.g. "הושלם" → the Done group)
+  if(field==='status' && t && !t.parent_id){
+    const g=((st.board&&st.board.groups)||[]).find(x=>x.task_status===value);
+    if(g) t.group_id=g.id;
+  }
+  try{ await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({[field]:value})}); renderView(); }
+  catch(e){ toast('שגיאה בעדכון'); }
+}
+function fieldPicker(e,id,field,map){
+  e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
+  const cur=(findAnyTask(id)||{})[field];
+  const html=Object.entries(map).map(([k,v])=>`<button class="cell-pop-opt" style="background:${v.c}" onclick="pickField(event,${id},'${field}','${k}')">${esc(v.he)}${cur===k?' <i class="fa-solid fa-check"></i>':''}</button>`).join('');
+  openCellPop(e.currentTarget,html);
+}
+function pickField(e,id,field,key){ e.stopPropagation(); closeCellPops(); setField(id,field,key); }
+function duePicker(e,id){
+  e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
+  const t=findAnyTask(id), cur=t&&t.due_date?String(t.due_date).slice(0,10):'';
+  const html=`<input type="date" value="${cur}" style="border:1px solid var(--border-strong);border-radius:6px;padding:6px;font-family:inherit" onchange="pickDue(event,${id},this.value)"><button class="cell-pop-opt2" style="justify-content:center;margin-top:6px" onclick="pickDue(event,${id},'')"><i class="fa-solid fa-xmark"></i> נקה</button>`;
+  const pop=openCellPop(e.currentTarget,html); pop.style.padding='9px'; const i=pop.querySelector('input'); if(i)i.focus();
+}
+function pickDue(e,id,val){ e.stopPropagation(); closeCellPops(); setField(id,'due_date',val?new Date(val+'T12:00:00').toISOString():null); }
+function tagsEditor(e,id){
+  e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
+  const t=findAnyTask(id), tags=(t&&t.tags)||[];
+  const admin=isBoardAdmin();
+  // vocabulary = tags used across the board (+ current item tags). Non-admins pick only.
+  const all=[...new Set([...boardTags(),...tags])].sort((a,b)=>a.localeCompare(b,'he'));
+  const chips=all.length?all.map(x=>{const on=tags.includes(x);
+      return `<button class="ff-chip${on?' tag-on':''}" onclick="toggleTag(event,${id},'${encodeURIComponent(x)}')">${on?'<i class="fa-solid fa-check" style="font-size:10px"></i> ':''}${esc(x)}</button>`;
+    }).join('')
+    : `<span style="color:var(--text-light);font-size:12px">${admin?'אין תגיות עדיין — הוסף למטה':'אין תגיות זמינות — פנה למנהל הלוח'}</span>`;
+  const addInput=admin?`<input placeholder="תגית חדשה + Enter" style="width:100%;margin-top:8px;border:1px solid var(--border-strong);border-radius:6px;padding:6px;font-family:inherit;font-size:12.5px" onkeydown="if(event.key==='Enter'){addTag(event,${id},this.value);this.value='';}">`:'';
+  const html=`<div class="pop-title" style="margin:2px 2px 6px">תגיות${admin?'':' · בחר מהרשימה'}</div><div class="ff-multi" style="max-width:240px">${chips}</div>${addInput}`;
+  const pop=openCellPop(e.currentTarget,html,'tags-pop'); pop.style.minWidth='210px'; const i=pop.querySelector('input'); if(i)i.focus();
+}
+function toggleTag(e,id,enc){
+  e.stopPropagation();
+  const tag=decodeURIComponent(enc);
+  const t=findAnyTask(id); const cur=((t&&t.tags)||[]).slice();
+  const i=cur.indexOf(tag); if(i>=0)cur.splice(i,1); else cur.push(tag);
+  closeCellPops(); setField(id,'tags',cur);
+}
+/* create a brand-new tag — board admin only (expands the vocabulary) */
+function addTag(e,id,val){ e.stopPropagation(); if(!isBoardAdmin())return; val=(val||'').trim(); if(!val)return; const t=findAnyTask(id); const tags=[...((t&&t.tags)||[]),val]; closeCellPops(); setField(id,'tags',tags); }
+function titleEdit(e,id){
+  if(!canEditItem(findAnyTask(id)))return; e.stopPropagation();
+  const span=e.currentTarget, old=findAnyTask(id).title;
+  const inp=document.createElement('input'); inp.className='title-edit'; inp.value=old;
+  const commit=()=>{ const v=inp.value.trim(); if(v&&v!==old)setField(id,'title',v); else renderView(); };
+  inp.onblur=commit; inp.onkeydown=(ev)=>{ if(ev.key==='Enter'){ev.preventDefault();inp.blur();} if(ev.key==='Escape'){inp.value=old;inp.blur();} };
+  span.replaceWith(inp); inp.focus(); inp.select();
+}
+/* rating */
+function ratingStars(taskId,colId,val){
+  let h='<span class="rating">';
+  for(let i=1;i<=5;i++)h+=`<i class="${i<=val?'fa-solid':'fa-regular'} fa-star" onclick="setRating(${taskId},'${colId}',${i})"></i>`;
+  h+='</span>';return h;
+}
+function setRating(taskId,colId,n){
+  const t=findAnyTask(taskId);const cur=(t&&t.custom_fields&&+t.custom_fields[colId])||0;
+  setCell(taskId,colId,n===cur?null:n);renderView();
+}
+/* status cell */
+function statusCellPill(v){
+  if(v&&v.label)return `<span class="pill" style="background:${v.color||'#c4c4c4'}">${esc(v.label)}</span>`;
+  return '<span class="pill pill-empty">—</span>';
+}
+function statusCellMenu(e,taskId,colId){
+  e.stopPropagation();
+  const html=STATUS_OPTS.map(o=>`<button class="cell-pop-opt" style="background:${o.color}" onclick="pickStatusCell(event,${taskId},'${colId}','${o.label}','${o.color}')">${o.label}</button>`).join('')+`<button class="cell-pop-opt cell-pop-clear" onclick="pickStatusCell(event,${taskId},'${colId}',null)">נקה</button>`;
+  openCellPop(e.currentTarget,html);
+}
+function pickStatusCell(e,taskId,colId,label,color){
+  e.stopPropagation();closeCellPops();
+  setCell(taskId,colId,label?{label,color}:null);renderView();
+}
+function closeCellPops(){document.querySelectorAll('.cell-pop').forEach(p=>p.remove());}
+/* Fixed-positioned cell popover appended to <body> so it never gets clipped by
+   the table's overflow:hidden. Returns the pop element (pop._anchor = cell). */
+function openCellPop(anchor,html,extraClass){
+  closeCellPops();
+  const pop=document.createElement('div');
+  pop.className='cell-pop cell-pop-fixed'+(extraClass?' '+extraClass:'');
+  pop.innerHTML=html; pop._anchor=anchor; document.body.appendChild(pop);
+  const r=anchor.getBoundingClientRect();
+  let left=r.right-pop.offsetWidth; if(left<8)left=8;
+  if(r.left<8&&r.right-pop.offsetWidth<8) left=r.left;
+  let top=r.bottom+4;
+  if(top+pop.offsetHeight>window.innerHeight-8) top=Math.max(8,r.top-pop.offsetHeight-4);
+  pop.style.left=left+'px'; pop.style.top=top+'px';
+  setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0);
+  return pop;
+}
+/* timeline */
+function timelineBar(v){
+  if(!v||!v.from)return '<span style="color:var(--text-light)">—</span>';
+  const f=new Date(v.from),to=new Date(v.to||v.from);
+  const days=Math.max(1,Math.round((to-f)/86400000)+1);
+  const fmt=d=>d.toLocaleDateString('he-IL',{day:'2-digit',month:'short'});
+  return `<div class="tl-bar" title="${days} ימים"><span class="tl-txt">${fmt(f)} – ${fmt(to)}</span></div>`;
+}
+function openTimeline(taskId,colId){
+  const t=findAnyTask(taskId);const v=(t&&t.custom_fields&&t.custom_fields[colId])||{};
+  const dstyle='padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%';
+  showModal(`<h2>ציר זמן</h2><div class="mbody">
+    <div class="field"><label>מתאריך</label><input type="date" id="tl-from" value="${v.from?String(v.from).slice(0,10):''}" style="${dstyle}"></div>
+    <div class="field"><label>עד תאריך</label><input type="date" id="tl-to" value="${v.to?String(v.to).slice(0,10):''}" style="${dstyle}"></div>
+  </div><div class="mfoot">
+    <button class="btn btn-primary" onclick="saveTimeline(${taskId},'${colId}')">שמור</button>
+    <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    <div style="flex:1"></div>
+    <button class="btn btn-ghost" style="color:var(--red)" onclick="saveTimeline(${taskId},'${colId}',true)">נקה</button>
+  </div>`);
+}
+async function saveTimeline(taskId,colId,clear){
+  let val=null;
+  if(!clear){const f=document.getElementById('tl-from').value,to=document.getElementById('tl-to').value;
+    if(f||to)val={from:f||to,to:to||f};}
+  await setCell(taskId,colId,val);closeModals();renderView();
+}
+/* add / rename / delete columns */
+function addColMenu(e){
+  e.stopPropagation();
+  const html='<div class="pop-title">בחר סוג עמודה</div>'+COLUMN_TYPES.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
+  openCellPop(e.currentTarget,html,'col-add-pop');
+}
+async function addColumn(type){
+  closeCellPops();
+  const col={type,title:COL_DEFAULTS[type]||type};
+  if(type==='formula'){
+    const f=prompt('נוסחה — השתמש בשם עמודה בסוגריים מסולסלים.\nלדוגמה:  {מספר} * 2 + {דירוג}','');
+    if(f===null)return; col.formula=f.trim();
+  }
+  if(type==='dropdown')col.options=[];
+  const cols=customColumns().slice();cols.push(col);
+  await saveColumns(cols);toast('עמודה נוספה');
+}
+function colMenu(e,colId){
+  e.stopPropagation();
+  const c=customColumns().find(x=>x.id===colId);
+  const isAdmin=st.board&&st.board.my_role==='admin';
+  const html=`<button class="cell-pop-opt2" onclick="renameColumn(event,'${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
+    +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
+    +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
+    +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
+  openCellPop(e.currentTarget,html);
+}
+async function editFormula(e,colId){
+  e.stopPropagation();closeCellPops();
+  const c=customColumns().find(x=>x.id===colId);if(!c)return;
+  const f=prompt('נוסחה — השתמש בשם עמודה בסוגריים מסולסלים:',c.formula||'');if(f===null)return;
+  const cols=customColumns().map(x=>x.id===colId?{...x,formula:f.trim()}:x);
+  await saveColumns(cols);toast('הנוסחה עודכנה');
+}
+async function renameColumn(e,colId){
+  e.stopPropagation();closeCellPops();
+  const c=customColumns().find(x=>x.id===colId);if(!c)return;
+  const name=prompt('שם העמודה:',c.title);if(name==null)return;
+  const cols=customColumns().map(x=>x.id===colId?{...x,title:name.trim()||x.title}:x);
+  await saveColumns(cols);toast('שם העמודה עודכן');
+}
+function deleteColumn(e,colId){
+  e.stopPropagation();closeCellPops();
+  const c=customColumns().find(x=>x.id===colId);
+  askConfirm('האם אתה בטוח שברצונך למחוק?',async()=>{
+    const cols=customColumns().filter(x=>x.id!==colId);
+    await saveColumns(cols);toast('העמודה נמחקה');
+  },{title:'מחיקת עמודה'+(c?` — ${c.title}`:''),note:'הנתונים בעמודה יוסרו מהתצוגה.',confirmText:'מחק עמודה'});
+}
+async function saveColumns(cols){
+  try{
+    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({columns:cols})});
+    st.board.columns=r.columns;renderView();
+  }catch(e){toast(String(e.message||'').includes('403')?'רק מנהל הלוח יכול לערוך עמודות':'שגיאה בשמירת עמודות');}
+}
+function toggleSubs(e,id){
+  e.stopPropagation();
+  const btn=e.currentTarget;
+  const open=!st.openSubs.has(id);
+  if(open)st.openSubs.add(id); else st.openSubs.delete(id);
+  btn.classList.toggle('open',open);
+  btn.closest('table').querySelectorAll('.subrow[data-parent="'+id+'"]').forEach(r=>r.style.display=open?'table-row':'none');
+}
+function findSub(id){
+  for(const t of (st.board.tasks||[])) for(const s of (t.subtasks||[])) if(s.id===id) return {sub:s,parent:t};
+  return null;
+}
+async function cycleStatus(e,id){
+  e.stopPropagation();
+  const f=findSub(id); if(!f)return;
+  const order=['todo','in_progress','review','done'];
+  const idx=order.indexOf(f.sub.status);
+  const next=order[(idx+1)%order.length];
+  try{
+    await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:next})});
+    f.sub.status=next; if(f.sub.custom_fields)delete f.sub.custom_fields.status_label;
+    const cell=e.target.closest('.status-clik'); if(cell)cell.innerHTML=statusPill(f.sub);
+  }catch(err){toast('שגיאה בעדכון סטטוס');}
+}
+function addSubItem(parentId){
+  showModal(`<h2>תת-פריט חדש</h2><div class="mbody">
+    <div class="field"><label>שם תת-הפריט</label><input id="si-title" placeholder="מה צריך לעשות?" onkeydown="if(event.key==='Enter')saveSubItem(${parentId})"></div>
+    <div class="field"><label>עדיפות</label><select id="si-prio">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select></div>
+    <div class="field"><label>תאריך יעד</label><input type="date" id="si-due" style="padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%"></div>
+    <div class="field"><label>אחראים</label><div style="display:flex;flex-wrap:wrap;gap:7px">${(st.users||[]).map(u=>`<label style="display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--border-strong);border-radius:20px;padding:4px 11px;cursor:pointer"><input type="checkbox" class="si-asg" value="${u.id}" style="width:auto">${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:13px">אין משתמשים</span>'}</div></div>
+  </div><div class="mfoot"><button class="btn btn-primary" onclick="saveSubItem(${parentId})">הוסף</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+  setTimeout(()=>{const n=document.getElementById('si-title');if(n)n.focus();},30);
+}
+async function saveSubItem(parentId){
+  const title=(document.getElementById('si-title').value||'').trim();if(!title){toast('צריך שם');return;}
+  const assignee_ids=[...document.querySelectorAll('.si-asg:checked')].map(x=>+x.value);
+  const dueVal=document.getElementById('si-due').value;
+  const dueDate=dueVal?new Date(dueVal+'T12:00:00').toISOString():null;
+  try{
+    await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parent_id:parentId,title,priority:document.getElementById('si-prio').value,due_date:dueDate,assignee_ids})});
+    st.openSubs.add(parentId);
+    closeModals();toast('תת-פריט נוסף');await openBoard(st.board.id);
+  }catch(e){toast('שגיאה ביצירת תת-פריט');}
+}
+async function deleteSubItem(e,id){
+  e.stopPropagation();
+  if(!confirm('למחוק את תת-הפריט?'))return;
+  try{await api('/api/tasks/'+id,{method:'DELETE'});toast('תת-פריט נמחק');await openBoard(st.board.id);}
+  catch(err){toast('שגיאה במחיקה');}
+}
+
 function vKanban(el){
   const cols=Object.keys(STATUS);
-  const tasks=st.board.tasks||[];
+  const tasks=applyFilters(st.board.tasks||[]);
+  if((st.board.tasks||[]).length && !tasks.length){el.innerHTML=noMatchHTML();return;}
   el.innerHTML='<div class="kanban">'+cols.map(s=>{
     const ts=tasks.filter(t=>t.status===s);
     return `<div class="kcol"><div class="kcol-head" style="--kc:${STATUS[s].c}">${STATUS[s].he}<span class="cnt">${ts.length}</span></div>
@@ -586,8 +2067,8 @@ function kcard(t){return `<div class="kcard" data-id="${t.id}">
 async function vDashboard(el){
   el.innerHTML='<div class="spin"></div>';
   let d={},ins={boards:[]};
-  try{d=await api('/api/dashboard');}catch(e){}
-  try{ins=await api('/api/viz/board-insights');}catch(e){}
+  try{d=await api('/api/dashboard'+(meId()?'?user_id='+meId():''));}catch(e){}
+  try{ins=await api('/api/viz/board-insights'+(meId()?'?user_id='+meId():''));}catch(e){}
   el.innerHTML=`
     <div class="kpis">
       ${kpi('סה"כ משימות',d.total_tasks||0,'fa-list-check','#0073ea')}
@@ -612,7 +2093,7 @@ function kpi(l,v,ic,c){return `<div class="kpi"><div class="lbl"><span class="ic
 async function vCeo(el){
   el.innerHTML='<div class="spin"></div>';
   let ceoData;
-  try{ceoData=await api('/api/ceo/dashboard');}catch(e){el.innerHTML='<div class="empty"><i class="fa-solid fa-building-columns"></i><div>דאשבורד מנכ\"ל לא זמין</div></div>';return;}
+  try{ceoData=await api('/api/ceo/dashboard'+(meId()?'?user_id='+meId():''));}catch(e){el.innerHTML='<div class="empty"><i class="fa-solid fa-building-columns"></i><div>דאשבורד מנכ\"ל לא זמין</div></div>';return;}
   const t=ceoData.totals;
   const healthColor=ceoData.health_score>=80?'#00c875':ceoData.health_score>=60?'#fdab3d':ceoData.health_score>=40?'#e2445c':'#bb3354';
 
@@ -751,20 +2232,39 @@ async function vCeo(el){
 }
 
 function vCalendar(el){
-  const now=new Date(),y=now.getFullYear(),m=now.getMonth();
+  const today=new Date();
+  if(!st.cal)st.cal={y:today.getFullYear(),m:today.getMonth()};
+  const {y,m}=st.cal;
   const first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate();
   const tasks=(st.board.tasks||[]).filter(t=>t.due_date);
   const dow=['א','ב','ג','ד','ה','ו','ש'];
-  let cells='';
+  const isToday=d=>d===today.getDate()&&m===today.getMonth()&&y===today.getFullYear();
+  let cells='',shown=0;
   for(let i=0;i<first;i++)cells+='<div></div>';
   for(let d=1;d<=days;d++){
-    const evs=tasks.filter(t=>{const dt=new Date(t.due_date);return dt.getDate()===d&&dt.getMonth()===m;});
-    cells+=`<div class="cal-cell ${d===now.getDate()?'today':''}"><div class="d">${d}</div>`+
-      evs.slice(0,3).map(t=>`<div class="cal-ev" style="background:${STATUS[t.status]?STATUS[t.status].c:'#0073ea'}">${esc(t.title)}</div>`).join('')+'</div>';
+    const evs=tasks.filter(t=>{const dt=new Date(t.due_date);return dt.getDate()===d&&dt.getMonth()===m&&dt.getFullYear()===y;});
+    shown+=evs.length;
+    cells+=`<div class="cal-cell ${isToday(d)?'today':''}"><div class="d">${d}</div>`+
+      evs.slice(0,3).map(t=>`<div class="cal-ev" title="${esc(t.title)}" onclick="Chat.open(${t.id})" style="background:${STATUS[t.status]?STATUS[t.status].c:'#0073ea'}">${esc(t.title)}</div>`).join('')+
+      (evs.length>3?`<div class="cal-more">+${evs.length-3}</div>`:'')+'</div>';
   }
-  el.innerHTML=`<div class="cal"><h3 style="margin-bottom:14px">${now.toLocaleDateString('he-IL',{month:'long',year:'numeric'})}</h3>
-    <div class="cal-grid">${dow.map(x=>`<div class="cal-dow">${x}</div>`).join('')}${cells}</div></div>`;
+  const label=new Date(y,m,1).toLocaleDateString('he-IL',{month:'long',year:'numeric'});
+  const isCur=m===today.getMonth()&&y===today.getFullYear();
+  el.innerHTML=`<div class="cal">
+    <div class="cal-head">
+      <div class="cal-nav">
+        <button class="cal-navbtn" onclick="calMove(-1)" title="חודש קודם"><i class="fa-solid fa-chevron-right"></i></button>
+        <button class="cal-navbtn" onclick="calMove(1)" title="חודש הבא"><i class="fa-solid fa-chevron-left"></i></button>
+        <button class="cal-today ${isCur?'cur':''}" onclick="calToday()">היום</button>
+      </div>
+      <h3>${label}</h3>
+    </div>
+    <div class="cal-grid">${dow.map(x=>`<div class="cal-dow">${x}</div>`).join('')}${cells}</div>
+    ${shown===0?'<div class="cal-empty"><i class="fa-regular fa-calendar-xmark"></i> אין פריטים עם תאריך יעד בחודש זה</div>':''}
+    </div>`;
 }
+function calMove(delta){const today=new Date();if(!st.cal)st.cal={y:today.getFullYear(),m:today.getMonth()};let m=st.cal.m+delta,y=st.cal.y;while(m<0){m+=12;y--;}while(m>11){m-=12;y++;}st.cal={y,m};renderView();}
+function calToday(){const t=new Date();st.cal={y:t.getFullYear(),m:t.getMonth()};renderView();}
 
 /* ── Map tile styles ── */
 const MAP_STYLES = {
@@ -934,41 +2434,352 @@ async function saveItem(group){
   await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,group_id:group,title,priority:document.getElementById('ni-prio').value,due_date:dueDate,description:document.getElementById('ni-desc').value,assignee_ids})});
   closeModals();toast('הפריט נוצר');await openBoard(st.board.id);
 }
-async function openForms(){
-  let tpls={templates:[]};try{tpls=await api('/api/forms/templates');}catch(e){}
-  showModal(`<h2>טפסים עירוניים</h2><div class="mbody">${tpls.templates.map(t=>`<div class="ai-act" style="text-align:right;margin-bottom:10px" onclick="loadForm('${t.id}')"><i class="fa-solid fa-file-lines" style="display:inline;margin-inline-end:8px"></i> ${esc(t.name)} <span style="color:var(--text-light);font-size:12px">(${t.fields_count} שדות)</span></div>`).join('')||'<div class="empty">אין טפסים</div>'}</div>`);
+
+/* ============ groups (קבוצות) ============ */
+const GROUP_COLORS=['#0073ea','#00c875','#fdab3d','#e2445c','#579bfc','#5559df','#ff158a','#9d50dd','#037f4c','#00a3d7','#ffcb00','#808080'];
+async function addGroup(){
+  try{
+    await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({board_id:st.board.id,name:'קבוצה חדשה',color:GROUP_COLORS[(st.board.groups||[]).length%GROUP_COLORS.length]})});
+    toast('קבוצה נוספה');await openBoard(st.board.id);
+  }catch(e){toast('שגיאה ביצירת קבוצה');}
 }
-async function loadForm(id){
-  const f=await api('/api/forms/templates/'+id);
-  window._formFields=f.fields.map(x=>x.id);
-  showModal(`<h2>${esc(f.name)}</h2><div class="mbody">${f.fields.map(fl=>`
-    <div class="field"><label>${esc(fl.label)}${fl.required?' *':''}</label>
-    ${fl.type==='textarea'?`<textarea id="f-${fl.id}" rows="3"></textarea>`:
-      fl.type==='select'?`<select id="f-${fl.id}">${(fl.options||[]).map(o=>`<option>${esc(o)}</option>`).join('')}</select>`:
-      `<input id="f-${fl.id}" type="${(fl.type==='file'||fl.type==='location')?'text':fl.type}" ${(fl.type==='file'||fl.type==='location')?'placeholder="(דמו)"':''}>`}</div>`).join('')}
-  </div><div class="mfoot"><button class="btn btn-primary" onclick="submitForm('${id}')">שלח</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+function editGroup(gid){
+  const g=(st.board.groups||[]).find(x=>x.id===gid); if(!g)return;
+  const groups=(st.board.groups||[]).slice().sort((a,b)=>a.position-b.position);
+  const idx=groups.findIndex(x=>x.id===gid);
+  window._gColor=g.color||'#0073ea';
+  showModal(`<h2>עריכת קבוצה</h2><div class="mbody">
+    <div class="field"><label>שם הקבוצה</label><input id="g-name" value="${esc(g.name)}" onkeydown="if(event.key==='Enter')saveGroup(${gid})"></div>
+    <div class="field"><label>צבע</label><div class="color-grid" id="g-colors">${GROUP_COLORS.map(c=>`<button type="button" class="color-sw ${c.toLowerCase()===(g.color||'').toLowerCase()?'sel':''}" style="background:${c}" data-c="${c}" onclick="pickGroupColor('${c}')"></button>`).join('')}</div></div>
+    <div class="field"><label>מיקום בלוח</label><select id="g-pos">${groups.map((x,i)=>`<option value="${i}" ${i===idx?'selected':''}>${i+1}${i===idx?' (נוכחי)':''}</option>`).join('')}</select></div>
+  </div><div class="mfoot">
+    <button class="btn btn-primary" onclick="saveGroup(${gid})">שמור</button>
+    <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    <div style="flex:1"></div>
+    <button class="btn btn-ghost" style="color:var(--red)" onclick="deleteGroup(${gid})"><i class="fa-solid fa-trash"></i> מחק</button>
+  </div>`);
+  setTimeout(()=>{const n=document.getElementById('g-name');if(n){n.focus();n.select();}},30);
 }
-async function submitForm(id){
-  const data={};(window._formFields||[]).forEach(i=>{const e=document.getElementById('f-'+i);if(e)data[i]=e.value;});
-  await api('/api/forms/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template_id:id,form_data:data})});
-  closeModals();toast('הטופס נשלח ונוצרה משימה');
+function pickGroupColor(c){window._gColor=c;document.querySelectorAll('#g-colors .color-sw').forEach(b=>b.classList.toggle('sel',(b.dataset.c||'').toLowerCase()===c.toLowerCase()));}
+async function saveGroup(gid){
+  const name=(document.getElementById('g-name').value||'').trim()||'ללא שם';
+  const color=window._gColor;
+  const newIdx=+document.getElementById('g-pos').value;
+  try{
+    await api('/api/groups/'+gid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,color})});
+    const groups=(st.board.groups||[]).slice().sort((a,b)=>a.position-b.position);
+    const cur=groups.findIndex(x=>x.id===gid);
+    if(cur!==newIdx){
+      const [m]=groups.splice(cur,1); groups.splice(newIdx,0,m);
+      await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:groups.map(x=>x.id)})});
+    }
+    closeModals();toast('הקבוצה עודכנה');await openBoard(st.board.id);
+  }catch(e){toast('שגיאה בשמירה');}
 }
+async function deleteGroup(gid){
+  if(!confirm('למחוק את הקבוצה? המשימות שבה יעברו ל״ללא קבוצה״.'))return;
+  try{
+    await api('/api/groups/'+gid,{method:'DELETE'});
+    closeModals();toast('הקבוצה נמחקה');await openBoard(st.board.id);
+  }catch(e){toast('שגיאה במחיקה');}
+}
+
+/* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */
+const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',tags:'תגיות',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
+function formSchema(){
+  const f=[
+    {key:'title',label:'שם הפריט',type:'text',locked:true},
+    {key:'assignees',label:'אחראים',type:'people'},
+    {key:'status',label:'סטטוס',type:'status'},
+    {key:'priority',label:'עדיפות',type:'priority'},
+    {key:'due_date',label:'תאריך יעד',type:'date'},
+    {key:'tags',label:'תגיות',type:'tags'},
+  ];
+  customColumns().forEach(c=>{ if(c.type!=='formula') f.push({key:c.id,label:c.title,type:c.type,col:c}); });
+  return f;
+}
+function currentForm(){
+  const schema=formSchema(), byKey=Object.fromEntries(schema.map(f=>[f.key,f]));
+  const saved=(st.board.form&&st.board.form.fields)||null;
+  if(!saved) return schema.map(f=>({...f,required:f.key==='title',visible:true}));
+  const out=[], used=new Set();
+  saved.forEach(sf=>{ const base=byKey[sf.key]; if(base){ out.push({...base,required:!!sf.required,visible:sf.visible!==false,min:sf.min,max:sf.max}); used.add(sf.key); }});
+  schema.forEach(f=>{ if(!used.has(f.key)) out.push({...f,required:f.key==='title',visible:true}); });
+  out.sort((a,b)=>(a.key==='title'?-1:b.key==='title'?1:0));
+  return out;
+}
+const Forms={
+  fields:[],
+  isAdmin(){ return st.board&&st.board.my_role==='admin'; },
+  open(){ if(!st.board)return; this.fields=currentForm(); if(this.isAdmin())this.builder(); else this.fill(); },
+  builder(){
+    showModal(`<h2><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> מחולל טפסים — ${esc(st.board.name)}</h2>
+      <div class="mbody">
+        <div id="fb-list">${this.builderRows()}</div>
+      </div>
+      <div class="mfoot">
+        <button class="btn btn-primary" onclick="Forms.save()"><i class="fa-solid fa-floppy-disk"></i> שמור טופס</button>
+        <button class="btn btn-ghost" onclick="Forms.fill(true)"><i class="fa-solid fa-eye"></i> תצוגה מקדימה</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost" onclick="Forms.reset()">איפוס</button>
+      </div>`);
+    this.attachSort();
+  },
+  builderRows(){
+    return this.fields.map((f,i)=>`<div class="fb-row" data-key="${f.key}">
+      <i class="fa-solid fa-grip-vertical fb-drag ${f.locked?'locked':''}"></i>
+      <div class="fb-info"><div class="fb-label">${esc(f.label)}</div><div class="fb-type">${FIELD_TYPE_HE[f.type]||f.type}${['people','tags','dropdown'].includes(f.type)?' · בחירה מרובה':(f.type==='status'||f.type==='priority')?' · ערך אחד':''}</div></div>
+      ${f.type==='date'?`<div class="fb-constraint"><input type="date" title="מתאריך" value="${f.min||''}" onchange="Forms.setCon(${i},'min',this.value)"><span>–</span><input type="date" title="עד תאריך" value="${f.max||''}" onchange="Forms.setCon(${i},'max',this.value)"></div>`:''}
+      <label class="fb-tog" title="שדה חובה"><input type="checkbox" ${f.required?'checked':''} ${f.locked?'disabled':''} onchange="Forms.set(${i},'required',this.checked)"> חובה</label>
+      <label class="fb-tog" title="הצג בטופס"><input type="checkbox" ${f.visible?'checked':''} ${f.locked?'disabled':''} onchange="Forms.set(${i},'visible',this.checked)"> מוצג</label>
+    </div>`).join('');
+  },
+  set(i,k,v){ this.fields[i][k]=v; },
+  setCon(i,k,v){ this.fields[i][k]=v||undefined; },
+  attachSort(){ const el=document.getElementById('fb-list'); if(!el||!window.Sortable)return;
+    new Sortable(el,{handle:'.fb-drag',draggable:'.fb-row',filter:'.locked',animation:150,ghostClass:'sortable-ghost',onEnd:()=>{
+      const order=[...el.querySelectorAll('.fb-row')].map(r=>r.dataset.key);
+      this.fields.sort((a,b)=>order.indexOf(a.key)-order.indexOf(b.key));
+      this.fields.sort((a,b)=>(a.key==='title'?-1:b.key==='title'?1:0));
+    }}); },
+  async save(){
+    const fields=this.fields.map(f=>({key:f.key,required:!!f.required,visible:f.visible!==false,min:f.min,max:f.max}));
+    try{ await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({form:{fields}})});
+      st.board.form={fields}; toast('הטופס נשמר'); closeModals(); }
+    catch(e){ toast('רק מנהל לוח יכול לשמור טופס'); }
+  },
+  reset(){ this.fields=formSchema().map(f=>({...f,required:f.key==='title',visible:true})); document.getElementById('fb-list').innerHTML=this.builderRows(); this.attachSort(); },
+  fill(preview){
+    const visible=this.fields.filter(f=>f.visible!==false);
+    showModal(`<h2><i class="fa-solid fa-file-lines" style="color:var(--primary)"></i> ${esc(st.board.name)} — טופס חדש${preview?' · תצוגה מקדימה':''}</h2>
+      <div class="mbody">${visible.map(f=>this.fieldInput(f)).join('')||'<div class="empty">אין שדות מוצגים</div>'}</div>
+      <div class="mfoot">
+        <button class="btn btn-primary" onclick="Forms.submit(${preview?'true':'false'})"><i class="fa-solid fa-paper-plane"></i> ${preview?'שליחה (הדגמה)':'צור פריט'}</button>
+        <button class="btn btn-ghost" onclick="${this.isAdmin()?'Forms.builder()':'closeModals()'}">${this.isAdmin()?'חזרה לעריכה':'ביטול'}</button>
+      </div>`);
+  },
+  fieldInput(f){
+    const req=f.required?' <span style="color:var(--red)">*</span>':'', id='ff-'+f.key;
+    let inp='';
+    if(f.type==='text') inp=`<input id="${id}" ${f.key==='title'?'placeholder="שם הפריט…"':''}>`;
+    else if(f.type==='number') inp=`<input id="${id}" type="number">`;
+    else if(f.type==='date') inp=`<input id="${id}" type="date" ${f.min?`min="${f.min}"`:''} ${f.max?`max="${f.max}"`:''}>${(f.min||f.max)?`<div style="font-size:11px;color:var(--text-light);margin-top:3px">מוגבל ${f.min?'מ־'+f.min:''} ${f.max?'עד '+f.max:''}</div>`:''}`;
+    else if(f.type==='checkbox') inp=`<input id="${id}" type="checkbox" style="width:auto">`;
+    else if(f.type==='rating') inp=`<select id="${id}"><option value="">—</option>${[1,2,3,4,5].map(n=>`<option value="${n}">${'★'.repeat(n)}</option>`).join('')}</select>`;
+    else if(f.type==='status') inp=`<select id="${id}">${Object.entries(STATUS).map(([k,v])=>`<option value="${k}">${v.he}</option>`).join('')}</select>`;
+    else if(f.type==='priority') inp=`<select id="${id}">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select>`;
+    else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${(st.users||[]).map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${esc(initials(u.name))}</span> ${esc(u.name)}</label>`).join('')}</div>`;
+    else if(f.type==='tags') inp=`<input id="${id}" placeholder="מופרד בפסיקים">`;
+    else if(f.type==='dropdown') inp=`<div class="ff-multi" id="${id}">${((f.col&&f.col.options)||[]).map(o=>`<label class="ff-chip"><input type="checkbox" value="${esc(o)}"> ${esc(o)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין אפשרויות בעמודה</span>'}</div>`;
+    else inp=`<input id="${id}" placeholder="(${FIELD_TYPE_HE[f.type]||f.type})">`;
+    return `<div class="field"><label>${esc(f.label)}${req}</label>${inp}</div>`;
+  },
+  async submit(preview){
+    const payload={board_id:st.board.id,custom_fields:{}}, missing=[];
+    const visible=this.fields.filter(f=>f.visible!==false);
+    for(const f of visible){
+      const el=document.getElementById('ff-'+f.key); if(!el)continue;
+      let val=null;
+      if(f.type==='people'||f.type==='dropdown'){ val=[...el.querySelectorAll('input:checked')].map(x=>f.type==='people'?+x.value:x.value); if(!val.length)val=null; }
+      else if(f.type==='checkbox'){ val=el.checked?true:null; }
+      else if(f.type==='tags'){ val=(el.value||'').split(',').map(s=>s.trim()).filter(Boolean); if(!val.length)val=null; }
+      else if(f.type==='rating'||f.type==='number'){ val=el.value===''?null:Number(el.value); }
+      else { val=el.value||null; }
+      if(f.required && (val==null||val===''||(Array.isArray(val)&&!val.length))){ missing.push(f.label); continue; }
+      if(f.key==='title') payload.title=val;
+      else if(f.key==='assignees') payload.assignee_ids=val||[];
+      else if(f.key==='status') payload.status=val;
+      else if(f.key==='priority') payload.priority=val;
+      else if(f.key==='due_date') payload.due_date=val?new Date(val+'T12:00:00').toISOString():null;
+      else if(f.key==='tags') payload.tags=val||[];
+      else if(val!=null) payload.custom_fields[f.key]=val;
+    }
+    if(missing.length){ toast('חסרים שדות חובה: '+missing.join(', ')); return; }
+    if(preview){ toast('תצוגה מקדימה — לא נוצר פריט'); closeModals(); return; }
+    if(!payload.title){ toast('צריך שם לפריט'); return; }
+    try{ await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(payload)}); closeModals(); toast('הפריט נוצר מהטופס'); await openBoard(st.board.id); }
+    catch(e){ toast('שגיאה ביצירת הפריט'); }
+  },
+};
+function openForms(){ Forms.open(); }
+
+/* ============ Item Conversation (שיחה / קבצים / לוגים) ============ */
+const fdatetime = d=>d?new Date(d).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
+const Chat = {
+  taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'',
+  open(id){
+    this.taskId=id; this.task=findAnyTask(id); this.tabName='chat';
+    this.replyTo=null; this.atts=[]; this.mentions=[];
+    document.getElementById('chat-panel').classList.add('open');
+    document.getElementById('chat-overlay').classList.add('open');
+    document.getElementById('chat-sub').textContent=this.task?this.task.title:'';
+    const pb=document.getElementById('chat-perm'); if(pb)pb.style.display=(st.board&&st.board.my_role==='admin')?'inline-flex':'none';
+    this.setTabUI(); this.render();
+  },
+  close(){ document.getElementById('chat-panel').classList.remove('open'); document.getElementById('chat-overlay').classList.remove('open'); this.taskId=null; },
+  setTabUI(){ document.querySelectorAll('.chat-tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===this.tabName)); },
+  tab(name){ this.tabName=name; this.setTabUI(); this.render(); },
+  async render(){
+    const body=document.getElementById('chat-body'); if(!this.taskId)return;
+    if(this.tabName==='chat')return this.renderChat(body);
+    body.innerHTML='<div class="spin"></div>';
+    if(this.tabName==='files')return this.renderFiles(body);
+    if(this.tabName==='logs')return this.renderLogs(body);
+  },
+  // ---- conversation ----
+  async renderChat(body){
+    try{ const d=await api('/api/tasks/'+this.taskId+'/comments'); this.comments=d.comments||[]; }catch(e){ this.comments=[]; }
+    const list=this.comments.length? this.comments.map(c=>this.commentHTML(c)).join('')
+      : '<div class="empty" style="padding:34px"><i class="fa-regular fa-comments"></i><div>אין הודעות עדיין</div></div>';
+    body.innerHTML=`<div class="chat-list">${list}</div>${canComment()?this.composerHTML():`<div class="chat-noperm"><i class="fa-solid fa-lock"></i> ${st.me&&st.me.role==='viewer'?'למשתמש הרשאת צפייה בלבד':'הלוח מוגדר לצפייה בלבד'} — אין אפשרות להגיב</div>`}`;
+    this.renderAtts();
+  },
+  composerHTML(){
+    return `<div class="composer">
+      ${this.replyTo?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
+      <div class="comp-tools">
+        <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
+        <button title="צ'ק-ליסט" onclick="Chat.insert('[ ] ')"><i class="fa-solid fa-square-check"></i></button>
+        <button title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
+        <button title="אימוג'י" onclick="Chat.emojiMenu(event)"><i class="fa-regular fa-face-smile"></i></button>
+        <button title="הדבק קישור" onclick="Chat.addLink()"><i class="fa-solid fa-link"></i></button>
+        <button title="צרף קובץ מהמחשב" onclick="Chat.attach()"><i class="fa-solid fa-paperclip"></i></button>
+      </div>
+      <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה)" onkeydown="Chat.keydown(event)"></textarea>
+      <div class="comp-atts" id="comp-atts"></div>
+      <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
+    </div>`;
+  },
+  commentHTML(c,isReply){
+    const me=meId(), liked=(c.likes||[]).includes(me);
+    const canDel=c.user_id===me||(st.me&&(st.me.role==='admin'||st.me.role==='manager'));
+    const replies=(c.replies||[]).map(r=>this.commentHTML(r,true)).join('');
+    return `<div class="cmt ${isReply?'cmt-reply':''}">
+      <span class="av av-click" style="background:var(--primary)" title="הצג פרופיל" onclick="Profile.open(${c.user_id})">${esc(initials(c.user_name))}</span>
+      <div class="cmt-main">
+        <div class="cmt-head"><b>${esc(c.user_name)}</b><span class="cmt-role">${ROLE_HE[c.user_role]||''}</span><span class="cmt-time">${fdatetime(c.created_at)}</span></div>
+        <div class="cmt-body">${this.renderContent(c.content,c.id)}</div>
+        ${(c.attachments||[]).length?`<div class="cmt-atts">${c.attachments.map(f=>`<a class="file-chip" href="${esc(f.url)}" target="_blank"><i class="fa-solid fa-paperclip"></i> ${esc(f.name)}</a>`).join('')}</div>`:''}
+        <div class="cmt-actions">
+          <button class="${liked?'liked':''}" onclick="Chat.like(${c.id})"><i class="fa-${liked?'solid':'regular'} fa-thumbs-up"></i> ${(c.likes||[]).length||''}</button>
+          ${!isReply&&canComment()?`<button onclick="Chat.startReply(${c.id},'${esc((c.user_name||'').replace(/['\\]/g,''))}')"><i class="fa-solid fa-reply"></i> הגב</button>`:''}
+          ${canDel?`<button onclick="Chat.del(${c.id})"><i class="fa-regular fa-trash-can"></i></button>`:''}
+        </div>
+        ${replies?`<div class="cmt-replies">${replies}</div>`:''}
+      </div>
+    </div>`;
+  },
+  renderContent(text,cid){
+    return (text||'').split('\n').map(line=>{
+      const m=line.match(/^\[( |x|X)\]\s?(.*)$/);
+      if(m){const done=m[1].toLowerCase()==='x';return `<label class="chk ${done?'done':''}"><input type="checkbox" ${done?'checked':''} onchange="Chat.toggleChk(${cid},this)"><span>${this.inline(m[2])}</span></label>`;}
+      if(/^[•\-]\s/.test(line))return `<div class="bullet">${this.inline(line.replace(/^[•\-]\s/,''))}</div>`;
+      return `<div>${this.inline(line)||'&nbsp;'}</div>`;
+    }).join('');
+  },
+  inline(s){ s=esc(s); s=s.replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>'); s=s.replace(/@([^\s@,.]{1,30})/g,'<span class="mention">@$1</span>'); return s; },
+  keydown(e){ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();this.post();} },
+  insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); },
+  startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
+  cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
+  mentionMenu(e){ e.stopPropagation(); this._float(e.currentTarget,(st.users||[]).map(u=>`<button onclick="Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${esc(initials(u.name))}</span> ${esc(u.name)}</button>`).join('')); },
+  pickMention(id){ const u=(st.users||[]).find(x=>x.id===id); if(!u)return; if(!this.mentions.includes(id))this.mentions.push(id); this.insert('@'+u.name+' '); closeCellPops(); },
+  emojiMenu(e){ e.stopPropagation(); this._float(e.currentTarget,'<div class="emoji-grid">'+EMOJIS.map(x=>`<button onclick="Chat.insert('${x} ');closeCellPops()">${x}</button>`).join('')+'</div>'); },
+  addLink(){ const url=prompt('הדבק קישור:'); if(url)this.insert(url+' '); },
+  attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=async()=>{const f=inp.files[0];if(!f)return;const fd=new FormData();fd.append('file',f);try{const r=await fetch('/api/upload',{method:'POST',body:fd});const data=await r.json();this.atts.push(data);this.renderAtts();toast('קובץ צורף');}catch(e){toast('שגיאה בהעלאה');}}; inp.click(); },
+  renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return; el.innerHTML=this.atts.map((f,i)=>`<span class="file-chip">${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`).join(''); },
+  rmAtt(i){ this.atts.splice(i,1); this.renderAtts(); },
+  _float(anchor,html){ closeCellPops(); const p=document.createElement('div'); p.className='cell-pop chat-float'; p.innerHTML=html; anchor.appendChild(p); setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0); },
+  async post(){
+    const ta=document.getElementById('comp-text'); const content=(ta?ta.value:'').trim();
+    if(!content&&!this.atts.length){toast('הודעה ריקה');return;}
+    try{
+      await api('/api/tasks/'+this.taskId+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({content,parent_id:this.replyTo,mentions:this.mentions,attachments:this.atts})});
+      this.atts=[]; this.mentions=[]; this.replyTo=null; await this.bump(); this.renderChat(document.getElementById('chat-body'));
+    }catch(e){ toast(String(e.message||'').includes('403')?'אין הרשאת תגובה':'שגיאה בשליחה'); }
+  },
+  async like(id){ try{ await api('/api/comments/'+id+'/like',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); this.renderChat(document.getElementById('chat-body')); }catch(e){toast('שגיאה');} },
+  del(id){ askConfirm('האם אתה בטוח שברצונך למחוק?',async()=>{ try{await api('/api/comments/'+id+'?user_id='+meId(),{method:'DELETE'});await this.bump();this.renderChat(document.getElementById('chat-body'));}catch(e){toast('אין הרשאה למחוק');} },{title:'מחיקת תגובה',confirmText:'מחק'}); },
+  async toggleChk(cid,cb){
+    const find=(arr)=>{for(const c of arr){if(c.id===cid)return c;const r=find(c.replies||[]);if(r)return r;}return null;};
+    const c=find(this.comments); if(!c)return;
+    const items=[...cb.closest('.cmt-body').querySelectorAll('.chk')]; const idx=items.indexOf(cb.closest('.chk'));
+    let n=-1; const lines=c.content.split('\n').map(l=>{ if(/^\[( |x|X)\]/.test(l)){n++; if(n===idx)return (cb.checked?'[x] ':'[ ] ')+l.replace(/^\[( |x|X)\]\s?/,''); } return l; });
+    try{ await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({content:lines.join('\n')})}); this.renderChat(document.getElementById('chat-body')); }catch(e){toast('שגיאה');}
+  },
+  async bump(){ try{ const d=await api('/api/tasks/'+this.taskId+'/comments'); const t=findAnyTask(this.taskId); if(t)t.comment_count=d.count; if(st.view==='table')renderView(); }catch(e){} },
+  // ---- files ----
+  async renderFiles(body){
+    let d={files:[]}; try{ d=await api('/api/tasks/'+this.taskId+'/files'); }catch(e){}
+    body.innerHTML=d.files.length? `<div class="files-list">${d.files.map(f=>`
+      <a class="file-row" href="${esc(f.url)}" target="_blank">
+        <i class="fa-solid fa-file" style="color:var(--primary)"></i>
+        <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}</div></div>
+        <i class="fa-solid fa-download" style="color:var(--text-light)"></i>
+      </a>`).join('')}</div>`
+      : '<div class="empty" style="padding:44px"><i class="fa-regular fa-folder-open"></i><div>אין קבצים בפריט</div></div>';
+  },
+  // ---- logs ----
+  async renderLogs(body){
+    const qs=[]; if(this.logUser)qs.push('user_id='+this.logUser); if(this.logDate)qs.push('date='+this.logDate);
+    let d={activity:[]}; try{ d=await api('/api/tasks/'+this.taskId+'/activity'+(qs.length?'?'+qs.join('&'):'')); }catch(e){}
+    const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
+    const rows=d.activity.map(a=>`<div class="log-row">
+      <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':'fa-pen'}"></i></div>
+      <div style="flex:1;min-width:0"><div class="log-txt"><b>${esc(a.user_name)}</b> ${this.logText(a)}</div><div class="log-time">${fdatetime(a.created_at)}</div></div>
+      ${a.can_undo&&isMgr?`<button class="log-undo" onclick="Chat.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
+    </div>`).join('')||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות</div></div>';
+    body.innerHTML=`<div class="log-filters">
+        <select onchange="Chat.logUser=this.value;Chat.render()"><option value="">כל המשתמשים</option>${(st.users||[]).map(u=>`<option value="${u.id}" ${this.logUser==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
+        <input type="date" value="${this.logDate}" onchange="Chat.logDate=this.value;Chat.render()">
+        <button class="btn btn-ghost" onclick="Chat.exportLogs()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא</button>
+      </div><div class="logs-list">${rows}</div>`;
+  },
+  logText(a){
+    if(a.action==='comment')return a.field==='reply'?'הגיב/ה בשרשור':'הוסיף/ה תגובה';
+    if(a.action==='undo')return 'ביטל/ה שינוי ב'+this.fieldHe(a.field);
+    return `שינה/תה ${this.fieldHe(a.field)}: <span class="log-old">${esc(this.transVal(a.field,a.old))}</span> ← <span class="log-new">${esc(this.transVal(a.field,a.new))}</span>`;
+  },
+  fieldHe(f){ if(!f)return ''; const m={title:'כותרת',status:'סטטוס',priority:'עדיפות',due_date:'תאריך יעד',tags:'תגיות'}; if(m[f])return m[f]; if(f.startsWith('col:')){const c=customColumns().find(x=>x.id===f.slice(4));return 'עמודה '+(c?'"'+c.title+'"':'');} return f; },
+  transVal(f,v){ if(v==null||v==='')return '—'; v=String(v).replace(/^"|"$/g,'');
+    if(f==='status'&&STATUS[v])return STATUS[v].he;
+    if(f==='priority'&&PRIORITY[v])return PRIORITY[v].he;
+    if(f==='due_date'){const d=new Date(v);if(!isNaN(d))return d.toLocaleDateString('he-IL');}
+    return this.short(v); },
+  short(v){ if(v==null||v==='')return '—'; v=String(v).replace(/^"|"$/g,''); return v.length>26?v.slice(0,25)+'…':v; },
+  exportLogs(){ window.open('/api/tasks/'+this.taskId+'/activity/export','_blank'); },
+  async undo(logId){ try{ await api('/api/activity/'+logId+'/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); toast('השינוי בוטל'); if(st.board){const b=await api('/api/boards/'+st.board.id);st.board=b;} this.render(); if(st.view==='table')renderView(); }catch(e){toast('רק מנהל יכול לבטל'); } },
+};
 
 /* ============ AI (monday-AI style) ============ */
 const AI = {
   tabName:'chat', history:[],
-  open(){document.getElementById('ai-panel').classList.add('open');loadModels().then(()=>{const s=document.getElementById('ai-model');if(s)s.innerHTML=modelOptions();});this.render();},
+  open(){document.getElementById('ai-panel').classList.add('open');loadModels().then(()=>{const s=document.getElementById('ai-model');if(s)s.innerHTML=modelOptions();this.applyAvail();});this.render();},
   close(){document.getElementById('ai-panel').classList.remove('open');},
+  applyAvail(){
+    const avail=aiAvailable();
+    const inp=document.getElementById('ai-input');
+    const btn=document.querySelector('#ai-input-wrap button');
+    const sel=document.getElementById('ai-model');
+    if(inp){inp.disabled=!avail;inp.placeholder=avail?'שאל את הסוכן...':'שירות ה-AI אינו זמין כרגע';}
+    if(btn)btn.disabled=!avail;
+    if(sel)sel.disabled=!avail;
+    this.render();
+  },
+  banner(){return aiAvailable()?'':'<div class="ai-offline"><i class="fa-solid fa-plug-circle-xmark"></i> <div><b>שירות ה-AI אינו מחובר</b><div style="font-size:12px;margin-top:3px">לא נמצא מודל פעיל בשרת. אפשר לחבר מודל ענן או מקומי, ואז הפעולות יופעלו אוטומטית.</div></div></div>';},
   tab(t){this.tabName=t;document.querySelectorAll('.ai-tab').forEach(x=>x.classList.toggle('active',x.dataset.ait===t));document.getElementById('ai-input-wrap').style.display=t==='chat'?'flex':'none';this.render();},
   render(){
     const b=document.getElementById('ai-body');
+    const bn=this.banner();
     if(this.tabName==='chat'){
-      b.innerHTML=this.history.length?this.history.map(m=>`<div class="msg ${m.role}">${esc(m.text)}</div>`).join(''):
-        `<div class="empty" style="padding:30px"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i><div>שאל אותי כל דבר על הלוח</div></div>`;
+      b.innerHTML=bn+(this.history.length?this.history.map(m=>`<div class="msg ${m.role}">${esc(m.text)}</div>`).join(''):
+        `<div class="empty" style="padding:30px"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i><div>שאל אותי כל דבר על הלוח</div></div>`);
       b.scrollTop=b.scrollHeight;
     } else if(this.tabName==='actions'){
       const acts=[['summarize','סיכום הלוח','fa-list'],['prioritize','המלצת עדיפויות','fa-arrow-up-wide-short'],['generate','הצעת משימות','fa-lightbulb'],['risks','זיהוי סיכונים','fa-triangle-exclamation'],['draft','ניסוח הודעה','fa-pen'],['categorize','קטלוג פניות','fa-tags'],['train','אימון מודל מקומי','fa-graduation-cap'],['terminal','מצב טרמינל','fa-terminal']];
-      b.innerHTML='<div class="ai-actions">'+acts.map(a=>`<div class="ai-act" onclick="AI.quick('${a[0]}')"><i class="fa-solid ${a[2]}"></i>${a[1]}</div>`).join('')+'</div>';
+      b.innerHTML=bn+'<div class="ai-actions">'+acts.map(a=>`<div class="ai-act" onclick="AI.quick('${a[0]}')"><i class="fa-solid ${a[2]}"></i>${a[1]}</div>`).join('')+'</div>';
     } else {
       b.innerHTML='<div class="spin"></div>';this.loadAgents();
     }
@@ -989,12 +2800,13 @@ const AI = {
     const prompts={summarize:'סכם את מצב הלוח: מה הושלם, מה תקוע, ומה דחוף.',prioritize:'אילו משימות כדאי לתעדף קודם ולמה?',generate:'הצע 5 משימות נוספות רלוונטיות ללוח.',risks:'זהה סיכונים ומשימות באיחור.',draft:'נסח עדכון סטטוס קצר לצוות על הלוח.',categorize:'קטלג את הפניות לפי נושא.'};
     this.open();this.tab('chat');this.add('user',prompts[kind]||kind);this.add('bot','חושב...');const r=await this.callAI(prompts[kind]||kind);this.history.pop();this.add('bot',r);
   },
-  async callAI(prompt){try{const r=await api('/api/ai/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,context:this.ctx(),model:MODEL.name})});return r.response||'אין תשובה';}catch(e){return 'ה-AI לא זמין כרגע (נדרש מודל מקומי פעיל).';}},
+  async callAI(prompt){try{const r=await api('/api/ai/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,context:this.ctx(),model:MODEL.name,user_id:meId()})});return r.response||'אין תשובה';}catch(e){return 'ה-AI לא זמין כרגע (נדרש מודל מקומי פעיל).';}},
   async callSwarm(agent,task){try{const r=await api('/api/swarm/think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent,task,context:this.ctx(),mode:'single'})});return (r.result||r.response||JSON.stringify(r)).toString().slice(0,2000);}catch(e){return 'הסוכן לא זמין כרגע.';}},
 };
 
 /* ============ local LLM models ============ */
-const MODEL = {name:'gemma4-coder', list:[], loaded:false};
+const MODEL = {name:'gemma4-coder', list:[], loaded:false, available:true};
+function aiAvailable(){return MODEL.available!==false;}
 
 /* Model alias reference:
    קרמר = DeepSeek
@@ -1002,7 +2814,7 @@ const MODEL = {name:'gemma4-coder', list:[], loaded:false};
 */
 async function loadModels(){
   if(MODEL.loaded)return;
-  try{const r=await api('/api/ai/models');MODEL.list=r.models||[];if(r.default)MODEL.name=r.default;else if(MODEL.list[0])MODEL.name=MODEL.list[0].name;MODEL.loaded=true;}catch(e){}
+  try{const r=await api('/api/ai/models');MODEL.list=r.models||[];MODEL.available=(r.available!==false)&&MODEL.list.length>0;if(r.default)MODEL.name=r.default;else if(MODEL.list[0])MODEL.name=MODEL.list[0].name;MODEL.loaded=true;}catch(e){MODEL.available=false;MODEL.loaded=true;}
 }
 function modelOptions(){return MODEL.list.length?MODEL.list.map(m=>`<option value="${esc(m.name)}" ${m.name===MODEL.name?'selected':''}>${esc(m.name)}${m.size?' · '+esc(m.size):''}</option>`).join(''):`<option>${esc(MODEL.name)} (לא זמין)</option>`;}
 
@@ -1061,7 +2873,7 @@ const Term = {
   async cmd_agents(){(await api('/api/swarm/agents')).agents.forEach(a=>this.print(`  ${a.name} — ${a.role}`));},
   async cmd_models(){await loadModels();document.getElementById('term-model').innerHTML=modelOptions();if(!MODEL.list.length)return this.print('אין מודלים מקומיים (ollama לא זמין/לא מותקן)','warn');MODEL.list.forEach(m=>this.print(`  ${m.name===MODEL.name?'*':' '} ${m.name}  ${m.size||''}`,m.name===MODEL.name?'acc':null));},
   cmd_model(a){if(!a)return this.print('מודל פעיל: '+MODEL.name,'mut');MODEL.name=a;const s=document.getElementById('term-model');if([...s.options].some(o=>o.value===a))s.value=a;this.print('✓ מודל פעיל: '+a,'ok');},
-  async cmd_ai(a){if(!a)return this.print('שימוש: ai <שאלה>','warn');this.print('… חושב ('+MODEL.name+')','mut');const r=await api('/api/ai/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:a,context:AI.ctx(),model:MODEL.name})});this.print(r.response||'אין תשובה',r.success?null:'err');},
+  async cmd_ai(a){if(!a)return this.print('שימוש: ai <שאלה>','warn');this.print('… חושב ('+MODEL.name+')','mut');const r=await api('/api/ai/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:a,context:AI.ctx(),model:MODEL.name,user_id:meId()})});this.print(r.response||'אין תשובה',r.success?null:'err');},
   cmd_train(a){Train.open(a?+a:(st.board&&st.board.id));},
 };
 
@@ -1091,7 +2903,23 @@ const Train = {
 
 /* ============ modal helpers ============ */
 function showModal(html){const m=document.getElementById('modal');m.innerHTML=html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
-function closeModals(){document.getElementById('modal').classList.remove('open');document.getElementById('overlay').classList.remove('open');}
+function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal');document.getElementById('overlay').classList.remove('open');}
+/* styled confirmation dialog (replaces native confirm) */
+function askConfirm(message,onYes,opts){
+  opts=opts||{};
+  window._confirmYes=async()=>{closeModals();try{await onYes();}catch(e){}};
+  showModal(`<div class="confirm-box">
+    <div class="confirm-ic ${opts.danger===false?'':'danger'}"><i class="fa-solid ${opts.icon||'fa-triangle-exclamation'}"></i></div>
+    <h2 style="border:none;padding:0 0 6px;text-align:center">${esc(opts.title||'אישור')}</h2>
+    <div class="confirm-msg">${esc(message)}</div>
+    ${opts.note?`<div class="confirm-note">${esc(opts.note)}</div>`:''}
+    <div class="confirm-actions">
+      <button class="btn ${opts.danger===false?'btn-primary':'btn-danger'}" onclick="window._confirmYes()">${esc(opts.confirmText||'מחק')}</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>
+  </div>`);
+  document.getElementById('modal').classList.add('confirm-modal');
+}
 
 async function apiGet(path){
   try{
@@ -1465,8 +3293,13 @@ async function vGantt(el){
   if(!data||!data.items||!data.items.length){el.innerHTML='<div class="empty"><i class="fa-solid fa-chart-gantt"></i><div>אין נתוני Gantt</div></div>';return;}
 
   const items=data.items;
-  const startStr=data.start_date||items.reduce((e,i)=>i.start_date<e?i.start_date:e,items[0].start_date);
-  const endStr=data.end_date||items.reduce((e,i)=>i.end_date>e?i.end_date:e,items[0].end_date);
+  const dated=items.filter(i=>i.start_date&&i.end_date);
+  if(!dated.length){el.innerHTML='<div class="empty"><i class="fa-solid fa-chart-gantt"></i><div>אין נתוני Gantt עם תאריכים</div></div>';return;}
+  const showSteps=!!st.ganttSteps;
+  const stepCount=items.filter(i=>(i.level||0)>=3).length;
+  const rows=showSteps?items:items.filter(i=>(i.level||0)<=2);
+  const startStr=data.start_date||dated.reduce((e,i)=>i.start_date<e?i.start_date:e,dated[0].start_date);
+  const endStr=data.end_date||dated.reduce((e,i)=>i.end_date>e?i.end_date:e,dated[0].end_date);
   const startDate=new Date(startStr);
   const endDate=new Date(endStr);
   const totalDays=Math.max(1,Math.ceil((endDate-startDate)/(1000*60*60*24)));
@@ -1485,11 +3318,12 @@ async function vGantt(el){
       ${data.name?esc(data.name):'תצוגת Gantt'}
       <span style="font-size:12px;color:var(--text-muted);font-weight:400">${startDate.toLocaleDateString('he-IL')} — ${endDate.toLocaleDateString('he-IL')}</span>
     </h2>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
       <span style="display:flex;align-items:center;gap:4px;font-size:12px"><span style="width:12px;height:12px;border-radius:3px;background:#0073ea;display:inline-block"></span> תוכנית עבודה</span>
       <span style="display:flex;align-items:center;gap:4px;font-size:12px"><span style="width:12px;height:12px;border-radius:3px;background:#579bfc;display:inline-block"></span> מחלקה</span>
       <span style="display:flex;align-items:center;gap:4px;font-size:12px"><span style="width:12px;height:12px;border-radius:3px;background:#00c875;display:inline-block"></span> פרויקט</span>
       <span style="display:flex;align-items:center;gap:4px;font-size:12px"><span style="width:12px;height:12px;border-radius:3px;background:#fdab3d;display:inline-block"></span> שלב</span>
+      ${stepCount?`<button class="cal-today ${showSteps?'cur':''}" style="margin-inline-start:auto" onclick="st.ganttSteps=!st.ganttSteps;renderView()"><i class="fa-solid fa-layer-group"></i> ${showSteps?'הסתר שלבים':'הצג שלבים ('+stepCount+')'}</button>`:''}
     </div>
     <div class="gantt-container" id="gantt-chart">
       <div class="gantt-row" style="position:relative;min-height:24px;background:var(--bg)">
@@ -1501,21 +3335,24 @@ async function vGantt(el){
     </div>`;
 
   const container=document.getElementById('gantt-chart');
-  items.forEach(item=>{
-    const itemStart=new Date(item.start_date);
-    const itemEnd=new Date(item.end_date);
-    const leftPct=Math.max(0,((itemStart-startDate)/(1000*60*60*24))/totalDays*100);
-    const widthPct=Math.min(100-leftPct,Math.max(2,((itemEnd-itemStart)/(1000*60*60*24))/totalDays*100));
+  rows.forEach(item=>{
     const indent=item.level||0;
     const color=colorMap[item.type]||'#0073ea';
-
     const row=document.createElement('div');
     row.className='gantt-row';
+    let bar='';
+    if(item.start_date&&item.end_date){
+      const itemStart=new Date(item.start_date), itemEnd=new Date(item.end_date);
+      const leftPct=Math.max(0,((itemStart-startDate)/(1000*60*60*24))/totalDays*100);
+      const widthPct=Math.min(100-leftPct,Math.max(2,((itemEnd-itemStart)/(1000*60*60*24))/totalDays*100));
+      // only print text inside the bar when it is wide enough — avoids the
+      // overflowing label seen on tiny step bars (row label + tooltip suffice)
+      const inBar=widthPct>=8?esc((item.name||'').slice(0,20)):'';
+      bar=`<div class="gantt-item" style="left:${leftPct}%;width:${widthPct}%;background:${color}" title="${esc(item.name||'')}: ${new Date(item.start_date).toLocaleDateString('he-IL')} → ${new Date(item.end_date).toLocaleDateString('he-IL')}">${inBar}</div>`;
+    }
     row.innerHTML=`
       <div class="gantt-label" style="padding-inline-start:${8+indent*16}px;font-weight:${indent===0?'700':'400'};color:${indent===0?'var(--text)':'var(--text-muted)'}">${esc(item.name||'')}</div>
-      <div class="gantt-track">
-        <div class="gantt-item" style="left:${leftPct}%;width:${widthPct}%;background:${color}" title="${esc(item.name||'')}: ${item.start_date} → ${item.end_date}">${esc((item.name||'').slice(0,20))}</div>
-      </div>`;
+      <div class="gantt-track">${bar}</div>`;
     container.appendChild(row);
   });
 }

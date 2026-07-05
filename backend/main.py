@@ -1,12 +1,13 @@
 """
 CityOS — FastAPI Backend Server
 """
-import os, sys, json
+import os, sys, json, uuid, csv, io
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import Response
 import os
 from pydantic import BaseModel
 from sqlalchemy import create_engine
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
 from models import (
-    Organization, Department, User, Board, Group, Task, Comment,
+    Organization, Department, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -43,10 +44,63 @@ async def no_cache_html(request, call_next):
 DB_PATH = os.path.join(os.path.dirname(__file__), "cityos.db")
 engine = init_db(f"sqlite:///{DB_PATH}")
 
+def _migrate():
+    """Lightweight additive migrations for SQLite (create_all won't ALTER)."""
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.execute(text("PRAGMA table_info(comments)"))}
+        for name, ddl in [("parent_id", "INTEGER"), ("mentions", "JSON"), ("likes", "JSON")]:
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE comments ADD COLUMN {name} {ddl}"))
+        tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
+        if "permissions" not in tcols:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN permissions JSON"))
+        # users: job title + contact phone (for the profile card)
+        ucols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)"))}
+        if "title" not in ucols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN title VARCHAR(120)"))
+        if "email_notifications" not in ucols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN email_notifications BOOLEAN DEFAULT 1"))
+        if "notif_prefs" not in ucols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN notif_prefs JSON"))
+        _demo = {
+            1: ("מנהל אגף הנדסה ותשתיות", "050-2345678"),
+            2: ("מנהלת מחלקת תחבורה",     "052-3456789"),
+            3: ("מנהל מחלקת תכנון",       "054-4567890"),
+            4: ("רכזת פרויקטים",          "053-5678901"),
+            5: ("מהנדס ביצוע",            "050-6789012"),
+            6: ("רכזת שירות לתושב",       "052-7890123"),
+            7: ("עובד תחזוקה",            "058-8901234"),
+        }
+        for uid, (title, phone) in _demo.items():
+            conn.execute(text("UPDATE users SET title=COALESCE(title,:t), phone=COALESCE(phone,:p) WHERE id=:id"),
+                         {"t": title, "p": phone, "id": uid})
+_migrate()
+
 # Seed on first run
 from seed import seed_database, seed_work_plan
 seed_database(engine)
 seed_work_plan(engine)
+
+def _seed_memberships():
+    """One-time: give existing boards their members so nothing disappears.
+    New boards start private to their creator (see create_board)."""
+    with Session(engine) as db:
+        users = db.query(User).all()
+        # workspace/environment members
+        if db.query(WorkspaceMember).count() == 0:
+            for u in users:
+                erole = "admin" if u.role in ("admin", "manager") else ("viewer" if u.role == "viewer" else "member")
+                db.add(WorkspaceMember(user_id=u.id, role=erole))
+            db.commit()
+        # board members
+        if db.query(BoardMember).count() == 0:
+            for b in db.query(Board).all():
+                for u in users:
+                    role = "viewer" if u.role == "viewer" else ("admin" if u.role in ("admin", "manager") else "editor")
+                    db.add(BoardMember(board_id=b.id, user_id=u.id, role=role))
+            db.commit()
+_seed_memberships()
 
 def get_db():
     with Session(engine) as session:
@@ -94,9 +148,12 @@ def status():
     return {"status": "ok", "app": "CODE-CAL MISSIONS", "version": "0.1.0"}
 
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(user_id: Optional[int] = None):
     with Session(engine) as db:
-        tasks = db.query(Task).filter(Task.is_archived == False).all()
+        visible = _visible_board_ids(db, user_id)
+        tasks = db.query(Task).filter(
+            Task.is_archived == False, Task.board_id.in_(visible)
+        ).all() if visible else []
         total = len(tasks)
         by_status = {}
         by_priority = {}
@@ -128,13 +185,85 @@ def dashboard():
             "recent_activity": [],
         }
 
+# Views a board can expose. "table" is always present and cannot be removed.
+ALL_VIEWS = ["table", "kanban", "gantt", "dashboard", "ceo", "calendar", "map", "gis"]
+
+def _board_views(b):
+    """Enabled views for a board. New boards start with only the main table;
+    older/seeded boards (no explicit setting) keep all views for compatibility."""
+    s = b.settings or {}
+    v = s.get("views")
+    if not v:
+        return list(ALL_VIEWS)
+    # always keep table first and present
+    out = ["table"] + [x for x in v if x in ALL_VIEWS and x != "table"]
+    return out
+
+def _board_role(db, board_id, user_id):
+    """Board-scoped role (admin/editor/viewer) for a user, or None if not a member."""
+    if user_id is None:
+        return None
+    m = db.query(BoardMember).filter(BoardMember.board_id == board_id,
+                                     BoardMember.user_id == user_id).first()
+    return m.role if m else None
+
+def _is_board_admin(db, board_id, user_id):
+    return _board_role(db, board_id, user_id) == "admin"
+
+def _visible_board_ids(db, user_id):
+    """Set of board IDs a user is allowed to see (membership-based).
+    Mirrors /api/boards visibility so aggregate views (dashboard, CEO,
+    insights) never leak boards the user was not invited to.
+    user_id=None keeps legacy 'all boards' behavior for internal callers."""
+    all_ids = {b for (b,) in db.query(Board.id).filter(Board.is_archived == False).all()}
+    if user_id is None:
+        return all_ids
+    member_ids = {m.board_id for m in db.query(BoardMember).filter(BoardMember.user_id == user_id).all()}
+    return {i for i in all_ids if i in member_ids}
+
+def _ws_role(db, user_id):
+    if user_id is None:
+        return None
+    m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user_id).first()
+    return m.role if m else None
+
+# ── Multi-level permission model (סביבה → לוח → פריט → עמודה) ────────
+def _board_caps(role):
+    """Capabilities implied by a board role."""
+    return {
+        "admin":  {"view", "edit", "delete", "manage"},
+        "editor": {"view", "edit"},
+        "viewer": {"view"},
+    }.get(role, set())
+
+def _item_perm(task, user_id, board_role):
+    """Effective permission on a specific item: none|view|edit|delete.
+    A per-user item override wins over the board role."""
+    ov = (task.permissions or {}).get(str(user_id))
+    if ov in ("none", "view", "edit", "delete"):
+        return ov
+    caps = _board_caps(board_role)
+    return "delete" if "delete" in caps else ("edit" if "edit" in caps else ("view" if "view" in caps else "none"))
+
+def _col_perm(col, user_id, board_role):
+    """Effective permission on a column for a user: none|view|edit."""
+    ov = (col.get("perms") or {}).get(str(user_id))
+    if ov in ("none", "view", "edit"):
+        return ov
+    caps = _board_caps(board_role)
+    return "edit" if "edit" in caps else ("view" if "view" in caps else "none")
+
 @app.get("/api/boards")
-def list_boards():
+def list_boards(user_id: Optional[int] = None):
     with Session(engine) as db:
         boards = db.query(Board).filter(Board.is_archived == False).all()
+        if user_id is not None:
+            # membership-based visibility: you only see boards you were invited to
+            member_ids = {m.board_id for m in db.query(BoardMember).filter(BoardMember.user_id == user_id).all()}
+            boards = [b for b in boards if b.id in member_ids]
         result = []
         for b in boards:
-            task_count = db.query(Task).filter(Task.board_id == b.id).count()
+            task_count = db.query(Task).filter(Task.board_id == b.id, Task.parent_id == None).count()
             dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
             groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
             result.append({
@@ -148,39 +277,66 @@ def list_boards():
             })
         return result
 
+def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, columns=None):
+    assignees = [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in t.assignees] if t.assignees else []
+    subtask_count = db.query(Task).filter(Task.parent_id == t.id).count()
+    comment_count = db.query(Comment).filter(Comment.task_id == t.id).count()
+    my_perm = _item_perm(t, user_id, board_role) if user_id is not None else "delete"
+    cf = dict(t.custom_fields or {})
+    col_perms = {}
+    if user_id is not None:
+        for c in (columns or []):
+            cp = _col_perm(c, user_id, board_role)
+            col_perms[c["id"]] = cp
+            if cp == "none":         # view-restricted column → mask its value
+                cf.pop(c["id"], None)
+    d = {
+        "id": t.id, "board_id": t.board_id, "group_id": t.group_id,
+        "parent_id": t.parent_id,
+        "title": t.title, "description": t.description,
+        "status": t.status.value if hasattr(t.status, 'value') else t.status,
+        "priority": t.priority.value if hasattr(t.priority, 'value') else t.priority,
+        "position": t.position, "due_date": t.due_date,
+        "start_date": t.start_date,
+        "estimated_hours": t.estimated_hours, "actual_hours": t.actual_hours,
+        "location_lat": t.location_lat, "location_lng": t.location_lng,
+        "address": t.address, "tags": t.tags or [],
+        "custom_fields": cf,
+        "permissions": t.permissions or {},
+        "my_perm": my_perm,
+        "col_perms": col_perms,
+        "is_archived": t.is_archived,
+        "created_by": t.created_by,
+        "created_at": t.created_at, "updated_at": t.updated_at,
+        "assignees": assignees,
+        "subtask_count": subtask_count,
+        "comment_count": comment_count,
+    }
+    if with_subs:
+        subs = db.query(Task).filter(Task.parent_id == t.id, Task.is_archived == False).order_by(Task.position).all()
+        subs = [s for s in subs if user_id is None or _item_perm(s, user_id, board_role) != "none"]
+        d["subtasks"] = [_serialize_task(s, db, with_subs=False, user_id=user_id, board_role=board_role, columns=columns) for s in subs]
+    return d
+
 @app.get("/api/boards/{board_id}")
-def get_board(board_id: int):
+def get_board(board_id: int, user_id: Optional[int] = None):
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
             raise HTTPException(404, "Board not found")
+        my_role = _board_role(db, board_id, user_id)
+        if user_id is not None and my_role is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
         groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
-        tasks = db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False).order_by(Task.position).all()
+        # only top-level items as rows; sub-items are nested under their parent
+        tasks = db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False,
+                                      Task.parent_id == None).order_by(Task.position).all()
         dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
-        
-        tasks_out = []
-        for t in tasks:
-            assignees = [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in t.assignees] if t.assignees else []
-            subtask_count = db.query(Task).filter(Task.parent_id == t.id).count()
-            comment_count = db.query(Comment).filter(Comment.task_id == t.id).count()
-            tasks_out.append({
-                "id": t.id, "board_id": t.board_id, "group_id": t.group_id,
-                "title": t.title, "description": t.description,
-                "status": t.status.value if hasattr(t.status, 'value') else t.status,
-                "priority": t.priority.value if hasattr(t.priority, 'value') else t.priority,
-                "position": t.position, "due_date": t.due_date,
-                "start_date": t.start_date,
-                "estimated_hours": t.estimated_hours, "actual_hours": t.actual_hours,
-                "location_lat": t.location_lat, "location_lng": t.location_lng,
-                "address": t.address, "tags": t.tags or [],
-                "custom_fields": t.custom_fields or {},
-                "is_archived": t.is_archived,
-                "created_by": t.created_by,
-                "created_at": t.created_at, "updated_at": t.updated_at,
-                "assignees": assignees,
-                "subtask_count": subtask_count,
-                "comment_count": comment_count,
-            })
+        columns = (b.settings or {}).get("columns", [])
+        # hide items the user has no view permission on
+        if user_id is not None:
+            tasks = [t for t in tasks if _item_perm(t, user_id, my_role) != "none"]
+        tasks_out = [_serialize_task(t, db, user_id=user_id, board_role=my_role, columns=columns) for t in tasks]
 
         return {
             "id": b.id, "name": b.name, "description": b.description,
@@ -188,9 +344,290 @@ def get_board(board_id: int):
             "icon": b.icon, "color": b.color,
             "is_archived": b.is_archived,
             "department_name": dept_name,
+            "views": _board_views(b),
+            "view_only": (b.settings or {}).get("view_only", False),
+            "my_role": my_role,
+            "columns": (b.settings or {}).get("columns", []),
+            "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             "tasks": tasks_out,
         }
+
+@app.post("/api/boards")
+def create_board(data: dict):
+    with Session(engine) as db:
+        # only a system (workspace) admin may create boards; the creator becomes
+        # the board's first admin, so a board is never created without a manager.
+        creator = data.get("user_id")
+        if _ws_role(db, creator) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול ליצור לוח חדש")
+        dept_id = data.get("department_id")
+        if not dept_id:
+            dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
+        b = Board(
+            name=data.get("name", "לוח חדש"),
+            description=data.get("description", ""),
+            department_id=dept_id,
+            board_type=BoardType.KANBAN,
+            icon=data.get("icon", "📋"),
+            color=data.get("color", "#0073ea"),
+            settings={"views": ["table"]},  # new boards start with only the main table
+        )
+        db.add(b)
+        db.flush()
+        # default groups: 3 clean stages (no "review"). More can be added in-board.
+        g1 = Group(board_id=b.id, name="בתכנון", position=0, color="#579bfc", task_status=TaskStatus.BACKLOG)
+        db.add_all([
+            g1,
+            Group(board_id=b.id, name="בביצוע", position=1, color="#fdab3d", task_status=TaskStatus.IN_PROGRESS),
+            Group(board_id=b.id, name="הושלם", position=2, color="#00c875", task_status=TaskStatus.DONE),
+        ])
+        db.flush()
+        # 3 starter items in the first group so the board isn't blank
+        for i in range(1, 4):
+            db.add(Task(board_id=b.id, group_id=g1.id, title=f"פריט {i}",
+                        status=TaskStatus.BACKLOG, priority=Priority.MEDIUM, position=i))
+        # creator becomes the board admin; the board is private until they invite others
+        db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
+        db.commit()
+        db.refresh(b)
+        return {"id": b.id, "name": b.name, "icon": b.icon, "views": _board_views(b), "my_role": "admin"}
+
+@app.patch("/api/boards/{board_id}")
+def update_board(board_id: int, data: dict):
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "board not found")
+        if data.get("name") is not None:
+            b.name = data["name"]
+        if data.get("icon") is not None:
+            b.icon = data["icon"]
+        if data.get("color") is not None:
+            b.color = data["color"]
+        if data.get("views") is not None:
+            views = ["table"] + [v for v in data["views"] if v in ALL_VIEWS and v != "table"]
+            s = dict(b.settings or {})
+            s["views"] = views
+            b.settings = s
+        if "view_only" in data:
+            s = dict(b.settings or {})
+            s["view_only"] = bool(data["view_only"])
+            b.settings = s
+        if "form" in data:
+            # only a board admin can add/update the form
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לערוך את הטופס")
+            s = dict(b.settings or {})
+            s["form"] = data["form"]
+            b.settings = s
+        if data.get("columns") is not None:
+            # only a board admin may add/edit/remove columns and their options
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+            # full replacement of the custom-column definitions
+            allowed = {"timeline", "text", "number", "date", "rating", "status",
+                       "people", "dropdown", "files", "accounts", "checkbox", "formula"}
+            cols = []
+            for c in data["columns"]:
+                if not isinstance(c, dict) or c.get("type") not in allowed:
+                    continue
+                cols.append({
+                    "id": c.get("id") or ("col_" + uuid.uuid4().hex[:8]),
+                    "type": c["type"],
+                    "title": c.get("title") or c["type"],
+                    "options": c.get("options"),
+                    "formula": c.get("formula"),
+                    "perms": c.get("perms") or {},
+                })
+            s = dict(b.settings or {})
+            s["columns"] = cols
+            b.settings = s
+        db.commit()
+        db.refresh(b)
+        return {"id": b.id, "name": b.name, "icon": b.icon, "color": b.color,
+                "views": _board_views(b), "columns": (b.settings or {}).get("columns", [])}
+
+@app.delete("/api/boards/{board_id}")
+def delete_board(board_id: int, user_id: Optional[int] = None):
+    """Delete a board and everything under it (groups, items, comments,
+    memberships). Only a board admin may delete it."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "board not found")
+        if user_id is not None and _board_role(db, board_id, user_id) != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול למחוק אותו")
+        tasks = db.query(Task).filter(Task.board_id == board_id).all()
+        task_ids = [t.id for t in tasks]
+        if task_ids:
+            db.query(Comment).filter(Comment.task_id.in_(task_ids)).delete(synchronize_session=False)
+        for t in tasks:          # clear assignee links via the ORM relationship
+            t.assignees = []
+        db.flush()
+        db.query(Task).filter(Task.board_id == board_id).delete(synchronize_session=False)
+        db.query(Group).filter(Group.board_id == board_id).delete(synchronize_session=False)
+        db.query(BoardMember).filter(BoardMember.board_id == board_id).delete(synchronize_session=False)
+        db.delete(b)
+        db.commit()
+        return {"status": "deleted", "id": board_id}
+
+# ── Board membership & per-board permissions ────────────────────────
+BOARD_ROLES = ("admin", "editor", "viewer")
+
+@app.get("/api/boards/{board_id}/members")
+def list_board_members(board_id: int):
+    with Session(engine) as db:
+        ms = db.query(BoardMember).filter(BoardMember.board_id == board_id).all()
+        member_ids = {m.user_id for m in ms}
+        out = []
+        for m in ms:
+            u = db.query(User).filter(User.id == m.user_id).first()
+            out.append({"user_id": m.user_id, "name": u.name if u else "—",
+                        "email": u.email if u else "", "role": m.role})
+        # users who could still be invited
+        available = [{"id": u.id, "name": u.name} for u in db.query(User).all() if u.id not in member_ids]
+        return {"members": out, "available": available}
+
+@app.post("/api/boards/{board_id}/members")
+def add_board_member(board_id: int, data: dict):
+    with Session(engine) as db:
+        if not _is_board_admin(db, board_id, data.get("actor_id")):
+            raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
+        uid = data.get("user_id")
+        role = data.get("role", "editor")
+        if role not in BOARD_ROLES:
+            role = "editor"
+        m = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.user_id == uid).first()
+        if m:
+            m.role = role
+        else:
+            db.add(BoardMember(board_id=board_id, user_id=uid, role=role))
+        db.commit()
+        return {"status": "ok"}
+
+@app.patch("/api/boards/{board_id}/members/{uid}")
+def update_board_member(board_id: int, uid: int, data: dict):
+    with Session(engine) as db:
+        if not _is_board_admin(db, board_id, data.get("actor_id")):
+            raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
+        m = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.user_id == uid).first()
+        if not m:
+            raise HTTPException(404, "member not found")
+        role = data.get("role")
+        if role in BOARD_ROLES:
+            # don't allow demoting the last admin
+            if m.role == "admin" and role != "admin":
+                admins = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.role == "admin").count()
+                if admins <= 1:
+                    raise HTTPException(400, "חייב להישאר לפחות מנהל אחד ללוח")
+            m.role = role
+        db.commit()
+        return {"status": "ok"}
+
+@app.delete("/api/boards/{board_id}/members/{uid}")
+def remove_board_member(board_id: int, uid: int, actor_id: Optional[int] = None):
+    with Session(engine) as db:
+        if not _is_board_admin(db, board_id, actor_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
+        m = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.user_id == uid).first()
+        if not m:
+            return {"status": "removed"}
+        if m.role == "admin":
+            admins = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.role == "admin").count()
+            if admins <= 1:
+                raise HTTPException(400, "לא ניתן להסיר את מנהל הלוח האחרון")
+        db.delete(m)
+        db.commit()
+        return {"status": "removed"}
+
+# ── Column-level permissions (הרשאות עמודה) ─────────────────────────
+@app.post("/api/boards/{board_id}/columns/{col_id}/permissions")
+def set_col_permissions(board_id: int, col_id: str, data: dict):
+    with Session(engine) as db:
+        if _board_role(db, board_id, data.get("actor_id")) != "admin":
+            raise HTTPException(403, "רק מנהל לוח יכול לקבוע הרשאות עמודה")
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "board not found")
+        s = dict(b.settings or {})
+        cols = [dict(c) for c in s.get("columns", [])]
+        found = False
+        for c in cols:
+            if c["id"] == col_id:
+                perms = dict(c.get("perms") or {})
+                uid = str(data.get("user_id")); perm = data.get("perm")
+                if perm in ("view", "edit", "none"):
+                    perms[uid] = perm
+                else:
+                    perms.pop(uid, None)
+                c["perms"] = perms; found = True
+        if not found:
+            raise HTTPException(404, "column not found")
+        s["columns"] = cols; b.settings = s; db.commit()
+        return {"columns": cols}
+
+# ── Environment / workspace members (הזמנה לסביבה) ──────────────────
+WS_ROLES = ("admin", "member", "viewer")
+
+@app.get("/api/workspace/members")
+def workspace_members():
+    with Session(engine) as db:
+        ms = db.query(WorkspaceMember).all()
+        member_ids = {m.user_id for m in ms}
+        out = []
+        for m in ms:
+            u = db.query(User).filter(User.id == m.user_id).first()
+            out.append({"user_id": m.user_id, "name": u.name if u else "—",
+                        "email": u.email if u else "", "role": m.role})
+        available = [{"id": u.id, "name": u.name} for u in db.query(User).all() if u.id not in member_ids]
+        return {"members": out, "available": available}
+
+@app.post("/api/workspace/members")
+def workspace_add(data: dict):
+    with Session(engine) as db:
+        if _ws_role(db, data.get("actor_id")) != "admin":
+            raise HTTPException(403, "רק מנהל סביבה יכול להזמין")
+        uid = data.get("user_id"); role = data.get("role", "member")
+        if role not in WS_ROLES:
+            role = "member"
+        m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == uid).first()
+        if m:
+            m.role = role
+        else:
+            db.add(WorkspaceMember(user_id=uid, role=role))
+        db.commit()
+        return {"status": "ok"}
+
+@app.patch("/api/workspace/members/{uid}")
+def workspace_update(uid: int, data: dict):
+    with Session(engine) as db:
+        if _ws_role(db, data.get("actor_id")) != "admin":
+            raise HTTPException(403, "רק מנהל סביבה")
+        m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == uid).first()
+        if not m:
+            raise HTTPException(404, "member not found")
+        role = data.get("role")
+        if role in WS_ROLES:
+            if m.role == "admin" and role != "admin":
+                if db.query(WorkspaceMember).filter(WorkspaceMember.role == "admin").count() <= 1:
+                    raise HTTPException(400, "חייב להישאר מנהל סביבה אחד")
+            m.role = role
+        db.commit()
+        return {"status": "ok"}
+
+@app.delete("/api/workspace/members/{uid}")
+def workspace_remove(uid: int, actor_id: Optional[int] = None):
+    with Session(engine) as db:
+        if _ws_role(db, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל סביבה")
+        m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == uid).first()
+        if m and m.role == "admin":
+            if db.query(WorkspaceMember).filter(WorkspaceMember.role == "admin").count() <= 1:
+                raise HTTPException(400, "לא ניתן להסיר את מנהל הסביבה האחרון")
+        if m:
+            db.delete(m); db.commit()
+        return {"status": "removed"}
 
 @app.get("/api/tasks")
 def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
@@ -219,9 +656,21 @@ def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
 @app.post("/api/tasks")
 def create_task(data: dict):
     with Session(engine) as db:
+        parent_id = data.get("parent_id")
+        board_id = data.get("board_id")
+        group_id = data.get("group_id")
+        if parent_id:
+            parent = db.query(Task).filter(Task.id == parent_id).first()
+            if not parent:
+                raise HTTPException(404, "parent task not found")
+            # sub-items inherit board (and group if not given) from their parent
+            board_id = parent.board_id
+            if group_id is None:
+                group_id = parent.group_id
         task = Task(
-            board_id=data.get("board_id"),
-            group_id=data.get("group_id"),
+            board_id=board_id,
+            group_id=group_id,
+            parent_id=parent_id,
             title=data.get("title", "Untitled"),
             description=data.get("description", ""),
             priority=data.get("priority", "medium"),
@@ -230,12 +679,377 @@ def create_task(data: dict):
             location_lng=data.get("location_lng"),
             address=data.get("address"),
         )
+        due = data.get("due_date")
+        if due:
+            try:
+                task.due_date = datetime.fromisoformat(str(due).replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        status = data.get("status")
+        if status:
+            try:
+                task.status = TaskStatus(status)
+            except ValueError:
+                pass
         ids = data.get("assignee_ids") or []
         if ids:
             task.assignees = db.query(User).filter(User.id.in_(ids)).all()
         db.add(task)
         db.commit()
         return {"id": task.id, "status": "created"}
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: int, data: dict):
+    """Generic item update — title, priority, status, due_date, and custom column
+    values (merged into custom_fields). Used by the editable board columns."""
+    with Session(engine) as db:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        actor = data.get("user_id")
+        # ── permission enforcement (item level, and column level for custom_fields) ──
+        actor_role = _board_role(db, task.board_id, actor) if actor is not None else None
+        editing_builtin = any(k in data for k in ("title", "description", "priority", "status", "due_date", "tags"))
+        if actor is not None:
+            iperm = _item_perm(task, actor, actor_role)
+            if editing_builtin and iperm not in ("edit", "delete"):
+                raise HTTPException(403, "אין לך הרשאת עריכה לפריט זה")
+            if "custom_fields" in data and isinstance(data["custom_fields"], dict):
+                cols = {c["id"]: c for c in (db.query(Board).filter(Board.id == task.board_id).first().settings or {}).get("columns", [])}
+                for k in list(data["custom_fields"].keys()):
+                    col = cols.get(k)
+                    if col is not None and _col_perm(col, actor, actor_role) != "edit":
+                        del data["custom_fields"][k]      # silently drop cols the user can't edit
+                if iperm not in ("edit", "delete"):
+                    data["custom_fields"] = {}
+        st_val = lambda v: (v.value if hasattr(v, "value") else v)
+        if data.get("title") is not None and data["title"] != task.title:
+            _audit(db, task_id, "update", "title", task.title, data["title"], actor)
+            task.title = data["title"]
+        if data.get("description") is not None:
+            task.description = data["description"]
+        if data.get("priority"):
+            try:
+                nv = Priority(data["priority"])
+                if st_val(task.priority) != st_val(nv):
+                    _audit(db, task_id, "update", "priority", st_val(task.priority), st_val(nv), actor)
+                task.priority = nv
+            except ValueError:
+                pass
+        if data.get("status"):
+            try:
+                nv = TaskStatus(data["status"])
+                if st_val(task.status) != st_val(nv):
+                    _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
+                task.status = nv
+                # auto-move a top-level item to the group that matches its status
+                # (e.g. status → "done" lands it in the "הושלם" group)
+                if task.parent_id is None:
+                    g = db.query(Group).filter(Group.board_id == task.board_id,
+                                               Group.task_status == nv).order_by(Group.position).first()
+                    if g:
+                        task.group_id = g.id
+            except ValueError:
+                pass
+        if "due_date" in data:
+            due = data["due_date"]
+            old_due = task.due_date.isoformat() if task.due_date else None
+            if due:
+                try:
+                    task.due_date = datetime.fromisoformat(str(due).replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+            else:
+                task.due_date = None
+            _audit(db, task_id, "update", "due_date", old_due,
+                   task.due_date.isoformat() if task.due_date else None, actor)
+        if "tags" in data and isinstance(data["tags"], list):
+            old_tags = task.tags or []
+            if old_tags != data["tags"]:
+                _audit(db, task_id, "update", "tags", ", ".join(old_tags), ", ".join(data["tags"]), actor)
+            task.tags = data["tags"]
+        if "custom_fields" in data and isinstance(data["custom_fields"], dict):
+            cf = dict(task.custom_fields or {})
+            for k, v in data["custom_fields"].items():
+                old = cf.get(k)
+                if v is None:
+                    cf.pop(k, None)
+                else:
+                    cf[k] = v
+                if json.dumps(old, ensure_ascii=False) != json.dumps(v, ensure_ascii=False):
+                    _audit(db, task_id, "update", "col:" + k,
+                           json.dumps(old, ensure_ascii=False), json.dumps(v, ensure_ascii=False), actor)
+            task.custom_fields = cf
+        db.commit()
+        return {"id": task.id, "custom_fields": task.custom_fields or {}}
+
+# ── File uploads (for the Files column) ─────────────────────────────
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    safe = (file.filename or "file").replace("/", "_").replace("\\", "_")
+    fname = f"{uuid.uuid4().hex[:8]}_{safe}"
+    with open(os.path.join(UPLOAD_DIR, fname), "wb") as f:
+        f.write(await file.read())
+    return {"name": file.filename, "url": f"/uploads/{fname}"}
+
+@app.post("/api/tasks/{task_id}/permissions")
+def set_item_permissions(task_id: int, data: dict):
+    """Set/clear a per-user permission on a single item. Board managers (admin) only.
+    perm ∈ view|edit|delete|none  (none = pass to null to remove the override)."""
+    with Session(engine) as db:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        actor = data.get("actor_id")
+        if _board_role(db, task.board_id, actor) != "admin":
+            raise HTTPException(403, "רק מנהל לוח יכול לקבוע הרשאות פריט")
+        perms = dict(task.permissions or {})
+        uid = str(data.get("user_id"))
+        perm = data.get("perm")
+        if perm in ("view", "edit", "delete", "none"):
+            perms[uid] = perm
+        else:
+            perms.pop(uid, None)   # clear override → falls back to board role
+        task.permissions = perms
+        db.commit()
+        return {"id": task.id, "permissions": task.permissions}
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int, user_id: Optional[int] = None):
+    with Session(engine) as db:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        if user_id is not None:
+            role = _board_role(db, task.board_id, user_id)
+            if _item_perm(task, user_id, role) != "delete":
+                raise HTTPException(403, "אין לך הרשאת מחיקה לפריט זה")
+        # remove sub-items along with the parent
+        for s in db.query(Task).filter(Task.parent_id == task_id).all():
+            db.delete(s)
+        db.delete(task)
+        db.commit()
+        return {"status": "deleted"}
+
+# ── Item conversation (comments), files & activity log ──────────────
+
+def _acting_user(db, data=None, uid=None):
+    if data and data.get("user_id") is not None:
+        uid = data.get("user_id")
+    return db.query(User).filter(User.id == uid).first() if uid is not None else None
+
+def _can_comment(db, board, user):
+    """Board-scoped: only members who are not view-only may comment.
+    A user who isn't a board member has no access at all."""
+    if not user or not board:
+        return False
+    role = _board_role(db, board.id, user.id)
+    if role is None:          # not invited to this board
+        return False
+    if role == "viewer":      # view-only at the board level
+        return False
+    if (board.settings or {}).get("view_only"):
+        return role == "admin"
+    return True
+
+def _audit(db, entity_id, action, field=None, old=None, new=None, user_id=None):
+    db.add(AuditLog(entity_type="task", entity_id=entity_id, action=action,
+                    field_name=field,
+                    old_value=(None if old is None else str(old)),
+                    new_value=(None if new is None else str(new)),
+                    changed_by=user_id))
+
+def _serialize_comment(c, db):
+    u = db.query(User).filter(User.id == c.user_id).first()
+    return {
+        "id": c.id, "task_id": c.task_id, "parent_id": c.parent_id,
+        "content": c.content, "attachments": c.attachments or [],
+        "mentions": c.mentions or [], "likes": c.likes or [],
+        "user_id": c.user_id, "user_name": u.name if u else "—",
+        "user_role": u.role if u else None, "created_at": c.created_at,
+    }
+
+@app.get("/api/tasks/{task_id}/comments")
+def list_comments(task_id: int):
+    with Session(engine) as db:
+        cs = db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at).all()
+        items = [_serialize_comment(c, db) for c in cs]
+        by_id = {i["id"]: {**i, "replies": []} for i in items}
+        roots = []
+        for i in items:
+            node = by_id[i["id"]]
+            if i["parent_id"] and i["parent_id"] in by_id:
+                by_id[i["parent_id"]]["replies"].append(node)
+            else:
+                roots.append(node)
+        # newest main comment pinned on top
+        roots.sort(key=lambda x: str(x["created_at"]), reverse=True)
+        return {"comments": roots, "count": len(items)}
+
+@app.post("/api/tasks/{task_id}/comments")
+def add_comment(task_id: int, data: dict):
+    with Session(engine) as db:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        board = db.query(Board).filter(Board.id == task.board_id).first()
+        user = _acting_user(db, data)
+        if not _can_comment(db, board, user):
+            raise HTTPException(403, "אין הרשאת תגובה (צפייה בלבד)")
+        content = (data.get("content") or "").strip()
+        atts = data.get("attachments") or []
+        if not content and not atts:
+            raise HTTPException(400, "תגובה ריקה")
+        c = Comment(task_id=task_id, user_id=user.id, parent_id=data.get("parent_id"),
+                    content=content, attachments=atts,
+                    mentions=data.get("mentions") or [], likes=[])
+        db.add(c)
+        _audit(db, task_id, "comment", field="reply" if data.get("parent_id") else "comment",
+               new=(content[:120] or "(קובץ)"), user_id=user.id)
+        db.commit(); db.refresh(c)
+        return _serialize_comment(c, db)
+
+@app.post("/api/comments/{cid}/like")
+def like_comment(cid: int, data: dict):
+    with Session(engine) as db:
+        c = db.query(Comment).filter(Comment.id == cid).first()
+        if not c:
+            raise HTTPException(404, "comment not found")
+        user = _acting_user(db, data)
+        if not user:
+            raise HTTPException(403, "אין משתמש")
+        likes = list(c.likes or [])
+        if user.id in likes:
+            likes.remove(user.id)
+        else:
+            likes.append(user.id)
+        c.likes = likes
+        db.commit()
+        return {"id": cid, "likes": likes}
+
+@app.patch("/api/comments/{cid}")
+def update_comment(cid: int, data: dict):
+    with Session(engine) as db:
+        c = db.query(Comment).filter(Comment.id == cid).first()
+        if not c:
+            raise HTTPException(404, "comment not found")
+        user = _acting_user(db, data)
+        if not user or (c.user_id != user.id and user.role not in ("admin", "manager")):
+            raise HTTPException(403, "אין הרשאה לערוך תגובה")
+        if "content" in data:
+            c.content = data["content"]
+        db.commit()
+        return _serialize_comment(c, db)
+
+@app.delete("/api/comments/{cid}")
+def delete_comment(cid: int, user_id: Optional[int] = None):
+    with Session(engine) as db:
+        c = db.query(Comment).filter(Comment.id == cid).first()
+        if not c:
+            raise HTTPException(404, "comment not found")
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or (c.user_id != user.id and user.role not in ("admin", "manager")):
+            raise HTTPException(403, "אין הרשאה למחוק תגובה")
+        for r in db.query(Comment).filter(Comment.parent_id == cid).all():
+            db.delete(r)
+        db.delete(c)
+        db.commit()
+        return {"status": "deleted"}
+
+@app.get("/api/tasks/{task_id}/files")
+def task_files(task_id: int):
+    with Session(engine) as db:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        out = []
+        for c in db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at.desc()).all():
+            u = db.query(User).filter(User.id == c.user_id).first()
+            for f in (c.attachments or []):
+                out.append({**f, "source": "שיחה", "user_name": u.name if u else None, "created_at": c.created_at})
+        board = db.query(Board).filter(Board.id == task.board_id).first()
+        cols = (board.settings or {}).get("columns", []) if board else []
+        cf = task.custom_fields or {}
+        for col in [c for c in cols if c.get("type") == "files"]:
+            for f in (cf.get(col["id"]) or []):
+                out.append({**f, "source": "עמודה: " + (col.get("title") or ""), "user_name": None, "created_at": task.updated_at})
+        return {"files": out}
+
+@app.get("/api/tasks/{task_id}/activity")
+def task_activity(task_id: int, user_id: Optional[int] = None, date: Optional[str] = None):
+    with Session(engine) as db:
+        q = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id == task_id)
+        if user_id:
+            q = q.filter(AuditLog.changed_by == user_id)
+        out = []
+        for l in q.order_by(AuditLog.created_at.desc()).all():
+            if date and (not l.created_at or str(l.created_at)[:10] != date):
+                continue
+            u = db.query(User).filter(User.id == l.changed_by).first()
+            out.append({"id": l.id, "action": l.action, "field": l.field_name,
+                        "old": l.old_value, "new": l.new_value,
+                        "user_id": l.changed_by, "user_name": u.name if u else "מערכת",
+                        "can_undo": l.action == "update", "created_at": l.created_at})
+        return {"activity": out}
+
+@app.get("/api/tasks/{task_id}/activity/export")
+def export_activity(task_id: int):
+    with Session(engine) as db:
+        logs = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id == task_id)\
+                 .order_by(AuditLog.created_at.desc()).all()
+        buf = io.StringIO()
+        buf.write("﻿")  # BOM so Excel reads Hebrew UTF-8
+        w = csv.writer(buf)
+        w.writerow(["תאריך", "משתמש", "פעולה", "שדה", "מ-", "ל-"])
+        for l in logs:
+            u = db.query(User).filter(User.id == l.changed_by).first()
+            w.writerow([str(l.created_at)[:19], u.name if u else "מערכת", l.action,
+                        l.field_name or "", l.old_value or "", l.new_value or ""])
+        return Response(content=buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=activity_task_{task_id}.csv"})
+
+def _revert_field(task, field, old):
+    if field == "title":
+        task.title = old or ""; return True
+    if field == "status":
+        try: task.status = TaskStatus(old); return True
+        except ValueError: return False
+    if field == "priority":
+        try: task.priority = Priority(old); return True
+        except ValueError: return False
+    if field == "due_date":
+        task.due_date = datetime.fromisoformat(old) if old else None; return True
+    if field == "tags":
+        task.tags = [x for x in (old or "").split(", ") if x]; return True
+    if field and field.startswith("col:"):
+        cid = field[4:]; cf = dict(task.custom_fields or {})
+        val = json.loads(old) if old not in (None, "", "null") else None
+        if val is None: cf.pop(cid, None)
+        else: cf[cid] = val
+        task.custom_fields = cf; return True
+    return False
+
+@app.post("/api/activity/{log_id}/undo")
+def undo_activity(log_id: int, data: dict):
+    with Session(engine) as db:
+        user = _acting_user(db, data)
+        if not user or user.role not in ("admin", "manager"):
+            raise HTTPException(403, "רק מנהל יכול לבצע ביטול")
+        log = db.query(AuditLog).filter(AuditLog.id == log_id).first()
+        if not log or log.entity_type != "task" or log.action != "update":
+            raise HTTPException(400, "לא ניתן לבטל פעולה זו")
+        task = db.query(Task).filter(Task.id == log.entity_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        if not _revert_field(task, log.field_name, log.old_value):
+            raise HTTPException(400, "שדה לא נתמך לביטול")
+        _audit(db, task.id, "undo", field=log.field_name, old=log.new_value, new=log.old_value, user_id=user.id)
+        db.commit()
+        return {"status": "reverted", "field": log.field_name}
 
 @app.post("/api/tasks/{task_id}/assignees")
 def task_assignees(task_id: int, data: dict):
@@ -271,6 +1085,79 @@ def move_task(task_id: int, data: dict):
             task.status = data["status"]
         db.commit()
         return {"status": "moved"}
+
+# ── Groups (board columns / קבוצות) ─────────────────────────────────
+
+def _group_dict(g):
+    return {"id": g.id, "name": g.name, "position": g.position, "color": g.color,
+            "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status}
+
+@app.post("/api/groups")
+def create_group_api(data: dict):
+    with Session(engine) as db:
+        board_id = data.get("board_id")
+        board = db.query(Board).filter(Board.id == board_id).first()
+        if not board:
+            raise HTTPException(404, "board not found")
+        pos = data.get("position")
+        if pos is None:
+            pos = db.query(Group).filter(Group.board_id == board_id).count()
+        try:
+            task_status = TaskStatus(data.get("task_status", "todo"))
+        except ValueError:
+            task_status = TaskStatus.TODO
+        g = Group(
+            board_id=board_id,
+            name=data.get("name", "קבוצה חדשה"),
+            position=pos,
+            color=data.get("color", "#0073ea"),
+            task_status=task_status,
+        )
+        db.add(g)
+        db.commit()
+        db.refresh(g)
+        return _group_dict(g)
+
+@app.patch("/api/groups/{group_id}")
+def update_group_api(group_id: int, data: dict):
+    with Session(engine) as db:
+        g = db.query(Group).filter(Group.id == group_id).first()
+        if not g:
+            raise HTTPException(404, "group not found")
+        if data.get("name") is not None:
+            g.name = data["name"]
+        if data.get("color") is not None:
+            g.color = data["color"]
+        if data.get("position") is not None:
+            g.position = data["position"]
+        db.commit()
+        db.refresh(g)
+        return _group_dict(g)
+
+@app.post("/api/groups/reorder")
+def reorder_groups_api(data: dict):
+    """Persist a new group ordering. data = {order: [groupId, ...]}"""
+    with Session(engine) as db:
+        order = data.get("order") or []
+        for idx, gid in enumerate(order):
+            g = db.query(Group).filter(Group.id == gid).first()
+            if g:
+                g.position = idx
+        db.commit()
+        return {"status": "reordered", "order": order}
+
+@app.delete("/api/groups/{group_id}")
+def delete_group_api(group_id: int):
+    with Session(engine) as db:
+        g = db.query(Group).filter(Group.id == group_id).first()
+        if not g:
+            raise HTTPException(404, "group not found")
+        # Detach tasks instead of deleting them — they fall back to "ללא קבוצה"
+        for t in db.query(Task).filter(Task.group_id == group_id).all():
+            t.group_id = None
+        db.delete(g)
+        db.commit()
+        return {"status": "deleted"}
 
 # ── Citizens & Permits ──────────────────────────────────────────────
 
@@ -347,7 +1234,32 @@ def list_users():
             "id": u.id, "name": u.name, "email": u.email,
             "role": u.role, "avatar_url": u.avatar_url,
             "department_id": u.department_id,
+            "phone": u.phone, "title": u.title,
+            "email_notifications": bool(u.email_notifications) if u.email_notifications is not None else True,
+            "notif_prefs": u.notif_prefs or {},
         } for u in users]
+
+@app.patch("/api/users/{uid}")
+def update_user(uid: int, data: dict):
+    """Update a user's profile. A user may edit their own profile; a system
+    (workspace) admin may edit anyone's."""
+    with Session(engine) as db:
+        actor = data.get("actor_id")
+        if actor != uid and _ws_role(db, actor) != "admin":
+            raise HTTPException(403, "אפשר לעדכן רק את הפרופיל שלך")
+        u = db.query(User).filter(User.id == uid).first()
+        if not u:
+            raise HTTPException(404, "user not found")
+        for f in ("avatar_url", "phone", "title", "name", "email_notifications"):
+            if f in data:
+                setattr(u, f, data[f])
+        if "notif_prefs" in data and isinstance(data["notif_prefs"], dict):
+            u.notif_prefs = {**(u.notif_prefs or {}), **data["notif_prefs"]}
+        db.commit()
+        return {"id": u.id, "name": u.name, "avatar_url": u.avatar_url,
+                "phone": u.phone, "title": u.title,
+                "email_notifications": bool(u.email_notifications),
+                "notif_prefs": u.notif_prefs or {}}
 
 @app.get("/api/departments")
 def list_departments():
@@ -464,10 +1376,13 @@ def submit_form(data: dict):
 # ── Visualization Engine ─────────────────────────────────────────────
 
 @app.get("/api/viz/board-insights")
-def board_insights():
-    """Generate visualization data and insights for all boards."""
+def board_insights(user_id: Optional[int] = None):
+    """Generate visualization data and insights for boards the user may see."""
     with Session(engine) as db:
-        boards = db.query(Board).filter(Board.is_archived == False).all()
+        visible = _visible_board_ids(db, user_id)
+        boards = db.query(Board).filter(
+            Board.is_archived == False, Board.id.in_(visible)
+        ).all() if visible else []
         insights = []
         for b in boards:
             tasks = db.query(Task).filter(Task.board_id == b.id).all()
@@ -757,7 +1672,7 @@ AI_TOOLS = [
 ]
 
 
-def execute_ai_tool(name: str, args: dict) -> str:
+def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
     """Execute an AI tool by name with the given arguments. Returns a descriptive Hebrew result string."""
     from datetime import datetime, timezone
 
@@ -820,6 +1735,10 @@ def execute_ai_tool(name: str, args: dict) -> str:
         icon = args.get("icon", "📋")
         color = args.get("color", "#0073ea")
         with Session(engine) as db:
+            # same rule as the UI: only a system (workspace) admin may create a
+            # board, and the creator is registered as its admin — never orphaned.
+            if _ws_role(db, actor) != "admin":
+                return "❌ רק מנהל מערכת יכול ליצור לוח חדש."
             b = Board(
                 name=name,
                 description=description,
@@ -832,13 +1751,14 @@ def execute_ai_tool(name: str, args: dict) -> str:
             db.flush()
 
             # Create default groups
-            g1 = Group(board_id=b.id, name="לתכנון", position=0, color="#579bfc", task_status=TaskStatus.BACKLOG)
+            g1 = Group(board_id=b.id, name="בתכנון", position=0, color="#579bfc", task_status=TaskStatus.BACKLOG)
             g2 = Group(board_id=b.id, name="בתהליך", position=1, color="#fdab3d", task_status=TaskStatus.IN_PROGRESS)
             g3 = Group(board_id=b.id, name="הושלם", position=2, color="#00c875", task_status=TaskStatus.DONE)
             db.add_all([g1, g2, g3])
+            db.add(BoardMember(board_id=b.id, user_id=actor, role="admin"))
             db.commit()
             db.refresh(b)
-            return f"✅ לוח '{name}' נוצר בהצלחה (מזהה: {b.id}) עם 3 עמודות ברירת מחדל."
+            return f"✅ לוח '{name}' נוצר בהצלחה (מזהה: {b.id}) — אתה מוגדר כמנהל הלוח."
 
     elif name == "create_group":
         board_id = args.get("board_id")
@@ -1157,7 +2077,7 @@ def ai_query(data: dict):
                             fn_args = json.loads(tc["function"]["arguments"])
                         except Exception:
                             fn_args = {}
-                        result_text = execute_ai_tool(fn_name, fn_args)
+                        result_text = execute_ai_tool(fn_name, fn_args, data.get("user_id"))
                         tool_results.append({
                             "tool_call_id": tc.get("id", ""),
                             "function_name": fn_name,
@@ -1289,8 +2209,12 @@ def ai_query(data: dict):
             env={**os.environ, "OLLAMA_NUM_THREADS": "8"},
         )
         return {"response": result.stdout.strip() or "לא התקבלה תשובה", "success": True, "tool_calls": [], "model": model, "provider": "ollama"}
-    except Exception as e:
-        return {"response": f"AI מקומי לא זמין: {str(e)}", "success": False, "model": model, "tool_calls": []}
+    except FileNotFoundError:
+        return {"response": "שירות ה-AI המקומי אינו זמין בשרת זה. אפשר לחבר מודל ענן דרך הגדרות המערכת.", "success": False, "model": model, "tool_calls": []}
+    except subprocess.TimeoutExpired:
+        return {"response": "מודל ה-AI לא הגיב בזמן. נסה שוב או בחר מודל אחר.", "success": False, "model": model, "tool_calls": []}
+    except Exception:
+        return {"response": "שירות ה-AI אינו זמין כרגע. נסה שוב מאוחר יותר.", "success": False, "model": model, "tool_calls": []}
 
 
 @app.get("/api/ai/models")
@@ -1467,14 +2391,19 @@ def bim_bcf_topics():
 # ── CEO Dashboard — City-Wide Command Center ─────────────────────────
 
 @app.get("/api/ceo/dashboard")
-def ceo_dashboard():
-    """Comprehensive CEO dashboard — city-wide view across all boards."""
+def ceo_dashboard(user_id: Optional[int] = None):
+    """Comprehensive CEO dashboard — city-wide view across boards the user may see."""
     with Session(engine) as db:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        # ── Board & Task Breakdown ──
-        boards = db.query(Board).filter(Board.is_archived == False).all()
-        all_tasks = db.query(Task).filter(Task.is_archived == False).all()
+        # ── Board & Task Breakdown (membership-scoped, no leaks) ──
+        visible = _visible_board_ids(db, user_id)
+        boards = db.query(Board).filter(
+            Board.is_archived == False, Board.id.in_(visible)
+        ).all() if visible else []
+        all_tasks = db.query(Task).filter(
+            Task.is_archived == False, Task.board_id.in_(visible)
+        ).all() if visible else []
 
         board_breakdown = []
         total_tasks = 0
