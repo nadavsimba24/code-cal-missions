@@ -4,7 +4,7 @@ CityOS — FastAPI Backend Server
 import os, sys, json, uuid, csv, io
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
@@ -2237,6 +2237,34 @@ def ai_models():
     except Exception:
         pass
     return {"models": models, "available": bool(models), "default": default}
+
+@app.post("/api/llm/v1/chat/completions")
+async def llm_proxy(request: Request):
+    """Server-side LLM proxy so in-browser clients (e.g. page-agent) can use the
+    model WITHOUT ever seeing the API key. Frontend sets baseURL=/api/llm/v1 and a
+    dummy apiKey; the real DEEPSEEK_API_KEY is injected here, server-side only."""
+    import httpx
+    key = os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        raise HTTPException(503, "שירות ה-AI אינו מוגדר בשרת")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    payload["model"] = "deepseek-chat"              # force a supported model
+    if payload.get("tool_choice") == "required":     # DeepSeek rejects 'required'
+        payload["tool_choice"] = "auto"
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                json=payload,
+                headers={"Authorization": f"Bearer {key}"},
+            )
+        return Response(content=r.content, status_code=r.status_code,
+                        media_type="application/json")
+    except Exception as e:
+        raise HTTPException(502, "LLM upstream error")
 
 @app.post("/api/ai/train")
 def ai_train(data: dict):

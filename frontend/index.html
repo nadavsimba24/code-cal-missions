@@ -461,6 +461,12 @@ img.pf-av{object-fit:cover;background:#fff}
 .lu-role{font-size:12px;color:var(--text-light)}
 .login-user>i{color:var(--text-light)}
 .login-user:hover>i{color:var(--primary)}
+/* ===== floating agent bubble (FAB) ===== */
+#agent-fab{position:fixed;bottom:22px;left:22px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#0073ea,#00c875);color:#fff;font-size:22px;display:grid;place-items:center;box-shadow:0 6px 20px rgba(0,115,234,.4);z-index:140;border:none;cursor:pointer;transition:transform .15s,box-shadow .15s}
+#agent-fab:hover{transform:scale(1.08) translateY(-2px);box-shadow:0 10px 28px rgba(0,115,234,.5)}
+#agent-fab:active{transform:scale(1.02)}
+#agent-fab::after{content:'';position:absolute;inset:0;border-radius:50%;animation:fab-pulse 2.4s infinite;pointer-events:none}
+@keyframes fab-pulse{0%{box-shadow:0 0 0 0 rgba(0,200,117,.45)}70%{box-shadow:0 0 0 13px rgba(0,200,117,0)}100%{box-shadow:0 0 0 0 rgba(0,200,117,0)}}
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);background:#323338;color:#fff;padding:12px 20px;border-radius:9px;z-index:300;transition:.3s;font-weight:600;font-size:13px}
 #toast.show{transform:translateX(-50%) translateY(0)}
 .empty{text-align:center;color:var(--text-light);padding:60px 20px}
@@ -727,6 +733,7 @@ img.pf-av{object-fit:cover;background:#fff}
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
       <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
+      <div class="sb-item" onclick="launchPageAgent()" title="שליטה בממשק בשפה טבעית (page-agent)"><span class="ic"><i class="fa-solid fa-bolt" style="color:var(--orange)"></i></span> עוזר עמוד<span class="sb-soon" style="color:var(--orange);border-color:var(--orange)">Beta</span></div>
       <div class="sb-item" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
     </div>
@@ -850,6 +857,11 @@ img.pf-av{object-fit:cover;background:#fff}
     <div id="login-users" class="login-users"></div>
   </div>
 </div>
+
+<!-- Floating agent bubble (bottom-left) -->
+<button id="agent-fab" onclick="launchPageAgent()" title="עוזר עמוד (page-agent) — שליטה בממשק בשפה טבעית" aria-label="עוזר עמוד">
+  <i class="fa-solid fa-robot"></i>
+</button>
 
 <div id="toast"></div>
 
@@ -2803,6 +2815,40 @@ const AI = {
   async callAI(prompt){try{const r=await api('/api/ai/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,context:this.ctx(),model:MODEL.name,user_id:meId()})});return r.response||'אין תשובה';}catch(e){return 'ה-AI לא זמין כרגע (נדרש מודל מקומי פעיל).';}},
   async callSwarm(agent,task){try{const r=await api('/api/swarm/think',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent,task,context:this.ctx(),mode:'single'})});return (r.result||r.response||JSON.stringify(r)).toString().slice(0,2000);}catch(e){return 'הסוכן לא זמין כרגע.';}},
 };
+
+/* ============ page-agent (in-page GUI agent, open source by Alibaba) ============
+   Loaded on demand as an ESM module from a CDN (no build step needed). It talks
+   to the LLM through our own /api/llm/v1 proxy, so the API key never reaches the
+   browser. PageAgent mounts its own in-page panel. */
+let _pageAgent=null;
+// The panel host starts as display:none and only appears after panel.show().
+// The panel may not be mounted synchronously right after `new PageAgent`, so
+// retry show() until the host is actually visible (fixes a race where the
+// bubble/bar never appears in real browsers).
+function _paShow(){
+  let tries=0;
+  const t=setInterval(()=>{
+    tries++;
+    try{ _pageAgent&&_pageAgent.panel&&_pageAgent.panel.show&&_pageAgent.panel.show(); }catch(e){}
+    const el=document.getElementById('page-agent-runtime_agent-panel');
+    if((el&&getComputedStyle(el).display!=='none')||tries>25) clearInterval(t);
+  },200);
+}
+async function launchPageAgent(){
+  if(_pageAgent){ _paShow(); return; }
+  toast('טוען עוזר עמוד…');
+  try{
+    const mod=await import('https://cdn.jsdelivr.net/npm/page-agent@1.11.0/+esm');
+    _pageAgent=new mod.PageAgent({
+      model:'deepseek-chat',
+      baseURL:location.origin+'/api/llm/v1',   // our server-side proxy (key stays server-side)
+      apiKey:'proxy',                          // dummy; the real key is injected by the proxy
+      language:'he-IL',
+    });
+    _paShow();
+    toast('עוזר העמוד פעיל — בקש פעולה בשפה טבעית');
+  }catch(e){ console.error('page-agent load failed',e); toast('שגיאה בטעינת עוזר העמוד'); }
+}
 
 /* ============ local LLM models ============ */
 const MODEL = {name:'gemma4-coder', list:[], loaded:false, available:true};
