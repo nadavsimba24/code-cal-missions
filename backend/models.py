@@ -159,6 +159,9 @@ class User(Base):
     role = Column(String(50), default="member")  # admin, manager, member, viewer
     avatar_url = Column(String(500))
     phone = Column(String(20))
+    title = Column(String(120))  # job title within the organization
+    email_notifications = Column(Boolean, default=True)
+    notif_prefs = Column(JSON, default=dict)  # {mention, status, assign}
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     organization = relationship("Organization", back_populates="users")
     department = relationship("Department", back_populates="users")
@@ -215,6 +218,7 @@ class Task(Base):
     gis_layer_id = Column(String(100))  # Reference to GeoLibre layer
     custom_fields = Column(JSON, default=dict)
     tags = Column(JSON, default=list)
+    permissions = Column(JSON, default=dict)  # item-level per-user perms {"<uid>":"view|edit|none"}
     is_archived = Column(Boolean, default=False)
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -232,10 +236,36 @@ class Comment(Base):
     id = Column(Integer, primary_key=True)
     task_id = Column(Integer, ForeignKey("tasks.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
+    parent_id = Column(Integer, ForeignKey("comments.id"), nullable=True)  # threaded replies
     content = Column(Text, nullable=False)
-    attachments = Column(JSON, default=list)
+    attachments = Column(JSON, default=list)   # [{name,url}]
+    mentions = Column(JSON, default=list)      # [user_id, ...]
+    likes = Column(JSON, default=list)         # [user_id, ...]
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     task = relationship("Task", back_populates="comments")
+    replies = relationship("Comment", backref="parent", remote_side=[id])
+
+class BoardMember(Base):
+    """Per-board membership & role. Access is membership-based: a user only sees
+    boards they are invited to. 'admin' here is board-scoped (manages that board's
+    members/permissions) — it is NOT a global super-user."""
+    __tablename__ = "board_members"
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    role = Column(String(20), default="editor")  # admin | editor | viewer  (board-scoped)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    user = relationship("User")
+
+class WorkspaceMember(Base):
+    """Environment/workspace membership. 'Invite to environment' with a default
+    role that seeds the board role when a user is added to a board."""
+    __tablename__ = "workspace_members"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
+    role = Column(String(20), default="member")  # admin | member | viewer
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    user = relationship("User")
 
 # ── Municipal-Specific Models ────────────────────────────────────────
 
