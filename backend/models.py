@@ -157,6 +157,7 @@ class User(Base):
     email = Column(String(200), unique=True, nullable=False)
     name = Column(String(200), nullable=False)
     role = Column(String(50), default="member")  # admin, manager, member, viewer
+    is_active = Column(Boolean, default=True)  # deactivated users stay in the directory
     avatar_url = Column(String(500))
     phone = Column(String(20))
     title = Column(String(120))  # job title within the organization

@@ -63,6 +63,8 @@ def _migrate():
             conn.execute(text("ALTER TABLE users ADD COLUMN email_notifications BOOLEAN DEFAULT 1"))
         if "notif_prefs" not in ucols:
             conn.execute(text("ALTER TABLE users ADD COLUMN notif_prefs JSON"))
+        if "is_active" not in ucols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
         _demo = {
             1: ("מנהל אגף הנדסה ותשתיות", "050-2345678"),
             2: ("מנהלת מחלקת תחבורה",     "052-3456789"),
@@ -1237,10 +1239,13 @@ def list_assets():
 def list_users():
     with Session(engine) as db:
         users = db.query(User).all()
+        dept_names = {d.id: d.name for d in db.query(Department).all()}
         return [{
             "id": u.id, "name": u.name, "email": u.email,
             "role": u.role, "avatar_url": u.avatar_url,
             "department_id": u.department_id,
+            "department_name": dept_names.get(u.department_id),
+            "is_active": bool(u.is_active) if u.is_active is not None else True,
             "phone": u.phone, "title": u.title,
             "email_notifications": bool(u.email_notifications) if u.email_notifications is not None else True,
             "notif_prefs": u.notif_prefs or {},
@@ -1262,9 +1267,29 @@ def update_user(uid: int, data: dict):
                 setattr(u, f, data[f])
         if "notif_prefs" in data and isinstance(data["notif_prefs"], dict):
             u.notif_prefs = {**(u.notif_prefs or {}), **data["notif_prefs"]}
+        # sensitive fields (role / department / active status) — system admin only,
+        # never editable on one's own profile via this path
+        admin_fields = {"role", "department_id", "is_active"}
+        if admin_fields & set(data):
+            if _ws_role(db, actor) != "admin":
+                raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד, מחלקה או סטטוס")
+            if "role" in data and data["role"] in ("admin", "manager", "member", "viewer"):
+                u.role = data["role"]
+            if "department_id" in data:
+                u.department_id = data["department_id"]
+            if "is_active" in data:
+                if u.id == actor and not data["is_active"]:
+                    raise HTTPException(400, "אי אפשר להשבית את המשתמש שלך")
+                u.is_active = bool(data["is_active"])
         db.commit()
+        dept_name = None
+        if u.department_id:
+            d = db.query(Department).filter(Department.id == u.department_id).first()
+            dept_name = d.name if d else None
         return {"id": u.id, "name": u.name, "avatar_url": u.avatar_url,
-                "phone": u.phone, "title": u.title,
+                "phone": u.phone, "title": u.title, "role": u.role,
+                "department_id": u.department_id, "department_name": dept_name,
+                "is_active": bool(u.is_active),
                 "email_notifications": bool(u.email_notifications),
                 "notif_prefs": u.notif_prefs or {}}
 

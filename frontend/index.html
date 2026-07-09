@@ -414,7 +414,24 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .btn-danger:hover{background:var(--red-d)}
 /* confirmation dialog */
 .modal.confirm-modal{width:400px}
+.modal.modal-wide{width:820px}
 .confirm-box{padding:26px 24px 20px;text-align:center}
+/* system-admin user directory */
+.sa-table{width:100%;border-collapse:collapse;font-size:13px}
+.sa-table th{text-align:right;font-size:11px;font-weight:600;color:var(--text-light);text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+.sa-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+.sa-table tr.inactive{opacity:.55}
+.sa-table tr:hover td{background:var(--row-hover)}
+.sa-name{display:flex;align-items:center;gap:9px}
+.sa-name .av{width:28px;height:28px;font-size:11px;flex-shrink:0}
+.sa-badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:20px}
+.sa-badge.on{background:#e7f6ec;color:#1a7f43}
+.sa-badge.off{background:#f1f2f4;color:var(--text-light)}
+.sa-badge i{font-size:7px}
+.sa-more{width:28px;height:28px;border:none;background:none;color:var(--text-light);border-radius:6px;cursor:pointer}
+.sa-more:hover{background:rgba(0,0,0,.08);color:var(--text)}
+.sa-menu-lbl{font-size:10.5px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.04em;padding:2px 4px 0}
+.sa-menu-sel{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
 .confirm-ic{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-size:23px;margin:0 auto 14px;background:var(--primary-soft);color:var(--primary)}
 .confirm-ic.danger{background:#fdebed;color:var(--red)}
 .confirm-msg{font-size:15px;font-weight:600;color:var(--text)}
@@ -766,6 +783,7 @@ img.pf-av{object-fit:cover;background:#fff}
       <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
       <div class="sb-item" onclick="launchPageAgent()" title="שליטה בממשק בשפה טבעית (page-agent)"><span class="ic"><i class="fa-solid fa-bolt" style="color:var(--orange)"></i></span> עוזר עמוד<span class="sb-soon" style="color:var(--orange);border-color:var(--orange)">Beta</span></div>
       <div class="sb-item" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
+      <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
       <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
     </div>
     <!-- ===== Work Plan & Budget ===== -->
@@ -1375,6 +1393,67 @@ const Workspace = {
   remove(uid){ askConfirm('להסיר את המשתמש מהסביבה?',async()=>{ try{ await api('/api/workspace/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר'); this.refresh(); }catch(e){toast('לא ניתן להסיר');} },{title:'הסרה מהסביבה',confirmText:'הסר'}); },
 };
 
+/* ===== system administration — user directory ===== */
+const SysAdmin = {
+  async open(){
+    if(!isSysAdmin()){ toast('רק מנהל מערכת'); return; }
+    closeCellPops();
+    try{ this.users = await api('/api/users'); }catch(e){ this.users=[]; }
+    if(!st.depts||!st.depts.length){ try{ st.depts = await api('/api/departments'); }catch(e){} }
+    showModal(`<h2><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i> ניהול מערכת — משתמשים</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. שינוי תפקיד, מחלקה או סטטוס דרך תפריט <i class="fa-solid fa-ellipsis-vertical"></i>.</div>
+        <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
+          <th style="width:34px"></th><th>שם</th><th>מייל</th><th>תפקיד</th><th>מחלקה</th><th>סטטוס</th>
+        </tr></thead><tbody id="sa-rows">${this.rowsHTML()}</tbody></table></div>
+      </div><div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+    document.getElementById('modal').classList.add('modal-wide');
+  },
+  rowsHTML(){
+    if(!this.users||!this.users.length) return `<tr><td colspan="6"><div class="empty" style="padding:20px">אין משתמשים</div></td></tr>`;
+    return this.users.map(u=>{
+      const active=u.is_active!==false;
+      return `<tr class="${active?'':'inactive'}">
+        <td><button class="sa-more" title="פעולות" onclick="SysAdmin.rowMenu(event,${u.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button></td>
+        <td><div class="sa-name"><span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span><span style="font-weight:600">${esc(u.name)}${u.id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</span></div></td>
+        <td style="color:var(--text-muted)">${esc(u.email||'—')}</td>
+        <td>${ROLE_HE[u.role]||esc(u.role||'—')}</td>
+        <td style="color:var(--text-muted)">${esc(u.department_name||'—')}</td>
+        <td><span class="sa-badge ${active?'on':'off'}"><i class="fa-solid fa-circle"></i> ${active?'פעיל':'לא פעיל'}</span></td>
+      </tr>`;
+    }).join('');
+  },
+  rowMenu(e,uid){
+    e.stopPropagation();
+    const u=(this.users||[]).find(x=>x.id===uid); if(!u)return;
+    const active=u.is_active!==false;
+    const roles=['admin','manager','member','viewer'];
+    const roleSel=`<select class="sa-menu-sel" onchange="SysAdmin.setRole(${uid},this.value)">${roles.map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_HE[r]}</option>`).join('')}</select>`;
+    const deptSel=`<select class="sa-menu-sel" onchange="SysAdmin.setDept(${uid},this.value)"><option value="">— ללא מחלקה —</option>${(st.depts||[]).map(d=>`<option value="${d.id}" ${u.department_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
+    const isSelf=uid===meId();
+    const toggle=isSelf?`<div class="rm-note">אי אפשר להשבית את עצמך</div>`
+      :`<button class="rm-item ${active?'danger':''}" onclick="SysAdmin.toggleActive(${uid},${!active})"><i class="fa-solid fa-${active?'user-slash':'user-check'}"></i> ${active?'השבת משתמש':'הפעל משתמש'}</button>`;
+    openCellPop(e.currentTarget,`<div class="row-menu" style="min-width:214px;padding:10px;gap:9px;display:flex;flex-direction:column">
+      <div class="sa-menu-lbl">תפקיד</div>${roleSel}
+      <div class="sa-menu-lbl">מחלקה</div>${deptSel}
+      <div style="height:1px;background:var(--border);margin:2px 0"></div>${toggle}
+    </div>`,'row-menu-pop');
+  },
+  async _patch(uid,body,okMsg){
+    try{
+      const r=await api('/api/users/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),...body})});
+      const u=(this.users||[]).find(x=>x.id===uid); if(u)Object.assign(u,r);
+      const tb=document.getElementById('sa-rows'); if(tb)tb.innerHTML=this.rowsHTML();
+      if(okMsg)toast(okMsg);
+    }catch(err){
+      toast(String(err&&err.message||'').includes('403')?'רק מנהל מערכת יכול לשנות':'שגיאה בעדכון'); closeCellPops();
+    }
+  },
+  setRole(uid,role){ closeCellPops(); this._patch(uid,{role},'התפקיד עודכן'); },
+  setDept(uid,val){ closeCellPops(); this._patch(uid,{department_id:val?+val:null},'המחלקה עודכנה'); },
+  toggleActive(uid,makeActive){ closeCellPops(); this._patch(uid,{is_active:makeActive},makeActive?'המשתמש הופעל':'המשתמש הושבת'); },
+};
+
 /* ===== item-level permissions (הרשאות פריט) ===== */
 const ItemPerms = {
   open(taskId){
@@ -1519,8 +1598,10 @@ const ROLE_HE={admin:'מנהל מערכת',manager:'מנהל',member:'חבר צ�
 async function loadWsMembers(){ try{ const d=await api('/api/workspace/members'); st.wsMembers=d.members||[]; }catch(e){ st.wsMembers=[]; } }
 function isSysAdmin(){ const m=(st.wsMembers||[]).find(x=>x.user_id===meId()); return !!m && m.role==='admin'; }
 function updateNewBoardBtn(){
-  const btn=document.getElementById('new-board-btn'); if(!btn)return;
-  btn.style.display=isSysAdmin()?'':'none';
+  const btn=document.getElementById('new-board-btn');
+  if(btn)btn.style.display=isSysAdmin()?'':'none';
+  const nav=document.getElementById('nav-sysadmin');
+  if(nav)nav.style.display=isSysAdmin()?'':'none';
 }
 function renderMe(){
   const u=st.me; if(!u)return;
@@ -3077,7 +3158,7 @@ const Train = {
 
 /* ============ modal helpers ============ */
 function showModal(html){const m=document.getElementById('modal');m.innerHTML=html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
-function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal');document.getElementById('overlay').classList.remove('open');}
+function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide');document.getElementById('overlay').classList.remove('open');}
 /* styled confirmation dialog (replaces native confirm) */
 function askConfirm(message,onYes,opts){
   opts=opts||{};
