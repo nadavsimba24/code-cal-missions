@@ -668,6 +668,12 @@ def create_task(data: dict):
             board_id = parent.board_id
             if group_id is None:
                 group_id = parent.group_id
+        # a task must belong to a board (directly or via its parent) — reject
+        # orphan tasks instead of silently creating board-less junk data
+        if not board_id:
+            raise HTTPException(422, "board_id (or a valid parent_id) is required")
+        if not db.query(Board.id).filter(Board.id == board_id).scalar():
+            raise HTTPException(404, "board not found")
         task = Task(
             board_id=board_id,
             group_id=group_id,
@@ -3587,11 +3593,13 @@ def ceo_dashboard_enhanced():
 # ── 13. Gantt Data ──────────────────────────────────────────────────
 
 @app.get("/api/gantt/data")
-def gantt_data(work_plan_id: int):
+def gantt_data(work_plan_id: Optional[int] = None):
+    if work_plan_id is None:
+        raise HTTPException(400, "work_plan_id query parameter is required")
     with Session(engine) as db:
         wp = db.query(AnnualWorkPlan).filter(AnnualWorkPlan.id == work_plan_id).first()
         if not wp:
-            raise HTTPException(404)
+            raise HTTPException(404, "work plan not found")
         items = []
         # Work Plan level
         items.append({
