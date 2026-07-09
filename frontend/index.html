@@ -445,6 +445,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .pf-head{display:flex;align-items:center;gap:14px;padding:22px;background:linear-gradient(135deg,var(--pf,#0073ea),#0086c0);color:#fff}
 .pf-av{width:60px;height:60px;border-radius:50%;background:rgba(255,255,255,.22);display:grid;place-items:center;font-size:22px;font-weight:800;border:2px solid rgba(255,255,255,.55);flex-shrink:0}
 img.pf-av{object-fit:cover;background:#fff}
+.pf-av img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
 .pf-av-btn{position:relative;padding:0;background:none;border:none;cursor:pointer;flex-shrink:0;border-radius:50%}
 .pf-av-btn:hover .pf-av{filter:brightness(.85)}
 .pf-av-cam{position:absolute;inset-inline-end:-2px;bottom:-2px;width:24px;height:24px;border-radius:50%;background:#fff;color:var(--primary);display:grid;place-items:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.3);border:1.5px solid var(--primary)}
@@ -949,6 +950,19 @@ const VIEWS = [
 const api = async (p,o)=>{const r=await fetch(p,o);if(!r.ok)throw new Error(p+' '+r.status);return r.json();};
 const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const initials = n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('');
+/* Auto cartoon avatars (DiceBear) — used when a user has no uploaded photo.
+   Seeded by name so the same person always gets the same illustrated face. */
+const AVATAR_STYLE='notionists';
+const AVATAR_BG='b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf,transparent';
+function dicebearUrl(seed){return `https://api.dicebear.com/9.x/${AVATAR_STYLE}/svg?seed=${encodeURIComponent(seed||'user')}&backgroundColor=${AVATAR_BG}&radius=50`;}
+/* Returns the inner <img> for an .av / .pf-av span. Accepts a user object
+   ({name/user_name, avatar_url}) or a bare name string. Real uploaded photo
+   wins; otherwise a generated cartoon avatar. */
+function avatarInner(u){
+  const name=(u&&(u.name||u.user_name))||(typeof u==='string'?u:'');
+  const url=(u&&typeof u==='object'&&u.avatar_url)?u.avatar_url:dicebearUrl(name);
+  return `<img src="${esc(url)}" alt="">`;
+}
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
 const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, openSubs:new Set()};
 
@@ -979,7 +993,7 @@ const Auth = {
     const box=document.getElementById('login-users');
     box.innerHTML=(st.users||[]).map(u=>`
       <button class="login-user" onclick="Auth.login(${u.id})">
-        <span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span>
+        <span class="av" style="background:var(--primary)">${avatarInner(u)}</span>
         <span class="lu-info"><span class="lu-name">${esc(u.name)}</span><span class="lu-role">${esc(ROLE_HE[u.role]||u.role)}</span></span>
         <i class="fa-solid fa-arrow-left"></i>
       </button>`).join('')||'<div class="empty" style="padding:20px">אין משתמשים</div>';
@@ -1201,7 +1215,7 @@ function renderView(){
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;return pill(STATUS,t.status);}
 function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span class="av-add" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span></span>';
-  return '<span class="avatars">'+arr.slice(0,3).map(a=>`<span class="av av-click" title="${esc(a.name)} — הצג פרופיל" onclick="event.stopPropagation();Profile.open(${a.id})">${a.avatar_url?`<img src="${esc(a.avatar_url)}" alt="">`:esc(initials(a.name))}</span>`).join('')+(arr.length>3?`<span class="av av-more">+${arr.length-3}</span>`:'')+'</span>';}
+  return '<span class="avatars">'+arr.slice(0,3).map(a=>`<span class="av av-click" title="${esc(a.name)} — הצג פרופיל" onclick="event.stopPropagation();Profile.open(${a.id})">${avatarInner(a)}</span>`).join('')+(arr.length>3?`<span class="av av-more">+${arr.length-3}</span>`:'')+'</span>';}
 function findTask(id){return ((st.board&&st.board.tasks)||[]).find(t=>t.id==id);}
 /* ===== personal profile card (click a user's avatar) ===== */
 const Profile = {
@@ -1217,7 +1231,7 @@ const Profile = {
     const byStatus={}; tasks.forEach(t=>{byStatus[t.status]=(byStatus[t.status]||0)+1;});
     const chips=Object.entries(byStatus).map(([s,n])=>`<span class="pf-stat-chip" style="background:${STATUS[s]?STATUS[s].c:'#c4c4c4'}">${esc(STATUS[s]?STATUS[s].he:s)} · ${n}</span>`).join('')
       ||'<span style="color:var(--text-light);font-size:12.5px">אין משימות משויכות בלוח זה</span>';
-    const avInner=u.avatar_url?`<img class="pf-av" src="${esc(u.avatar_url)}" alt="">`:`<span class="pf-av">${esc(initials(u.name))}</span>`;
+    const avInner=u.avatar_url?`<img class="pf-av" src="${esc(u.avatar_url)}" alt="">`:`<span class="pf-av">${avatarInner(u)}</span>`;
     const canEditAv=(userId===meId()||isSysAdmin());
     const avHtml=canEditAv?`<button class="pf-av-btn" onclick="Profile.pickAvatar(${userId})" title="לחץ להעלאת תמונה">${avInner}<span class="pf-av-cam"><i class="fa-solid fa-camera"></i></span></button>`:avInner;
     const sysRole=(ROLE_HE[u.role]||u.role)+(wsRole?` · ${wsRole}`:'');
@@ -1299,7 +1313,7 @@ function openPeople(id){
   <div class="mbody">${(st.users||[]).map(u=>`
     <label style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:7px;cursor:pointer">
       <input type="checkbox" style="width:auto" ${cur.has(u.id)?'checked':''} onchange="togglePerson(${id},${u.id},this.checked)">
-      <span class="av" style="background:var(--primary);margin:0">${esc(initials(u.name))}</span>
+      <span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span>
       <span>${esc(u.name)}</span><span style="color:var(--text-light);font-size:12px;margin-inline-start:auto">${esc(u.role||'')}</span>
     </label>`).join('')||'<div class="empty">אין משתמשים</div>'}</div>
   <div class="mfoot"><button class="btn btn-primary" onclick="closeModals();renderView()">סיום</button></div>`);
@@ -1377,7 +1391,7 @@ const Workspace = {
   },
   listHTML(){
     return this.data.members.map(m=>`<div class="mem-row">
-      <span class="av" style="background:var(--primary)">${esc(initials(m.name))}</span>
+      <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
       <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
       ${this.isAdmin?`<select onchange="Workspace.setRole(${m.user_id},this.value)">${['admin','member','viewer'].map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${WSROLE_HE[r]}</option>`).join('')}</select>
       <button class="mem-del" title="הסר מהסביבה" onclick="Workspace.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>`:`<span class="perm-badge">${WSROLE_HE[m.role]}</span>`}
@@ -1415,7 +1429,7 @@ const SysAdmin = {
       const active=u.is_active!==false;
       return `<tr class="${active?'':'inactive'}">
         <td><button class="sa-more" title="פעולות" onclick="SysAdmin.rowMenu(event,${u.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button></td>
-        <td><div class="sa-name"><span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span><span style="font-weight:600">${esc(u.name)}${u.id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</span></div></td>
+        <td><div class="sa-name"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span style="font-weight:600">${esc(u.name)}${u.id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</span></div></td>
         <td style="color:var(--text-muted)">${esc(u.email||'—')}</td>
         <td>${ROLE_HE[u.role]||esc(u.role||'—')}</td>
         <td style="color:var(--text-muted)">${esc(u.department_name||'—')}</td>
@@ -1463,7 +1477,7 @@ const ItemPerms = {
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> הרשאה פר-משתמש שדורסת את תפקיד-הלוח <b>עבור פריט זה בלבד</b>. "ברירת מחדל" = לפי תפקיד הלוח.</div>
         ${(st.users||[]).map(u=>`<div class="mem-row">
-          <span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span>
+          <span class="av" style="background:var(--primary)">${avatarInner(u)}</span>
           <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
           <select onchange="ItemPerms.set(${u.id},this.value)">${Object.entries(IPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
         </div>`).join('')}
@@ -1485,7 +1499,7 @@ const ColPerms = {
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> הרשאה פר-משתמש על העמודה. "מוסתר" מסתיר את הערכים מהמשתמש.</div>
         ${(st.users||[]).map(u=>`<div class="mem-row">
-          <span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span>
+          <span class="av" style="background:var(--primary)">${avatarInner(u)}</span>
           <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
           <select onchange="ColPerms.set(${u.id},this.value)">${Object.entries(CPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
         </div>`).join('')}
@@ -1519,7 +1533,7 @@ const Members = {
   deleteBoard(){ if(st.board) deleteBoardById(st.board.id); },
   listHTML(){
     return this.data.members.map(m=>`<div class="mem-row">
-      <span class="av" style="background:var(--primary)">${esc(initials(m.name))}</span>
+      <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
       <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
       <select onchange="Members.setRole(${m.user_id},this.value)">${['admin','editor','viewer'].map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${BROLE_HE[r]}</option>`).join('')}</select>
       <button class="mem-del" title="הסר מהלוח" onclick="Members.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>
@@ -1606,7 +1620,7 @@ function updateNewBoardBtn(){
 function renderMe(){
   const u=st.me; if(!u)return;
   const av=document.getElementById('me-av'),nm=document.getElementById('me-name');
-  if(av)av.innerHTML=u.avatar_url?`<img src="${esc(u.avatar_url)}" alt="">`:esc(initials(u.name)); if(nm)nm.textContent=u.name;
+  if(av)av.innerHTML=u.avatar_url?`<img src="${esc(u.avatar_url)}" alt="">`:avatarInner(u); if(nm)nm.textContent=u.name;
   updateNewBoardBtn();
 }
 async function setMe(id){
@@ -1622,10 +1636,10 @@ function renderPop(name){
   if(name==='me'){
     const el=document.getElementById('pop-me'); if(!el)return;
     el.innerHTML=(st.me?`<button class="pop-row" style="width:100%;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:5px" onclick="closePops();Profile.open(${meId()})" title="הצג פרופיל אישי">
-        <span class="av" style="background:var(--primary);width:34px;height:34px;font-size:12px">${esc(initials(st.me.name))}</span>
+        <span class="av" style="background:var(--primary);width:34px;height:34px;font-size:12px">${avatarInner(st.me)}</span>
         <span style="flex:1;text-align:start"><div style="font-weight:700">${esc(st.me.name)}</div><div style="font-size:11px;color:var(--text-light)">${esc(st.me.title||ROLE_HE[st.me.role]||'')} · הצג פרופיל</div></span>
         <i class="fa-solid fa-chevron-left" style="color:var(--text-light);font-size:11px"></i>
-      </button>`:'')+'<div class="pop-title">פועל בתור</div><div class="pop-people">'+(st.users||[]).map(u=>`<label class="pop-row" onclick="setMe(${u.id})"><span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span><span style="flex:1">${esc(u.name)}<div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></span>${meId()===u.id?'<i class="fa-solid fa-check" style="color:var(--green)"></i>':''}</label>`).join('')+'</div>'
+      </button>`:'')+'<div class="pop-title">פועל בתור</div><div class="pop-people">'+(st.users||[]).map(u=>`<label class="pop-row" onclick="setMe(${u.id})"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span style="flex:1">${esc(u.name)}<div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></span>${meId()===u.id?'<i class="fa-solid fa-check" style="color:var(--green)"></i>':''}</label>`).join('')+'</div>'
       +'<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px"><button class="pop-row" style="width:100%;color:var(--red);font-weight:600" onclick="Auth.logout()"><span style="width:26px;text-align:center"><i class="fa-solid fa-right-from-bracket"></i></span> התנתק</button></div>';
     return;
   }
@@ -1633,7 +1647,7 @@ function renderPop(name){
   const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
   const sChips=Object.entries(STATUS).map(([k,v])=>`<button class="pop-chip ${f.status===k?'sel':''}" style="--c:${v.c}" onclick="setStatusFilter('${k}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
   const pChips=Object.entries(PRIORITY).map(([k,v])=>`<button class="pop-chip ${f.priority===k?'sel':''}" style="--c:${v.c}" onclick="setPriorityFilter('${k}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
-  const people=(st.users||[]).map(u=>`<label class="pop-row"><input type="checkbox" ${f.people.includes(u.id)?'checked':''} onchange="toggleFilterPerson(${u.id},this.checked)"><span class="av" style="background:var(--primary)">${esc(initials(u.name))}</span><span>${esc(u.name)}</span></label>`).join('')||'<div style="padding:8px;color:var(--text-light);font-size:13px">אין משתמשים</div>';
+  const people=(st.users||[]).map(u=>`<label class="pop-row"><input type="checkbox" ${f.people.includes(u.id)?'checked':''} onchange="toggleFilterPerson(${u.id},this.checked)"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span>${esc(u.name)}</span></label>`).join('')||'<div style="padding:8px;color:var(--text-light);font-size:13px">אין משתמשים</div>';
   const sortOpts=[['','ללא מיון','fa-ban'],['due','תאריך יעד','fa-calendar-day'],['priority','עדיפות','fa-flag'],['title','שם (א-ת)','fa-arrow-down-a-z']];
   const sort=sortOpts.map(([k,he,ic])=>`<label class="pop-row"><input type="radio" name="sortby" ${(f.sort||'')===k?'checked':''} onchange="setSort('${k}')"><i class="fa-solid ${ic}" style="width:16px;color:var(--text-light)"></i><span>${he}</span></label>`).join('');
   el.innerHTML=`
@@ -1827,11 +1841,11 @@ function customCells(t){
 function peopleDisp(ids){
   const users=(Array.isArray(ids)?ids:[]).map(uid=>(st.users||[]).find(u=>u.id===uid)).filter(Boolean);
   if(!users.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>';
-  return '<div class="avatars">'+users.slice(0,3).map(u=>`<span class="av" title="${esc(u.name)}">${esc(initials(u.name))}</span>`).join('')+(users.length>3?`<span class="av" style="background:var(--text-light)">+${users.length-3}</span>`:'')+'</div>';
+  return '<div class="avatars">'+users.slice(0,3).map(u=>`<span class="av" title="${esc(u.name)}">${avatarInner(u)}</span>`).join('')+(users.length>3?`<span class="av" style="background:var(--text-light)">+${users.length-3}</span>`:'')+'</div>';
 }
 function buildPeoplePop(pop,taskId,colId){
   const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];
-  pop.innerHTML=(st.users||[]).map(u=>`<button class="pl-opt ${vals.includes(u.id)?'sel':''}" onclick="togglePeopleCell(event,${taskId},'${colId}',${u.id})"><span class="av" style="background:var(--primary);margin:0">${esc(initials(u.name))}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${vals.includes(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||'<div style="padding:6px;color:var(--text-light);font-size:12px">אין משתמשים</div>';
+  pop.innerHTML=(st.users||[]).map(u=>`<button class="pl-opt ${vals.includes(u.id)?'sel':''}" onclick="togglePeopleCell(event,${taskId},'${colId}',${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${vals.includes(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||'<div style="padding:6px;color:var(--text-light);font-size:12px">אין משתמשים</div>';
 }
 function peopleCellMenu(e,taskId,colId){
   e.stopPropagation();
@@ -2717,7 +2731,7 @@ const Forms={
     else if(f.type==='rating') inp=`<select id="${id}"><option value="">—</option>${[1,2,3,4,5].map(n=>`<option value="${n}">${'★'.repeat(n)}</option>`).join('')}</select>`;
     else if(f.type==='status') inp=`<select id="${id}">${Object.entries(STATUS).map(([k,v])=>`<option value="${k}">${v.he}</option>`).join('')}</select>`;
     else if(f.type==='priority') inp=`<select id="${id}">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select>`;
-    else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${(st.users||[]).map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${esc(initials(u.name))}</span> ${esc(u.name)}</label>`).join('')}</div>`;
+    else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${(st.users||[]).map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${avatarInner(u)}</span> ${esc(u.name)}</label>`).join('')}</div>`;
     else if(f.type==='tags') inp=`<input id="${id}" placeholder="מופרד בפסיקים">`;
     else if(f.type==='dropdown') inp=`<div class="ff-multi" id="${id}">${((f.col&&f.col.options)||[]).map(o=>`<label class="ff-chip"><input type="checkbox" value="${esc(o)}"> ${esc(o)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין אפשרויות בעמודה</span>'}</div>`;
     else inp=`<input id="${id}" placeholder="(${FIELD_TYPE_HE[f.type]||f.type})">`;
@@ -2805,7 +2819,7 @@ const Chat = {
     const canDel=c.user_id===me||(st.me&&(st.me.role==='admin'||st.me.role==='manager'));
     const replies=(c.replies||[]).map(r=>this.commentHTML(r,true)).join('');
     return `<div class="cmt ${isReply?'cmt-reply':''}">
-      <span class="av av-click" style="background:var(--primary)" title="הצג פרופיל" onclick="Profile.open(${c.user_id})">${esc(initials(c.user_name))}</span>
+      <span class="av av-click" style="background:var(--primary)" title="הצג פרופיל" onclick="Profile.open(${c.user_id})">${avatarInner(c)}</span>
       <div class="cmt-main">
         <div class="cmt-head"><b>${esc(c.user_name)}</b><span class="cmt-role">${ROLE_HE[c.user_role]||''}</span><span class="cmt-time">${fdatetime(c.created_at)}</span></div>
         <div class="cmt-body">${this.renderContent(c.content,c.id)}</div>
@@ -2832,7 +2846,7 @@ const Chat = {
   insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); },
   startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
   cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
-  mentionMenu(e){ e.stopPropagation(); this._float(e.currentTarget,(st.users||[]).map(u=>`<button onclick="Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${esc(initials(u.name))}</span> ${esc(u.name)}</button>`).join('')); },
+  mentionMenu(e){ e.stopPropagation(); this._float(e.currentTarget,(st.users||[]).map(u=>`<button onclick="Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')); },
   pickMention(id){ const u=(st.users||[]).find(x=>x.id===id); if(!u)return; if(!this.mentions.includes(id))this.mentions.push(id); this.insert('@'+u.name+' '); closeCellPops(); },
   emojiMenu(e){ e.stopPropagation(); this._float(e.currentTarget,'<div class="emoji-grid">'+EMOJIS.map(x=>`<button onclick="Chat.insert('${x} ');closeCellPops()">${x}</button>`).join('')+'</div>'); },
   addLink(){ const url=prompt('הדבק קישור:'); if(url)this.insert(url+' '); },
