@@ -41,7 +41,7 @@ async def no_cache_html(request, call_next):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     return resp
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "cityos.db")
+DB_PATH = os.environ.get("CITYOS_DB_PATH", os.path.join(os.path.dirname(__file__), "cityos.db"))
 engine = init_db(f"sqlite:///{DB_PATH}")
 
 def _migrate():
@@ -785,7 +785,7 @@ def update_task(task_id: int, data: dict):
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
 
 # ── File uploads (for the Files column) ─────────────────────────────
-UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+UPLOAD_DIR = os.environ.get("CITYOS_UPLOAD_DIR", os.path.join(os.path.dirname(__file__), "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 

@@ -16,3 +16,4 @@ frontend/index.html.old
 frontend/index.html.bak
 frontend/*.pre-monday.*.bak
 node_modules/
+.vercel
