@@ -273,6 +273,7 @@ def list_boards(user_id: Optional[int] = None):
                 "is_archived": b.is_archived,
                 "department_name": dept_name,
                 "task_count": task_count,
+                "my_role": _board_role(db, b.id, user_id) if user_id is not None else None,
                 "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             })
         return result

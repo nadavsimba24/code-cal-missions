@@ -81,6 +81,18 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .sb-item.active{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .sb-item .ic{width:22px;text-align:center;font-size:15px;flex-shrink:0}
 .sb-item .cnt{margin-inline-start:auto;font-size:11px;color:var(--text-light);background:var(--bg);padding:1px 7px;border-radius:10px}
+.sb-item .sb-more{margin-inline-start:auto;flex-shrink:0;width:24px;height:24px;border:none;background:none;color:var(--text-light);border-radius:5px;cursor:pointer;opacity:0;transition:.12s;display:grid;place-items:center;font-size:13px}
+.sb-item:hover .sb-more,.sb-item.active .sb-more{opacity:1}
+.sb-item .sb-more:hover{background:rgba(0,0,0,.09);color:var(--text)}
+.row-menu{min-width:170px;padding:5px}
+.row-menu-pop{padding:0}
+.rm-item{display:flex;align-items:center;gap:10px;width:100%;text-align:right;background:none;border:none;border-radius:7px;padding:9px 11px;font-size:13px;font-weight:500;color:var(--text);cursor:pointer;font-family:inherit}
+.rm-item i{width:16px;text-align:center;color:var(--text-light)}
+.rm-item:hover{background:var(--row-hover)}
+.rm-item.danger{color:var(--red)}
+.rm-item.danger i{color:var(--red)}
+.rm-item.danger:hover{background:#ffeaea}
+.rm-note{padding:9px 11px;font-size:11.5px;color:var(--text-light)}
 .sb-foot{border-top:1px solid var(--border);padding:8px}
 
 /* ===== Main ===== */
@@ -467,6 +479,25 @@ img.pf-av{object-fit:cover;background:#fff}
 #agent-fab:active{transform:scale(1.02)}
 #agent-fab::after{content:'';position:absolute;inset:0;border-radius:50%;animation:fab-pulse 2.4s infinite;pointer-events:none}
 @keyframes fab-pulse{0%{box-shadow:0 0 0 0 rgba(0,200,117,.45)}70%{box-shadow:0 0 0 13px rgba(0,200,117,0)}100%{box-shadow:0 0 0 0 rgba(0,200,117,0)}}
+#agent-fab.loading{cursor:progress;pointer-events:none}
+#agent-fab.loading .fa-robot{display:none}
+#agent-fab.loading::after{animation:none}
+#agent-fab .fab-spin{display:none;width:22px;height:22px;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:fab-rot .7s linear infinite}
+#agent-fab.loading .fab-spin{display:block}
+#agent-fab.active{background:linear-gradient(135deg,#00c875,#0073ea)}
+#agent-fab.active::after{animation:none}
+@keyframes fab-rot{to{transform:rotate(360deg)}}
+/* first-time welcome bubble next to the FAB */
+#agent-hint{position:fixed;bottom:30px;left:88px;z-index:139;width:260px;background:#fff;border:1px solid var(--border-strong);border-radius:14px;box-shadow:0 12px 34px rgba(0,0,0,.18);padding:14px 16px 15px;font-size:12.5px;color:var(--text);opacity:0;transform:translateY(8px) scale(.96);transform-origin:bottom left;pointer-events:none;transition:.22s cubic-bezier(.2,.9,.3,1.3)}
+#agent-hint.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+#agent-hint::before{content:'';position:absolute;bottom:16px;left:-7px;width:14px;height:14px;background:#fff;border-left:1px solid var(--border-strong);border-bottom:1px solid var(--border-strong);transform:rotate(45deg)}
+#agent-hint h4{margin:0 0 6px;font-size:13px;display:flex;align-items:center;gap:7px}
+#agent-hint h4 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(0,200,117,.18)}
+#agent-hint p{margin:0 0 10px;color:var(--text-light);line-height:1.5}
+#agent-hint .ex{display:block;width:100%;text-align:right;background:var(--row-hover);border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin:5px 0 0;font-size:12px;color:var(--text);cursor:pointer;transition:.12s}
+#agent-hint .ex:hover{background:#eaf2ff;border-color:var(--primary)}
+#agent-hint .hint-x{position:absolute;top:8px;left:10px;background:none;border:none;color:var(--text-light);cursor:pointer;font-size:13px;padding:2px 5px;border-radius:5px}
+#agent-hint .hint-x:hover{background:var(--row-hover)}
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);background:#323338;color:#fff;padding:12px 20px;border-radius:9px;z-index:300;transition:.3s;font-weight:600;font-size:13px}
 #toast.show{transform:translateX(-50%) translateY(0)}
 .empty{text-align:center;color:var(--text-light);padding:60px 20px}
@@ -859,9 +890,18 @@ img.pf-av{object-fit:cover;background:#fff}
 </div>
 
 <!-- Floating agent bubble (bottom-left) -->
-<button id="agent-fab" onclick="launchPageAgent()" title="עוזר עמוד (page-agent) — שליטה בממשק בשפה טבעית" aria-label="עוזר עמוד">
+<button id="agent-fab" onclick="onAgentFab()" title="עוזר עמוד (page-agent) — שליטה בממשק בשפה טבעית" aria-label="עוזר עמוד">
   <i class="fa-solid fa-robot"></i>
+  <span class="fab-spin" aria-hidden="true"></span>
 </button>
+<div id="agent-hint" role="dialog" aria-label="עוזר העמוד">
+  <button class="hint-x" onclick="dismissAgentHint(event)" aria-label="סגור">✕</button>
+  <h4><span class="dot"></span>עוזר העמוד</h4>
+  <p>אני יכול לתפעל את המערכת בשבילך בשפה טבעית. נסה משהו כזה:</p>
+  <button class="ex" onclick="launchPageAgent('פתח את הלוח הראשון והצג את המשימות')">"פתח את הלוח הראשון והצג את המשימות"</button>
+  <button class="ex" onclick="launchPageAgent('צור פריט חדש בשם בדיקה')">"צור פריט חדש בשם בדיקה"</button>
+  <button class="ex" onclick="launchPageAgent('עבור לתצוגת לוח שנה')">"עבור לתצוגת לוח שנה"</button>
+</div>
 
 <div id="toast"></div>
 
@@ -914,6 +954,7 @@ async function enterApp(){
   await loadBoards();
   if(st.boards.length){ await openBoard(st.boards[0].id); }
   else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
+  setTimeout(showAgentHint,3500);
 }
 const Auth = {
   showLogin(){
@@ -954,11 +995,38 @@ async function loadBoards(){
 }
 function renderSidebar(){
   document.getElementById('board-list').innerHTML = st.boards.map(b=>`
-    <div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" onclick="openBoard(${b.id})">
+    <div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" onclick="openBoard(${b.id})" oncontextmenu="boardRowMenu(event,${b.id});return false">
       <span class="ic">${b.icon||'📋'}</span>
       <span style="overflow:hidden;text-overflow:ellipsis">${esc(b.name)}</span>
-      <span class="cnt" title="${b.task_count||0} פריטים בלוח (לא כולל תת-פריטים)">${b.task_count||0}</span>
+      <button class="sb-more" title="אפשרויות לוח" onclick="boardRowMenu(event,${b.id})" aria-label="אפשרויות לוח"><i class="fa-solid fa-ellipsis-vertical"></i></button>
     </div>`).join('')||'<div style="padding:14px;color:var(--text-light);font-size:12px;text-align:center">אין לוחות שהוזמנת אליהם</div>';
+}
+function boardRowMenu(e,id){
+  e.stopPropagation(); e.preventDefault();
+  const b=(st.boards||[]).find(x=>x.id===id); if(!b)return;
+  const isAdmin=b.my_role==='admin';
+  const items=[];
+  items.push(`<button class="rm-item" onclick="openBoard(${id})"><i class="fa-solid fa-arrow-up-right-from-square"></i> פתח לוח</button>`);
+  if(isAdmin) items.push(`<button class="rm-item danger" onclick="closeCellPops();deleteBoardById(${id})"><i class="fa-solid fa-trash"></i> מחק לוח</button>`);
+  else items.push(`<div class="rm-note">רק מנהל הלוח יכול למחוק</div>`);
+  openCellPop(e.currentTarget,`<div class="row-menu">${items.join('')}</div>`,'row-menu-pop');
+}
+function deleteBoardById(id){
+  const b=(st.boards||[]).find(x=>x.id===id)||(st.board&&st.board.id===id?st.board:null);
+  const name=b?b.name:'';
+  askConfirm(`למחוק את הלוח "${name}"?`,async()=>{
+    try{
+      await api('/api/boards/'+id+'?user_id='+meId(),{method:'DELETE'});
+      closeModals(); toast('הלוח נמחק');
+      if(st.board&&st.board.id===id) st.board=null;
+      st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
+      renderSidebar();
+      if(!st.board){
+        if(st.boards.length){ await openBoard(st.boards[0].id); }
+        else{ document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות</div></div>'; }
+      }
+    }catch(e){ toast('רק מנהל הלוח יכול למחוק'); }
+  },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
 }
 async function openBoard(id){
   if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); }
@@ -1369,20 +1437,7 @@ const Members = {
         <button class="btn btn-danger" style="margin-inline-start:auto" onclick="Members.deleteBoard()"><i class="fa-solid fa-trash"></i> מחק לוח</button>
       </div>`);
   },
-  deleteBoard(){
-    const b=st.board; if(!b)return;
-    askConfirm(`למחוק את הלוח "${b.name}"?`,async()=>{
-      try{
-        await api('/api/boards/'+b.id+'?user_id='+meId(),{method:'DELETE'});
-        closeModals(); toast('הלוח נמחק');
-        st.board=null;
-        st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
-        renderSidebar();
-        if(st.boards.length){ await openBoard(st.boards[0].id); }
-        else{ document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות</div></div>'; }
-      }catch(e){ toast('רק מנהל הלוח יכול למחוק'); }
-    },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
-  },
+  deleteBoard(){ if(st.board) deleteBoardById(st.board.id); },
   listHTML(){
     return this.data.members.map(m=>`<div class="mem-row">
       <span class="av" style="background:var(--primary)">${esc(initials(m.name))}</span>
@@ -2820,22 +2875,83 @@ const AI = {
    Loaded on demand as an ESM module from a CDN (no build step needed). It talks
    to the LLM through our own /api/llm/v1 proxy, so the API key never reaches the
    browser. PageAgent mounts its own in-page panel. */
-let _pageAgent=null;
+let _pageAgent=null, _paLoading=false;
+function _paHost(){ return document.getElementById('page-agent-runtime_agent-panel'); }
+function _paVisible(){ const el=_paHost(); return !!(el && getComputedStyle(el).display!=='none'); }
+function _paFab(active){ const f=document.getElementById('agent-fab'); if(f)f.classList.toggle('active',!!active); }
+
 // The panel host starts as display:none and only appears after panel.show().
 // The panel may not be mounted synchronously right after `new PageAgent`, so
 // retry show() until the host is actually visible (fixes a race where the
 // bubble/bar never appears in real browsers).
-function _paShow(){
+function _paShow(cb){
   let tries=0;
   const t=setInterval(()=>{
     tries++;
     try{ _pageAgent&&_pageAgent.panel&&_pageAgent.panel.show&&_pageAgent.panel.show(); }catch(e){}
-    const el=document.getElementById('page-agent-runtime_agent-panel');
-    if((el&&getComputedStyle(el).display!=='none')||tries>25) clearInterval(t);
+    if(_paVisible()||tries>25){ clearInterval(t); _paFab(_paVisible()); _paLocalize(); cb&&cb(); }
   },200);
 }
-async function launchPageAgent(){
-  if(_pageAgent){ _paShow(); return; }
+
+/* page-agent's UI ships only en-US / zh-CN, so language:'he-IL' falls back to
+   English. Rewrite the panel's built-in strings to Hebrew after it mounts, and
+   keep them Hebrew as the library re-renders them (placeholder + status text). */
+const _PA_HE={
+  "Enter new task, describe steps in detail, press Enter to submit":"כתוב כאן בקשה (למשל: \"פתח את הלוח הראשון\") ולחץ Enter לשליחה",
+  "Please answer the question above, press Enter to submit":"השב/י על השאלה שלמעלה ולחץ Enter לשליחה",
+  "Waiting for task to start...":"ממתין להתחלת המשימה…",
+  "Task terminated":"המשימה הופסקה",
+  "Task completed":"המשימה הושלמה",
+  "Task done":"המשימה בוצעה",
+  "Task execution failed":"ביצוע המשימה נכשל",
+  "Task description is required":"יש להזין תיאור משימה",
+  "Asking user...":"ממתין לתשובתך…"
+};
+let _paLocObs=null;
+function _paApplyHe(root){
+  if(!root||!root.querySelectorAll)return;
+  root.querySelectorAll('[placeholder]').forEach(el=>{
+    const he=_PA_HE[el.getAttribute('placeholder')];
+    if(he){ el.setAttribute('placeholder',he); el.style.direction='rtl'; el.style.textAlign='right'; }
+  });
+  const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+  let n; while(n=w.nextNode()){ const he=_PA_HE[(n.nodeValue||'').trim()]; if(he&&n.nodeValue.trim()!==he)n.nodeValue=he; }
+}
+function _paLocalize(){
+  const host=_paHost(); if(!host)return;
+  _paApplyHe(host);
+  if(_paLocObs)return;
+  _paLocObs=new MutationObserver(()=>_paApplyHe(host));
+  _paLocObs.observe(host,{subtree:true,childList:true,attributes:true,attributeFilter:['placeholder'],characterData:true});
+}
+function _paHide(){
+  try{ _pageAgent&&_pageAgent.panel&&_pageAgent.panel.hide&&_pageAgent.panel.hide(); }catch(e){}
+  const el=_paHost(); if(el && _paVisible())el.style.display='none';
+  _paFab(false);
+}
+// Best-effort: hand a natural-language task to the agent. The exact API isn't
+// contractual, so try known method names, then fall back to filling its input.
+function _paSend(prompt){
+  if(!prompt)return;
+  const tries=['run','ask','send','chat','execute','submit'];
+  for(const m of tries){ try{ if(typeof _pageAgent[m]==='function'){ _pageAgent[m](prompt); return; } }catch(e){} }
+  const box=_paHost(); const inp=box&&(box.querySelector('textarea')||box.querySelector('input[type=text]'));
+  if(inp){ inp.value=prompt; inp.dispatchEvent(new Event('input',{bubbles:true})); inp.focus(); }
+}
+
+// FAB click: toggle the panel when already loaded, otherwise load it.
+function onAgentFab(){
+  dismissAgentHint();
+  if(_paLoading)return;
+  if(_pageAgent){ if(_paVisible()) _paHide(); else _paShow(); return; }
+  launchPageAgent();
+}
+async function launchPageAgent(prompt){
+  dismissAgentHint();
+  if(_paLoading)return;
+  if(_pageAgent){ _paShow(()=>_paSend(prompt)); return; }
+  _paLoading=true;
+  const fab=document.getElementById('agent-fab'); fab&&fab.classList.add('loading');
   toast('טוען עוזר עמוד…');
   try{
     const mod=await import('https://cdn.jsdelivr.net/npm/page-agent@1.11.0/+esm');
@@ -2845,9 +2961,21 @@ async function launchPageAgent(){
       apiKey:'proxy',                          // dummy; the real key is injected by the proxy
       language:'he-IL',
     });
-    _paShow();
-    toast('עוזר העמוד פעיל — בקש פעולה בשפה טבעית');
+    _paShow(()=>_paSend(prompt));
+    toast(prompt?'שולח לעוזר העמוד…':'עוזר העמוד פעיל — בקש פעולה בשפה טבעית');
   }catch(e){ console.error('page-agent load failed',e); toast('שגיאה בטעינת עוזר העמוד'); }
+  finally{ _paLoading=false; fab&&fab.classList.remove('loading'); }
+}
+
+// One-time discoverability bubble pointing at the FAB.
+function showAgentHint(){
+  if(localStorage.getItem('cc_agent_hint')||_pageAgent)return;
+  const h=document.getElementById('agent-hint'); if(h)h.classList.add('show');
+}
+function dismissAgentHint(e){
+  if(e)e.stopPropagation();
+  const h=document.getElementById('agent-hint'); if(h)h.classList.remove('show');
+  localStorage.setItem('cc_agent_hint','1');
 }
 
 /* ============ local LLM models ============ */
