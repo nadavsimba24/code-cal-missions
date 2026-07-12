@@ -1304,6 +1304,23 @@ def login_history(uid: int, actor_id: Optional[int] = None, limit: int = 50):
             "ip": e.ip, "user_agent": e.user_agent,
         } for e in evs]
 
+@app.get("/api/login-history")
+def all_login_history(actor_id: Optional[int] = None, limit: int = 100):
+    """Consolidated login history across all users — system admins only."""
+    with Session(engine) as db:
+        if _ws_role(db, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול לראות היסטוריית התחברות")
+        names = {u.id: (u.name, u.avatar_url) for u in db.query(User).all()}
+        evs = (db.query(LoginEvent).order_by(LoginEvent.logged_in_at.desc())
+               .limit(max(1, min(limit, 500))).all())
+        return [{
+            "user_id": e.user_id,
+            "user_name": names.get(e.user_id, ("—", None))[0],
+            "avatar_url": names.get(e.user_id, ("—", None))[1],
+            "logged_in_at": e.logged_in_at.isoformat() if e.logged_in_at else None,
+            "ip": e.ip, "user_agent": e.user_agent,
+        } for e in evs]
+
 @app.patch("/api/users/{uid}")
 def update_user(uid: int, data: dict):
     """Update a user's profile. A user may edit their own profile; a system
