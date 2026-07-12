@@ -1466,7 +1466,7 @@ const SysAdmin = {
   usersHTML(){
     return `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. תפקיד ומחלקה דרך תפריט <i class="fa-solid fa-ellipsis-vertical"></i>, סטטוס בטוגל.</div>
       <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
-        <th style="width:34px"></th><th>שם</th><th>מייל</th><th>תפקיד</th><th>מחלקה</th><th>כניסה אחרונה</th><th>סטטוס</th>
+        <th style="width:34px"></th><th>שם</th><th>מייל</th><th>תפקיד</th><th>מחלקה</th><th>סטטוס</th>
       </tr></thead><tbody id="sa-rows">${this.rowsHTML()}</tbody></table></div>`;
   },
   async renderHistory(){
@@ -1484,7 +1484,7 @@ const SysAdmin = {
   },
   fdt(iso){ if(!iso)return '<span style="color:var(--text-light)">— מעולם לא —</span>'; try{ return esc(new Date(iso).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})); }catch(e){ return esc(iso); } },
   rowsHTML(){
-    if(!this.users||!this.users.length) return `<tr><td colspan="7"><div class="empty" style="padding:20px">אין משתמשים</div></td></tr>`;
+    if(!this.users||!this.users.length) return `<tr><td colspan="6"><div class="empty" style="padding:20px">אין משתמשים</div></td></tr>`;
     return this.users.map(u=>{
       const active=u.is_active!==false;
       return `<tr class="${active?'':'inactive'}">
@@ -1493,7 +1493,6 @@ const SysAdmin = {
         <td style="color:var(--text-muted)">${esc(u.email||'—')}</td>
         <td>${ROLE_HE[u.role]||esc(u.role||'—')}</td>
         <td style="color:var(--text-muted)">${esc(u.department_name||'—')}</td>
-        <td style="color:var(--text-muted);white-space:nowrap;font-size:12px">${this.fdt(u.last_login)}</td>
         <td>${(()=>{const self=u.id===meId();return `<label class="sa-toggle ${active?'on':''} ${self?'disabled':''}" title="${self?'אי אפשר לשנות את הסטטוס שלך':'שנה סטטוס פעיל/לא פעיל'}"><input type="checkbox" ${active?'checked':''} ${self?'disabled':''} onchange="SysAdmin.toggleActive(${u.id},this.checked)"><span class="sa-tk"></span><span class="sa-tl">${active?'פעיל':'לא פעיל'}</span></label>`;})()}</td>
       </tr>`;
     }).join('');
