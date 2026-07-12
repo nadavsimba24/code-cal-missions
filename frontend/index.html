@@ -428,6 +428,17 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .sa-badge.on{background:#e7f6ec;color:#1a7f43}
 .sa-badge.off{background:#f1f2f4;color:var(--text-light)}
 .sa-badge i{font-size:7px}
+/* active/inactive toggle (system-admin only) */
+.sa-toggle{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+.sa-toggle input{position:absolute;opacity:0;width:0;height:0}
+.sa-toggle .sa-tk{position:relative;width:38px;height:22px;border-radius:22px;background:#cdd0d6;transition:background .18s;flex-shrink:0}
+.sa-toggle .sa-tk::after{content:'';position:absolute;top:2px;inset-inline-start:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .18s}
+.sa-toggle.on .sa-tk{background:#1a7f43}
+.sa-toggle.on .sa-tk::after{transform:translateX(-16px)}
+.sa-toggle .sa-tl{font-size:12px;font-weight:600;min-width:46px}
+.sa-toggle.on .sa-tl{color:#1a7f43}
+.sa-toggle:not(.on) .sa-tl{color:var(--text-light)}
+.sa-toggle.disabled{cursor:not-allowed;opacity:.6}
 .sa-more{width:28px;height:28px;border:none;background:none;color:var(--text-light);border-radius:6px;cursor:pointer}
 .sa-more:hover{background:rgba(0,0,0,.08);color:var(--text)}
 .sa-menu-lbl{font-size:10.5px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.04em;padding:2px 4px 0}
@@ -786,7 +797,6 @@ img.pf-av{object-fit:cover;background:#fff}
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
       <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
-      <div class="sb-item" onclick="launchPageAgent()" title="שליטה בממשק בשפה טבעית (page-agent)"><span class="ic"><i class="fa-solid fa-bolt" style="color:var(--orange)"></i></span> עוזר עמוד<span class="sb-soon" style="color:var(--orange);border-color:var(--orange)">Beta</span></div>
       <div class="sb-item" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
       <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
@@ -1447,24 +1457,20 @@ const SysAdmin = {
         <td style="color:var(--text-muted)">${esc(u.email||'—')}</td>
         <td>${ROLE_HE[u.role]||esc(u.role||'—')}</td>
         <td style="color:var(--text-muted)">${esc(u.department_name||'—')}</td>
-        <td><span class="sa-badge ${active?'on':'off'}"><i class="fa-solid fa-circle"></i> ${active?'פעיל':'לא פעיל'}</span></td>
+        <td>${(()=>{const self=u.id===meId();return `<label class="sa-toggle ${active?'on':''} ${self?'disabled':''}" title="${self?'אי אפשר לשנות את הסטטוס שלך':'שנה סטטוס פעיל/לא פעיל'}"><input type="checkbox" ${active?'checked':''} ${self?'disabled':''} onchange="SysAdmin.toggleActive(${u.id},this.checked)"><span class="sa-tk"></span><span class="sa-tl">${active?'פעיל':'לא פעיל'}</span></label>`;})()}</td>
       </tr>`;
     }).join('');
   },
   rowMenu(e,uid){
     e.stopPropagation();
     const u=(this.users||[]).find(x=>x.id===uid); if(!u)return;
-    const active=u.is_active!==false;
     const roles=['admin','manager','member','viewer'];
     const roleSel=`<select class="sa-menu-sel" onchange="SysAdmin.setRole(${uid},this.value)">${roles.map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_HE[r]}</option>`).join('')}</select>`;
     const deptSel=`<select class="sa-menu-sel" onchange="SysAdmin.setDept(${uid},this.value)"><option value="">— ללא מחלקה —</option>${(st.depts||[]).map(d=>`<option value="${d.id}" ${u.department_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
-    const isSelf=uid===meId();
-    const toggle=isSelf?`<div class="rm-note">אי אפשר להשבית את עצמך</div>`
-      :`<button class="rm-item ${active?'danger':''}" onclick="SysAdmin.toggleActive(${uid},${!active})"><i class="fa-solid fa-${active?'user-slash':'user-check'}"></i> ${active?'השבת משתמש':'הפעל משתמש'}</button>`;
     openCellPop(e.currentTarget,`<div class="row-menu" style="min-width:214px;padding:10px;gap:9px;display:flex;flex-direction:column">
       <div class="sa-menu-lbl">תפקיד</div>${roleSel}
       <div class="sa-menu-lbl">מחלקה</div>${deptSel}
-      <div style="height:1px;background:var(--border);margin:2px 0"></div>${toggle}
+      <div class="rm-note" style="padding-top:4px">סטטוס פעיל/לא-פעיל נשלט בטוגל שבעמודת "סטטוס".</div>
     </div>`,'row-menu-pop');
   },
   async _patch(uid,body,okMsg){
