@@ -543,6 +543,16 @@ class AuditLog(Base):
     changer = relationship("User", foreign_keys=[changed_by])
 
 
+class LoginEvent(Base):
+    """A single successful login, recorded for the admin login-history view."""
+    __tablename__ = "login_events"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    logged_in_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    ip = Column(String(64))
+    user_agent = Column(String(400))
+
+
 # ── Init DB ──────────────────────────────────────────────────────────
 
 def init_db(db_url="sqlite:///cityos.db"):

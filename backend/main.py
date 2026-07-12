@@ -21,7 +21,7 @@ from models import (
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
     Approval, ChangeRequest, KPI, Dependency, Document, AuditLog,
     ProjectStatus, ApprovalStatus, ChangeRequestStatus,
-    DependencyType, BudgetItemType, DocumentType
+    DependencyType, BudgetItemType, DocumentType, LoginEvent
 )
 
 try:
@@ -1249,6 +1249,13 @@ def list_users():
     with Session(engine) as db:
         users = db.query(User).all()
         dept_names = {d.id: d.name for d in db.query(Department).all()}
+        # most-recent login per user (for the admin directory "last login" column)
+        from sqlalchemy import func as _func
+        last_logins = dict(
+            db.query(LoginEvent.user_id, _func.max(LoginEvent.logged_in_at)).group_by(LoginEvent.user_id).all()
+        )
+        def _iso(dt):
+            return dt.isoformat() if dt else None
         return [{
             "id": u.id, "name": u.name, "email": u.email,
             "role": u.role, "avatar_url": u.avatar_url,
@@ -1256,9 +1263,46 @@ def list_users():
             "department_name": dept_names.get(u.department_id),
             "is_active": bool(u.is_active) if u.is_active is not None else True,
             "phone": u.phone, "title": u.title,
+            "last_login": _iso(last_logins.get(u.id)),
             "email_notifications": bool(u.email_notifications) if u.email_notifications is not None else True,
             "notif_prefs": u.notif_prefs or {},
         } for u in users]
+
+@app.post("/api/auth/login")
+async def record_login(request: Request):
+    """Record a successful login for the admin login-history view."""
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    uid = data.get("user_id")
+    with Session(engine) as db:
+        u = db.query(User).filter(User.id == uid).first()
+        if not u:
+            raise HTTPException(404, "user not found")
+        ev = LoginEvent(
+            user_id=uid,
+            ip=(request.client.host if request.client else None),
+            user_agent=(request.headers.get("user-agent") or "")[:400],
+        )
+        db.add(ev)
+        db.commit()
+        return {"status": "ok", "logged_in_at": ev.logged_in_at.isoformat()}
+
+@app.get("/api/users/{uid}/login-history")
+def login_history(uid: int, actor_id: Optional[int] = None, limit: int = 50):
+    """Login history for a user — visible to system (workspace) admins only."""
+    with Session(engine) as db:
+        if _ws_role(db, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול לראות היסטוריית התחברות")
+        if not db.query(User.id).filter(User.id == uid).scalar():
+            raise HTTPException(404, "user not found")
+        evs = (db.query(LoginEvent).filter(LoginEvent.user_id == uid)
+               .order_by(LoginEvent.logged_in_at.desc()).limit(max(1, min(limit, 200))).all())
+        return [{
+            "logged_in_at": e.logged_in_at.isoformat() if e.logged_in_at else None,
+            "ip": e.ip, "user_agent": e.user_agent,
+        } for e in evs]
 
 @app.patch("/api/users/{uid}")
 def update_user(uid: int, data: dict):
