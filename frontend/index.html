@@ -722,6 +722,10 @@ img.pf-av{object-fit:cover;background:#fff}
 /* board members / permissions */
 .bh-perm{font-size:12px;font-weight:600;color:var(--primary);background:var(--primary-soft);border-radius:7px;padding:5px 11px;display:inline-flex;align-items:center;gap:6px;vertical-align:middle;margin-inline-start:6px}
 .bh-perm:hover{background:var(--primary);color:#fff}
+.bh-owner{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;margin-inline-start:8px;padding:3px 10px 3px 4px;background:var(--bg);border:1px solid var(--border);border-radius:20px;font-size:12px;cursor:default}
+.bh-owner .bh-owner-lbl{font-size:10.5px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.03em}
+.bh-owner .av{width:24px;height:24px;font-size:10px;margin:0;border-width:0}
+.bh-owner .bh-owner-name{font-weight:600;color:var(--text)}
 .mem-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--border)}
 .mem-row .av{width:32px;height:32px;font-size:12px;margin:0;flex-shrink:0}
 .mem-row select{border:1px solid var(--border-strong);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12.5px}
@@ -1082,7 +1086,16 @@ function renderBoardHead(){
   document.getElementById('bh-title').innerHTML =
     `<span class="bt-icon${canEdit?' editable':''}" ${canEdit?'onclick="editBoardIcon(event)" title="שנה אייקון"':''}>${st.board.icon||'📋'}</span> `+
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
+    ownerChipHTML()+
     (st.board.my_role==='admin'?`<button class="bh-perm" onclick="Members.open()" title="חברים והרשאות"><i class="fa-solid fa-user-shield"></i> הרשאות</button>`:'');
+}
+/* Board owner(s) chip — the board-admin members, visible to everyone. */
+function ownerChipHTML(){
+  const o=(st.board&&st.board.owners)||[];
+  if(!o.length)return '';
+  const names=o.map(x=>x.name).join(', ');
+  const extra=o.length>1?`<span style="color:var(--text-light);font-weight:600">+${o.length-1}</span>`:'';
+  return `<span class="bh-owner" title="בעלי הלוח: ${esc(names)}"><span class="bh-owner-lbl">בעלים</span><span class="av">${avatarInner(o[0])}</span><span class="bh-owner-name">${esc(o[0].name)}</span>${extra}</span>`;
 }
 function editBoardIcon(e){
   e.stopPropagation();

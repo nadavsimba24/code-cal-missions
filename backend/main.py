@@ -341,6 +341,14 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             tasks = [t for t in tasks if _item_perm(t, user_id, my_role) != "none"]
         tasks_out = [_serialize_task(t, db, user_id=user_id, board_role=my_role, columns=columns) for t in tasks]
 
+        # board owners = members with the board-scoped admin role (creator + any
+        # promoted admin). Exposed to every member so anyone can see who manages it.
+        owners = []
+        for m in db.query(BoardMember).filter(BoardMember.board_id == b.id, BoardMember.role == "admin").all():
+            ou = db.query(User).filter(User.id == m.user_id).first()
+            if ou:
+                owners.append({"id": ou.id, "name": ou.name, "avatar_url": ou.avatar_url})
+
         return {
             "id": b.id, "name": b.name, "description": b.description,
             "board_type": b.board_type.value if hasattr(b.board_type, 'value') else b.board_type,
@@ -350,6 +358,7 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             "views": _board_views(b),
             "view_only": (b.settings or {}).get("view_only", False),
             "my_role": my_role,
+            "owners": owners,
             "columns": (b.settings or {}).get("columns", []),
             "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
