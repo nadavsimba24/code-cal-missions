@@ -1,0 +1,3 @@
+# Dev/test dependencies (run: ./venv/bin/pip install -r requirements-dev.txt)
+# httpx (used by FastAPI's TestClient) is already in requirements.txt.
+pytest==9.1.1

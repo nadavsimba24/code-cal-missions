@@ -3008,7 +3008,7 @@ const AI = {
     }catch(e){b.innerHTML='<div class="empty">סוכנים לא זמינים</div>';}
   },
   async runAgent(id){this.tab('chat');this.add('user','הפעלת סוכן: '+id);this.add('bot','חושב...');const r=await this.callSwarm(id,'נתח את הלוח הנוכחי ותן המלצות');this.history.pop();this.add('bot',r);},
-  ctx(){if(!st.board)return '';const t=st.board.tasks||[];return `לוח: ${st.board.name}. ${t.length} משימות. סטטוסים: ${t.map(x=>STATUS[x.status]?STATUS[x.status].he:x.status).join(', ').slice(0,400)}`;},
+  ctx(){if(!st.board)return '';const t=st.board.tasks||[];const g=(st.board.groups||[]).map(x=>`${x.id}:${x.name}`).join(', ');return `מזהה הלוח הפעיל: ${st.board.id}. שם: ${st.board.name}. קבוצות (id:שם): [${g}]. ${t.length} משימות. סטטוסים: ${t.map(x=>STATUS[x.status]?STATUS[x.status].he:x.status).join(', ').slice(0,300)}`;},
   add(role,text){this.history.push({role,text});if(this.tabName!=='chat')this.tab('chat');else this.render();},
   async send(){const i=document.getElementById('ai-input');const q=i.value.trim();if(!q)return;i.value='';this.add('user',q);this.add('bot','חושב...');const r=await this.callAI(q);this.history.pop();this.add('bot',r);},
   async quick(kind){

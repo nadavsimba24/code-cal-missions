@@ -1672,20 +1672,20 @@ AI_TOOLS = [
         "type": "function",
         "function": {
             "name": "create_task",
-            "description": "יצירת משימה חדשה בלוח",
+            "description": "יצירת משימה (פריט) חדשה בלוח. חובה רק board_id ו-title. אם לא צוינה קבוצה — המשימה תיכנס לקבוצה הראשונה בלוח. מלא רק שדות שהמשתמש ביקש במפורש.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "board_id": {"type": "integer", "description": "מזהה הלוח"},
-                    "group_id": {"type": "integer", "description": "מזהה הקבוצה/עמודה"},
+                    "group_id": {"type": "integer", "description": "מזהה הקבוצה/עמודה (אופציונלי; ברירת מחדל: הקבוצה הראשונה בלוח)"},
                     "title": {"type": "string", "description": "כותרת המשימה"},
-                    "description": {"type": "string", "description": "תיאור המשימה"},
-                    "priority": {"type": "string", "enum": ["low", "medium", "high", "critical", "emergency"], "description": "עדיפות"},
-                    "status": {"type": "string", "enum": ["backlog", "todo", "in_progress", "review", "done", "cancelled", "on_hold"], "description": "סטטוס"},
-                    "due_date": {"type": "string", "description": "תאריך יעד בפורמט ISO"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "תגיות"},
+                    "description": {"type": "string", "description": "תיאור המשימה (אופציונלי — השאר ריק אם לא צוין)"},
+                    "priority": {"type": "string", "enum": ["low", "medium", "high", "critical", "emergency"], "description": "עדיפות (אופציונלי; ברירת מחדל: medium)"},
+                    "status": {"type": "string", "enum": ["backlog", "todo", "in_progress", "review", "done", "cancelled", "on_hold"], "description": "סטטוס (אופציונלי; ברירת מחדל: backlog)"},
+                    "due_date": {"type": "string", "description": "תאריך יעד בפורמט ISO (אופציונלי)"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "תגיות (אופציונלי)"},
                 },
-                "required": ["board_id", "group_id", "title"]
+                "required": ["board_id", "title"]
             }
         }
     },
@@ -1893,8 +1893,10 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
         group_id = args.get("group_id")
         title = args.get("title", "משימה חדשה")
         description = args.get("description", "")
+        # defaults for an item created via the agent: medium priority, "בתכנון"
+        # (backlog) status, no assignees, everything else empty.
         priority_str = args.get("priority", "medium")
-        status_str = args.get("status", "todo")
+        status_str = args.get("status", "backlog")
         due_date_str = args.get("due_date")
         tags = args.get("tags", [])
         try:
@@ -1904,7 +1906,7 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
         try:
             status = TaskStatus(status_str)
         except ValueError:
-            status = TaskStatus.TODO
+            status = TaskStatus.BACKLOG
         due_date = None
         if due_date_str:
             try:
@@ -1915,10 +1917,14 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             board = db.query(Board).filter(Board.id == board_id).first()
             if not board:
                 return f"❌ לוח {board_id} לא נמצא."
+            # group_id is optional — fall back to the board's first group so the
+            # agent can add an item without needing to resolve column ids first.
+            g = None
             if group_id:
-                g = db.query(Group).filter(Group.id == group_id).first()
-                if not g:
-                    return f"❌ עמודה {group_id} לא נמצאה."
+                g = db.query(Group).filter(Group.id == group_id, Group.board_id == board_id).first()
+            if not g:
+                g = db.query(Group).filter(Group.board_id == board_id).order_by(Group.position).first()
+            group_id = g.id if g else None
             t = Task(
                 board_id=board_id,
                 group_id=group_id,
@@ -2125,10 +2131,11 @@ def ai_query(data: dict):
 2. כשמשתמש שואל שאלה - ענה מידע מהמערכת
 3. תמיד אשר למשתמש אחרי ביצוע פעולה
 4. כשאתה יוצר לוח חדש, צור גם קבוצות (עמודות) מתאימות: "לתכנון" (backlog), "בתהליך" (in_progress), "הושלם" (done)
-5. צור משימות עם תאריכי יעד רלוונטיים
-6. דבר בעברית תמיד
-7. השתמש באימוג'ים במידה
-8. אם אתה לא יודע איזה department_id או board_id - השתמש ברשימה קודם"""
+5. יצירת פריט (משימה): צריך רק **שם**. קח את הלוח מההקשר — בהקשר יש "מזהה הלוח הפעיל" ורשימת קבוצות; העבר את ה-board_id הזה ל-create_task (group_id אופציונלי, ברירת מחדל היא הקבוצה הראשונה). אם אין לוח פעיל בהקשר - בקש מהמשתמש לאיזה לוח.
+6. ברירות מחדל לפריט חדש: עדיפות **medium**, סטטוס **backlog** (בתכנון), **בלי אחראים**, ושאר השדות ריקים. אל תמלא תיאור/תאריך/תגיות אלא אם המשתמש ביקש במפורש - אל תמציא.
+7. דבר בעברית תמיד
+8. השתמש באימוג'ים במידה
+9. אם אתה לא יודע איזה department_id או board_id - השתמש ברשימה קודם"""
 
     if model_internal == "kremer":
         # DeepSeek with tool calling

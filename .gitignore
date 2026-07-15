@@ -17,3 +17,6 @@ frontend/index.html.bak
 frontend/*.pre-monday.*.bak
 node_modules/
 .vercel
+.pytest_cache/
+tests/_inline_check.js
+backend/uploads/
