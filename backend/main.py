@@ -41,8 +41,17 @@ async def no_cache_html(request, call_next):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     return resp
 
-DB_PATH = os.environ.get("CITYOS_DB_PATH", os.path.join(os.path.dirname(__file__), "cityos.db"))
-engine = init_db(f"sqlite:///{DB_PATH}")
+# Persistent Postgres (production) via DATABASE_URL; SQLite otherwise (local).
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL:
+    if DATABASE_URL.startswith("postgres://"):  # SQLAlchemy needs postgresql://
+        DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+    engine = init_db(DATABASE_URL)
+    IS_SQLITE = False
+else:
+    DB_PATH = os.environ.get("CITYOS_DB_PATH", os.path.join(os.path.dirname(__file__), "cityos.db"))
+    engine = init_db(f"sqlite:///{DB_PATH}")
+    IS_SQLITE = True
 
 def _migrate():
     """Lightweight additive migrations for SQLite (create_all won't ALTER)."""
@@ -77,12 +86,19 @@ def _migrate():
         for uid, (title, phone) in _demo.items():
             conn.execute(text("UPDATE users SET title=COALESCE(title,:t), phone=COALESCE(phone,:p) WHERE id=:id"),
                          {"t": title, "p": phone, "id": uid})
-_migrate()
+# The additive migrations use SQLite PRAGMA/ALTER; on Postgres create_all()
+# already builds every table with all current columns, so they're not needed.
+if IS_SQLITE:
+    _migrate()
 
-# Seed on first run
+# Seed on first run only — on a persistent DB (Postgres) skip if data exists,
+# so real data isn't duplicated or overwritten on every cold start.
 from seed import seed_database, seed_work_plan
-seed_database(engine)
-seed_work_plan(engine)
+with Session(engine) as _seed_db:
+    _db_empty = _seed_db.query(Board).count() == 0
+if _db_empty:
+    seed_database(engine)
+    seed_work_plan(engine)
 
 def _seed_memberships():
     """One-time: give existing boards their members so nothing disappears.

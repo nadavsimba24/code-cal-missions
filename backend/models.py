@@ -556,6 +556,8 @@ class LoginEvent(Base):
 # ── Init DB ──────────────────────────────────────────────────────────
 
 def init_db(db_url="sqlite:///cityos.db"):
-    engine = create_engine(db_url, echo=False)
+    # pool_pre_ping keeps Postgres connections healthy across serverless cold
+    # starts / idle drops; harmless for SQLite.
+    engine = create_engine(db_url, echo=False, pool_pre_ping=True)
     Base.metadata.create_all(engine)
     return engine
