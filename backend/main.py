@@ -1420,6 +1420,12 @@ def update_user(uid: int, data: dict):
         for f in ("avatar_url", "phone", "title", "name", "email_notifications"):
             if f in data:
                 setattr(u, f, data[f])
+        if "email" in data:
+            new_email = (data["email"] or "").strip().lower()
+            if new_email and new_email != u.email:
+                if db.query(User).filter(User.email == new_email, User.id != uid).first():
+                    raise HTTPException(409, "כתובת המייל כבר קיימת במערכת")
+                u.email = new_email
         if "notif_prefs" in data and isinstance(data["notif_prefs"], dict):
             u.notif_prefs = {**(u.notif_prefs or {}), **data["notif_prefs"]}
         # sensitive fields (role / department / active status) — system admin only,
@@ -1441,7 +1447,7 @@ def update_user(uid: int, data: dict):
         if u.department_id:
             d = db.query(Department).filter(Department.id == u.department_id).first()
             dept_name = d.name if d else None
-        return {"id": u.id, "name": u.name, "avatar_url": u.avatar_url,
+        return {"id": u.id, "name": u.name, "email": u.email, "avatar_url": u.avatar_url,
                 "phone": u.phone, "title": u.title, "role": u.role,
                 "department_id": u.department_id, "department_name": dept_name,
                 "is_active": bool(u.is_active),
