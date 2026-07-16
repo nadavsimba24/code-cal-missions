@@ -376,6 +376,7 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             "my_role": my_role,
             "owners": owners,
             "columns": (b.settings or {}).get("columns", []),
+            "col_widths": (b.settings or {}).get("col_widths", {}),
             "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             "tasks": tasks_out,
@@ -448,6 +449,19 @@ def update_board(board_id: int, data: dict):
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך את הטופס")
             s = dict(b.settings or {})
             s["form"] = data["form"]
+            b.settings = s
+        if data.get("col_widths") is not None:
+            # only a board admin may set column widths (drag-to-resize)
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לשנות רוחב עמודות")
+            widths = {}
+            for k, v in (data["col_widths"] or {}).items():
+                try:
+                    widths[str(k)] = max(60, min(600, int(v)))
+                except (TypeError, ValueError):
+                    continue
+            s = dict(b.settings or {})
+            s["col_widths"] = widths
             b.settings = s
         if data.get("columns") is not None:
             # only a board admin may add/edit/remove columns and their options
@@ -732,6 +746,33 @@ def create_task(data: dict):
         db.commit()
         return {"id": task.id, "status": "created"}
 
+# each status belongs to a coarse stage, so a status change can still find a
+# sensible group even when the board has fewer groups than statuses (e.g. the
+# 3 default groups). Exact task_status match is always preferred over the stage.
+STATUS_STAGE = {
+    "backlog": "todo", "todo": "todo",
+    "in_progress": "active", "review": "active", "on_hold": "active",
+    "done": "done", "cancelled": "done",
+}
+
+
+def _group_for_status(db, board_id, status_val):
+    """Return the group a top-level item should move to for the given status:
+    first a group whose task_status matches exactly, else one in the same stage."""
+    sv = status_val.value if hasattr(status_val, "value") else status_val
+    groups = db.query(Group).filter(Group.board_id == board_id).order_by(Group.position).all()
+    gs_of = lambda g: (g.task_status.value if hasattr(g.task_status, "value") else g.task_status)
+    for g in groups:                       # 1) exact status match
+        if gs_of(g) == sv:
+            return g
+    stage = STATUS_STAGE.get(sv)           # 2) same-stage fallback
+    if stage:
+        for g in groups:
+            if STATUS_STAGE.get(gs_of(g)) == stage:
+                return g
+    return None
+
+
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: int, data: dict):
     """Generic item update — title, priority, status, due_date, and custom column
@@ -777,10 +818,9 @@ def update_task(task_id: int, data: dict):
                     _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
                 task.status = nv
                 # auto-move a top-level item to the group that matches its status
-                # (e.g. status → "done" lands it in the "הושלם" group)
+                # (exact status first, else same stage — e.g. "done" → "הושלם")
                 if task.parent_id is None:
-                    g = db.query(Group).filter(Group.board_id == task.board_id,
-                                               Group.task_status == nv).order_by(Group.position).first()
+                    g = _group_for_status(db, task.board_id, nv)
                     if g:
                         task.group_id = g.id
             except ValueError:
@@ -1864,6 +1904,7 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
                 board_type=BoardType.KANBAN,
                 icon=icon,
                 color=color,
+                settings={"views": ["table"]},  # new boards start with only the main table
             )
             db.add(b)
             db.flush()

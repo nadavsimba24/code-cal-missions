@@ -209,11 +209,30 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .color-sw{width:30px;height:30px;border-radius:50%;border:2px solid transparent;cursor:pointer;position:relative;transition:transform .1s}
 .color-sw:hover{transform:scale(1.12)}
 .color-sw.sel::after{content:'\2713';position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-size:14px;font-weight:800;text-shadow:0 1px 2px rgba(0,0,0,.35)}
-.tbl{width:100%;border-collapse:separate;border-spacing:0;background:var(--surface);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-sm)}
-.tbl th{font-size:12px;color:var(--text-muted);font-weight:600;text-align:right;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap}
+/* width = sum of column widths (not 100%), so resizing one column only changes
+   the table's total width; the rest stay put and #view scrolls horizontally */
+.tbl{width:max-content;min-width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;background:var(--surface);border-radius:var(--radius);overflow:visible;box-shadow:var(--shadow-sm)}
+.tbl th{position:relative;font-size:12px;color:var(--text-muted);font-weight:600;text-align:center;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap;overflow:visible}
+/* drag-to-resize handle on column headers (board admin only) */
+.tbl th.th-spacer{padding:0;background:var(--surface)}
+/* per-column sort control — a small badge that floats ABOVE the column name on
+   hover (absolute, so it adds no height to the header row) */
+.th-in{position:relative;display:inline-flex;align-items:center;justify-content:center;max-width:100%;vertical-align:middle}
+.th-lbl,.th-wrap{overflow:hidden;text-overflow:ellipsis;max-width:100%;min-width:0}
+.col-sort{opacity:0;pointer-events:none;position:absolute;left:50%;bottom:calc(100% - 1px);transform:translateX(-50%) translateY(4px);width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:var(--text);background:var(--surface);border:1px solid var(--border);box-shadow:0 2px 7px rgba(0,0,0,.2);font-size:10px;transition:opacity .13s,transform .13s,background .12s,color .12s;z-index:9}
+.th-in:hover .col-sort{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+.col-sort:hover{color:var(--primary);border-color:var(--primary)}
+.col-sort.on{opacity:1;pointer-events:auto;color:#fff;background:var(--primary);border-color:var(--primary);transform:translateX(-50%) translateY(0)}
+.col-resizer{position:absolute;top:0;inset-inline-end:0;width:10px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
+.col-resizer::after{content:"";position:absolute;top:6px;bottom:6px;inset-inline-end:1px;width:2px;border-radius:2px;background:transparent;transition:background .12s}
+.col-resizer:hover::after,.col-resizer.dragging::after{background:var(--primary)}
 .tbl td{padding:0;border-bottom:1px solid var(--border);border-inline-start:1px solid var(--border);font-size:14px;height:40px}
 .tbl tr:hover td{background:var(--row-hover)}
-.tbl .c-item{font-weight:500;padding:6px 12px;min-width:280px;border-inline-start:4px solid var(--gcolor,var(--primary));vertical-align:middle}
+.tbl .c-item{position:relative;font-weight:500;padding:6px 12px;min-width:0;border-inline-start:4px solid var(--gcolor,var(--primary));vertical-align:middle}
+/* 3-dots item menu — appears on row hover, just outside the item on the right (RTL start) */
+.item-menu{opacity:0;pointer-events:none;position:absolute;inset-inline-start:-11px;top:50%;transform:translateY(-50%);width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:var(--text-light);background:var(--surface);border:1px solid var(--border);box-shadow:0 1px 5px rgba(0,0,0,.18);font-size:12px;z-index:5;transition:opacity .12s,color .12s,border-color .12s}
+.tbl tr:hover .item-menu{opacity:1;pointer-events:auto}
+.item-menu:hover{color:var(--primary);border-color:var(--primary)}
 .tbl .cell{padding:6px 10px;text-align:center}
 .pill{display:inline-flex;align-items:center;justify-content:center;width:100%;min-width:96px;height:30px;border-radius:4px;color:#fff;font-weight:600;font-size:12.5px;padding:0 8px}
 .prio{min-width:80px}
@@ -666,7 +685,7 @@ img.pf-av{object-fit:cover;background:#fff}
 #chat-panel.open{transform:translateX(0)}
 .chat-head{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface);border-bottom:1px solid var(--border)}
 .chat-title{font-weight:800;font-size:16px}
-.chat-sub{font-size:12.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-sub{font-size:14.5px;color:var(--text);line-height:1.5;white-space:normal;display:-webkit-box;-webkit-line-clamp:4;line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
 .chat-tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 8px}
 .chat-tab{flex:1;text-align:center;padding:11px 6px;font-size:13px;font-weight:600;color:var(--text-muted);border-bottom:3px solid transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px}
 .chat-tab:hover{background:var(--row-hover)}
@@ -950,6 +969,9 @@ const STATUS = {
   done:{he:'הושלם',c:'#00c875'}, cancelled:{he:'בוטל',c:'#e2445c'},
   on_hold:{he:'בהמתנה',c:'#808080'},
 };
+// coarse stage per status — lets a status change find a sensible group even
+// when the board has fewer groups than statuses (mirrors STATUS_STAGE on the server)
+const STATUS_STAGE={backlog:'todo',todo:'todo',in_progress:'active',review:'active',on_hold:'active',done:'done',cancelled:'done'};
 const PRIORITY = {
   low:{he:'נמוכה',c:'#579bfc'}, medium:{he:'בינונית',c:'#5559df'},
   high:{he:'גבוהה',c:'#fdab3d'}, critical:{he:'קריטית',c:'#e2445c'},
@@ -983,7 +1005,7 @@ function avatarInner(u){
   return `<img src="${esc(url)}" alt="" loading="lazy">`;
 }
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
-const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, openSubs:new Set()};
+const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, openSubs:new Set()};
 
 /* ============ boot ============ */
 async function boot(){
@@ -1003,7 +1025,12 @@ async function boot(){
 }
 async function enterApp(){
   await loadBoards();
-  if(st.boards.length){ await openBoard(st.boards[0].id); }
+  if(st.boards.length){
+    // return to the board that was open before the refresh, if still accessible
+    const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
+    const target=st.boards.some(b=>b.id===savedBoard)?savedBoard:st.boards[0].id;
+    await openBoard(target);
+  }
   else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
   setTimeout(showAgentHint,3500);
 }
@@ -1081,13 +1108,14 @@ function deleteBoardById(id){
   },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
 }
 async function openBoard(id){
-  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); }
+  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.colSort=null; }
   st.filters={q:'',people:[],status:'',priority:'',sort:''};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
   document.getElementById('view').innerHTML='<div class="spin"></div>';
   try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); }
   catch(e){ document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-lock"></i><div>אין לך גישה ללוח זה</div></div>'; return; }
+  try{ localStorage.setItem('cc_board', id); }catch(e){}   // remember the open board across refreshes
   renderSidebar();
   renderBoardHead();
   document.getElementById('bh-desc').textContent = '';
@@ -1365,7 +1393,10 @@ function applyFilters(tasks){
   if(f.people.length)out=out.filter(t=>(t.assignees||[]).some(a=>f.people.includes(a.id)));
   if(f.status)out=out.filter(t=>t.status===f.status);
   if(f.priority)out=out.filter(t=>t.priority===f.priority);
-  if(f.sort){
+  if(st.colSort&&st.colSort.key){
+    const {key,dir}=st.colSort, s=dir==='desc'?-1:1;
+    out.sort((a,b)=>colCompare(a,b,key)*s);
+  } else if(f.sort){
     const pr={emergency:0,critical:1,high:2,medium:3,low:4};
     const cmp={
       due:(a,b)=>(a.due_date||'9999-99-99').localeCompare(b.due_date||'9999-99-99'),
@@ -1376,11 +1407,45 @@ function applyFilters(tasks){
   }
   return out;
 }
+/* ===== per-column sorting (click the round arrows on a header) ===== */
+const STATUS_ORDER={backlog:0,todo:1,in_progress:2,review:3,done:4,cancelled:5,on_hold:6};
+const PRIO_ORDER={emergency:0,critical:1,high:2,medium:3,low:4};
+function sortVal(t,key){
+  if(key==='item')return (t.title||'').toLowerCase();
+  if(key==='assignees')return (((t.assignees||[])[0]||{}).name||'').toLowerCase();
+  if(key==='status')return STATUS_ORDER[t.status]??99;
+  if(key==='priority')return PRIO_ORDER[t.priority]??99;
+  if(key==='due')return t.due_date||'9999-99-99';
+  if(key==='tags')return (t.tags||[]).join(', ').toLowerCase();
+  const v=(t.custom_fields||{})[key];          // custom column, by id
+  if(Array.isArray(v))return v.join(', ').toLowerCase();
+  return v==null?'':v;
+}
+function colCompare(a,b,key){
+  const va=sortVal(a,key), vb=sortVal(b,key);
+  if(typeof va==='number'&&typeof vb==='number')return va-vb;
+  return String(va).localeCompare(String(vb),'he',{numeric:true});
+}
+function columnSort(e,key){
+  e.stopPropagation();
+  const cs=st.colSort||{};
+  if(cs.key!==key) st.colSort={key,dir:'desc'};        // 1st click → יורד
+  else if(cs.dir==='desc') st.colSort={key,dir:'asc'}; // 2nd click → עולה
+  else st.colSort=null;                                 // 3rd click → ביטול מיון
+  renderView();
+}
+function sortBtn(key){
+  const cs=st.colSort||{};
+  const on=cs.key===key;
+  const ic=!on?'fa-sort':(cs.dir==='desc'?'fa-arrow-down-wide-short':'fa-arrow-up-short-wide');
+  const tip=!on?'מיון':(cs.dir==='desc'?'מיון יורד — לחץ לסדר עולה':'מיון עולה — לחץ לביטול');
+  return `<button class="col-sort${on?' on':''}" title="${tip}" onclick="columnSort(event,'${key}')"><i class="fa-solid ${ic}"></i></button>`;
+}
 function filtersActive(){const f=st.filters;return !!(f.q||f.people.length||f.status||f.priority||f.sort);}
 function noMatchHTML(){return '<div class="empty"><i class="fa-solid fa-filter-circle-xmark"></i><div>אין פריטים שתואמים את הסינון</div><button class="btn btn-primary" style="margin-top:14px" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button></div>';}
 
 function setSearch(v){st.filters.q=v;const i=document.getElementById('tb-q');if(i&&i.value!==v)i.value=v;refreshToolbar();renderView();}
-function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:''};const i=document.getElementById('tb-q');if(i)i.value='';closePops();refreshToolbar();renderView();}
+function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:''};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();refreshToolbar();renderView();}
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
 document.addEventListener('click',e=>{if(!e.target.closest('.tb-ctl'))closePops();});
@@ -1761,9 +1826,10 @@ function vTable(el){
     return `<div class="group" ${real?'':'data-orphan="1"'}>
       ${head}
       <table class="tbl">
-        <thead><tr><th style="border-inline-start:4px solid ${col}">פריט</th><th>אחראים</th><th>סטטוס</th><th>עדיפות</th><th>תאריך יעד</th><th>תגיות</th>${colHeaders()}</tr></thead>
+        ${colgroupHTML()}
+        <thead><tr>${builtinHeaders(col)}${colHeaders()}<th class="th-spacer"></th></tr></thead>
         <tbody>${rows}
-          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()}">+ הוסף פריט</td></tr>
+          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
       </table>
       <div style="margin-top:6px">${battery(g.tasks)}</div>
@@ -1787,6 +1853,7 @@ function vTable(el){
         }catch(e){toast('שגיאה בשמירת המיקום');renderView();}
       }});
   }
+  if(isBoardAdmin())initColResizers(el);
 }
 function battery(tasks){
   if(!tasks.length)return '';
@@ -1803,12 +1870,12 @@ function itemRow(t,col){
   const tagcell=(arr)=>(arr||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>';
   const parent=`
     <tr>
-      <td class="c-item" style="--gcolor:${col}"><div class="ci-flex">
+      <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
         <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
         ${cnt?`<span class="sub-badge" title="${cnt} תת-פריטים"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
-      </div></td>
+      </div>${canEditItem(t)?`<button class="item-menu" title="אפשרויות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}</td>
       <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(${t.id})">${avatars(t.assignees)}</td>
       <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',STATUS)">${statusPill(t)}</td>
       <td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',PRIORITY)">${pill(PRIORITY,t.priority)}</td>
@@ -1829,7 +1896,7 @@ function itemRow(t,col){
       <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${s.id})">${tagcell(s.tags)}</td>
       ${customCells(s)}
     </tr>`).join('');
-  const addSub=`<tr class="subrow subadd" data-parent="${t.id}" style="display:${disp}"><td class="c-sub" colspan="${totalCols()}" onclick="addSubItem(${t.id})"><span class="sub-twig"></span>+ הוסף תת-פריט</td></tr>`;
+  const addSub=`<tr class="subrow subadd" data-parent="${t.id}" style="display:${disp}"><td class="c-sub" colspan="${totalCols()+1}" onclick="addSubItem(${t.id})"><span class="sub-twig"></span>+ הוסף תת-פריט</td></tr>`;
   return parent+subRows+addSub;
 }
 
@@ -1864,13 +1931,76 @@ function boardTags(){
   return [...s].sort((a,b)=>a.localeCompare(b,'he'));
 }
 function totalCols(){return 6+customColumns().length+(isBoardAdmin()?1:0);}
+/* built-in (fixed) columns, in display order — keys drive drag-to-resize widths */
+const BUILTIN_COLS=[
+  {key:'item',label:'פריט',w:280},{key:'assignees',label:'אחראים',w:120},
+  {key:'status',label:'סטטוס',w:130},{key:'priority',label:'עדיפות',w:120},
+  {key:'due',label:'תאריך יעד',w:130},{key:'tags',label:'תגיות',w:170},
+];
+/* only a board admin gets the drag handle; others just see the header */
+function resizerHTML(key){return isBoardAdmin()?`<span class="col-resizer" data-colkey="${key}" title="גרור לשינוי רוחב העמודה"></span>`:'';}
+function colWidthMap(){
+  const saved=(st.board&&st.board.col_widths)||{};
+  const m={};
+  BUILTIN_COLS.forEach(c=>m[c.key]=saved[c.key]||c.w);
+  customColumns().forEach(c=>m[c.id]=saved[c.id]||150);
+  if(isBoardAdmin())m['__add']=saved['__add']||44;
+  return m;
+}
+function colgroupHTML(){
+  const m=colWidthMap();
+  let cols=BUILTIN_COLS.map(c=>`<col data-colkey="${c.key}" style="width:${m[c.key]}px">`).join('');
+  cols+=customColumns().map(c=>`<col data-colkey="${c.id}" style="width:${m[c.id]}px">`).join('');
+  if(isBoardAdmin())cols+=`<col data-colkey="__add" style="width:${m['__add']}px">`;
+  // trailing auto-width spacer: absorbs leftover space so real columns keep their
+  // exact widths (resizing one never nudges the others); shrinks to 0 when the
+  // columns overflow, letting #view scroll horizontally instead.
+  cols+=`<col data-colkey="__spacer">`;
+  return `<colgroup>${cols}</colgroup>`;
+}
+function builtinHeaders(col){
+  return BUILTIN_COLS.map((c,i)=>{
+    const style=i===0?`style="border-inline-start:4px solid ${col}"`:'';
+    return `<th data-colkey="${c.key}" ${style}><span class="th-in"><span class="th-lbl">${c.label}</span>${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
+  }).join('');
+}
+/* drag-to-resize: board admin drags a header edge; width syncs across every
+   group table live and persists to the board settings (col_widths). */
+function initColResizers(root){
+  root.querySelectorAll('.col-resizer').forEach(rz=>{
+    rz.onmousedown=(e)=>{
+      e.preventDefault(); e.stopPropagation();
+      const key=rz.dataset.colkey;
+      const rtl=(document.documentElement.getAttribute('dir')||document.dir||'rtl')==='rtl';
+      const cols=[...root.querySelectorAll('col[data-colkey="'+key+'"]')];
+      const startX=e.clientX;
+      const startW=parseFloat(cols[0]&&cols[0].style.width)||120;
+      let w=startW;
+      rz.classList.add('dragging'); document.body.style.cursor='col-resize'; document.body.style.userSelect='none';
+      const move=(ev)=>{
+        const delta=rtl?(startX-ev.clientX):(ev.clientX-startX);
+        w=Math.max(60,Math.min(600,Math.round(startW+delta)));
+        cols.forEach(c=>c.style.width=w+'px');
+      };
+      const up=async()=>{
+        document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up);
+        rz.classList.remove('dragging'); document.body.style.cursor=''; document.body.style.userSelect='';
+        if(w===startW)return;
+        st.board.col_widths=Object.assign({},st.board.col_widths||{},{[key]:w});
+        try{await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({col_widths:st.board.col_widths})});}
+        catch(err){toast('שגיאה בשמירת רוחב העמודה');}
+      };
+      document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+    };
+  });
+}
 function colHeaders(){
   const admin=isBoardAdmin();
   return customColumns().map(c=>{
     const m=COLUMN_TYPES.find(x=>x.type===c.type)||{ic:'fa-table-columns'};
     // the column menu (rename/options/delete) is a board-admin action only
     const menu=admin?`<button class="th-menu" title="עמודה" onclick="colMenu(event,'${c.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
-    return `<th class="th-custom"><span class="th-wrap"><i class="fa-solid ${m.ic}" style="color:var(--text-light);font-size:11px"></i> ${esc(c.title)}${menu}</span></th>`;
+    return `<th class="th-custom" data-colkey="${c.id}"><span class="th-in"><span class="th-wrap"><i class="fa-solid ${m.ic}" style="color:var(--text-light);font-size:11px"></i> ${esc(c.title)}${menu}</span>${sortBtn(c.id)}</span>${resizerHTML(c.id)}</th>`;
   }).join('') + (admin?`<th class="th-add"><div class="th-add-wrap" id="thadd-${Math.random().toString(36).slice(2,7)}"><button class="th-add-btn" title="הוסף עמודה" onclick="addColMenu(event)"><i class="fa-solid fa-plus"></i></button></div></th>`:'');
 }
 function cellValue(t,colId){return (t.custom_fields||{})[colId];}
@@ -2029,9 +2159,12 @@ function canEditCol(t,colId){ if(!canEditItem(t))return false; const cp=(t&&t.co
 async function setField(id,field,value){
   const t=findAnyTask(id); if(t)t[field]=value;
   // mirror the backend auto-move: a top-level item whose status changes jumps to
-  // the group matching that status (e.g. "הושלם" → the Done group)
+  // the group matching that status (exact status first, else same stage —
+  // e.g. "הושלם"→Done group; "לביצוע" on a 3-group board → the "בתכנון" group)
   if(field==='status' && t && !t.parent_id){
-    const g=((st.board&&st.board.groups)||[]).find(x=>x.task_status===value);
+    const gs=(st.board&&st.board.groups)||[];
+    let g=gs.find(x=>x.task_status===value);
+    if(!g){const stage=STATUS_STAGE[value]; if(stage)g=gs.find(x=>STATUS_STAGE[x.task_status]===stage);}
     if(g) t.group_id=g.id;
   }
   try{ await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({[field]:value})}); renderView(); }
@@ -2254,6 +2387,24 @@ async function deleteSubItem(e,id){
   if(!confirm('למחוק את תת-הפריט?'))return;
   try{await api('/api/tasks/'+id,{method:'DELETE'});toast('תת-פריט נמחק');await openBoard(st.board.id);}
   catch(err){toast('שגיאה במחיקה');}
+}
+/* item options menu — opened by right-click on the row or the hover 3-dots button */
+function itemRowMenu(e,id){
+  e.preventDefault(); e.stopPropagation();
+  const t=findAnyTask(id); if(!t||!canEditItem(t))return;
+  const items=[
+    `<button class="rm-item" onclick="closeCellPops();Chat.open(${id})"><i class="fa-regular fa-comment"></i> פתח שיחה</button>`,
+    `<button class="rm-item danger" onclick="deleteItem(event,${id})"><i class="fa-regular fa-trash-can"></i> מחק פריט</button>`,
+  ];
+  openCellPop(e.currentTarget,`<div class="row-menu">${items.join('')}</div>`,'row-menu-pop');
+}
+async function deleteItem(e,id){
+  e.stopPropagation(); closeCellPops();
+  const t=findAnyTask(id); const n=(t&&t.subtasks&&t.subtasks.length)||0;
+  askConfirm('למחוק את הפריט'+(n?` ואת ${n} תת-הפריטים שלו`:'')+'?',async()=>{
+    try{await api('/api/tasks/'+id,{method:'DELETE'});toast('הפריט נמחק');await openBoard(st.board.id);}
+    catch(err){toast('שגיאה במחיקה');}
+  },{title:'מחיקת פריט',confirmText:'מחק',note:'הפריט וכל תת-הפריטים שלו יימחקו ולא ניתן לשחזר.'});
 }
 
 function vKanban(el){
@@ -2831,7 +2982,13 @@ const Chat = {
     this.replyTo=null; this.atts=[]; this.mentions=[];
     document.getElementById('chat-panel').classList.add('open');
     document.getElementById('chat-overlay').classList.add('open');
-    document.getElementById('chat-sub').textContent=this.task?this.task.title:'';
+    document.getElementById('chat-title').textContent=this.task?this.task.title:'שיחה';
+    // show the item's description (enlarged) in the sub-header when it exists;
+    // items may have none, so leave it empty/hidden rather than showing a placeholder
+    const sub=document.getElementById('chat-sub');
+    const desc=((this.task&&this.task.description)||'').trim();
+    sub.textContent=desc;
+    sub.style.display=desc?'':'none';
     const pb=document.getElementById('chat-perm'); if(pb)pb.style.display=(st.board&&st.board.my_role==='admin')?'inline-flex':'none';
     this.setTabUI(); this.render();
   },
@@ -2859,12 +3016,11 @@ const Chat = {
       <div class="comp-tools">
         <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
         <button title="צ'ק-ליסט" onclick="Chat.insert('[ ] ')"><i class="fa-solid fa-square-check"></i></button>
-        <button title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
+        <button id="mention-btn" title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
         <button title="אימוג'י" onclick="Chat.emojiMenu(event)"><i class="fa-regular fa-face-smile"></i></button>
-        <button title="הדבק קישור" onclick="Chat.addLink()"><i class="fa-solid fa-link"></i></button>
         <button title="צרף קובץ מהמחשב" onclick="Chat.attach()"><i class="fa-solid fa-paperclip"></i></button>
       </div>
-      <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה)" onkeydown="Chat.keydown(event)"></textarea>
+      <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)"></textarea>
       <div class="comp-atts" id="comp-atts"></div>
       <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
     </div>`;
@@ -2901,8 +3057,10 @@ const Chat = {
   insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); },
   startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
   cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
-  mentionMenu(e){ e.stopPropagation(); this._float(e.currentTarget,(st.users||[]).map(u=>`<button onclick="Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')); },
-  pickMention(id){ const u=(st.users||[]).find(x=>x.id===id); if(!u)return; if(!this.mentions.includes(id))this.mentions.push(id); this.insert('@'+u.name+' '); closeCellPops(); },
+  mentionMenu(e,atMode){ e.stopPropagation(); this._atMode=!!atMode; this._float(e.currentTarget,(st.users||[]).map(u=>`<button onclick="Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')); },
+  // typing "@" in the composer opens the same people-tagging menu as the @ button
+  onType(e){ const ta=e.target, pos=ta.selectionStart||0; if(/(^|\s)@$/.test(ta.value.slice(0,pos))){ const anchor=document.getElementById('mention-btn')||ta; this.mentionMenu({stopPropagation(){},currentTarget:anchor}, true); } },
+  pickMention(id){ const u=(st.users||[]).find(x=>x.id===id); if(!u)return; if(!this.mentions.includes(id))this.mentions.push(id); this.insert((this._atMode?'':'@')+u.name+' '); this._atMode=false; closeCellPops(); },
   emojiMenu(e){ e.stopPropagation(); this._float(e.currentTarget,'<div class="emoji-grid">'+EMOJIS.map(x=>`<button onclick="Chat.insert('${x} ');closeCellPops()">${x}</button>`).join('')+'</div>'); },
   addLink(){ const url=prompt('הדבק קישור:'); if(url)this.insert(url+' '); },
   attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=async()=>{const f=inp.files[0];if(!f)return;const fd=new FormData();fd.append('file',f);try{const r=await fetch('/api/upload',{method:'POST',body:fd});const data=await r.json();this.atts.push(data);this.renderAtts();toast('קובץ צורף');}catch(e){toast('שגיאה בהעלאה');}}; inp.click(); },
