@@ -1529,7 +1529,10 @@ const SysAdmin = {
     else body.innerHTML=this.usersHTML();
   },
   usersHTML(){
-    return `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. תפקיד ומחלקה דרך תפריט <i class="fa-solid fa-ellipsis-vertical"></i>, סטטוס בטוגל.</div>
+    return `<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. תפקיד ומחלקה דרך תפריט <i class="fa-solid fa-ellipsis-vertical"></i>, סטטוס בטוגל.</div>
+        <button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addUser()"><i class="fa-solid fa-user-plus"></i> הוסף משתמש</button>
+      </div>
       <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
         <th style="width:34px"></th><th>שם</th><th>מייל</th><th>תפקיד</th><th>מחלקה</th><th>סטטוס</th>
       </tr></thead><tbody id="sa-rows">${this.rowsHTML()}</tbody></table></div>`;
@@ -1586,6 +1589,35 @@ const SysAdmin = {
   setRole(uid,role){ closeCellPops(); this._patch(uid,{role},'התפקיד עודכן'); },
   setDept(uid,val){ closeCellPops(); this._patch(uid,{department_id:val?+val:null},'המחלקה עודכנה'); },
   toggleActive(uid,makeActive){ closeCellPops(); this._patch(uid,{is_active:makeActive},makeActive?'המשתמש הופעל':'המשתמש הושבת'); },
+  addUser(){
+    const roles=['admin','manager','member','viewer'];
+    showModal(`<h2><i class="fa-solid fa-user-plus" style="color:var(--primary)"></i> הוספת משתמש</h2>
+      <div class="mbody">
+        <div class="field"><label>שם מלא</label><input id="nu-name" placeholder="לדוגמה: שלי פיינברג"></div>
+        <div class="field"><label>מייל</label><input id="nu-email" placeholder="shelly@hodhasharon.gov.il"></div>
+        <div class="field"><label>תפקיד</label><select id="nu-role">${roles.map(r=>`<option value="${r}" ${r==='admin'?'selected':''}>${ROLE_HE[r]}</option>`).join('')}</select></div>
+        <div class="field"><label>מחלקה</label><select id="nu-dept"><option value="">— ללא מחלקה —</option>${(st.depts||[]).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="SysAdmin.open('users')">ביטול</button><button class="btn btn-primary" onclick="SysAdmin.createUser()"><i class="fa-solid fa-check"></i> צור משתמש</button></div>`);
+    setTimeout(()=>{const i=document.getElementById('nu-name');if(i)i.focus();},60);
+  },
+  async createUser(){
+    const name=(document.getElementById('nu-name').value||'').trim();
+    const email=(document.getElementById('nu-email').value||'').trim();
+    const role=document.getElementById('nu-role').value;
+    const dept=document.getElementById('nu-dept').value;
+    if(!name){toast('חסר שם');return;}
+    if(!email){toast('חסרה כתובת מייל');return;}
+    try{
+      await api('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name,email,role,department_id:dept?+dept:null})});
+      try{ st.users=await api('/api/users'); }catch(e){}
+      toast('המשתמש נוצר');
+      await this.open('users');
+    }catch(err){
+      const m=String(err&&err.message||'');
+      toast(m.includes('409')?'כתובת המייל כבר קיימת':(m.includes('403')?'רק מנהל מערכת יכול להוסיף':'שגיאה ביצירת המשתמש'));
+    }
+  },
 };
 
 /* ===== item-level permissions (הרשאות פריט) ===== */

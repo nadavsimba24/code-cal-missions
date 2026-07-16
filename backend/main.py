@@ -1377,6 +1377,35 @@ def all_login_history(actor_id: Optional[int] = None, limit: int = 100):
             "ip": e.ip, "user_agent": e.user_agent,
         } for e in evs]
 
+@app.post("/api/users")
+def create_user(data: dict):
+    """Create a new user in the workspace directory. System (workspace) admin only."""
+    with Session(engine) as db:
+        actor = data.get("actor_id")
+        if _ws_role(db, actor) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול להוסיף משתמש")
+        name = (data.get("name") or "").strip()
+        email = (data.get("email") or "").strip().lower()
+        if not name:
+            raise HTTPException(400, "חסר שם משתמש")
+        if not email:
+            raise HTTPException(400, "חסרה כתובת מייל")
+        if db.query(User).filter(User.email == email).first():
+            raise HTTPException(409, "כתובת המייל כבר קיימת במערכת")
+        role = data.get("role") if data.get("role") in ("admin", "manager", "member", "viewer") else "member"
+        dept_id = data.get("department_id") or None
+        # inherit the organization of an existing user so the new user is in the same workspace
+        org_id = db.query(User.organization_id).filter(User.organization_id != None).limit(1).scalar()
+        u = User(name=name, email=email, role=role, department_id=dept_id,
+                 organization_id=org_id, is_active=True)
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        dept_name = db.query(Department.name).filter(Department.id == u.department_id).scalar() if u.department_id else None
+        return {"id": u.id, "name": u.name, "email": u.email, "role": u.role,
+                "department_id": u.department_id, "department_name": dept_name,
+                "is_active": True, "avatar_url": u.avatar_url}
+
 @app.patch("/api/users/{uid}")
 def update_user(uid: int, data: dict):
     """Update a user's profile. A user may edit their own profile; a system
