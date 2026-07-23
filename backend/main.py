@@ -528,7 +528,19 @@ def _send_email(to_email, subject, html):
         print(f"[email] skipped (no RESEND_API_KEY) → {to_email}: {subject}")
         return False
     from_addr = os.environ.get("INVITE_FROM_EMAIL", "CityOS <onboarding@resend.dev>")
-    payload = _json.dumps({"from": from_addr, "to": [to_email],
+    # development mode: until a domain is verified in Resend, real recipients are
+    # blocked. Redirect every message to a single verified inbox so invites can be
+    # tested end-to-end, keeping the original recipient visible in the email.
+    redirect = os.environ.get("EMAIL_DEV_REDIRECT")
+    actual_to = to_email
+    if redirect:
+        actual_to = redirect
+        subject = f"[פיתוח · נועד ל-{to_email}] {subject}"
+        html = (f"<div dir='rtl' style='background:#fff3cd;border:1px solid #ffe08a;"
+                f"border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12.5px;"
+                f"font-family:Arial'>⚙️ מצב פיתוח — הנמען המקורי של ההזמנה הוא "
+                f"<b>{to_email}</b>. מייל זה הופנה אליך לצורכי בדיקה.</div>") + html
+    payload = _json.dumps({"from": from_addr, "to": [actual_to],
                            "subject": subject, "html": html}).encode("utf-8")
     req = urllib.request.Request("https://api.resend.com/emails", data=payload,
                                  headers={"Authorization": f"Bearer {api_key}",
@@ -537,10 +549,10 @@ def _send_email(to_email, subject, html):
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             r.read()
-        print(f"[email] sent → {to_email}: {subject}")
+        print(f"[email] sent → {actual_to}: {subject}")
         return True
     except Exception as e:
-        print(f"[email] send failed → {to_email}: {e}")
+        print(f"[email] send failed → {actual_to}: {e}")
         return False
 
 
