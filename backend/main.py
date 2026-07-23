@@ -812,6 +812,15 @@ def create_task(data: dict):
         ids = data.get("assignee_ids") or []
         if ids:
             task.assignees = db.query(User).filter(User.id.in_(ids)).all()
+        # place the new item last — bottom of its group (or its parent's sub-list)
+        from sqlalchemy import func as _func
+        if parent_id is not None:
+            maxpos = db.query(_func.max(Task.position)).filter(Task.parent_id == parent_id).scalar()
+        else:
+            _q = db.query(_func.max(Task.position)).filter(Task.board_id == board_id, Task.parent_id == None)
+            _q = _q.filter(Task.group_id == group_id) if group_id is not None else _q.filter(Task.group_id == None)
+            maxpos = _q.scalar()
+        task.position = (maxpos + 1) if maxpos is not None else 0
         db.add(task)
         db.commit()
         return {"id": task.id, "status": "created"}

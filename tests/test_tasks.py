@@ -90,3 +90,17 @@ def test_parent_rolls_up_to_done_when_all_subitems_done(client):
             assert pt["group_id"] in done_gids
     finally:
         client.delete(f"/api/tasks/{p}")
+
+
+def test_new_item_appended_to_bottom_of_group(client):
+    """A newly created item lands at the bottom of its group (last in order)."""
+    b = client.get("/api/boards/1?user_id=1").json()
+    gid = b["groups"][0]["id"]
+    a = client.post("/api/tasks", json={"title": "aaa", "board_id": 1, "group_id": gid}).json()["id"]
+    z = client.post("/api/tasks", json={"title": "zzz", "board_id": 1, "group_id": gid}).json()["id"]
+    try:
+        order = [t["id"] for t in client.get("/api/boards/1?user_id=1").json()["tasks"] if t["group_id"] == gid]
+        assert order.index(a) < order.index(z)           # created earlier → higher up
+        assert order[-1] == z                            # the latest is at the very bottom
+    finally:
+        client.delete(f"/api/tasks/{a}"); client.delete(f"/api/tasks/{z}")
