@@ -516,6 +516,52 @@ def delete_board(board_id: int, user_id: Optional[int] = None):
 
 # ── Board membership & per-board permissions ────────────────────────
 BOARD_ROLES = ("admin", "editor", "viewer")
+BROLE_HE = {"admin": "מנהל לוח", "editor": "עורך", "viewer": "צופה"}
+
+
+def _send_email(to_email, subject, html):
+    """Send a transactional email via Resend. No-ops (logs) when RESEND_API_KEY
+    isn't configured, so an invite never fails just because email isn't set up."""
+    import urllib.request, json as _json
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key or not to_email:
+        print(f"[email] skipped (no RESEND_API_KEY) → {to_email}: {subject}")
+        return False
+    from_addr = os.environ.get("INVITE_FROM_EMAIL", "CityOS <onboarding@resend.dev>")
+    payload = _json.dumps({"from": from_addr, "to": [to_email],
+                           "subject": subject, "html": html}).encode("utf-8")
+    req = urllib.request.Request("https://api.resend.com/emails", data=payload,
+                                 headers={"Authorization": f"Bearer {api_key}",
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+        print(f"[email] sent → {to_email}: {subject}")
+        return True
+    except Exception as e:
+        print(f"[email] send failed → {to_email}: {e}")
+        return False
+
+
+def _board_invite_html(invitee_name, board_name, inviter_name, role):
+    role_he = BROLE_HE.get(role, role)
+    base = os.environ.get("APP_BASE_URL", "https://code-cal-missions.vercel.app")
+    return f"""<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#1a1a2e">
+      <div style="background:#0073ea;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0">
+        <h2 style="margin:0;font-size:20px">הוזמנת ללוח ב-CityOS</h2>
+      </div>
+      <div style="border:1px solid #e6e9ef;border-top:none;border-radius:0 0 12px 12px;padding:22px">
+        <p style="font-size:15px">שלום {invitee_name},</p>
+        <p style="font-size:15px"><b>{inviter_name}</b> הזמין/ה אותך ללוח <b>{board_name}</b> במערכת CityOS של עיריית הוד השרון.</p>
+        <table style="width:100%;font-size:14px;border-collapse:collapse;margin:16px 0">
+          <tr><td style="padding:8px 0;color:#676879">שם הלוח</td><td style="padding:8px 0;font-weight:600">{board_name}</td></tr>
+          <tr><td style="padding:8px 0;color:#676879">ההרשאה שלך</td><td style="padding:8px 0;font-weight:600">{role_he}</td></tr>
+          <tr><td style="padding:8px 0;color:#676879">הוזמנת על ידי</td><td style="padding:8px 0;font-weight:600">{inviter_name}</td></tr>
+        </table>
+        <a href="{base}" style="display:inline-block;background:#0073ea;color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:700;font-size:15px">כניסה למערכת</a>
+        <p style="color:#9699a6;font-size:12px;margin-top:22px">מייל זה נשלח אוטומטית ממערכת CityOS. אם לא ציפית לו, אפשר להתעלם ממנו.</p>
+      </div>
+    </div>"""
 
 @app.get("/api/boards/{board_id}/members")
 def list_board_members(board_id: int):
@@ -541,12 +587,23 @@ def add_board_member(board_id: int, data: dict):
         if role not in BOARD_ROLES:
             role = "editor"
         m = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.user_id == uid).first()
+        is_new = m is None
         if m:
             m.role = role
         else:
             db.add(BoardMember(board_id=board_id, user_id=uid, role=role))
         db.commit()
-        return {"status": "ok"}
+        # email the invitee — only on a genuine new invitation, any role
+        if is_new:
+            invitee = db.query(User).filter(User.id == uid).first()
+            board = db.query(Board).filter(Board.id == board_id).first()
+            inviter = db.query(User).filter(User.id == data.get("actor_id")).first()
+            if invitee and invitee.email and board:
+                _send_email(invitee.email,
+                            f"הוזמנת ללוח '{board.name}' ב-CityOS",
+                            _board_invite_html(invitee.name, board.name,
+                                               inviter.name if inviter else "מנהל הלוח", role))
+        return {"status": "ok", "invited": is_new}
 
 @app.patch("/api/boards/{board_id}/members/{uid}")
 def update_board_member(board_id: int, uid: int, data: dict):

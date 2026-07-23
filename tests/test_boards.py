@@ -73,3 +73,18 @@ def test_non_admin_cannot_set_column_widths(client, member_id):
     """A non-admin board member cannot change column widths → 403."""
     r = client.patch("/api/boards/1", json={"user_id": member_id, "col_widths": {"item": 300}})
     assert r.status_code == 403
+
+
+def test_inviting_new_member_flags_invited(client, admin_id, guinea_id):
+    """Inviting a genuinely new member returns invited=True (triggers the email);
+    a follow-up role change on the same member returns invited=False (no email).
+    Email delivery itself no-ops without RESEND_API_KEY, so the invite never fails."""
+    r = client.post("/api/boards", json={"name": "invite test", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        r = client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "viewer"})
+        assert r.status_code == 200 and r.json().get("invited") is True, r.text
+        r = client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+        assert r.status_code == 200 and r.json().get("invited") is False, r.text
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
