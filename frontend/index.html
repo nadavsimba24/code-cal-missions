@@ -1894,7 +1894,7 @@ function vTable(el){
       <table class="tbl">
         ${colgroupHTML()}
         <thead><tr>${builtinHeaders(col)}${colHeaders()}<th class="th-spacer"></th></tr></thead>
-        <tbody>${rows}
+        <tbody data-gid="${g.id===null?'':g.id}">${rows}
           <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
       </table>
@@ -1919,6 +1919,23 @@ function vTable(el){
           (st.board.groups||[]).forEach(gr=>{const i=ids.indexOf(gr.id);if(i>=0)gr.position=i;});
         }catch(e){toast('שגיאה בשמירת המיקום');renderView();}
       }});
+    // drag items between groups — grab an item by its name, drop into any group
+    el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
+      new Sortable(tb,{group:'board-items',handle:'.item-title',draggable:'tr[data-tid]',
+        forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
+        onEnd:async(evt)=>{
+          const tid=+evt.item.dataset.tid; if(!tid)return;
+          const toBody=evt.to, gid=toBody.dataset.gid?+toBody.dataset.gid:null;
+          const pos=[...toBody.querySelectorAll('tr[data-tid]')].indexOf(evt.item);
+          const grp=(st.board.groups||[]).find(g=>g.id===gid);
+          const body={group_id:gid,position:pos<0?0:pos}; if(grp)body.status=grp.task_status;
+          try{
+            await api('/api/tasks/'+tid+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+            const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
+            toast('הפריט הועבר'); renderView();
+          }catch(e){ toast('שגיאה בהעברת הפריט'); renderView(); }
+        }});
+    });
   }
   if(isBoardAdmin())initColResizers(el);
 }
@@ -1936,7 +1953,7 @@ function itemRow(t,col){
   const open=st.openSubs.has(t.id);
   const tagcell=(arr)=>(arr||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>';
   const parent=`
-    <tr>
+    <tr data-tid="${t.id}">
       <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
         <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
