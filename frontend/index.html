@@ -1868,9 +1868,10 @@ function groupsOf(){
 }
 
 function vTable(el){
-  if(!(st.board.tasks||[]).length){el.innerHTML='<div class="empty"><i class="fa-regular fa-rectangle-list"></i><div>אין פריטים בלוח</div><button class="btn btn-primary" style="margin-top:14px" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> הוסף פריט</button></div>';return;}
   const groups=groupsOf();
-  if(!groups.reduce((n,g)=>n+g.tasks.length,0)){el.innerHTML=noMatchHTML();return;}
+  // filters are active but nothing matches → show the "no match" hint. An empty
+  // board still renders its groups + "add group" so the structure stays visible.
+  if((st.board.tasks||[]).length && !groups.reduce((n,g)=>n+g.tasks.length,0)){el.innerHTML=noMatchHTML();return;}
   el.innerHTML = groups.map(g=>{
     const col=g.color||'#0073ea';
     const rows=g.tasks.map(t=>itemRow(t,col)).join('');
