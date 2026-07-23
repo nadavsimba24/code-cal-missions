@@ -2234,6 +2234,16 @@ async function setField(id,field,value){
     if(!g){const stage=STATUS_STAGE[value]; if(stage)g=gs.find(x=>STATUS_STAGE[x.task_status]===stage);}
     if(g) t.group_id=g.id;
   }
+  // roll up: when all sub-items are done, the parent item moves to "done" too
+  if(field==='status' && t && t.parent_id){
+    const parent=findAnyTask(t.parent_id), subs=(parent&&parent.subtasks)||[];
+    if(parent && subs.length && subs.every(s=>s.status==='done') && parent.status!=='done'){
+      parent.status='done';
+      const gs=(st.board&&st.board.groups)||[];
+      const g=gs.find(x=>x.task_status==='done')||gs.find(x=>STATUS_STAGE[x.task_status]==='done');
+      if(g) parent.group_id=g.id;
+    }
+  }
   try{ await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({[field]:value})}); renderView(); }
   catch(e){ toast('שגיאה בעדכון'); }
 }

@@ -843,6 +843,26 @@ def _group_for_status(db, board_id, status_val):
     return None
 
 
+def _st_of(t):
+    return t.status.value if hasattr(t.status, "value") else t.status
+
+
+def _rollup_parent(db, parent_id):
+    """When every sub-item of a parent is done, mark the parent done too and move
+    it to the matching group."""
+    parent = db.query(Task).filter(Task.id == parent_id).first()
+    if not parent:
+        return
+    subs = db.query(Task).filter(Task.parent_id == parent_id).all()
+    if not subs:
+        return
+    if all(_st_of(s) == "done" for s in subs) and _st_of(parent) != "done":
+        parent.status = TaskStatus.DONE
+        g = _group_for_status(db, parent.board_id, TaskStatus.DONE)
+        if g:
+            parent.group_id = g.id
+
+
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: int, data: dict):
     """Generic item update — title, priority, status, due_date, and custom column
@@ -893,6 +913,9 @@ def update_task(task_id: int, data: dict):
                     g = _group_for_status(db, task.board_id, nv)
                     if g:
                         task.group_id = g.id
+                else:
+                    # roll up: parent auto-completes once all its sub-items are done
+                    _rollup_parent(db, task.parent_id)
             except ValueError:
                 pass
         if "due_date" in data:

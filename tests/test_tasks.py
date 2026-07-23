@@ -66,3 +66,27 @@ def test_status_change_auto_moves_to_matching_group(client):
                 f"status {status} landed in {landed['task_status']}"
     finally:
         client.delete(f"/api/tasks/{tid}")
+
+
+def test_parent_rolls_up_to_done_when_all_subitems_done(client):
+    """A parent item auto-completes (status done, moved to the done group) only
+    once every one of its sub-items is done."""
+    b = client.get("/api/boards/1?user_id=1").json()
+    gid = b["groups"][0]["id"]
+    done_gids = [g["id"] for g in b["groups"] if g["task_status"] == "done"]
+    p = client.post("/api/tasks", json={"title": "parent", "board_id": 1, "group_id": gid}).json()["id"]
+    s1 = client.post("/api/tasks", json={"title": "s1", "board_id": 1, "parent_id": p}).json()["id"]
+    s2 = client.post("/api/tasks", json={"title": "s2", "board_id": 1, "parent_id": p}).json()["id"]
+    try:
+        def parent():
+            d = client.get("/api/boards/1?user_id=1").json()
+            return next(t for t in d["tasks"] if t["id"] == p)
+        client.patch(f"/api/tasks/{s1}", json={"status": "done", "user_id": 1})
+        assert parent()["status"] != "done"          # not all subs done yet
+        client.patch(f"/api/tasks/{s2}", json={"status": "done", "user_id": 1})
+        pt = parent()
+        assert pt["status"] == "done"                # all subs done → parent done
+        if done_gids:
+            assert pt["group_id"] in done_gids
+    finally:
+        client.delete(f"/api/tasks/{p}")
