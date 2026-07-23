@@ -3168,10 +3168,14 @@ const Chat = {
   attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=async()=>{
     const f=inp.files[0]; if(!f)return;
     this._uploading=f.name; this.renderAtts();                 // show loader while uploading
+    const started=Date.now();
     const fd=new FormData(); fd.append('file',f);
     try{ const r=await fetch('/api/upload',{method:'POST',body:fd}); if(!r.ok)throw 0; const data=await r.json(); this.atts.push(data); toast('קובץ צורף'); }
     catch(e){ toast('שגיאה בהעלאה'); }
-    finally{ this._uploading=null; this.renderAtts(); }
+    finally{ // keep the loader visible for at least 0.7s so it's actually perceivable
+      const wait=Math.max(0,700-(Date.now()-started));
+      setTimeout(()=>{ this._uploading=null; this.renderAtts(); }, wait);
+    }
   }; inp.click(); },
   renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return;
     let h=this.atts.map((f,i)=>`<span class="file-chip">${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`).join('');
