@@ -709,6 +709,18 @@ img.pf-av{object-fit:cover;background:#fff}
 .cmt-body .chk input:checked{background:var(--green);border-color:var(--green)}
 .cmt-body .chk input:checked::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
 .cmt-body .chk.done span{text-decoration:line-through;color:var(--text-light)}
+/* interactive checklist inside the composer */
+.comp-check{display:flex;flex-direction:column;gap:6px}
+.comp-check:not(:empty){margin:2px 0 8px}
+.cl-item{display:flex;align-items:center;gap:9px}
+.cl-box{appearance:none;-webkit-appearance:none;width:19px;height:19px;flex-shrink:0;border:2px solid var(--border-strong);border-radius:5px;background:var(--surface);cursor:pointer;position:relative;transition:background .15s,border-color .15s}
+.cl-box:hover{border-color:var(--green)}
+.cl-box:checked{background:var(--green);border-color:var(--green)}
+.cl-box:checked::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.cl-box:checked ~ .cl-txt{text-decoration:line-through;color:var(--text-light)}
+.cl-txt{flex:1;border:none;background:none;font-family:inherit;font-size:14px;color:var(--text);padding:4px 0;outline:none}
+.cl-del{color:var(--text-light);width:22px;height:22px;border-radius:5px;font-size:17px;line-height:1;flex-shrink:0}
+.cl-del:hover{background:var(--row-hover);color:var(--red)}
 .cmt-body a{color:var(--primary);text-decoration:underline}
 .cmt-body .mention{color:var(--primary);font-weight:600;background:var(--primary-soft);border-radius:4px;padding:0 3px}
 .cmt-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
@@ -3051,11 +3063,12 @@ const Chat = {
       ${this.replyTo?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
       <div class="comp-tools">
         <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
-        <button title="צ'ק-ליסט" onclick="Chat.insertCheck()"><i class="fa-solid fa-square-check"></i></button>
+        <button title="צ'ק-ליסט" onclick="Chat.addCheckItem()"><i class="fa-solid fa-square-check"></i></button>
         <button id="mention-btn" title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
         <button title="אימוג'י" onclick="Chat.emojiMenu(event)"><i class="fa-regular fa-face-smile"></i></button>
         <button title="צרף קובץ מהמחשב" onclick="Chat.attach()"><i class="fa-solid fa-paperclip"></i></button>
       </div>
+      <div class="comp-check" id="comp-check"></div>
       <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)"></textarea>
       <div class="comp-atts" id="comp-atts"></div>
       <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
@@ -3108,6 +3121,21 @@ const Chat = {
   },
   insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); },
   insertCheck(){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; const before=ta.value.slice(0,s); this.insert((before===''||before.endsWith('\n')?'':'\n')+'☐ '); },
+  // interactive checklist inside the composer: a real clickable checkbox + text
+  // per row. Enter adds another row; empty-Enter/Backspace leaves the list.
+  addCheckItem(text,checked){
+    const wrap=document.getElementById('comp-check'); if(!wrap)return;
+    const row=document.createElement('div'); row.className='cl-item';
+    row.innerHTML=`<input type="checkbox" class="cl-box"${checked?' checked':''}><input type="text" class="cl-txt" placeholder="פריט בצ'ק-ליסט…"><button class="cl-del" title="הסר" tabindex="-1">&times;</button>`;
+    wrap.appendChild(row);
+    const txt=row.querySelector('.cl-txt'); if(text)txt.value=text;
+    row.querySelector('.cl-del').onclick=()=>{ row.remove(); };
+    txt.onkeydown=(e)=>{
+      if(e.key==='Enter'){ e.preventDefault(); if(txt.value.trim()) this.addCheckItem(); else { row.remove(); const t=document.getElementById('comp-text'); if(t)t.focus(); } }
+      else if(e.key==='Backspace' && txt.value===''){ e.preventDefault(); const prev=row.previousElementSibling; row.remove(); if(prev){const p=prev.querySelector('.cl-txt'); if(p){p.focus();p.setSelectionRange(p.value.length,p.value.length);}} else{const t=document.getElementById('comp-text'); if(t)t.focus();} }
+    };
+    txt.focus();
+  },
   startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
   cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
   mentionMenu(e,atMode){ e.stopPropagation(); this._atMode=!!atMode; this._float(e.currentTarget,(st.users||[]).map(u=>`<button onclick="Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')); },
@@ -3121,7 +3149,13 @@ const Chat = {
   rmAtt(i){ this.atts.splice(i,1); this.renderAtts(); },
   _float(anchor,html){ closeCellPops(); const p=document.createElement('div'); p.className='cell-pop chat-float'; p.innerHTML=html; anchor.appendChild(p); setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0); },
   async post(){
-    const ta=document.getElementById('comp-text'); const content=(ta?ta.value:'').trim();
+    const ta=document.getElementById('comp-text'); let content=(ta?ta.value:'').trim();
+    // fold interactive checklist rows into the message as ☐/☑ lines
+    const checkLines=[...document.querySelectorAll('#comp-check .cl-item')].map(r=>{
+      const t=r.querySelector('.cl-txt').value.trim(); if(!t)return null;
+      return (r.querySelector('.cl-box').checked?'☑ ':'☐ ')+t;
+    }).filter(Boolean);
+    if(checkLines.length) content=checkLines.join('\n')+(content?'\n'+content:'');
     if(!content&&!this.atts.length){toast('הודעה ריקה');return;}
     try{
       await api('/api/tasks/'+this.taskId+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({content,parent_id:this.replyTo,mentions:this.mentions,attachments:this.atts})});
