@@ -738,8 +738,11 @@ img.pf-av{object-fit:cover;background:#fff}
 .comp-tools{display:flex;gap:2px;margin-bottom:6px}
 .comp-tools button{width:30px;height:30px;border-radius:6px;color:var(--text-muted);position:relative}
 .comp-tools button:hover{background:var(--row-hover);color:var(--primary)}
-.composer textarea{width:100%;border:1px solid var(--border-strong);border-radius:8px;padding:9px;font-family:inherit;font-size:13.5px;resize:vertical;min-height:52px}
-.composer textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+/* unified input box: checklist rows + text share one bordered box */
+.composer-input{border:1px solid var(--border-strong);border-radius:8px;padding:9px;transition:border-color .12s,box-shadow .12s}
+.composer-input:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+.composer textarea{width:100%;border:none;background:none;padding:0;font-family:inherit;font-size:13.5px;resize:vertical;min-height:44px}
+.composer textarea:focus{outline:none}
 .comp-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
 .comp-foot{display:flex;justify-content:flex-start;margin-top:8px}
 .chat-float{inset-inline-start:0;inset-inline-end:auto;transform:none;bottom:calc(100% + 6px);top:auto;max-height:230px;overflow-y:auto;min-width:190px}
@@ -3063,13 +3066,15 @@ const Chat = {
       ${this.replyTo?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
       <div class="comp-tools">
         <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
-        <button title="צ'ק-ליסט" onclick="Chat.addCheckItem()"><i class="fa-solid fa-square-check"></i></button>
+        <button title="צ'ק-ליסט" onclick="Chat.checkFromLine()"><i class="fa-solid fa-square-check"></i></button>
         <button id="mention-btn" title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
         <button title="אימוג'י" onclick="Chat.emojiMenu(event)"><i class="fa-regular fa-face-smile"></i></button>
         <button title="צרף קובץ מהמחשב" onclick="Chat.attach()"><i class="fa-solid fa-paperclip"></i></button>
       </div>
-      <div class="comp-check" id="comp-check"></div>
-      <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)"></textarea>
+      <div class="composer-input">
+        <div class="comp-check" id="comp-check"></div>
+        <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)"></textarea>
+      </div>
       <div class="comp-atts" id="comp-atts"></div>
       <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
     </div>`;
@@ -3121,6 +3126,19 @@ const Chat = {
   },
   insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); },
   insertCheck(){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; const before=ta.value.slice(0,s); this.insert((before===''||before.endsWith('\n')?'':'\n')+'☐ '); },
+  // checklist button: if the caret's line already has text, convert that line
+  // into a checklist item; otherwise add a fresh empty checkbox row.
+  checkFromLine(){
+    const ta=document.getElementById('comp-text');
+    if(ta){
+      const val=ta.value, pos=ta.selectionStart||0;
+      const ls=val.lastIndexOf('\n',pos-1)+1;
+      let le=val.indexOf('\n',pos); if(le<0)le=val.length;
+      const line=val.slice(ls,le).trim();
+      if(line){ ta.value=(val.slice(0,ls)+val.slice(le)).replace(/\n\n/,'\n').replace(/^\n/,''); this.addCheckItem(line); return; }
+    }
+    this.addCheckItem();
+  },
   // interactive checklist inside the composer: a real clickable checkbox + text
   // per row. Enter adds another row; empty-Enter/Backspace leaves the list.
   addCheckItem(text,checked){
