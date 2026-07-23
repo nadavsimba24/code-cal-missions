@@ -3047,7 +3047,7 @@ const Chat = {
       ${this.replyTo?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
       <div class="comp-tools">
         <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
-        <button title="צ'ק-ליסט" onclick="Chat.insert('[ ] ')"><i class="fa-solid fa-square-check"></i></button>
+        <button title="צ'ק-ליסט" onclick="Chat.insertCheck()"><i class="fa-solid fa-square-check"></i></button>
         <button id="mention-btn" title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
         <button title="אימוג'י" onclick="Chat.emojiMenu(event)"><i class="fa-regular fa-face-smile"></i></button>
         <button title="צרף קובץ מהמחשב" onclick="Chat.attach()"><i class="fa-solid fa-paperclip"></i></button>
@@ -3078,15 +3078,32 @@ const Chat = {
   },
   renderContent(text,cid){
     return (text||'').split('\n').map(line=>{
-      const m=line.match(/^\[( |x|X)\]\s?(.*)$/);
-      if(m){const done=m[1].toLowerCase()==='x';return `<label class="chk ${done?'done':''}"><input type="checkbox" ${done?'checked':''} onchange="Chat.toggleChk(${cid},this)"><span>${this.inline(m[2])}</span></label>`;}
+      // checklist item — new clear icon (☐/☑) plus legacy [ ]/[x] for old comments
+      const m=line.match(/^\s*(?:\[( |x|X)\]|([☐☑]))\s?(.*)$/);
+      if(m){const done=(m[1]&&m[1].toLowerCase()==='x')||m[2]==='☑';return `<label class="chk ${done?'done':''}"><input type="checkbox" ${done?'checked':''} onchange="Chat.toggleChk(${cid},this)"><span>${this.inline(m[3])}</span></label>`;}
       if(/^[•\-]\s/.test(line))return `<div class="bullet">${this.inline(line.replace(/^[•\-]\s/,''))}</div>`;
       return `<div>${this.inline(line)||'&nbsp;'}</div>`;
     }).join('');
   },
   inline(s){ s=esc(s); s=s.replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>'); s=s.replace(/@([^\s@,.]{1,30})/g,'<span class="mention">@$1</span>'); return s; },
-  keydown(e){ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();this.post();} },
+  keydown(e){
+    if(e.key!=='Enter'||e.shiftKey)return;
+    // checklist continuation: Enter on a checklist line adds a fresh box below;
+    // Enter on an empty checklist line exits the list; otherwise Enter sends.
+    const ta=e.target, pos=ta.selectionStart;
+    const before=ta.value.slice(0,pos);
+    const lineStart=before.lastIndexOf('\n')+1;
+    const m=before.slice(lineStart).match(/^(\s*)(?:[☐☑]|\[[ xX]\])\s?(.*)$/);
+    if(m){
+      e.preventDefault();
+      if((m[2]||'').trim()===''){ ta.value=ta.value.slice(0,lineStart)+ta.value.slice(pos); ta.selectionStart=ta.selectionEnd=lineStart; ta.focus(); }
+      else{ this.insert('\n'+(m[1]||'')+'☐ '); }
+      return;
+    }
+    e.preventDefault(); this.post();
+  },
   insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); },
+  insertCheck(){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; const before=ta.value.slice(0,s); this.insert((before===''||before.endsWith('\n')?'':'\n')+'☐ '); },
   startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
   cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
   mentionMenu(e,atMode){ e.stopPropagation(); this._atMode=!!atMode; this._float(e.currentTarget,(st.users||[]).map(u=>`<button onclick="Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')); },
@@ -3113,7 +3130,7 @@ const Chat = {
     const find=(arr)=>{for(const c of arr){if(c.id===cid)return c;const r=find(c.replies||[]);if(r)return r;}return null;};
     const c=find(this.comments); if(!c)return;
     const items=[...cb.closest('.cmt-body').querySelectorAll('.chk')]; const idx=items.indexOf(cb.closest('.chk'));
-    let n=-1; const lines=c.content.split('\n').map(l=>{ if(/^\[( |x|X)\]/.test(l)){n++; if(n===idx)return (cb.checked?'[x] ':'[ ] ')+l.replace(/^\[( |x|X)\]\s?/,''); } return l; });
+    let n=-1; const lines=c.content.split('\n').map(l=>{ const mm=l.match(/^(\s*)(?:[☐☑]|\[[ xX]\])\s?(.*)$/); if(mm){n++; if(n===idx)return mm[1]+(cb.checked?'☑ ':'☐ ')+mm[2]; } return l; });
     try{ await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({content:lines.join('\n')})}); this.renderChat(document.getElementById('chat-body')); }catch(e){toast('שגיאה');}
   },
   async bump(){ try{ const d=await api('/api/tasks/'+this.taskId+'/comments'); const t=findAnyTask(this.taskId); if(t)t.comment_count=d.count; if(st.view==='table')renderView(); }catch(e){} },
