@@ -744,6 +744,9 @@ img.pf-av{object-fit:cover;background:#fff}
 .composer textarea{width:100%;border:none;background:none;padding:0;font-family:inherit;font-size:13.5px;resize:vertical;min-height:44px}
 .composer textarea:focus{outline:none}
 .comp-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.comp-atts .file-chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;padding:3px 9px;font-size:12px}
+.comp-atts .file-chip.uploading{color:var(--text-muted);border-style:dashed}
+.comp-atts .file-chip.uploading i{color:var(--primary)}
 .comp-foot{display:flex;justify-content:flex-start;margin-top:8px}
 .chat-float{inset-inline-start:0;inset-inline-end:auto;transform:none;bottom:calc(100% + 6px);top:auto;max-height:230px;overflow-y:auto;min-width:190px}
 .chat-float button{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;width:100%;text-align:start}
@@ -3162,8 +3165,18 @@ const Chat = {
   pickMention(id){ const u=(st.users||[]).find(x=>x.id===id); if(!u)return; if(!this.mentions.includes(id))this.mentions.push(id); this.insert((this._atMode?'':'@')+u.name+' '); this._atMode=false; closeCellPops(); },
   emojiMenu(e){ e.stopPropagation(); this._float(e.currentTarget,'<div class="emoji-grid">'+EMOJIS.map(x=>`<button onclick="Chat.insert('${x} ');closeCellPops()">${x}</button>`).join('')+'</div>'); },
   addLink(){ const url=prompt('הדבק קישור:'); if(url)this.insert(url+' '); },
-  attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=async()=>{const f=inp.files[0];if(!f)return;const fd=new FormData();fd.append('file',f);try{const r=await fetch('/api/upload',{method:'POST',body:fd});const data=await r.json();this.atts.push(data);this.renderAtts();toast('קובץ צורף');}catch(e){toast('שגיאה בהעלאה');}}; inp.click(); },
-  renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return; el.innerHTML=this.atts.map((f,i)=>`<span class="file-chip">${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`).join(''); },
+  attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=async()=>{
+    const f=inp.files[0]; if(!f)return;
+    this._uploading=f.name; this.renderAtts();                 // show loader while uploading
+    const fd=new FormData(); fd.append('file',f);
+    try{ const r=await fetch('/api/upload',{method:'POST',body:fd}); if(!r.ok)throw 0; const data=await r.json(); this.atts.push(data); toast('קובץ צורף'); }
+    catch(e){ toast('שגיאה בהעלאה'); }
+    finally{ this._uploading=null; this.renderAtts(); }
+  }; inp.click(); },
+  renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return;
+    let h=this.atts.map((f,i)=>`<span class="file-chip">${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`).join('');
+    if(this._uploading) h+=`<span class="file-chip uploading"><i class="fa-solid fa-spinner fa-spin"></i> ${esc(this._uploading)} — מעלה…</span>`;
+    el.innerHTML=h; },
   rmAtt(i){ this.atts.splice(i,1); this.renderAtts(); },
   _float(anchor,html){ closeCellPops(); const p=document.createElement('div'); p.className='cell-pop chat-float'; p.innerHTML=html; anchor.appendChild(p); setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0); },
   async post(){
