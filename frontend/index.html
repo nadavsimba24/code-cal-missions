@@ -92,6 +92,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .rm-item.danger{color:var(--red)}
 .rm-item.danger i{color:var(--red)}
 .rm-item.danger:hover{background:#ffeaea}
+.rm-sep{font-size:11px;color:var(--text-light);font-weight:600;padding:8px 11px 3px;display:flex;align-items:center;gap:7px;border-top:1px solid var(--border);margin-top:4px}
+.rm-sep i{font-size:10px}
+.rm-dot{width:11px;height:11px;border-radius:3px;flex-shrink:0}
+.row-menu-pop{max-height:340px;overflow-y:auto}
 .rm-note{padding:9px 11px;font-size:11.5px;color:var(--text-light)}
 .sb-foot{border-top:1px solid var(--border);padding:8px}
 
@@ -246,6 +250,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .add-row:hover td{color:var(--primary)}
 /* sub-items (תת-פריטים) */
 .tbl .c-item .ci-flex{display:flex;align-items:center;gap:8px;min-height:28px}
+.row-grip{color:var(--text-light);font-size:12px;cursor:grab;opacity:0;transition:.12s;margin-inline-end:-3px}
+tr:hover .row-grip{opacity:.55}
+.row-grip:hover{opacity:1;color:var(--text)}
+.row-grip:active{cursor:grabbing}
 .sub-toggle{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;flex-shrink:0;transition:.12s}
 .sub-toggle:hover{background:var(--row-hover);color:var(--text)}
 .sub-toggle i{transition:transform .15s}
@@ -1927,7 +1935,7 @@ function vTable(el){
       }});
     // drag items between groups — grab an item by its name, drop into any group
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      new Sortable(tb,{group:'board-items',handle:'.item-title',draggable:'tr[data-tid]',
+      new Sortable(tb,{group:'board-items',handle:'.itm-h',draggable:'tr[data-tid]',
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         onEnd:async(evt)=>{
           const tid=+evt.item.dataset.tid; if(!tid)return;
@@ -1961,8 +1969,9 @@ function itemRow(t,col){
   const parent=`
     <tr data-tid="${t.id}">
       <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
+        <i class="fa-solid fa-grip-vertical row-grip itm-h" title="גרור להעברה בין קבוצות"></i>
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
-        <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
+        <span class="item-title editable itm-h" title="לחץ לעריכת השם · גרור להעברה" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
         ${cnt?`<span class="sub-badge" title="${cnt} תת-פריטים"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
       </div>${canEditItem(t)?`<button class="item-menu" title="אפשרויות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}</td>
@@ -2492,11 +2501,26 @@ async function deleteSubItem(e,id){
 function itemRowMenu(e,id){
   e.preventDefault(); e.stopPropagation();
   const t=findAnyTask(id); if(!t||!canEditItem(t))return;
+  const others=(st.board.groups||[]).filter(g=>g.id!==t.group_id);
+  const moveOpts=others.length?`<div class="rm-sep"><i class="fa-solid fa-arrow-right-arrow-left"></i> העבר לקבוצה</div>`
+    + others.map(g=>`<button class="rm-item" onclick="moveItemToGroup(event,${id},${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('') : '';
   const items=[
     `<button class="rm-item" onclick="closeCellPops();Chat.open(${id})"><i class="fa-regular fa-comment"></i> פתח שיחה</button>`,
+    moveOpts,
     `<button class="rm-item danger" onclick="deleteItem(event,${id})"><i class="fa-regular fa-trash-can"></i> מחק פריט</button>`,
   ];
   openCellPop(e.currentTarget,`<div class="row-menu">${items.join('')}</div>`,'row-menu-pop');
+}
+async function moveItemToGroup(e,id,gid){
+  e.stopPropagation(); closeCellPops();
+  const grp=(st.board.groups||[]).find(g=>g.id===gid);
+  const pos=(st.board.tasks||[]).filter(x=>x.group_id===gid && !x.parent_id).length; // append at end
+  const body={group_id:gid,position:pos}; if(grp)body.status=grp.task_status;
+  try{
+    await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
+    toast('הפריט הועבר לקבוצה'); renderView();
+  }catch(err){ toast('שגיאה בהעברת הפריט'); }
 }
 async function deleteItem(e,id){
   e.stopPropagation(); closeCellPops();
