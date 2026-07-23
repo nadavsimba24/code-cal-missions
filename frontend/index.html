@@ -702,8 +702,12 @@ img.pf-av{object-fit:cover;background:#fff}
 .cmt-body{background:var(--surface);border:1px solid var(--border);border-radius:10px;border-start-start-radius:2px;padding:9px 12px;margin-top:5px;font-size:13.5px;line-height:1.55;word-break:break-word}
 .cmt-body .bullet{position:relative;padding-inline-start:16px}
 .cmt-body .bullet::before{content:'•';position:absolute;inset-inline-start:2px;color:var(--primary)}
-.cmt-body .chk{display:flex;align-items:flex-start;gap:7px;cursor:pointer}
-.cmt-body .chk input{margin-top:3px;accent-color:var(--green)}
+.cmt-body .chk{display:flex;align-items:flex-start;gap:9px;cursor:pointer}
+/* nice custom checkbox — fills green with a white tick when the task is done */
+.cmt-body .chk input{appearance:none;-webkit-appearance:none;width:19px;height:19px;margin:1px 0 0;flex-shrink:0;border:2px solid var(--border-strong);border-radius:5px;background:var(--surface);cursor:pointer;position:relative;transition:background .15s,border-color .15s}
+.cmt-body .chk input:hover{border-color:var(--green)}
+.cmt-body .chk input:checked{background:var(--green);border-color:var(--green)}
+.cmt-body .chk input:checked::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
 .cmt-body .chk.done span{text-decoration:line-through;color:var(--text-light)}
 .cmt-body a{color:var(--primary);text-decoration:underline}
 .cmt-body .mention{color:var(--primary);font-weight:600;background:var(--primary-soft);border-radius:4px;padding:0 3px}
