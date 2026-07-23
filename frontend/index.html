@@ -725,6 +725,12 @@ img.pf-av{object-fit:cover;background:#fff}
 .cmt-body a{color:var(--primary);text-decoration:underline}
 .cmt-body .mention{color:var(--primary);font-weight:600;background:var(--primary-soft);border-radius:4px;padding:0 3px}
 .cmt-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.cmt-edit{margin-top:5px}
+.cmt-edit-ta{width:100%;border:1px solid var(--primary);border-radius:9px;padding:9px;font-family:inherit;font-size:13.5px;line-height:1.55;resize:vertical;min-height:48px;outline:none;box-shadow:0 0 0 3px var(--primary-soft)}
+.cmt-edit-foot{display:flex;gap:6px;margin-top:6px}
+.cmt-edit-foot .ce-save{background:var(--primary);color:#fff;border-radius:7px;padding:5px 14px;font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.cmt-edit-foot .ce-cancel{color:var(--text-muted);border-radius:7px;padding:5px 12px;font-size:12.5px}
+.cmt-edit-foot .ce-cancel:hover{background:var(--row-hover);color:var(--text)}
 .cmt-actions{display:flex;gap:4px;margin-top:5px}
 .cmt-actions button{font-size:12px;color:var(--text-muted);padding:3px 8px;border-radius:6px;display:inline-flex;align-items:center;gap:5px}
 .cmt-actions button:hover{background:var(--row-hover);color:var(--text)}
@@ -3070,7 +3076,7 @@ function openForms(){ Forms.open(); }
 const fdatetime = d=>d?new Date(d).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
-  taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'',
+  taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'', editing:null,
   open(id){
     this.taskId=id; this.task=findAnyTask(id); this.tabName='chat';
     this.replyTo=null; this.atts=[]; this.mentions=[];
@@ -3124,21 +3130,37 @@ const Chat = {
   },
   commentHTML(c,isReply){
     const me=meId(), liked=(c.likes||[]).includes(me);
-    const canDel=c.user_id===me||(st.me&&(st.me.role==='admin'||st.me.role==='manager'));
+    const canMod=c.user_id===me||(st.me&&(st.me.role==='admin'||st.me.role==='manager'));
     const replies=(c.replies||[]).map(r=>this.commentHTML(r,true)).join('');
+    const editing=this.editing===c.id;
+    const bodyOrEdit=editing
+      ? `<div class="cmt-edit">
+          <textarea id="edit-${c.id}" class="cmt-edit-ta" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();Chat.saveEdit(${c.id});} if(event.key==='Escape')Chat.cancelEdit();">${esc(c.content||'')}</textarea>
+          <div class="cmt-edit-foot"><button class="ce-save" onclick="Chat.saveEdit(${c.id})"><i class="fa-solid fa-check"></i> שמור</button><button class="ce-cancel" onclick="Chat.cancelEdit()">ביטול</button></div>
+        </div>`
+      : `<div class="cmt-body">${(c.content||'').trim()?this.renderContent(c.content,c.id):''}${(c.attachments||[]).length?`<div class="cmt-atts">${c.attachments.map(f=>this.attPreview(f)).join('')}</div>`:''}</div>
+        <div class="cmt-actions">
+          <button class="${liked?'liked':''}" onclick="Chat.like(${c.id})"><i class="fa-${liked?'solid':'regular'} fa-thumbs-up"></i> ${(c.likes||[]).length||''}</button>
+          ${!isReply&&canComment()?`<button onclick="Chat.startReply(${c.id},'${esc((c.user_name||'').replace(/['\\]/g,''))}')"><i class="fa-solid fa-reply"></i> הגב</button>`:''}
+          ${canMod?`<button title="ערוך" onclick="Chat.startEdit(${c.id})"><i class="fa-solid fa-pen"></i></button>`:''}
+          ${canMod?`<button title="מחק" onclick="Chat.del(${c.id})"><i class="fa-regular fa-trash-can"></i></button>`:''}
+        </div>`;
     return `<div class="cmt ${isReply?'cmt-reply':''}">
       <span class="av av-click" style="background:var(--primary)" title="הצג פרופיל" onclick="Profile.open(${c.user_id})">${avatarInner(c)}</span>
       <div class="cmt-main">
         <div class="cmt-head"><b>${esc(c.user_name)}</b><span class="cmt-role">${ROLE_HE[c.user_role]||''}</span><span class="cmt-time">${fdatetime(c.created_at)}</span></div>
-        <div class="cmt-body">${(c.content||'').trim()?this.renderContent(c.content,c.id):''}${(c.attachments||[]).length?`<div class="cmt-atts">${c.attachments.map(f=>this.attPreview(f)).join('')}</div>`:''}</div>
-        <div class="cmt-actions">
-          <button class="${liked?'liked':''}" onclick="Chat.like(${c.id})"><i class="fa-${liked?'solid':'regular'} fa-thumbs-up"></i> ${(c.likes||[]).length||''}</button>
-          ${!isReply&&canComment()?`<button onclick="Chat.startReply(${c.id},'${esc((c.user_name||'').replace(/['\\]/g,''))}')"><i class="fa-solid fa-reply"></i> הגב</button>`:''}
-          ${canDel?`<button onclick="Chat.del(${c.id})"><i class="fa-regular fa-trash-can"></i></button>`:''}
-        </div>
+        ${bodyOrEdit}
         ${replies?`<div class="cmt-replies">${replies}</div>`:''}
       </div>
     </div>`;
+  },
+  startEdit(cid){ this.editing=cid; this.renderChat(document.getElementById('chat-body')); setTimeout(()=>{const ta=document.getElementById('edit-'+cid); if(ta){ta.focus();ta.setSelectionRange(ta.value.length,ta.value.length);}},40); },
+  cancelEdit(){ this.editing=null; this.renderChat(document.getElementById('chat-body')); },
+  async saveEdit(cid){
+    const ta=document.getElementById('edit-'+cid); const content=(ta?ta.value:'').trim();
+    if(!content){ toast('ההודעה ריקה'); return; }
+    try{ await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({content})}); this.editing=null; await this.bump(); this.renderChat(document.getElementById('chat-body')); }
+    catch(e){ toast('אין הרשאה לערוך הודעה זו'); }
   },
   renderContent(text,cid){
     return (text||'').split('\n').map(line=>{
