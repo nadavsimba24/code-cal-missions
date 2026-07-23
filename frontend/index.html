@@ -745,8 +745,16 @@ img.pf-av{object-fit:cover;background:#fff}
 .composer textarea:focus{outline:none}
 .comp-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
 .comp-atts .file-chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;padding:3px 9px;font-size:12px}
+.comp-atts .file-chip .chip-thumb{width:26px;height:26px;object-fit:cover;border-radius:4px}
 .comp-atts .file-chip.uploading{color:var(--text-muted);border-style:dashed}
 .comp-atts .file-chip.uploading i{color:var(--primary)}
+/* attachment preview in a posted comment */
+.cmt-atts{display:flex;flex-wrap:wrap;gap:8px;margin-top:7px}
+.att-prev{display:inline-flex;flex-direction:column;align-items:center;gap:5px;width:94px;border:1px solid var(--border);border-radius:9px;padding:7px;background:var(--surface);text-decoration:none;color:var(--text);transition:border-color .12s,box-shadow .12s}
+.att-prev:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
+.att-prev img{width:80px;height:64px;object-fit:cover;border-radius:6px;display:block;background:var(--bg)}
+.att-prev.att-file i{font-size:36px;color:var(--primary);height:64px;display:flex;align-items:center}
+.att-name{font-size:10.5px;color:var(--text-muted);max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .comp-foot{display:flex;justify-content:flex-start;margin-top:8px}
 .chat-float{inset-inline-start:0;inset-inline-end:auto;transform:none;bottom:calc(100% + 6px);top:auto;max-height:230px;overflow-y:auto;min-width:190px}
 .chat-float button{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;width:100%;text-align:start}
@@ -3091,7 +3099,7 @@ const Chat = {
       <div class="cmt-main">
         <div class="cmt-head"><b>${esc(c.user_name)}</b><span class="cmt-role">${ROLE_HE[c.user_role]||''}</span><span class="cmt-time">${fdatetime(c.created_at)}</span></div>
         <div class="cmt-body">${this.renderContent(c.content,c.id)}</div>
-        ${(c.attachments||[]).length?`<div class="cmt-atts">${c.attachments.map(f=>`<a class="file-chip" href="${esc(f.url)}" target="_blank"><i class="fa-solid fa-paperclip"></i> ${esc(f.name)}</a>`).join('')}</div>`:''}
+        ${(c.attachments||[]).length?`<div class="cmt-atts">${c.attachments.map(f=>this.attPreview(f)).join('')}</div>`:''}
         <div class="cmt-actions">
           <button class="${liked?'liked':''}" onclick="Chat.like(${c.id})"><i class="fa-${liked?'solid':'regular'} fa-thumbs-up"></i> ${(c.likes||[]).length||''}</button>
           ${!isReply&&canComment()?`<button onclick="Chat.startReply(${c.id},'${esc((c.user_name||'').replace(/['\\]/g,''))}')"><i class="fa-solid fa-reply"></i> הגב</button>`:''}
@@ -3177,8 +3185,18 @@ const Chat = {
       setTimeout(()=>{ this._uploading=null; this.renderAtts(); }, wait);
     }
   }; inp.click(); },
+  isImg(name){ return /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name||''); },
+  fileIcon(name){ const e=(name||'').split('.').pop().toLowerCase(); return ({pdf:'fa-file-pdf',doc:'fa-file-word',docx:'fa-file-word',xls:'fa-file-excel',xlsx:'fa-file-excel',csv:'fa-file-csv',ppt:'fa-file-powerpoint',pptx:'fa-file-powerpoint',zip:'fa-file-zipper',rar:'fa-file-zipper',txt:'fa-file-lines',mp4:'fa-file-video',mov:'fa-file-video',mp3:'fa-file-audio',wav:'fa-file-audio'})[e]||'fa-file'; },
+  // attachment thumbnail/preview for a posted comment
+  attPreview(f){
+    if(this.isImg(f.name)) return `<a class="att-prev" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"><span class="att-name">${esc(f.name)}</span></a>`;
+    return `<a class="att-prev att-file" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><i class="fa-solid ${this.fileIcon(f.name)}"></i><span class="att-name">${esc(f.name)}</span></a>`;
+  },
   renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return;
-    let h=this.atts.map((f,i)=>`<span class="file-chip">${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`).join('');
+    let h=this.atts.map((f,i)=>{
+      const thumb=this.isImg(f.name)?`<img src="${esc(f.url)}" class="chip-thumb" alt="">`:`<i class="fa-solid ${this.fileIcon(f.name)}"></i>`;
+      return `<span class="file-chip">${thumb} ${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`;
+    }).join('');
     if(this._uploading) h+=`<span class="file-chip uploading"><i class="fa-solid fa-spinner fa-spin"></i> ${esc(this._uploading)} — מעלה…</span>`;
     el.innerHTML=h; },
   rmAtt(i){ this.atts.splice(i,1); this.renderAtts(); },
