@@ -2922,7 +2922,16 @@ function openNewItem(group){
     <div class="field"><label>תיאור</label><textarea id="ni-desc" rows="3"></textarea></div>
   </div><div class="mfoot"><button class="btn btn-primary" onclick="saveItem(${group===undefined||group===null?'null':group})">צור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
 }
+// default group for a new item created from the top "פריט חדש" button: the
+// "בתכנון" (backlog) group, else the first group by position — never ungrouped
+function defaultGroupId(){
+  const gs=(st.board&&st.board.groups)||[];
+  if(!gs.length)return null;
+  const backlog=gs.find(g=>g.task_status==='backlog');
+  return (backlog||gs.slice().sort((a,b)=>(a.position||0)-(b.position||0))[0]).id;
+}
 async function saveItem(group){
+  if(group==null) group=defaultGroupId();               // top button → "בתכנון", not "ללא קבוצה"
   const title=document.getElementById('ni-title').value.trim();if(!title){toast('צריך שם');return;}
   if(window._creatingItem)return;                       // guard against double-submit
   window._creatingItem=true;
