@@ -5,7 +5,7 @@ Database Models
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float, Boolean,
-    DateTime, ForeignKey, JSON, Enum as SAEnum, Table
+    DateTime, ForeignKey, JSON, Enum as SAEnum, Table, LargeBinary
 )
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
@@ -551,6 +551,19 @@ class LoginEvent(Base):
     logged_in_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     ip = Column(String(64))
     user_agent = Column(String(400))
+
+
+class UploadedFile(Base):
+    """File attachments stored in the DB so they persist and are shared across
+    serverless instances (the local filesystem on Vercel is ephemeral/per-instance)."""
+    __tablename__ = "uploaded_files"
+    id = Column(Integer, primary_key=True)
+    token = Column(String(40), unique=True, index=True)
+    name = Column(String(300))
+    content_type = Column(String(150))
+    data = Column(LargeBinary)
+    size = Column(Integer)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 # ── Init DB ──────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ from models import (
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
     Approval, ChangeRequest, KPI, Dependency, Document, AuditLog,
     ProjectStatus, ApprovalStatus, ChangeRequestStatus,
-    DependencyType, BudgetItemType, DocumentType, LoginEvent
+    DependencyType, BudgetItemType, DocumentType, LoginEvent, UploadedFile
 )
 
 try:
@@ -960,17 +960,33 @@ def update_task(task_id: int, data: dict):
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
 
 # ── File uploads (for the Files column) ─────────────────────────────
-UPLOAD_DIR = os.environ.get("CITYOS_UPLOAD_DIR", os.path.join(os.path.dirname(__file__), "uploads"))
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB per file
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
-    safe = (file.filename or "file").replace("/", "_").replace("\\", "_")
-    fname = f"{uuid.uuid4().hex[:8]}_{safe}"
-    with open(os.path.join(UPLOAD_DIR, fname), "wb") as f:
-        f.write(await file.read())
-    return {"name": file.filename, "url": f"/uploads/{fname}"}
+    """Store the upload in the DB so it persists and is shared across serverless
+    instances (Vercel's local filesystem is ephemeral and per-instance)."""
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 10MB)")
+    token = uuid.uuid4().hex
+    with Session(engine) as db:
+        db.add(UploadedFile(token=token, name=file.filename or "file",
+                            content_type=file.content_type or "application/octet-stream",
+                            data=content, size=len(content)))
+        db.commit()
+    return {"name": file.filename, "url": f"/api/files/{token}"}
+
+@app.get("/api/files/{token}")
+def serve_file(token: str):
+    with Session(engine) as db:
+        f = db.query(UploadedFile).filter(UploadedFile.token == token).first()
+        if not f:
+            raise HTTPException(404, "file not found")
+        from urllib.parse import quote
+        disp = f"inline; filename*=UTF-8''{quote(f.name or 'file')}"
+        return Response(content=f.data, media_type=f.content_type or "application/octet-stream",
+                        headers={"Content-Disposition": disp, "Cache-Control": "public, max-age=31536000"})
 
 @app.post("/api/tasks/{task_id}/permissions")
 def set_item_permissions(task_id: int, data: dict):

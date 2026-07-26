@@ -54,3 +54,14 @@ def test_inline_js_syntax():
         assert res.returncode == 0, res.stderr
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def test_file_upload_and_serve_roundtrip(client):
+    """Uploaded files are stored in the DB and served back (persist across instances)."""
+    r = client.post("/api/upload", files={"file": ("note.txt", b"hello-cityos", "text/plain")})
+    assert r.status_code == 200, r.text
+    url = r.json()["url"]
+    assert url.startswith("/api/files/")
+    g = client.get(url)
+    assert g.status_code == 200 and g.content == b"hello-cityos"
+    assert client.get("/api/files/nope").status_code == 404
