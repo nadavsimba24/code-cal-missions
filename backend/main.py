@@ -424,6 +424,7 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             "owners": owners,
             "columns": (b.settings or {}).get("columns", []),
             "col_widths": (b.settings or {}).get("col_widths", {}),
+            "col_labels": (b.settings or {}).get("col_labels", {}),
             "statuses": _board_statuses(b),
             "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
@@ -510,6 +511,20 @@ def update_board(board_id: int, data: dict):
                     continue
             s = dict(b.settings or {})
             s["col_widths"] = widths
+            b.settings = s
+        if data.get("col_labels") is not None:
+            # rename a built-in column header (e.g. "פריט") — workspace admin only
+            if _ws_role(db, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל מערכת יכול לשנות שם עמודה")
+            builtin = {"item", "assignees", "status", "priority", "due", "tags"}
+            labels = {}
+            for k, v in (data["col_labels"] or {}).items():
+                if k in builtin:
+                    lv = str(v or "").strip()[:40]
+                    if lv:
+                        labels[str(k)] = lv
+            s = dict(b.settings or {})
+            s["col_labels"] = labels
             b.settings = s
         if data.get("statuses") is not None:
             # only a board admin may rename/recolor/reorder/add statuses

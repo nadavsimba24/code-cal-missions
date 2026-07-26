@@ -228,6 +228,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .th-in:hover .col-sort{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
 .col-sort:hover{color:var(--primary);border-color:var(--primary)}
 .col-sort.on{opacity:1;pointer-events:auto;color:#fff;background:var(--primary);border-color:var(--primary);transform:translateX(-50%) translateY(0)}
+.th-edit{opacity:0;margin-inline-start:6px;font-size:10.5px;color:var(--text-light);cursor:pointer;transition:opacity .13s,color .12s;flex-shrink:0}
+.th-in:hover .th-edit{opacity:1}
+.th-edit:hover{color:var(--primary)}
+.th-rename{max-width:150px;border:1px solid var(--primary);border-radius:6px;padding:3px 7px;font-family:inherit;font-size:13px;font-weight:600;text-align:center;outline:none}
 .col-resizer{position:absolute;top:0;inset-inline-end:0;width:10px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
 .col-resizer::after{content:"";position:absolute;top:6px;bottom:6px;inset-inline-end:1px;width:2px;border-radius:2px;background:transparent;transition:background .12s}
 .col-resizer:hover::after,.col-resizer.dragging::after{background:var(--primary)}
@@ -2100,11 +2104,32 @@ function colgroupHTML(){
   cols+=`<col data-colkey="__spacer">`;
   return `<colgroup>${cols}</colgroup>`;
 }
+/* a built-in column's label = the board's custom override (if any) else default */
+function builtinLabel(key,def){return (((st.board&&st.board.col_labels)||{})[key])||def;}
 function builtinHeaders(col){
   return BUILTIN_COLS.map((c,i)=>{
     const style=i===0?`style="border-inline-start:4px solid ${col}"`:'';
-    return `<th data-colkey="${c.key}" ${style}><span class="th-in"><span class="th-lbl">${c.label}</span>${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
+    // only the "פריט" column is renamable, and only by a workspace (system) admin
+    const editable=(c.key==='item'&&isSysAdmin());
+    const pencil=editable?`<i class="fa-solid fa-pen th-edit" title="שנה שם עמודה" onclick="renameBuiltinCol(event,'${c.key}')"></i>`:'';
+    return `<th data-colkey="${c.key}" ${style}><span class="th-in"><span class="th-lbl">${esc(builtinLabel(c.key,c.label))}</span>${pencil}${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
   }).join('');
+}
+function renameBuiltinCol(e,key){
+  e.stopPropagation(); if(!isSysAdmin())return;
+  const th=e.currentTarget.closest('th'); const lbl=th.querySelector('.th-lbl'); if(!lbl)return;
+  const old=lbl.textContent;
+  const inp=document.createElement('input'); inp.className='th-rename'; inp.value=old; inp.maxLength=40;
+  inp.onkeydown=(ev)=>{ if(ev.key==='Enter'){ev.preventDefault();inp.blur();} if(ev.key==='Escape'){inp._cancel=true;inp.blur();} };
+  inp.onblur=()=>{ const v=inp.value.trim(); if(!inp._cancel&&v&&v!==old)saveColLabel(key,v); else renderView(); };
+  lbl.replaceWith(inp); inp.focus(); inp.select();
+}
+async function saveColLabel(key,label){
+  const cl={...((st.board&&st.board.col_labels)||{})}; cl[key]=label;
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({col_labels:cl})});
+    st.board.col_labels=cl; toast('שם העמודה עודכן'); renderView();
+  }catch(e){ toast('שגיאה בשמירת שם העמודה'); renderView(); }
 }
 /* drag-to-resize: board admin drags a header edge; width syncs across every
    group table live and persists to the board settings (col_widths). */

@@ -116,6 +116,25 @@ def test_non_admin_cannot_customise_statuses(client, member_id):
     assert r.status_code == 403
 
 
+def test_sysadmin_renames_item_column(client, admin_id):
+    """A workspace (system) admin renames the built-in 'פריט' column; it persists.
+    Only built-in keys are accepted, blank/unknown dropped."""
+    r = client.patch("/api/boards/1", json={"user_id": admin_id, "col_labels": {
+        "item": "משימה", "bogus": "x", "status": "  "}})
+    assert r.status_code == 200, r.text
+    cl = client.get(f"/api/boards/1?user_id={admin_id}").json().get("col_labels", {})
+    assert cl.get("item") == "משימה"
+    assert "bogus" not in cl and "status" not in cl
+    # restore default (empty label removed)
+    client.patch("/api/boards/1", json={"user_id": admin_id, "col_labels": {}})
+
+
+def test_non_sysadmin_cannot_rename_column(client, member_id):
+    """A non-workspace-admin cannot rename a built-in column → 403."""
+    r = client.patch("/api/boards/1", json={"user_id": member_id, "col_labels": {"item": "x"}})
+    assert r.status_code == 403
+
+
 def test_inviting_new_member_flags_invited(client, admin_id, guinea_id):
     """Inviting a genuinely new member returns invited=True (triggers the email);
     a follow-up role change on the same member returns invited=False (no email).
