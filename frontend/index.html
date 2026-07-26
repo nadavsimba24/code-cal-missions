@@ -707,11 +707,11 @@ img.pf-av{object-fit:cover;background:#fff}
 /* ===== conversation slideover ===== */
 .chat-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:190;display:none}
 .chat-overlay.open{display:block}
-#chat-panel{position:fixed;top:0;left:0;height:100vh;width:460px;max-width:96vw;background:var(--bg);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(-110%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
-#chat-panel.open{transform:translateX(0)}
+#chat-panel{position:fixed;top:50%;right:18px;left:auto;height:calc(100vh - 36px);width:460px;max-width:calc(96vw - 36px);background:var(--bg);border-radius:16px;overflow:hidden;box-shadow:0 14px 44px rgba(0,0,0,.26);transform:translateY(-50%) translateX(120%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
+#chat-panel.open{transform:translateY(-50%) translateX(0)}
 #chat-panel.dnd-over{outline:2.5px dashed var(--primary);outline-offset:-6px}
 #chat-panel.dnd-over::after{content:"שחרר כאן כדי לצרף לשיחה";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--primary-soft);color:var(--primary);font-weight:700;font-size:15px;pointer-events:none;z-index:5}
-.chat-head{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface);border-bottom:1px solid var(--border)}
+.chat-head{display:flex;align-items:center;gap:10px;padding:12px 14px 12px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
 .chat-title{font-weight:800;font-size:16px}
 .chat-sub{font-size:14.5px;color:var(--text);line-height:1.5;white-space:normal;display:-webkit-box;-webkit-line-clamp:4;line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
 .chat-tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 8px}
@@ -720,7 +720,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .chat-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
 .chat-body{flex:1;overflow-y:auto;display:flex;flex-direction:column}
 /* conversation list + composer */
-.chat-list{flex:1;overflow-y:auto;padding:14px}
+.chat-list{flex:1;overflow-y:auto;padding:14px 14px 14px 24px}
 .cmt{display:flex;gap:10px;margin-bottom:16px}
 .cmt .av{width:34px;height:34px;font-size:12px;flex-shrink:0;margin:0}
 .cmt-main{flex:1;min-width:0}
@@ -774,7 +774,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .cmt-reply .av{width:28px;height:28px;font-size:11px}
 .chat-noperm{padding:14px;text-align:center;color:var(--text-muted);font-size:13px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:8px}
 .chat-noperm i{color:var(--text-light)}
-.composer{background:var(--surface);border-top:1px solid var(--border);padding:10px 12px}
+.composer{background:var(--surface);border-top:1px solid var(--border);padding:10px 12px 10px 24px}
 .reply-ctx{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:6px;padding:5px 9px;margin-bottom:7px;display:flex;align-items:center;gap:7px}
 .comp-tools{display:flex;gap:2px;margin-bottom:6px}
 .comp-tools button{width:30px;height:30px;border-radius:6px;color:var(--text-muted);position:relative}
