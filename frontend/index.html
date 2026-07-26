@@ -510,6 +510,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .pf-av-cam{position:absolute;inset-inline-end:-2px;bottom:-2px;width:24px;height:24px;border-radius:50%;background:#fff;color:var(--primary);display:grid;place-items:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.3);border:1.5px solid var(--primary)}
 .pf-av-btn:hover .pf-av-cam{background:var(--primary);color:#fff}
 .av img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
+.av-ini{width:100%;height:100%;display:grid;place-items:center;border-radius:50%;color:#fff;font-size:inherit;font-weight:inherit;line-height:1;letter-spacing:.3px;text-transform:uppercase}
 .pf-name{font-size:19px;font-weight:800;line-height:1.2}
 .pf-role{font-size:13px;opacity:.92;margin-top:3px}
 .pf-body{padding:16px 22px 4px}
@@ -1090,13 +1091,18 @@ const initials = n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join(''
 const AVATAR_POOL_SIZE=30;
 function _avHash(s){let h=0;for(let i=0;i<(s||'').length;i++){h=(h*31+s.charCodeAt(i))>>>0;}return h;}
 function avatarUrl(seed){return `/avatars/${String(_avHash(seed||'user')%AVATAR_POOL_SIZE).padStart(2,'0')}.svg`;}
-/* Returns the inner <img> for an .av / .pf-av span. Accepts a user object
-   ({name/user_name, avatar_url}) or a bare name string. Real uploaded photo
-   wins; otherwise an illustrated avatar from the pool. */
+/* palette for the initials avatars — a stable color per name (first+last initial) */
+const AV_COLORS=['#e2445c','#fdab3d','#00c875','#0073ea','#a25ddc','#ff642e','#579bfc','#00c2b8','#bb3354','#037f4c','#9d50dd','#e2698e'];
+function avatarColor(name){return AV_COLORS[_avHash(name||'user')%AV_COLORS.length];}
+/* Returns the inner content for an .av / .pf-av span. Accepts a user object
+   ({name/user_name, avatar_url}) or a bare name string. A real uploaded photo
+   still wins; otherwise a colored circle with the person's initials
+   (first letter of first + last name). */
 function avatarInner(u){
   const name=(u&&(u.name||u.user_name))||(typeof u==='string'?u:'');
-  const url=(u&&typeof u==='object'&&u.avatar_url)?u.avatar_url:avatarUrl(name||'user');
-  return `<img src="${esc(url)}" alt="" loading="lazy">`;
+  const url=(u&&typeof u==='object'&&u.avatar_url)?u.avatar_url:null;
+  if(url) return `<img src="${esc(url)}" alt="" loading="lazy">`;
+  return `<span class="av-ini" style="background:${avatarColor(name)}">${esc(initials(name)||'?')}</span>`;
 }
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
 const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, openSubs:new Set()};
