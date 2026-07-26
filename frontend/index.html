@@ -794,6 +794,9 @@ img.pf-av{object-fit:cover;background:#fff}
 .emoji-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:2px}
 .emoji-grid button{font-size:18px;padding:5px;width:auto}
 /* files tab */
+.files-search{display:flex;align-items:center;gap:8px;margin:12px 12px 0;padding:8px 11px;background:var(--surface);border:1px solid var(--border-strong);border-radius:9px}
+.files-search i{color:var(--text-light);font-size:13px}
+.files-search input{flex:1;border:none;outline:none;background:none;font-family:inherit;font-size:13.5px;color:var(--text)}
 .files-list{padding:12px}
 .file-row{display:flex;align-items:center;gap:11px;padding:11px 12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;margin-bottom:8px;color:var(--text)}
 .file-row:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
@@ -3435,13 +3438,31 @@ const Chat = {
   // ---- files ----
   async renderFiles(body){
     let d={files:[]}; try{ d=await api('/api/tasks/'+this.taskId+'/files'); }catch(e){}
-    body.innerHTML=d.files.length? `<div class="files-list">${d.files.map(f=>`
+    this._filesCache=d.files||[]; this._fileQuery='';
+    if(!this._filesCache.length){
+      body.innerHTML='<div class="empty" style="padding:44px"><i class="fa-regular fa-folder-open"></i><div>אין קבצים בפריט</div></div>';
+      return;
+    }
+    // search-by-name appears only when the item actually has files
+    body.innerHTML=`
+      <div class="files-search"><i class="fa-solid fa-magnifying-glass"></i>
+        <input id="file-search" placeholder="חיפוש לפי שם קובץ…" oninput="Chat.filterFiles(this.value)" autocomplete="off">
+      </div>
+      <div id="files-list-wrap"></div>`;
+    this._paintFiles();
+  },
+  filterFiles(q){ this._fileQuery=q; this._paintFiles(); },   // client-side, keeps input focus
+  _paintFiles(){
+    const wrap=document.getElementById('files-list-wrap'); if(!wrap)return;
+    const q=(this._fileQuery||'').trim().toLowerCase();
+    const list=(this._filesCache||[]).filter(f=>!q||(f.name||'').toLowerCase().includes(q));
+    wrap.innerHTML=list.length? `<div class="files-list">${list.map(f=>`
       <a class="file-row" href="${esc(f.url)}" target="_blank">
-        <i class="fa-solid fa-file" style="color:var(--primary)"></i>
+        <i class="fa-solid ${this.fileIcon(f.name)}" style="color:var(--primary)"></i>
         <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}</div></div>
         <i class="fa-solid fa-download" style="color:var(--text-light)"></i>
       </a>`).join('')}</div>`
-      : '<div class="empty" style="padding:44px"><i class="fa-regular fa-folder-open"></i><div>אין קבצים בפריט</div></div>';
+      : `<div class="empty" style="padding:30px"><i class="fa-regular fa-face-frown"></i><div>לא נמצאו קבצים בשם "${esc(this._fileQuery||'')}"</div></div>`;
   },
   // ---- logs ----
   async renderLogs(body){
