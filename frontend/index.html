@@ -704,6 +704,8 @@ img.pf-av{object-fit:cover;background:#fff}
 .chat-overlay.open{display:block}
 #chat-panel{position:fixed;top:0;left:0;height:100vh;width:460px;max-width:96vw;background:var(--bg);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(-110%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
 #chat-panel.open{transform:translateX(0)}
+#chat-panel.dnd-over{outline:2.5px dashed var(--primary);outline-offset:-6px}
+#chat-panel.dnd-over::after{content:"שחרר כאן כדי לצרף לשיחה";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--primary-soft);color:var(--primary);font-weight:700;font-size:15px;pointer-events:none;z-index:5}
 .chat-head{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--surface);border-bottom:1px solid var(--border)}
 .chat-title{font-weight:800;font-size:16px}
 .chat-sub{font-size:14.5px;color:var(--text);line-height:1.5;white-space:normal;display:-webkit-box;-webkit-line-clamp:4;line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
@@ -3215,7 +3217,23 @@ const Chat = {
     sub.textContent=desc;
     sub.style.display=desc?'':'none';
     const pb=document.getElementById('chat-perm'); if(pb)pb.style.display=(st.board&&st.board.my_role==='admin')?'inline-flex':'none';
+    this.bindDnd();
     this.setTabUI(); this.render();
+  },
+  // drag & drop files/screenshots anywhere onto the chat panel (bound once).
+  // Without preventDefault the browser would just open the dropped image in a new tab.
+  bindDnd(){
+    const panel=document.getElementById('chat-panel'); if(!panel||this._dndBound)return;
+    this._dndBound=true;
+    const hasFiles=e=>{const dt=e.dataTransfer; return dt&&Array.from(dt.types||[]).includes('Files');};
+    panel.addEventListener('dragover',e=>{ if(!hasFiles(e))return; e.preventDefault(); if(canComment())panel.classList.add('dnd-over'); });
+    panel.addEventListener('dragleave',e=>{ if(e.target===panel||!panel.contains(e.relatedTarget))panel.classList.remove('dnd-over'); });
+    panel.addEventListener('drop',e=>{
+      if(!hasFiles(e))return; e.preventDefault(); panel.classList.remove('dnd-over');
+      if(!canComment()){ toast('אין לך הרשאת תגובה בלוח זה'); return; }
+      const files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]);
+      files.forEach(f=>this._upload(f));
+    });
   },
   close(){ document.getElementById('chat-panel').classList.remove('open'); document.getElementById('chat-overlay').classList.remove('open'); this.taskId=null; },
   setTabUI(){ document.querySelectorAll('.chat-tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===this.tabName)); },
@@ -3247,7 +3265,7 @@ const Chat = {
       </div>
       <div class="composer-input">
         <div class="comp-check" id="comp-check"></div>
-        <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה · ניתן להדביק צילום מסך)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)" onpaste="Chat.onPaste(event)"></textarea>
+        <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · ניתן להדביק או לגרור צילום מסך)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)" onpaste="Chat.onPaste(event)"></textarea>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
       <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
