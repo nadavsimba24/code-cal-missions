@@ -757,6 +757,13 @@ img.pf-av{object-fit:cover;background:#fff}
 .cmt-actions button{font-size:12px;color:var(--text-muted);padding:3px 8px;border-radius:6px;display:inline-flex;align-items:center;gap:5px}
 .cmt-actions button:hover{background:var(--row-hover);color:var(--text)}
 .cmt-actions button.liked{color:var(--primary);font-weight:600}
+.seen-ind{margin-inline-start:auto;display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text-light);cursor:default;padding:3px 6px;border-radius:6px}
+.seen-ind:hover{background:var(--row-hover);color:var(--primary)}
+.seen-pop{position:fixed;z-index:260;background:var(--surface);border:1px solid var(--border-strong);border-radius:10px;box-shadow:var(--shadow);padding:8px;min-width:170px;max-height:260px;overflow-y:auto}
+.seen-pop-h{font-size:12px;font-weight:700;color:var(--text-muted);padding:2px 6px 7px;border-bottom:1px solid var(--border);margin-bottom:5px;display:flex;align-items:center;gap:6px}
+.seen-pop-row{display:flex;align-items:center;gap:8px;padding:5px 6px;font-size:13px;color:var(--text)}
+.seen-pop .av-mini{width:24px;height:24px;border-radius:50%;overflow:hidden;flex-shrink:0;display:inline-block}
+.seen-pop .av-mini img{width:100%;height:100%;object-fit:cover}
 .cmt-replies{margin-top:12px;padding-inline-start:12px;border-inline-start:2px solid var(--border)}
 .cmt-reply{margin-bottom:12px}
 .cmt-reply .av{width:28px;height:28px;font-size:11px}
@@ -3251,11 +3258,27 @@ const Chat = {
   // ---- conversation ----
   async renderChat(body){
     try{ const d=await api('/api/tasks/'+this.taskId+'/comments'); this.comments=d.comments||[]; }catch(e){ this.comments=[]; }
+    // flat id→comment lookup (incl. replies) so the "seen by" hover can find viewers
+    this._commentsById={}; const _flat=arr=>arr.forEach(c=>{this._commentsById[c.id]=c; if(c.replies)_flat(c.replies);}); _flat(this.comments);
     const list=this.comments.length? this.comments.map(c=>this.commentHTML(c)).join('')
       : '<div class="empty" style="padding:34px"><i class="fa-regular fa-comments"></i><div>אין הודעות עדיין</div></div>';
     body.innerHTML=`<div class="chat-list">${list}</div>${canComment()?this.composerHTML():`<div class="chat-noperm"><i class="fa-solid fa-lock"></i> ${st.me&&st.me.role==='viewer'?'למשתמש הרשאת צפייה בלבד':'הלוח מוגדר לצפייה בלבד'} — אין אפשרות להגיב</div>`}`;
     this.renderAtts();
+    this.markSeen();   // record that I viewed the thread (updates others' receipts)
   },
+  async markSeen(){ if(!this.taskId)return; try{ await api('/api/tasks/'+this.taskId+'/comments/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){} },
+  seenPop(e,cid){
+    const c=this._commentsById&&this._commentsById[cid]; const us=(c&&c.seen_users)||[]; if(!us.length)return;
+    this.seenPopClose();
+    const pop=document.createElement('div'); pop.className='seen-pop'; pop.id='seen-pop';
+    pop.innerHTML=`<div class="seen-pop-h"><i class="fa-solid fa-eye"></i> נצפה על ידי ${us.length}</div>`
+      +us.map(u=>`<div class="seen-pop-row"><span class="av-mini">${avatarInner(u)}</span><span>${esc(u.name)}</span></div>`).join('');
+    document.body.appendChild(pop);
+    const r=e.currentTarget.getBoundingClientRect();
+    pop.style.top=Math.min(window.innerHeight-pop.offsetHeight-8,r.bottom+6)+'px';
+    pop.style.left=Math.max(8,Math.min(window.innerWidth-pop.offsetWidth-8,r.left))+'px';
+  },
+  seenPopClose(){ const p=document.getElementById('seen-pop'); if(p)p.remove(); },
   composerHTML(){
     return `<div class="composer">
       ${this.replyTo?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
@@ -3290,6 +3313,7 @@ const Chat = {
           ${!isReply&&canComment()?`<button onclick="Chat.startReply(${c.id},'${esc((c.user_name||'').replace(/['\\]/g,''))}')"><i class="fa-solid fa-reply"></i> הגב</button>`:''}
           ${canMod?`<button title="ערוך" onclick="Chat.startEdit(${c.id})"><i class="fa-solid fa-pen"></i></button>`:''}
           ${canMod?`<button title="מחק" onclick="Chat.del(${c.id})"><i class="fa-regular fa-trash-can"></i></button>`:''}
+          ${(c.seen_users||[]).length?`<span class="seen-ind" title="נצפה על ידי ${(c.seen_users||[]).length}" onmouseenter="Chat.seenPop(event,${c.id})" onmouseleave="Chat.seenPopClose()"><i class="fa-solid fa-eye"></i> ${(c.seen_users||[]).length}</span>`:''}
         </div>`;
     return `<div class="cmt ${isReply?'cmt-reply':''}">
       <span class="av av-click" style="background:var(--primary)" title="הצג פרופיל" onclick="Profile.open(${c.user_id})">${avatarInner(c)}</span>

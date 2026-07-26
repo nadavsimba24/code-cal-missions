@@ -44,6 +44,29 @@ def test_task_lifecycle(client):
         assert r.status_code in (200, 204), r.text
 
 
+def test_comment_read_receipts(client, admin_id, member_id):
+    """A message reports who has seen it (read receipts), excluding its own author."""
+    def _find(cid):
+        for c in client.get("/api/tasks/1/comments").json()["comments"]:
+            if c["id"] == cid:
+                return c
+        return None
+
+    r = client.post("/api/tasks/1/comments", json={"content": "seen-test", "user_id": admin_id})
+    cid = r.json()["id"]
+    try:
+        # nobody has seen it yet
+        assert _find(cid)["seen_users"] == []
+        # a different member opens the thread → becomes a viewer
+        assert client.post("/api/tasks/1/comments/seen", json={"user_id": member_id}).status_code == 200
+        assert member_id in [u["id"] for u in _find(cid)["seen_users"]]
+        # the author viewing does NOT add themselves as a "seen by"
+        client.post("/api/tasks/1/comments/seen", json={"user_id": admin_id})
+        assert admin_id not in [u["id"] for u in _find(cid)["seen_users"]]
+    finally:
+        client.delete(f"/api/comments/{cid}?user_id={admin_id}")
+
+
 def test_status_change_auto_moves_to_matching_group(client):
     """Changing a top-level item's status moves it to the group for that status:
     exact task_status match first, else the same coarse stage (todo/active/done)."""

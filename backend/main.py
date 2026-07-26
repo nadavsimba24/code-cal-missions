@@ -58,7 +58,7 @@ def _migrate():
     from sqlalchemy import text
     with engine.begin() as conn:
         cols = {r[1] for r in conn.execute(text("PRAGMA table_info(comments)"))}
-        for name, ddl in [("parent_id", "INTEGER"), ("mentions", "JSON"), ("likes", "JSON")]:
+        for name, ddl in [("parent_id", "INTEGER"), ("mentions", "JSON"), ("likes", "JSON"), ("seen_by", "JSON")]:
             if name not in cols:
                 conn.execute(text(f"ALTER TABLE comments ADD COLUMN {name} {ddl}"))
         tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
@@ -90,6 +90,15 @@ def _migrate():
 # already builds every table with all current columns, so they're not needed.
 if IS_SQLITE:
     _migrate()
+else:
+    # Postgres: create_all builds new tables fully, but seen_by (read receipts)
+    # was added to the already-existing comments table — add it if missing.
+    from sqlalchemy import text as _text
+    try:
+        with engine.begin() as _conn:
+            _conn.execute(_text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON"))
+    except Exception:
+        pass
 
 # Seed on first run only — on a persistent DB (Postgres) skip if data exists,
 # so real data isn't duplicated or overwritten on every cold start.
@@ -1116,10 +1125,17 @@ def _audit(db, entity_id, action, field=None, old=None, new=None, user_id=None):
 
 def _serialize_comment(c, db):
     u = db.query(User).filter(User.id == c.user_id).first()
+    # read receipts: everyone who saw the message except its own author
+    seen_ids = [i for i in (c.seen_by or []) if i != c.user_id]
+    seen_users = []
+    if seen_ids:
+        for su in db.query(User).filter(User.id.in_(seen_ids)).all():
+            seen_users.append({"id": su.id, "name": su.name, "avatar_url": su.avatar_url})
     return {
         "id": c.id, "task_id": c.task_id, "parent_id": c.parent_id,
         "content": c.content, "attachments": c.attachments or [],
         "mentions": c.mentions or [], "likes": c.likes or [],
+        "seen_users": seen_users,
         "user_id": c.user_id, "user_name": u.name if u else "—",
         "user_role": u.role if u else None, "created_at": c.created_at,
     }
@@ -1157,7 +1173,7 @@ def add_comment(task_id: int, data: dict):
             raise HTTPException(400, "תגובה ריקה")
         c = Comment(task_id=task_id, user_id=user.id, parent_id=data.get("parent_id"),
                     content=content, attachments=atts,
-                    mentions=data.get("mentions") or [], likes=[])
+                    mentions=data.get("mentions") or [], likes=[], seen_by=[])
         db.add(c)
         _audit(db, task_id, "comment", field="reply" if data.get("parent_id") else "comment",
                new=(content[:120] or "(קובץ)"), user_id=user.id)
@@ -1181,6 +1197,27 @@ def like_comment(cid: int, data: dict):
         c.likes = likes
         db.commit()
         return {"id": cid, "likes": likes}
+
+@app.post("/api/tasks/{task_id}/comments/seen")
+def mark_comments_seen(task_id: int, data: dict):
+    """Mark every message in the item as seen by the acting user (read receipts).
+    A user's own messages are skipped — you don't 'see' your own."""
+    with Session(engine) as db:
+        user = _acting_user(db, data)
+        if not user:
+            raise HTTPException(403, "אין משתמש")
+        changed = False
+        for c in db.query(Comment).filter(Comment.task_id == task_id).all():
+            if c.user_id == user.id:
+                continue
+            seen = list(c.seen_by or [])
+            if user.id not in seen:
+                seen.append(user.id)
+                c.seen_by = seen
+                changed = True
+        if changed:
+            db.commit()
+        return {"ok": True}
 
 @app.patch("/api/comments/{cid}")
 def update_comment(cid: int, data: dict):

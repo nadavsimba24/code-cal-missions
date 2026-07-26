@@ -242,6 +242,7 @@ class Comment(Base):
     attachments = Column(JSON, default=list)   # [{name,url}]
     mentions = Column(JSON, default=list)      # [user_id, ...]
     likes = Column(JSON, default=list)         # [user_id, ...]
+    seen_by = Column(JSON, default=list)       # [user_id, ...] — read receipts
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     task = relationship("Task", back_populates="comments")
     replies = relationship("Comment", backref="parent", remote_side=[id])
