@@ -217,6 +217,44 @@ def _board_views(b):
     out = ["table"] + [x for x in v if x in ALL_VIEWS and x != "table"]
     return out
 
+# Per-board status vocabulary. Each entry is {key,label,color} where `key` is one
+# of the underlying TaskStatus values. Keeping the enum key under the hood means
+# group auto-move, parent roll-up, kanban and charts keep working (they all key
+# off task.status) while a board admin may rename/recolor/reorder the statuses
+# and expose only the ones the board actually uses.
+STATUS_DEFAULTS = [
+    {"key": "backlog", "label": "בתכנון", "color": "#9699a6"},
+    {"key": "todo", "label": "לביצוע", "color": "#c4c4c4"},
+    {"key": "in_progress", "label": "בתהליך", "color": "#fdab3d"},
+    {"key": "review", "label": "בבדיקה", "color": "#579bfc"},
+    {"key": "on_hold", "label": "בהמתנה", "color": "#808080"},
+    {"key": "done", "label": "הושלם", "color": "#00c875"},
+    {"key": "cancelled", "label": "בוטל", "color": "#e2445c"},
+]
+_STATUS_KEYS = {s["key"] for s in STATUS_DEFAULTS}
+
+def _valid_hex(c):
+    c = str(c or "")
+    if len(c) == 7 and c[0] == "#":
+        try:
+            int(c[1:], 16); return True
+        except ValueError:
+            return False
+    return False
+
+def _board_statuses(b):
+    """The board's ordered status list (defaults when the admin hasn't customised)."""
+    raw = (b.settings or {}).get("statuses")
+    if not raw:
+        return [dict(x) for x in STATUS_DEFAULTS]
+    out, seen = [], set()
+    for it in raw:
+        k = (it or {}).get("key")
+        if k in _STATUS_KEYS and k not in seen:
+            seen.add(k)
+            out.append({"key": k, "label": (it.get("label") or k), "color": (it.get("color") or "#c4c4c4")})
+    return out or [dict(x) for x in STATUS_DEFAULTS]
+
 def _board_role(db, board_id, user_id):
     """Board-scoped role (admin/editor/viewer) for a user, or None if not a member."""
     if user_id is None:
@@ -377,6 +415,7 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             "owners": owners,
             "columns": (b.settings or {}).get("columns", []),
             "col_widths": (b.settings or {}).get("col_widths", {}),
+            "statuses": _board_statuses(b),
             "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             "tasks": tasks_out,
@@ -462,6 +501,26 @@ def update_board(board_id: int, data: dict):
                     continue
             s = dict(b.settings or {})
             s["col_widths"] = widths
+            b.settings = s
+        if data.get("statuses") is not None:
+            # only a board admin may rename/recolor/reorder/add statuses
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לערוך סטטוסים")
+            out, seen = [], set()
+            for it in data["statuses"]:
+                if not isinstance(it, dict):
+                    continue
+                k = it.get("key")
+                if k not in _STATUS_KEYS or k in seen:
+                    continue
+                seen.add(k)
+                label = (str(it.get("label") or "").strip())[:40] or k
+                color = it.get("color") if _valid_hex(it.get("color")) else "#c4c4c4"
+                out.append({"key": k, "label": label, "color": color})
+            if not out:
+                raise HTTPException(400, "חובה סטטוס אחד לפחות")
+            s = dict(b.settings or {})
+            s["statuses"] = out
             b.settings = s
         if data.get("columns") is not None:
             # only a board admin may add/edit/remove columns and their options

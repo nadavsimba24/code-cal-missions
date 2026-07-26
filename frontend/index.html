@@ -296,6 +296,18 @@ tr:hover .row-grip{opacity:.55}
 .cell-pop-opt{color:#fff;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:600;text-align:center}
 .cell-pop-opt:hover{filter:brightness(1.06)}
 .cell-pop-clear{background:var(--bg)!important;color:var(--text-muted)!important;border:1px solid var(--border)}
+.cell-pop-manage{background:var(--bg)!important;color:var(--text)!important;border:1px solid var(--border);display:flex;align-items:center;gap:7px;justify-content:center;margin-top:2px}
+.cell-pop-manage:hover{background:var(--row-hover)!important;filter:none}
+/* status vocabulary editor */
+.st-row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--border)}
+.st-row:last-child{border-bottom:none}
+.st-ord{display:flex;flex-direction:column;gap:2px}
+.st-ord button{width:24px;height:17px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text-muted);font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.st-ord button:disabled{opacity:.35;cursor:default}
+.st-row input[type=color]{width:34px;height:30px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;padding:2px}
+.st-lbl{flex:1;border:1px solid var(--border-strong);border-radius:6px;padding:7px 9px;font-family:inherit;font-size:13.5px}
+.st-del{width:32px;height:30px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--red,#e2445c);cursor:pointer}
+.st-del:disabled{opacity:.35;cursor:default;color:var(--text-muted)}
 .cell-pop-opt2{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;font-size:13px;color:var(--text)}
 .cell-pop-opt2:hover{background:var(--row-hover)}
 .col-add-pop{min-width:230px;inset-inline-start:auto;inset-inline-end:0;transform:none}
@@ -1019,6 +1031,25 @@ const STATUS = {
 // coarse stage per status — lets a status change find a sensible group even
 // when the board has fewer groups than statuses (mirrors STATUS_STAGE on the server)
 const STATUS_STAGE={backlog:'todo',todo:'todo',in_progress:'active',review:'active',on_hold:'active',done:'done',cancelled:'done'};
+/* Per-board statuses: the open board defines its own label/color/order for the
+   built-in status column (falls back to the global STATUS when uncustomised).
+   Keys stay the underlying enum values so auto-move/kanban/charts keep working. */
+function boardStatusList(){
+  const s=st.board&&st.board.statuses;
+  if(s&&s.length)return s.map(x=>({key:x.key,he:x.label,c:x.color}));
+  return Object.entries(STATUS).map(([k,v])=>({key:k,he:v.he,c:v.c}));
+}
+function boardStatusMap(){const m={};boardStatusList().forEach(x=>m[x.key]={he:x.he,c:x.c});return m;}
+/* single status descriptor: board label first, else global, else the raw key */
+function bStat(key){const m=boardStatusMap();return m[key]||STATUS[key]||{he:key,c:'#c4c4c4'};}
+/* the full status vocabulary a board admin may draw from (mirrors STATUS_DEFAULTS
+   on the server) — the pool for "add another status" (max 7). */
+const STATUS_ALL=[
+  {key:'backlog',he:'בתכנון',c:'#9699a6'},{key:'todo',he:'לביצוע',c:'#c4c4c4'},
+  {key:'in_progress',he:'בתהליך',c:'#fdab3d'},{key:'review',he:'בבדיקה',c:'#579bfc'},
+  {key:'on_hold',he:'בהמתנה',c:'#808080'},{key:'done',he:'הושלם',c:'#00c875'},
+  {key:'cancelled',he:'בוטל',c:'#e2445c'},
+];
 const PRIORITY = {
   low:{he:'נמוכה',c:'#579bfc'}, medium:{he:'בינונית',c:'#5559df'},
   high:{he:'גבוהה',c:'#fdab3d'}, critical:{he:'קריטית',c:'#e2445c'},
@@ -1317,7 +1348,7 @@ function renderView(){
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
-function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;return pill(STATUS,t.status);}
+function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;const m=bStat(t.status);return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span class="av-add" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span></span>';
   return '<span class="avatars">'+arr.slice(0,3).map(a=>`<span class="av av-click" title="${esc(a.name)} — הצג פרופיל" onclick="event.stopPropagation();Profile.open(${a.id})">${avatarInner(a)}</span>`).join('')+(arr.length>3?`<span class="av av-more">+${arr.length-3}</span>`:'')+'</span>';}
 function findTask(id){return ((st.board&&st.board.tasks)||[]).find(t=>t.id==id);}
@@ -1333,7 +1364,7 @@ const Profile = {
     // tasks assigned to this user in the current board, grouped by status
     const tasks=((st.board&&st.board.tasks)||[]).filter(t=>(t.assignees||[]).some(a=>a.id===userId));
     const byStatus={}; tasks.forEach(t=>{byStatus[t.status]=(byStatus[t.status]||0)+1;});
-    const chips=Object.entries(byStatus).map(([s,n])=>`<span class="pf-stat-chip" style="background:${STATUS[s]?STATUS[s].c:'#c4c4c4'}">${esc(STATUS[s]?STATUS[s].he:s)} · ${n}</span>`).join('')
+    const chips=Object.entries(byStatus).map(([s,n])=>`<span class="pf-stat-chip" style="background:${bStat(s).c}">${esc(bStat(s).he)} · ${n}</span>`).join('')
       ||'<span style="color:var(--text-light);font-size:12.5px">אין משימות משויכות בלוח זה</span>';
     const avInner=u.avatar_url?`<img class="pf-av" src="${esc(u.avatar_url)}" alt="">`:`<span class="pf-av">${avatarInner(u)}</span>`;
     const canEditAv=(userId===meId()||isSysAdmin());
@@ -1844,7 +1875,7 @@ function renderPop(name){
   }
   if(name!=='arrange')return;
   const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
-  const sChips=Object.entries(STATUS).map(([k,v])=>`<button class="pop-chip ${f.status===k?'sel':''}" style="--c:${v.c}" onclick="setStatusFilter('${k}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
+  const sChips=boardStatusList().map(v=>`<button class="pop-chip ${f.status===v.key?'sel':''}" style="--c:${v.c}" onclick="setStatusFilter('${v.key}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
   const pChips=Object.entries(PRIORITY).map(([k,v])=>`<button class="pop-chip ${f.priority===k?'sel':''}" style="--c:${v.c}" onclick="setPriorityFilter('${k}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
   const people=(st.users||[]).map(u=>`<label class="pop-row"><input type="checkbox" ${f.people.includes(u.id)?'checked':''} onchange="toggleFilterPerson(${u.id},this.checked)"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span>${esc(u.name)}</span></label>`).join('')||'<div style="padding:8px;color:var(--text-light);font-size:13px">אין משתמשים</div>';
   const sortOpts=[['','ללא מיון','fa-ban'],['due','תאריך יעד','fa-calendar-day'],['priority','עדיפות','fa-flag'],['title','שם (א-ת)','fa-arrow-down-a-z']];
@@ -1957,7 +1988,7 @@ function battery(tasks){
   if(!tasks.length)return '';
   const by={};tasks.forEach(t=>by[t.status]=(by[t.status]||0)+1);
   const total=tasks.length;
-  return '<div class="battery">'+Object.entries(by).map(([s,n])=>`<span title="${STATUS[s]?STATUS[s].he:s}: ${n}" style="width:${n/total*100}%;background:${STATUS[s]?STATUS[s].c:'#c4c4c4'}"></span>`).join('')+'</div>';
+  return '<div class="battery">'+Object.entries(by).map(([s,n])=>`<span title="${esc(bStat(s).he)}: ${n}" style="width:${n/total*100}%;background:${bStat(s).c}"></span>`).join('')+'</div>';
 }
 
 /* ============ items + sub-items (פריט / תת-פריט) ============ */
@@ -1976,7 +2007,7 @@ function itemRow(t,col){
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
       </div>${canEditItem(t)?`<button class="item-menu" title="אפשרויות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}</td>
       <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(${t.id})">${avatars(t.assignees)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',STATUS)">${statusPill(t)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',boardStatusMap())">${statusPill(t)}</td>
       <td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',PRIORITY)">${pill(PRIORITY,t.priority)}</td>
       <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${t.id})">${fdate(t.due_date)}</td>
       <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>
@@ -1989,7 +2020,7 @@ function itemRow(t,col){
         <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
         <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button></div></td>
       <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(${s.id})">${avatars(s.assignees)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${s.id},'status',STATUS)">${statusPill(s)}</td>
+      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${s.id},'status',boardStatusMap())">${statusPill(s)}</td>
       <td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${s.id},'priority',PRIORITY)">${pill(PRIORITY,s.priority)}</td>
       <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${s.id})">${fdate(s.due_date)}</td>
       <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${s.id})">${tagcell(s.tags)}</td>
@@ -2282,7 +2313,10 @@ async function setField(id,field,value){
 function fieldPicker(e,id,field,map){
   e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
   const cur=(findAnyTask(id)||{})[field];
-  const html=Object.entries(map).map(([k,v])=>`<button class="cell-pop-opt" style="background:${v.c}" onclick="pickField(event,${id},'${field}','${k}')">${esc(v.he)}${cur===k?' <i class="fa-solid fa-check"></i>':''}</button>`).join('');
+  let html=Object.entries(map).map(([k,v])=>`<button class="cell-pop-opt" style="background:${v.c}" onclick="pickField(event,${id},'${field}','${k}')">${esc(v.he)}${cur===k?' <i class="fa-solid fa-check"></i>':''}</button>`).join('');
+  // board admin gets a shortcut to manage the status vocabulary
+  if(field==='status'&&isBoardAdmin())
+    html+=`<button class="cell-pop-opt cell-pop-manage" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
   openCellPop(e.currentTarget,html);
 }
 function pickField(e,id,field,key){ e.stopPropagation(); closeCellPops(); setField(id,field,key); }
@@ -2347,6 +2381,54 @@ function statusCellMenu(e,taskId,colId){
 function pickStatusCell(e,taskId,colId,label,color){
   e.stopPropagation();closeCellPops();
   setCell(taskId,colId,label?{label,color}:null);renderView();
+}
+/* ===== board-admin editor for the built-in status vocabulary ===== */
+let _stDraft=[];
+function manageStatuses(){
+  if(!isBoardAdmin()||!st.board)return;
+  _stDraft=boardStatusList().map(x=>({key:x.key,label:x.he,color:x.c}));
+  _renderStatusModal();
+}
+function _renderStatusModal(){
+  const rows=_stDraft.map((s,i)=>`
+    <div class="st-row">
+      <div class="st-ord">
+        <button title="למעלה" ${i===0?'disabled':''} onclick="_stMove(${i},-1)"><i class="fa-solid fa-chevron-up"></i></button>
+        <button title="למטה" ${i===_stDraft.length-1?'disabled':''} onclick="_stMove(${i},1)"><i class="fa-solid fa-chevron-down"></i></button>
+      </div>
+      <input type="color" value="${s.color}" title="צבע" oninput="_stSet(${i},'color',this.value)">
+      <input class="st-lbl" value="${esc(s.label)}" maxlength="40" placeholder="שם הסטטוס" oninput="_stSet(${i},'label',this.value)">
+      <button class="st-del" title="הסר" ${_stDraft.length<=1?'disabled':''} onclick="_stRemove(${i})"><i class="fa-solid fa-trash-can"></i></button>
+    </div>`).join('');
+  const used=new Set(_stDraft.map(s=>s.key));
+  const avail=STATUS_ALL.filter(s=>!used.has(s.key));
+  const addBtn=avail.length
+    ? `<button class="btn btn-ghost" onclick="_stAdd()"><i class="fa-solid fa-plus"></i> הוסף סטטוס</button>`
+    : `<span style="color:var(--text-light);font-size:12px">הגעת למספר הסטטוסים המרבי (7)</span>`;
+  showModal(`
+    <h2><i class="fa-solid fa-sliders"></i> ניהול סטטוסים · ${esc(st.board.name)}</h2>
+    <div class="mbody">
+      <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">שנה שם, צבע וסדר של הסטטוסים בלוח. שינוי סטטוס של פריט ימשיך להעביר אותו לקבוצה המתאימה.</p>
+      <div id="st-rows">${rows}</div>
+      <div style="margin-top:12px">${addBtn}</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="_stSave()"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+function _stSet(i,k,v){if(_stDraft[i])_stDraft[i][k]=v;}         // no re-render → inputs keep focus
+function _stMove(i,d){const j=i+d;if(j<0||j>=_stDraft.length)return;const t=_stDraft[i];_stDraft[i]=_stDraft[j];_stDraft[j]=t;_renderStatusModal();}
+function _stRemove(i){if(_stDraft.length<=1)return;_stDraft.splice(i,1);_renderStatusModal();}
+function _stAdd(){const used=new Set(_stDraft.map(s=>s.key));const nx=STATUS_ALL.find(s=>!used.has(s.key));if(!nx)return;_stDraft.push({key:nx.key,label:nx.he,color:nx.c});_renderStatusModal();}
+async function _stSave(){
+  const payload=_stDraft.map(s=>({key:s.key,label:(s.label||'').trim()||s.key,color:s.color}));
+  if(!payload.length)return;
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({statuses:payload})});
+    st.board.statuses=payload.map(s=>({key:s.key,label:s.label,color:s.color}));
+    closeModals();toast('הסטטוסים עודכנו ✓');renderView();
+  }catch(e){toast('שגיאה בשמירת הסטטוסים');}
 }
 function closeCellPops(){document.querySelectorAll('.cell-pop').forEach(p=>p.remove());}
 /* Fixed-positioned cell popover appended to <body> so it never gets clipped by
@@ -2536,12 +2618,12 @@ async function deleteItem(e,id){
 }
 
 function vKanban(el){
-  const cols=Object.keys(STATUS);
+  const cols=boardStatusList();
   const tasks=applyFilters(st.board.tasks||[]);
   if((st.board.tasks||[]).length && !tasks.length){el.innerHTML=noMatchHTML();return;}
-  el.innerHTML='<div class="kanban">'+cols.map(s=>{
+  el.innerHTML='<div class="kanban">'+cols.map(sv=>{const s=sv.key;
     const ts=tasks.filter(t=>t.status===s);
-    return `<div class="kcol"><div class="kcol-head" style="--kc:${STATUS[s].c}">${STATUS[s].he}<span class="cnt">${ts.length}</span></div>
+    return `<div class="kcol"><div class="kcol-head" style="--kc:${sv.c}">${esc(sv.he)}<span class="cnt">${ts.length}</span></div>
       <div class="kcol-body" data-status="${s}">${ts.map(kcard).join('')}</div></div>`;
   }).join('')+'</div>';
   if(!window.Sortable){toast('גרירה לא זמינה (Sortable לא נטען) — לחץ על אווטאר לשיוך');return;}
@@ -2549,7 +2631,7 @@ function vKanban(el){
     new Sortable(body,{group:'kanban',animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
       const id=ev.item.dataset.id, status=ev.to.dataset.status;
       try{await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
-        const t=tasks.find(x=>x.id==id);if(t)t.status=status;toast('עודכן ל'+STATUS[status].he);
+        const t=tasks.find(x=>x.id==id);if(t)t.status=status;toast('עודכן ל'+bStat(status).he);
         el.querySelectorAll('.kcol').forEach(c=>{const b=c.querySelector('.kcol-body');c.querySelector('.cnt').textContent=b.children.length;});
       }catch(e){toast('שגיאה בעדכון');}
     }});
@@ -3165,7 +3247,7 @@ const Chat = {
       </div>
       <div class="composer-input">
         <div class="comp-check" id="comp-check"></div>
-        <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)"></textarea>
+        <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · Shift+Enter לשורה · ניתן להדביק צילום מסך)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)" onpaste="Chat.onPaste(event)"></textarea>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
       <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
@@ -3269,18 +3351,29 @@ const Chat = {
   pickMention(id){ const u=(st.users||[]).find(x=>x.id===id); if(!u)return; if(!this.mentions.includes(id))this.mentions.push(id); this.insert((this._atMode?'':'@')+u.name+' '); this._atMode=false; closeCellPops(); },
   emojiMenu(e){ e.stopPropagation(); this._float(e.currentTarget,'<div class="emoji-grid">'+EMOJIS.map(x=>`<button onclick="Chat.insert('${x} ');closeCellPops()">${x}</button>`).join('')+'</div>'); },
   addLink(){ const url=prompt('הדבק קישור:'); if(url)this.insert(url+' '); },
-  attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=async()=>{
-    const f=inp.files[0]; if(!f)return;
-    this._uploading=f.name; this.renderAtts();                 // show loader while uploading
+  async _upload(f,label){ if(!f)return;
+    this._uploading=label||f.name; this.renderAtts();          // show loader while uploading
     const started=Date.now();
-    const fd=new FormData(); fd.append('file',f);
+    const fd=new FormData(); fd.append('file',f,f.name);
     try{ const r=await fetch('/api/upload',{method:'POST',body:fd}); if(!r.ok)throw 0; const data=await r.json(); this.atts.push(data); toast('קובץ צורף'); }
     catch(e){ toast('שגיאה בהעלאה'); }
     finally{ // keep the loader visible for at least 0.7s so it's actually perceivable
       const wait=Math.max(0,700-(Date.now()-started));
       setTimeout(()=>{ this._uploading=null; this.renderAtts(); }, wait);
     }
-  }; inp.click(); },
+  },
+  attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=()=>{ this._upload(inp.files[0]); }; inp.click(); },
+  onPaste(e){ // paste a screenshot / image straight from the clipboard into the chat
+    const items=(e.clipboardData||{}).items||[]; let img=null;
+    for(const it of items){ if(it.kind==='file' && (it.type||'').startsWith('image/')){ img=it; break; } }
+    if(!img)return;                                            // no image → let normal text paste happen
+    e.preventDefault();
+    const blob=img.getAsFile(); if(!blob)return;
+    const ext=(blob.type.split('/')[1]||'png').replace('jpeg','jpg');
+    const ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    const file=new File([blob],`screenshot-${ts}.${ext}`,{type:blob.type});
+    this._upload(file);
+  },
   isImg(name){ return /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name||''); },
   fileIcon(name){ const e=(name||'').split('.').pop().toLowerCase(); return ({pdf:'fa-file-pdf',doc:'fa-file-word',docx:'fa-file-word',xls:'fa-file-excel',xlsx:'fa-file-excel',csv:'fa-file-csv',ppt:'fa-file-powerpoint',pptx:'fa-file-powerpoint',zip:'fa-file-zipper',rar:'fa-file-zipper',txt:'fa-file-lines',mp4:'fa-file-video',mov:'fa-file-video',mp3:'fa-file-audio',wav:'fa-file-audio'})[e]||'fa-file'; },
   // attachment thumbnail/preview for a posted comment

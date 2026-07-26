@@ -75,6 +75,47 @@ def test_non_admin_cannot_set_column_widths(client, member_id):
     assert r.status_code == 403
 
 
+def test_board_has_default_statuses(client, admin_id):
+    """Every board exposes a status list; a fresh board gets the 7 defaults."""
+    r = client.post("/api/boards", json={"name": "st board", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        sts = client.get(f"/api/boards/{bid}?user_id={admin_id}").json().get("statuses")
+        assert isinstance(sts, list) and len(sts) == 7
+        assert {s["key"] for s in sts} >= {"backlog", "in_progress", "done"}
+        assert all({"key", "label", "color"} <= set(s) for s in sts)
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_board_admin_customises_statuses(client, admin_id):
+    """A board admin renames/reorders statuses; unknown keys dropped, colors validated."""
+    r = client.post("/api/boards", json={"name": "st2 board", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "statuses": [
+            {"key": "backlog", "label": "בתכנון", "color": "#9699a6"},
+            {"key": "in_progress", "label": "בפיתוח", "color": "#fdab3d"},
+            {"key": "done", "label": "הושלם", "color": "not-a-color"},   # bad hex → default
+            {"key": "bogus", "label": "X", "color": "#000000"},          # unknown key → dropped
+            {"key": "backlog", "label": "dup", "color": "#111111"},      # dup → dropped
+        ]})
+        assert r.status_code == 200, r.text
+        sts = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["statuses"]
+        assert [s["key"] for s in sts] == ["backlog", "in_progress", "done"]
+        assert sts[0]["label"] == "בתכנון"
+        assert sts[2]["color"] == "#c4c4c4"   # invalid hex fell back to default
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_non_admin_cannot_customise_statuses(client, member_id):
+    """A non-admin board member cannot edit statuses → 403."""
+    r = client.patch("/api/boards/1", json={"user_id": member_id,
+                                            "statuses": [{"key": "done", "label": "X", "color": "#00c875"}]})
+    assert r.status_code == 403
+
+
 def test_inviting_new_member_flags_invited(client, admin_id, guinea_id):
     """Inviting a genuinely new member returns invited=True (triggers the email);
     a follow-up role change on the same member returns invited=False (no email).
