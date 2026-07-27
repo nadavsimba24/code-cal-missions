@@ -265,7 +265,10 @@ tr:hover .row-grip{opacity:.55}
 .sub-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:11px;padding:1px 8px;font-weight:600;margin-inline-start:auto}
 .tbl tr.subrow td{background:var(--bg)}
 .tbl tr.subrow:hover td{background:var(--row-hover)}
-.tbl .c-sub{padding-inline-start:30px;font-weight:400;color:var(--text)}
+/* sub-items sit visibly indented from the parent so the hierarchy reads as its
+   own tabular level; dropping the group color bar sets them apart from top rows */
+.tbl .c-sub{padding-inline-start:56px;font-weight:400;color:var(--text)}
+.tbl .c-item.c-sub{border-inline-start-color:transparent}
 .sub-twig{width:14px;height:14px;border-inline-start:2px solid var(--border-strong);border-bottom:2px solid var(--border-strong);border-end-start-radius:5px;display:inline-block;margin-inline-end:8px;flex-shrink:0;margin-bottom:4px}
 .sub-del{margin-inline-start:auto;color:var(--text-light);opacity:0;transition:.12s;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px}
 .subrow:hover .sub-del{opacity:1}
@@ -782,8 +785,16 @@ img.pf-av{object-fit:cover;background:#fff}
 /* unified input box: checklist rows + text share one bordered box */
 .composer-input{border:1px solid var(--border-strong);border-radius:8px;padding:9px;transition:border-color .12s,box-shadow .12s}
 .composer-input:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
-.composer textarea{width:100%;border:none;background:none;padding:0;font-family:inherit;font-size:13.5px;resize:vertical;min-height:44px}
+.composer textarea{width:100%;border:none;background:none;padding:0;font-family:inherit;font-size:13.5px;line-height:1.55;resize:vertical;min-height:44px}
 .composer textarea:focus{outline:none}
+/* live mention highlighting: a mirror div renders colored @mentions behind a
+   transparent-text textarea (caret stays visible). Metrics must match exactly,
+   so the .mention span changes only color/background — never width. */
+.comp-hl-wrap{position:relative}
+.comp-hl{position:absolute;inset:0;pointer-events:none;overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;font-family:inherit;font-size:13.5px;line-height:1.55;color:var(--text)}
+.comp-hl .mention{color:var(--primary);background:var(--primary-soft);border-radius:3px}
+.comp-hl-wrap textarea{position:relative;color:transparent;caret-color:var(--text);white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;line-height:1.55}
+.comp-hl-wrap textarea::placeholder{color:var(--text-light)}
 .comp-atts{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
 .comp-atts .file-chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;padding:3px 9px;font-size:12px}
 .comp-atts .file-chip .chip-thumb{width:26px;height:26px;object-fit:cover;border-radius:4px}
@@ -3322,7 +3333,10 @@ const Chat = {
       </div>
       <div class="composer-input">
         <div class="comp-check" id="comp-check"></div>
-        <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · ניתן להדביק או לגרור צילום מסך)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event)" onpaste="Chat.onPaste(event)"></textarea>
+        <div class="comp-hl-wrap">
+          <div class="comp-hl" id="comp-hl" aria-hidden="true"></div>
+          <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · ניתן להדביק או לגרור צילום מסך)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
+        </div>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
       <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
@@ -3384,6 +3398,24 @@ const Chat = {
     s=s.replace(new RegExp('@'+alt,'g'),m=>`<span class="mention">${m}</span>`);
     return s;
   },
+  // mention highlighting for the LIVE composer (no links/checklist — plain text
+  // + colored @mentions, newlines preserved by white-space:pre-wrap).
+  highlightMentions(text){
+    let s=esc(text||'');
+    const names=((st.users||[]).map(u=>u.name).filter(Boolean))
+      .sort((a,b)=>b.length-a.length)
+      .map(n=>esc(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+    const alt=names.length?'(?:'+names.join('|')+'|[^\\s@,.]{1,30})':'[^\\s@,.]{1,30}';
+    return s.replace(new RegExp('@'+alt,'g'),m=>`<span class="mention">${m}</span>`);
+  },
+  // mirror the textarea content (with highlights) into the overlay div, in sync
+  syncHL(){
+    const ta=document.getElementById('comp-text'), hl=document.getElementById('comp-hl');
+    if(!ta||!hl)return;
+    let v=ta.value; if(v.endsWith('\n'))v+=' ';   // ensure a trailing newline is shown
+    hl.innerHTML=this.highlightMentions(v);
+    hl.scrollTop=ta.scrollTop;
+  },
   keydown(e){
     if(e.key!=='Enter'||e.shiftKey)return;
     // checklist continuation: Enter on a checklist line adds a fresh box below;
@@ -3394,13 +3426,13 @@ const Chat = {
     const m=before.slice(lineStart).match(/^(\s*)(?:[☐☑]|\[[ xX]\])\s?(.*)$/);
     if(m){
       e.preventDefault();
-      if((m[2]||'').trim()===''){ ta.value=ta.value.slice(0,lineStart)+ta.value.slice(pos); ta.selectionStart=ta.selectionEnd=lineStart; ta.focus(); }
+      if((m[2]||'').trim()===''){ ta.value=ta.value.slice(0,lineStart)+ta.value.slice(pos); ta.selectionStart=ta.selectionEnd=lineStart; ta.focus(); this.syncHL(); }
       else{ this.insert('\n'+(m[1]||'')+'☐ '); }
       return;
     }
     e.preventDefault(); this.post();
   },
-  insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); },
+  insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); this.syncHL(); },
   insertCheck(){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; const before=ta.value.slice(0,s); this.insert((before===''||before.endsWith('\n')?'':'\n')+'☐ '); },
   // checklist button: if the caret's line already has text, convert that line
   // into a checklist item; otherwise add a fresh empty checkbox row.
@@ -3411,7 +3443,7 @@ const Chat = {
       const ls=val.lastIndexOf('\n',pos-1)+1;
       let le=val.indexOf('\n',pos); if(le<0)le=val.length;
       const line=val.slice(ls,le).trim();
-      if(line){ ta.value=(val.slice(0,ls)+val.slice(le)).replace(/\n\n/,'\n').replace(/^\n/,''); this.addCheckItem(line); return; }
+      if(line){ ta.value=(val.slice(0,ls)+val.slice(le)).replace(/\n\n/,'\n').replace(/^\n/,''); this.syncHL(); this.addCheckItem(line); return; }
     }
     this.addCheckItem();
   },
