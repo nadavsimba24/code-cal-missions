@@ -3372,7 +3372,18 @@ const Chat = {
       return `<div>${this.inline(line)||'&nbsp;'}</div>`;
     }).join('');
   },
-  inline(s){ s=esc(s); s=s.replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>'); s=s.replace(/@([^\s@,.]{1,30})/g,'<span class="mention">@$1</span>'); return s; },
+  inline(s){
+    s=esc(s);
+    s=s.replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>');
+    // mentions: color the FULL user name (incl. spaces) when it matches a known
+    // user. One pass: known names (longest first) win over a single-token @handle.
+    const names=((st.users||[]).map(u=>u.name).filter(Boolean))
+      .sort((a,b)=>b.length-a.length)
+      .map(n=>esc(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
+    const alt=names.length?'(?:'+names.join('|')+'|[^\\s@,.]{1,30})':'[^\\s@,.]{1,30}';
+    s=s.replace(new RegExp('@'+alt,'g'),m=>`<span class="mention">${m}</span>`);
+    return s;
+  },
   keydown(e){
     if(e.key!=='Enter'||e.shiftKey)return;
     // checklist continuation: Enter on a checklist line adds a fresh box below;
