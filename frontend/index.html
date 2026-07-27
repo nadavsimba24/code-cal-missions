@@ -3049,14 +3049,28 @@ function GIS_args(tool){
 /* ============ end GIS ============ */
 
 /* ============ new item + forms ============ */
-function openNewItem(group){
-  showModal(`<h2>פריט חדש</h2><div class="mbody">
-    <div class="field"><label>שם הפריט</label><input id="ni-title" placeholder="מה צריך לעשות?"></div>
-    <div class="field"><label>עדיפות</label><select id="ni-prio">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select></div>
-    <div class="field"><label>תאריך יעד</label><input type="date" id="ni-due" style="padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%"></div>
-    <div class="field"><label>אחראים</label><div style="display:flex;flex-wrap:wrap;gap:7px">${(st.users||[]).map(u=>`<label style="display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--border-strong);border-radius:20px;padding:4px 11px;cursor:pointer"><input type="checkbox" class="ni-asg" value="${u.id}" style="width:auto">${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:13px">אין משתמשים</span>'}</div></div>
-    <div class="field"><label>תיאור</label><textarea id="ni-desc" rows="3"></textarea></div>
-  </div><div class="mfoot"><button class="btn btn-primary" onclick="saveItem(${group===undefined||group===null?'null':group})">צור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+// Add-item: no form. Clicking "פריט חדש" (or a group's "+ הוסף פריט") instantly
+// creates an item at the bottom of the target group — default is "בתכנון" (the
+// first/backlog group) — and opens its title for inline editing.
+async function openNewItem(group){
+  if(!st.board||window._creatingItem)return;            // guard against double-submit
+  window._creatingItem=true;
+  const gid=(group==null)?defaultGroupId():group;
+  const g=((st.board.groups)||[]).find(x=>x.id===gid);
+  const status=(g&&g.task_status)||undefined;           // new item's status matches its group
+  try{
+    const r=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({board_id:st.board.id,group_id:gid,title:'פריט חדש',status})});
+    const newId=r&&r.id;
+    await openBoard(st.board.id);
+    if(newId) setTimeout(()=>focusNewItemTitle(newId),80);   // rename it inline
+  }catch(e){ toast('שגיאה ביצירת הפריט'); }
+  finally{ window._creatingItem=false; }
+}
+// open the freshly-created row's title in inline-edit mode (text pre-selected)
+function focusNewItemTitle(id){
+  const span=document.querySelector('tr[data-tid="'+id+'"] .item-title');
+  if(span){ span.scrollIntoView({block:'center'}); titleEdit({currentTarget:span,stopPropagation(){}},id); }
 }
 // default group for a new item created from the top "פריט חדש" button: the
 // "בתכנון" (backlog) group, else the first group by position — never ungrouped
@@ -3065,21 +3079,6 @@ function defaultGroupId(){
   if(!gs.length)return null;
   const backlog=gs.find(g=>g.task_status==='backlog');
   return (backlog||gs.slice().sort((a,b)=>(a.position||0)-(b.position||0))[0]).id;
-}
-async function saveItem(group){
-  if(group==null) group=defaultGroupId();               // top button → "בתכנון", not "ללא קבוצה"
-  const title=document.getElementById('ni-title').value.trim();if(!title){toast('צריך שם');return;}
-  if(window._creatingItem)return;                       // guard against double-submit
-  window._creatingItem=true;
-  const btn=document.querySelector('#modal .mfoot .btn-primary'); if(btn)btn.disabled=true;
-  const assignee_ids=[...document.querySelectorAll('.ni-asg:checked')].map(x=>+x.value);
-  const dueVal=document.getElementById('ni-due').value;
-  const dueDate=dueVal?new Date(dueVal+'T12:00:00').toISOString():null;
-  try{
-    await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,group_id:group,title,priority:document.getElementById('ni-prio').value,due_date:dueDate,description:document.getElementById('ni-desc').value,assignee_ids})});
-    closeModals();toast('הפריט נוצר');await openBoard(st.board.id);
-  }catch(e){ toast('שגיאה ביצירת הפריט'); if(btn)btn.disabled=false; }
-  finally{ window._creatingItem=false; }
 }
 
 /* ============ groups (קבוצות) ============ */
