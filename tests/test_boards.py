@@ -135,6 +135,62 @@ def test_non_sysadmin_cannot_rename_column(client, member_id):
     assert r.status_code == 403
 
 
+def test_board_add_remove_notifies_user(client, admin_id, guinea_id):
+    """Adding a user to a board (any role) notifies them; removing them notifies too.
+    A plain role change (not a new add) does not create an extra 'add' notification."""
+    # baseline unread count for the guinea user
+    base = client.get(f"/api/notifications?user_id={guinea_id}").json()["unread_count"]
+    r = client.post("/api/boards", json={"name": "notif board", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        # add (viewer) → one notification
+        client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "viewer"})
+        n = client.get(f"/api/notifications?user_id={guinea_id}").json()
+        assert n["unread_count"] == base + 1
+        assert n["notifications"][0]["type"] == "board_add"
+        assert n["notifications"][0]["board_id"] == bid
+        # role change (already a member) → no new notification
+        client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+        assert client.get(f"/api/notifications?user_id={guinea_id}").json()["unread_count"] == base + 1
+        # remove → another notification
+        client.delete(f"/api/boards/{bid}/members/{guinea_id}?actor_id={admin_id}")
+        n = client.get(f"/api/notifications?user_id={guinea_id}").json()
+        assert n["unread_count"] == base + 2
+        assert n["notifications"][0]["type"] == "board_remove"
+        # mark-all-read clears the count
+        client.post("/api/notifications/read-all", json={"user_id": guinea_id})
+        assert client.get(f"/api/notifications?user_id={guinea_id}").json()["unread_count"] == 0
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_board_notifications_can_be_switched_off(client, admin_id, guinea_id):
+    """A board admin can switch off notifications for a board; add/remove then
+    produce no notifications. Non-admins can't toggle it."""
+    base = client.get(f"/api/notifications?user_id={guinea_id}").json()["unread_count"]
+    r = client.post("/api/boards", json={"name": "quiet board", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        # default on
+        assert client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["notifications_enabled"] is True
+        # switch off (admin)
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "notifications_enabled": False})
+        assert r.status_code == 200, r.text
+        assert client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["notifications_enabled"] is False
+        # add + remove while off → no notifications
+        client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "viewer"})
+        client.delete(f"/api/boards/{bid}/members/{guinea_id}?actor_id={admin_id}")
+        assert client.get(f"/api/notifications?user_id={guinea_id}").json()["unread_count"] == base
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_non_admin_cannot_toggle_board_notifications(client, member_id):
+    """A non-admin board member cannot toggle board notifications → 403."""
+    r = client.patch("/api/boards/1", json={"user_id": member_id, "notifications_enabled": False})
+    assert r.status_code == 403
+
+
 def test_inviting_new_member_flags_invited(client, admin_id, guinea_id):
     """Inviting a genuinely new member returns invited=True (triggers the email);
     a follow-up role change on the same member returns invited=False (no email).

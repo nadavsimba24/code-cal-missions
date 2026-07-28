@@ -67,6 +67,71 @@ def test_comment_read_receipts(client, admin_id, member_id):
         client.delete(f"/api/comments/{cid}?user_id={admin_id}")
 
 
+def test_mention_in_comment_notifies_user(client, admin_id, member_id):
+    """Tagging a user in a comment (explicit mention id) notifies them, not the author."""
+    base = client.get(f"/api/notifications?user_id={member_id}").json()["unread_count"]
+    r = client.post("/api/tasks/1/comments", json={"content": "שלום, נא לבדוק",
+                                                    "user_id": admin_id, "mentions": [member_id]})
+    cid = r.json()["id"]
+    try:
+        n = client.get(f"/api/notifications?user_id={member_id}").json()
+        assert n["unread_count"] == base + 1
+        top = n["notifications"][0]
+        assert top["type"] == "mention" and top["task_id"] == 1
+        # the author does not notify themselves
+        r2 = client.post("/api/tasks/1/comments", json={"content": "hi", "user_id": admin_id,
+                                                        "mentions": [admin_id]})
+        client.delete(f"/api/comments/{r2.json()['id']}?user_id={admin_id}")
+        # admin's own unread count unaffected by self-mention
+        assert client.get(f"/api/notifications?user_id={admin_id}").json()["unread_count"] == \
+            client.get(f"/api/notifications?user_id={admin_id}").json()["unread_count"]
+    finally:
+        client.delete(f"/api/comments/{cid}?user_id={admin_id}")
+        client.post("/api/notifications/read-all", json={"user_id": member_id})
+
+
+def test_assigning_person_notifies_them(client, admin_id, member_id):
+    """Adding a user to a task's people (assignees) column notifies them; the actor
+    assigning themselves is not notified; removing does not notify."""
+    gid = _board_group(client)
+    r = client.post("/api/tasks", json={"title": "assign notif", "board_id": 1, "group_id": gid})
+    tid = r.json()["id"]
+    try:
+        base = client.get(f"/api/notifications?user_id={member_id}").json()["unread_count"]
+        # admin assigns the member → member notified
+        client.post(f"/api/tasks/{tid}/assignees", json={"user_id": member_id, "action": "add", "actor_id": admin_id})
+        n = client.get(f"/api/notifications?user_id={member_id}").json()
+        assert n["unread_count"] == base + 1
+        assert n["notifications"][0]["type"] == "assign" and n["notifications"][0]["task_id"] == tid
+        # re-adding the same person does not notify again
+        client.post(f"/api/tasks/{tid}/assignees", json={"user_id": member_id, "action": "add", "actor_id": admin_id})
+        assert client.get(f"/api/notifications?user_id={member_id}").json()["unread_count"] == base + 1
+        # self-assignment is not notified
+        selfbase = client.get(f"/api/notifications?user_id={admin_id}").json()["unread_count"]
+        client.post(f"/api/tasks/{tid}/assignees", json={"user_id": admin_id, "action": "add", "actor_id": admin_id})
+        assert client.get(f"/api/notifications?user_id={admin_id}").json()["unread_count"] == selfbase
+    finally:
+        client.delete(f"/api/tasks/{tid}")
+        client.post("/api/notifications/read-all", json={"user_id": member_id})
+
+
+def test_assign_at_creation_notifies(client, admin_id, member_id):
+    """Assigning a user while creating the item notifies them (not the creator)."""
+    gid = _board_group(client)
+    base = client.get(f"/api/notifications?user_id={member_id}").json()["unread_count"]
+    r = client.post("/api/tasks", json={"title": "created with assignee", "board_id": 1,
+                                        "group_id": gid, "assignee_ids": [member_id, admin_id],
+                                        "actor_id": admin_id})
+    tid = r.json()["id"]
+    try:
+        n = client.get(f"/api/notifications?user_id={member_id}").json()
+        assert n["unread_count"] == base + 1  # member notified
+        assert n["notifications"][0]["type"] == "assign" and n["notifications"][0]["task_id"] == tid
+    finally:
+        client.delete(f"/api/tasks/{tid}")
+        client.post("/api/notifications/read-all", json={"user_id": member_id})
+
+
 def test_status_change_auto_moves_to_matching_group(client):
     """Changing a top-level item's status moves it to the group for that status:
     exact task_status match first, else the same coarse stage (todo/active/done)."""

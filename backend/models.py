@@ -567,6 +567,20 @@ class UploadedFile(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class Notification(Base):
+    """In-app notification for a single recipient (e.g. added/removed from a board)."""
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)   # recipient
+    type = Column(String(40))                                        # board_add | board_remove | ...
+    title = Column(String(200))
+    body = Column(Text)
+    board_id = Column(Integer, nullable=True)                        # deep-link target, if any
+    task_id = Column(Integer, nullable=True)                         # open this item's chat, if any
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 # ── Init DB ──────────────────────────────────────────────────────────
 
 def init_db(db_url="sqlite:///cityos.db"):

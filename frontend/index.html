@@ -165,6 +165,31 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tb-ctl.open .tb-btn{background:var(--row-hover);color:var(--text)}
 .tb-pop{display:none;position:absolute;top:calc(100% + 6px);inset-inline-start:0;min-width:230px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:10px;z-index:120}
 .tb-ctl.open .tb-pop{display:block}
+/* notifications bell + dropdown */
+.notif-btn{position:relative}
+.notif-badge{position:absolute;top:-3px;inset-inline-end:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--red,#e2445c);color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;box-sizing:border-box;line-height:1}
+.notif-pop{min-width:330px;max-width:360px;padding:0;overflow:hidden}
+.notif-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px}
+.notif-readall{font-size:12px;font-weight:600;color:var(--primary);cursor:pointer}
+.notif-readall:hover{text-decoration:underline}
+.notif-list{max-height:60vh;overflow-y:auto}
+.notif-row{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer;position:relative}
+.notif-row:last-child{border-bottom:none}
+.notif-row:hover{background:var(--row-hover)}
+.notif-row.unread{background:var(--primary-soft)}
+.notif-row.unread:hover{background:var(--primary-soft);filter:brightness(.98)}
+.notif-ic{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;color:#fff;flex-shrink:0;font-size:13px;background:var(--primary)}
+.notif-ic.board_remove{background:var(--red,#e2445c)}
+.notif-ic.board_add{background:var(--green,#00c875)}
+.notif-ic.mention{background:#a25ddc}
+.notif-ic.assign{background:#0073ea}
+.notif-txt{flex:1;min-width:0}
+.notif-title{font-size:13.5px;font-weight:600;color:var(--text)}
+.notif-body{font-size:12.5px;color:var(--text-muted);margin-top:2px;line-height:1.4}
+.notif-time{font-size:11px;color:var(--text-light);margin-top:3px}
+.notif-dot{width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:6px}
+.notif-empty{padding:34px 14px;text-align:center;color:var(--text-light);font-size:13px}
+.notif-empty i{font-size:26px;display:block;margin-bottom:8px;opacity:.5}
 .pop-title{font-size:11px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:4px 2px 7px}
 .pop-title:not(:first-child){margin-top:12px;border-top:1px solid var(--border);padding-top:11px}
 .pop-chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -925,8 +950,11 @@ img.pf-av{object-fit:cover;background:#fff}
     <div id="appbar">
       <div class="ab-title"><i class="fa-solid fa-table-cells-large" style="color:var(--primary)"></i> מרכז העבודה</div>
       <div class="ab-spacer"></div>
-      <button class="icon-btn" title="התראות — בקרוב" disabled><i class="fa-regular fa-bell"></i></button>
       <button class="btn btn-ai" onclick="AI.open()"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>
+      <div class="tb-ctl" id="ctl-notif">
+        <button class="icon-btn notif-btn" title="התראות" onclick="Notif.toggle(event)"><i class="fa-regular fa-bell"></i><span class="notif-badge" id="notif-badge" style="display:none">0</span></button>
+        <div class="tb-pop notif-pop" id="pop-notif" style="inset-inline-start:auto;inset-inline-end:0"></div>
+      </div>
       <div class="tb-ctl" id="ctl-me">
         <button class="me-btn" onclick="togglePop('me')" title="פועל בתור"><span class="av" id="me-av" style="background:var(--primary)">?</span><span class="me-name" id="me-name"></span><i class="fa-solid fa-chevron-down" style="font-size:10px;color:var(--text-light)"></i></button>
         <div class="tb-pop" id="pop-me" style="inset-inline-start:auto;inset-inline-end:0"></div>
@@ -1143,6 +1171,7 @@ async function enterApp(){
     await openBoard(target);
   }
   else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
+  Notif.start();
   setTimeout(showAgentHint,3500);
 }
 const Auth = {
@@ -1169,6 +1198,7 @@ const Auth = {
     askConfirm('להתנתק מהמערכת?',()=>{
       localStorage.removeItem('cc_uid');
       st.me=null; st.board=null; st.boards=[];
+      try{Notif.stop();}catch(e){}
       try{closeModals();AI.close();Chat.close();Term&&Term.close&&Term.close();}catch(e){}
       renderSidebar();
       document.getElementById('bh-title').textContent='';
@@ -1487,7 +1517,7 @@ function openPeople(id){
   <div class="mfoot"><button class="btn btn-primary" onclick="closeModals();renderView()">סיום</button></div>`);
 }
 async function togglePerson(taskId,userId,add){
-  try{const r=await api('/api/tasks/'+taskId+'/assignees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,action:add?'add':'remove'})});
+  try{const r=await api('/api/tasks/'+taskId+'/assignees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,action:add?'add':'remove',actor_id:meId()})});
     const t=findTask(taskId); if(t)t.assignees=r.assignees; toast(add?'נוסף אחראי':'הוסר אחראי');
   }catch(e){toast('שגיאה בשיוך');}
 }
@@ -1560,6 +1590,48 @@ function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:''
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
 document.addEventListener('click',e=>{if(!e.target.closest('.tb-ctl'))closePops();});
+/* ===== in-app notifications (bell) ===== */
+const Notif={
+  items:[], unread:0, _timer:null,
+  async load(){
+    if(!meId())return;
+    try{ const d=await api('/api/notifications?user_id='+meId()); this.items=d.notifications||[]; this.unread=d.unread_count||0; }
+    catch(e){ this.items=[]; this.unread=0; }
+    this.badge();
+    const ctl=document.getElementById('ctl-notif'); if(ctl&&ctl.classList.contains('open'))this.render();
+  },
+  badge(){ const b=document.getElementById('notif-badge'); if(!b)return; if(this.unread>0){ b.textContent=this.unread>99?'99+':this.unread; b.style.display=''; } else b.style.display='none'; },
+  toggle(e){ const ctl=document.getElementById('ctl-notif'); if(!ctl)return; const open=ctl.classList.contains('open'); closePops(); if(!open){ ctl.classList.add('open'); this.render(); this.load(); } },
+  render(){
+    const el=document.getElementById('pop-notif'); if(!el)return;
+    const head=`<div class="notif-head"><span><i class="fa-regular fa-bell"></i> התראות</span>${this.unread?`<button class="notif-readall" onclick="Notif.readAll(event)">סמן הכל כנקרא</button>`:''}</div>`;
+    const body=this.items.length? this.items.map(n=>this.rowHTML(n)).join('')
+      : '<div class="notif-empty"><i class="fa-regular fa-bell-slash"></i><div>אין התראות</div></div>';
+    el.innerHTML=head+`<div class="notif-list">${body}</div>`;
+  },
+  rowHTML(n){
+    const icon=n.type==='board_remove'?'fa-user-minus':n.type==='board_add'?'fa-user-plus':n.type==='mention'?'fa-at':n.type==='assign'?'fa-user-check':'fa-bell';
+    return `<div class="notif-row ${n.is_read?'':'unread'}" onclick="Notif.click(${n.id},${n.board_id==null?'null':n.board_id},${n.task_id==null?'null':n.task_id})">
+      <span class="notif-ic ${esc(n.type||'')}"><i class="fa-solid ${icon}"></i></span>
+      <div class="notif-txt"><div class="notif-title">${esc(n.title||'')}</div>${n.body?`<div class="notif-body">${esc(n.body)}</div>`:''}<div class="notif-time">${fdatetime(n.created_at)}</div></div>
+      ${n.is_read?'':'<span class="notif-dot"></span>'}
+    </div>`;
+  },
+  async click(id,boardId,taskId){
+    try{ await api('/api/notifications/'+id+'/read',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){}
+    const n=this.items.find(x=>x.id===id); if(n)n.is_read=true;
+    this.unread=this.items.filter(x=>!x.is_read).length; this.badge();
+    if(boardId){
+      if(!st.boards.some(b=>b.id===boardId)){ toast('אין לך גישה ללוח זה'); this.render(); return; }
+      closePops();
+      await openBoard(boardId);
+      if(taskId!=null) setTimeout(()=>{ if(findAnyTask(taskId))Chat.open(taskId); },120);  // open the item's chat
+    } else this.render();
+  },
+  async readAll(e){ e&&e.stopPropagation(); try{ await api('/api/notifications/read-all',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){} this.items.forEach(n=>n.is_read=true); this.unread=0; this.badge(); this.render(); },
+  start(){ clearInterval(this._timer); this.load(); this._timer=setInterval(()=>this.load(),45000); },
+  stop(){ clearInterval(this._timer); this.items=[]; this.unread=0; this.badge(); },
+};
 /* ===== current user ("פועל בתור") ===== */
 function meId(){return st.me&&st.me.id;}
 function withMe(body){return JSON.stringify({...(body||{}),user_id:meId()});}
@@ -1782,6 +1854,10 @@ const Members = {
     showModal(`<h2><i class="fa-solid fa-user-shield" style="color:var(--primary)"></i> חברים והרשאות — ${esc(st.board.name)}</h2>
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> רק חברי הלוח רואים אותו. מנהל לוח מנהל הזמנות והרשאות. גישת אדמין אינה גלובלית — לוחות שלא הוזמנת אליהם אינם נראים.</div>
+        <div class="pf-row pf-toggle" style="border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
+          <span><i class="fa-regular fa-bell"></i> התראות ללוח זה</span>
+          <label class="switch"><input type="checkbox" ${st.board.notifications_enabled!==false?'checked':''} onchange="Members.toggleNotif(this.checked)"><span class="slider"></span></label>
+        </div>
         <div id="mem-list">${this.listHTML()}</div>
         <div class="mem-add">
           <select id="mem-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כל המשתמשים כבר חברים —</option>'}</select>
@@ -1794,6 +1870,12 @@ const Members = {
       </div>`);
   },
   deleteBoard(){ if(st.board) deleteBoardById(st.board.id); },
+  async toggleNotif(on){
+    try{
+      await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({notifications_enabled:on})});
+      st.board.notifications_enabled=on; toast(on?'התראות הלוח הופעלו':'התראות הלוח כובו');
+    }catch(e){ toast('רק מנהל לוח יכול לשנות'); }
+  },
   listHTML(){
     return this.data.members.map(m=>`<div class="mem-row">
       <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
@@ -1888,6 +1970,7 @@ function renderMe(){
 }
 async function setMe(id){
   st.me=(st.users||[]).find(u=>u.id===id)||st.me; renderMe(); closePops();
+  Notif.start();
   await loadBoards();
   if(st.board && st.boards.some(b=>b.id===st.board.id)){ await openBoard(st.board.id); }
   else if(st.boards.length){ st.board=null; await openBoard(st.boards[0].id); }
@@ -2625,7 +2708,7 @@ async function saveSubItem(parentId){
   const dueVal=document.getElementById('si-due').value;
   const dueDate=dueVal?new Date(dueVal+'T12:00:00').toISOString():null;
   try{
-    await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parent_id:parentId,title,priority:document.getElementById('si-prio').value,due_date:dueDate,assignee_ids})});
+    await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parent_id:parentId,title,priority:document.getElementById('si-prio').value,due_date:dueDate,assignee_ids,actor_id:meId()})});
     st.openSubs.add(parentId);
     closeModals();toast('תת-פריט נוסף');await openBoard(st.board.id);
   }catch(e){toast('שגיאה ביצירת תת-פריט'); if(btn)btn.disabled=false;}

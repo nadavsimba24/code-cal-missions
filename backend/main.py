@@ -21,7 +21,7 @@ from models import (
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
     Approval, ChangeRequest, KPI, Dependency, Document, AuditLog,
     ProjectStatus, ApprovalStatus, ChangeRequestStatus,
-    DependencyType, BudgetItemType, DocumentType, LoginEvent, UploadedFile
+    DependencyType, BudgetItemType, DocumentType, LoginEvent, UploadedFile, Notification
 )
 
 try:
@@ -64,6 +64,10 @@ def _migrate():
         tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
         if "permissions" not in tcols:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN permissions JSON"))
+        # notifications table may predate the task_id column (created before mentions)
+        ncols = {r[1] for r in conn.execute(text("PRAGMA table_info(notifications)"))}
+        if ncols and "task_id" not in ncols:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN task_id INTEGER"))
         # users: job title + contact phone (for the profile card)
         ucols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)"))}
         if "title" not in ucols:
@@ -97,6 +101,7 @@ else:
     try:
         with engine.begin() as _conn:
             _conn.execute(_text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON"))
+            _conn.execute(_text("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER"))
     except Exception:
         pass
 
@@ -425,6 +430,7 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             "columns": (b.settings or {}).get("columns", []),
             "col_widths": (b.settings or {}).get("col_widths", {}),
             "col_labels": (b.settings or {}).get("col_labels", {}),
+            "notifications_enabled": bool((b.settings or {}).get("notifications_enabled", True)),
             "statuses": _board_statuses(b),
             "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
@@ -526,6 +532,13 @@ def update_board(board_id: int, data: dict):
             s = dict(b.settings or {})
             s["col_labels"] = labels
             b.settings = s
+        if "notifications_enabled" in data:
+            # board admin toggles all notifications for this board on/off
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לשנות התראות ללוח")
+            s = dict(b.settings or {})
+            s["notifications_enabled"] = bool(data["notifications_enabled"])
+            b.settings = s
         if data.get("statuses") is not None:
             # only a board admin may rename/recolor/reorder/add statuses
             if _board_role(db, board_id, data.get("user_id")) != "admin":
@@ -600,6 +613,18 @@ def delete_board(board_id: int, user_id: Optional[int] = None):
 # ── Board membership & per-board permissions ────────────────────────
 BOARD_ROLES = ("admin", "editor", "viewer")
 BROLE_HE = {"admin": "מנהל לוח", "editor": "עורך", "viewer": "צופה"}
+
+
+def _notify(db, user_id, type, title, body="", board_id=None, task_id=None):
+    """Create an in-app notification for a recipient (best-effort, no-op on bad input)."""
+    if not user_id:
+        return
+    db.add(Notification(user_id=user_id, type=type, title=title, body=body,
+                        board_id=board_id, task_id=task_id))
+
+def _board_notify_on(board):
+    """Whether the board emits notifications (board admin can switch it off wholesale)."""
+    return bool((board.settings or {}).get("notifications_enabled", True)) if board else True
 
 
 def _send_email(to_email, subject, html):
@@ -688,12 +713,18 @@ def add_board_member(board_id: int, data: dict):
             m.role = role
         else:
             db.add(BoardMember(board_id=board_id, user_id=uid, role=role))
+        board = db.query(Board).filter(Board.id == board_id).first()
+        inviter = db.query(User).filter(User.id == data.get("actor_id")).first()
+        # in-app notification to the added user — every role, only on a real add,
+        # and only if the board hasn't switched notifications off
+        if is_new and _board_notify_on(board):
+            _notify(db, uid, "board_add", f"נוספת ללוח '{board.name if board else ''}'",
+                    f"{(inviter.name + ' ') if inviter else ''}הוסיף/ה אותך ללוח בתפקיד {BROLE_HE.get(role, role)}.",
+                    board_id=board_id)
         db.commit()
         # email the invitee — only on a genuine new invitation, any role
         if is_new:
             invitee = db.query(User).filter(User.id == uid).first()
-            board = db.query(Board).filter(Board.id == board_id).first()
-            inviter = db.query(User).filter(User.id == data.get("actor_id")).first()
             if invitee and invitee.email and board:
                 _send_email(invitee.email,
                             f"הוזמנת ללוח '{board.name}' ב-CityOS",
@@ -733,8 +764,51 @@ def remove_board_member(board_id: int, uid: int, actor_id: Optional[int] = None)
             if admins <= 1:
                 raise HTTPException(400, "לא ניתן להסיר את מנהל הלוח האחרון")
         db.delete(m)
+        board = db.query(Board).filter(Board.id == board_id).first()
+        actor = db.query(User).filter(User.id == actor_id).first()
+        # notify the removed user (any role) — no board deep-link (no longer a member)
+        if _board_notify_on(board):
+            _notify(db, uid, "board_remove", f"הוסרת מהלוח '{board.name if board else ''}'",
+                    f"{(actor.name + ' ') if actor else ''}הסיר/ה אותך מהלוח.")
         db.commit()
         return {"status": "removed"}
+
+# ── In-app notifications (התראות) ───────────────────────────────────
+def _serialize_notif(n):
+    return {"id": n.id, "type": n.type, "title": n.title, "body": n.body,
+            "board_id": n.board_id, "task_id": n.task_id,
+            "is_read": bool(n.is_read), "created_at": n.created_at}
+
+@app.get("/api/notifications")
+def list_notifications(user_id: Optional[int] = None, limit: int = 30):
+    if user_id is None:
+        raise HTTPException(400, "user_id required")
+    with Session(engine) as db:
+        q = db.query(Notification).filter(Notification.user_id == user_id)
+        unread = q.filter(Notification.is_read == False).count()
+        items = q.order_by(Notification.created_at.desc()).limit(max(1, min(100, limit))).all()
+        return {"notifications": [_serialize_notif(n) for n in items], "unread_count": unread}
+
+@app.post("/api/notifications/{nid}/read")
+def read_notification(nid: int, data: dict):
+    with Session(engine) as db:
+        n = db.query(Notification).filter(Notification.id == nid,
+                                          Notification.user_id == data.get("user_id")).first()
+        if n and not n.is_read:
+            n.is_read = True
+            db.commit()
+        return {"status": "ok"}
+
+@app.post("/api/notifications/read-all")
+def read_all_notifications(data: dict):
+    uid = data.get("user_id")
+    if uid is None:
+        raise HTTPException(400, "user_id required")
+    with Session(engine) as db:
+        db.query(Notification).filter(Notification.user_id == uid,
+                                      Notification.is_read == False).update({Notification.is_read: True})
+        db.commit()
+        return {"status": "ok"}
 
 # ── Column-level permissions (הרשאות עמודה) ─────────────────────────
 @app.post("/api/boards/{board_id}/columns/{col_id}/permissions")
@@ -905,6 +979,16 @@ def create_task(data: dict):
             maxpos = _q.scalar()
         task.position = (maxpos + 1) if maxpos is not None else 0
         db.add(task)
+        db.flush()   # get task.id for assignment notifications
+        # notify anyone assigned at creation time (skip the creator), honoring the switch
+        if ids:
+            board = db.query(Board).filter(Board.id == board_id).first()
+            if _board_notify_on(board):
+                actor = data.get("actor_id") or data.get("user_id")
+                for aid in set(ids):
+                    if aid != actor:
+                        _notify(db, aid, "assign", "שויכת למשימה",
+                                f"שויכת למשימה '{task.title}'.", board_id=board_id, task_id=task.id)
         db.commit()
         return {"id": task.id, "status": "created"}
 
@@ -1028,6 +1112,17 @@ def update_task(task_id: int, data: dict):
                 _audit(db, task_id, "update", "tags", ", ".join(old_tags), ", ".join(data["tags"]), actor)
             task.tags = data["tags"]
         if "custom_fields" in data and isinstance(data["custom_fields"], dict):
+            board = db.query(Board).filter(Board.id == task.board_id).first()
+            coldefs = {c["id"]: c for c in ((board.settings or {}).get("columns", []) if board else [])}
+            notify_on = _board_notify_on(board)
+            def _ids(val):
+                out = set()
+                for x in (val or []) if isinstance(val, list) else []:
+                    try:
+                        out.add(int(x))
+                    except (TypeError, ValueError):
+                        pass
+                return out
             cf = dict(task.custom_fields or {})
             for k, v in data["custom_fields"].items():
                 old = cf.get(k)
@@ -1038,6 +1133,15 @@ def update_task(task_id: int, data: dict):
                 if json.dumps(old, ensure_ascii=False) != json.dumps(v, ensure_ascii=False):
                     _audit(db, task_id, "update", "col:" + k,
                            json.dumps(old, ensure_ascii=False), json.dumps(v, ensure_ascii=False), actor)
+                    # people column: notify each user newly added to this cell
+                    col = coldefs.get(k)
+                    if col and col.get("type") == "people" and notify_on:
+                        added = _ids(v) - _ids(old)
+                        added.discard(actor)
+                        for uid2 in added:
+                            _notify(db, uid2, "assign", "שויכת לפריט",
+                                    f"שויכת לעמודת '{col.get('title', 'אנשים')}' במשימה '{task.title}'.",
+                                    board_id=task.board_id, task_id=task_id)
             task.custom_fields = cf
         db.commit()
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
@@ -1192,6 +1296,24 @@ def add_comment(task_id: int, data: dict):
         db.add(c)
         _audit(db, task_id, "comment", field="reply" if data.get("parent_id") else "comment",
                new=(content[:120] or "(קובץ)"), user_id=user.id)
+        # notify every tagged user (explicit @-picks + any @Name typed in the text),
+        # excluding the author, honoring the board's notification switch
+        mentioned = set()
+        for x in (data.get("mentions") or []):
+            try:
+                mentioned.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        if content:
+            for u in sorted(db.query(User).all(), key=lambda x: -len(x.name or "")):
+                if u.name and ("@" + u.name) in content:
+                    mentioned.add(u.id)
+        mentioned.discard(user.id)
+        if mentioned and _board_notify_on(board):
+            for mid in mentioned:
+                _notify(db, mid, "mention", "תויגת בשיחה",
+                        f"{user.name} תייג/ה אותך במשימה '{task.title}'.",
+                        board_id=task.board_id, task_id=task_id)
         db.commit(); db.refresh(c)
         return _serialize_comment(c, db)
 
@@ -1364,12 +1486,22 @@ def task_assignees(task_id: int, data: dict):
         user = db.query(User).filter(User.id == data.get("user_id")).first()
         if not user:
             raise HTTPException(404, "user not found")
+        actor = data.get("actor_id")
+        was = user in task.assignees
         if data.get("action") == "remove":
-            if user in task.assignees:
+            if was:
                 task.assignees.remove(user)
         else:
-            if user not in task.assignees:
+            if not was:
                 task.assignees.append(user)
+                # notify the newly-assigned person (skip self-assignment / re-adds)
+                if user.id != actor:
+                    board = db.query(Board).filter(Board.id == task.board_id).first()
+                    if _board_notify_on(board):
+                        actor_u = db.query(User).filter(User.id == actor).first()
+                        _notify(db, user.id, "assign", "שויכת למשימה",
+                                f"{(actor_u.name + ' ') if actor_u else ''}שייך/ה אותך למשימה '{task.title}'.",
+                                board_id=task.board_id, task_id=task_id)
         db.commit()
         return {"assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
                               for u in task.assignees]}
