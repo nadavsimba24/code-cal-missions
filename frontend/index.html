@@ -1513,23 +1513,24 @@ const Profile = {
     }catch(e){ toast('שגיאה בעדכון ההעדפה'); }
   }
 };
-/* compact assignee picker — a popover anchored right under the clicked circle */
+/* compact assignee picker — a popover anchored right above the clicked circle */
 function openPeople(e,id){
   if(e&&e.stopPropagation)e.stopPropagation();
   const t=findAnyTask(id); if(!t)return;   // findAnyTask → works for sub-items too
   const anchor=(e&&e.target&&e.target.closest&&(e.target.closest('.av')||e.target.closest('.avatars')))||(e&&e.currentTarget)||document.body;
-  const pop=openCellPop(anchor,'','list-pop'); buildAssigneePop(pop,id);
+  // build content first so openCellPop measures the real height and can open upward
+  openCellPop(anchor,assigneePopHTML(id),'list-pop',true);
 }
-function buildAssigneePop(pop,id){
+function assigneePopHTML(id){
   const t=findAnyTask(id); const cur=new Set(((t&&t.assignees)||[]).map(a=>a.id));
-  pop.innerHTML=(st.users||[]).map(u=>`<button class="pl-opt ${cur.has(u.id)?'sel':''}" onclick="togglePersonPop(event,${id},${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${cur.has(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||'<div style="padding:6px;color:var(--text-light);font-size:12px">אין משתמשים</div>';
+  return (st.users||[]).map(u=>`<button class="pl-opt ${cur.has(u.id)?'sel':''}" onclick="togglePersonPop(event,${id},${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${cur.has(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||'<div style="padding:6px;color:var(--text-light);font-size:12px">אין משתמשים</div>';
 }
 async function togglePersonPop(e,taskId,uid){
   e.stopPropagation();
   const t=findAnyTask(taskId); const has=((t&&t.assignees)||[]).some(a=>a.id===uid);
   await togglePerson(taskId,uid,!has);
-  const pop=e.target&&e.target.closest('.cell-pop'); if(pop)buildAssigneePop(pop,taskId);
-  renderView();   // reflect the change in the cell avatars (popover stays open)
+  closeCellPops();   // close the popover after a selection
+  renderView();      // reflect the change in the cell avatars
 }
 async function togglePerson(taskId,userId,add){
   try{const r=await api('/api/tasks/'+taskId+'/assignees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,action:add?'add':'remove',actor_id:meId()})});
@@ -2602,7 +2603,7 @@ async function _stSave(){
 function closeCellPops(){document.querySelectorAll('.cell-pop').forEach(p=>p.remove());}
 /* Fixed-positioned cell popover appended to <body> so it never gets clipped by
    the table's overflow:hidden. Returns the pop element (pop._anchor = cell). */
-function openCellPop(anchor,html,extraClass){
+function openCellPop(anchor,html,extraClass,above){
   closeCellPops();
   const pop=document.createElement('div');
   pop.className='cell-pop cell-pop-fixed'+(extraClass?' '+extraClass:'');
@@ -2610,8 +2611,16 @@ function openCellPop(anchor,html,extraClass){
   const r=anchor.getBoundingClientRect();
   let left=r.right-pop.offsetWidth; if(left<8)left=8;
   if(r.left<8&&r.right-pop.offsetWidth<8) left=r.left;
-  let top=r.bottom+4;
-  if(top+pop.offsetHeight>window.innerHeight-8) top=Math.max(8,r.top-pop.offsetHeight-4);
+  let top;
+  if(above){                                   // open above the anchor, centered, scrolling if tall
+    left=Math.max(8,Math.min(r.left+r.width/2-pop.offsetWidth/2,window.innerWidth-pop.offsetWidth-8));  // center over the circle
+    const room=Math.max(120,r.top-12);         // usable space above the circle
+    if(pop.offsetHeight>room) pop.style.maxHeight=room+'px';   // cap height → scroll
+    top=Math.max(8,r.top-pop.offsetHeight-4);
+  }else{
+    top=r.bottom+4;
+    if(top+pop.offsetHeight>window.innerHeight-8) top=Math.max(8,r.top-pop.offsetHeight-4);
+  }
   pop.style.left=left+'px'; pop.style.top=top+'px';
   setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0);
   return pop;
