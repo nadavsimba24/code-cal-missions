@@ -565,17 +565,28 @@ def update_board(board_id: int, data: dict):
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
-                       "people", "dropdown", "files", "accounts", "checkbox", "formula"}
+                       "people", "dropdown", "files", "accounts", "checkbox", "formula",
+                       "connect"}
+            old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
+            is_ws_admin = _ws_role(db, data.get("user_id")) == "admin"
             cols = []
             for c in data["columns"]:
                 if not isinstance(c, dict) or c.get("type") not in allowed:
                     continue
+                cid = c.get("id") or ("col_" + uuid.uuid4().hex[:8])
+                if c["type"] == "connect":
+                    # only a workspace (system) admin may create/change a connect column
+                    prev = old_cols.get(cid)
+                    changed = (not prev) or prev.get("type") != "connect" or prev.get("connect") != c.get("connect")
+                    if changed and not is_ws_admin:
+                        raise HTTPException(403, "רק מנהל מערכת יכול להוסיף או לשנות עמודת קישור בין לוחות")
                 cols.append({
-                    "id": c.get("id") or ("col_" + uuid.uuid4().hex[:8]),
+                    "id": cid,
                     "type": c["type"],
                     "title": c.get("title") or c["type"],
                     "options": c.get("options"),
                     "formula": c.get("formula"),
+                    "connect": c.get("connect") if c["type"] == "connect" else None,
                     "perms": c.get("perms") or {},
                 })
             s = dict(b.settings or {})
@@ -991,6 +1002,38 @@ def create_task(data: dict):
                                 f"שויכת למשימה '{task.title}'.", board_id=board_id, task_id=task.id)
         db.commit()
         return {"id": task.id, "status": "created"}
+
+# ── Cross-board item linking (connect column) ───────────────────────
+@app.get("/api/items/search")
+def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] = None, limit: int = 60):
+    """Top-level items across the given boards, for the connect-column picker."""
+    ids = [int(x) for x in board_ids.split(",") if x.strip().isdigit()]
+    with Session(engine) as db:
+        query = db.query(Task).filter(Task.is_archived == False, Task.parent_id == None)
+        if ids:
+            query = query.filter(Task.board_id.in_(ids))
+        if q.strip():
+            query = query.filter(Task.title.ilike(f"%{q.strip()}%"))
+        if exclude_task:
+            query = query.filter(Task.id != exclude_task)
+        rows = query.order_by(Task.board_id, Task.position).limit(max(1, min(200, limit))).all()
+        bnames = {b.id: b.name for b in db.query(Board).all()}
+        return {"items": [{"id": t.id, "title": t.title, "board_id": t.board_id,
+                           "board_name": bnames.get(t.board_id, ""),
+                           "status": t.status.value if hasattr(t.status, "value") else t.status}
+                          for t in rows]}
+
+@app.get("/api/tasks/lookup")
+def tasks_lookup(ids: str = ""):
+    """Resolve item ids → title/board, to display linked items in a connect cell."""
+    id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not id_list:
+        return {"items": []}
+    with Session(engine) as db:
+        rows = db.query(Task).filter(Task.id.in_(id_list)).all()
+        bnames = {b.id: b.name for b in db.query(Board).all()}
+        return {"items": [{"id": t.id, "title": t.title, "board_id": t.board_id,
+                           "board_name": bnames.get(t.board_id, "")} for t in rows]}
 
 # each status belongs to a coarse stage, so a status change can still find a
 # sensible group even when the board has fewer groups than statuses (e.g. the
@@ -1760,6 +1803,11 @@ def create_user(data: dict):
         u = User(name=name, email=email, role=role, department_id=dept_id,
                  organization_id=org_id, is_active=True)
         db.add(u)
+        db.flush()
+        # also register workspace membership so the role actually takes effect
+        # (system-admin capabilities key off workspace_members, not User.role)
+        ws_role = "admin" if role == "admin" else ("viewer" if role == "viewer" else "member")
+        db.add(WorkspaceMember(user_id=u.id, role=ws_role))
         db.commit()
         db.refresh(u)
         dept_name = db.query(Department.name).filter(Department.id == u.department_id).scalar() if u.department_id else None

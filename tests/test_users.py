@@ -47,3 +47,21 @@ def test_admin_toggles_active_and_restores(client, admin_id, guinea_id):
         assert _get_user(client, guinea_id)["is_active"] is True
     finally:
         client.patch(f"/api/users/{guinea_id}", json={"actor_id": admin_id, "is_active": True})
+
+
+def test_created_admin_becomes_workspace_admin(client, admin_id):
+    """Creating a user with role=admin also registers workspace membership as admin,
+    so system-admin capabilities (create board, connect column) actually take effect."""
+    import uuid as _uuid
+    email = f"cx_{_uuid.uuid4().hex[:8]}@example.com"
+    r = client.post("/api/users", json={"actor_id": admin_id, "name": "בדיקת אדמין",
+                                        "email": email, "role": "admin"})
+    assert r.status_code == 200, r.text
+    uid = r.json()["id"]
+    members = client.get("/api/workspace/members").json()["members"]
+    row = next((m for m in members if m["user_id"] == uid), None)
+    assert row is not None and row["role"] == "admin"
+    # and that user may now create a board (a workspace-admin-only action)
+    b = client.post("/api/boards", json={"name": "by new admin", "department_id": 1, "user_id": uid})
+    assert b.status_code == 200, b.text
+    client.delete(f"/api/boards/{b.json()['id']}?user_id={uid}")

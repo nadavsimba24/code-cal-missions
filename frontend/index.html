@@ -268,6 +268,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tbl tr:hover .item-menu{opacity:1;pointer-events:auto}
 .item-menu:hover{color:var(--primary);border-color:var(--primary)}
 .tbl .cell{padding:6px 10px;text-align:center}
+/* trailing cell so the row's bottom border reaches the end of the table
+   (covers the add-column + flexible spacer columns); no vertical divider */
+.tbl td.row-end{border-inline-start:none;padding:0}
 .pill{display:inline-flex;align-items:center;justify-content:center;width:100%;min-width:96px;height:30px;border-radius:4px;color:#fff;font-weight:600;font-size:12.5px;padding:0 8px}
 .prio{min-width:80px}
 .avatars{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;height:28px}
@@ -367,6 +370,20 @@ tr:hover .row-grip{opacity:.55}
 .file-add:hover{border-color:var(--primary);color:var(--primary)}
 /* accounts */
 .acct-chip{display:inline-flex;align-items:center;gap:5px;background:var(--primary-soft);color:var(--primary-hover);border-radius:14px;padding:3px 11px;font-size:12.5px;font-weight:600}
+/* connect (cross-board link) */
+.link-chip{display:inline-flex;align-items:center;gap:4px;max-width:130px;background:var(--primary-soft);color:var(--primary-hover);border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600;margin:1px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+.link-chip:hover{filter:brightness(.96);text-decoration:underline}
+.link-chip i{font-size:9px;flex-shrink:0}
+.link-more{display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border-strong);color:var(--text-muted);border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:600;margin:1px;vertical-align:middle}
+.cn-list{max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
+.cn-opt{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;text-align:start;cursor:pointer}
+.cn-opt:hover{background:var(--row-hover);border-color:var(--border-strong)}
+.cn-opt.sel{background:var(--primary-soft);border-color:var(--primary)}
+.cn-check{width:18px;height:18px;border-radius:5px;border:1.5px solid var(--border-strong);display:grid;place-items:center;flex-shrink:0;font-size:10px;color:#fff}
+.cn-opt.sel .cn-check{background:var(--primary);border-color:var(--primary)}
+.cn-txt{display:flex;flex-direction:column;min-width:0}
+.cn-txt b{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cn-txt small{font-size:11px;color:var(--text-light)}
 /* formula */
 .formula-val{font-weight:700;color:var(--dark-blue);font-variant-numeric:tabular-nums}
 /* inline editing of built-in columns */
@@ -2115,6 +2132,7 @@ function vTable(el){
     });
   }
   if(isBoardAdmin())initColResizers(el);
+  resolveLinks();   // fetch titles for any cross-board linked items, then re-render
 }
 function battery(tasks){
   if(!tasks.length)return '';
@@ -2161,6 +2179,7 @@ function itemRow(t,col){
       <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${t.id})">${fdate(t.due_date)}</td>
       <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>
       ${customCells(t)}
+      <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`;
   const disp=open?'table-row':'none';
   const subRows=subs.map(s=>`
@@ -2174,6 +2193,7 @@ function itemRow(t,col){
       <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${s.id})">${fdate(s.due_date)}</td>
       <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${s.id})">${tagcell(s.tags)}</td>
       ${customCells(s)}
+      <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`).join('');
   const addSub=`<tr class="subrow subadd" data-parent="${t.id}" style="display:${disp}"><td class="c-sub" colspan="${totalCols()+1}" onclick="addSubItem(${t.id})"><span class="sub-twig"></span>+ הוסף תת-פריט</td></tr>`;
   return parent+subRows+addSub;
@@ -2193,13 +2213,14 @@ const COLUMN_TYPES=[
   {type:'formula',he:'נוסחה',ic:'fa-calculator',desc:'חישוב מעמודות אחרות'},
   {type:'number',he:'מספר',ic:'fa-hashtag',desc:'ערך מספרי'},
   {type:'rating',he:'דירוג',ic:'fa-star',desc:'דירוג בכוכבים'},
+  {type:'connect',he:'קישור בין לוחות',ic:'fa-diagram-project',desc:'קישור לפריטים בלוחות אחרים (מנהל מערכת)'},
 ];
 const STATUS_OPTS=[
   {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
   {label:'תקוע',color:'#e2445c'},{label:'הושלם',color:'#00c875'},
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
-  people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה'};
+  people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור'};
 function customColumns(){return (st.board&&st.board.columns)||[];}
 function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
 /* Board vocabulary of tags = every tag already used across the board's items.
@@ -2318,6 +2339,7 @@ function customCells(t){
     if(c.type==='dropdown')return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="dropdownCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${dropdownDisp(v)}</span></td>`;
     if(c.type==='files')   return `<td class="cell cell-custom">${filesDisp(v,id,c.id)}</td>`;
     if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
+    if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')"><span class="cell-disp">${connectDisp(v)}</span></td>`;
     if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
     return `<td class="cell cell-custom">—</td>`;
   }).join('') + `<td class="cell"></td>`;
@@ -2377,6 +2399,88 @@ async function addDropdownOption(e,colId){
   const name=prompt('אפשרות חדשה:');if(!name||!name.trim())return;
   const cols=customColumns().map(c=>c.id===colId?{...c,options:[...(c.options||[]),name.trim()]}:c);
   closeCellPops();await saveColumns(cols);
+}
+/* ===== connect column (קישור בין לוחות) ===== */
+st.linkCache=st.linkCache||{};
+function linkInfo(id){return st.linkCache[id];}
+function connectDisp(ids){
+  ids=Array.isArray(ids)?ids:[];
+  if(!ids.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-diagram-project"></i> קשר פריט</span>';
+  const shown=ids.slice(0,2).map(tid=>{const it=linkInfo(tid);
+    return `<span class="link-chip" title="${it?esc((it.title||'')+' · '+(it.board_name||'')):''} — פתח" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i> ${it?esc(it.title):'#'+tid}</span>`;}).join('');
+  return shown+(ids.length>2?`<span class="link-more" title="${ids.length} פריטים מקושרים">+${ids.length-2}</span>`:'');
+}
+/* gather every linked id on the board, fetch missing titles, re-render once */
+function collectLinks(t,set){
+  customColumns().filter(c=>c.type==='connect').forEach(c=>{const v=(t.custom_fields||{})[c.id]; if(Array.isArray(v))v.forEach(id=>set.add(id));});
+  (t.subtasks||[]).forEach(s=>collectLinks(s,set));
+}
+async function resolveLinks(){
+  if(!customColumns().some(c=>c.type==='connect'))return;
+  const need=new Set(); ((st.board&&st.board.tasks)||[]).forEach(t=>collectLinks(t,need));
+  const missing=[...need].filter(id=>!st.linkCache[id]);
+  if(!missing.length)return;
+  try{
+    const d=await api('/api/tasks/lookup?ids='+missing.join(','));
+    (d.items||[]).forEach(it=>{st.linkCache[it.id]=it;});
+    missing.forEach(id=>{if(!st.linkCache[id])st.linkCache[id]={id,title:'#'+id,board_id:null,board_name:''};}); // avoid refetch loop
+    renderView();
+  }catch(e){}
+}
+async function openLinkedItem(tid){
+  const it=st.linkCache[tid], bid=it&&it.board_id;
+  if(!bid){toast('הפריט המקושר לא נמצא');return;}
+  if(!(st.boards||[]).some(b=>b.id===bid)){toast('אין לך גישה ללוח של הפריט המקושר');return;}
+  closeModals(); await openBoard(bid);
+  setTimeout(()=>{ if(findAnyTask(tid))Chat.open(tid); },160);
+}
+let _connect=null,_cnTimer=null;
+function openConnectPicker(e,taskId,colId){
+  e&&e.stopPropagation();
+  const t=findAnyTask(taskId); if(!t)return;
+  const col=customColumns().find(c=>c.id===colId); if(!col)return;
+  if(!canEditCol(t,colId)){toast('אין לך הרשאת עריכה לעמודה זו');return;}
+  _connect={taskId,colId,col,items:[],sel:new Set(((t.custom_fields||{})[colId])||[])};
+  const multi=col.connect&&col.connect.multiple!==false;
+  showModal(`<h2><i class="fa-solid fa-diagram-project" style="color:var(--primary)"></i> קישור פריטים — ${esc(col.title)}</h2>
+    <div class="mbody">
+      <div class="files-search" style="margin:0 0 10px"><i class="fa-solid fa-magnifying-glass"></i><input id="cn-q" placeholder="חיפוש פריט לפי שם…" oninput="connectSearch(this.value)" autocomplete="off"></div>
+      <div style="font-size:12px;color:var(--text-light);margin-bottom:8px">${multi?'ניתן לבחור מספר פריטים':'בחירת פריט אחד'} · <span id="cn-count">${_connect.sel.size} נבחרו</span></div>
+      <div id="cn-list" class="cn-list"><div class="empty" style="padding:20px">טוען…</div></div>
+    </div>
+    <div class="mfoot"><button class="btn btn-primary" onclick="connectSave()"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+  connectSearch('');
+}
+function connectSearch(q){
+  clearTimeout(_cnTimer);
+  _cnTimer=setTimeout(async()=>{
+    const bids=(_connect.col.connect&&_connect.col.connect.board_ids)||[];
+    try{ const d=await api('/api/items/search?board_ids='+bids.join(',')+'&q='+encodeURIComponent(q||'')+'&exclude_task='+_connect.taskId);
+      _connect.items=d.items||[]; renderConnectList();
+    }catch(e){ _connect.items=[]; renderConnectList(); }
+  },200);
+}
+function renderConnectList(){
+  const el=document.getElementById('cn-list'); if(!el)return;
+  const items=_connect.items;
+  el.innerHTML=items.length?items.map(it=>{const on=_connect.sel.has(it.id);
+    return `<button class="cn-opt ${on?'sel':''}" onclick="connectToggle(${it.id})"><span class="cn-check">${on?'<i class="fa-solid fa-check"></i>':''}</span><span class="cn-txt"><b>${esc(it.title)}</b><small>${esc(it.board_name)}</small></span></button>`;
+  }).join(''):'<div class="empty" style="padding:20px"><i class="fa-regular fa-face-frown"></i> לא נמצאו פריטים</div>';
+  const cnt=document.getElementById('cn-count'); if(cnt)cnt.textContent=_connect.sel.size+' נבחרו';
+}
+function connectToggle(id){
+  const multi=_connect.col.connect&&_connect.col.connect.multiple!==false;
+  if(_connect.sel.has(id))_connect.sel.delete(id);
+  else{ if(!multi)_connect.sel.clear(); _connect.sel.add(id); }
+  // cache the title for immediate display
+  const it=_connect.items.find(x=>x.id===id); if(it)st.linkCache[id]={id:it.id,title:it.title,board_id:it.board_id,board_name:it.board_name};
+  if(!multi)return connectSave();     // single-select → save & close
+  renderConnectList();
+}
+async function connectSave(){
+  const ids=[..._connect.sel];
+  await setCell(_connect.taskId,_connect.colId,ids.length?ids:null);
+  closeModals(); renderView();
 }
 /* files column */
 function filesDisp(files,taskId,colId){
@@ -2655,11 +2759,14 @@ async function saveTimeline(taskId,colId,clear){
 /* add / rename / delete columns */
 function addColMenu(e){
   e.stopPropagation();
-  const html='<div class="pop-title">בחר סוג עמודה</div>'+COLUMN_TYPES.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
+  // the connect (cross-board) column is a system-admin-only capability
+  const types=COLUMN_TYPES.filter(c=>c.type!=='connect'||isSysAdmin());
+  const html='<div class="pop-title">בחר סוג עמודה</div>'+types.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
   openCellPop(e.currentTarget,html,'col-add-pop');
 }
 async function addColumn(type){
   closeCellPops();
+  if(type==='connect'){ if(!isSysAdmin()){toast('רק מנהל מערכת');return;} openConnectConfig(); return; }
   const col={type,title:COL_DEFAULTS[type]||type};
   if(type==='formula'){
     const f=prompt('נוסחה — השתמש בשם עמודה בסוגריים מסולסלים.\nלדוגמה:  {מספר} * 2 + {דירוג}','');
@@ -2669,12 +2776,41 @@ async function addColumn(type){
   const cols=customColumns().slice();cols.push(col);
   await saveColumns(cols);toast('עמודה נוספה');
 }
+/* connect column config: choose the target board(s) + single/multi (sys admin) */
+function openConnectConfig(existingColId){
+  if(!isSysAdmin()){toast('רק מנהל מערכת');return;}
+  const others=(st.boards||[]).filter(b=>!st.board||b.id!==st.board.id);
+  const existing=existingColId?customColumns().find(c=>c.id===existingColId):null;
+  const sel=new Set((existing&&existing.connect&&existing.connect.board_ids)||[]);
+  const multiple=existing?(existing.connect&&existing.connect.multiple!==false):true;
+  const inp='padding:8px 10px;border:1px solid var(--border-strong);border-radius:7px;font-size:13px;font-family:inherit;width:100%';
+  showModal(`<h2><i class="fa-solid fa-diagram-project" style="color:var(--primary)"></i> עמודת קישור בין לוחות</h2>
+    <div class="mbody">
+      <div class="field"><label>שם העמודה</label><input id="cc-title" value="${esc(existing?existing.title:'קישור')}" style="${inp}"></div>
+      <div class="field"><label>לוחות מקושרים — בחר מהם ניתן לקשר פריטים</label>
+        <div style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px">${others.map(b=>`<label style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13.5px"><input type="checkbox" class="cc-board" value="${b.id}" ${sel.has(b.id)?'checked':''} style="width:auto"> ${esc(b.icon||'📋')} ${esc(b.name)}</label>`).join('')||'<div style="padding:8px;color:var(--text-light)">אין לוחות אחרים זמינים</div>'}</div>
+      </div>
+      <label style="display:flex;align-items:center;gap:9px;font-size:13.5px;cursor:pointer;margin-top:4px"><input type="checkbox" id="cc-multi" ${multiple?'checked':''} style="width:auto"> אפשר קישור למספר פריטים</label>
+    </div>
+    <div class="mfoot"><button class="btn btn-primary" onclick="saveConnectCol('${existingColId||''}')"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+}
+async function saveConnectCol(existingColId){
+  const title=(document.getElementById('cc-title').value||'קישור').trim();
+  const board_ids=[...document.querySelectorAll('.cc-board:checked')].map(x=>+x.value);
+  if(!board_ids.length){toast('בחר לפחות לוח אחד לקישור');return;}
+  const connect={board_ids,multiple:document.getElementById('cc-multi').checked};
+  let cols;
+  if(existingColId)cols=customColumns().map(c=>c.id===existingColId?{...c,title,connect}:c);
+  else{cols=customColumns().slice();cols.push({type:'connect',title,connect});}
+  closeModals(); await saveColumns(cols); toast('עמודת הקישור נשמרה');
+}
 function colMenu(e,colId){
   e.stopPropagation();
   const c=customColumns().find(x=>x.id===colId);
   const isAdmin=st.board&&st.board.my_role==='admin';
   const html=`<button class="cell-pop-opt2" onclick="renameColumn(event,'${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
+    +(c&&c.type==='connect'&&isSysAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
     +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   openCellPop(e.currentTarget,html);

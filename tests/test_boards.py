@@ -191,6 +191,113 @@ def test_non_admin_cannot_toggle_board_notifications(client, member_id):
     assert r.status_code == 403
 
 
+def test_connect_column_requires_system_admin(client, admin_id, guinea_id):
+    """Adding/changing a cross-board 'connect' column requires a workspace admin;
+    a board admin who isn't a workspace admin is refused, but may still edit other
+    columns and pass the existing connect column through unchanged."""
+    r = client.post("/api/boards", json={"name": "connect board", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "columns": [
+            {"type": "connect", "title": "קישור", "connect": {"board_ids": [1], "multiple": True}}]})
+        assert r.status_code == 200, r.text
+        cols = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"]
+        con = [c for c in cols if c["type"] == "connect"]
+        assert con and con[0]["connect"]["board_ids"] == [1]
+        # promote guinea to board admin — still NOT a workspace admin
+        client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "admin"})
+        # guinea adds a new connect column → 403
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": guinea_id, "columns": cols + [
+            {"type": "connect", "title": "עוד", "connect": {"board_ids": [1], "multiple": False}}]})
+        assert r.status_code == 403, r.text
+        # guinea keeps the existing connect column unchanged → allowed
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": guinea_id, "columns": cols})
+        assert r.status_code == 200, r.text
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_items_search_and_lookup(client, admin_id):
+    """The connect picker's search + the display lookup return items with board names."""
+    tasks = client.get(f"/api/boards/1?user_id={admin_id}").json()["tasks"]
+    assert tasks
+    tid, title = tasks[0]["id"], tasks[0]["title"]
+    items = client.get("/api/items/search?board_ids=1").json()["items"]
+    assert any(it["id"] == tid for it in items)
+    assert all("board_name" in it for it in items)
+    # search filters by title, and excludes a given task
+    filt = client.get(f"/api/items/search?board_ids=1&exclude_task={tid}").json()["items"]
+    assert all(it["id"] != tid for it in filt)
+    look = client.get(f"/api/tasks/lookup?ids={tid}").json()["items"]
+    assert look and look[0]["id"] == tid and look[0]["title"] == title and look[0]["board_id"] == 1
+
+
+def test_connect_cell_link_add_remove_replace(client, admin_id):
+    """A connect cell stores only references; add / replace / remove / clear all
+    persist as a plain id list without touching the linked items."""
+    r = client.post("/api/boards", json={"name": "link cells", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "columns": [
+            {"type": "connect", "title": "קישור", "connect": {"board_ids": [1], "multiple": True}}]})
+        colid = [c for c in r.json()["columns"] if c["type"] == "connect"][0]["id"]
+        host = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["tasks"][0]["id"]
+        b1 = client.get(f"/api/boards/1?user_id={admin_id}").json()["tasks"]
+        a, b = b1[0]["id"], b1[1]["id"]
+
+        def cell():
+            tasks = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["tasks"]
+            t = next(x for x in tasks if x["id"] == host)
+            return (t.get("custom_fields") or {}).get(colid)
+
+        client.patch(f"/api/tasks/{host}", json={"user_id": admin_id, "custom_fields": {colid: [a]}})
+        assert cell() == [a]
+        client.patch(f"/api/tasks/{host}", json={"user_id": admin_id, "custom_fields": {colid: [a, b]}})
+        assert cell() == [a, b]
+        client.patch(f"/api/tasks/{host}", json={"user_id": admin_id, "custom_fields": {colid: [b]}})   # replace/remove
+        assert cell() == [b]
+        client.patch(f"/api/tasks/{host}", json={"user_id": admin_id, "custom_fields": {colid: None}})   # clear
+        assert cell() in (None, [])
+        # linked items themselves are untouched
+        assert client.get(f"/api/boards/1?user_id={admin_id}").json()["tasks"], "linked board still intact"
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_connect_config_change_requires_sysadmin(client, admin_id, guinea_id):
+    """Changing a connect column's target boards needs a workspace admin; a board
+    admin who isn't a workspace admin is refused."""
+    r = client.post("/api/boards", json={"name": "cfg board", "department_id": 1, "user_id": admin_id})
+    bid = r.json()["id"]
+    try:
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "columns": [
+            {"type": "connect", "title": "קישור", "connect": {"board_ids": [1], "multiple": True}}]})
+        cols = r.json()["columns"]
+        client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "admin"})
+        changed = [{**cols[0], "connect": {"board_ids": [1, 2], "multiple": True}}]
+        assert client.patch(f"/api/boards/{bid}", json={"user_id": guinea_id, "columns": changed}).status_code == 403
+        assert client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "columns": changed}).status_code == 200
+        got = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"][0]
+        assert got["connect"]["board_ids"] == [1, 2]
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_items_search_query_filters(client, admin_id):
+    """Item search matches by title and returns nothing for a non-matching query;
+    lookup handles empty and multiple ids."""
+    b1 = client.get(f"/api/boards/1?user_id={admin_id}").json()["tasks"]
+    word = b1[0]["title"].split()[0]
+    hit = client.get("/api/items/search", params={"board_ids": "1", "q": word}).json()["items"]
+    assert any(word in it["title"] for it in hit)
+    miss = client.get("/api/items/search", params={"board_ids": "1", "q": "zzq_nomatch_9"}).json()["items"]
+    assert miss == []
+    assert client.get("/api/tasks/lookup", params={"ids": ""}).json()["items"] == []
+    ids = f"{b1[0]['id']},{b1[1]['id']}"
+    got = {it["id"] for it in client.get("/api/tasks/lookup", params={"ids": ids}).json()["items"]}
+    assert got == {b1[0]["id"], b1[1]["id"]}
+
+
 def test_inviting_new_member_flags_invited(client, admin_id, guinea_id):
     """Inviting a genuinely new member returns invited=True (triggers the email);
     a follow-up role change on the same member returns invited=False (no email).
