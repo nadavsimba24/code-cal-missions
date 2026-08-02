@@ -3769,6 +3769,7 @@ const Chat = {
   rmAtt(i){ this.atts.splice(i,1); this.renderAtts(); },
   _float(anchor,html){ closeCellPops(); const p=document.createElement('div'); p.className='cell-pop chat-float'; p.innerHTML=html; anchor.appendChild(p); setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0); },
   async post(){
+    if(this._posting)return;                 // guard: ignore rapid repeat clicks / Enter while sending
     const ta=document.getElementById('comp-text'); let content=(ta?ta.value:'').trim();
     // fold interactive checklist rows into the message as ☐/☑ lines
     const checkLines=[...document.querySelectorAll('#comp-check .cl-item')].map(r=>{
@@ -3777,10 +3778,13 @@ const Chat = {
     }).filter(Boolean);
     if(checkLines.length) content=checkLines.join('\n')+(content?'\n'+content:'');
     if(!content&&!this.atts.length){toast('הודעה ריקה');return;}
+    this._posting=true;
+    const btn=document.querySelector('.composer .comp-foot .btn-primary'); if(btn)btn.disabled=true;
     try{
       await api('/api/tasks/'+this.taskId+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({content,parent_id:this.replyTo,mentions:this.mentions,attachments:this.atts})});
       this.atts=[]; this.mentions=[]; this.replyTo=null; await this.bump(); this.renderChat(document.getElementById('chat-body'));
-    }catch(e){ toast(String(e.message||'').includes('403')?'אין הרשאת תגובה':'שגיאה בשליחה'); }
+    }catch(e){ toast(String(e.message||'').includes('403')?'אין הרשאת תגובה':'שגיאה בשליחה'); if(btn)btn.disabled=false; }
+    finally{ this._posting=false; }
   },
   async like(id){ try{ await api('/api/comments/'+id+'/like',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); this.renderChat(document.getElementById('chat-body')); }catch(e){toast('שגיאה');} },
   del(id){ askConfirm('האם אתה בטוח שברצונך למחוק?',async()=>{ try{await api('/api/comments/'+id+'?user_id='+meId(),{method:'DELETE'});await this.bump();this.renderChat(document.getElementById('chat-body'));}catch(e){toast('אין הרשאה למחוק');} },{title:'מחיקת תגובה',confirmText:'מחק'}); },
