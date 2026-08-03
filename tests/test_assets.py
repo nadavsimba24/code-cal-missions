@@ -65,3 +65,29 @@ def test_file_upload_and_serve_roundtrip(client):
     g = client.get(url)
     assert g.status_code == 200 and g.content == b"hello-cityos"
     assert client.get("/api/files/nope").status_code == 404
+
+
+def test_chat_file_delete_and_permissions(client):
+    """A chat attachment appears in the item's files, can be deleted by its
+    uploader (removing it from the comment + files list + the stored blob), and a
+    different non-privileged user is refused."""
+    # upload a file, attach it via a comment authored by user 1 (board-1 admin)
+    up = client.post("/api/upload", files={"file": ("doc.txt", b"bye-cityos", "text/plain")}).json()
+    url = up["url"]
+    r = client.post("/api/tasks/1/comments", json={"content": "here", "user_id": 1,
+                                                   "attachments": [{"name": "doc.txt", "url": url}]})
+    cid = r.json()["id"]
+    try:
+        files = client.get("/api/tasks/1/files").json()["files"]
+        assert any(f["url"] == url for f in files)
+        # a non-privileged, non-uploader user cannot delete it
+        r = client.post("/api/tasks/1/files/delete", json={"user_id": 5, "url": url})
+        assert r.status_code == 403
+        # the uploader deletes it → gone from the list and the blob is removed
+        r = client.post("/api/tasks/1/files/delete", json={"user_id": 1, "url": url})
+        assert r.status_code == 200, r.text
+        files = client.get("/api/tasks/1/files").json()["files"]
+        assert not any(f["url"] == url for f in files)
+        assert client.get(url).status_code == 404
+    finally:
+        client.delete(f"/api/comments/{cid}?user_id=1")

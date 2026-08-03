@@ -1438,14 +1438,62 @@ def task_files(task_id: int):
         for c in db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at.desc()).all():
             u = db.query(User).filter(User.id == c.user_id).first()
             for f in (c.attachments or []):
-                out.append({**f, "source": "שיחה", "user_name": u.name if u else None, "created_at": c.created_at})
+                out.append({**f, "source": "שיחה", "user_name": u.name if u else None,
+                            "user_id": c.user_id, "created_at": c.created_at})
         board = db.query(Board).filter(Board.id == task.board_id).first()
         cols = (board.settings or {}).get("columns", []) if board else []
         cf = task.custom_fields or {}
         for col in [c for c in cols if c.get("type") == "files"]:
             for f in (cf.get(col["id"]) or []):
-                out.append({**f, "source": "עמודה: " + (col.get("title") or ""), "user_name": None, "created_at": task.updated_at})
+                out.append({**f, "source": "עמודה: " + (col.get("title") or ""), "user_name": None,
+                            "user_id": None, "created_at": task.updated_at})
         return {"files": out}
+
+@app.post("/api/tasks/{task_id}/files/delete")
+def delete_task_file(task_id: int, data: dict):
+    """Remove a file from the item — from the comment it's attached to or a files
+    column — and delete the stored blob. The uploader or a board admin/manager may
+    delete a chat attachment; a board editor+/admin may delete a column file."""
+    with Session(engine) as db:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            raise HTTPException(404, "task not found")
+        user = _acting_user(db, data)
+        if not user:
+            raise HTTPException(403, "אין משתמש")
+        url = (data.get("url") or "").strip()
+        if not url:
+            raise HTTPException(400, "חסר קובץ למחיקה")
+        role = _board_role(db, task.board_id, user.id)
+        is_priv = role == "admin" or user.role in ("admin", "manager")
+        removed = False
+        # 1) chat attachment: find the owning comment (uploader or admin may delete)
+        for c in db.query(Comment).filter(Comment.task_id == task_id).all():
+            atts = c.attachments or []
+            if any((a or {}).get("url") == url for a in atts):
+                if not (is_priv or c.user_id == user.id):
+                    raise HTTPException(403, "רק מעלה הקובץ או מנהל הלוח יכול למחוק אותו")
+                c.attachments = [a for a in atts if (a or {}).get("url") != url]
+                removed = True
+        # 2) files-column value (board editor+/admin)
+        board = db.query(Board).filter(Board.id == task.board_id).first()
+        cols = (board.settings or {}).get("columns", []) if board else []
+        cf = dict(task.custom_fields or {})
+        for col in [c for c in cols if c.get("type") == "files"]:
+            arr = cf.get(col["id"]) or []
+            if any((a or {}).get("url") == url for a in arr):
+                if not (is_priv or role in ("editor",)):
+                    raise HTTPException(403, "אין לך הרשאה למחוק קובץ זה")
+                cf[col["id"]] = [a for a in arr if (a or {}).get("url") != url] or None
+                task.custom_fields = cf
+                removed = True
+        # 3) delete the stored blob (best-effort, by token in the url)
+        token = url.rsplit("/", 1)[-1]
+        uf = db.query(UploadedFile).filter(UploadedFile.token == token).first()
+        if uf:
+            db.delete(uf)
+        db.commit()
+        return {"status": "deleted", "removed": removed}
 
 @app.get("/api/tasks/{task_id}/activity")
 def task_activity(task_id: int, user_id: Optional[int] = None, date: Optional[str] = None):

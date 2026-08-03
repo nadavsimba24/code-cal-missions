@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CODE-CAL MISSIONS — ניהול משימות עירוני</title>
+<title>Missions</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/><path d='M32 38 L39 49 L30 45 Z' fill='%23d6ecff'/></svg>">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/></svg>">
 <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
@@ -875,6 +875,9 @@ img.pf-av{object-fit:cover;background:#fff}
 .file-row:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
 .fr-name{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fr-meta{font-size:11.5px;color:var(--text-light)}
+.fr-dl{color:var(--text-light);flex-shrink:0}
+.fr-del{flex-shrink:0;width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--text-light);font-size:12.5px;cursor:pointer;transition:background .12s,color .12s}
+.fr-del:hover{background:#fdebed;color:var(--red)}
 /* logs tab */
 .log-filters{display:flex;gap:8px;padding:11px 12px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:2}
 .log-filters select,.log-filters input{border:1px solid var(--border-strong);border-radius:6px;padding:6px 8px;font-family:inherit;font-size:12.5px}
@@ -3512,7 +3515,10 @@ const Forms={
 function openForms(){ Forms.open(); }
 
 /* ============ Item Conversation (שיחה / קבצים / לוגים) ============ */
-const fdatetime = d=>d?new Date(d).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+// server timestamps are naive UTC (no tz suffix) → mark as UTC so the browser
+// doesn't read them as local, then always render in Israel (Jerusalem) time
+function _utc(d){ return (typeof d==='string' && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(d)) ? d.replace(' ','T')+'Z' : d; }
+const fdatetime = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
   taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'', editing:null,
@@ -3864,10 +3870,23 @@ const Chat = {
     wrap.innerHTML=list.length? `<div class="files-list">${list.map(f=>`
       <a class="file-row" href="${esc(f.url)}" target="_blank">
         <i class="fa-solid ${this.fileIcon(f.name)}" style="color:var(--primary)"></i>
-        <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}</div></div>
-        <i class="fa-solid fa-download" style="color:var(--text-light)"></i>
+        <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}${f.created_at?' · <i class="fa-regular fa-clock" style="font-size:10px"></i> '+fdatetime(f.created_at):''}</div></div>
+        <i class="fa-solid fa-download fr-dl"></i>
+        ${this.canDeleteFile(f)?`<button class="fr-del" title="מחק קובץ" onclick="Chat.deleteFile(event,'${encodeURIComponent(f.url)}')"><i class="fa-solid fa-trash-can"></i></button>`:''}
       </a>`).join('')}</div>`
       : `<div class="empty" style="padding:30px"><i class="fa-regular fa-face-frown"></i><div>לא נמצאו קבצים בשם "${esc(this._fileQuery||'')}"</div></div>`;
+  },
+  canDeleteFile(f){ return f.user_id===meId() || isBoardAdmin() || (st.me&&(st.me.role==='admin'||st.me.role==='manager')); },
+  deleteFile(e,encUrl){
+    e.preventDefault(); e.stopPropagation();
+    const url=decodeURIComponent(encUrl);
+    askConfirm('הקובץ יימחק לצמיתות. להמשיך?',async()=>{
+      try{
+        await api('/api/tasks/'+this.taskId+'/files/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({url})});
+        this._filesCache=(this._filesCache||[]).filter(x=>x.url!==url);
+        this._paintFiles(); toast('הקובץ נמחק');
+      }catch(err){ toast(String(err&&err.message||'').includes('403')?'אין לך הרשאה למחוק קובץ זה':'שגיאה במחיקת הקובץ'); }
+    },{title:'מחיקת קובץ',confirmText:'מחק'});
   },
   // ---- logs ----
   async renderLogs(body){
