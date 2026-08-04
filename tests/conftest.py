@@ -22,11 +22,25 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 import main as cityos_main  # noqa: E402  (imports trigger seeding into the temp DB)
 
-# Seeded identities (see backend/seed.py + main._seed_memberships):
-#   users 1-3 are workspace admins; users 4-7 are plain members.
-ADMIN_ID = 1     # workspace admin
-MEMBER_ID = 4    # workspace member (non-admin)
-GUINEA_ID = 5    # a member we mutate in tests, then restore
+# The demo-user purge (main._purge_removed_demo_users) deletes the original seed
+# members that this suite used to hardcode (ids 4/5). To stay seed-independent we
+# create stable, non-admin test users via the API and enroll them in board 1.
+ADMIN_ID = 1     # משה — workspace admin, survives the purge
+_boot = TestClient(cityos_main.app)
+
+
+def _ensure_user(name, email):
+    for u in _boot.get("/api/users").json():
+        if u.get("email") == email:
+            return u["id"]
+    r = _boot.post("/api/users", json={"actor_id": ADMIN_ID, "name": name, "email": email, "role": "member"})
+    return r.json()["id"]
+
+
+MEMBER_ID = _ensure_user("בודק חבר", "test.member@cityos.test")     # non-admin board-1 member
+GUINEA_ID = _ensure_user("בודק ניסוי", "test.guinea@cityos.test")  # a member we mutate in tests
+for _uid in (MEMBER_ID, GUINEA_ID):
+    _boot.post("/api/boards/1/members", json={"actor_id": ADMIN_ID, "user_id": _uid, "role": "editor"})
 
 
 @pytest.fixture(scope="session")
