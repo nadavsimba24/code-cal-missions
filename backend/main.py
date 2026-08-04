@@ -574,7 +574,15 @@ def create_board(data: dict):
             board_type=BoardType.KANBAN,
             icon=data.get("icon", "📋"),
             color=data.get("color", "#0073ea"),
-            settings={"views": ["table"]},  # new boards start with only the main table
+            settings={
+                "views": ["table"],  # new boards start with only the main table
+                # every new board ships with these auto columns (read-only, from the item's metadata)
+                "columns": [
+                    {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
+                    # a real people column (like "אחראים"), auto-assigned to the creator
+                    {"id": "sys_created_by", "type": "people", "title": "יוצר הרשומה"},
+                ],
+            },
         )
         db.add(b)
         db.flush()
@@ -586,10 +594,13 @@ def create_board(data: dict):
             Group(board_id=b.id, name="הושלם", position=2, color="#00c875", task_status=TaskStatus.DONE),
         ])
         db.flush()
-        # 3 starter items in the first group so the board isn't blank
+        # 3 starter items in the first group so the board isn't blank — the creator
+        # is recorded as their author and auto-filled into the "יוצר הרשומה" column
         for i in range(1, 4):
             db.add(Task(board_id=b.id, group_id=g1.id, title=f"פריט {i}",
-                        status=TaskStatus.BACKLOG, priority=Priority.MEDIUM, position=i))
+                        status=TaskStatus.BACKLOG, priority=Priority.MEDIUM, position=i,
+                        created_by=creator,
+                        custom_fields={"sys_created_by": [creator]} if creator else {}))
         # creator becomes the board admin; the board is private until they invite others
         db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
         db.commit()
@@ -685,7 +696,7 @@ def update_board(board_id: int, data: dict):
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
-                       "connect"}
+                       "connect", "created_at"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
             is_ws_admin = _ws_role(db, data.get("user_id")) == "admin"
             cols = []
@@ -1200,6 +1211,7 @@ def create_task(data: dict):
             location_lat=data.get("location_lat"),
             location_lng=data.get("location_lng"),
             address=data.get("address"),
+            created_by=data.get("actor_id") or data.get("user_id"),  # record the creator
         )
         due = data.get("due_date")
         if due:
@@ -1216,6 +1228,16 @@ def create_task(data: dict):
         ids = data.get("assignee_ids") or []
         if ids:
             task.assignees = db.query(User).filter(User.id.in_(ids)).all()
+        # auto-assign the creator into the board's default "creator" people column
+        creator = data.get("actor_id") or data.get("user_id")
+        cf = dict(data.get("custom_fields") or {})
+        if creator:
+            board = db.query(Board).filter(Board.id == board_id).first()
+            cols = (board.settings or {}).get("columns", []) if board else []
+            if any(c.get("id") == "sys_created_by" for c in cols):
+                cf.setdefault("sys_created_by", [creator])
+        if cf:
+            task.custom_fields = cf
         # place the new item last — bottom of its group (or its parent's sub-list)
         from sqlalchemy import func as _func
         if parent_id is not None:

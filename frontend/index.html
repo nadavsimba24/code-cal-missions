@@ -294,6 +294,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .prio{min-width:80px}
 .avatars{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;height:28px}
 .av-add{display:inline-flex;align-items:center;justify-content:center;color:var(--text-light);font-size:16px}
+.created-at{font-size:12.5px;color:var(--text-muted);white-space:nowrap}
 .av-more{background:var(--text-light)!important;font-size:10px}
 .av{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:inline-grid;place-items:center;font-size:11px;font-weight:700;border:2px solid var(--surface);margin-inline-start:-8px;flex-shrink:0;box-sizing:border-box}
 .av:first-child{margin:0}
@@ -1174,12 +1175,8 @@ const VIEWS = [
 const api = async (p,o)=>{const r=await fetch(p,o);if(!r.ok)throw new Error(p+' '+r.status);return r.json();};
 const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const initials = n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('');
-/* Auto cartoon avatars — a bundled, offline pool of flat illustrated faces
-   (BigHeads, MIT). A user with no uploaded photo gets one assigned by name,
-   so the same person always shows the same face across the app. */
-const AVATAR_POOL_SIZE=30;
+/* stable per-name hash — drives the initials-avatar color */
 function _avHash(s){let h=0;for(let i=0;i<(s||'').length;i++){h=(h*31+s.charCodeAt(i))>>>0;}return h;}
-function avatarUrl(seed){return `/avatars/${String(_avHash(seed||'user')%AVATAR_POOL_SIZE).padStart(2,'0')}.svg`;}
 /* palette for the initials avatars — a stable color per name (first+last initial) */
 const AV_COLORS=['#e2445c','#fdab3d','#00c875','#0073ea','#a25ddc','#ff642e','#579bfc','#00c2b8','#bb3354','#037f4c','#9d50dd','#e2698e'];
 function avatarColor(name){return AV_COLORS[_avHash(name||'user')%AV_COLORS.length];}
@@ -2358,13 +2355,15 @@ const COLUMN_TYPES=[
   {type:'number',he:'מספר',ic:'fa-hashtag',desc:'ערך מספרי'},
   {type:'rating',he:'דירוג',ic:'fa-star',desc:'דירוג בכוכבים'},
   {type:'connect',he:'קישור בין לוחות',ic:'fa-diagram-project',desc:'קישור לפריטים בלוחות אחרים (מנהל מערכת)'},
+  {type:'created_at',he:'מועד יצירה',ic:'fa-calendar-plus',desc:'תאריך יצירת הרשומה (אוטומטי)'},
 ];
 const STATUS_OPTS=[
   {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
   {label:'תקוע',color:'#e2445c'},{label:'הושלם',color:'#00c875'},
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
-  people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור'};
+  people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
+  created_at:'מועד יצירה'};
 function customColumns(){return (st.board&&st.board.columns)||[];}
 function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
 /* Board vocabulary of tags = every tag already used across the board's items.
@@ -2485,6 +2484,7 @@ function customCells(t){
     if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
     if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')"><span class="cell-disp">${connectDisp(v)}</span></td>`;
     if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
+    if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
     return `<td class="cell cell-custom">—</td>`;
   }).join('') + `<td class="cell"></td>`;
 }
@@ -3464,7 +3464,7 @@ async function openNewItem(group){
   const status=(g&&g.task_status)||undefined;           // new item's status matches its group
   try{
     const r=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({board_id:st.board.id,group_id:gid,title:'פריט חדש',status})});
+      body:withMe({board_id:st.board.id,group_id:gid,title:'פריט חדש',status})});
     const newId=r&&r.id;
     await openBoard(st.board.id);
     if(newId) setTimeout(()=>focusNewItemTitle(newId),80);   // rename it inline

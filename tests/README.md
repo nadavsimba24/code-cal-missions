@@ -93,11 +93,9 @@
 | `test_per_user_history_admin_only` | היסטוריה פר-משתמש: אדמין → 200 עם אירועים; לא-אדמין → **403** |
 | `test_consolidated_history_admin_only` | היסטוריה מרוכזת: אדמין → 200 עם שמות; לא-אדמין → **403** |
 
-### `test_assets.py` — נכסים סטטיים ושפיות frontend (4 בדיקות)
+### `test_assets.py` — שפיות frontend והעלאת קבצים (4 בדיקות)
 | בדיקה | מוודאת |
 |-------|--------|
-| `test_avatar_pool_bundled` | 30 קבצי אווטר (`frontend/avatars/*.svg`) קיימים |
-| `test_avatars_served` | `/avatars/00.svg` ו-`29.svg` מוגשים כ-SVG (200) |
 | `test_index_served` | `/` מחזיר HTML עם הרכיבים `SysAdmin, avatarInner, ownerChipHTML` |
 | `test_inline_js_syntax` | ה-JS הפנימי ב-index.html עובר `node --check` (מדלג אם אין node) |
 

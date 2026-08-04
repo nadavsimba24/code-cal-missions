@@ -1,4 +1,4 @@
-"""Group 7 & 8 — bundled avatar assets + frontend sanity."""
+"""Group 7 & 8 — frontend sanity + file upload roundtrip."""
 import pathlib
 import re
 import shutil
@@ -7,21 +7,6 @@ import subprocess
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-AVATARS = ROOT / "frontend" / "avatars"
-
-
-def test_avatar_pool_bundled():
-    """The bundled avatar pool has all 30 SVGs on disk."""
-    svgs = sorted(AVATARS.glob("*.svg"))
-    assert len(svgs) == 30, f"expected 30 avatar SVGs, found {len(svgs)}"
-
-
-def test_avatars_served(client):
-    """Avatar SVGs are served over HTTP with an svg content-type."""
-    for name in ("00.svg", "29.svg"):
-        r = client.get(f"/avatars/{name}")
-        assert r.status_code == 200
-        assert "svg" in r.headers.get("content-type", "")
 
 
 def test_index_served(client):
