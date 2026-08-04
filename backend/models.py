@@ -159,7 +159,16 @@ class Environment(Base):
     icon = Column(String(50), default="🏢")
     color = Column(String(7), default="#6366f1")
     position = Column(Integer, default=0)
+    is_primary = Column(Boolean, default=False)  # the default workspace that holds legacy/unassigned boards
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class EnvironmentMember(Base):
+    """Which users are permitted to access an environment. System admins see
+    every environment regardless; managers/members see only their own."""
+    __tablename__ = "environment_members"
+    id = Column(Integer, primary_key=True)
+    environment_id = Column(Integer, ForeignKey("environments.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
 
 class User(Base):
     __tablename__ = "users"

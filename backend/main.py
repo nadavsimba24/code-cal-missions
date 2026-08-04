@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
 from models import (
-    Organization, Department, Environment, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember,
+    Organization, Department, Environment, EnvironmentMember, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -69,6 +69,10 @@ def _migrate():
         bcols = {r[1] for r in conn.execute(text("PRAGMA table_info(boards)"))}
         if "environment_id" not in bcols:
             conn.execute(text("ALTER TABLE boards ADD COLUMN environment_id INTEGER"))
+        # environments: primary-workspace flag (may predate the column)
+        ecols = {r[1] for r in conn.execute(text("PRAGMA table_info(environments)"))}
+        if ecols and "is_primary" not in ecols:
+            conn.execute(text("ALTER TABLE environments ADD COLUMN is_primary BOOLEAN DEFAULT 0"))
         # notifications table may predate the task_id column (created before mentions)
         ncols = {r[1] for r in conn.execute(text("PRAGMA table_info(notifications)"))}
         if ncols and "task_id" not in ncols:
@@ -108,6 +112,7 @@ else:
             _conn.execute(_text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON"))
             _conn.execute(_text("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER"))
             _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER"))
+            _conn.execute(_text("ALTER TABLE environments ADD COLUMN IF NOT EXISTS is_primary BOOLEAN DEFAULT FALSE"))
     except Exception:
         pass
 
@@ -170,7 +175,9 @@ def _seed_memberships():
         # workspace/environment members
         if db.query(WorkspaceMember).count() == 0:
             for u in users:
-                erole = "admin" if u.role in ("admin", "manager") else ("viewer" if u.role == "viewer" else "member")
+                # only a true system admin (User.role == "admin") is a workspace/system
+                # admin; a "manager" is NOT — they get access only to granted environments
+                erole = "admin" if u.role == "admin" else ("viewer" if u.role == "viewer" else "member")
                 db.add(WorkspaceMember(user_id=u.id, role=erole))
             db.commit()
         # board members
@@ -194,21 +201,40 @@ ENVIRONMENTS_SEED = [
 ]
 _ENV_COLORS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6"]
 
+PRIMARY_ENV_NAME = "עיריית הוד השרון"
+
 def _seed_environments():
-    """Create the municipality's environments on first run (idempotent by name)."""
+    """Seed environments on first run (idempotent by name):
+    - a primary workspace 'עיריית הוד השרון' that holds the existing/legacy boards
+    - the municipality's 17 environments
+    Also gives every current user access to the primary workspace so nothing
+    disappears, and attaches legacy (unassigned) boards to the primary workspace."""
     with Session(engine) as db:
         org = db.query(Organization).first()
-        existing = {e.name for e in db.query(Environment).all()}
-        pos = db.query(Environment).count()
-        added = False
+        existing = {e.name: e for e in db.query(Environment).all()}
+        # 1) primary workspace first
+        primary = existing.get(PRIMARY_ENV_NAME)
+        if not primary:
+            primary = Environment(name=PRIMARY_ENV_NAME, icon="🏛️", color=_ENV_COLORS[0],
+                                  position=0, is_primary=True, organization_id=org.id if org else None)
+            db.add(primary); db.flush()
+        elif not primary.is_primary:
+            primary.is_primary = True
+        # 2) the 17 municipality environments after it
+        pos = max([e.position for e in existing.values()], default=0) + 1
         for name, icon in ENVIRONMENTS_SEED:
             if name in existing:
                 continue
             db.add(Environment(name=name, icon=icon, color=_ENV_COLORS[pos % len(_ENV_COLORS)],
                                position=pos, organization_id=org.id if org else None))
-            pos += 1; added = True
-        if added:
-            db.commit()
+            pos += 1
+        # 3) legacy boards (no environment) belong to the primary workspace
+        db.query(Board).filter(Board.environment_id == None).update({Board.environment_id: primary.id})
+        # 4) every current user gets access to the primary workspace (once)
+        if db.query(EnvironmentMember).filter(EnvironmentMember.environment_id == primary.id).count() == 0:
+            for u in db.query(User).all():
+                db.add(EnvironmentMember(environment_id=primary.id, user_id=u.id))
+        db.commit()
 _seed_environments()
 
 def get_db():
@@ -352,7 +378,13 @@ def _board_role(db, board_id, user_id):
         return None
     m = db.query(BoardMember).filter(BoardMember.board_id == board_id,
                                      BoardMember.user_id == user_id).first()
-    return m.role if m else None
+    if m:
+        return m.role
+    # system (workspace) admins have admin access to every board, even ones
+    # they were never explicitly added to
+    if _ws_role(db, user_id) == "admin":
+        return "admin"
+    return None
 
 def _is_board_admin(db, board_id, user_id):
     return _board_role(db, board_id, user_id) == "admin"
@@ -364,6 +396,8 @@ def _visible_board_ids(db, user_id):
     user_id=None keeps legacy 'all boards' behavior for internal callers."""
     all_ids = {b for (b,) in db.query(Board.id).filter(Board.is_archived == False).all()}
     if user_id is None:
+        return all_ids
+    if _ws_role(db, user_id) == "admin":   # system admins see every board
         return all_ids
     member_ids = {m.board_id for m in db.query(BoardMember).filter(BoardMember.user_id == user_id).all()}
     return {i for i in all_ids if i in member_ids}
@@ -404,8 +438,9 @@ def _col_perm(col, user_id, board_role):
 def list_boards(user_id: Optional[int] = None):
     with Session(engine) as db:
         boards = db.query(Board).filter(Board.is_archived == False).all()
-        if user_id is not None:
-            # membership-based visibility: you only see boards you were invited to
+        # system (workspace) admins see every board; everyone else only the boards
+        # they were invited to (membership-based visibility)
+        if user_id is not None and _ws_role(db, user_id) != "admin":
             member_ids = {m.board_id for m in db.query(BoardMember).filter(BoardMember.user_id == user_id).all()}
             boards = [b for b in boards if b.id in member_ids]
         result = []
@@ -419,6 +454,7 @@ def list_boards(user_id: Optional[int] = None):
                 "icon": b.icon, "color": b.color,
                 "is_archived": b.is_archived,
                 "department_name": dept_name,
+                "environment_id": b.environment_id,
                 "task_count": task_count,
                 "my_role": _board_role(db, b.id, user_id) if user_id is not None else None,
                 "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
@@ -525,10 +561,16 @@ def create_board(data: dict):
         dept_id = data.get("department_id")
         if not dept_id:
             dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
+        # a new board belongs to the environment it was created in (default: primary workspace)
+        env_id = data.get("environment_id")
+        if not env_id:
+            primary = db.query(Environment).filter(Environment.is_primary == True).first()
+            env_id = primary.id if primary else None
         b = Board(
             name=data.get("name", "לוח חדש"),
             description=data.get("description", ""),
             department_id=dept_id,
+            environment_id=env_id,
             board_type=BoardType.KANBAN,
             icon=data.get("icon", "📋"),
             color=data.get("color", "#0073ea"),
@@ -990,14 +1032,25 @@ def workspace_remove(uid: int, actor_id: Optional[int] = None):
 # Reads are open to all; create/edit/delete are restricted to system (workspace) admins.
 def _env_out(e, board_count=0):
     return {"id": e.id, "name": e.name, "icon": e.icon, "color": e.color,
-            "position": e.position, "board_count": board_count}
+            "position": e.position, "is_primary": bool(e.is_primary), "board_count": board_count}
 
 @app.get("/api/environments")
-def list_environments():
+def list_environments(user_id: Optional[int] = None):
+    """System admins see every environment; managers/members see only the
+    environments they were granted access to."""
     with Session(engine) as db:
         counts = dict(db.query(Board.environment_id, func.count(Board.id))
                         .group_by(Board.environment_id).all())
-        envs = db.query(Environment).order_by(Environment.position, Environment.id).all()
+        allenvs = db.query(Environment).order_by(
+            Environment.is_primary.desc(), Environment.position, Environment.id).all()
+        if _ws_role(db, user_id) == "admin":
+            envs = allenvs
+        elif user_id is not None:
+            member_ids = {m.environment_id for m in
+                          db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
+            envs = [e for e in allenvs if e.id in member_ids]
+        else:
+            envs = []
         return {"environments": [_env_out(e, counts.get(e.id, 0)) for e in envs]}
 
 @app.post("/api/environments")
@@ -1041,10 +1094,56 @@ def delete_environment(env_id: int, actor_id: Optional[int] = None):
         e = db.query(Environment).filter(Environment.id == env_id).first()
         if not e:
             raise HTTPException(404, "סביבה לא נמצאה")
-        # detach boards (don't delete them) so nothing disappears
-        db.query(Board).filter(Board.environment_id == env_id).update({Board.environment_id: None})
+        if e.is_primary:
+            raise HTTPException(400, "לא ניתן למחוק את סביבת ברירת המחדל")
+        # move boards to the primary workspace (don't delete them) so nothing disappears
+        primary = db.query(Environment).filter(Environment.is_primary == True).first()
+        db.query(Board).filter(Board.environment_id == env_id).update(
+            {Board.environment_id: primary.id if primary else None})
+        db.query(EnvironmentMember).filter(EnvironmentMember.environment_id == env_id).delete()
         db.delete(e); db.commit()
         return {"status": "deleted"}
+
+# ── Environment members (who may access an environment) — system admins only ──
+@app.get("/api/environments/{env_id}/members")
+def environment_members(env_id: int, actor_id: Optional[int] = None):
+    with Session(engine) as db:
+        if _ws_role(db, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת")
+        if not db.query(Environment).filter(Environment.id == env_id).first():
+            raise HTTPException(404, "סביבה לא נמצאה")
+        member_ids = [m.user_id for m in
+                      db.query(EnvironmentMember).filter(EnvironmentMember.environment_id == env_id).all()]
+        users = {u.id: u for u in db.query(User).all()}
+        members = [{"user_id": uid, "name": users[uid].name, "avatar_url": users[uid].avatar_url}
+                   for uid in member_ids if uid in users]
+        available = [{"id": u.id, "name": u.name} for u in users.values() if u.id not in member_ids]
+        return {"members": members, "available": available}
+
+@app.post("/api/environments/{env_id}/members")
+def environment_add_member(env_id: int, data: dict):
+    with Session(engine) as db:
+        if _ws_role(db, data.get("actor_id")) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת")
+        if not db.query(Environment).filter(Environment.id == env_id).first():
+            raise HTTPException(404, "סביבה לא נמצאה")
+        uid = data.get("user_id")
+        if uid and not db.query(EnvironmentMember).filter(
+                EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first():
+            db.add(EnvironmentMember(environment_id=env_id, user_id=uid))
+            db.commit()
+        return {"status": "ok"}
+
+@app.delete("/api/environments/{env_id}/members/{uid}")
+def environment_remove_member(env_id: int, uid: int, actor_id: Optional[int] = None):
+    with Session(engine) as db:
+        if _ws_role(db, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת")
+        m = db.query(EnvironmentMember).filter(
+            EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first()
+        if m:
+            db.delete(m); db.commit()
+        return {"status": "removed"}
 
 @app.get("/api/tasks")
 def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
