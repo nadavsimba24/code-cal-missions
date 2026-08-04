@@ -84,6 +84,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .sb-item .sb-more{margin-inline-start:auto;flex-shrink:0;width:24px;height:24px;border:none;background:none;color:var(--text-light);border-radius:5px;cursor:pointer;opacity:0;transition:.12s;display:grid;place-items:center;font-size:13px}
 .sb-item:hover .sb-more,.sb-item.active .sb-more{opacity:1}
 .sb-item .sb-more:hover{background:rgba(0,0,0,.09);color:var(--text)}
+.env-count{flex-shrink:0;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--bg);color:var(--text-muted);font-size:10.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
 .row-menu{min-width:170px;padding:5px}
 .row-menu-pop{padding:0}
 .rm-item{display:flex;align-items:center;gap:10px;width:100%;text-align:right;background:none;border:none;border-radius:7px;padding:9px 11px;font-size:13px;font-weight:500;color:var(--text);cursor:pointer;font-family:inherit}
@@ -500,6 +501,9 @@ tr:hover .row-grip{opacity:.55}
 .overlay.open{display:block}
 .modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--surface);border-radius:12px;box-shadow:var(--shadow);z-index:160;width:560px;max-width:94vw;max-height:88vh;overflow:auto;display:none}
 .modal.open{display:block}
+/* confirm dialog must sit above the chat panel (z-index 200), else it opens behind it */
+.overlay.confirm-overlay{z-index:300}
+.modal.confirm-modal{z-index:310}
 .modal h2{padding:18px 20px;border-bottom:1px solid var(--border);font-size:17px}
 .modal .mbody{padding:20px}
 .field{margin-bottom:14px}
@@ -826,7 +830,12 @@ img.pf-av{object-fit:cover;background:#fff}
 .cmt-reply .av{width:28px;height:28px;font-size:11px}
 .chat-noperm{padding:14px;text-align:center;color:var(--text-muted);font-size:13px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:8px}
 .chat-noperm i{color:var(--text-light)}
-.composer{background:var(--surface);border-top:1px solid var(--border);padding:10px 12px 10px 24px}
+.composer{background:var(--surface);border-top:1px solid var(--border);padding:10px 12px 10px 24px;position:relative}
+/* drag-and-drop import zone (files / Outlook emails) */
+.comp-drop{position:absolute;inset:6px;z-index:6;display:none;flex-direction:column;align-items:center;justify-content:center;gap:6px;border:2px dashed var(--primary);border-radius:11px;background:color-mix(in srgb,var(--primary) 9%,var(--surface));color:var(--primary);font-weight:700;font-size:14px;pointer-events:none;text-align:center}
+.comp-drop.show{display:flex}
+.comp-drop i{font-size:22px}
+.comp-drop small{font-weight:500;font-size:11px;color:var(--text-muted)}
 .reply-ctx{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:6px;padding:5px 9px;margin-bottom:7px;display:flex;align-items:center;gap:7px}
 .comp-tools{display:flex;gap:2px;margin-bottom:6px}
 .comp-tools button{width:30px;height:30px;border-radius:6px;color:var(--text-muted);position:relative}
@@ -852,11 +861,15 @@ img.pf-av{object-fit:cover;background:#fff}
 /* attachment preview in a posted comment */
 .cmt-atts{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .cmt-body .cmt-atts:first-child{margin-top:0}
-.cmt-body .att-prev{background:var(--bg)}
+.cmt-body .att-prev{background:var(--bg);text-decoration:none}
 .att-prev{display:inline-flex;flex-direction:column;align-items:center;gap:5px;width:94px;border:1px solid var(--border);border-radius:9px;padding:7px;background:var(--surface);text-decoration:none;color:var(--text);transition:border-color .12s,box-shadow .12s}
 .att-prev:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
 .att-prev img{width:80px;height:64px;object-fit:cover;border-radius:6px;display:block;background:var(--bg)}
 .att-prev.att-file i{font-size:36px;color:var(--primary);height:64px;display:flex;align-items:center}
+/* subtle file-type badge (spells out PDF / PNG / DOCX … in the type's tint) */
+.ext-badge{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:14px;padding:0 4px;border-radius:3px;font-size:8px;font-weight:700;letter-spacing:.3px;flex:none;box-sizing:border-box}
+.att-prev .ext-badge{min-width:40px;height:30px;font-size:11px;border-radius:6px}
+.file-row .ext-badge{min-width:34px;height:18px;font-size:9.5px}
 .att-name{font-size:10.5px;color:var(--text-muted);max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .comp-foot{display:flex;justify-content:flex-start;margin-top:8px}
 .chat-float{inset-inline-start:0;inset-inline-end:auto;transform:none;bottom:calc(100% + 6px);top:auto;max-height:230px;overflow-y:auto;min-width:190px}
@@ -871,7 +884,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .files-search i{color:var(--text-light);font-size:13px}
 .files-search input{flex:1;border:none;outline:none;background:none;font-family:inherit;font-size:13.5px;color:var(--text)}
 .files-list{padding:12px}
-.file-row{display:flex;align-items:center;gap:11px;padding:11px 12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;margin-bottom:8px;color:var(--text)}
+.file-row{display:flex;align-items:center;gap:11px;padding:11px 12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;margin-bottom:8px;color:var(--text);text-decoration:none}
 .file-row:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
 .fr-name{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fr-meta{font-size:11.5px;color:var(--text-light)}
@@ -956,6 +969,8 @@ img.pf-av{object-fit:cover;background:#fff}
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
     <div class="sb-section">סביבת עבודה</div>
     <div class="sb-item active" onclick="Workspace.open()" title="ניהול הזמנות והרשאות סביבה"><span class="ic"><i class="fa-solid fa-building-columns"></i></span> עיריית הוד השרון<i class="fa-solid fa-user-gear" style="margin-inline-start:auto;font-size:12px;color:var(--text-light)"></i></div>
+    <div class="sb-section">סביבות <i id="new-env-btn" class="fa-solid fa-plus" title="סביבה חדשה (מנהל מערכת בלבד)" onclick="Env.add()" style="display:none"></i></div>
+    <div class="sb-list" id="env-list"></div>
     <div class="sb-section">לוחות <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש (מנהל מערכת בלבד)" onclick="newBoardQuick()"></i></div>
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
@@ -964,13 +979,6 @@ img.pf-av{object-fit:cover;background:#fff}
       <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
       <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
     </div>
-    <!-- ===== Work Plan & Budget ===== -->
-    <div class="sb-section" style="margin-top:12px">תוכנית עבודה ותקציב 2026</div>
-    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-calendar-days"></i></span> תוכנית עבודה<span class="sb-soon">בקרוב</span></div>
-    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-shekel-sign"></i></span> תקציב<span class="sb-soon">בקרוב</span></div>
-    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-check-circle"></i></span> אישורים<span class="sb-soon">בקרוב</span></div>
-    <div class="sb-item" onclick="setView('gantt')"><span class="ic"><i class="fa-solid fa-chart-gantt" style="color:var(--blue)"></i></span> תצוגת Gantt</div>
-    <div class="sb-item disabled" title="בקרוב — לא פעיל"><span class="ic"><i class="fa-solid fa-chart-simple"></i></span> דשבורד מנכ"ל<span class="sb-soon">בקרוב</span></div>
   </aside>
 
   <!-- Main -->
@@ -1142,9 +1150,7 @@ const PRIORITY = {
 const VIEWS = [
   {id:'table',he:'טבלה ראשית',ic:'fa-table-list'},
   {id:'kanban',he:'קנבן',ic:'fa-columns'},
-  {id:'gantt',he:'גאנט',ic:'fa-chart-gantt'},
   {id:'dashboard',he:'דאשבורד',ic:'fa-chart-pie'},
-  {id:'ceo',he:'מנכ"ל',ic:'fa-building-columns'},
   {id:'calendar',he:'לוח שנה',ic:'fa-calendar-days'},
   {id:'map',he:'מפה',ic:'fa-map-location-dot'},
   {id:'gis',he:'ניתוח שטח',ic:'fa-globe'},
@@ -1353,8 +1359,11 @@ function renderTabs(){
   if(!enabled.includes(st.view))st.view='table';
   const tabs=enabled.map(id=>{const v=VIEW_META[id];
     return `<div class="tab ${st.view===id?'active':''}" onclick="setView('${id}')"><i class="fa-solid ${v.ic}"></i> ${v.he}</div>`;}).join('');
-  document.getElementById('tabs').innerHTML = tabs +
-    `<div class="tab" onclick="openForms()"><i class="fa-solid fa-file-lines"></i> טפסים</div>
+  const formTab=st.board&&st.board.form
+    ? `<div class="tab" onclick="openForms()"><i class="fa-solid fa-file-lines"></i> טפסים</div>`
+    : '';
+  document.getElementById('tabs').innerHTML = tabs + formTab +
+    `
      <div class="tab-add-wrap" id="tab-add-wrap">
        <button class="tab-add" title="הוסף/הסר תצוגה" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>
        <div class="tab-pop" id="tab-pop"></div>
@@ -1376,6 +1385,10 @@ function renderAddViewPop(){
       <i class="fa-solid ${v.ic}" style="width:16px;color:var(--text-light)"></i><span>${v.he}</span>
       ${locked?'<i class="fa-solid fa-lock" style="margin-inline-start:auto;color:var(--text-light);font-size:11px"></i>':''}
     </label>`;}).join('');
+  pop.innerHTML += `<label class="pop-row">
+      <input type="checkbox" ${st.board&&st.board.form?'checked':''} onchange="toggleBoardForms(this.checked)">
+      <i class="fa-solid fa-file-lines" style="width:16px;color:var(--text-light)"></i><span>טפסים</span>
+    </label>`;
 }
 document.addEventListener('click',e=>{if(!e.target.closest('#tab-add-wrap')){const w=document.getElementById('tab-add-wrap');if(w)w.classList.remove('open');}});
 async function toggleBoardView(id,on){
@@ -1391,6 +1404,17 @@ async function toggleBoardView(id,on){
     renderView();
     toast(on?'תצוגה נוספה':'תצוגה הוסרה');
   }catch(e){toast('שגיאה בעדכון תצוגות');}
+}
+async function toggleBoardForms(on){
+  if(!st.board)return;
+  try{
+    const form = on ? {fields: currentForm().map(f=>({key:f.key,required:!!f.required,visible:f.visible!==false,min:f.min,max:f.max}))} : null;
+    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({form})});
+    st.board.form=form;
+    renderTabs();
+    const w=document.getElementById('tab-add-wrap');if(w){w.classList.add('open');renderAddViewPop();}
+    toast(on?'טפסים נוספו ללוח':'טפסים הוסרו מהלוח');
+  }catch(e){toast('רק מנהל לוח יכול לערוך טפסים');}
 }
 
 /* ============ new board (לוח חדש) ============ */
@@ -1721,6 +1745,44 @@ const Workspace = {
   remove(uid){ askConfirm('להסיר את המשתמש מהסביבה?',async()=>{ try{ await api('/api/workspace/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר'); this.refresh(); }catch(e){toast('לא ניתן להסיר');} },{title:'הסרה מהסביבה',confirmText:'הסר'}); },
 };
 
+/* ===== environments (Monday-style workspaces) — sysadmin manages, everyone views ===== */
+const Env = {
+  items:[],
+  async load(){ try{ const d=await api('/api/environments'); this.items=d.environments||[]; }catch(e){ this.items=[]; } this.render(); },
+  render(){
+    const el=document.getElementById('env-list'); if(!el)return;
+    const admin=isSysAdmin();
+    const btn=document.getElementById('new-env-btn'); if(btn)btn.style.display=admin?'':'none';
+    el.innerHTML=this.items.map(e=>`
+      <div class="sb-item env-item ${st.env&&st.env.id===e.id?'active':''}" onclick="Env.select(${e.id})" title="${esc(e.name)}">
+        <span class="ic">${e.icon||'🏢'}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;flex:1">${esc(e.name)}</span>
+        ${e.board_count?`<span class="env-count" title="${e.board_count} לוחות">${e.board_count}</span>`:''}
+        ${admin?`<button class="sb-more" title="אפשרויות סביבה" onclick="Env.menu(event,${e.id})" aria-label="אפשרויות סביבה"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}
+      </div>`).join('')||'<div style="padding:10px 14px;color:var(--text-light);font-size:12px">אין סביבות</div>';
+  },
+  select(id){ st.env=(st.env&&st.env.id===id)?null:this.items.find(x=>x.id===id)||null; this.render(); },
+  add(){ if(!isSysAdmin()){ toast('רק מנהל מערכת יכול ליצור סביבה'); return; }
+    const name=prompt('שם הסביבה החדשה:'); if(!name||!name.trim())return;
+    api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})})
+      .then(()=>{ toast('הסביבה נוצרה'); this.load(); }).catch(()=>toast('שגיאה ביצירת סביבה')); },
+  menu(e,id){ e.stopPropagation(); e.preventDefault();
+    if(!isSysAdmin())return;
+    openCellPop(e.currentTarget,`<div class="row-menu">
+      <button class="rm-item" onclick="closeCellPops();Env.rename(${id})"><i class="fa-solid fa-pen"></i> שנה שם</button>
+      <button class="rm-item danger" onclick="closeCellPops();Env.del(${id})"><i class="fa-solid fa-trash"></i> מחק סביבה</button>
+    </div>`,'row-menu-pop'); },
+  rename(id){ const it=this.items.find(x=>x.id===id); if(!it)return;
+    const name=prompt('שם הסביבה:',it.name); if(!name||!name.trim())return;
+    api('/api/environments/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})})
+      .then(()=>{ toast('עודכן'); this.load(); }).catch(()=>toast('שגיאה בעדכון')); },
+  del(id){ const it=this.items.find(x=>x.id===id); if(!it)return;
+    askConfirm(`למחוק את הסביבה "${it.name}"?`,async()=>{
+      try{ await api('/api/environments/'+id+'?actor_id='+meId(),{method:'DELETE'}); toast('הסביבה נמחקה'); if(st.env&&st.env.id===id)st.env=null; this.load(); }
+      catch(e){ toast('רק מנהל מערכת יכול למחוק'); }
+    },{title:'מחיקת סביבה',confirmText:'מחק',note:'הלוחות לא יימחקו — הם רק ינותקו מהסביבה.'}); },
+};
+
 /* ===== system administration — user directory ===== */
 const SysAdmin = {
   tab:'users',
@@ -1998,6 +2060,7 @@ function updateNewBoardBtn(){
   if(btn)btn.style.display=isSysAdmin()?'':'none';
   const nav=document.getElementById('nav-sysadmin');
   if(nav)nav.style.display=isSysAdmin()?'':'none';
+  Env.load();
 }
 function renderMe(){
   const u=st.me; if(!u)return;
@@ -3456,7 +3519,7 @@ const Forms={
   async save(){
     const fields=this.fields.map(f=>({key:f.key,required:!!f.required,visible:f.visible!==false,min:f.min,max:f.max}));
     try{ await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({form:{fields}})});
-      st.board.form={fields}; toast('הטופס נשמר'); closeModals(); }
+      st.board.form={fields}; renderTabs(); toast('הטופס נשמר'); closeModals(); }
     catch(e){ toast('רק מנהל לוח יכול לשמור טופס'); }
   },
   reset(){ this.fields=formSchema().map(f=>({...f,required:f.key==='title',visible:true})); document.getElementById('fb-list').innerHTML=this.builderRows(); this.attachSort(); },
@@ -3588,7 +3651,8 @@ const Chat = {
   },
   seenPopClose(){ const p=document.getElementById('seen-pop'); if(p)p.remove(); },
   composerHTML(){
-    return `<div class="composer">
+    return `<div class="composer" ondragenter="Chat.onDragOver(event)" ondragover="Chat.onDragOver(event)" ondragleave="Chat.onDragLeave(event)" ondrop="Chat.onDrop(event)">
+      <div class="comp-drop" id="comp-drop"><i class="fa-solid fa-envelope-open-text"></i> שחררו כאן לצירוף<small>קובץ או מייל מ‑Outlook</small></div>
       ${this.replyTo?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
       <div class="comp-tools">
         <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
@@ -3791,6 +3855,43 @@ const Chat = {
     }
   },
   attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=()=>{ this._upload(inp.files[0]); }; inp.click(); },
+  // ---- drag & drop import (files + Outlook emails) ----
+  _isImport(e){ const dt=e.dataTransfer; if(!dt||!dt.types)return false;
+    return Array.from(dt.types).some(t=>{ t=(t||'').toLowerCase();
+      return t==='files'||t==='application/x-moz-file'||t.includes('filegroupdescriptor')||t.includes('filecontents')
+        ||t.includes('outlook')||t==='text/html'||t==='text/plain'||t==='text/uri-list'||t==='message/rfc822'; }); },
+  onDragOver(e){ if(!this._isImport(e))return; e.preventDefault(); try{e.dataTransfer.dropEffect='copy';}catch(_){}
+    const d=document.getElementById('comp-drop'); if(d)d.classList.add('show'); },
+  onDragLeave(e){ const comp=e.currentTarget; if(e.relatedTarget&&comp.contains(e.relatedTarget))return; // still inside
+    const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show'); },
+  async onDrop(e){ if(!this._isImport(e))return; e.preventDefault();
+    const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show');
+    const dt=e.dataTransfer; if(!dt)return;
+    // 1) collect real file bytes (normal files + Outlook emails the browser exposes as .msg)
+    let files=[];
+    if(dt.items&&dt.items.length){ for(const it of dt.items){ if(it.kind==='file'){ const f=it.getAsFile(); if(f)files.push(f); } } }
+    if(!files.length && dt.files&&dt.files.length) files=Array.from(dt.files);
+    if(files.length){ for(const f of files){ await this._upload(this._normDropped(f)); } return; }
+    // 2) no file bytes (typical on macOS Outlook) → rebuild the email from the drag content
+    let html='',txt=''; try{ html=dt.getData('text/html')||''; }catch(_){} try{ txt=dt.getData('text/plain')||''; }catch(_){}
+    if(html.trim()){ await this._upload(this._emlFromDrag(html,txt)); return; }   // attach as a reopenable .eml
+    if(txt.trim()){ this.insert(txt.trim()+' ');                                  // plain text drag → just insert it
+      toast('התוכן הוכנס כטקסט'); return; }
+    toast('הדפדפן לא סיפק תוכן לגרירה · שמרו/גררו את המייל לשולחן העבודה ואז לכאן'); },
+  // build an .eml attachment from an Outlook email dragged as HTML
+  _emlFromDrag(html,txt){
+    const subject=((txt||'').trim().split('\n')[0]||'מייל').slice(0,120).replace(/[\r\n]+/g,' ').trim()||'מייל';
+    const eml='Subject: '+subject+'\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n'+html;
+    const safe=(subject.replace(/[^\p{L}\p{N} _\-]/gu,'').trim()||'email').slice(0,60);
+    try{ return new File([eml],safe+'.eml',{type:'message/rfc822'}); }
+    catch(_){ return new File([eml],'email.eml',{type:'message/rfc822'}); } },
+  // Outlook-dragged emails often arrive without a proper name/extension — give them one
+  _normDropped(f){ let name=f.name||''; const t=(f.type||'').toLowerCase();
+    if(t.includes('outlook')||t==='message/rfc822'||!name.includes('.')){
+      const ext=t==='message/rfc822'?'eml':'msg';
+      if(!/\.(msg|eml)$/i.test(name)) name=(name||'email')+'.'+ext;
+      try{ return new File([f],name,{type:f.type||'application/octet-stream'}); }catch(_){ } }
+    return f; },
   onPaste(e){ // paste a screenshot / image straight from the clipboard into the chat
     const items=(e.clipboardData||{}).items||[]; let img=null;
     for(const it of items){ if(it.kind==='file' && (it.type||'').startsWith('image/')){ img=it; break; } }
@@ -3802,16 +3903,48 @@ const Chat = {
     const file=new File([blob],`screenshot-${ts}.${ext}`,{type:blob.type});
     this._upload(file);
   },
-  isImg(name){ return /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name||''); },
-  fileIcon(name){ const e=(name||'').split('.').pop().toLowerCase(); return ({pdf:'fa-file-pdf',doc:'fa-file-word',docx:'fa-file-word',xls:'fa-file-excel',xlsx:'fa-file-excel',csv:'fa-file-csv',ppt:'fa-file-powerpoint',pptx:'fa-file-powerpoint',zip:'fa-file-zipper',rar:'fa-file-zipper',txt:'fa-file-lines',mp4:'fa-file-video',mov:'fa-file-video',mp3:'fa-file-audio',wav:'fa-file-audio'})[e]||'fa-file'; },
+  isImg(name,type){ return /^image\//i.test(type||'') || /\.(png|jpe?g|gif|webp|svg|bmp|avif|heic|heif)$/i.test(name||''); },
+  // real file extension — from the name, or derived from the server's MIME type when the name has none
+  fileExt(name,type){
+    let e=((name||'').split('.').pop()||'').toLowerCase();
+    if(!e || e.length>5 || !(name||'').includes('.')){
+      const t=(type||'').toLowerCase();
+      e = t==='application/pdf'?'pdf'
+        : t.includes('word')?'doc'
+        : (t.includes('excel')||t.includes('sheet'))?'xls'
+        : (t.includes('powerpoint')||t.includes('presentation'))?'ppt'
+        : t.includes('zip')||t.includes('compressed')?'zip'
+        : t.startsWith('image/')?(t.split('/')[1]||'img')
+        : t.startsWith('video/')?'video'
+        : t.startsWith('audio/')?'audio'
+        : t.startsWith('text/')?'txt'
+        : 'file';
+    }
+    return e;
+  },
+  // a clear, colored badge that spells out the file type (PDF / PNG / DOCX …)
+  extBadge(name,type){
+    const e=this.fileExt(name,type);
+    const col={pdf:'#e2445c',doc:'#2b7fff',docx:'#2b7fff',rtf:'#2b7fff',
+      xls:'#1a7f43',xlsx:'#1a7f43',csv:'#1a7f43',
+      ppt:'#d9730d',pptx:'#d9730d',
+      png:'#8b5cf6',jpg:'#8b5cf6',jpeg:'#8b5cf6',gif:'#8b5cf6',webp:'#8b5cf6',svg:'#8b5cf6',bmp:'#8b5cf6',avif:'#8b5cf6',heic:'#8b5cf6',heif:'#8b5cf6',img:'#8b5cf6',
+      zip:'#64748b',rar:'#64748b','7z':'#64748b',gz:'#64748b',tar:'#64748b',
+      mp4:'#0ea5e9',mov:'#0ea5e9',webm:'#0ea5e9',mkv:'#0ea5e9',avi:'#0ea5e9',video:'#0ea5e9',
+      mp3:'#db2777',wav:'#db2777',m4a:'#db2777',aac:'#db2777',ogg:'#db2777',audio:'#db2777',
+      txt:'#64748b',md:'#64748b',json:'#334155',xml:'#334155',html:'#334155',js:'#334155',css:'#334155',
+      msg:'#0072c6',eml:'#0072c6'};
+    const c=col[e]||'#64748b';
+    return `<span class="ext-badge" style="color:${c};background:color-mix(in srgb, ${c} 12%, transparent)">${esc(e.toUpperCase().slice(0,4))}</span>`;
+  },
   // attachment thumbnail/preview for a posted comment
   attPreview(f){
-    if(this.isImg(f.name)) return `<a class="att-prev" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"><span class="att-name">${esc(f.name)}</span></a>`;
-    return `<a class="att-prev att-file" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><i class="fa-solid ${this.fileIcon(f.name)}"></i><span class="att-name">${esc(f.name)}</span></a>`;
+    if(this.isImg(f.name,f.type)) return `<a class="att-prev" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"><span class="att-name">${esc(f.name)}</span></a>`;
+    return `<a class="att-prev att-file" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}">${this.extBadge(f.name,f.type)}<span class="att-name">${esc(f.name)}</span></a>`;
   },
   renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return;
     let h=this.atts.map((f,i)=>{
-      const thumb=this.isImg(f.name)?`<img src="${esc(f.url)}" class="chip-thumb" alt="">`:`<i class="fa-solid ${this.fileIcon(f.name)}"></i>`;
+      const thumb=this.isImg(f.name,f.type)?`<img src="${esc(f.url)}" class="chip-thumb" alt="">`:this.extBadge(f.name,f.type);
       return `<span class="file-chip">${thumb} ${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`;
     }).join('');
     if(this._uploading) h+=`<span class="file-chip uploading"><i class="fa-solid fa-spinner fa-spin"></i> ${esc(this._uploading)} — מעלה…</span>`;
@@ -3869,7 +4002,7 @@ const Chat = {
     const list=(this._filesCache||[]).filter(f=>!q||(f.name||'').toLowerCase().includes(q));
     wrap.innerHTML=list.length? `<div class="files-list">${list.map(f=>`
       <a class="file-row" href="${esc(f.url)}" target="_blank">
-        <i class="fa-solid ${this.fileIcon(f.name)}" style="color:var(--primary)"></i>
+        ${this.extBadge(f.name,f.type)}
         <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}${f.created_at?' · <i class="fa-regular fa-clock" style="font-size:10px"></i> '+fdatetime(f.created_at):''}</div></div>
         <i class="fa-solid fa-download fr-dl"></i>
         ${this.canDeleteFile(f)?`<button class="fr-del" title="מחק קובץ" onclick="Chat.deleteFile(event,'${encodeURIComponent(f.url)}')"><i class="fa-solid fa-trash-can"></i></button>`:''}
@@ -4177,7 +4310,7 @@ const Train = {
 
 /* ============ modal helpers ============ */
 function showModal(html){const m=document.getElementById('modal');m.innerHTML=html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
-function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide');document.getElementById('overlay').classList.remove('open');}
+function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
 /* styled confirmation dialog (replaces native confirm) */
 function askConfirm(message,onYes,opts){
   opts=opts||{};
@@ -4193,6 +4326,7 @@ function askConfirm(message,onYes,opts){
     </div>
   </div>`);
   document.getElementById('modal').classList.add('confirm-modal');
+  document.getElementById('overlay').classList.add('confirm-overlay');
 }
 
 async function apiGet(path){

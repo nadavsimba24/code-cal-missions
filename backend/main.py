@@ -10,16 +10,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 import os
 from pydantic import BaseModel
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
 from models import (
-    Organization, Department, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember,
+    Organization, Department, Environment, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
     Approval, ChangeRequest, KPI, Dependency, Document, AuditLog,
+    task_assignees, task_watchers,
     ProjectStatus, ApprovalStatus, ChangeRequestStatus,
     DependencyType, BudgetItemType, DocumentType, LoginEvent, UploadedFile, Notification
 )
@@ -64,6 +65,10 @@ def _migrate():
         tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
         if "permissions" not in tcols:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN permissions JSON"))
+        # boards: environment membership (Monday-style environments/workspaces)
+        bcols = {r[1] for r in conn.execute(text("PRAGMA table_info(boards)"))}
+        if "environment_id" not in bcols:
+            conn.execute(text("ALTER TABLE boards ADD COLUMN environment_id INTEGER"))
         # notifications table may predate the task_id column (created before mentions)
         ncols = {r[1] for r in conn.execute(text("PRAGMA table_info(notifications)"))}
         if ncols and "task_id" not in ncols:
@@ -102,6 +107,7 @@ else:
         with engine.begin() as _conn:
             _conn.execute(_text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON"))
             _conn.execute(_text("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER"))
+            _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER"))
     except Exception:
         pass
 
@@ -113,6 +119,48 @@ with Session(engine) as _seed_db:
 if _db_empty:
     seed_database(engine)
     seed_work_plan(engine)
+
+REMOVED_DEMO_USERS = {
+    "רחל לוי": "rachel@hodhasharon.gov.il",
+    "שרה ברק": "sarah@hodhasharon.gov.il",
+    "יוסי אברהם": "yossi@hodhasharon.gov.il",
+    "נעה שטרן": "noa@hodhasharon.gov.il",
+    "עומר גולן": "omer@hodhasharon.gov.il",
+}
+
+def _purge_removed_demo_users():
+    """Keep removed demo users out of existing local/serverless databases."""
+    names = set(REMOVED_DEMO_USERS)
+    emails = set(REMOVED_DEMO_USERS.values())
+    with Session(engine) as db:
+        users = db.query(User).filter(or_(User.name.in_(names), User.email.in_(emails))).all()
+        ids = [u.id for u in users]
+        if not ids:
+            return
+
+        db.execute(task_assignees.delete().where(task_assignees.c.user_id.in_(ids)))
+        db.execute(task_watchers.delete().where(task_watchers.c.user_id.in_(ids)))
+        db.query(BoardMember).filter(BoardMember.user_id.in_(ids)).delete(synchronize_session=False)
+        db.query(WorkspaceMember).filter(WorkspaceMember.user_id.in_(ids)).delete(synchronize_session=False)
+        db.query(LoginEvent).filter(LoginEvent.user_id.in_(ids)).delete(synchronize_session=False)
+        db.query(Notification).filter(Notification.user_id.in_(ids)).delete(synchronize_session=False)
+
+        db.query(Task).filter(Task.created_by.in_(ids)).update({Task.created_by: None}, synchronize_session=False)
+        db.query(Comment).filter(Comment.user_id.in_(ids)).update({Comment.user_id: None}, synchronize_session=False)
+        db.query(Permit).filter(Permit.assigned_to.in_(ids)).update({Permit.assigned_to: None}, synchronize_session=False)
+        db.query(CitizenRequest).filter(CitizenRequest.assigned_to.in_(ids)).update({CitizenRequest.assigned_to: None}, synchronize_session=False)
+        db.query(Project).filter(Project.manager_id.in_(ids)).update({Project.manager_id: None}, synchronize_session=False)
+        db.query(ProjectStep).filter(ProjectStep.owner_id.in_(ids)).update({ProjectStep.owner_id: None}, synchronize_session=False)
+        db.query(Approval).filter(Approval.approver_user_id.in_(ids)).update({Approval.approver_user_id: None}, synchronize_session=False)
+        db.query(ChangeRequest).filter(ChangeRequest.requested_by.in_(ids)).update({ChangeRequest.requested_by: None}, synchronize_session=False)
+        db.query(ChangeRequest).filter(ChangeRequest.approved_by.in_(ids)).update({ChangeRequest.approved_by: None}, synchronize_session=False)
+        db.query(Document).filter(Document.uploaded_by.in_(ids)).update({Document.uploaded_by: None}, synchronize_session=False)
+        db.query(AuditLog).filter(AuditLog.changed_by.in_(ids)).update({AuditLog.changed_by: None}, synchronize_session=False)
+
+        db.query(User).filter(User.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+
+_purge_removed_demo_users()
 
 def _seed_memberships():
     """One-time: give existing boards their members so nothing disappears.
@@ -133,6 +181,35 @@ def _seed_memberships():
                     db.add(BoardMember(board_id=b.id, user_id=u.id, role=role))
             db.commit()
 _seed_memberships()
+
+# The municipality's environments (Monday-style workspaces, like 'עיריית הוד השרון').
+# Seeded once; sysadmins manage them afterwards via /api/environments.
+ENVIRONMENTS_SEED = [
+    ("בינוי", "🏗️"), ("היסעים", "🚌"), ("חדשנות טכנולוגיה ומערכות מידע", "💡"),
+    ("כספים", "💰"), ("מגזר ערבי דרוזי וצ'רקסי", "🕌"), ("מטה", "🏛️"),
+    ("מינהל ואיכות", "📋"), ("משאבי אנוש", "👥"), ("משפטית", "⚖️"),
+    ("סוכנות הביטוח", "🛡️"), ("פיקוח ובקרה", "🔎"), ("פיתוח תשתיות ואחזקה", "🛠️"),
+    ('פמ"א', "🏭"), ("קשרי לקוחות", "🤝"), ("רגולציה וקשרי ממשל", "📜"),
+    ("שיווק", "📣"), ('תבו"ר', "💵"),
+]
+_ENV_COLORS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6"]
+
+def _seed_environments():
+    """Create the municipality's environments on first run (idempotent by name)."""
+    with Session(engine) as db:
+        org = db.query(Organization).first()
+        existing = {e.name for e in db.query(Environment).all()}
+        pos = db.query(Environment).count()
+        added = False
+        for name, icon in ENVIRONMENTS_SEED:
+            if name in existing:
+                continue
+            db.add(Environment(name=name, icon=icon, color=_ENV_COLORS[pos % len(_ENV_COLORS)],
+                               position=pos, organization_id=org.id if org else None))
+            pos += 1; added = True
+        if added:
+            db.commit()
+_seed_environments()
 
 def get_db():
     with Session(engine) as session:
@@ -909,6 +986,66 @@ def workspace_remove(uid: int, actor_id: Optional[int] = None):
             db.delete(m); db.commit()
         return {"status": "removed"}
 
+# ── Environments (Monday-style workspaces) ───────────────────────────
+# Reads are open to all; create/edit/delete are restricted to system (workspace) admins.
+def _env_out(e, board_count=0):
+    return {"id": e.id, "name": e.name, "icon": e.icon, "color": e.color,
+            "position": e.position, "board_count": board_count}
+
+@app.get("/api/environments")
+def list_environments():
+    with Session(engine) as db:
+        counts = dict(db.query(Board.environment_id, func.count(Board.id))
+                        .group_by(Board.environment_id).all())
+        envs = db.query(Environment).order_by(Environment.position, Environment.id).all()
+        return {"environments": [_env_out(e, counts.get(e.id, 0)) for e in envs]}
+
+@app.post("/api/environments")
+def create_environment(data: dict):
+    with Session(engine) as db:
+        if _ws_role(db, data.get("actor_id")) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול ליצור סביבה")
+        name = (data.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "נדרש שם לסביבה")
+        org = db.query(Organization).first()
+        pos = db.query(Environment).count()
+        e = Environment(name=name, icon=data.get("icon") or "🏢",
+                        color=data.get("color") or _ENV_COLORS[pos % len(_ENV_COLORS)],
+                        position=pos, organization_id=org.id if org else None)
+        db.add(e); db.commit(); db.refresh(e)
+        return _env_out(e, 0)
+
+@app.patch("/api/environments/{env_id}")
+def update_environment(env_id: int, data: dict):
+    with Session(engine) as db:
+        if _ws_role(db, data.get("actor_id")) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול לערוך סביבה")
+        e = db.query(Environment).filter(Environment.id == env_id).first()
+        if not e:
+            raise HTTPException(404, "סביבה לא נמצאה")
+        if "name" in data and (data.get("name") or "").strip():
+            e.name = data["name"].strip()
+        if data.get("icon"):
+            e.icon = data["icon"]
+        if data.get("color"):
+            e.color = data["color"]
+        db.commit()
+        return _env_out(e)
+
+@app.delete("/api/environments/{env_id}")
+def delete_environment(env_id: int, actor_id: Optional[int] = None):
+    with Session(engine) as db:
+        if _ws_role(db, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול למחוק סביבה")
+        e = db.query(Environment).filter(Environment.id == env_id).first()
+        if not e:
+            raise HTTPException(404, "סביבה לא נמצאה")
+        # detach boards (don't delete them) so nothing disappears
+        db.query(Board).filter(Board.environment_id == env_id).update({Board.environment_id: None})
+        db.delete(e); db.commit()
+        return {"status": "deleted"}
+
 @app.get("/api/tasks")
 def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
     with Session(engine) as db:
@@ -1205,7 +1342,8 @@ async def upload_file(file: UploadFile = File(...)):
                             content_type=file.content_type or "application/octet-stream",
                             data=content, size=len(content)))
         db.commit()
-    return {"name": file.filename, "url": f"/api/files/{token}"}
+    return {"name": file.filename, "url": f"/api/files/{token}",
+            "type": file.content_type or "application/octet-stream"}
 
 @app.get("/api/files/{token}")
 def serve_file(token: str):

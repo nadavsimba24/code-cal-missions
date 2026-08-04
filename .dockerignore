@@ -1,0 +1,32 @@
+# VCS & tooling
+.git
+.gitignore
+.github
+.vercel
+*.md
+
+# Python virtualenv & caches
+venv
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+
+# Local SQLite DB (prod uses DATABASE_URL / Postgres)
+*.db
+backend/*.db
+
+# Tests & scratch
+tests
+data
+scratchpad
+
+# Large reference/cloned repos (not needed in the image)
+GeoLibre
+hod-hasharon-siri
+
+# Node / misc
+node_modules
+.DS_Store
+.env

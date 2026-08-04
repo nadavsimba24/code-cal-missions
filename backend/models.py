@@ -149,6 +149,18 @@ class Department(Base):
     users = relationship("User", back_populates="department")
     projects = relationship("Project", back_populates="department")
 
+class Environment(Base):
+    """A top-level workspace/environment (Monday-style), e.g. 'עיריית הוד השרון'.
+    Contains boards. Only a system (workspace) admin may create/edit/delete."""
+    __tablename__ = "environments"
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    name = Column(String(200), nullable=False)
+    icon = Column(String(50), default="🏢")
+    color = Column(String(7), default="#6366f1")
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
@@ -172,6 +184,7 @@ class Board(Base):
     id = Column(Integer, primary_key=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"))
     department_id = Column(Integer, ForeignKey("departments.id"))
+    environment_id = Column(Integer, ForeignKey("environments.id"), nullable=True)
     name = Column(String(200), nullable=False)
     description = Column(Text)
     board_type = Column(SAEnum(BoardType), default=BoardType.KANBAN)
