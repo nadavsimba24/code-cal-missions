@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
 from models import (
-    Organization, Department, Environment, EnvironmentMember, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember,
+    Organization, Department, Environment, EnvironmentMember, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -236,6 +236,56 @@ def _seed_environments():
                 db.add(EnvironmentMember(environment_id=primary.id, user_id=u.id))
         db.commit()
 _seed_environments()
+
+# ── Configurable capability matrix (role → feature) ──────────────────
+# 'admin' always has every capability (implicit, never stored). These roles are
+# editable by a system admin from the SysAdmin → role-permissions panel.
+CAPABILITIES = ["manage_system", "create_environment", "create_board"]
+CAP_HE = {
+    "manage_system": "ניהול מערכת",
+    "create_environment": "יצירת סביבה חדשה",
+    "create_board": "יצירת לוח חדש",
+}
+EDITABLE_ROLES = ["manager", "member", "viewer", "guest"]
+ROLE_HE_BE = {"admin": "מנהל מערכת", "manager": "מנהל", "member": "חבר צוות",
+              "viewer": "צפייה בלבד", "guest": "אורח"}
+
+def _seed_role_permissions():
+    """Ensure a row exists for every (editable role × capability). Defaults to
+    False — only 'admin' (implicit) starts with access, matching prior behavior."""
+    with Session(engine) as db:
+        existing = {(r.role, r.capability) for r in db.query(RolePermission).all()}
+        added = False
+        for role in EDITABLE_ROLES:
+            for cap in CAPABILITIES:
+                if (role, cap) not in existing:
+                    db.add(RolePermission(role=role, capability=cap, allowed=False))
+                    added = True
+        if added:
+            db.commit()
+_seed_role_permissions()
+
+def _role_perms(db):
+    """Return {role: {capability: bool}} for the editable roles."""
+    m = {role: {cap: False for cap in CAPABILITIES} for role in EDITABLE_ROLES}
+    for r in db.query(RolePermission).all():
+        if r.role in m and r.capability in CAPABILITIES:
+            m[r.role][r.capability] = bool(r.allowed)
+    return m
+
+def _cap(db, uid, cap):
+    """Whether the user (by User.role, with 'admin' always-on) has a capability."""
+    if uid is None:
+        return False
+    if _ws_role(db, uid) == "admin":
+        return True
+    u = db.query(User).filter(User.id == uid).first()
+    role = (u.role if u else None) or "guest"
+    if role == "admin":
+        return True
+    row = (db.query(RolePermission)
+           .filter(RolePermission.role == role, RolePermission.capability == cap).first())
+    return bool(row and row.allowed)
 
 def get_db():
     with Session(engine) as session:
@@ -556,8 +606,8 @@ def create_board(data: dict):
         # only a system (workspace) admin may create boards; the creator becomes
         # the board's first admin, so a board is never created without a manager.
         creator = data.get("user_id")
-        if _ws_role(db, creator) != "admin":
-            raise HTTPException(403, "רק מנהל מערכת יכול ליצור לוח חדש")
+        if not _cap(db, creator, "create_board"):
+            raise HTTPException(403, "אין לך הרשאה ליצור לוח חדש")
         dept_id = data.get("department_id")
         if not dept_id:
             dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
@@ -1068,8 +1118,8 @@ def list_environments(user_id: Optional[int] = None):
 @app.post("/api/environments")
 def create_environment(data: dict):
     with Session(engine) as db:
-        if _ws_role(db, data.get("actor_id")) != "admin":
-            raise HTTPException(403, "רק מנהל מערכת יכול ליצור סביבה")
+        if not _cap(db, data.get("actor_id"), "create_environment"):
+            raise HTTPException(403, "אין לך הרשאה ליצור סביבה")
         name = (data.get("name") or "").strip()
         if not name:
             raise HTTPException(400, "נדרש שם לסביבה")
@@ -2061,7 +2111,7 @@ async def record_login(request: Request):
 def login_history(uid: int, actor_id: Optional[int] = None, limit: int = 50):
     """Login history for a user — visible to system (workspace) admins only."""
     with Session(engine) as db:
-        if _ws_role(db, actor_id) != "admin":
+        if not _cap(db, actor_id, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול לראות היסטוריית התחברות")
         if not db.query(User.id).filter(User.id == uid).scalar():
             raise HTTPException(404, "user not found")
@@ -2076,7 +2126,7 @@ def login_history(uid: int, actor_id: Optional[int] = None, limit: int = 50):
 def all_login_history(actor_id: Optional[int] = None, limit: int = 100):
     """Consolidated login history across all users — system admins only."""
     with Session(engine) as db:
-        if _ws_role(db, actor_id) != "admin":
+        if not _cap(db, actor_id, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול לראות היסטוריית התחברות")
         names = {u.id: (u.name, u.avatar_url) for u in db.query(User).all()}
         evs = (db.query(LoginEvent).order_by(LoginEvent.logged_in_at.desc())
@@ -2094,7 +2144,7 @@ def create_user(data: dict):
     """Create a new user in the workspace directory. System (workspace) admin only."""
     with Session(engine) as db:
         actor = data.get("actor_id")
-        if _ws_role(db, actor) != "admin":
+        if not _cap(db, actor, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול להוסיף משתמש")
         name = (data.get("name") or "").strip()
         email = (data.get("email") or "").strip().lower()
@@ -2104,7 +2154,7 @@ def create_user(data: dict):
             raise HTTPException(400, "חסרה כתובת מייל")
         if db.query(User).filter(User.email == email).first():
             raise HTTPException(409, "כתובת המייל כבר קיימת במערכת")
-        role = data.get("role") if data.get("role") in ("admin", "manager", "member", "viewer") else "member"
+        role = data.get("role") if data.get("role") in ("admin", "manager", "member", "viewer", "guest") else "member"
         dept_id = data.get("department_id") or None
         # inherit the organization of an existing user so the new user is in the same workspace
         org_id = db.query(User.organization_id).filter(User.organization_id != None).limit(1).scalar()
@@ -2129,7 +2179,7 @@ def update_user(uid: int, data: dict):
     (workspace) admin may edit anyone's."""
     with Session(engine) as db:
         actor = data.get("actor_id")
-        if actor != uid and _ws_role(db, actor) != "admin":
+        if actor != uid and not _cap(db, actor, "manage_system"):
             raise HTTPException(403, "אפשר לעדכן רק את הפרופיל שלך")
         u = db.query(User).filter(User.id == uid).first()
         if not u:
@@ -2149,9 +2199,9 @@ def update_user(uid: int, data: dict):
         # never editable on one's own profile via this path
         admin_fields = {"role", "department_id", "is_active"}
         if admin_fields & set(data):
-            if _ws_role(db, actor) != "admin":
+            if not _cap(db, actor, "manage_system"):
                 raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד, מחלקה או סטטוס")
-            if "role" in data and data["role"] in ("admin", "manager", "member", "viewer"):
+            if "role" in data and data["role"] in ("admin", "manager", "member", "viewer", "guest"):
                 u.role = data["role"]
             if "department_id" in data:
                 u.department_id = data["department_id"]
@@ -2174,11 +2224,125 @@ def update_user(uid: int, data: dict):
 @app.get("/api/departments")
 def list_departments():
     with Session(engine) as db:
-        depts = db.query(Department).all()
+        depts = db.query(Department).order_by(Department.name).all()
+        from sqlalchemy import func as _func
+        ucount = dict(db.query(User.department_id, _func.count(User.id))
+                      .filter(User.department_id != None).group_by(User.department_id).all())
+        bcount = dict(db.query(Board.department_id, _func.count(Board.id))
+                      .filter(Board.department_id != None).group_by(Board.department_id).all())
         return [{
             "id": d.id, "name": d.name, "code": d.code, "color": d.color,
             "organization_id": d.organization_id,
+            "user_count": ucount.get(d.id, 0), "board_count": bcount.get(d.id, 0),
         } for d in depts]
+
+DEPT_COLORS = ("#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981",
+               "#06b6d4", "#ef4444", "#6366f1", "#14b8a6", "#f97316")
+
+
+@app.post("/api/departments")
+def create_department(data: dict):
+    """Create an organizational unit (department). System (workspace) admin only."""
+    with Session(engine) as db:
+        if not _cap(db, data.get("actor_id"), "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול להוסיף יחידה ארגונית")
+        name = (data.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "חסר שם ליחידה הארגונית")
+        if db.query(Department).filter(func.lower(Department.name) == name.lower()).first():
+            raise HTTPException(409, "יחידה ארגונית בשם זה כבר קיימת")
+        org_id = db.query(User.organization_id).filter(User.organization_id != None).limit(1).scalar()
+        color = (data.get("color") or "").strip() or DEPT_COLORS[db.query(Department).count() % len(DEPT_COLORS)]
+        d = Department(name=name, code=(data.get("code") or "").strip() or None,
+                       color=color, organization_id=org_id)
+        db.add(d)
+        db.commit()
+        db.refresh(d)
+        return {"id": d.id, "name": d.name, "code": d.code, "color": d.color,
+                "organization_id": d.organization_id, "user_count": 0, "board_count": 0}
+
+
+@app.patch("/api/departments/{dept_id}")
+def update_department(dept_id: int, data: dict):
+    """Rename / recolor an organizational unit. System (workspace) admin only."""
+    with Session(engine) as db:
+        if not _cap(db, data.get("actor_id"), "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול לערוך יחידה ארגונית")
+        d = db.query(Department).filter(Department.id == dept_id).first()
+        if not d:
+            raise HTTPException(404, "יחידה ארגונית לא נמצאה")
+        if "name" in data:
+            name = (data["name"] or "").strip()
+            if not name:
+                raise HTTPException(400, "חסר שם ליחידה הארגונית")
+            if db.query(Department).filter(func.lower(Department.name) == name.lower(),
+                                           Department.id != dept_id).first():
+                raise HTTPException(409, "יחידה ארגונית בשם זה כבר קיימת")
+            d.name = name
+        if "code" in data:
+            d.code = (data["code"] or "").strip() or None
+        if "color" in data and data["color"]:
+            d.color = data["color"].strip()
+        db.commit()
+        return {"id": d.id, "name": d.name, "code": d.code, "color": d.color}
+
+
+@app.delete("/api/departments/{dept_id}")
+def delete_department(dept_id: int, actor_id: Optional[int] = None):
+    """Delete an organizational unit. System admin only. Any users/boards attached
+    to it are detached (department set to none) rather than deleted."""
+    with Session(engine) as db:
+        if not _cap(db, actor_id, "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול למחוק יחידה ארגונית")
+        d = db.query(Department).filter(Department.id == dept_id).first()
+        if not d:
+            raise HTTPException(404, "יחידה ארגונית לא נמצאה")
+        # detach references so nothing is orphaned or violates a FK
+        db.query(User).filter(User.department_id == dept_id).update({User.department_id: None})
+        db.query(Board).filter(Board.department_id == dept_id).update({Board.department_id: None})
+        db.query(Project).filter(Project.department_id == dept_id).update({Project.department_id: None})
+        db.delete(d)
+        db.commit()
+        return {"status": "deleted", "id": dept_id}
+
+# ── Role permissions (capability matrix) ─────────────────────────────
+
+@app.get("/api/role-permissions")
+def get_role_permissions():
+    """The capability matrix. Readable by anyone so the client can gate features.
+    'admin' is returned as an always-on, locked row."""
+    with Session(engine) as db:
+        matrix = _role_perms(db)
+    roles = [{"key": "admin", "he": ROLE_HE_BE["admin"], "locked": True}] + \
+            [{"key": r, "he": ROLE_HE_BE.get(r, r), "locked": False} for r in EDITABLE_ROLES]
+    matrix_out = {"admin": {cap: True for cap in CAPABILITIES}, **matrix}
+    return {
+        "capabilities": [{"key": c, "he": CAP_HE[c]} for c in CAPABILITIES],
+        "roles": roles,
+        "matrix": matrix_out,
+    }
+
+@app.put("/api/role-permissions")
+def set_role_permission(data: dict):
+    """Toggle one (role, capability) cell. System-management capability required."""
+    with Session(engine) as db:
+        if not _cap(db, data.get("actor_id"), "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול לשנות הרשאות תפקידים")
+        role = data.get("role")
+        cap = data.get("capability")
+        if role not in EDITABLE_ROLES:
+            raise HTTPException(400, "תפקיד לא ניתן לעריכה")
+        if cap not in CAPABILITIES:
+            raise HTTPException(400, "יכולת לא מוכרת")
+        allowed = bool(data.get("allowed"))
+        row = (db.query(RolePermission)
+               .filter(RolePermission.role == role, RolePermission.capability == cap).first())
+        if row:
+            row.allowed = allowed
+        else:
+            db.add(RolePermission(role=role, capability=cap, allowed=allowed))
+        db.commit()
+        return {"role": role, "capability": cap, "allowed": allowed, "matrix": _role_perms(db)}
 
 # ── Agent Swarm ───────────────────────────────────────────────────────
 

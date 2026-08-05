@@ -538,6 +538,9 @@ tr:hover .row-grip{opacity:.55}
 /* confirmation dialog */
 .modal.confirm-modal{width:400px}
 .modal.modal-wide{width:820px}
+.modal.modal-80{width:80vw;max-width:80vw;height:80vh;max-height:80vh}
+.modal.modal-80.open{display:flex;flex-direction:column}
+.modal.modal-80 .mbody{flex:1;min-height:0;max-height:none;overflow:auto}
 .confirm-box{padding:26px 24px 20px;text-align:center}
 /* system-admin user directory */
 .sa-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px}
@@ -570,6 +573,7 @@ tr:hover .row-grip{opacity:.55}
 .sa-more:hover{background:rgba(0,0,0,.08);color:var(--text)}
 .sa-menu-lbl{font-size:10.5px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.04em;padding:2px 4px 0}
 .sa-menu-sel{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
+.dp-swatch{display:inline-block;width:16px;height:16px;border-radius:50%;border:1px solid rgba(0,0,0,.12);vertical-align:middle}
 .confirm-ic{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-size:23px;margin:0 auto 14px;background:var(--primary-soft);color:var(--primary)}
 .confirm-ic.danger{background:#fdebed;color:var(--red)}
 .confirm-msg{font-size:15px;font-weight:600;color:var(--text)}
@@ -1203,11 +1207,23 @@ async function boot(){
   try{
     try{st.users = await api('/api/users');}catch(e){st.users=[];}
     try{st.depts = await api('/api/departments');}catch(e){st.depts=[];}
+    try{st.rolePerms = await api('/api/role-permissions');}catch(e){st.rolePerms=null;}
     await loadWsMembers();
     // no real auth yet: restore the last logged-in user, otherwise show login
     const savedId=parseInt(localStorage.getItem('cc_uid')||'',10);
     const saved=(st.users||[]).find(u=>u.id===savedId);
-    if(saved){ st.me=saved; renderMe(); await enterApp(); }
+    if(saved){
+      st.me=saved; renderMe();
+      // record a login on session-restore too (throttled to 30m) so "last login"
+      // reflects real usage — not only the rare trip through the login screen.
+      try{
+        const last=saved.last_login?new Date(saved.last_login).getTime():0;
+        if(Date.now()-last>30*60*1000){
+          api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:saved.id})}).catch(()=>{});
+        }
+      }catch(e){}
+      await enterApp();
+    }
     else{ Auth.showLogin(); }
   }catch(e){
     document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-plug-circle-xmark"></i><div>השרת לא זמין</div><div style="font-size:12px">'+esc(e.message)+'</div></div>';
@@ -1466,7 +1482,7 @@ async function createBoard(){
    creator becomes its admin, it lands at the bottom of the list and opens ready
    for inline rename. */
 async function newBoardQuick(){
-  if(!isSysAdmin()){ toast('רק מנהל מערכת יכול ליצור לוח חדש'); return; }
+  if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
   try{
     const r=await api('/api/boards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'לוח חדש',icon:'📋',environment_id:(Env.active()||{}).id||null,user_id:meId()})});
     st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
@@ -1787,7 +1803,7 @@ const Env = {
     }
     const a=this.active();
     // a single environment (and no admin management options) needs no dropdown — show it statically
-    if(this.items.length===1 && !admin){
+    if(this.items.length===1 && !admin && !hasCap('create_environment')){
       wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(a?a.name:'')}</span></div>`;
       return;
     }
@@ -1810,7 +1826,7 @@ const Env = {
       </div>
       <div class="ws-dd" ${this.open?'':'hidden'}>
         <div class="ws-dd-list">${rows}</div>
-        ${admin?`<div class="ws-dd-foot"><button class="ws-dd-item" onclick="Env.add()"><i class="fa-solid fa-plus"></i> סביבה חדשה</button></div>`:''}
+        ${hasCap('create_environment')?`<div class="ws-dd-foot"><button class="ws-dd-item" onclick="Env.add()"><i class="fa-solid fa-plus"></i> סביבה חדשה</button></div>`:''}
       </div>`;
   },
   _set(v){ this.open=v; this.render();
@@ -1819,7 +1835,7 @@ const Env = {
   _onDoc(ev){ const sw=document.getElementById('ws-switch'); if(!sw||!sw.contains(ev.target)) Env._set(false); },
   toggle(e){ e&&e.stopPropagation(); this._set(!this.open); },
   select(id){ st.env=this.items.find(x=>x.id===id)||st.env; this._set(false); renderSidebar(); },
-  add(){ if(!isSysAdmin()){ toast('רק מנהל מערכת יכול ליצור סביבה'); return; }
+  add(){ if(!hasCap('create_environment')){ toast('אין לך הרשאה ליצור סביבה'); return; }
     const name=prompt('שם הסביבה החדשה:'); if(!name||!name.trim())return;
     api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})})
       .then(()=>{ toast('הסביבה נוצרה'); this.load(); }).catch(()=>toast('שגיאה ביצירת סביבה')); },
@@ -1865,7 +1881,7 @@ const Env = {
 const SysAdmin = {
   tab:'users',
   async open(tab){
-    if(!isSysAdmin()){ toast('רק מנהל מערכת'); return; }
+    if(!hasCap('manage_system')){ toast('רק מנהל מערכת'); return; }
     closeCellPops();
     this.tab = tab || this.tab || 'users';
     try{ this.users = await api('/api/users'); }catch(e){ this.users=[]; }
@@ -1874,11 +1890,12 @@ const SysAdmin = {
       <div class="mbody">
         <div class="sa-tabs">
           <button class="sa-tab" data-tab="users" onclick="SysAdmin.go('users')"><i class="fa-solid fa-users"></i> משתמשים</button>
+          <button class="sa-tab" data-tab="depts" onclick="SysAdmin.go('depts')"><i class="fa-solid fa-sitemap"></i> יחידות ארגוניות</button>
           <button class="sa-tab" data-tab="history" onclick="SysAdmin.go('history')"><i class="fa-solid fa-clock-rotate-left"></i> היסטוריית התחברות</button>
         </div>
         <div id="sa-body"></div>
       </div>`);
-    document.getElementById('modal').classList.add('modal-wide');
+    document.getElementById('modal').classList.add('modal-80');
     this.go(this.tab);
   },
   go(tab){
@@ -1886,16 +1903,106 @@ const SysAdmin = {
     document.querySelectorAll('.sa-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
     const body=document.getElementById('sa-body'); if(!body)return;
     if(tab==='history'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderHistory(); }
+    else if(tab==='depts'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderDepts(); }
     else body.innerHTML=this.usersHTML();
+  },
+  async renderDepts(){
+    try{ st.depts = await api('/api/departments'); }catch(e){ st.depts = st.depts||[]; }
+    const body=document.getElementById('sa-body'); if(!body)return;
+    const rows=(st.depts||[]).length ? (st.depts).map(d=>`<tr>
+        <td><span class="dp-swatch" style="background:${esc(d.color||'#3b82f6')}"></span></td>
+        <td style="font-weight:600">${esc(d.name)}</td>
+        <td style="color:var(--text-muted)">${esc(d.code||'—')}</td>
+        <td style="color:var(--text-muted)">${d.user_count||0} <span style="color:var(--text-light)">משתמשים</span></td>
+        <td style="color:var(--text-muted)">${d.board_count||0} <span style="color:var(--text-light)">לוחות</span></td>
+        <td style="white-space:nowrap;text-align:left">
+          <button class="sa-more" title="עריכה" onclick="SysAdmin.editDept(${d.id})"><i class="fa-solid fa-pen"></i></button>
+          <button class="sa-more" title="מחיקה" onclick="SysAdmin.deleteDept(${d.id})"><i class="fa-solid fa-trash" style="color:var(--danger,#e2445c)"></i></button>
+        </td>
+      </tr>`).join('') : `<tr><td colspan="6"><div class="empty" style="padding:20px">אין יחידות ארגוניות עדיין</div></td></tr>`;
+    body.innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> היחידות הארגוניות (מחלקות) משמשות לשיוך משתמשים ולוחות. מחיקת יחידה מנתקת ממנה את המשויכים אליה — היא לא מוחקת אותם.</div>
+        <button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addDept()"><i class="fa-solid fa-plus"></i> הוסף יחידה</button>
+      </div>
+      <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
+        <th style="width:34px"></th><th>שם היחידה</th><th>קוד</th><th>משתמשים</th><th>לוחות</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table></div>`;
+  },
+  deptModal(d){
+    const edit=!!d; d=d||{};
+    showModal(`<h2><i class="fa-solid fa-sitemap" style="color:var(--primary)"></i> ${edit?'עריכת יחידה ארגונית':'יחידה ארגונית חדשה'}</h2>
+      <div class="mbody">
+        <div class="field"><label>שם היחידה</label><input id="dp-name" value="${esc(d.name||'')}" placeholder="לדוגמה: הנדסה ותשתיות"></div>
+        <div class="field"><label>קוד (רשות)</label><input id="dp-code" value="${esc(d.code||'')}" placeholder="לדוגמה: ENG"></div>
+        <div class="field"><label>צבע</label><input type="color" id="dp-color" value="${esc(d.color||'#3b82f6')}" style="width:56px;height:34px;padding:2px;cursor:pointer"></div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="SysAdmin.open('depts')">ביטול</button><button class="btn btn-primary" onclick="SysAdmin.saveDept(${edit?d.id:'null'})"><i class="fa-solid fa-check"></i> שמור</button></div>`);
+    setTimeout(()=>{const i=document.getElementById('dp-name');if(i)i.focus();},60);
+  },
+  addDept(){ this.deptModal(null); },
+  editDept(id){ const d=(st.depts||[]).find(x=>x.id===id); this.deptModal(d||{id}); },
+  async saveDept(id){
+    const name=(document.getElementById('dp-name').value||'').trim();
+    if(!name){toast('חסר שם ליחידה');return;}
+    const body={actor_id:meId(),name,code:(document.getElementById('dp-code').value||'').trim(),color:document.getElementById('dp-color').value};
+    try{
+      if(id) await api('/api/departments/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      else   await api('/api/departments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      toast(id?'היחידה עודכנה':'היחידה נוצרה');
+      await this.open('depts');
+    }catch(err){
+      const m=String(err&&err.message||'');
+      toast(m.includes('409')?'יחידה בשם זה כבר קיימת':(m.includes('403')?'רק מנהל מערכת':'שגיאה בשמירה'));
+    }
+  },
+  deleteDept(id){
+    const d=(st.depts||[]).find(x=>x.id===id)||{}; const n=d.user_count||0, b=d.board_count||0;
+    const warn=(n||b)?` (${n} משתמשים ו-${b} לוחות ינותקו ממנה)`:'';
+    askConfirm(`למחוק את היחידה "${esc(d.name||'')}"?${warn}`,async()=>{
+      try{ await api('/api/departments/'+id+'?actor_id='+meId(),{method:'DELETE'}); toast('היחידה נמחקה'); await this.open('depts'); }
+      catch(err){ toast(String(err&&err.message||'').includes('403')?'רק מנהל מערכת יכול למחוק':'שגיאה במחיקה'); }
+    },{title:'מחיקת יחידה ארגונית',confirmText:'מחק'});
   },
   usersHTML(){
     return `<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. תפקיד ומחלקה דרך תפריט <i class="fa-solid fa-ellipsis-vertical"></i>, סטטוס בטוגל.</div>
+        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. לעריכת כל פרטי הפרופיל — תפריט <i class="fa-solid fa-ellipsis-vertical"></i> ← ״ערוך פרופיל״.</div>
+        <button class="btn btn-ghost" style="white-space:nowrap" title="ניהול הרשאות תפקידים" onclick="SysAdmin.perms()"><i class="fa-solid fa-gear"></i> הרשאות תפקידים</button>
         <button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addUser()"><i class="fa-solid fa-user-plus"></i> הוסף משתמש</button>
       </div>
       <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
-        <th style="width:34px"></th><th>שם</th><th>מייל</th><th>תפקיד</th><th>מחלקה</th><th>סטטוס</th>
+        <th style="width:34px"></th><th>שם</th><th>מייל</th><th>תפקיד</th><th>מחלקה</th><th>כניסה אחרונה</th><th>סטטוס</th>
       </tr></thead><tbody id="sa-rows">${this.rowsHTML()}</tbody></table></div>`;
+  },
+  async perms(){
+    let d; try{ d=await api('/api/role-permissions'); }catch(e){ toast('שגיאה בטעינת הרשאות'); return; }
+    st.rolePerms=d;
+    const caps=d.capabilities||[], roles=d.roles||[], m=d.matrix||{};
+    const head=`<th style="text-align:right">תפקיד</th>`+caps.map(c=>`<th style="text-align:center">${esc(c.he)}</th>`).join('');
+    const rows=roles.map(r=>{
+      const cells=caps.map(c=>{
+        const on=!!(m[r.key]&&m[r.key][c.key]);
+        if(r.locked) return `<td style="text-align:center"><input type="checkbox" checked disabled title="למנהל מערכת יש תמיד גישה מלאה"></td>`;
+        return `<td style="text-align:center"><input type="checkbox" ${on?'checked':''} onchange="SysAdmin.togglePerm('${r.key}','${c.key}',this.checked)"></td>`;
+      }).join('');
+      return `<tr><td style="font-weight:600">${esc(r.he)}${r.locked?' <i class="fa-solid fa-lock" style="color:var(--text-light);font-size:11px" title="נעול"></i>':''}</td>${cells}</tr>`;
+    }).join('');
+    showModal(`<h2><i class="fa-solid fa-gear" style="color:var(--primary)"></i> הרשאות תפקידים</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> סמנו אילו פיצ'רים מרכזיים כל תפקיד רשאי לבצע. למנהל מערכת יש תמיד גישה מלאה. השינוי נכנס לתוקף מיד.</div>
+        <div style="overflow-x:auto"><table class="sa-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>
+      </div>
+      <div class="mfoot"><button class="btn btn-primary" onclick="SysAdmin.open('users')"><i class="fa-solid fa-check"></i> סיום</button></div>`);
+  },
+  async togglePerm(role,cap,allowed){
+    try{
+      const r=await api('/api/role-permissions',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role,capability:cap,allowed})});
+      if(st.rolePerms&&st.rolePerms.matrix&&r.matrix) st.rolePerms.matrix[role]=r.matrix[role];
+      toast('ההרשאה עודכנה');
+      updateNewBoardBtn(); renderSidebar();
+    }catch(err){
+      toast(String(err&&err.message||'').includes('403')?'רק מנהל מערכת יכול לשנות':'שגיאה בעדכון');
+      this.perms();
+    }
   },
   async renderHistory(){
     let evs=[]; try{ evs=await api('/api/login-history?actor_id='+meId()); }
@@ -1912,7 +2019,7 @@ const SysAdmin = {
   },
   fdt(iso){ if(!iso)return '<span style="color:var(--text-light)">— מעולם לא —</span>'; try{ return esc(new Date(iso).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})); }catch(e){ return esc(iso); } },
   rowsHTML(){
-    if(!this.users||!this.users.length) return `<tr><td colspan="6"><div class="empty" style="padding:20px">אין משתמשים</div></td></tr>`;
+    if(!this.users||!this.users.length) return `<tr><td colspan="7"><div class="empty" style="padding:20px">אין משתמשים</div></td></tr>`;
     return this.users.map(u=>{
       const active=u.is_active!==false;
       return `<tr class="${active?'':'inactive'}">
@@ -1921,6 +2028,7 @@ const SysAdmin = {
         <td style="color:var(--text-muted)">${esc(u.email||'—')}</td>
         <td>${ROLE_HE[u.role]||esc(u.role||'—')}</td>
         <td style="color:var(--text-muted)">${esc(u.department_name||'—')}</td>
+        <td style="color:var(--text-muted);white-space:nowrap">${this.fdt(u.last_login)}</td>
         <td>${(()=>{const self=u.id===meId();return `<label class="sa-toggle ${active?'on':''} ${self?'disabled':''}" title="${self?'אי אפשר לשנות את הסטטוס שלך':'שנה סטטוס פעיל/לא פעיל'}"><input type="checkbox" ${active?'checked':''} ${self?'disabled':''} onchange="SysAdmin.toggleActive(${u.id},this.checked)"><span class="sa-tk"></span><span class="sa-tl">${active?'פעיל':'לא פעיל'}</span></label>`;})()}</td>
       </tr>`;
     }).join('');
@@ -1928,13 +2036,58 @@ const SysAdmin = {
   rowMenu(e,uid){
     e.stopPropagation();
     const u=(this.users||[]).find(x=>x.id===uid); if(!u)return;
-    const roles=['admin','manager','member','viewer'];
+    const roles=['admin','manager','member','viewer','guest'];
     const roleSel=`<select class="sa-menu-sel" onchange="SysAdmin.setRole(${uid},this.value)">${roles.map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_HE[r]}</option>`).join('')}</select>`;
     const deptSel=`<select class="sa-menu-sel" onchange="SysAdmin.setDept(${uid},this.value)"><option value="">— ללא מחלקה —</option>${(st.depts||[]).map(d=>`<option value="${d.id}" ${u.department_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
-    openCellPop(e.currentTarget,`<div class="row-menu" style="min-width:214px;padding:10px;gap:9px;display:flex;flex-direction:column">
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()" style="min-width:214px;padding:10px;gap:9px;display:flex;flex-direction:column">
+      <button class="btn btn-ghost" style="justify-content:flex-start;gap:8px" onclick="SysAdmin.editUser(${uid})"><i class="fa-solid fa-user-pen"></i> ערוך פרופיל</button>
       <div class="sa-menu-lbl">תפקיד</div>${roleSel}
       <div class="sa-menu-lbl">מחלקה</div>${deptSel}
     </div>`,'row-menu-pop');
+  },
+  editUser(uid){
+    closeCellPops();
+    const u=(this.users||[]).find(x=>x.id===uid); if(!u)return;
+    const roles=['admin','manager','member','viewer','guest'];
+    const self=u.id===meId();
+    const active=u.is_active!==false;
+    showModal(`<h2><i class="fa-solid fa-user-pen" style="color:var(--primary)"></i> עריכת פרופיל — ${esc(u.name||'')}</h2>
+      <div class="mbody">
+        <div class="field"><label>שם מלא</label><input id="eu-name" value="${esc(u.name||'')}"></div>
+        <div class="field"><label>מייל</label><input id="eu-email" value="${esc(u.email||'')}"></div>
+        <div class="field"><label>טלפון</label><input id="eu-phone" value="${esc(u.phone||'')}" placeholder="050-0000000"></div>
+        <div class="field"><label>תפקיד בארגון</label><input id="eu-title" value="${esc(u.title||'')}" placeholder="לדוגמה: מנהלת מחלקה"></div>
+        <div class="field"><label>הרשאה</label><select id="eu-role">${roles.map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_HE[r]}</option>`).join('')}</select></div>
+        <div class="field"><label>מחלקה</label><select id="eu-dept"><option value="">— ללא מחלקה —</option>${(st.depts||[]).map(d=>`<option value="${d.id}" ${u.department_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>סטטוס</label><select id="eu-active" ${self?'disabled':''}><option value="1" ${active?'selected':''}>פעיל</option><option value="0" ${!active?'selected':''}>לא פעיל</option></select>${self?'<div style="font-size:11px;color:var(--text-light);margin-top:4px">אי אפשר לשנות את הסטטוס שלך</div>':''}</div>
+        <div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500"><input type="checkbox" id="eu-notif" ${u.email_notifications!==false?'checked':''}> קבלת התראות במייל</label></div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="SysAdmin.open('users')">ביטול</button><button class="btn btn-primary" onclick="SysAdmin.saveUser(${uid})"><i class="fa-solid fa-check"></i> שמור</button></div>`);
+    setTimeout(()=>{const i=document.getElementById('eu-name');if(i)i.focus();},60);
+  },
+  async saveUser(uid){
+    const g=id=>document.getElementById(id);
+    const self=uid===meId();
+    const name=(g('eu-name').value||'').trim();
+    const email=(g('eu-email').value||'').trim();
+    if(!name){toast('חסר שם');return;}
+    if(!email){toast('חסרה כתובת מייל');return;}
+    const body={name,email,
+      phone:(g('eu-phone').value||'').trim(),
+      title:(g('eu-title').value||'').trim(),
+      role:g('eu-role').value,
+      department_id:g('eu-dept').value?+g('eu-dept').value:null,
+      email_notifications:g('eu-notif').checked};
+    if(!self) body.is_active=g('eu-active').value==='1';
+    try{
+      await api('/api/users/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),...body})});
+      try{ st.users=await api('/api/users'); }catch(e){}
+      toast('הפרופיל עודכן');
+      await this.open('users');
+    }catch(err){
+      const m=String(err&&err.message||'');
+      toast(m.includes('409')?'כתובת המייל כבר קיימת':(m.includes('403')?'רק מנהל מערכת יכול לערוך':'שגיאה בעדכון'));
+    }
   },
   async _patch(uid,body,okMsg){
     try{
@@ -1950,7 +2103,7 @@ const SysAdmin = {
   setDept(uid,val){ closeCellPops(); this._patch(uid,{department_id:val?+val:null},'המחלקה עודכנה'); },
   toggleActive(uid,makeActive){ closeCellPops(); this._patch(uid,{is_active:makeActive},makeActive?'המשתמש הופעל':'המשתמש הושבת'); },
   addUser(){
-    const roles=['admin','manager','member','viewer'];
+    const roles=['admin','manager','member','viewer','guest'];
     showModal(`<h2><i class="fa-solid fa-user-plus" style="color:var(--primary)"></i> הוספת משתמש</h2>
       <div class="mbody">
         <div class="field"><label>שם מלא</label><input id="nu-name" placeholder="לדוגמה: שלי פיינברג"></div>
@@ -2130,14 +2283,22 @@ const Settings={
   },
 };
 
-const ROLE_HE={admin:'מנהל מערכת',manager:'מנהל',member:'חבר צוות',viewer:'צפייה בלבד'};
+const ROLE_HE={admin:'מנהל מערכת',manager:'מנהל',member:'חבר צוות',viewer:'צפייה בלבד',guest:'אורח'};
+// capability check against the configurable role→feature matrix (admins always pass)
+function hasCap(cap){
+  if(isSysAdmin())return true;
+  const role=(st.me&&st.me.role)||'guest';
+  if(role==='admin')return true;
+  const m=(st.rolePerms&&st.rolePerms.matrix)||{};
+  return !!(m[role]&&m[role][cap]);
+}
 async function loadWsMembers(){ try{ const d=await api('/api/workspace/members'); st.wsMembers=d.members||[]; }catch(e){ st.wsMembers=[]; } }
 function isSysAdmin(){ const m=(st.wsMembers||[]).find(x=>x.user_id===meId()); return !!m && m.role==='admin'; }
 function updateNewBoardBtn(){
   const btn=document.getElementById('new-board-btn');
-  if(btn)btn.style.display=isSysAdmin()?'':'none';
+  if(btn)btn.style.display=hasCap('create_board')?'':'none';
   const nav=document.getElementById('nav-sysadmin');
-  if(nav)nav.style.display=isSysAdmin()?'':'none';
+  if(nav)nav.style.display=hasCap('manage_system')?'':'none';
   Env.load();
 }
 function renderMe(){
@@ -4392,8 +4553,8 @@ const Train = {
 };
 
 /* ============ modal helpers ============ */
-function showModal(html){const m=document.getElementById('modal');m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
-function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
+function showModal(html){const m=document.getElementById('modal');m.classList.remove('modal-wide','modal-80');m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
+function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide','modal-80');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
 /* styled confirmation dialog (replaces native confirm) */
 function askConfirm(message,onYes,opts){
   opts=opts||{};

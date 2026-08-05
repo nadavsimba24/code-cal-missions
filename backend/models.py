@@ -291,6 +291,16 @@ class WorkspaceMember(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     user = relationship("User")
 
+class RolePermission(Base):
+    """Configurable capability matrix: whether a given user role (manager/member/
+    viewer/guest) is granted a top-level capability. The 'admin' role always has
+    every capability and is not stored here."""
+    __tablename__ = "role_permissions"
+    id = Column(Integer, primary_key=True)
+    role = Column(String(50), nullable=False)        # manager | member | viewer | guest
+    capability = Column(String(50), nullable=False)  # manage_system | create_environment | create_board
+    allowed = Column(Boolean, default=False)
+
 # ── Municipal-Specific Models ────────────────────────────────────────
 
 class Permit(Base):
