@@ -651,8 +651,8 @@ img.pf-av{object-fit:cover;background:#fff}
 #agent-hint .ex:hover{background:#eaf2ff;border-color:var(--primary)}
 #agent-hint .hint-x{position:absolute;top:8px;left:10px;background:none;border:none;color:var(--text-light);cursor:pointer;font-size:13px;padding:2px 5px;border-radius:5px}
 #agent-hint .hint-x:hover{background:var(--row-hover)}
-#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);background:#323338;color:#fff;padding:12px 20px;border-radius:9px;z-index:300;transition:.3s;font-weight:600;font-size:13px}
-#toast.show{transform:translateX(-50%) translateY(0)}
+#toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);opacity:0;visibility:hidden;pointer-events:none;background:#323338;color:#fff;padding:12px 20px;border-radius:9px;z-index:300;transition:transform .3s,opacity .3s,visibility .3s;font-weight:600;font-size:13px}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1;visibility:visible}
 .empty{text-align:center;color:var(--text-light);padding:60px 20px}
 .empty i{font-size:40px;margin-bottom:14px;opacity:.5;display:block}
 .spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:sp 1s linear infinite;margin:50px auto}
