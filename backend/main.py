@@ -578,6 +578,7 @@ def create_board(data: dict):
                 "views": ["table"],  # new boards start with only the main table
                 # every new board ships with these auto columns (read-only, from the item's metadata)
                 "columns": [
+                    {"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
                     {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
                     # a real people column (like "אחראים"), auto-assigned to the creator
                     {"id": "sys_created_by", "type": "people", "title": "יוצר הרשומה"},
@@ -696,7 +697,7 @@ def update_board(board_id: int, data: dict):
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
-                       "connect", "created_at"}
+                       "connect", "created_at", "item_id"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
             is_ws_admin = _ws_role(db, data.get("user_id")) == "admin"
             cols = []

@@ -295,6 +295,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .avatars{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;height:28px}
 .av-add{display:inline-flex;align-items:center;justify-content:center;color:var(--text-light);font-size:16px}
 .created-at{font-size:12.5px;color:var(--text-muted);white-space:nowrap}
+.item-id{font-size:12.5px;color:var(--text-muted);font-weight:600;font-variant-numeric:tabular-nums}
 .av-more{background:var(--text-light)!important;font-size:10px}
 .av{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:inline-grid;place-items:center;font-size:11px;font-weight:700;border:2px solid var(--surface);margin-inline-start:-8px;flex-shrink:0;box-sizing:border-box}
 .av:first-child{margin:0}
@@ -519,6 +520,9 @@ tr:hover .row-grip{opacity:.55}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:150;display:none}
 .overlay.open{display:block}
 .modal{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--surface);border-radius:12px;box-shadow:var(--shadow);z-index:160;width:560px;max-width:94vw;max-height:88vh;overflow:auto;display:none}
+/* universal top-left close (×) for every modal/popup */
+.modal-x{position:absolute;top:10px;left:10px;width:30px;height:30px;border:none;background:none;color:var(--text-light);font-size:26px;line-height:1;cursor:pointer;border-radius:8px;display:flex;align-items:center;justify-content:center;z-index:3;transition:background .12s,color .12s}
+.modal-x:hover{background:var(--row-hover,rgba(0,0,0,.06));color:var(--text)}
 .modal.open{display:block}
 /* confirm dialog must sit above the chat panel (z-index 200), else it opens behind it */
 .overlay.confirm-overlay{z-index:300}
@@ -1534,7 +1538,7 @@ const Profile = {
         <div class="pf-sec">משימות בלוח "${esc((st.board&&st.board.name)||'')}" · ${tasks.length}</div>
         <div class="pf-stats">${chips}</div>
       </div>
-      <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+      `);
     document.getElementById('modal').classList.add('profile-modal');
   },
   pickAvatar(userId){
@@ -1742,7 +1746,7 @@ const Workspace = {
           <select id="ws-role"><option value="member">חבר</option><option value="viewer">צפייה בלבד</option><option value="admin">מנהל סביבה</option></select>
           <button class="btn btn-primary" onclick="Workspace.add()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-user-plus"></i> הזמן</button>
         </div>`:''}
-      </div><div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+      </div>`);
   },
   listHTML(){
     return this.data.members.map(m=>`<div class="mem-row">
@@ -1841,7 +1845,7 @@ const Env = {
           <button class="btn btn-primary" onclick="Env.addMember()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-user-plus"></i> הוסף</button>
         </div>
         <div id="envm-list">${this.membersHTML()}</div>
-      </div><div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+      </div>`);
   },
   membersHTML(){ return this.membersData.members.map(m=>`<div class="mem-row">
       <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
@@ -1873,7 +1877,7 @@ const SysAdmin = {
           <button class="sa-tab" data-tab="history" onclick="SysAdmin.go('history')"><i class="fa-solid fa-clock-rotate-left"></i> היסטוריית התחברות</button>
         </div>
         <div id="sa-body"></div>
-      </div><div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+      </div>`);
     document.getElementById('modal').classList.add('modal-wide');
     this.go(this.tab);
   },
@@ -1989,7 +1993,7 @@ const ItemPerms = {
           <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
           <select onchange="ItemPerms.set(${u.id},this.value)">${Object.entries(IPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
         </div>`).join('')}
-      </div><div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">סגור</button></div>`);
+      </div>`);
   },
   async set(uid,perm){
     try{ const r=await api('/api/tasks/'+this.tid+'/permissions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,perm:perm||null})});
@@ -2011,7 +2015,7 @@ const ColPerms = {
           <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
           <select onchange="ColPerms.set(${u.id},this.value)">${Object.entries(CPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
         </div>`).join('')}
-      </div><div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">סגור</button></div>`);
+      </div>`);
   },
   async set(uid,perm){
     try{ const r=await api('/api/boards/'+st.board.id+'/columns/'+this.cid+'/permissions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,perm:perm||null})});
@@ -2038,7 +2042,7 @@ const Members = {
           <button class="btn btn-primary" onclick="Members.add()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-plus"></i> הזמן</button>
         </div>
       </div>
-      <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button>
+      <div class="mfoot">
         <button class="btn btn-danger" style="margin-inline-start:auto" onclick="Members.deleteBoard()"><i class="fa-solid fa-trash"></i> מחק לוח</button>
       </div>`);
   },
@@ -2122,7 +2126,7 @@ const Settings={
       <div class="set-sec"><div class="set-label"><i class="fa-solid fa-fill-drip"></i> רקע ${d.theme==='dark'?'<span style="font-size:11px;color:var(--text-light);font-weight:400">— זמין במצב בהיר</span>':''}</div>
         <div class="set-bgs">${BGS.map(b=>`<button class="set-bg ${d.theme!=='dark'&&d.bg===b.id?'sel':''}" title="${esc(b.he)}" style="background:${b.c}" ${d.theme==='dark'?'disabled style="opacity:.4;background:'+b.c+'"':''} onclick="Settings.set('bg','${b.id}')">${d.theme!=='dark'&&d.bg===b.id?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')}</div></div>
     </div>
-    <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">סגור</button><button class="btn btn-ghost" onclick="Settings.reset()">איפוס</button></div>`);
+    <div class="mfoot"><button class="btn btn-ghost" onclick="Settings.reset()">איפוס</button></div>`);
   },
 };
 
@@ -2356,6 +2360,7 @@ const COLUMN_TYPES=[
   {type:'rating',he:'דירוג',ic:'fa-star',desc:'דירוג בכוכבים'},
   {type:'connect',he:'קישור בין לוחות',ic:'fa-diagram-project',desc:'קישור לפריטים בלוחות אחרים (מנהל מערכת)'},
   {type:'created_at',he:'מועד יצירה',ic:'fa-calendar-plus',desc:'תאריך יצירת הרשומה (אוטומטי)'},
+  {type:'item_id',he:'מספר מזהה',ic:'fa-hashtag',desc:'המספר הסדורי הייחודי של הפריט (אוטומטי)'},
 ];
 const STATUS_OPTS=[
   {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
@@ -2363,7 +2368,7 @@ const STATUS_OPTS=[
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
-  created_at:'מועד יצירה'};
+  created_at:'מועד יצירה',item_id:'מספר מזהה'};
 function customColumns(){return (st.board&&st.board.columns)||[];}
 function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
 /* Board vocabulary of tags = every tag already used across the board's items.
@@ -2484,6 +2489,7 @@ function customCells(t){
     if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
     if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')"><span class="cell-disp">${connectDisp(v)}</span></td>`;
     if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
+    if(c.type==='item_id')return `<td class="cell cell-custom"><span class="item-id">#${t.id}</span></td>`;
     if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
     return `<td class="cell cell-custom">—</td>`;
   }).join('') + `<td class="cell"></td>`;
@@ -4386,7 +4392,7 @@ const Train = {
 };
 
 /* ============ modal helpers ============ */
-function showModal(html){const m=document.getElementById('modal');m.innerHTML=html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
+function showModal(html){const m=document.getElementById('modal');m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+html;m.classList.add('open');document.getElementById('overlay').classList.add('open');}
 function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
 /* styled confirmation dialog (replaces native confirm) */
 function askConfirm(message,onYes,opts){
@@ -4531,7 +4537,7 @@ async function showProjectDetail(projectId, projectName){
   detailDiv.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center">
       <h3><i class="fa-solid fa-diagram-project" style="color:var(--primary)"></i> ${esc(projectName)}</h3>
-      <button class="btn btn-ghost" onclick="document.getElementById('project-detail').remove()"><i class="fa-solid fa-xmark"></i> סגור</button>
+      <button class="modal-x" style="position:static" title="סגור" aria-label="סגור" onclick="document.getElementById('project-detail').remove()">&times;</button>
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px">
       ${p.description?`<div style="flex:1;min-width:200px;font-size:13px;color:var(--text-muted)">${esc(p.description)}</div>`:''}
@@ -4921,7 +4927,7 @@ async function vCeoEnhanced(el){
 async function renderAiInsights(projectId, projectName){
   showModal(`<h2><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> תובנות AI — ${esc(projectName)}</h2>
     <div class="mbody" id="ai-insights-body"><div class="spin"></div><div style="text-align:center;margin-top:14px;color:var(--text-muted)">מנתח...</div></div>
-    <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
+    `);
 
   try{
     const r=await fetch('/api/ai/project-insights/'+projectId,{method:'POST'});
