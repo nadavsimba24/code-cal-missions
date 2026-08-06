@@ -1201,6 +1201,31 @@ function avatarInner(u){
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
 const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, openSubs:new Set()};
 
+/* ============ URL routing (hash-based deep links) ============
+   #/board/{id}            — a board is open
+   #/board/{id}/item/{id}  — an item (chat) is open inside that board
+   Uses replaceState so the address bar reflects state & links are shareable,
+   without polluting history; a hashchange listener handles manual/back nav. */
+const Router={
+  parse(){
+    const m=(location.hash||'').match(/board\/(\d+)(?:\/item\/(\d+))?/);
+    return m?{boardId:+m[1],itemId:m[2]?+m[2]:null}:{boardId:null,itemId:null};
+  },
+  set(boardId,itemId){
+    const h=boardId?('#/board/'+boardId+(itemId?('/item/'+itemId):'')):'#/';
+    if(location.hash!==h){ try{history.replaceState(null,'',h);}catch(e){location.hash=h;} }
+  },
+  async apply(){   // react to manual URL edits / back-forward
+    const r=this.parse();
+    if(r.boardId && (st.boards||[]).some(b=>b.id===r.boardId)){
+      if(!st.board||st.board.id!==r.boardId) await openBoard(r.boardId);
+      if(r.itemId){ if(Chat.taskId!==r.itemId && findAnyTask(r.itemId)) Chat.open(r.itemId); }
+      else if(Chat.taskId) Chat.close();
+    }
+  }
+};
+window.addEventListener('hashchange',()=>{ try{Router.apply();}catch(e){} });
+
 /* ============ boot ============ */
 async function boot(){
   Settings.load();
@@ -1232,10 +1257,14 @@ async function boot(){
 async function enterApp(){
   await loadBoards();
   if(st.boards.length){
-    // return to the board that was open before the refresh, if still accessible
-    const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
-    const target=st.boards.some(b=>b.id===savedBoard)?savedBoard:st.boards[0].id;
+    // a deep link in the URL wins; otherwise return to the board open before refresh
+    const r=Router.parse();
+    let target, wantItem=null;
+    if(r.boardId && st.boards.some(b=>b.id===r.boardId)){ target=r.boardId; wantItem=r.itemId; }
+    else { const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
+           target=st.boards.some(b=>b.id===savedBoard)?savedBoard:st.boards[0].id; }
     await openBoard(target);
+    if(wantItem && findAnyTask(wantItem)) Chat.open(wantItem);   // deep link to a specific item
   }
   else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
   Notif.start();
@@ -1334,6 +1363,7 @@ async function openBoard(id){
   renderTabs();
   refreshToolbar();
   renderView();
+  Router.set(id,null);   // reflect the open board in the URL
 }
 function renderBoardHead(){
   if(!st.board)return;
@@ -3847,6 +3877,7 @@ const Chat = {
     const pb=document.getElementById('chat-perm'); if(pb)pb.style.display=(st.board&&st.board.my_role==='admin')?'inline-flex':'none';
     this.bindDnd();
     this.setTabUI(); this.render();
+    Router.set(st.board&&st.board.id, id);   // reflect the open item in the URL
   },
   // drag & drop files/screenshots anywhere onto the chat panel (bound once).
   // Without preventDefault the browser would just open the dropped image in a new tab.
@@ -3863,7 +3894,7 @@ const Chat = {
       files.forEach(f=>this._upload(f));
     });
   },
-  close(){ document.getElementById('chat-panel').classList.remove('open'); document.getElementById('chat-overlay').classList.remove('open'); this.taskId=null; },
+  close(){ document.getElementById('chat-panel').classList.remove('open'); document.getElementById('chat-overlay').classList.remove('open'); this.taskId=null; Router.set(st.board&&st.board.id, null); },
   setTabUI(){ document.querySelectorAll('.chat-tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===this.tabName)); },
   tab(name){ this.tabName=name; this.setTabUI(); this.render(); },
   async render(){
