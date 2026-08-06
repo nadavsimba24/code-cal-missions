@@ -3630,11 +3630,14 @@ async function openNewItem(group){
   const g=((st.board.groups)||[]).find(x=>x.id===gid);
   const status=(g&&g.task_status)||undefined;           // new item's status matches its group
   try{
-    const r=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
+    const t=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
       body:withMe({board_id:st.board.id,group_id:gid,title:'פריט חדש',status})});
-    const newId=r&&r.id;
-    await openBoard(st.board.id);
-    if(newId) setTimeout(()=>focusNewItemTitle(newId),80);   // rename it inline
+    if(t&&t.id){
+      // insert the new row in place — no full-board refetch/refresh
+      (st.board.tasks=st.board.tasks||[]).push(t);
+      renderView();
+      setTimeout(()=>focusNewItemTitle(t.id),40);   // rename it inline
+    }
   }catch(e){ toast('שגיאה ביצירת הפריט'); }
   finally{ window._creatingItem=false; }
 }

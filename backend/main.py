@@ -1310,7 +1310,12 @@ def create_task(data: dict):
                         _notify(db, aid, "assign", "שויכת למשימה",
                                 f"שויכת למשימה '{task.title}'.", board_id=board_id, task_id=task.id)
         db.commit()
-        return {"id": task.id, "status": "created"}
+        db.refresh(task)
+        # return the fully-serialized task so the client can insert the new row
+        # in place (no full-board refetch/re-render on every add)
+        my_role = _board_role(db, board_id, creator)
+        cols = (db.query(Board.settings).filter(Board.id == board_id).scalar() or {}).get("columns", [])
+        return _serialize_task(task, db, user_id=creator, board_role=my_role, columns=cols)
 
 # ── Cross-board item linking (connect column) ───────────────────────
 @app.get("/api/items/search")
