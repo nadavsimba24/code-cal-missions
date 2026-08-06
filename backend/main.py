@@ -1504,7 +1504,9 @@ def update_task(task_id: int, data: dict):
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
 
 # ── File uploads (for the Files column) ─────────────────────────────
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB per file
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024  # 4MB per file — the serverless host (Vercel)
+# rejects request bodies larger than ~4.5MB at the edge before they reach us, so
+# keep our own ceiling safely under that. Larger files need external blob storage.
 
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -1512,7 +1514,7 @@ async def upload_file(file: UploadFile = File(...)):
     instances (Vercel's local filesystem is ephemeral and per-instance)."""
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 10MB)")
+        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 4MB)")
     token = uuid.uuid4().hex
     with Session(engine) as db:
         db.add(UploadedFile(token=token, name=file.filename or "file",

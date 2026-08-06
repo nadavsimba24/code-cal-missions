@@ -1226,6 +1226,18 @@ const Router={
 };
 window.addEventListener('hashchange',()=>{ try{Router.apply();}catch(e){} });
 
+/* Uploads go through the serverless function, which caps the request body at
+   ~4.5MB (Vercel). Gate client-side so oversized files get a clear message
+   instead of a silent edge-level 413 (which left broken, 404-on-open links). */
+const MAX_UPLOAD_BYTES=4*1024*1024;   // 4MB — safely under the platform limit
+function fileTooBig(f){
+  if(f && f.size>MAX_UPLOAD_BYTES){
+    toast(`הקובץ גדול מדי (${(f.size/1048576).toFixed(1)}MB). הגודל המרבי הוא 4MB.`);
+    return true;
+  }
+  return false;
+}
+
 /* ============ boot ============ */
 async function boot(){
   Settings.load();
@@ -2832,6 +2844,7 @@ function filesDisp(files,taskId,colId){
 function uploadFileCell(taskId,colId){
   const inp=document.createElement('input');inp.type='file';
   inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
+    if(fileTooBig(f))return;
     const fd=new FormData();fd.append('file',f);
     try{const r=await fetch('/api/upload',{method:'POST',body:fd});if(!r.ok)throw 0;const data=await r.json();
       const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();arr.push(data);
@@ -4122,6 +4135,7 @@ const Chat = {
   emojiMenu(e){ e.stopPropagation(); this._float(e.currentTarget,'<div class="emoji-grid">'+EMOJIS.map(x=>`<button onclick="Chat.insert('${x} ');closeCellPops()">${x}</button>`).join('')+'</div>'); },
   addLink(){ const url=prompt('הדבק קישור:'); if(url)this.insert(url+' '); },
   async _upload(f,label){ if(!f)return;
+    if(fileTooBig(f))return;                                    // block oversized before hitting the edge
     this._uploading=label||f.name; this.renderAtts();          // show loader while uploading
     const started=Date.now();
     const fd=new FormData(); fd.append('file',f,f.name);
