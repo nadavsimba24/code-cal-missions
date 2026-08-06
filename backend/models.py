@@ -162,6 +162,16 @@ class Environment(Base):
     is_primary = Column(Boolean, default=False)  # the default workspace that holds legacy/unassigned boards
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+class Folder(Base):
+    """A folder groups boards within an environment. Managed by the environment's
+    manager (or a system admin). Deleting a folder detaches its boards, never deletes them."""
+    __tablename__ = "folders"
+    id = Column(Integer, primary_key=True)
+    environment_id = Column(Integer, ForeignKey("environments.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
 class EnvironmentMember(Base):
     """Which users are permitted to access an environment. System admins see
     every environment regardless; managers/members see only their own."""
@@ -169,6 +179,7 @@ class EnvironmentMember(Base):
     id = Column(Integer, primary_key=True)
     environment_id = Column(Integer, ForeignKey("environments.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
+    role = Column(String(20), default="member")  # manager | member (env-scoped)
 
 class User(Base):
     __tablename__ = "users"
@@ -194,6 +205,8 @@ class Board(Base):
     organization_id = Column(Integer, ForeignKey("organizations.id"))
     department_id = Column(Integer, ForeignKey("departments.id"))
     environment_id = Column(Integer, ForeignKey("environments.id"), nullable=True)
+    folder_id = Column(Integer, ForeignKey("folders.id"), nullable=True)  # optional grouping within an environment
+    position = Column(Integer, default=0)  # order within its container (folder or environment root)
     name = Column(String(200), nullable=False)
     description = Column(Text)
     board_type = Column(SAEnum(BoardType), default=BoardType.KANBAN)

@@ -84,6 +84,23 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .sb-item .sb-more{margin-inline-start:auto;flex-shrink:0;width:24px;height:24px;border:none;background:none;color:var(--text-light);border-radius:5px;cursor:pointer;opacity:0;transition:.12s;display:grid;place-items:center;font-size:13px}
 .sb-item:hover .sb-more,.sb-item.active .sb-more{opacity:1}
 .sb-item .sb-more:hover{background:rgba(0,0,0,.09);color:var(--text)}
+.sb-item-name{overflow:hidden;text-overflow:ellipsis}
+.sb-sec-acts{display:inline-flex;gap:10px;align-items:center}
+.sb-sec-acts i{cursor:pointer}
+.sb-empty{padding:14px;color:var(--text-light);font-size:12px;text-align:center}
+/* folders in the sidebar board list */
+.sb-folder{margin-bottom:1px}
+.sb-folder-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--text);font-size:14px;white-space:nowrap;overflow:hidden;font-weight:600}
+.sb-folder-head:hover{background:var(--row-hover)}
+.sb-folder-head .folder-caret{font-size:10px;color:var(--text-light);width:11px;flex-shrink:0}
+.sb-folder-head .folder-name{overflow:hidden;text-overflow:ellipsis;flex:1}
+.sb-folder-head .folder-count{font-size:11px;color:var(--text-light);font-weight:500}
+.sb-folder-head .sb-more{flex-shrink:0;width:24px;height:24px;border:none;background:none;color:var(--text-light);border-radius:5px;cursor:pointer;opacity:0;transition:.12s;display:grid;place-items:center;font-size:13px}
+.sb-folder-head:hover .sb-more{opacity:1}
+.sb-folder-head .sb-more:hover{background:rgba(0,0,0,.09);color:var(--text)}
+.sb-folder-boards{padding-inline-start:14px;min-height:2px}
+.sb-folder-boards:empty{min-height:8px}
+.rm-sub-label{font-size:10px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.04em;padding:6px 11px 2px}
 /* environment (workspace) switcher */
 #ws-switch{position:relative}
 .ws-btn .ws-caret{margin-inline-start:auto;flex-shrink:0;font-size:11px;color:var(--text-light);transition:transform .15s}
@@ -95,6 +112,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .ws-opt.active{background:var(--primary-soft)}
 .ws-opt .ic{flex-shrink:0}
 .ws-opt-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-opt-badge{font-size:9.5px;font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:4px;padding:1px 5px;vertical-align:middle}
 .ws-opt-act{display:none;gap:8px;flex-shrink:0;color:var(--text-light)}
 .ws-opt:hover .ws-opt-act{display:inline-flex}
 .ws-opt-act i{cursor:pointer;font-size:11px}
@@ -858,6 +876,8 @@ img.pf-av{object-fit:cover;background:#fff}
 .chat-noperm{padding:14px;text-align:center;color:var(--text-muted);font-size:13px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:8px}
 .chat-noperm i{color:var(--text-light)}
 .composer{background:var(--surface);border-top:1px solid var(--border);padding:10px 12px 10px 24px;position:relative}
+/* the same rich composer, rendered inline when editing an existing comment */
+.composer.composer-edit{border-top:none;border:1px solid var(--primary);border-radius:10px;padding:8px;margin-top:5px;box-shadow:0 0 0 3px var(--primary-soft)}
 /* drag-and-drop import zone (files / Outlook emails) */
 .comp-drop{position:absolute;inset:6px;z-index:6;display:none;flex-direction:column;align-items:center;justify-content:center;gap:6px;border:2px dashed var(--primary);border-radius:11px;background:color-mix(in srgb,var(--primary) 9%,var(--surface));color:var(--primary);font-weight:700;font-size:14px;pointer-events:none;text-align:center}
 .comp-drop.show{display:flex}
@@ -996,7 +1016,7 @@ img.pf-av{object-fit:cover;background:#fff}
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
     <div class="sb-section">סביבת עבודה</div>
     <div id="ws-switch"></div>
-    <div class="sb-section">לוחות <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש (מנהל מערכת בלבד)" onclick="newBoardQuick()"></i></div>
+    <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="newBoardQuick()"></i></span></div>
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
       <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
@@ -1180,7 +1200,10 @@ const VIEWS = [
   {id:'map',he:'מפה',ic:'fa-map-location-dot'},
   {id:'gis',he:'ניתוח שטח',ic:'fa-globe'},
 ];
-const api = async (p,o)=>{const r=await fetch(p,o);if(!r.ok)throw new Error(p+' '+r.status);return r.json();};
+const api = async (p,o)=>{const r=await fetch(p,o);
+  if(!r.ok){ let detail=''; try{ const j=await r.json(); detail=(j&&j.detail)||''; }catch(e){}
+    const err=new Error(p+' '+r.status+(detail?': '+detail:'')); err.status=r.status; err.detail=detail; throw err; }
+  return r.json();};
 const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const initials = n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('');
 /* stable per-name hash — drives the initials-avatar color */
@@ -1319,29 +1342,115 @@ const Auth = {
 };
 async function loadBoards(){
   try{ st.boards = await api('/api/boards'+(meId()?'?user_id='+meId():'')); }catch(e){ st.boards=[]; }
+  try{ const d=await api('/api/folders'+(meId()?'?user_id='+meId():'')); st.folders=d.folders||[]; }catch(e){ st.folders=[]; }
   renderSidebar();
 }
 function renderSidebar(){
-  // show only the boards that belong to the active environment
   const active = (typeof Env!=='undefined') ? Env.active() : null;
-  const boards = active ? (st.boards||[]).filter(b => b.environment_id===active.id) : (st.boards||[]);
-  const emptyMsg = active ? 'אין לוחות בסביבה זו' : 'אין לוחות שהוזמנת אליהם';
-  document.getElementById('board-list').innerHTML = boards.map(b=>`
-    <div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" onclick="openBoard(${b.id})" oncontextmenu="boardRowMenu(event,${b.id});return false">
+  const el=document.getElementById('board-list');
+  const canManage = !!(active && (isSysAdmin() || active.can_manage));
+  const fbtn=document.getElementById('new-folder-btn'); if(fbtn)fbtn.style.display=canManage?'':'none';
+  if(!active){ el.innerHTML=`<div class="sb-empty">אין לוחות שהוזמנת אליהם</div>`; return; }
+  if(!st._foldersCollapsed){ try{ st._foldersCollapsed=new Set(JSON.parse(localStorage.getItem('cc_folders_collapsed')||'[]')); }catch(e){ st._foldersCollapsed=new Set(); } }
+  const collapsed=st._foldersCollapsed;
+  const envFolders=(st.folders||[]).filter(f=>f.environment_id===active.id).sort((a,b)=>(a.position-b.position)||a.id-b.id);
+  const envBoards=(st.boards||[]).filter(b=>b.environment_id===active.id);
+  const inContainer=fid=>envBoards.filter(b=>(b.folder_id||null)===fid).sort((a,b)=>(a.position-b.position)||a.id-b.id);
+  const boardItem=b=>`<div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" data-bid="${b.id}" onclick="openBoard(${b.id})" oncontextmenu="boardRowMenu(event,${b.id});return false">
       <span class="ic">${b.icon||'📋'}</span>
-      <span style="overflow:hidden;text-overflow:ellipsis">${esc(b.name)}</span>
+      <span class="sb-item-name">${esc(b.name)}</span>
       <button class="sb-more" title="אפשרויות לוח" onclick="boardRowMenu(event,${b.id})" aria-label="אפשרויות לוח"><i class="fa-solid fa-ellipsis-vertical"></i></button>
-    </div>`).join('')||`<div style="padding:14px;color:var(--text-light);font-size:12px;text-align:center">${emptyMsg}</div>`;
+    </div>`;
+  const folderHTML=f=>{
+    const boards=inContainer(f.id), isCol=collapsed.has(f.id);
+    return `<div class="sb-folder" data-fid="${f.id}">
+      <div class="sb-folder-head" onclick="Folders.toggle(${f.id})">
+        <i class="fa-solid fa-chevron-${isCol?'left':'down'} folder-caret"></i>
+        <span class="ic"><i class="fa-solid fa-folder" style="color:var(--primary)"></i></span>
+        <span class="folder-name">${esc(f.name)}</span>
+        <span class="folder-count">${boards.length}</span>
+        ${canManage?`<button class="sb-more" title="אפשרויות תיקייה" onclick="event.stopPropagation();Folders.menu(event,${f.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}
+      </div>
+      <div class="sb-folder-boards" data-folder="${f.id}" ${isCol?'style="display:none"':''}>${boards.map(boardItem).join('')}</div>
+    </div>`;
+  };
+  const root=inContainer(null);
+  el.innerHTML=`<div id="sb-folders">${envFolders.map(folderHTML).join('')}</div>`
+    +`<div id="sb-root" class="sb-folder-boards" data-folder="root">${root.map(boardItem).join('')}</div>`
+    +((!envFolders.length&&!root.length)?`<div class="sb-empty">אין לוחות בסביבה זו</div>`:'');
+  if(canManage) Folders.initSort();
 }
+const Folders = {
+  folderModal(fid){
+    const edit=!!fid, f=edit?(st.folders||[]).find(x=>x.id===fid):null, env=Env.active();
+    if(!edit && !(env && (isSysAdmin()||env.can_manage))){ toast('רק מנהל מערכת או מנהל הסביבה'); return; }
+    showModal(`<h2><i class="fa-solid fa-folder-plus" style="color:var(--primary)"></i> ${edit?'שינוי שם תיקייה':'תיקייה חדשה'}</h2>
+      <div class="mbody">
+        <div class="field"><label>שם התיקייה</label><input id="fld-name" value="${edit?esc(f?f.name:''):''}" placeholder="לדוגמה: פרויקטים אסטרטגיים" onkeydown="if(event.key==='Enter')Folders.save(${edit?fid:'null'})"></div>
+        ${edit?'':`<div style="font-size:12.5px;color:var(--text-light);margin-top:4px"><i class="fa-solid fa-circle-info"></i> תיקיות מקבצות לוחות בתוך הסביבה. אפשר לגרור לוחות פנימה והחוצה.</div>`}
+      </div>
+      <div class="mfoot"><button class="btn btn-primary" onclick="Folders.save(${edit?fid:'null'})"><i class="fa-solid fa-check"></i> ${edit?'שמור':'צור תיקייה'}</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+    setTimeout(()=>{const n=document.getElementById('fld-name');if(n){n.focus();n.select&&n.select();}},40); },
+  create(){ this.folderModal(null); },
+  async save(fid){
+    const name=(document.getElementById('fld-name').value||'').trim(); if(!name){toast('צריך שם לתיקייה');return;}
+    const env=Env.active();
+    try{
+      if(fid) await api('/api/folders/'+fid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name})});
+      else{ if(!env){toast('בחר סביבה');return;} await api('/api/folders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),environment_id:env.id,name})}); }
+      closeModals(); toast(fid?'התיקייה עודכנה':'התיקייה נוצרה'); loadBoards();
+    }catch(err){ toast(err&&err.detail?err.detail:'שגיאה בשמירת התיקייה'); } },
+  toggle(fid){ st._foldersCollapsed=st._foldersCollapsed||new Set();
+    if(st._foldersCollapsed.has(fid))st._foldersCollapsed.delete(fid); else st._foldersCollapsed.add(fid);
+    try{ localStorage.setItem('cc_folders_collapsed',JSON.stringify([...st._foldersCollapsed])); }catch(e){}
+    renderSidebar(); },
+  menu(e,fid){ e.stopPropagation();
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
+      <button class="rm-item" onclick="closeCellPops();Folders.rename(${fid})"><i class="fa-solid fa-pen"></i> שנה שם</button>
+      <button class="rm-item danger" onclick="closeCellPops();Folders.del(${fid})"><i class="fa-solid fa-trash"></i> מחק תיקייה</button>
+    </div>`,'row-menu-pop'); },
+  rename(fid){ this.folderModal(fid); },
+  del(fid){ const f=(st.folders||[]).find(x=>x.id===fid);
+    askConfirm(`למחוק את התיקייה "${f?f.name:''}"?`,async()=>{
+      try{ await api('/api/folders/'+fid+'?actor_id='+meId(),{method:'DELETE'}); toast('התיקייה נמחקה'); loadBoards(); }
+      catch(e){ toast('שגיאה במחיקה'); }
+    },{title:'מחיקת תיקייה',confirmText:'מחק',note:'הלוחות שבתיקייה יעברו לרשימה הראשית — לא יימחקו.'}); },
+  moveBoard(bid,fid){ const b=(st.boards||[]).find(x=>x.id===bid); if(!b)return; const env=b.environment_id;
+    const pos=(st.boards||[]).filter(x=>x.environment_id===env && (x.folder_id||null)===(fid||null)).length;
+    api('/api/environments/'+env+'/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),boards:[{id:bid,folder_id:fid,position:pos}]})})
+      .then(()=>{ toast('הלוח הועבר'); loadBoards(); }).catch(()=>toast('שגיאה')); },
+  initSort(){ if(!window.Sortable)return;
+    const fwrap=document.getElementById('sb-folders');
+    if(fwrap) new Sortable(fwrap,{group:'sb-folders',handle:'.sb-folder-head',draggable:'.sb-folder',animation:150,onEnd:()=>Folders.persist()});
+    document.querySelectorAll('#board-list .sb-folder-boards').forEach(c=>{
+      new Sortable(c,{group:'sb-boards',draggable:'.sb-item',animation:150,onEnd:()=>Folders.persist()});
+    }); },
+  persist(){ const env=Env.active(); if(!env)return;
+    const folders=[...document.querySelectorAll('#sb-folders .sb-folder')].map((el,i)=>({id:+el.dataset.fid,position:i}));
+    const boards=[];
+    document.querySelectorAll('#sb-root .sb-item').forEach((el,i)=>boards.push({id:+el.dataset.bid,folder_id:null,position:i}));
+    document.querySelectorAll('#sb-folders .sb-folder').forEach(fel=>{ const fid=+fel.dataset.fid;
+      fel.querySelectorAll('.sb-folder-boards .sb-item').forEach((el,i)=>boards.push({id:+el.dataset.bid,folder_id:fid,position:i})); });
+    api('/api/environments/'+env.id+'/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),folders,boards})})
+      .then(()=>loadBoards()).catch(()=>{ toast('שגיאה בשמירת הסדר'); loadBoards(); }); },
+};
 function boardRowMenu(e,id){
   e.stopPropagation(); e.preventDefault();
   const b=(st.boards||[]).find(x=>x.id===id); if(!b)return;
-  const isAdmin=b.my_role==='admin';
+  const canManageEnv = !!b.can_manage_env || isSysAdmin();
+  const canDelete = b.my_role==='admin' || canManageEnv;
   const items=[];
   items.push(`<button class="rm-item" onclick="openBoard(${id})"><i class="fa-solid fa-arrow-up-right-from-square"></i> פתח לוח</button>`);
-  if(isAdmin) items.push(`<button class="rm-item danger" onclick="closeCellPops();deleteBoardById(${id})"><i class="fa-solid fa-trash"></i> מחק לוח</button>`);
-  else items.push(`<div class="rm-note">רק מנהל הלוח יכול למחוק</div>`);
-  openCellPop(e.currentTarget,`<div class="row-menu">${items.join('')}</div>`,'row-menu-pop');
+  if(canManageEnv){
+    const folders=(st.folders||[]).filter(f=>f.environment_id===b.environment_id);
+    items.push(`<div class="rm-sub-label">העבר לתיקייה</div>`);
+    if((b.folder_id||null)!==null) items.push(`<button class="rm-item" onclick="closeCellPops();Folders.moveBoard(${id},null)"><i class="fa-solid fa-inbox"></i> ללא תיקייה</button>`);
+    folders.forEach(f=>{ if(f.id!==b.folder_id) items.push(`<button class="rm-item" onclick="closeCellPops();Folders.moveBoard(${id},${f.id})"><i class="fa-solid fa-folder"></i> ${esc(f.name)}</button>`); });
+    if(!folders.length) items.push(`<div class="rm-note">אין תיקיות — צור תיקייה חדשה</div>`);
+  }
+  if(canDelete) items.push(`<button class="rm-item danger" onclick="closeCellPops();deleteBoardById(${id})"><i class="fa-solid fa-trash"></i> מחק לוח</button>`);
+  else items.push(`<div class="rm-note">רק מנהל הלוח או הסביבה יכול למחוק</div>`);
+  openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${items.join('')}</div>`,'row-menu-pop');
 }
 function deleteBoardById(id){
   const b=(st.boards||[]).find(x=>x.id===id)||(st.board&&st.board.id===id?st.board:null);
@@ -1357,7 +1466,7 @@ function deleteBoardById(id){
         if(st.boards.length){ await openBoard(st.boards[0].id); }
         else{ document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות</div></div>'; }
       }
-    }catch(e){ toast('רק מנהל הלוח יכול למחוק'); }
+    }catch(e){ toast('רק מנהל הלוח או הסביבה יכול למחוק'); }
   },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
 }
 async function openBoard(id){
@@ -1844,19 +1953,21 @@ const Env = {
       return;
     }
     const a=this.active();
-    // a single environment (and no admin management options) needs no dropdown — show it statically
-    if(this.items.length===1 && !admin && !hasCap('create_environment')){
+    // manageable = system admin (all envs) or an environment manager (their env)
+    const manageAny=admin||this.items.some(e=>e.can_manage);
+    // a single environment with no management options needs no dropdown — show it statically
+    if(this.items.length===1 && !manageAny && !hasCap('create_environment')){
       wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(a?a.name:'')}</span></div>`;
       return;
     }
     const rows=this.items.map(e=>`
       <button class="ws-opt ${a&&a.id===e.id?'active':''}" onclick="Env.select(${e.id})">
         <span class="ic">${e.icon||'🏢'}</span>
-        <span class="ws-opt-name">${esc(e.name)}</span>
-        ${admin?`<span class="ws-opt-act">
+        <span class="ws-opt-name">${esc(e.name)}${e.my_role==='manager'?' <span class="ws-opt-badge">מנהל</span>':''}</span>
+        ${e.can_manage?`<span class="ws-opt-act">
           <i class="fa-solid fa-user-gear" title="ניהול משתמשים" onclick="event.stopPropagation();Env.members(${e.id})"></i>
           <i class="fa-solid fa-pen" title="שנה שם" onclick="event.stopPropagation();Env.rename(${e.id})"></i>
-          ${e.is_primary?'':`<i class="fa-solid fa-trash" title="מחק" onclick="event.stopPropagation();Env.del(${e.id})"></i>`}
+          ${(admin&&!e.is_primary)?`<i class="fa-solid fa-trash" title="מחק" onclick="event.stopPropagation();Env.del(${e.id})"></i>`:''}
         </span>`:''}
         ${a&&a.id===e.id?'<i class="fa-solid fa-check ws-opt-chk"></i>':''}
       </button>`).join('');
@@ -1890,24 +2001,33 @@ const Env = {
       try{ await api('/api/environments/'+id+'?actor_id='+meId(),{method:'DELETE'}); toast('הסביבה נמחקה'); if(st.env&&st.env.id===id)st.env=null; await this.load(); renderSidebar(); }
       catch(e){ toast('לא ניתן למחוק סביבה זו'); }
     },{title:'מחיקת סביבה',confirmText:'מחק',note:'הלוחות יעברו לסביבת ברירת המחדל — לא יימחקו.'}); },
-  // ── members management (who may access the environment) — sysadmin only ──
-  async members(id){ this._set(false); if(!isSysAdmin()){ toast('רק מנהל מערכת'); return; }
-    const env=this.items.find(x=>x.id===id); this.membersFor=id;
-    let d={members:[],available:[]}; try{ d=await api('/api/environments/'+id+'/members?actor_id='+meId()); }catch(e){}
+  // ── members management (who may access the environment) — sysadmin + env manager ──
+  async members(id){ this._set(false);
+    const env=this.items.find(x=>x.id===id);
+    if(!(isSysAdmin()||(env&&env.can_manage))){ toast('רק מנהל מערכת או מנהל הסביבה'); return; }
+    this.membersFor=id;
+    let d={members:[],available:[],can_set_manager:false}; try{ d=await api('/api/environments/'+id+'/members?actor_id='+meId()); }catch(e){}
     this.membersData=d;
-    showModal(`<h2><i class="fa-solid fa-user-gear" style="color:var(--primary)"></i> ${esc(env?env.name:'סביבה')} — הרשאות גישה</h2>
+    const roleAdd=d.can_set_manager?`<select id="envm-role"><option value="member">חבר</option><option value="manager">מנהל סביבה</option></select>`:'';
+    // same design & logic as a board's "חברים והרשאות" — restricted to sysadmin / env manager
+    showModal(`<h2><i class="fa-solid fa-user-shield" style="color:var(--primary)"></i> חברים והרשאות — ${esc(env?env.name:'סביבה')}</h2>
       <div class="mbody">
-        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> מנהל מערכת רואה את כל הסביבות. כאן בוחרים אילו משתמשים (מנהל / חבר צוות) רשאים לגשת לסביבה זו.</div>
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> רק חברי הסביבה רואים אותה ואת לוחותיה. <b>מנהל סביבה</b> מנהל חברים, לוחות ותיקיות.${d.can_set_manager?'':' רק מנהל מערכת ממנה מנהל סביבה.'}</div>
+        <div id="envm-list">${this.membersHTML()}</div>
         <div class="mem-add">
           <select id="envm-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כל המשתמשים כבר בסביבה —</option>'}</select>
-          <button class="btn btn-primary" onclick="Env.addMember()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-user-plus"></i> הוסף</button>
+          ${roleAdd}
+          <button class="btn btn-primary" onclick="Env.addMember()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-plus"></i> הוסף</button>
         </div>
-        <div id="envm-list">${this.membersHTML()}</div>
       </div>`);
   },
-  membersHTML(){ return this.membersData.members.map(m=>`<div class="mem-row">
+  membersHTML(){ const canSet=this.membersData.can_set_manager;
+    return this.membersData.members.map(m=>`<div class="mem-row">
       <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
-      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</div></div>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}${(m.role||'member')==='manager'?' <span class="perm-badge" style="background:var(--primary-soft);color:var(--primary)">מנהל סביבה</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
+      ${canSet
+        ? `<select onchange="Env.setMemberRole(${m.user_id},this.value)">${['manager','member'].map(r=>`<option value="${r}" ${(m.role||'member')===r?'selected':''}>${r==='manager'?'מנהל סביבה':'חבר'}</option>`).join('')}</select>`
+        : `<span class="perm-badge">${esc(m.role_he||'חבר')}</span>`}
       <button class="mem-del" title="הסר מהסביבה" onclick="Env.removeMember(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>
     </div>`).join('')||'<div style="padding:16px;text-align:center;color:var(--text-light);font-size:12.5px">אין משתמשים מורשים עדיין</div>'; },
   async refreshMembers(){ try{ this.membersData=await api('/api/environments/'+this.membersFor+'/members?actor_id='+meId()); }catch(e){}
@@ -1915,8 +2035,14 @@ const Env = {
     const s=document.getElementById('envm-user'); if(s)s.innerHTML=this.membersData.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כל המשתמשים כבר בסביבה —</option>';
     this.load(); },
   async addMember(){ const uid=+document.getElementById('envm-user').value; if(!uid){toast('בחר משתמש');return;}
-    try{ await api('/api/environments/'+this.membersFor+'/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid})}); toast('נוסף לסביבה'); this.refreshMembers(); }catch(e){toast('שגיאה');} },
-  removeMember(uid){ api('/api/environments/'+this.membersFor+'/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}).then(()=>{ toast('הוסר'); this.refreshMembers(); }).catch(()=>toast('שגיאה')); },
+    const rs=document.getElementById('envm-role'); const role=rs?rs.value:'member';
+    try{ await api('/api/environments/'+this.membersFor+'/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('נוסף לסביבה'); this.refreshMembers(); }catch(e){toast('שגיאה');} },
+  setMemberRole(uid,role){ api('/api/environments/'+this.membersFor+'/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}).then(()=>{ toast('התפקיד עודכן'); this.refreshMembers(); }).catch(()=>{toast('שגיאה');this.refreshMembers();}); },
+  removeMember(uid){ api('/api/environments/'+this.membersFor+'/members/'+uid+'?actor_id='+meId(),{method:'DELETE'})
+    .then(()=>{ toast('הוסר'); this.refreshMembers(); })
+    .catch(err=>{
+      if(err&&err.status===400&&err.detail){ alertModal('לא ניתן להסיר משתתף',err.detail); }
+      else toast(err&&err.detail?err.detail:'שגיאה'); }); },
 };
 
 /* ===== system administration — user directory ===== */
@@ -3924,8 +4050,13 @@ const Chat = {
     this._commentsById={}; const _flat=arr=>arr.forEach(c=>{this._commentsById[c.id]=c; if(c.replies)_flat(c.replies);}); _flat(this.comments);
     const list=this.comments.length? this.comments.map(c=>this.commentHTML(c)).join('')
       : '<div class="empty" style="padding:34px"><i class="fa-regular fa-comments"></i><div>אין הודעות עדיין</div></div>';
-    body.innerHTML=`<div class="chat-list">${list}</div>${canComment()?this.composerHTML():`<div class="chat-noperm"><i class="fa-solid fa-lock"></i> ${st.me&&st.me.role==='viewer'?'למשתמש הרשאת צפייה בלבד':'הלוח מוגדר לצפייה בלבד'} — אין אפשרות להגיב</div>`}`;
+    // while editing a comment, the rich composer moves inline into that comment;
+    // the bottom composer is hidden so there's a single active editor (#comp-text)
+    const bottom = this.editing!=null ? ''
+      : (canComment()?this.composerHTML('new'):`<div class="chat-noperm"><i class="fa-solid fa-lock"></i> ${st.me&&st.me.role==='viewer'?'למשתמש הרשאת צפייה בלבד':'הלוח מוגדר לצפייה בלבד'} — אין אפשרות להגיב</div>`);
+    body.innerHTML=`<div class="chat-list">${list}</div>${bottom}`;
     this.renderAtts();
+    if(this.editing!=null){ const ec=this._commentsById[this.editing]; const ta=document.getElementById('comp-text'); if(ta){ if(ec&&ta.value==='')ta.value=ec.content||''; this.syncHL(); } }
     this.markSeen();   // record that I viewed the thread (updates others' receipts)
   },
   async markSeen(){ if(!this.taskId)return; try{ await api('/api/tasks/'+this.taskId+'/comments/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){} },
@@ -3941,10 +4072,14 @@ const Chat = {
     pop.style.left=Math.max(8,Math.min(window.innerWidth-pop.offsetWidth-8,r.left))+'px';
   },
   seenPopClose(){ const p=document.getElementById('seen-pop'); if(p)p.remove(); },
-  composerHTML(){
-    return `<div class="composer" ondragenter="Chat.onDragOver(event)" ondragover="Chat.onDragOver(event)" ondragleave="Chat.onDragLeave(event)" ondrop="Chat.onDrop(event)">
+  composerHTML(mode,cid){
+    const edit=mode==='edit';
+    const foot=edit
+      ? `<button class="btn btn-primary" onclick="Chat.saveEdit(${cid})"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="Chat.cancelEdit()">ביטול</button>`
+      : `<button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button>`;
+    return `<div class="composer${edit?' composer-edit':''}" ondragenter="Chat.onDragOver(event)" ondragover="Chat.onDragOver(event)" ondragleave="Chat.onDragLeave(event)" ondrop="Chat.onDrop(event)">
       <div class="comp-drop" id="comp-drop"><i class="fa-solid fa-envelope-open-text"></i> שחררו כאן לצירוף<small>קובץ או מייל מ‑Outlook</small></div>
-      ${this.replyTo?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
+      ${(!edit&&this.replyTo)?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
       <div class="comp-tools">
         <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
         <button title="צ'ק-ליסט" onclick="Chat.checkFromLine()"><i class="fa-solid fa-square-check"></i></button>
@@ -3956,11 +4091,11 @@ const Chat = {
         <div class="comp-check" id="comp-check"></div>
         <div class="comp-hl-wrap">
           <div class="comp-hl" id="comp-hl" aria-hidden="true"></div>
-          <textarea id="comp-text" placeholder="כתוב הודעה…  (Enter לשליחה · ניתן להדביק או לגרור צילום מסך)" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
+          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…':'כתוב הודעה…  (Enter לשליחה · ניתן להדביק או לגרור צילום מסך)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
         </div>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
-      <div class="comp-foot"><button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button></div>
+      <div class="comp-foot">${foot}</div>
     </div>`;
   },
   commentHTML(c,isReply){
@@ -3969,10 +4104,7 @@ const Chat = {
     const replies=(c.replies||[]).map(r=>this.commentHTML(r,true)).join('');
     const editing=this.editing===c.id;
     const bodyOrEdit=editing
-      ? `<div class="cmt-edit">
-          <textarea id="edit-${c.id}" class="cmt-edit-ta" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();Chat.saveEdit(${c.id});} if(event.key==='Escape')Chat.cancelEdit();">${esc(c.content||'')}</textarea>
-          <div class="cmt-edit-foot"><button class="ce-save" onclick="Chat.saveEdit(${c.id})"><i class="fa-solid fa-check"></i> שמור</button><button class="ce-cancel" onclick="Chat.cancelEdit()">ביטול</button></div>
-        </div>`
+      ? `<div class="cmt-edit">${this.composerHTML('edit',c.id)}</div>`
       : `<div class="cmt-body">${(c.content||'').trim()?this.renderContent(c.content,c.id):''}${(c.attachments||[]).length?`<div class="cmt-atts">${c.attachments.map(f=>this.attPreview(f)).join('')}</div>`:''}</div>
         <div class="cmt-actions">
           <button class="${liked?'liked':''}" onclick="Chat.like(${c.id})"><i class="fa-${liked?'solid':'regular'} fa-thumbs-up"></i> ${(c.likes||[]).length||''}</button>
@@ -3990,13 +4122,36 @@ const Chat = {
       </div>
     </div>`;
   },
-  startEdit(cid){ this.editing=cid; this.renderChat(document.getElementById('chat-body')); setTimeout(()=>{const ta=document.getElementById('edit-'+cid); if(ta){ta.focus();ta.setSelectionRange(ta.value.length,ta.value.length);}},40); },
-  cancelEdit(){ this.editing=null; this.renderChat(document.getElementById('chat-body')); },
+  startEdit(cid){
+    const c=this._commentsById&&this._commentsById[cid];
+    // reuse the shared composer state for the edit session (attachments + mentions)
+    this.editing=cid; this.replyTo=null;
+    this.atts=(c&&c.attachments?c.attachments.slice():[]);
+    this.mentions=(c&&c.mentions?c.mentions.slice():[]);
+    this.renderChat(document.getElementById('chat-body')).then(()=>{
+      const ta=document.getElementById('comp-text');
+      if(ta){ ta.focus(); ta.setSelectionRange(ta.value.length,ta.value.length); this.syncHL(); }
+    });
+  },
+  cancelEdit(){ this.editing=null; this.atts=[]; this.mentions=[]; this.renderChat(document.getElementById('chat-body')); },
   async saveEdit(cid){
-    const ta=document.getElementById('edit-'+cid); const content=(ta?ta.value:'').trim();
-    if(!content){ toast('ההודעה ריקה'); return; }
-    try{ await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({content})}); this.editing=null; await this.bump(); this.renderChat(document.getElementById('chat-body')); }
-    catch(e){ toast('אין הרשאה לערוך הודעה זו'); }
+    if(this._posting)return;
+    const ta=document.getElementById('comp-text'); let content=(ta?ta.value:'').trim();
+    // fold interactive checklist rows into the message (same as posting)
+    const checkLines=[...document.querySelectorAll('#comp-check .cl-item')].map(r=>{
+      const t=r.querySelector('.cl-txt').value.trim(); if(!t)return null;
+      return (r.querySelector('.cl-box').checked?'☑ ':'☐ ')+t;
+    }).filter(Boolean);
+    if(checkLines.length) content=checkLines.join('\n')+(content?'\n'+content:'');
+    if(!content&&!this.atts.length){ toast('ההודעה ריקה'); return; }
+    this._posting=true;
+    try{
+      await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},
+        body:withMe({content,mentions:this.mentions,attachments:this.atts})});
+      this.editing=null; this.atts=[]; this.mentions=[];
+      await this.bump(); this.renderChat(document.getElementById('chat-body'));
+    }catch(e){ toast('אין הרשאה לערוך הודעה זו'); }
+    finally{ this._posting=false; }
   },
   renderContent(text,cid){
     return (text||'').split('\n').map(line=>{
@@ -4059,7 +4214,8 @@ const Chat = {
       else{ this.insert('\n'+(m[1]||'')+'☐ '); }
       return;
     }
-    e.preventDefault(); this.post();
+    e.preventDefault();
+    if(this.editing!=null) this.saveEdit(this.editing); else this.post();   // Enter saves while editing
   },
   insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); this.syncHL(); },
   insertCheck(){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; const before=ta.value.slice(0,s); this.insert((before===''||before.endsWith('\n')?'':'\n')+'☐ '); },
@@ -4616,6 +4772,18 @@ function askConfirm(message,onYes,opts){
       <button class="btn ${opts.danger===false?'btn-primary':'btn-danger'}" onclick="window._confirmYes()">${esc(opts.confirmText||'מחק')}</button>
       <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
     </div>
+  </div>`);
+  document.getElementById('modal').classList.add('confirm-modal');
+  document.getElementById('overlay').classList.add('confirm-overlay');
+}
+
+// simple info dialog (single OK button) — for messages that are too long/important for a toast
+function alertModal(title,message,icon){
+  showModal(`<div class="confirm-box">
+    <div class="confirm-ic"><i class="fa-solid ${icon||'fa-circle-info'}"></i></div>
+    <h2 style="border:none;padding:0 0 6px;text-align:center">${esc(title||'שים לב')}</h2>
+    <div class="confirm-msg">${esc(message||'')}</div>
+    <div class="confirm-actions"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>
   </div>`);
   document.getElementById('modal').classList.add('confirm-modal');
   document.getElementById('overlay').classList.add('confirm-overlay');

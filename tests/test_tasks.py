@@ -7,6 +7,27 @@ def _board_group(client, board_id=1):
     return gid
 
 
+def test_edit_comment_keeps_mentions_and_attachments(client, admin_id):
+    """Editing a comment persists content, @mentions and attachments (parity with
+    the composer), not just the text body."""
+    r = client.post("/api/tasks/1/comments", json={"content": "מקורי", "user_id": admin_id})
+    cid = r.json()["id"]
+    try:
+        r = client.patch(f"/api/comments/{cid}", json={
+            "user_id": admin_id,
+            "content": "ערוך עם תיוג",
+            "mentions": [admin_id],
+            "attachments": [{"name": "x.txt", "url": "/api/files/abc"}],
+        })
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["content"] == "ערוך עם תיוג"
+        assert d["mentions"] == [admin_id]
+        assert d["attachments"] and d["attachments"][0]["url"] == "/api/files/abc"
+    finally:
+        client.delete(f"/api/comments/{cid}?user_id={admin_id}")
+
+
 def test_task_lifecycle(client):
     """Full task flow: create -> appears on board -> update -> comment -> move -> delete."""
     gid = _board_group(client)

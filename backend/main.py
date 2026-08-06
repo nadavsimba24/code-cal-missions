@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
 from models import (
-    Organization, Department, Environment, EnvironmentMember, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission,
+    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -69,10 +69,18 @@ def _migrate():
         bcols = {r[1] for r in conn.execute(text("PRAGMA table_info(boards)"))}
         if "environment_id" not in bcols:
             conn.execute(text("ALTER TABLE boards ADD COLUMN environment_id INTEGER"))
+        if "folder_id" not in bcols:
+            conn.execute(text("ALTER TABLE boards ADD COLUMN folder_id INTEGER"))
+        if "position" not in bcols:
+            conn.execute(text("ALTER TABLE boards ADD COLUMN position INTEGER DEFAULT 0"))
         # environments: primary-workspace flag (may predate the column)
         ecols = {r[1] for r in conn.execute(text("PRAGMA table_info(environments)"))}
         if ecols and "is_primary" not in ecols:
             conn.execute(text("ALTER TABLE environments ADD COLUMN is_primary BOOLEAN DEFAULT 0"))
+        # environment members: per-environment role (manager | member)
+        emcols = {r[1] for r in conn.execute(text("PRAGMA table_info(environment_members)"))}
+        if emcols and "role" not in emcols:
+            conn.execute(text("ALTER TABLE environment_members ADD COLUMN role VARCHAR(20) DEFAULT 'member'"))
         # notifications table may predate the task_id column (created before mentions)
         ncols = {r[1] for r in conn.execute(text("PRAGMA table_info(notifications)"))}
         if ncols and "task_id" not in ncols:
@@ -112,7 +120,10 @@ else:
             _conn.execute(_text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON"))
             _conn.execute(_text("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER"))
             _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER"))
+            _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER"))
+            _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0"))
             _conn.execute(_text("ALTER TABLE environments ADD COLUMN IF NOT EXISTS is_primary BOOLEAN DEFAULT FALSE"))
+            _conn.execute(_text("ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'"))
     except Exception:
         pass
 
@@ -487,7 +498,8 @@ def _col_perm(col, user_id, board_role):
 @app.get("/api/boards")
 def list_boards(user_id: Optional[int] = None):
     with Session(engine) as db:
-        boards = db.query(Board).filter(Board.is_archived == False).all()
+        boards = db.query(Board).filter(Board.is_archived == False).order_by(
+            Board.position, Board.id).all()
         # system (workspace) admins see every board; everyone else only the boards
         # they were invited to (membership-based visibility)
         if user_id is not None and _ws_role(db, user_id) != "admin":
@@ -505,8 +517,11 @@ def list_boards(user_id: Optional[int] = None):
                 "is_archived": b.is_archived,
                 "department_name": dept_name,
                 "environment_id": b.environment_id,
+                "folder_id": b.folder_id,
+                "position": b.position or 0,
                 "task_count": task_count,
                 "my_role": _board_role(db, b.id, user_id) if user_id is not None else None,
+                "can_manage_env": _can_manage_env(db, b.environment_id, user_id) if user_id is not None else False,
                 "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             })
         return result
@@ -606,21 +621,29 @@ def create_board(data: dict):
         # only a system (workspace) admin may create boards; the creator becomes
         # the board's first admin, so a board is never created without a manager.
         creator = data.get("user_id")
-        if not _cap(db, creator, "create_board"):
-            raise HTTPException(403, "אין לך הרשאה ליצור לוח חדש")
-        dept_id = data.get("department_id")
-        if not dept_id:
-            dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
         # a new board belongs to the environment it was created in (default: primary workspace)
         env_id = data.get("environment_id")
         if not env_id:
             primary = db.query(Environment).filter(Environment.is_primary == True).first()
             env_id = primary.id if primary else None
+        # allowed if the user has the global create-board capability, or manages the
+        # target environment (an environment manager runs their own environment)
+        if not (_cap(db, creator, "create_board") or _can_manage_env(db, env_id, creator)):
+            raise HTTPException(403, "אין לך הרשאה ליצור לוח חדש")
+        dept_id = data.get("department_id")
+        if not dept_id:
+            dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
+        folder_id = data.get("folder_id")
+        # append the new board at the bottom of its container (env root or folder)
+        maxpos = (db.query(func.max(Board.position))
+                  .filter(Board.environment_id == env_id, Board.folder_id == folder_id).scalar())
         b = Board(
             name=data.get("name", "לוח חדש"),
             description=data.get("description", ""),
             department_id=dept_id,
             environment_id=env_id,
+            folder_id=folder_id,
+            position=(maxpos + 1) if maxpos is not None else 0,
             board_type=BoardType.KANBAN,
             icon=data.get("icon", "📋"),
             color=data.get("color", "#0073ea"),
@@ -786,8 +809,11 @@ def delete_board(board_id: int, user_id: Optional[int] = None):
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
             raise HTTPException(404, "board not found")
-        if user_id is not None and _board_role(db, board_id, user_id) != "admin":
-            raise HTTPException(403, "רק מנהל הלוח יכול למחוק אותו")
+        # a board admin, an environment manager (of the board's environment), or a
+        # system admin may delete a board
+        if user_id is not None and _board_role(db, board_id, user_id) != "admin" \
+                and not _can_manage_env(db, b.environment_id, user_id):
+            raise HTTPException(403, "רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו")
         tasks = db.query(Task).filter(Task.board_id == board_id).all()
         task_ids = [t.id for t in tasks]
         if task_ids:
@@ -1092,9 +1118,25 @@ def workspace_remove(uid: int, actor_id: Optional[int] = None):
 
 # ── Environments (Monday-style workspaces) ───────────────────────────
 # Reads are open to all; create/edit/delete are restricted to system (workspace) admins.
-def _env_out(e, board_count=0):
+def _env_role(db, env_id, user_id):
+    """A user's role within one environment: 'admin' for a system (workspace) admin
+    (manages every environment), else the per-environment role (manager|member), or None."""
+    if user_id is None:
+        return None
+    if _ws_role(db, user_id) == "admin":
+        return "admin"
+    m = (db.query(EnvironmentMember)
+         .filter(EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == user_id).first())
+    return (m.role or "member") if m else None
+
+def _can_manage_env(db, env_id, user_id):
+    """System admins and environment managers may manage an environment."""
+    return _env_role(db, env_id, user_id) in ("admin", "manager")
+
+def _env_out(e, board_count=0, my_role=None):
     return {"id": e.id, "name": e.name, "icon": e.icon, "color": e.color,
-            "position": e.position, "is_primary": bool(e.is_primary), "board_count": board_count}
+            "position": e.position, "is_primary": bool(e.is_primary), "board_count": board_count,
+            "my_role": my_role, "can_manage": my_role in ("admin", "manager")}
 
 @app.get("/api/environments")
 def list_environments(user_id: Optional[int] = None):
@@ -1105,15 +1147,20 @@ def list_environments(user_id: Optional[int] = None):
                         .group_by(Board.environment_id).all())
         allenvs = db.query(Environment).order_by(
             Environment.is_primary.desc(), Environment.position, Environment.id).all()
-        if _ws_role(db, user_id) == "admin":
+        is_sysadmin = _ws_role(db, user_id) == "admin"
+        roles = {}
+        if user_id is not None:
+            roles = {m.environment_id: (m.role or "member") for m in
+                     db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
+        if is_sysadmin:
             envs = allenvs
         elif user_id is not None:
-            member_ids = {m.environment_id for m in
-                          db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
-            envs = [e for e in allenvs if e.id in member_ids]
+            envs = [e for e in allenvs if e.id in roles]
         else:
             envs = []
-        return {"environments": [_env_out(e, counts.get(e.id, 0)) for e in envs]}
+        def _role_for(e):
+            return "admin" if is_sysadmin else roles.get(e.id)
+        return {"environments": [_env_out(e, counts.get(e.id, 0), _role_for(e)) for e in envs]}
 
 @app.post("/api/environments")
 def create_environment(data: dict):
@@ -1134,8 +1181,9 @@ def create_environment(data: dict):
 @app.patch("/api/environments/{env_id}")
 def update_environment(env_id: int, data: dict):
     with Session(engine) as db:
-        if _ws_role(db, data.get("actor_id")) != "admin":
-            raise HTTPException(403, "רק מנהל מערכת יכול לערוך סביבה")
+        actor = data.get("actor_id")
+        if not _can_manage_env(db, env_id, actor):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול לערוך אותה")
         e = db.query(Environment).filter(Environment.id == env_id).first()
         if not e:
             raise HTTPException(404, "סביבה לא נמצאה")
@@ -1146,7 +1194,7 @@ def update_environment(env_id: int, data: dict):
         if data.get("color"):
             e.color = data["color"]
         db.commit()
-        return _env_out(e)
+        return _env_out(e, my_role=_env_role(db, env_id, actor))
 
 @app.delete("/api/environments/{env_id}")
 def delete_environment(env_id: int, actor_id: Optional[int] = None):
@@ -1166,46 +1214,177 @@ def delete_environment(env_id: int, actor_id: Optional[int] = None):
         db.delete(e); db.commit()
         return {"status": "deleted"}
 
-# ── Environment members (who may access an environment) — system admins only ──
+ENV_ROLES = ("manager", "member")
+ENV_ROLE_HE = {"admin": "מנהל מערכת", "manager": "מנהל סביבה", "member": "חבר"}
+
+# ── Environment members — system admins and environment managers ──
 @app.get("/api/environments/{env_id}/members")
 def environment_members(env_id: int, actor_id: Optional[int] = None):
     with Session(engine) as db:
-        if _ws_role(db, actor_id) != "admin":
-            raise HTTPException(403, "רק מנהל מערכת")
+        if not _can_manage_env(db, env_id, actor_id):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
         if not db.query(Environment).filter(Environment.id == env_id).first():
             raise HTTPException(404, "סביבה לא נמצאה")
-        member_ids = [m.user_id for m in
-                      db.query(EnvironmentMember).filter(EnvironmentMember.environment_id == env_id).all()]
+        rows = db.query(EnvironmentMember).filter(EnvironmentMember.environment_id == env_id).all()
         users = {u.id: u for u in db.query(User).all()}
-        members = [{"user_id": uid, "name": users[uid].name, "avatar_url": users[uid].avatar_url}
-                   for uid in member_ids if uid in users]
+        member_ids = {m.user_id for m in rows}
+        members = [{"user_id": m.user_id, "name": users[m.user_id].name,
+                    "email": users[m.user_id].email,
+                    "avatar_url": users[m.user_id].avatar_url, "role": m.role or "member",
+                    "role_he": ENV_ROLE_HE.get(m.role or "member", m.role)}
+                   for m in rows if m.user_id in users]
+        members.sort(key=lambda x: (x["role"] != "manager", x["name"]))
         available = [{"id": u.id, "name": u.name} for u in users.values() if u.id not in member_ids]
-        return {"members": members, "available": available}
+        # only a system admin may hand out the manager role; a plain env manager can add members
+        can_set_manager = _ws_role(db, actor_id) == "admin"
+        return {"members": members, "available": available, "can_set_manager": can_set_manager}
 
 @app.post("/api/environments/{env_id}/members")
 def environment_add_member(env_id: int, data: dict):
     with Session(engine) as db:
-        if _ws_role(db, data.get("actor_id")) != "admin":
-            raise HTTPException(403, "רק מנהל מערכת")
+        actor = data.get("actor_id")
+        if not _can_manage_env(db, env_id, actor):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
         if not db.query(Environment).filter(Environment.id == env_id).first():
             raise HTTPException(404, "סביבה לא נמצאה")
         uid = data.get("user_id")
-        if uid and not db.query(EnvironmentMember).filter(
-                EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first():
-            db.add(EnvironmentMember(environment_id=env_id, user_id=uid))
-            db.commit()
+        role = data.get("role") if data.get("role") in ENV_ROLES else "member"
+        # only a system admin may grant the manager role
+        if role == "manager" and _ws_role(db, actor) != "admin":
+            role = "member"
+        if not uid:
+            return {"status": "ok"}
+        m = db.query(EnvironmentMember).filter(
+            EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first()
+        if m:
+            m.role = role
+        else:
+            db.add(EnvironmentMember(environment_id=env_id, user_id=uid, role=role))
+        db.commit()
         return {"status": "ok"}
+
+@app.patch("/api/environments/{env_id}/members/{uid}")
+def environment_set_member_role(env_id: int, uid: int, data: dict):
+    """Promote/demote an environment member (manager|member). System admin only —
+    handing out the manager role is a system-level grant."""
+    with Session(engine) as db:
+        if _ws_role(db, data.get("actor_id")) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד בסביבה")
+        role = data.get("role") if data.get("role") in ENV_ROLES else "member"
+        m = db.query(EnvironmentMember).filter(
+            EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first()
+        if not m:
+            raise HTTPException(404, "החבר לא נמצא בסביבה")
+        m.role = role
+        db.commit()
+        return {"status": "ok", "role": role}
 
 @app.delete("/api/environments/{env_id}/members/{uid}")
 def environment_remove_member(env_id: int, uid: int, actor_id: Optional[int] = None):
     with Session(engine) as db:
-        if _ws_role(db, actor_id) != "admin":
-            raise HTTPException(403, "רק מנהל מערכת")
+        if not _can_manage_env(db, env_id, actor_id):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
+        # a user may be removed from an environment only if they don't belong to any
+        # board within it — otherwise they'd lose access to boards they're part of
+        env_boards = {b.id: b.name for b in db.query(Board).filter(
+            Board.environment_id == env_id, Board.is_archived == False).all()}
+        if env_boards:
+            linked = (db.query(BoardMember)
+                      .filter(BoardMember.user_id == uid,
+                              BoardMember.board_id.in_(list(env_boards.keys()))).all())
+            names = [env_boards[bm.board_id] for bm in linked if bm.board_id in env_boards]
+            if names:
+                raise HTTPException(400, "לא ניתן להסיר משתתף זה מאחר והוא משוייך ללוחות הבאים בסביבה: "
+                                    + ", ".join(names))
         m = db.query(EnvironmentMember).filter(
             EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first()
         if m:
             db.delete(m); db.commit()
         return {"status": "removed"}
+
+# ── Folders (group boards inside an environment) — env managers + sysadmins ──
+def _folder_out(db, f, user_id):
+    return {"id": f.id, "environment_id": f.environment_id, "name": f.name,
+            "position": f.position or 0,
+            "can_manage": _can_manage_env(db, f.environment_id, user_id)}
+
+@app.get("/api/folders")
+def list_folders(user_id: Optional[int] = None):
+    """Folders across every environment the user can access."""
+    with Session(engine) as db:
+        folders = db.query(Folder).order_by(Folder.position, Folder.id).all()
+        if user_id is not None and _ws_role(db, user_id) != "admin":
+            env_ids = {m.environment_id for m in
+                       db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
+            folders = [f for f in folders if f.environment_id in env_ids]
+        return {"folders": [_folder_out(db, f, user_id) for f in folders]}
+
+@app.post("/api/folders")
+def create_folder(data: dict):
+    with Session(engine) as db:
+        actor = data.get("actor_id")
+        env_id = data.get("environment_id")
+        if not _can_manage_env(db, env_id, actor):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול ליצור תיקייה")
+        if not db.query(Environment).filter(Environment.id == env_id).first():
+            raise HTTPException(404, "סביבה לא נמצאה")
+        name = (data.get("name") or "").strip() or "תיקייה חדשה"
+        maxpos = db.query(func.max(Folder.position)).filter(Folder.environment_id == env_id).scalar()
+        f = Folder(environment_id=env_id, name=name, position=(maxpos + 1) if maxpos is not None else 0)
+        db.add(f); db.commit(); db.refresh(f)
+        return _folder_out(db, f, actor)
+
+@app.patch("/api/folders/{folder_id}")
+def update_folder(folder_id: int, data: dict):
+    with Session(engine) as db:
+        f = db.query(Folder).filter(Folder.id == folder_id).first()
+        if not f:
+            raise HTTPException(404, "תיקייה לא נמצאה")
+        if not _can_manage_env(db, f.environment_id, data.get("actor_id")):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
+        if (data.get("name") or "").strip():
+            f.name = data["name"].strip()
+        db.commit()
+        return _folder_out(db, f, data.get("actor_id"))
+
+@app.delete("/api/folders/{folder_id}")
+def delete_folder(folder_id: int, actor_id: Optional[int] = None):
+    """Delete a folder. Its boards are detached to the environment root — never deleted."""
+    with Session(engine) as db:
+        f = db.query(Folder).filter(Folder.id == folder_id).first()
+        if not f:
+            raise HTTPException(404, "תיקייה לא נמצאה")
+        if not _can_manage_env(db, f.environment_id, actor_id):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
+        db.query(Board).filter(Board.folder_id == folder_id).update({Board.folder_id: None})
+        db.delete(f); db.commit()
+        return {"status": "deleted", "id": folder_id}
+
+@app.post("/api/environments/{env_id}/reorder")
+def reorder_environment(env_id: int, data: dict):
+    """Persist the ordering of folders and boards in an environment. Body:
+    {folders:[{id,position}], boards:[{id,folder_id,position}]}. Only items that
+    belong to this environment are touched. Env managers / sysadmins only."""
+    with Session(engine) as db:
+        if not _can_manage_env(db, env_id, data.get("actor_id")):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול לסדר")
+        env_folder_ids = {f.id for f in db.query(Folder).filter(Folder.environment_id == env_id).all()}
+        for row in (data.get("folders") or []):
+            f = db.query(Folder).filter(Folder.id == row.get("id"),
+                                        Folder.environment_id == env_id).first()
+            if f:
+                f.position = int(row.get("position", 0))
+        for row in (data.get("boards") or []):
+            b = db.query(Board).filter(Board.id == row.get("id"),
+                                       Board.environment_id == env_id).first()
+            if not b:
+                continue
+            b.position = int(row.get("position", 0))
+            fid = row.get("folder_id")
+            # only allow assigning to a folder that belongs to this environment
+            b.folder_id = fid if (fid in env_folder_ids) else None
+        db.commit()
+        return {"status": "ok"}
 
 @app.get("/api/tasks")
 def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
@@ -1725,8 +1904,39 @@ def update_comment(cid: int, data: dict):
         user = _acting_user(db, data)
         if not user or (c.user_id != user.id and user.role not in ("admin", "manager")):
             raise HTTPException(403, "אין הרשאה לערוך תגובה")
+
+        def _mentioned(content, explicit):
+            """Users tagged either explicitly or via '@Name' inside the text."""
+            s = set()
+            for x in (explicit or []):
+                try:
+                    s.add(int(x))
+                except (TypeError, ValueError):
+                    continue
+            if content:
+                for u in db.query(User).all():
+                    if u.name and ("@" + u.name) in content:
+                        s.add(u.id)
+            return s
+
+        before = _mentioned(c.content, c.mentions)   # who was already tagged
         if "content" in data:
             c.content = data["content"]
+        if "attachments" in data:
+            c.attachments = data.get("attachments") or []
+        if "mentions" in data:
+            c.mentions = data.get("mentions") or []
+        # notify anyone newly tagged in this edit (not the editor, honoring the switch)
+        newly = _mentioned(c.content, c.mentions) - before
+        newly.discard(user.id)
+        if newly:
+            task = db.query(Task).filter(Task.id == c.task_id).first()
+            board = db.query(Board).filter(Board.id == task.board_id).first() if task else None
+            if task and _board_notify_on(board):
+                for mid in newly:
+                    _notify(db, mid, "mention", "תויגת בשיחה",
+                            f"{user.name} תייג/ה אותך במשימה '{task.title}'.",
+                            board_id=task.board_id, task_id=task.id)
         db.commit()
         return _serialize_comment(c, db)
 
