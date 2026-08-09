@@ -144,8 +144,8 @@ SECRET_PATTERNS = [
     ("Slack Token", re.compile(r"\bxox[baprs]-[0-9A-Za-z\-]{10,}\b")),
     ("Stripe Secret Key", re.compile(r"\bsk_live_[0-9A-Za-z]{16,}\b")),
     ("סוד גנרי בהשמה", re.compile(
-        r"""(?ix)\b(?:password|passwd|secret|api[_-]?key|apikey|access[_-]?key|
-            auth[_-]?token|private[_-]?key|client[_-]?secret)\b\s*[:=]\s*
+        r"""(?ix)\b\w*(?:password|passwd|secret|apikey|api[_-]?key|access[_-]?key|
+            auth[_-]?token|private[_-]?key|client[_-]?secret|token)\w*\b\s*[:=]\s*
             (['"])(?P<val>[^'"]{8,})\1""")),
 ]
 # lines that clearly READ from env or are placeholders are safe
