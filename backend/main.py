@@ -619,6 +619,8 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             "columns": (b.settings or {}).get("columns", []),
             "col_widths": (b.settings or {}).get("col_widths", {}),
             "col_labels": (b.settings or {}).get("col_labels", {}),
+            "col_hidden": (b.settings or {}).get("col_hidden", []),
+            "col_order": (b.settings or {}).get("col_order", []),
             "notifications_enabled": bool((b.settings or {}).get("notifications_enabled", True)),
             "statuses": _board_statuses(b),
             "form": (b.settings or {}).get("form"),
@@ -734,9 +736,9 @@ def update_board(board_id: int, data: dict):
             s["col_widths"] = widths
             b.settings = s
         if data.get("col_labels") is not None:
-            # rename a built-in column header (e.g. "פריט") — workspace admin only
-            if _ws_role(db, data.get("user_id")) != "admin":
-                raise HTTPException(403, "רק מנהל מערכת יכול לשנות שם עמודה")
+            # rename a built-in column header (e.g. "פריט") — board admin
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לשנות שם עמודה")
             builtin = {"item", "assignees", "status", "priority", "due", "tags"}
             labels = {}
             for k, v in (data["col_labels"] or {}).items():
@@ -746,6 +748,23 @@ def update_board(board_id: int, data: dict):
                         labels[str(k)] = lv
             s = dict(b.settings or {})
             s["col_labels"] = labels
+            b.settings = s
+        if data.get("col_hidden") is not None:
+            # hide built-in columns (the "פריט" name column can never be hidden) — board admin
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול להסתיר עמודות")
+            hideable = {"assignees", "status", "priority", "due", "tags"}
+            hidden = [str(k) for k in (data["col_hidden"] or []) if str(k) in hideable]
+            s = dict(b.settings or {})
+            s["col_hidden"] = list(dict.fromkeys(hidden))  # de-dup, preserve order
+            b.settings = s
+        if data.get("col_order") is not None:
+            # persisted display order of columns (built-in keys + custom ids) — board admin
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לשנות סדר עמודות")
+            order = [str(k) for k in (data["col_order"] or []) if isinstance(k, (str, int))]
+            s = dict(b.settings or {})
+            s["col_order"] = list(dict.fromkeys(order))  # de-dup, preserve first occurrence
             b.settings = s
         if "notifications_enabled" in data:
             # board admin toggles all notifications for this board on/off

@@ -14,6 +14,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&family=Heebo:wght@400;500;600;700;800&family=Assistant:wght@400;500;600;700;800&family=Noto+Sans+Hebrew:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Font gate: keep the page invisible until the real fonts are loaded, so the
+     first painted text is already in the correct font (no fallback→web swap).
+     A safety timer guarantees the page is never hidden for more than 1.2s. -->
+<style>html{background:var(--bg,#f6f7fb)}html:not(.fonts-ready) body{opacity:0}body{transition:opacity .18s ease}</style>
+<script>window.__revealFonts=function(){document.documentElement.classList.add('fonts-ready');};setTimeout(window.__revealFonts,1200);</script>
 <script type="importmap">
 {
   "imports": {
@@ -287,13 +292,15 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .th-in{position:relative;display:inline-flex;align-items:center;justify-content:center;max-width:100%;vertical-align:middle}
 .th-lbl,.th-wrap{overflow:hidden;text-overflow:ellipsis;max-width:100%;min-width:0}
 .col-sort{opacity:0;pointer-events:none;position:absolute;left:50%;bottom:calc(100% - 1px);transform:translateX(-50%) translateY(4px);width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:var(--text);background:var(--surface);border:1px solid var(--border);box-shadow:0 2px 7px rgba(0,0,0,.2);font-size:10px;transition:opacity .13s,transform .13s,background .12s,color .12s;z-index:9}
-.th-in:hover .col-sort{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+.tbl th:hover .col-sort{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
 .col-sort:hover{color:var(--primary);border-color:var(--primary)}
 .col-sort.on{opacity:1;pointer-events:auto;color:#fff;background:var(--primary);border-color:var(--primary);transform:translateX(-50%) translateY(0)}
 .th-edit{opacity:0;margin-inline-start:6px;font-size:10.5px;color:var(--text-light);cursor:pointer;transition:opacity .13s,color .12s;flex-shrink:0}
-.th-in:hover .th-edit{opacity:1}
+.tbl th:hover .th-edit{opacity:1}
 .th-edit:hover{color:var(--primary)}
-.th-rename{max-width:150px;border:1px solid var(--primary);border-radius:6px;padding:3px 7px;font-family:inherit;font-size:13px;font-weight:600;text-align:center;outline:none}
+.th-rename{max-width:150px;border:1px solid var(--primary);border-radius:6px;padding:3px 7px;font-family:inherit;font-size:13px;font-weight:600;text-align:center;outline:none;box-shadow:0 0 0 3px var(--primary-soft)}
+.th-edit-dbl{cursor:text;border-radius:4px;transition:box-shadow .12s}
+.tbl th:hover .th-edit-dbl{box-shadow:inset 0 -1px 0 var(--border-strong)}
 .col-resizer{position:absolute;top:0;inset-inline-end:0;width:10px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
 .col-resizer::after{content:"";position:absolute;top:6px;bottom:6px;inset-inline-end:1px;width:2px;border-radius:2px;background:transparent;transition:background .12s}
 .col-resizer:hover::after,.col-resizer.dragging::after{background:var(--primary)}
@@ -349,9 +356,14 @@ tr:hover .row-grip{opacity:.55}
 /* custom columns */
 .tbl th.th-custom,.tbl th.th-add{position:relative}
 .th-wrap{display:inline-flex;align-items:center;gap:5px}
-.th-menu{opacity:0;color:var(--text-light);width:18px;height:18px;border-radius:4px;font-size:11px;transition:.12s}
-.tbl th.th-custom:hover .th-menu{opacity:1}
+.th-menu{opacity:0;color:var(--text-light);width:18px;height:18px;border-radius:4px;font-size:11px;transition:.12s;flex-shrink:0}
+.tbl th:hover .th-menu{opacity:1}
 .th-menu:hover{background:var(--row-hover);color:var(--text)}
+/* drag grip for reordering columns (board admin) — appears on header hover */
+.col-grip{opacity:0;cursor:grab;color:var(--text-light);font-size:10px;margin-inline-end:3px;flex-shrink:0;transition:opacity .12s,color .12s}
+.tbl th:hover .col-grip{opacity:.65}
+.col-grip:hover{opacity:1;color:var(--text)}
+.col-grip:active{cursor:grabbing}
 .th-add{width:42px}
 .th-add-wrap{position:relative;display:inline-block}
 .th-add-btn{width:26px;height:26px;border-radius:6px;color:var(--text-light);display:grid;place-items:center;font-size:12px}
@@ -601,6 +613,12 @@ tr:hover .row-grip{opacity:.55}
 .confirm-note{font-size:13px;color:var(--text-muted);margin-top:7px}
 .confirm-actions{display:flex;gap:10px;justify-content:center;margin-top:20px}
 .confirm-actions .btn{min-width:104px;justify-content:center}
+/* styled single-field edit dialog (replaces native prompt) */
+.ep-field{margin-top:16px;text-align:start}
+.ep-field label{display:block;font-size:12.5px;font-weight:600;color:var(--text-muted);margin-bottom:6px}
+.ep-field input{width:100%;border:1px solid var(--border-strong);border-radius:8px;padding:10px 12px;font-family:inherit;font-size:14px;color:var(--text);background:var(--surface);transition:border-color .12s,box-shadow .12s}
+.ep-field input::placeholder{color:var(--text-light)}
+.ep-field input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
 /* ===== personal profile card ===== */
 .modal.profile-modal{width:380px;overflow:hidden}
 .av.av-click,.avatars .av{cursor:pointer;transition:transform .1s}
@@ -1347,8 +1365,28 @@ function fileTooBig(f){
 }
 
 /* ============ boot ============ */
+/* Reveal the page once the actually-applied fonts have loaded (see the font
+   gate in <head>). Waits only for the families in the current --font stack, so
+   the first text paints in the correct font instead of flashing a fallback. */
+function revealWhenFontsReady(){
+  const reveal=window.__revealFonts||(()=>document.documentElement.classList.add('fonts-ready'));
+  try{
+    if(!(document.fonts&&document.fonts.load)){ reveal(); return; }
+    const stack=getComputedStyle(document.documentElement).getPropertyValue('--font')||'';
+    // the primary Latin + primary Hebrew families the page will actually render
+    const fams=(stack.match(/'[^']+'|"[^"]+"/g)||[]).map(s=>s.slice(1,-1))
+      .filter(n=>!/^(system-ui|sans-serif|serif|Segoe UI|Arial|ui-|monospace)/i.test(n))
+      .slice(0,2);
+    if(!fams.length){ reveal(); return; }
+    const jobs=[];
+    fams.forEach(f=>['400','500','600','700'].forEach(w=>jobs.push(document.fonts.load(`${w} 1em "${f}"`).catch(()=>{}))));
+    Promise.all(jobs).then(reveal).catch(reveal);
+    if(document.fonts.ready) document.fonts.ready.then(reveal);
+  }catch(e){ reveal(); }
+}
 async function boot(){
   Settings.load();
+  revealWhenFontsReady();
   try{ if(localStorage.getItem('cc_sb_collapsed')==='1') document.body.classList.add('sb-collapsed'); }catch(e){}
   try{
     try{st.users = await api('/api/users');}catch(e){st.users=[];}
@@ -2670,7 +2708,7 @@ function vTable(el){
       ${head}
       <table class="tbl">
         ${colgroupHTML()}
-        <thead><tr>${builtinHeaders(col)}${colHeaders()}<th class="th-spacer"></th></tr></thead>
+        <thead><tr class="col-head-row">${columnHeadersHTML(col)}<th class="th-spacer"></th></tr></thead>
         <tbody data-gid="${g.id===null?'':g.id}">${rows}
           <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
@@ -2714,7 +2752,7 @@ function vTable(el){
         }});
     });
   }
-  if(isBoardAdmin())initColResizers(el);
+  if(isBoardAdmin()){initColResizers(el);initColReorder(el);}
   resolveLinks();   // fetch titles for any cross-board linked items, then re-render
 }
 function battery(tasks){
@@ -2746,7 +2784,6 @@ function itemRow(t,col){
   const subs=t.subtasks||[];
   const cnt=subs.length;
   const open=st.openSubs.has(t.id);
-  const tagcell=(arr)=>(arr||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>';
   const parent=`
     <tr data-tid="${t.id}">
       <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
@@ -2756,12 +2793,8 @@ function itemRow(t,col){
         ${cnt?`<span class="sub-badge" title="${cnt} תת-פריטים"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
       </div>${canEditItem(t)?`<button class="item-menu" title="אפשרויות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}</td>
-      <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(event,${t.id})">${avatars(t.assignees)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',boardStatusMap())">${statusPill(t)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',PRIORITY)">${pill(PRIORITY,t.priority)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${t.id})">${fdate(t.due_date)}</td>
-      <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>
-      ${customCells(t)}
+      ${rowCellsAfterItem(t)}
+      <td class="cell"></td>
       <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`;
   const disp=open?'table-row':'none';
@@ -2770,12 +2803,8 @@ function itemRow(t,col){
       <td class="c-item c-sub"><div class="ci-flex"><span class="sub-twig"></span><span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
         <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
         <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button></div></td>
-      <td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(event,${s.id})">${avatars(s.assignees)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${s.id},'status',boardStatusMap())">${statusPill(s)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${s.id},'priority',PRIORITY)">${pill(PRIORITY,s.priority)}</td>
-      <td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${s.id})">${fdate(s.due_date)}</td>
-      <td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${s.id})">${tagcell(s.tags)}</td>
-      ${customCells(s)}
+      ${rowCellsAfterItem(s)}
+      <td class="cell"></td>
       <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`).join('');
   const addSub=`<tr class="subrow subadd" data-parent="${t.id}" style="display:${disp}"><td class="c-sub" colspan="${totalCols()+1}" onclick="addSubItem(${t.id})"><span class="sub-twig"></span>+ הוסף תת-פריט</td></tr>`;
@@ -2809,6 +2838,26 @@ const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date
   created_at:'מועד יצירה',item_id:'מספר מזהה'};
 function customColumns(){return (st.board&&st.board.columns)||[];}
 function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
+/* Unified, ordered column model: the 6 built-in columns (minus any the admin
+   hid) interleaved with the custom columns, sorted by the persisted col_order.
+   The "פריט" (item/name) column is always pinned first and never hidden. Each
+   descriptor is {kind:'builtin',id,key,label} or {kind:'custom',id,col}. */
+function orderedColumns(){
+  const hidden=new Set(((st.board&&st.board.col_hidden)||[]).map(String));
+  const builtins=BUILTIN_COLS
+    .filter(c=>c.key==='item'||!hidden.has(c.key))
+    .map(c=>({kind:'builtin',id:c.key,key:c.key,label:builtinLabel(c.key,c.label)}));
+  const customs=customColumns().map(c=>({kind:'custom',id:String(c.id),col:c}));
+  let all=builtins.concat(customs);
+  const order=((st.board&&st.board.col_order)||[]).map(String);
+  if(order.length){
+    const rank=id=>{const i=order.indexOf(String(id));return i<0?1e6:i;};
+    all=all.map((c,i)=>[c,i]).sort((a,b)=>(rank(a[0].id)-rank(b[0].id))||(a[1]-b[1])).map(x=>x[0]);
+  }
+  // item column is always first regardless of stored order
+  all.sort((a,b)=>(a.id==='item'?-1:b.id==='item'?1:0));
+  return all;
+}
 /* Board vocabulary of tags = every tag already used across the board's items.
    Non-admins pick from this list; only the board admin may create new tags. */
 function boardTags(){
@@ -2816,7 +2865,7 @@ function boardTags(){
   ((st.board&&st.board.tasks)||[]).forEach(t=>{(t.tags||[]).forEach(x=>s.add(x)); (t.subtasks||[]).forEach(su=>(su.tags||[]).forEach(x=>s.add(x)));});
   return [...s].sort((a,b)=>a.localeCompare(b,'he'));
 }
-function totalCols(){return 6+customColumns().length+(isBoardAdmin()?1:0);}
+function totalCols(){return orderedColumns().length+(isBoardAdmin()?1:0);}
 /* built-in (fixed) columns, in display order — keys drive drag-to-resize widths */
 const BUILTIN_COLS=[
   {key:'item',label:'פריט',w:280},{key:'assignees',label:'אחראים',w:120},
@@ -2835,8 +2884,7 @@ function colWidthMap(){
 }
 function colgroupHTML(){
   const m=colWidthMap();
-  let cols=BUILTIN_COLS.map(c=>`<col data-colkey="${c.key}" style="width:${m[c.key]}px">`).join('');
-  cols+=customColumns().map(c=>`<col data-colkey="${c.id}" style="width:${m[c.id]}px">`).join('');
+  let cols=orderedColumns().map(c=>`<col data-colkey="${c.id}" style="width:${m[c.id]||150}px">`).join('');
   if(isBoardAdmin())cols+=`<col data-colkey="__add" style="width:${m['__add']}px">`;
   // trailing auto-width spacer: absorbs leftover space so real columns keep their
   // exact widths (resizing one never nudges the others); shrinks to 0 when the
@@ -2846,23 +2894,100 @@ function colgroupHTML(){
 }
 /* a built-in column's label = the board's custom override (if any) else default */
 function builtinLabel(key,def){return (((st.board&&st.board.col_labels)||{})[key])||def;}
-function builtinHeaders(col){
-  return BUILTIN_COLS.map((c,i)=>{
-    const style=i===0?`style="border-inline-start:4px solid ${col}"`:'';
-    // only the "פריט" column is renamable, and only by a workspace (system) admin
-    const editable=(c.key==='item'&&isSysAdmin());
-    const pencil=editable?`<i class="fa-solid fa-pen th-edit" title="שנה שם עמודה" onclick="renameBuiltinCol(event,'${c.key}')"></i>`:'';
-    return `<th data-colkey="${c.key}" ${style}><span class="th-in"><span class="th-lbl">${esc(builtinLabel(c.key,c.label))}</span>${pencil}${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
+/* unified header row: renders every ordered column (built-in + custom), with a
+   board-admin drag grip (reorder) and a "..." menu (rename / hide / options). */
+function columnHeadersHTML(boardColor){
+  const admin=isBoardAdmin();
+  const ths=orderedColumns().map(c=>{
+    const grip=(admin&&c.id!=='item')?`<i class="fa-solid fa-grip-vertical col-grip" title="גרור לשינוי מיקום העמודה"></i>`:'';
+    if(c.kind==='builtin'){
+      const style=c.key==='item'?`style="border-inline-start:4px solid ${boardColor}"`:'';
+      const fixed=c.key==='item'?'data-fixed="1"':'';
+      const menu=admin?`<button class="th-menu" title="עמודה" onclick="builtinColMenu(event,'${c.key}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
+      const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startColRename('builtin','${c.key}')"`:' class="th-lbl"';
+      return `<th data-colkey="${c.key}" ${fixed} ${style}><span class="th-in">${grip}<span${dbl}>${esc(c.label)}</span>${menu}${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
+    }
+    const cc=c.col, m=COLUMN_TYPES.find(x=>x.type===cc.type)||{ic:'fa-table-columns'};
+    const menu=admin?`<button class="th-menu" title="עמודה" onclick="colMenu(event,'${cc.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
+    const dblc=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startColRename('custom','${cc.id}')"`:' class="th-lbl"';
+    return `<th class="th-custom" data-colkey="${cc.id}"><span class="th-in">${grip}<span class="th-wrap"><i class="fa-solid ${m.ic}" style="color:var(--text-light);font-size:11px"></i> <span${dblc}>${esc(cc.title)}</span></span>${menu}${sortBtn(cc.id)}</span>${resizerHTML(cc.id)}</th>`;
   }).join('');
+  const add=admin?`<th class="th-add"><div class="th-add-wrap"><button class="th-add-btn" title="הוסף עמודה" onclick="addColMenu(event)"><i class="fa-solid fa-plus"></i></button></div></th>`:'';
+  return ths+add;
 }
-function renameBuiltinCol(e,key){
-  e.stopPropagation(); if(!isSysAdmin())return;
-  const th=e.currentTarget.closest('th'); const lbl=th.querySelector('.th-lbl'); if(!lbl)return;
-  const old=lbl.textContent;
-  const inp=document.createElement('input'); inp.className='th-rename'; inp.value=old; inp.maxLength=40;
-  inp.onkeydown=(ev)=>{ if(ev.key==='Enter'){ev.preventDefault();inp.blur();} if(ev.key==='Escape'){inp._cancel=true;inp.blur();} };
-  inp.onblur=()=>{ const v=inp.value.trim(); if(!inp._cancel&&v&&v!==old)saveColLabel(key,v); else renderView(); };
+/* built-in column "..." menu — rename (all) + hide (all but the item column) */
+function builtinColMenu(e,key){
+  e.stopPropagation(); if(!isBoardAdmin())return;
+  const canHide=key!=='item';
+  const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('builtin','${key}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
+    +(canHide?`<button class="cell-pop-opt2" style="color:var(--red)" onclick="hideBuiltinCol(event,'${key}')"><i class="fa-solid fa-eye-slash"></i> מחק עמודה</button>`:'');
+  openCellPop(e.currentTarget,html);
+}
+/* rename a column by editing its header text IN PLACE (no dialog). Works for
+   built-in (kind='builtin', id=key) and custom (kind='custom', id=colId)
+   columns alike; commits on Enter/blur, cancels on Esc. Triggered from the
+   column "..." menu or by double-clicking the header text. */
+function startColRename(kind,id){
+  if(!isBoardAdmin())return;
+  let th;
+  try{ th=document.querySelector('.col-head-row th[data-colkey="'+CSS.escape(String(id))+'"]'); }catch(_){ th=null; }
+  const lbl=th&&th.querySelector('.th-lbl'); if(!lbl)return;
+  const cur=lbl.textContent.trim();
+  const inp=document.createElement('input');
+  inp.className='th-rename'; inp.value=cur; inp.maxLength=(kind==='builtin'?40:60); inp.dir='auto';
+  let done=false;
+  const commit=async(save)=>{
+    if(done)return; done=true;
+    const v=inp.value.trim();
+    if(!save||!v||v===cur){ renderView(); return; }
+    if(kind==='builtin'){ saveColLabel(id,v); }
+    else{ const cols=customColumns().map(x=>x.id===id?{...x,title:v}:x); await saveColumns(cols); toast('שם העמודה עודכן'); }
+  };
+  inp.onkeydown=(ev)=>{ ev.stopPropagation(); if(ev.key==='Enter'){ev.preventDefault();commit(true);} else if(ev.key==='Escape'){ev.preventDefault();commit(false);} };
+  inp.onblur=()=>commit(true);
   lbl.replaceWith(inp); inp.focus(); inp.select();
+}
+async function hideBuiltinCol(e,key){
+  e.stopPropagation(); closeCellPops();
+  if(!isBoardAdmin()||key==='item')return;
+  const hidden=[...new Set([...(((st.board&&st.board.col_hidden)||[]).map(String)),key])];
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({col_hidden:hidden})});
+    st.board.col_hidden=hidden; toast('העמודה הוסתרה — ניתן להחזירה מכפתור +'); renderView();
+  }catch(err){ toast('שגיאה בהסתרת העמודה'); }
+}
+async function unhideBuiltinCol(key){
+  const hidden=(((st.board&&st.board.col_hidden)||[]).map(String)).filter(k=>k!==key);
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({col_hidden:hidden})});
+    st.board.col_hidden=hidden; toast('העמודה הוחזרה'); renderView();
+  }catch(err){ toast('שגיאה'); }
+}
+/* persist a new column order (built-in keys + custom ids); item is forced first */
+async function saveColOrder(order){
+  const clean=['item',...order.filter(k=>k&&k!=='item'&&k!=='__add'&&k!=='__spacer')];
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({col_order:clean})});
+    st.board.col_order=clean; toast('סדר העמודות עודכן'); renderView();
+  }catch(err){ toast('שגיאה בשמירת סדר העמודות'); renderView(); }
+}
+/* drag-to-reorder: Sortable on each group's header row, dragged by the grip */
+function initColReorder(root){
+  if(!window.Sortable||!isBoardAdmin())return;
+  root.querySelectorAll('.col-head-row').forEach(tr=>{
+    new Sortable(tr,{
+      draggable:'th[data-colkey]', handle:'.col-grip',
+      filter:'[data-fixed],.th-add,.th-spacer',
+      forceFallback:true, fallbackTolerance:4, animation:150,
+      ghostClass:'sortable-ghost', dragClass:'sortable-drag',
+      onMove:evt=>!(evt.related.classList.contains('th-add')||evt.related.classList.contains('th-spacer')||evt.related.hasAttribute('data-fixed')),
+      onEnd:()=>{
+        const ids=[...tr.querySelectorAll('th[data-colkey]')].map(th=>th.dataset.colkey)
+          .filter(k=>k&&k!=='__add'&&k!=='__spacer');
+        saveColOrder(ids);
+      }
+    });
+  });
 }
 async function saveColLabel(key,label){
   const cl={...((st.board&&st.board.col_labels)||{})}; cl[key]=label;
@@ -2901,36 +3026,43 @@ function initColResizers(root){
     };
   });
 }
-function colHeaders(){
-  const admin=isBoardAdmin();
-  return customColumns().map(c=>{
-    const m=COLUMN_TYPES.find(x=>x.type===c.type)||{ic:'fa-table-columns'};
-    // the column menu (rename/options/delete) is a board-admin action only
-    const menu=admin?`<button class="th-menu" title="עמודה" onclick="colMenu(event,'${c.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
-    return `<th class="th-custom" data-colkey="${c.id}"><span class="th-in"><span class="th-wrap"><i class="fa-solid ${m.ic}" style="color:var(--text-light);font-size:11px"></i> ${esc(c.title)}${menu}</span>${sortBtn(c.id)}</span>${resizerHTML(c.id)}</th>`;
-  }).join('') + (admin?`<th class="th-add"><div class="th-add-wrap" id="thadd-${Math.random().toString(36).slice(2,7)}"><button class="th-add-btn" title="הוסף עמודה" onclick="addColMenu(event)"><i class="fa-solid fa-plus"></i></button></div></th>`:'');
-}
 function cellValue(t,colId){return (t.custom_fields||{})[colId];}
-function customCells(t){
-  return customColumns().map(c=>{
-    const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
-    if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
-    if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
-    if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
-    if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
-    if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v)}</span></td>`;
-    if(c.type==='timeline')return `<td class="cell cell-custom"><div onclick="openTimeline(${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
-    if(c.type==='checkbox')return `<td class="cell cell-custom"><input type="checkbox" class="cc-check" ${v?'checked':''} onchange="setCell(${id},'${c.id}',this.checked?true:null)"></td>`;
-    if(c.type==='people')  return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="peopleCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${peopleDisp(v)}</span></td>`;
-    if(c.type==='dropdown')return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="dropdownCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${dropdownDisp(v)}</span></td>`;
-    if(c.type==='files')   return `<td class="cell cell-custom">${filesDisp(v,id,c.id)}</td>`;
-    if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
-    if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')"><span class="cell-disp">${connectDisp(v)}</span></td>`;
-    if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
-    if(c.type==='item_id')return `<td class="cell cell-custom"><span class="item-id" title="לחצי להעתקת המזהה" onclick="copyItemId(event,${t.id})">#${t.id}<i class="fa-regular fa-copy id-copy"></i></span></td>`;
-    if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
-    return `<td class="cell cell-custom">—</td>`;
-  }).join('') + `<td class="cell"></td>`;
+/* one built-in (non-item) cell for a given row */
+function builtinCellHTML(key,t){
+  const tagcell=(arr)=>(arr||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>';
+  if(key==='assignees')return `<td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(event,${t.id})">${avatars(t.assignees)}</td>`;
+  if(key==='status')   return `<td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',boardStatusMap())">${statusPill(t)}</td>`;
+  if(key==='priority') return `<td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',PRIORITY)">${pill(PRIORITY,t.priority)}</td>`;
+  if(key==='due')      return `<td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${t.id})">${fdate(t.due_date)}</td>`;
+  if(key==='tags')     return `<td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>`;
+  return '';
+}
+/* one custom-column cell for a given row */
+function customCellHTML(c,t){
+  const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
+  if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
+  if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
+  if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
+  if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
+  if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v)}</span></td>`;
+  if(c.type==='timeline')return `<td class="cell cell-custom"><div onclick="openTimeline(${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
+  if(c.type==='checkbox')return `<td class="cell cell-custom"><input type="checkbox" class="cc-check" ${v?'checked':''} onchange="setCell(${id},'${c.id}',this.checked?true:null)"></td>`;
+  if(c.type==='people')  return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="peopleCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${peopleDisp(v)}</span></td>`;
+  if(c.type==='dropdown')return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="dropdownCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${dropdownDisp(v)}</span></td>`;
+  if(c.type==='files')   return `<td class="cell cell-custom">${filesDisp(v,id,c.id)}</td>`;
+  if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
+  if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')"><span class="cell-disp">${connectDisp(v)}</span></td>`;
+  if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
+  if(c.type==='item_id')return `<td class="cell cell-custom"><span class="item-id" title="לחצי להעתקת המזהה" onclick="copyItemId(event,${t.id})">#${t.id}<i class="fa-regular fa-copy id-copy"></i></span></td>`;
+  if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
+  return `<td class="cell cell-custom">—</td>`;
+}
+/* every column cell for a row EXCEPT the item/name cell (which is rendered
+   explicitly first), in the persisted column order. The trailing empty spacer
+   cell + row-end are appended by the row itself, exactly as before. */
+function rowCellsAfterItem(t){
+  return orderedColumns().filter(c=>c.id!=='item')
+    .map(c=>c.kind==='builtin'?builtinCellHTML(c.key,t):customCellHTML(c.col,t)).join('');
 }
 /* people column */
 function peopleDisp(ids){
@@ -3134,6 +3266,16 @@ function evalFormula(col,t){
 function findAnyTask(id){
   for(const t of (st.board.tasks||[])){ if(t.id==id)return t; for(const s of (t.subtasks||[])) if(s.id==id)return s; }
   return null;
+}
+// remove a task from local board state (top-level item or subtask) without a
+// server round-trip, so deletion re-renders in place instead of reloading.
+function removeTaskLocal(id){
+  if(!st.board||!st.board.tasks)return false;
+  const before=st.board.tasks.length;
+  st.board.tasks=st.board.tasks.filter(t=>t.id!=id);
+  if(st.board.tasks.length!==before)return true;
+  for(const t of st.board.tasks){ if((t.subtasks||[]).some(s=>s.id==id)){ t.subtasks=t.subtasks.filter(s=>s.id!=id); return true; } }
+  return false;
 }
 async function setCell(taskId,colId,value){
   const t=findAnyTask(taskId);
@@ -3352,7 +3494,13 @@ function addColMenu(e){
   e.stopPropagation();
   // the connect (cross-board) column is a system-admin-only capability
   const types=COLUMN_TYPES.filter(c=>c.type!=='connect'||isSysAdmin());
-  const html='<div class="pop-title">בחר סוג עמודה</div>'+types.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
+  // any built-in columns the admin hid can be restored from here
+  const hidden=((st.board&&st.board.col_hidden)||[]).map(String);
+  const hiddenHTML=hidden.length?('<div class="pop-title">עמודות מוסתרות — החזרה</div>'+hidden.map(k=>{
+    const bc=BUILTIN_COLS.find(c=>c.key===k)||{}; const lbl=builtinLabel(k,bc.label||k);
+    return `<button class="coltype" onclick="closeCellPops();unhideBuiltinCol('${k}')"><i class="fa-solid fa-eye"></i><span><b>${esc(lbl)}</b><small>החזרת עמודת ברירת מחדל</small></span></button>`;
+  }).join('')+'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>'):'';
+  const html=hiddenHTML+'<div class="pop-title">בחר סוג עמודה</div>'+types.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
   openCellPop(e.currentTarget,html,'col-add-pop');
 }
 async function addColumn(type){
@@ -3399,7 +3547,7 @@ function colMenu(e,colId){
   e.stopPropagation();
   const c=customColumns().find(x=>x.id===colId);
   const isAdmin=st.board&&st.board.my_role==='admin';
-  const html=`<button class="cell-pop-opt2" onclick="renameColumn(event,'${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
+  const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     +(c&&c.type==='connect'&&isSysAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
@@ -3412,13 +3560,6 @@ async function editFormula(e,colId){
   const f=prompt('נוסחה — השתמש בשם עמודה בסוגריים מסולסלים:',c.formula||'');if(f===null)return;
   const cols=customColumns().map(x=>x.id===colId?{...x,formula:f.trim()}:x);
   await saveColumns(cols);toast('הנוסחה עודכנה');
-}
-async function renameColumn(e,colId){
-  e.stopPropagation();closeCellPops();
-  const c=customColumns().find(x=>x.id===colId);if(!c)return;
-  const name=prompt('שם העמודה:',c.title);if(name==null)return;
-  const cols=customColumns().map(x=>x.id===colId?{...x,title:name.trim()||x.title}:x);
-  await saveColumns(cols);toast('שם העמודה עודכן');
 }
 function deleteColumn(e,colId){
   e.stopPropagation();closeCellPops();
@@ -3517,7 +3658,13 @@ async function deleteItem(e,id){
   e.stopPropagation(); closeCellPops();
   const t=findAnyTask(id); const n=(t&&t.subtasks&&t.subtasks.length)||0;
   askConfirm('למחוק את הפריט'+(n?` ואת ${n} תת-הפריטים שלו`:'')+'?',async()=>{
-    try{await api('/api/tasks/'+id,{method:'DELETE'});toast('הפריט נמחק');await openBoard(st.board.id);}
+    try{
+      await api('/api/tasks/'+id,{method:'DELETE'});
+      const vw=document.getElementById('view'); const sy=vw?vw.scrollTop:0, sx=vw?vw.scrollLeft:0;
+      removeTaskLocal(id); renderView();
+      const vw2=document.getElementById('view'); if(vw2){ vw2.scrollTop=sy; vw2.scrollLeft=sx; }
+      toast('הפריט נמחק');
+    }
     catch(err){toast('שגיאה במחיקה');}
   },{title:'מחיקת פריט',confirmText:'מחק',note:'הפריט וכל תת-הפריטים שלו יימחקו ולא ניתן לשחזר.'});
 }
@@ -4186,8 +4333,8 @@ const Chat = {
   composerHTML(mode,cid){
     const edit=mode==='edit';
     const foot=edit
-      ? `<button class="btn btn-primary" onclick="Chat.saveEdit(${cid})"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="Chat.cancelEdit()">ביטול</button>`
-      : `<button class="btn btn-primary" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button>`;
+      ? `<button class="btn btn-primary" title="שמור (Ctrl+S)" onclick="Chat.saveEdit(${cid})"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="Chat.cancelEdit()">ביטול</button>`
+      : `<button class="btn btn-primary" title="שלח (Ctrl+S)" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button>`;
     return `<div class="composer${edit?' composer-edit':''}" ondragenter="Chat.onDragOver(event)" ondragover="Chat.onDragOver(event)" ondragleave="Chat.onDragLeave(event)" ondrop="Chat.onDrop(event)">
       <div class="comp-drop" id="comp-drop"><i class="fa-solid fa-envelope-open-text"></i> שחררו כאן לצירוף<small>קובץ או מייל מ‑Outlook</small></div>
       ${(!edit&&this.replyTo)?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
@@ -4202,7 +4349,7 @@ const Chat = {
         <div class="comp-check" id="comp-check"></div>
         <div class="comp-hl-wrap">
           <div class="comp-hl" id="comp-hl" aria-hidden="true"></div>
-          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…':'כתוב הודעה…  (Enter לשליחה · ניתן להדביק או לגרור צילום מסך)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
+          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…  (Ctrl+S לשמירה)':'כתוב הודעה…  (Ctrl+S לשליחה · Enter לשורה חדשה · ניתן להדביק או לגרור צילום מסך)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
         </div>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
@@ -4304,6 +4451,13 @@ const Chat = {
     hl.scrollTop=ta.scrollTop;
   },
   keydown(e){
+    // Ctrl/Cmd+S sends (or saves while editing). Enter never sends — it only
+    // inserts a newline — so users don't fire off half-written messages.
+    if((e.ctrlKey||e.metaKey) && (e.key==='s'||e.key==='S')){
+      e.preventDefault();
+      if(this.editing!=null) this.saveEdit(this.editing); else this.post();
+      return;
+    }
     // tag autocomplete open → arrows navigate, Enter/Tab pick, Esc closes
     const men=this._mention;
     if(men&&men.matches&&men.matches.length){
@@ -4314,7 +4468,8 @@ const Chat = {
     }
     if(e.key!=='Enter'||e.shiftKey)return;
     // checklist continuation: Enter on a checklist line adds a fresh box below;
-    // Enter on an empty checklist line exits the list; otherwise Enter sends.
+    // Enter on an empty checklist line exits the list. Otherwise Enter just
+    // inserts a normal newline (default) — sending is Ctrl/Cmd+S or the button.
     const ta=e.target, pos=ta.selectionStart;
     const before=ta.value.slice(0,pos);
     const lineStart=before.lastIndexOf('\n')+1;
@@ -4325,8 +4480,6 @@ const Chat = {
       else{ this.insert('\n'+(m[1]||'')+'☐ '); }
       return;
     }
-    e.preventDefault();
-    if(this.editing!=null) this.saveEdit(this.editing); else this.post();   // Enter saves while editing
   },
   insert(txt){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; ta.value=ta.value.slice(0,s)+txt+ta.value.slice(s); ta.focus(); const p=s+txt.length; ta.setSelectionRange(p,p); this.syncHL(); },
   insertCheck(){ const ta=document.getElementById('comp-text'); if(!ta)return; const s=ta.selectionStart==null?ta.value.length:ta.selectionStart; const before=ta.value.slice(0,s); this.insert((before===''||before.endsWith('\n')?'':'\n')+'☐ '); },
@@ -4898,6 +5051,43 @@ function alertModal(title,message,icon){
   </div>`);
   document.getElementById('modal').classList.add('confirm-modal');
   document.getElementById('overlay').classList.add('confirm-overlay');
+}
+
+/* styled single-field edit dialog (replaces the native prompt) — matches the
+   system's confirm/alert modals. Resolves to the trimmed value, or null on
+   cancel/Esc. Enter saves; the field opens focused and pre-selected. */
+function editPrompt(opts){
+  opts=opts||{};
+  return new Promise(resolve=>{
+    let done=false;
+    const finish=(val)=>{ if(done)return; done=true; closeModals(); resolve(val); };
+    window._editPromptSave=()=>{ const i=document.getElementById('edit-prompt-inp'); finish((i?i.value:'').trim()||null); };
+    window._editPromptCancel=()=>finish(null);
+    showModal(`<div class="confirm-box edit-prompt">
+      <div class="confirm-ic"><i class="fa-solid ${opts.icon||'fa-pen'}"></i></div>
+      <h2 style="border:none;padding:0 0 6px;text-align:center">${esc(opts.title||'עריכה')}</h2>
+      ${opts.message?`<div class="confirm-msg" style="font-weight:500">${esc(opts.message)}</div>`:''}
+      <div class="ep-field">
+        ${opts.label?`<label for="edit-prompt-inp">${esc(opts.label)}</label>`:''}
+        <input id="edit-prompt-inp" type="text" value="${esc(opts.value||'')}" placeholder="${esc(opts.placeholder||'')}" maxlength="${opts.maxlength||120}" autocomplete="off" dir="auto">
+      </div>
+      ${opts.note?`<div class="confirm-note">${esc(opts.note)}</div>`:''}
+      <div class="confirm-actions">
+        <button class="btn btn-primary" onclick="window._editPromptSave()"><i class="fa-solid fa-check"></i> ${esc(opts.confirmText||'שמור')}</button>
+        <button class="btn btn-ghost" onclick="window._editPromptCancel()">ביטול</button>
+      </div>
+    </div>`);
+    document.getElementById('modal').classList.add('confirm-modal');
+    document.getElementById('overlay').classList.add('confirm-overlay');
+    const i=document.getElementById('edit-prompt-inp');
+    if(i){
+      i.focus(); i.select();
+      i.addEventListener('keydown',ev=>{
+        if(ev.key==='Enter'){ ev.preventDefault(); window._editPromptSave(); }
+        else if(ev.key==='Escape'){ ev.preventDefault(); window._editPromptCancel(); }
+      });
+    }
+  });
 }
 
 async function apiGet(path){
