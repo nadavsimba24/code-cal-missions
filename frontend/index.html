@@ -1006,6 +1006,36 @@ img.pf-av{object-fit:cover;background:#fff}
 .set-bg{width:40px;height:40px;border-radius:10px;border:2px solid var(--border-strong);cursor:pointer;display:grid;place-items:center;color:var(--primary);font-size:14px}
 .set-bg.sel{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
 
+/* ===== board screen — design polish (ui-ux-pro-max: clean · high-contrast · corporate) ===== */
+/* board header — calmer rhythm, more elegant title */
+#boardhead{padding:18px 26px 0}
+#boardhead .bh-top{margin-bottom:14px}
+#boardhead h1{font-weight:700;letter-spacing:-.015em;font-size:23px}
+/* tabs — refined, tighter, cleaner active state */
+.tabs{gap:2px}
+.tab{padding:10px 15px;border-bottom-width:2px;transition:color .15s,background .15s,border-color .15s}
+.tab.active{font-weight:700}
+/* toolbar — a touch more air */
+#toolbar{padding:11px 26px;gap:8px}
+#view{padding:22px 26px}
+/* table — premium data grid: hairline frame, soft depth, refined header */
+.tbl{border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(29,42,68,.04), 0 8px 24px rgba(29,42,68,.055)}
+.tbl th{background:var(--bg);color:var(--text-muted);font-weight:600;font-size:13px;letter-spacing:.02em;padding:11px 12px;border-bottom:1px solid var(--border-strong)}
+.tbl td{height:46px;border-inline-start-color:color-mix(in srgb, var(--border) 55%, transparent)}
+.tbl .c-item{font-weight:600;border-inline-start-width:3px}
+.tbl tr:hover td{background:color-mix(in srgb, var(--primary) 5%, var(--surface))}
+.tbl tr.subrow:hover td{background:color-mix(in srgb, var(--primary) 4%, var(--bg))}
+/* status pills — softer, calmer */
+.pill{border-radius:7px;height:28px;font-weight:600;letter-spacing:.01em}
+/* buttons — subtle, confident depth (no gradients) */
+.btn{border-radius:8px}
+.btn-primary{box-shadow:0 1px 2px rgba(0,115,234,.22)}
+.btn-primary:hover{box-shadow:0 3px 10px rgba(0,115,234,.26)}
+/* group row header count chip a touch calmer */
+.add-row td{font-weight:500}
+/* respect reduced-motion (accessibility checklist) */
+@media (prefers-reduced-motion: reduce){ *{transition-duration:.01ms!important;animation-duration:.01ms!important;scroll-behavior:auto!important} }
+
 /* hamburger + sidebar drawer overlay (hidden on desktop) */
 .sb-toggle{display:none;width:38px;height:38px;border-radius:8px;place-items:center;color:var(--text);font-size:18px;cursor:pointer;background:none;border:none;flex-shrink:0}
 #sb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:49}
