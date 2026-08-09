@@ -1,3 +1,6 @@
 # Dev/test dependencies (run: ./venv/bin/pip install -r requirements-dev.txt)
 # httpx (used by FastAPI's TestClient) is already in requirements.txt.
 pytest==9.1.1
+# security agent — scripts/security_agent.py (SAST + dependency CVE scanning)
+bandit==1.9.4
+pip-audit==2.10.1
