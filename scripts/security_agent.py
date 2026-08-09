@@ -188,7 +188,7 @@ def scan_secrets():
 # ════════════════════════ 4) AUTHZ (AST heuristic) ══════════════════
 AUTH_SIGNALS = ("_ws_role", "_cap(", "_board_role", "_env_role", "_can_manage_env",
                 "_acting_user", "_can_comment", "_is_board_admin", "_item_perm",
-                "_col_perm", "_visible_board_ids", "403", "401")
+                "_col_perm", "_visible_board_ids", "_require_board_edit", "403", "401")
 MUTATING = {"post", "put", "patch", "delete"}
 # endpoints that are intentionally public — reduce obvious noise (still reviewable)
 PUBLIC_OK = {"/api/auth/login", "/api/upload"}

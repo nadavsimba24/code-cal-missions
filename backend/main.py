@@ -450,6 +450,17 @@ def _board_role(db, board_id, user_id):
 def _is_board_admin(db, board_id, user_id):
     return _board_role(db, board_id, user_id) == "admin"
 
+_BROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
+def _require_board_edit(db, board_id, actor, need="editor"):
+    """Enforce board-level write permission (closes IDOR on board mutations).
+    Following the app convention it enforces only when an actor is supplied; the
+    supplied actor must be a board member whose role meets `need` (editor|admin)."""
+    if actor is None:
+        return
+    role = _board_role(db, board_id, actor)
+    if role is None or _BROLE_ORDER.get(role, -1) < _BROLE_ORDER.get(need, 1):
+        raise HTTPException(403, "אין לך הרשאה לשנות לוח זה")
+
 def _visible_board_ids(db, user_id):
     """Set of board IDs a user is allowed to see (membership-based).
     Mirrors /api/boards visibility so aggregate views (dashboard, CEO,
@@ -2105,6 +2116,7 @@ def task_assignees(task_id: int, data: dict):
         if not user:
             raise HTTPException(404, "user not found")
         actor = data.get("actor_id")
+        _require_board_edit(db, task.board_id, actor)   # only board editors may (un)assign
         was = user in task.assignees
         if data.get("action") == "remove":
             if was:
@@ -2130,6 +2142,7 @@ def move_task(task_id: int, data: dict):
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404)
+        _require_board_edit(db, task.board_id, data.get("actor_id") or data.get("user_id"))
         if "group_id" in data:
             task.group_id = data["group_id"]
         if "position" in data:
@@ -2152,6 +2165,7 @@ def create_group_api(data: dict):
         board = db.query(Board).filter(Board.id == board_id).first()
         if not board:
             raise HTTPException(404, "board not found")
+        _require_board_edit(db, board_id, data.get("actor_id") or data.get("user_id"))
         pos = data.get("position")
         if pos is None:
             pos = db.query(Group).filter(Group.board_id == board_id).count()
@@ -2177,6 +2191,7 @@ def update_group_api(group_id: int, data: dict):
         g = db.query(Group).filter(Group.id == group_id).first()
         if not g:
             raise HTTPException(404, "group not found")
+        _require_board_edit(db, g.board_id, data.get("actor_id") or data.get("user_id"))
         if data.get("name") is not None:
             g.name = data["name"]
         if data.get("color") is not None:
@@ -2192,6 +2207,11 @@ def reorder_groups_api(data: dict):
     """Persist a new group ordering. data = {order: [groupId, ...]}"""
     with Session(engine) as db:
         order = data.get("order") or []
+        actor = data.get("actor_id") or data.get("user_id")
+        if order and actor is not None:
+            first = db.query(Group).filter(Group.id == order[0]).first()
+            if first:
+                _require_board_edit(db, first.board_id, actor)
         for idx, gid in enumerate(order):
             g = db.query(Group).filter(Group.id == gid).first()
             if g:
@@ -2200,11 +2220,12 @@ def reorder_groups_api(data: dict):
         return {"status": "reordered", "order": order}
 
 @app.delete("/api/groups/{group_id}")
-def delete_group_api(group_id: int):
+def delete_group_api(group_id: int, actor_id: Optional[int] = None):
     with Session(engine) as db:
         g = db.query(Group).filter(Group.id == group_id).first()
         if not g:
             raise HTTPException(404, "group not found")
+        _require_board_edit(db, g.board_id, actor_id)   # board editors+ only
         # Detach tasks instead of deleting them — they fall back to "ללא קבוצה"
         for t in db.query(Task).filter(Task.group_id == group_id).all():
             t.group_id = None

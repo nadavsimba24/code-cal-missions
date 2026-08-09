@@ -2633,7 +2633,7 @@ function vTable(el){
       onEnd:async()=>{
         const ids=[...el.querySelectorAll('.group-head[data-gid]')].map(h=>+h.dataset.gid);
         if(!ids.length)return;
-        try{await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids})});
+        try{await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
           toast('מיקום הקבוצה עודכן');
           (st.board.groups||[]).forEach(gr=>{const i=ids.indexOf(gr.id);if(i>=0)gr.position=i;});
         }catch(e){toast('שגיאה בשמירת המיקום');renderView();}
@@ -2649,7 +2649,7 @@ function vTable(el){
           const grp=(st.board.groups||[]).find(g=>g.id===gid);
           const body={group_id:gid,position:pos<0?0:pos}; if(grp)body.status=grp.task_status;
           try{
-            await api('/api/tasks/'+tid+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+            await api('/api/tasks/'+tid+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})});
             const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
             toast('הפריט הועבר'); renderView();
           }catch(e){ toast('שגיאה בהעברת הפריט'); renderView(); }
@@ -3393,7 +3393,7 @@ async function cycleStatus(e,id){
   const idx=order.indexOf(f.sub.status);
   const next=order[(idx+1)%order.length];
   try{
-    await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:next})});
+    await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:next,actor_id:meId()})});
     f.sub.status=next; if(f.sub.custom_fields)delete f.sub.custom_fields.status_label;
     const cell=e.target.closest('.status-clik'); if(cell)cell.innerHTML=statusPill(f.sub);
   }catch(err){toast('שגיאה בעדכון סטטוס');}
@@ -3448,7 +3448,7 @@ async function moveItemToGroup(e,id,gid){
   const pos=(st.board.tasks||[]).filter(x=>x.group_id===gid && !x.parent_id).length; // append at end
   const body={group_id:gid,position:pos}; if(grp)body.status=grp.task_status;
   try{
-    await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})});
     const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
     toast('הפריט הועבר לקבוצה'); renderView();
   }catch(err){ toast('שגיאה בהעברת הפריט'); }
@@ -3475,7 +3475,7 @@ function vKanban(el){
   el.querySelectorAll('.kcol-body').forEach(body=>{
     new Sortable(body,{group:'kanban',animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
       const id=ev.item.dataset.id, status=ev.to.dataset.status;
-      try{await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
+      try{await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status,actor_id:meId()})});
         const t=tasks.find(x=>x.id==id);if(t)t.status=status;toast('עודכן ל'+bStat(status).he);
         el.querySelectorAll('.kcol').forEach(c=>{const b=c.querySelector('.kcol-body');c.querySelector('.cnt').textContent=b.children.length;});
       }catch(e){toast('שגיאה בעדכון');}
@@ -3880,7 +3880,7 @@ const GROUP_COLORS=['#0073ea','#00c875','#fdab3d','#e2445c','#579bfc','#5559df',
 async function addGroup(){
   try{
     await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({board_id:st.board.id,name:'קבוצה חדשה',color:GROUP_COLORS[(st.board.groups||[]).length%GROUP_COLORS.length]})});
+      body:JSON.stringify({board_id:st.board.id,name:'קבוצה חדשה',color:GROUP_COLORS[(st.board.groups||[]).length%GROUP_COLORS.length],actor_id:meId()})});
     toast('קבוצה נוספה');await openBoard(st.board.id);
   }catch(e){toast('שגיאה ביצירת קבוצה');}
 }
@@ -3907,12 +3907,12 @@ async function saveGroup(gid){
   const color=window._gColor;
   const newIdx=+document.getElementById('g-pos').value;
   try{
-    await api('/api/groups/'+gid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,color})});
+    await api('/api/groups/'+gid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,color,actor_id:meId()})});
     const groups=(st.board.groups||[]).slice().sort((a,b)=>a.position-b.position);
     const cur=groups.findIndex(x=>x.id===gid);
     if(cur!==newIdx){
       const [m]=groups.splice(cur,1); groups.splice(newIdx,0,m);
-      await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:groups.map(x=>x.id)})});
+      await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:groups.map(x=>x.id),actor_id:meId()})});
     }
     closeModals();toast('הקבוצה עודכנה');await openBoard(st.board.id);
   }catch(e){toast('שגיאה בשמירה');}
@@ -3920,7 +3920,7 @@ async function saveGroup(gid){
 async function deleteGroup(gid){
   if(!confirm('למחוק את הקבוצה? המשימות שבה יעברו ל״ללא קבוצה״.'))return;
   try{
-    await api('/api/groups/'+gid,{method:'DELETE'});
+    await api('/api/groups/'+gid+'?actor_id='+meId(),{method:'DELETE'});
     closeModals();toast('הקבוצה נמחקה');await openBoard(st.board.id);
   }catch(e){toast('שגיאה במחיקה');}
 }
@@ -4771,7 +4771,7 @@ const Term = {
   async cmd_open(a){if(!a)return this.print('שימוש: open <id>','warn');await openBoard(+a);this.print(`✓ ${st.board.name} — ${(st.board.tasks||[]).length} משימות`,'ok');},
   cmd_tasks(a){if(!st.board)return this.print('פתח לוח: open <id>','warn');let t=st.board.tasks||[];if(a)t=t.filter(x=>x.status===a);if(!t.length)return this.print('אין משימות','mut');t.forEach(x=>{const lbl=(x.custom_fields&&x.custom_fields.status_label)||(STATUS[x.status]&&STATUS[x.status].he)||x.status;this.print(`  #${x.id}  [${lbl}]  ${x.title}`);});},
   async cmd_add(a){if(!st.board)return this.print('פתח לוח קודם','warn');const title=a.replace(/^["']|["']$/g,'');if(!title)return this.print('שימוש: add "כותרת"','warn');await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,title})});this.print('✓ נוצרה: '+title,'ok');await openBoard(st.board.id);},
-  async cmd_move(a,rest){const id=rest[0],status=rest[1];if(!id||!status)return this.print('שימוש: move <id> <status>','warn');await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});this.print(`✓ #${id} → ${status}`,'ok');},
+  async cmd_move(a,rest){const id=rest[0],status=rest[1];if(!id||!status)return this.print('שימוש: move <id> <status>','warn');await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status,actor_id:meId()})});this.print(`✓ #${id} → ${status}`,'ok');},
   async cmd_dashboard(){const d=await api('/api/dashboard');this.print(`  משימות:${d.total_tasks}  באיחור:${d.overdue_tasks}  פניות:${d.citizen_requests_open}  היתרים:${d.permits_pending}`);this.print('  '+JSON.stringify(d.tasks_by_status),'mut');},
   async cmd_permits(){const p=await api('/api/permits');if(!p.length)return this.print('אין','mut');p.forEach(x=>this.print(`  ${x.permit_number||x.id} ${x.applicant_name||''} — ${x.status}`));},
   async cmd_requests(){const r=await api('/api/citizen-requests');if(!r.length)return this.print('אין','mut');r.forEach(x=>this.print(`  #${x.id} ${x.title} — ${x.status}`));},
