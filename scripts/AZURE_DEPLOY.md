@@ -90,13 +90,12 @@ az identity federated-credential create \
   --subject "repo:Mashcal-Projects/code-cal-missions:ref:refs/heads/main" \
   --audiences api://AzureADTokenExchange
 
-# 3. least-privilege roles: push to ACR + manage the container app
+# 3. roles for the identity — REQUIRES an Owner / User Access Administrator.
+#    RG-scoped Contributor is simplest and covers both `az acr build`
+#    (AcrPush alone can't trigger ACR builds) and `az containerapp update`:
 az role assignment create --assignee-object-id "$PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
-  --role AcrPush \
-  --scope "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/$ACR"
-az role assignment create --assignee-object-id "$PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
-  --role Contributor \
-  --scope "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.App/containerApps/$APP"
+  --role Contributor --scope "/subscriptions/$SUB/resourceGroups/$RG"
+# (narrower alternative: Contributor on the ACR + Contributor on the container app)
 
 echo "AZURE_CLIENT_ID=$CLIENT_ID"   # → set this as the GitHub secret
 ```
