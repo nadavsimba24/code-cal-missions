@@ -64,35 +64,51 @@ az acr create -g <rg> -n <acr> --sku Basic
 **Secrets** (OIDC — recommended, no stored password):
 `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
 
-### 2. Azure identity for GitHub (OIDC federation)
+### 2. Azure identity for GitHub — User-Assigned Managed Identity + OIDC (recommended)
+Use this when there is **no App Registration** (or you can't create one — App
+Registration creation is often restricted at the tenant level). A managed
+identity lives in a resource group and federates to GitHub the same way, so
+`azure/login` works identically. No password is ever stored.
+
 ```bash
-# create an app registration + service principal
-az ad app create --display-name "github-missions-deploy"
-APP_ID=$(az ad app list --display-name "github-missions-deploy" --query "[0].appId" -o tsv)
-az ad sp create --id "$APP_ID"
+RG=RG-Missions-POC
+LOC=westeurope
+SUB=2666ecd7-2381-4297-a647-5514687a3233   # subscription id
+ACR=missionspoccontainer
+APP=missionspoccontainer                    # the container app
 
-# federated credential: trust pushes to main of this repo
-az ad app federated-credential create --id "$APP_ID" --parameters '{
-  "name": "github-main",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:Mashcal-Projects/code-cal-missions:ref:refs/heads/main",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
+# 1. create the identity
+az identity create -g "$RG" -n missions-gh-deploy -l "$LOC"
+CLIENT_ID=$(az identity show -g "$RG" -n missions-gh-deploy --query clientId -o tsv)
+PRINCIPAL_ID=$(az identity show -g "$RG" -n missions-gh-deploy --query principalId -o tsv)
 
-# least-privilege roles: push to ACR + manage the container app
-SUB=$(az account show --query id -o tsv)
-az role assignment create --assignee "$APP_ID" --role AcrPush \
-  --scope "/subscriptions/$SUB/resourceGroups/<rg>/providers/Microsoft.ContainerRegistry/registries/<acr>"
-az role assignment create --assignee "$APP_ID" --role "Contributor" \
-  --scope "/subscriptions/$SUB/resourceGroups/<rg>/providers/Microsoft.App/containerApps/missionspoccontainer"
+# 2. federate: trust pushes to main of this repo
+az identity federated-credential create \
+  --identity-name missions-gh-deploy -g "$RG" \
+  --name github-main \
+  --issuer https://token.actions.githubusercontent.com \
+  --subject "repo:Mashcal-Projects/code-cal-missions:ref:refs/heads/main" \
+  --audiences api://AzureADTokenExchange
+
+# 3. least-privilege roles: push to ACR + manage the container app
+az role assignment create --assignee-object-id "$PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
+  --role AcrPush \
+  --scope "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/$ACR"
+az role assignment create --assignee-object-id "$PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
+  --role Contributor \
+  --scope "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.App/containerApps/$APP"
+
+echo "AZURE_CLIENT_ID=$CLIENT_ID"   # → set this as the GitHub secret
 ```
-Put `$APP_ID` in `AZURE_CLIENT_ID`, `az account show --query tenantId` in
-`AZURE_TENANT_ID`, and `$SUB` in `AZURE_SUBSCRIPTION_ID`.
+`AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID` are just identifiers (already set).
+`AZURE_CLIENT_ID` is the managed identity's `clientId` printed above.
 
-> Simpler alternative to OIDC: create a client-secret service principal and store
-> the JSON as a single `AZURE_CREDENTIALS` secret, then swap the login step to
-> `azure/login@v2` with `creds: ${{ secrets.AZURE_CREDENTIALS }}`. Works, but is a
-> long-lived password — prefer OIDC.
+> Also add the same federated credential with a `pull_request` subject
+> (`repo:…:pull_request`) if you later want deploy previews.
+
+> Alternative (if you *do* have App Registration rights): create an app +
+> service principal and add the federated credential to the app instead
+> (`az ad app create` / `az ad app federated-credential create`). Same result.
 
 ## Rollback (manual)
 ```bash
