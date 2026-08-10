@@ -353,6 +353,22 @@ tr:hover .row-grip{opacity:.55}
 .status-clik{cursor:pointer;display:inline-block;width:100%}
 .subrow.subadd td{color:var(--text-muted);cursor:pointer;font-size:13px}
 .subrow.subadd:hover td{color:var(--primary)}
+/* sub-item header row — the sub-item column titles, mirroring the main header */
+.tbl tr.subhead td{background:var(--bg);color:var(--text-light);font-size:11.5px;font-weight:700;
+  letter-spacing:.2px;padding-top:7px;padding-bottom:7px;border-bottom:1px solid var(--border-strong);white-space:nowrap}
+.tbl tr.subhead:hover td{background:var(--bg)}
+.tbl tr.subhead .subh-name{display:flex;align-items:center}
+/* the header controls (grip / "..." / sort) behave exactly like the main header's */
+.tbl tr.subhead td{position:relative}
+.tbl tr.subhead td:hover .th-menu,.tbl tr.subhead td:hover .col-grip{opacity:1}
+.tbl tr.subhead td:hover .col-sort{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+.tbl tr.subhead .col-sort{bottom:auto;top:calc(100% - 1px);transform:translateX(-50%) translateY(-4px)}
+.tbl tr.subhead .col-sort.on{transform:translateX(-50%) translateY(0)}
+.subc-list{display:flex;flex-direction:column;gap:2px;max-height:46vh;overflow:auto}
+.subc-opt{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;font-size:13.5px}
+.subc-opt:hover{background:var(--row-hover)}
+.subc-opt input{width:auto}
+.subc-opt small{margin-inline-start:auto;color:var(--text-light);font-size:11px}
 /* custom columns */
 .tbl th.th-custom,.tbl th.th-add{position:relative}
 .th-wrap{display:inline-flex;align-items:center;gap:5px}
@@ -1325,7 +1341,7 @@ function avatarInner(u){
   return `<span class="av-ini" style="background:${avatarColor(name)}">${esc(initials(name)||'?')}</span>`;
 }
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
-const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, openSubs:new Set()};
+const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set()};
 
 /* ============ URL routing (hash-based deep links) ============
    #/board/{id}            — a board is open
@@ -1609,7 +1625,7 @@ function deleteBoardById(id){
   },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
 }
 async function openBoard(id){
-  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.colSort=null; }
+  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.colSort=null; st.subSort=null; }
   st.filters={q:'',people:[],status:'',priority:'',sort:''};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
@@ -2285,20 +2301,18 @@ const SysAdmin = {
     const rows=(st.depts||[]).length ? (st.depts).map(d=>`<tr>
         <td><span class="dp-swatch" style="background:${esc(d.color||'#3b82f6')}"></span></td>
         <td style="font-weight:600">${esc(d.name)}</td>
-        <td style="color:var(--text-muted)">${esc(d.code||'—')}</td>
         <td style="color:var(--text-muted)">${d.user_count||0} <span style="color:var(--text-light)">משתמשים</span></td>
-        <td style="color:var(--text-muted)">${d.board_count||0} <span style="color:var(--text-light)">לוחות</span></td>
         <td style="white-space:nowrap;text-align:left">
           <button class="sa-more" title="עריכה" onclick="SysAdmin.editDept(${d.id})"><i class="fa-solid fa-pen"></i></button>
           <button class="sa-more" title="מחיקה" onclick="SysAdmin.deleteDept(${d.id})"><i class="fa-solid fa-trash" style="color:var(--danger,#e2445c)"></i></button>
         </td>
-      </tr>`).join('') : `<tr><td colspan="6"><div class="empty" style="padding:20px">אין יחידות ארגוניות עדיין</div></td></tr>`;
+      </tr>`).join('') : `<tr><td colspan="4"><div class="empty" style="padding:20px">אין יחידות ארגוניות עדיין</div></td></tr>`;
     body.innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
         <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> היחידות הארגוניות (מחלקות) משמשות לשיוך משתמשים ולוחות. מחיקת יחידה מנתקת ממנה את המשויכים אליה — היא לא מוחקת אותם.</div>
         <button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addDept()"><i class="fa-solid fa-plus"></i> הוסף יחידה</button>
       </div>
       <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
-        <th style="width:34px"></th><th>שם היחידה</th><th>קוד</th><th>משתמשים</th><th>לוחות</th><th></th>
+        <th style="width:34px"></th><th>שם היחידה</th><th>משתמשים</th><th></th>
       </tr></thead><tbody>${rows}</tbody></table></div>`;
   },
   deptModal(d){
@@ -2810,7 +2824,7 @@ function vTable(el){
         }});
     });
   }
-  if(isBoardAdmin()){initColResizers(el);initColReorder(el);}
+  if(isBoardAdmin()){initColResizers(el);initColReorder(el);initSubColReorder(el);}
   resolveLinks();   // fetch titles for any cross-board linked items, then re-render
 }
 function battery(tasks){
@@ -2839,7 +2853,7 @@ function battTipHide(){ const t=document.getElementById('batt-tip'); if(t)t.remo
 
 /* ============ items + sub-items (פריט / תת-פריט) ============ */
 function itemRow(t,col){
-  const subs=t.subtasks||[];
+  const subs=sortedSubs(t.subtasks||[]);
   const cnt=subs.length;
   const open=st.openSubs.has(t.id);
   const parent=`
@@ -2861,12 +2875,112 @@ function itemRow(t,col){
       <td class="c-item c-sub"><div class="ci-flex"><span class="sub-twig"></span><span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
         <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
         <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button></div></td>
-      ${rowCellsAfterItem(s)}
+      ${subRowCellsAfterItem(s)}
       <td class="cell"></td>
       <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`).join('');
   const addSub=`<tr class="subrow subadd" data-parent="${t.id}" style="display:${disp}"><td class="c-sub" colspan="${totalCols()+1}" onclick="addSubItem(${t.id})"><span class="sub-twig"></span>+ הוסף תת-פריט</td></tr>`;
-  return parent+subRows+addSub;
+  return parent+subHeadRowHTML(t.id,disp)+subRows+addSub;
+}
+/* Header row for a parent's sub-items — the sub-item columns get their own
+   titles, exactly like the main table's header, so it's clear what each cell
+   holds while adding or filling a sub-item. The headers behave like the main
+   ones: rename in place, remove from the sub-item structure, drag to reorder
+   and sort the sub-items by the column. */
+function subHeadRowHTML(parentId,disp){
+  const cols=subColumns(), admin=isBoardAdmin();
+  const gear=admin?`<button class="th-menu" title="הגדרת עמודות תת-פריט" onclick="event.stopPropagation();subColsConfig()"><i class="fa-solid fa-gear"></i></button>`:'';
+  const rest=cols.filter(c=>c.id!=='item').map(c=>{
+    const grip=admin?`<i class="fa-solid fa-grip-vertical col-grip" title="גרור לשינוי מיקום העמודה"></i>`:'';
+    const menu=admin?`<button class="th-menu" title="עמודת תת-פריט" onclick="subColMenu(event,'${c.id}',${parentId})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
+    const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startSubColRename('${c.kind}','${c.id}',${parentId})"`:' class="th-lbl"';
+    return `<td class="subh-cell" data-subcol="${esc(String(c.id))}"><span class="th-in">${grip}<span${dbl}>${esc(subColLabel(c))}</span>${menu}${subSortBtn(c.id)}</span></td>`;
+  }).join('');
+  const pad=(orderedColumns().length-1)-(cols.length-1);
+  return `<tr class="subrow subhead" data-parent="${parentId}" style="display:${disp}">
+      <td class="c-sub subh-cell subh-name" data-subcol="item"><span class="sub-twig"></span><span class="th-in">תת-פריט${gear}${subSortBtn('item')}</span></td>
+      ${rest}${pad>0?`<td class="subh-cell" colspan="${pad}"></td>`:''}
+      <td class="subh-cell"></td>
+      <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
+    </tr>`;
+}
+/* sub-item rows are sorted on their own, so sorting them never reorders the items */
+function sortedSubs(subs){
+  const cs=st.subSort;
+  if(!cs||!cs.key)return subs;
+  const s=cs.dir==='desc'?-1:1;
+  return (subs||[]).slice().sort((a,b)=>colCompare(a,b,cs.key)*s);
+}
+function subColumnSort(e,key){
+  e.stopPropagation();
+  const cs=st.subSort||{};
+  if(cs.key!==key) st.subSort={key,dir:'desc'};
+  else if(cs.dir==='desc') st.subSort={key,dir:'asc'};
+  else st.subSort=null;
+  renderView();
+}
+function subSortBtn(key){
+  const cs=st.subSort||{};
+  const on=cs.key===String(key);
+  const ic=!on?'fa-sort':(cs.dir==='desc'?'fa-arrow-down-wide-short':'fa-arrow-up-short-wide');
+  const tip=!on?'מיון תתי-הפריטים':(cs.dir==='desc'?'מיון יורד — לחץ לסדר עולה':'מיון עולה — לחץ לביטול');
+  return `<button class="col-sort${on?' on':''}" title="${tip}" onclick="subColumnSort(event,'${key}')"><i class="fa-solid ${ic}"></i></button>`;
+}
+/* "..." menu on a sub-item column header — rename / remove from the structure */
+function subColMenu(e,id,parentId){
+  e.stopPropagation(); if(!isBoardAdmin())return;
+  const c=subColumns().find(x=>String(x.id)===String(id)); if(!c)return;
+  const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startSubColRename('${c.kind}','${c.id}',${parentId})"><i class="fa-solid fa-pen"></i> שנה שם</button>`
+    +`<button class="cell-pop-opt2" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i> בחר עמודות תת-פריט</button>`
+    +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="removeSubCol(event,'${c.id}')"><i class="fa-solid fa-eye-slash"></i> הסר מתת-פריט</button>`;
+  openCellPop(e.currentTarget,html);
+}
+/* renaming a sub-item header renames the board column itself (it is the same
+   column), so it is committed exactly like a rename from the main header */
+function startSubColRename(kind,id,parentId){
+  if(!isBoardAdmin())return;
+  let cell=null;
+  try{ cell=document.querySelector('.subrow.subhead[data-parent="'+CSS.escape(String(parentId))+'"] td[data-subcol="'+CSS.escape(String(id))+'"]'); }catch(_){ }
+  startColRename(kind,id,cell);
+}
+/* remove a column from the sub-item structure only — the item columns are untouched */
+async function removeSubCol(e,id){
+  e.stopPropagation(); closeCellPops();
+  if(!isBoardAdmin())return;
+  const ids=subColumns().map(c=>String(c.id)).filter(x=>x!=='item'&&x!==String(id));
+  await saveSubCols(ids,'העמודה הוסרה מתת-הפריט');
+}
+/* board admin — pick which of the board's columns exist on sub-item rows */
+function subColsConfig(){
+  if(!isBoardAdmin()){toast('רק מנהל הלוח');return;}
+  closeCellPops();
+  const all=orderedColumns().filter(c=>c.id!=='item');
+  const cur=new Set(subColumns().map(c=>String(c.id)));
+  const rows=all.map(c=>`<label class="subc-opt">
+      <input type="checkbox" class="subc-cb" value="${esc(String(c.id))}" ${cur.has(String(c.id))?'checked':''}>
+      <span>${esc(subColLabel(c))}</span>
+      <small>${c.kind==='builtin'?'עמודת ברירת מחדל':'עמודה מותאמת'}</small>
+    </label>`).join('')||'<div style="padding:12px;color:var(--text-light);font-size:12.5px">אין עמודות בלוח</div>';
+  showModal(`<h2><i class="fa-solid fa-diagram-next" style="color:var(--primary)"></i> עמודות תת-פריט</h2>
+    <div class="mbody">
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        מבנה תת-הפריט זהה בכל הלוח, ואינו חייב להיות זהה למבנה הפריט. בחר אילו עמודות יופיעו בשורות תת-הפריט — עמודת השם מוצגת תמיד.</div>
+      <div class="subc-list">${rows}</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="saveSubCols(null)"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+/* persist the sub-item structure. Called with an explicit id list (remove /
+   reorder) or with none, in which case the config dialog's checkboxes win. */
+async function saveSubCols(ids,msg){
+  if(!Array.isArray(ids))ids=[...document.querySelectorAll('.subc-cb:checked')].map(x=>x.value);
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({sub_cols:ids})});
+    st.board.sub_cols=['item',...ids];
+    closeModals(); toast(msg||'עמודות תת-הפריט עודכנו'); renderView();
+  }catch(err){ toast(err&&err.detail?err.detail:'שגיאה בשמירת העמודות'); renderView(); }
 }
 
 /* ============ custom columns (עמודות מותאמות, בהשראת Monday) ============ */
@@ -2916,6 +3030,19 @@ function orderedColumns(){
   all.sort((a,b)=>(a.id==='item'?-1:b.id==='item'?1:0));
   return all;
 }
+/* Sub-item column model. An item's structure is the same down the whole board,
+   and so is a sub-item's — but the two need not match: the board admin picks
+   which of the board's columns exist on sub-item rows (board.sub_cols, ids in
+   display order). Never configured → sub-items mirror the item columns. */
+function subColumns(){
+  const all=orderedColumns();
+  const ids=st.board&&st.board.sub_cols;
+  if(!Array.isArray(ids))return all;
+  const by=new Map(all.map(c=>[String(c.id),c]));
+  const name=by.get('item')||all[0];
+  return [name].concat(ids.map(String).filter(id=>id!=='item'&&by.has(id)).map(id=>by.get(id)));
+}
+function subColLabel(c){return c.kind==='builtin'?c.label:(c.col&&c.col.title)||'';}
 /* Board vocabulary of tags = every tag already used across the board's items.
    Non-admins pick from this list; only the board admin may create new tags. */
 function boardTags(){
@@ -2985,10 +3112,10 @@ function builtinColMenu(e,key){
    built-in (kind='builtin', id=key) and custom (kind='custom', id=colId)
    columns alike; commits on Enter/blur, cancels on Esc. Triggered from the
    column "..." menu or by double-clicking the header text. */
-function startColRename(kind,id){
+function startColRename(kind,id,host){
   if(!isBoardAdmin())return;
-  let th;
-  try{ th=document.querySelector('.col-head-row th[data-colkey="'+CSS.escape(String(id))+'"]'); }catch(_){ th=null; }
+  let th=host||null;
+  if(!th){ try{ th=document.querySelector('.col-head-row th[data-colkey="'+CSS.escape(String(id))+'"]'); }catch(_){ th=null; } }
   const lbl=th&&th.querySelector('.th-lbl'); if(!lbl)return;
   const cur=lbl.textContent.trim();
   const inp=document.createElement('input');
@@ -3043,6 +3170,24 @@ function initColReorder(root){
         const ids=[...tr.querySelectorAll('th[data-colkey]')].map(th=>th.dataset.colkey)
           .filter(k=>k&&k!=='__add'&&k!=='__spacer');
         saveColOrder(ids);
+      }
+    });
+  });
+}
+/* the same drag-to-reorder for the sub-item header row; the new order is the
+   sub-item structure's order, saved on drop */
+function initSubColReorder(root){
+  if(!window.Sortable||!isBoardAdmin())return;
+  root.querySelectorAll('tr.subhead').forEach(tr=>{
+    new Sortable(tr,{
+      draggable:'td[data-subcol]', handle:'.col-grip',
+      filter:'[data-subcol="item"]',
+      forceFallback:true, fallbackTolerance:4, animation:150,
+      ghostClass:'sortable-ghost', dragClass:'sortable-drag',
+      onMove:evt=>evt.related.dataset.subcol!=='item',
+      onEnd:()=>{
+        const ids=[...tr.querySelectorAll('td[data-subcol]')].map(td=>td.dataset.subcol).filter(k=>k&&k!=='item');
+        saveSubCols(ids,'סדר עמודות תת-הפריט עודכן');
       }
     });
   });
@@ -3121,6 +3266,14 @@ function customCellHTML(c,t){
 function rowCellsAfterItem(t){
   return orderedColumns().filter(c=>c.id!=='item')
     .map(c=>c.kind==='builtin'?builtinCellHTML(c.key,t):customCellHTML(c.col,t)).join('');
+}
+/* same, for a sub-item row — the sub-item column set, padded with one empty cell
+   so a shorter sub structure still lines up with the item rows above it */
+function subRowCellsAfterItem(s){
+  const cols=subColumns().filter(c=>c.id!=='item');
+  const html=cols.map(c=>c.kind==='builtin'?builtinCellHTML(c.key,s):customCellHTML(c.col,s)).join('');
+  const pad=(orderedColumns().length-1)-cols.length;
+  return html+(pad>0?`<td class="cell" colspan="${pad}"></td>`:'');
 }
 /* people column */
 function peopleDisp(ids){
@@ -3593,7 +3746,9 @@ function addColMenu(e){
     const bc=BUILTIN_COLS.find(c=>c.key===k)||{}; const lbl=builtinLabel(k,bc.label||k);
     return `<button class="coltype" onclick="closeCellPops();unhideBuiltinCol('${k}')"><i class="fa-solid fa-eye"></i><span><b>${esc(lbl)}</b><small>החזרת עמודת ברירת מחדל</small></span></button>`;
   }).join('')+'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>'):'';
-  const html=hiddenHTML+'<div class="pop-title">בחר סוג עמודה</div>'+types.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
+  const subCfg=`<button class="coltype" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i><span><b>עמודות תת-פריט</b><small>אילו עמודות יופיעו בשורות תת-הפריט</small></span></button>`
+    +'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>';
+  const html=hiddenHTML+subCfg+'<div class="pop-title">בחר סוג עמודה</div>'+types.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
   openCellPop(e.currentTarget,html,'col-add-pop');
 }
 async function addColumn(type){
@@ -3692,40 +3847,37 @@ async function cycleStatus(e,id){
     const cell=e.target.closest('.status-clik'); if(cell)cell.innerHTML=statusPill(f.sub);
   }catch(err){toast('שגיאה בעדכון סטטוס');}
 }
-function addSubItem(parentId){
-  showModal(`<h2>תת-פריט חדש</h2><div class="mbody">
-    <div class="field"><label>שם תת-הפריט</label><input id="si-title" placeholder="מה צריך לעשות?" onkeydown="if(event.key==='Enter')saveSubItem(${parentId})"></div>
-    <div class="field"><label>עדיפות</label><select id="si-prio">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select></div>
-    <div class="field"><label>תאריך יעד</label><input type="date" id="si-due" style="padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%"></div>
-    <div class="field"><label>אחראים</label><div style="display:flex;flex-wrap:wrap;gap:7px">${(st.users||[]).map(u=>`<label style="display:flex;align-items:center;gap:5px;font-size:13px;border:1px solid var(--border-strong);border-radius:20px;padding:4px 11px;cursor:pointer"><input type="checkbox" class="si-asg" value="${u.id}" style="width:auto">${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:13px">אין משתמשים</span>'}</div></div>
-  </div><div class="mfoot"><button class="btn btn-primary" onclick="saveSubItem(${parentId})">הוסף</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
-  setTimeout(()=>{const n=document.getElementById('si-title');if(n)n.focus();},30);
-}
-async function saveSubItem(parentId){
-  const title=(document.getElementById('si-title').value||'').trim();if(!title){toast('צריך שם');return;}
-  if(window._creatingItem)return;                       // guard against double-submit
+/* Adding a sub-item works exactly like adding an item: no dialog — the row is
+   created immediately and its name opens for inline editing. */
+async function addSubItem(parentId){
+  if(!st.board||window._creatingItem)return;            // guard against double-submit
   window._creatingItem=true;
-  const btn=document.querySelector('#modal .mfoot .btn-primary'); if(btn)btn.disabled=true;
-  const assignee_ids=[...document.querySelectorAll('.si-asg:checked')].map(x=>+x.value);
-  const dueVal=document.getElementById('si-due').value;
-  const dueDate=dueVal?new Date(dueVal+'T12:00:00').toISOString():null;
   try{
-    await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parent_id:parentId,title,priority:document.getElementById('si-prio').value,due_date:dueDate,assignee_ids,actor_id:meId()})});
-    st.openSubs.add(parentId);
-    closeModals();toast('תת-פריט נוסף');await openBoard(st.board.id);
-  }catch(e){toast('שגיאה ביצירת תת-פריט'); if(btn)btn.disabled=false;}
+    const s=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:withMe({parent_id:parentId,title:'תת-פריט חדש'})});
+    if(s&&s.id){
+      const p=findTask(parentId);
+      if(p){ p.subtasks=(p.subtasks||[]).concat(s); p.subtask_count=(p.subtask_count||0)+1; }
+      st.openSubs.add(parentId);                        // keep the sub-items open
+      renderView();
+      setTimeout(()=>focusNewItemTitle(s.id),40);       // rename it inline
+    }
+  }catch(e){ toast('שגיאה ביצירת תת-הפריט'); }
   finally{ window._creatingItem=false; }
 }
-async function deleteSubItem(e,id){
+/* same styled confirmation dialog an item deletion uses (no native confirm) */
+function deleteSubItem(e,id){
   e.stopPropagation();
-  if(!confirm('למחוק את תת-הפריט?'))return;
-  try{
-    await api('/api/tasks/'+id,{method:'DELETE'});
-    removeTaskLocal(id);
-    if(!removeRowsLocal(id))renderView();   // no board reload — the row just disappears
-    toast('תת-פריט נמחק');
-  }
-  catch(err){toast('שגיאה במחיקה');}
+  const s=findAnyTask(id);
+  askConfirm('למחוק את תת-הפריט'+(s&&s.title?` "${s.title}"`:'')+'?',async()=>{
+    try{
+      await api('/api/tasks/'+id,{method:'DELETE'});
+      removeTaskLocal(id);
+      if(!removeRowsLocal(id))renderView();   // no board reload — the row just disappears
+      toast('תת-פריט נמחק');
+    }
+    catch(err){toast('שגיאה במחיקה');}
+  },{title:'מחיקת תת-פריט',confirmText:'מחק',note:'תת-הפריט יימחק ולא ניתן לשחזר.'});
 }
 /* item options menu — opened by right-click on the row or the hover 3-dots button */
 function itemRowMenu(e,id){
@@ -4165,9 +4317,10 @@ async function openNewItem(group){
   }catch(e){ toast('שגיאה ביצירת הפריט'); }
   finally{ window._creatingItem=false; }
 }
-// open the freshly-created row's title in inline-edit mode (text pre-selected)
+// open the freshly-created row's title in inline-edit mode (text pre-selected).
+// Works for an item row (data-tid) and a sub-item row (data-sid) alike.
 function focusNewItemTitle(id){
-  const span=document.querySelector('tr[data-tid="'+id+'"] .item-title');
+  const span=document.querySelector('tr[data-tid="'+id+'"] .item-title, tr[data-sid="'+id+'"] .item-title');
   if(span){ span.scrollIntoView({block:'center'}); titleEdit({currentTarget:span,stopPropagation(){}},id); }
 }
 // default group for a new item created from the top "פריט חדש" button: the

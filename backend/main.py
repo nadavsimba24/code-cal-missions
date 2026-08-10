@@ -617,6 +617,9 @@ def get_board(board_id: int, user_id: Optional[int] = None):
             "my_role": my_role,
             "owners": owners,
             "columns": (b.settings or {}).get("columns", []),
+            # which columns sub-items show (ids, name column first). None = never
+            # configured → sub-items mirror the item columns.
+            "sub_cols": (b.settings or {}).get("sub_cols"),
             "col_widths": (b.settings or {}).get("col_widths", {}),
             "col_labels": (b.settings or {}).get("col_labels", {}),
             "col_hidden": (b.settings or {}).get("col_hidden", []),
@@ -825,6 +828,19 @@ def update_board(board_id: int, data: dict):
                 })
             s = dict(b.settings or {})
             s["columns"] = cols
+            b.settings = s
+        if data.get("sub_cols") is not None:
+            # Sub-items have their own column structure: identical for every
+            # sub-item on the board, but not necessarily the item's columns.
+            # Stored as ids picked from the board's column pool (built-in keys +
+            # custom column ids); the name column is always present and first.
+            if _board_role(db, board_id, data.get("user_id")) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול להגדיר את עמודות תת-הפריט")
+            s = dict(b.settings or {})
+            pool = {"assignees", "status", "priority", "due", "tags"}
+            pool |= {str(c.get("id")) for c in s.get("columns", []) if c.get("id")}
+            picked = [str(k) for k in (data["sub_cols"] or []) if str(k) in pool]
+            s["sub_cols"] = ["item"] + list(dict.fromkeys(picked))
             b.settings = s
         db.commit()
         db.refresh(b)

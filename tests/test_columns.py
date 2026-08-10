@@ -59,11 +59,38 @@ def test_board_admin_can_rename_builtin(client, admin_id):
     assert _board(client, bid, admin_id)["col_labels"].get("due") == "דדליין"
 
 
+def test_sub_item_columns_are_independent_of_the_item_columns(client, admin_id):
+    """A sub-item's structure is uniform across the board but need not match the
+    item's: the board admin picks which columns exist on sub-item rows."""
+    bid = _make_board(client, admin_id)
+    # never configured → null, meaning sub-items mirror the item columns
+    assert _board(client, bid, admin_id)["sub_cols"] is None
+
+    # a custom column, so the pool holds more than the built-ins
+    r = client.patch(f"/api/boards/{bid}",
+                     json={"columns": [{"type": "number", "title": "שעות"}], "user_id": admin_id})
+    col_id = r.json()["columns"][0]["id"]
+
+    r = client.patch(f"/api/boards/{bid}",
+                     json={"sub_cols": ["status", col_id, "bogus"], "user_id": admin_id})
+    assert r.status_code == 200, r.text
+    # unknown ids dropped, the name column is always present and first
+    assert _board(client, bid, admin_id)["sub_cols"] == ["item", "status", col_id]
+
+    # the item columns are untouched by the sub-item structure
+    assert _board(client, bid, admin_id)["col_hidden"] == []
+
+    # an empty pick leaves sub-items with just their name
+    client.patch(f"/api/boards/{bid}", json={"sub_cols": [], "user_id": admin_id})
+    assert _board(client, bid, admin_id)["sub_cols"] == ["item"]
+
+
 def test_non_admin_cannot_manage_columns(client, admin_id, member_id):
     """A board member (editor, not admin) cannot hide/reorder/rename columns."""
     bid = _make_board(client, admin_id)
     client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": member_id, "role": "editor"})
-    for payload in ({"col_hidden": ["tags"]}, {"col_order": ["item", "tags"]}, {"col_labels": {"due": "x"}}):
+    for payload in ({"col_hidden": ["tags"]}, {"col_order": ["item", "tags"]}, {"col_labels": {"due": "x"}},
+                    {"sub_cols": ["status"]}):
         payload["user_id"] = member_id
         r = client.patch(f"/api/boards/{bid}", json=payload)
         assert r.status_code == 403, f"{payload} -> {r.status_code}"
