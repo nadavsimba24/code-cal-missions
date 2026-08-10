@@ -2206,6 +2206,7 @@ const SysAdmin = {
         <div class="sa-tabs">
           <button class="sa-tab" data-tab="users" onclick="SysAdmin.go('users')"><i class="fa-solid fa-users"></i> משתמשים</button>
           <button class="sa-tab" data-tab="depts" onclick="SysAdmin.go('depts')"><i class="fa-solid fa-sitemap"></i> יחידות ארגוניות</button>
+          <button class="sa-tab" data-tab="envs" onclick="SysAdmin.go('envs')"><i class="fa-solid fa-layer-group"></i> סביבות</button>
           <button class="sa-tab" data-tab="history" onclick="SysAdmin.go('history')"><i class="fa-solid fa-clock-rotate-left"></i> היסטוריית התחברות</button>
         </div>
         <div id="sa-body"></div>
@@ -2219,8 +2220,65 @@ const SysAdmin = {
     const body=document.getElementById('sa-body'); if(!body)return;
     if(tab==='history'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderHistory(); }
     else if(tab==='depts'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderDepts(); }
+    else if(tab==='envs'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderEnvs(); }
     else body.innerHTML=this.usersHTML();
   },
+  /* ── סביבות — a discoverable place for a system admin to rename or delete an
+     environment (the sidebar switcher only exposes these on hover) ── */
+  async renderEnvs(){
+    let envs=[]; try{ const d=await api('/api/environments'+(meId()?'?user_id='+meId():'')); envs=d.environments||[]; }catch(e){}
+    this.envs=envs;
+    const body=document.getElementById('sa-body'); if(!body)return;
+    const admin=isSysAdmin();   // only a workspace admin may delete — same rule the API enforces
+    const rows=envs.length ? envs.map(e=>`<tr>
+        <td><span class="dp-swatch" style="background:${esc(e.color||'#0073ea')}"></span></td>
+        <td style="font-weight:600">${esc(e.icon||'🏢')} ${esc(e.name)}${e.is_primary?' <span class="perm-badge">ברירת מחדל</span>':''}</td>
+        <td style="color:var(--text-muted)">${e.board_count||0} <span style="color:var(--text-light)">לוחות</span></td>
+        <td style="white-space:nowrap;text-align:left">
+          <button class="sa-more" title="שנה שם" onclick="SysAdmin.renameEnv(${e.id})"><i class="fa-solid fa-pen"></i></button>
+          ${!admin ? ''
+            : e.is_primary
+              ? `<button class="sa-more" title="לא ניתן למחוק את סביבת ברירת המחדל" disabled style="opacity:.35;cursor:not-allowed"><i class="fa-solid fa-trash"></i></button>`
+              : `<button class="sa-more" title="מחיקה" onclick="SysAdmin.deleteEnv(${e.id})"><i class="fa-solid fa-trash" style="color:var(--danger,#e2445c)"></i></button>`}
+        </td>
+      </tr>`).join('') : `<tr><td colspan="4"><div class="empty" style="padding:20px">אין סביבות עדיין</div></td></tr>`;
+    body.innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> סביבות (Workspaces) מכילות לוחות ותיקיות. מחיקת סביבה מעבירה את לוחותיה לסביבת ברירת המחדל — הלוחות לא נמחקים. את סביבת ברירת המחדל לא ניתן למחוק.</div>
+        ${hasCap('create_environment')?`<button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addEnv()"><i class="fa-solid fa-plus"></i> סביבה חדשה</button>`:''}
+      </div>
+      <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
+        <th style="width:34px"></th><th>שם הסביבה</th><th>לוחות</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table></div>`;
+  },
+  async addEnv(){
+    const name=prompt('שם הסביבה החדשה:'); if(!name||!name.trim())return;
+    try{ await api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})});
+      toast('הסביבה נוצרה'); await this.reloadEnvs(); }
+    catch(err){ toast(err&&err.detail?err.detail:'שגיאה ביצירת סביבה'); }
+  },
+  async renameEnv(id){
+    const e=(this.envs||[]).find(x=>x.id===id); if(!e)return;
+    const name=prompt('שם הסביבה:',e.name); if(!name||!name.trim())return;
+    try{ await api('/api/environments/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})});
+      toast('עודכן'); await this.reloadEnvs(); }
+    catch(err){ toast(err&&err.detail?err.detail:'שגיאה בעדכון'); }
+  },
+  deleteEnv(id){
+    const e=(this.envs||[]).find(x=>x.id===id)||{}; const b=e.board_count||0;
+    askConfirm(`למחוק את הסביבה "${e.name||''}"?`,async()=>{
+      try{
+        await api('/api/environments/'+id+'?actor_id='+meId(),{method:'DELETE'});
+        toast('הסביבה נמחקה');
+        if(st.env&&st.env.id===id)st.env=null;
+        await this.reloadEnvs();
+      }catch(err){ toast(err&&err.detail?err.detail:'שגיאה במחיקה'); }
+    },{title:'מחיקת סביבה',confirmText:'מחק',
+       note:b?`${b} לוחות יעברו לסביבת ברירת המחדל — הם לא יימחקו. חברי הסביבה יאבדו את השיוך אליה.`
+             :'חברי הסביבה יאבדו את השיוך אליה. הפעולה אינה הפיכה.'});
+  },
+  /* refresh the sidebar switcher (same data) and reopen the panel — askConfirm
+     replaces the modal, so the tab has to be rebuilt rather than re-rendered */
+  async reloadEnvs(){ try{ await Env.load(); }catch(e){} await loadBoards(); await this.open('envs'); },
   async renderDepts(){
     try{ st.depts = await api('/api/departments'); }catch(e){ st.depts = st.depts||[]; }
     const body=document.getElementById('sa-body'); if(!body)return;
