@@ -2799,7 +2799,7 @@ function itemRow(t,col){
     </tr>`;
   const disp=open?'table-row':'none';
   const subRows=subs.map(s=>`
-    <tr class="subrow" data-parent="${t.id}" style="display:${disp}">
+    <tr class="subrow" data-parent="${t.id}" data-sid="${s.id}" style="display:${disp}">
       <td class="c-item c-sub"><div class="ci-flex"><span class="sub-twig"></span><span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
         <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
         <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button></div></td>
@@ -3277,6 +3277,41 @@ function removeTaskLocal(id){
   for(const t of st.board.tasks){ if((t.subtasks||[]).some(s=>s.id==id)){ t.subtasks=t.subtasks.filter(s=>s.id!=id); return true; } }
   return false;
 }
+/* Drop a deleted item's rows straight out of the table instead of re-rendering
+   the view: nothing flashes, scroll position and collapsed/expanded groups and
+   sub-items all stay exactly as they were. Returns false when the row isn't on
+   screen (other view, filtered out) so the caller can fall back to renderView. */
+function removeRowsLocal(id){
+  const view=document.getElementById('view'); if(!view)return false;
+  const row=view.querySelector(`tr[data-tid="${CSS.escape(String(id))}"]`);
+  if(row){
+    const tbody=row.closest('tbody');
+    view.querySelectorAll(`tr[data-parent="${CSS.escape(String(id))}"]`).forEach(r=>r.remove()); // sub-rows + "הוסף תת-פריט"
+    row.remove();
+    refreshGroupStats(tbody);
+    return true;
+  }
+  const sub=view.querySelector(`tr[data-sid="${CSS.escape(String(id))}"]`);
+  if(sub){ const pid=sub.dataset.parent; sub.remove(); refreshSubBadge(view,pid); return true; }
+  return false;
+}
+/* keep the group's item counter + status battery in sync after a row is dropped */
+function refreshGroupStats(tbody){
+  const grp=tbody&&tbody.closest('.group'); if(!grp)return;
+  const raw=tbody.dataset.gid, gid=raw===''?null:+raw;
+  const g=groupsOf().find(x=>x.id===gid); if(!g)return;
+  const cnt=grp.querySelector('.g-count'); if(cnt)cnt.textContent=g.tasks.length;
+  const bat=grp.querySelector('.battery'); const box=bat&&bat.parentElement;
+  if(box)box.innerHTML=battery(g.tasks);
+}
+/* a sub-item was removed → update (or drop) the parent's "N תת-פריטים" badge */
+function refreshSubBadge(view,parentId){
+  const parentRow=view.querySelector(`tr[data-tid="${CSS.escape(String(parentId))}"]`); if(!parentRow)return;
+  const n=view.querySelectorAll(`tr[data-parent="${CSS.escape(String(parentId))}"][data-sid]`).length;
+  const badge=parentRow.querySelector('.sub-badge');
+  if(!n){ if(badge)badge.remove(); return; }
+  if(badge){ badge.innerHTML=`<i class="fa-solid fa-diagram-next"></i> ${n}`; badge.title=`${n} תת-פריטים`; }
+}
 async function setCell(taskId,colId,value){
   const t=findAnyTask(taskId);
   if(t && !canEditCol(t,colId)){ toast('אין לך הרשאת עריכה לעמודה זו'); return; }
@@ -3626,7 +3661,12 @@ async function saveSubItem(parentId){
 async function deleteSubItem(e,id){
   e.stopPropagation();
   if(!confirm('למחוק את תת-הפריט?'))return;
-  try{await api('/api/tasks/'+id,{method:'DELETE'});toast('תת-פריט נמחק');await openBoard(st.board.id);}
+  try{
+    await api('/api/tasks/'+id,{method:'DELETE'});
+    removeTaskLocal(id);
+    if(!removeRowsLocal(id))renderView();   // no board reload — the row just disappears
+    toast('תת-פריט נמחק');
+  }
   catch(err){toast('שגיאה במחיקה');}
 }
 /* item options menu — opened by right-click on the row or the hover 3-dots button */
@@ -3660,9 +3700,8 @@ async function deleteItem(e,id){
   askConfirm('למחוק את הפריט'+(n?` ואת ${n} תת-הפריטים שלו`:'')+'?',async()=>{
     try{
       await api('/api/tasks/'+id,{method:'DELETE'});
-      const vw=document.getElementById('view'); const sy=vw?vw.scrollTop:0, sx=vw?vw.scrollLeft:0;
-      removeTaskLocal(id); renderView();
-      const vw2=document.getElementById('view'); if(vw2){ vw2.scrollTop=sy; vw2.scrollLeft=sx; }
+      removeTaskLocal(id);
+      if(!removeRowsLocal(id))renderView();   // not on screen (other view) → re-render
       toast('הפריט נמחק');
     }
     catch(err){toast('שגיאה במחיקה');}
