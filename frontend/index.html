@@ -376,7 +376,16 @@ tr:hover .row-grip{opacity:.55}
 .tbl th:hover .th-menu{opacity:1}
 .th-menu:hover{background:var(--row-hover);color:var(--text)}
 /* drag grip for reordering columns (board admin) — appears on header hover */
-.col-grip{opacity:0;cursor:grab;color:var(--text-light);font-size:10px;margin-inline-end:3px;flex-shrink:0;transition:opacity .12s,color .12s}
+/* dragging a column: its name follows the pointer and a line shows where it lands */
+.coldrag-ghost{position:fixed;z-index:400;pointer-events:none;transform:translate(-50%,-140%);white-space:nowrap;
+  background:var(--surface);border:1px solid var(--primary);border-radius:8px;padding:6px 11px;font-size:12.5px;
+  font-weight:700;color:var(--text);box-shadow:0 10px 26px rgba(0,0,0,.22)}
+.coldrag-marker{position:fixed;z-index:399;pointer-events:none;width:3px;border-radius:2px;background:var(--primary);
+  box-shadow:0 0 0 1px rgba(255,255,255,.55),0 0 10px color-mix(in srgb,var(--primary) 55%,transparent)}
+body.coldragging{user-select:none;cursor:grabbing}
+body.coldragging .col-grip{opacity:1}
+.coldrag-src{opacity:.35}
+.col-grip{opacity:0;cursor:grab;color:var(--text-light);font-size:10px;margin-inline-end:3px;flex-shrink:0;transition:opacity .12s,color .12s;touch-action:none}
 .tbl th:hover .col-grip{opacity:.65}
 .col-grip:hover{opacity:1;color:var(--text)}
 .col-grip:active{cursor:grabbing}
@@ -415,7 +424,20 @@ tr:hover .row-grip{opacity:.55}
 .st-del:disabled{opacity:.35;cursor:default;color:var(--text-muted)}
 .cell-pop-opt2{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;font-size:13px;color:var(--text)}
 .cell-pop-opt2:hover{background:var(--row-hover)}
+/* nested menu: hovering "הגדרות" reveals its options. The options open inside
+   the menu (not flying out) because the popup itself scrolls, which would clip
+   an absolutely-positioned flyout. */
+.pop-sub>.cell-pop-opt2{width:100%;cursor:default}
+.pop-sub:hover>.cell-pop-opt2{background:var(--row-hover)}
+.pop-sub-caret{margin-inline-start:auto;font-size:9px;color:var(--text-light);transition:transform .12s}
+.pop-sub:hover .pop-sub-caret{transform:rotate(-90deg)}
+.pop-subm{display:none;margin:2px 0 2px 0;padding-inline-start:10px;border-inline-start:2px solid var(--border)}
+.pop-sub:hover .pop-subm{display:block}
+.pop-subm .cell-pop-opt2{width:100%;font-size:12.5px}
 .col-add-pop{min-width:230px;inset-inline-start:auto;inset-inline-end:0;transform:none}
+.col-type-q{padding:7px 10px;border:1px solid var(--border-strong);border-radius:7px;font-size:12.5px;font-family:inherit;width:100%;margin-bottom:2px}
+.col-type-q:focus{outline:none;border-color:var(--primary)}
+.col-type-none{padding:10px;text-align:center;color:var(--text-light);font-size:12.5px}
 .coltype{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;text-align:right}
 .coltype:hover{background:var(--row-hover)}
 .coltype i{width:18px;color:var(--primary);font-size:14px}
@@ -1928,9 +1950,19 @@ async function togglePerson(taskId,userId,add){
 }
 const fdate = d=>{ if(!d) return '<span style="color:var(--text-light)">—</span>'; const x=new Date(d); if(isNaN(x)) return esc(String(d)); const p=n=>String(n).padStart(2,'0'); return `${p(x.getDate())}/${p(x.getMonth()+1)}/${x.getFullYear()}`; };
 // copy the item's unique id to the clipboard (used by the read-only "מספר מזהה" column)
-function copyItemId(e,code){
+/* deep link to a single item — what the "מזהה פריט" column copies in URL mode */
+function itemUrl(taskId){
+  return location.origin+location.pathname+'#/board/'+((st.board&&st.board.id)||'')+'/item/'+taskId;
+}
+/* click on a "מזהה פריט" cell → copy what the column settings ask for, with a
+   short confirmation. mode: 'id' (the number) | 'url' (a link to the item). */
+function copyItemId(e,taskId,mode){
   if(e)e.stopPropagation();
-  const txt=String(code), done=()=>toast('המזהה הועתק: '+txt);
+  const t=findAnyTask(taskId);
+  const asUrl=mode==='url';
+  if(!asUrl&&!(t&&t.item_uid)){ toast('המזהה טרם הונפק'); return; }
+  const txt=asUrl?itemUrl(taskId):String(t.item_uid);
+  const done=()=>toast(asUrl?'הקישור לפריט הועתק':'מזהה הפריט הועתק: '+txt);
   const fallback=()=>{ try{ const ta=document.createElement('textarea'); ta.value=txt; ta.style.cssText='position:fixed;opacity:0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); done(); }catch(_){ toast('לא ניתן להעתיק'); } };
   try{ (navigator.clipboard&&navigator.clipboard.writeText)?navigator.clipboard.writeText(txt).then(done).catch(fallback):fallback(); }catch(_){ fallback(); }
 }
@@ -2824,7 +2856,7 @@ function vTable(el){
         }});
     });
   }
-  if(isBoardAdmin()){initColResizers(el);initColReorder(el);initSubColReorder(el);}
+  if(isBoardAdmin()){initColResizers(el);initColReorder(el);}
   resolveLinks();   // fetch titles for any cross-board linked items, then re-render
 }
 function battery(tasks){
@@ -2999,7 +3031,7 @@ const COLUMN_TYPES=[
   {type:'rating',he:'דירוג',ic:'fa-star',desc:'דירוג בכוכבים'},
   {type:'connect',he:'קישור בין לוחות',ic:'fa-diagram-project',desc:'קישור לפריטים בלוחות אחרים (מנהל מערכת)'},
   {type:'created_at',he:'מועד יצירה',ic:'fa-calendar-plus',desc:'תאריך יצירת הרשומה (אוטומטי)'},
-  {type:'item_id',he:'מספר מזהה',ic:'fa-hashtag',desc:'המספר הסדורי הייחודי של הפריט (אוטומטי)'},
+  {type:'item_id',he:'מזהה פריט',ic:'fa-hashtag',desc:'מזהה טכני אוטומטי בן 11 ספרות לכל פריט'},
 ];
 const STATUS_OPTS=[
   {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
@@ -3007,7 +3039,7 @@ const STATUS_OPTS=[
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
-  created_at:'מועד יצירה',item_id:'מספר מזהה'};
+  created_at:'מועד יצירה',item_id:'מזהה פריט'};
 function customColumns(){return (st.board&&st.board.columns)||[];}
 function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
 /* Unified, ordered column model: the 6 built-in columns (minus any the admin
@@ -3105,6 +3137,7 @@ function builtinColMenu(e,key){
   e.stopPropagation(); if(!isBoardAdmin())return;
   const canHide=key!=='item';
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('builtin','${key}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
+    +(key==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(canHide?`<button class="cell-pop-opt2" style="color:var(--red)" onclick="hideBuiltinCol(event,'${key}')"><i class="fa-solid fa-eye-slash"></i> מחק עמודה</button>`:'');
   openCellPop(e.currentTarget,html);
 }
@@ -3156,41 +3189,74 @@ async function saveColOrder(order){
     st.board.col_order=clean; toast('סדר העמודות עודכן'); renderView();
   }catch(err){ toast('שגיאה בשמירת סדר העמודות'); renderView(); }
 }
-/* drag-to-reorder: Sortable on each group's header row, dragged by the grip */
+/* Drag-to-reorder columns.
+   A generic sortable can't do this well: lifting a <th> out of its row drops
+   its table context, so the dragged cell collapses and jumps to the edge of the
+   screen. Instead the pointer drives it directly — the column's name follows the
+   cursor and a line marks exactly where it will land, so the drop position is
+   always the one under the pointer. Works for the item header row and for the
+   sub-item header row alike. */
 function initColReorder(root){
-  if(!window.Sortable||!isBoardAdmin())return;
-  root.querySelectorAll('.col-head-row').forEach(tr=>{
-    new Sortable(tr,{
-      draggable:'th[data-colkey]', handle:'.col-grip',
-      filter:'[data-fixed],.th-add,.th-spacer',
-      forceFallback:true, fallbackTolerance:4, animation:150,
-      ghostClass:'sortable-ghost', dragClass:'sortable-drag',
-      onMove:evt=>!(evt.related.classList.contains('th-add')||evt.related.classList.contains('th-spacer')||evt.related.hasAttribute('data-fixed')),
-      onEnd:()=>{
-        const ids=[...tr.querySelectorAll('th[data-colkey]')].map(th=>th.dataset.colkey)
-          .filter(k=>k&&k!=='__add'&&k!=='__spacer');
-        saveColOrder(ids);
-      }
-    });
-  });
+  if(!isBoardAdmin())return;
+  root.querySelectorAll('.col-grip').forEach(g=>{ g.onpointerdown=ev=>startColDrag(ev,g); });
 }
-/* the same drag-to-reorder for the sub-item header row; the new order is the
-   sub-item structure's order, saved on drop */
-function initSubColReorder(root){
-  if(!window.Sortable||!isBoardAdmin())return;
-  root.querySelectorAll('tr.subhead').forEach(tr=>{
-    new Sortable(tr,{
-      draggable:'td[data-subcol]', handle:'.col-grip',
-      filter:'[data-subcol="item"]',
-      forceFallback:true, fallbackTolerance:4, animation:150,
-      ghostClass:'sortable-ghost', dragClass:'sortable-drag',
-      onMove:evt=>evt.related.dataset.subcol!=='item',
-      onEnd:()=>{
-        const ids=[...tr.querySelectorAll('td[data-subcol]')].map(td=>td.dataset.subcol).filter(k=>k&&k!=='item');
-        saveSubCols(ids,'סדר עמודות תת-הפריט עודכן');
-      }
-    });
-  });
+const COLDRAG_FIXED=new Set(['item','__add','__spacer']);
+function startColDrag(ev,grip){
+  if(ev.button!==undefined&&ev.button!==0)return;
+  const cell=grip.closest('th[data-colkey],td[data-subcol]'); if(!cell)return;
+  const row=cell.parentElement, isSub=row.classList.contains('subhead');
+  const keyOf=c=>isSub?c.dataset.subcol:c.dataset.colkey;
+  const key=keyOf(cell); if(!key||COLDRAG_FIXED.has(key))return;
+  ev.preventDefault(); ev.stopPropagation();
+  const cells=[...row.querySelectorAll(isSub?'td[data-subcol]':'th[data-colkey]')]
+    .filter(c=>{const k=keyOf(c); return k&&!COLDRAG_FIXED.has(k);});
+  const from=cells.indexOf(cell); if(from<0)return;
+  const rtl=(getComputedStyle(row).direction||'rtl')==='rtl';
+  const table=cell.closest('table');
+  const label=(cell.querySelector('.th-lbl')||cell).textContent.trim();
+
+  const ghost=document.createElement('div');
+  ghost.className='coldrag-ghost'; ghost.textContent=label;
+  const marker=document.createElement('div'); marker.className='coldrag-marker';
+  document.body.append(ghost,marker);
+  document.body.classList.add('coldragging'); cell.classList.add('coldrag-src');
+
+  let to=from, moved=false;
+  const place=(x,y)=>{
+    ghost.style.left=x+'px'; ghost.style.top=y+'px';
+    // the insertion point is the gap the pointer is closest to, in visual order
+    let idx=cells.length;
+    for(let i=0;i<cells.length;i++){
+      const r=cells[i].getBoundingClientRect(), mid=r.left+r.width/2;
+      if(rtl?x>mid:x<mid){ idx=i; break; }
+    }
+    to=idx;
+    const tr=table.getBoundingClientRect();
+    const edge=(i,side)=>{const r=cells[i].getBoundingClientRect();return side==='start'?(rtl?r.right:r.left):(rtl?r.left:r.right);};
+    const px=idx<cells.length?edge(idx,'start'):edge(cells.length-1,'end');
+    marker.style.left=(px-1.5)+'px'; marker.style.top=tr.top+'px'; marker.style.height=Math.min(tr.height,window.innerHeight-tr.top)+'px';
+  };
+  place(ev.clientX,ev.clientY);
+
+  const onMove=e=>{ moved=true; place(e.clientX,e.clientY); };
+  const finish=(commit)=>{
+    document.removeEventListener('pointermove',onMove);
+    document.removeEventListener('pointerup',onUp);
+    document.removeEventListener('keydown',onKey);
+    ghost.remove(); marker.remove();
+    document.body.classList.remove('coldragging'); cell.classList.remove('coldrag-src');
+    if(!commit||!moved)return;
+    let idx=to; if(from<idx)idx--;              // the cell leaves its old slot first
+    if(idx===from)return;                       // dropped back where it started
+    const ids=cells.map(keyOf); ids.splice(from,1); ids.splice(idx,0,key);
+    if(isSub) saveSubCols(ids,'סדר עמודות תת-הפריט עודכן');
+    else      saveColOrder(ids);
+  };
+  const onUp=()=>finish(true);
+  const onKey=e=>{ if(e.key==='Escape')finish(false); };
+  document.addEventListener('pointermove',onMove);
+  document.addEventListener('pointerup',onUp);
+  document.addEventListener('keydown',onKey);
 }
 async function saveColLabel(key,label){
   const cl={...((st.board&&st.board.col_labels)||{})}; cl[key]=label;
@@ -3247,7 +3313,7 @@ function customCellHTML(c,t){
   if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
   if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
   if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
-  if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v)}</span></td>`;
+  if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
   if(c.type==='timeline')return `<td class="cell cell-custom"><div onclick="openTimeline(${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
   if(c.type==='checkbox')return `<td class="cell cell-custom"><input type="checkbox" class="cc-check" ${v?'checked':''} onchange="setCell(${id},'${c.id}',this.checked?true:null)"></td>`;
   if(c.type==='people')  return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="peopleCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${peopleDisp(v)}</span></td>`;
@@ -3256,7 +3322,15 @@ function customCellHTML(c,t){
   if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
   if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')"><span class="cell-disp">${connectDisp(v)}</span></td>`;
   if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
-  if(c.type==='item_id')return `<td class="cell cell-custom"><span class="item-id" title="לחצי להעתקת המזהה" onclick="copyItemId(event,${t.id})">#${t.id}<i class="fa-regular fa-copy id-copy"></i></span></td>`;
+  if(c.type==='item_id'){
+    // automatic technical identifier — 11 digits, shown as-is (no prefix), never
+    // editable. Only a real identifier is ever displayed: falling back to the
+    // row's internal number would show a short id that isn't the item's id.
+    if(!t.item_uid)return `<td class="cell cell-custom"><span style="color:var(--text-light)" title="המזהה טרם הונפק — רענן את הלוח">—</span></td>`;
+    const mode=c.copy_mode==='url'?'url':'id';
+    const tip=mode==='url'?'לחיצה מעתיקה קישור לפריט':'לחיצה מעתיקה את מזהה הפריט';
+    return `<td class="cell cell-custom"><span class="item-id" title="${tip}" onclick="copyItemId(event,${t.id},'${mode}')">${esc(String(t.item_uid))}<i class="fa-regular fa-copy id-copy"></i></span></td>`;
+  }
   if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
   return `<td class="cell cell-custom">—</td>`;
 }
@@ -3478,6 +3552,15 @@ function findAnyTask(id){
   for(const t of (st.board.tasks||[])){ if(t.id==id)return t; for(const s of (t.subtasks||[])) if(s.id==id)return s; }
   return null;
 }
+/* pull the board's items again, keeping the open view — used when the server
+   changed item data behind the client's back (e.g. issuing item identifiers) */
+async function refreshBoardItems(){
+  if(!st.board)return;
+  try{
+    const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():''));
+    st.board.tasks=fresh.tasks;
+  }catch(e){}
+}
 // remove a task from local board state (top-level item or subtask) without a
 // server round-trip, so deletion re-renders in place instead of reloading.
 function removeTaskLocal(id){
@@ -3621,19 +3704,112 @@ function setRating(taskId,colId,n){
   const t=findAnyTask(taskId);const cur=(t&&t.custom_fields&&+t.custom_fields[colId])||0;
   setCell(taskId,colId,n===cur?null:n);renderView();
 }
-/* status cell */
-function statusCellPill(v){
-  if(v&&v.label)return `<span class="pill" style="background:${v.color||'#c4c4c4'}">${esc(v.label)}</span>`;
-  return '<span class="pill pill-empty">—</span>';
+/* status cell — every status column carries its own label/color vocabulary
+   (col.options=[{label,color}]); STATUS_OPTS is only the starting point for a
+   column the board admin hasn't customised yet. */
+function statusColOpts(col){
+  const c=(col&&typeof col==='object')?col:customColumns().find(x=>x.id===col);
+  const raw=(c&&c.options)||[];
+  const out=raw.map(o=>typeof o==='string'?{label:o,color:'#c4c4c4'}:{label:o&&o.label,color:(o&&o.color)||'#c4c4c4'})
+               .filter(o=>o.label);
+  return out.length?out:STATUS_OPTS.map(o=>({label:o.label,color:o.color}));
+}
+function statusCellPill(v,colId){
+  if(!v||!v.label)return '<span class="pill pill-empty">—</span>';
+  // the column's vocabulary wins on color, so a recolor shows on existing cells
+  const o=colId==null?null:statusColOpts(colId).find(x=>x.label===v.label);
+  return `<span class="pill" style="background:${(o&&o.color)||v.color||'#c4c4c4'}">${esc(v.label)}</span>`;
 }
 function statusCellMenu(e,taskId,colId){
   e.stopPropagation();
-  const html=STATUS_OPTS.map(o=>`<button class="cell-pop-opt" style="background:${o.color}" onclick="pickStatusCell(event,${taskId},'${colId}','${o.label}','${o.color}')">${o.label}</button>`).join('')+`<button class="cell-pop-opt cell-pop-clear" onclick="pickStatusCell(event,${taskId},'${colId}',null)">נקה</button>`;
+  const cur=((findAnyTask(taskId)||{}).custom_fields||{})[colId];
+  let html=statusColOpts(colId).map((o,i)=>`<button class="cell-pop-opt" style="background:${o.color}" onclick="pickStatusCell(event,${taskId},'${colId}',${i})">${esc(o.label)}${cur&&cur.label===o.label?' <i class="fa-solid fa-check"></i>':''}</button>`).join('')
+    +`<button class="cell-pop-opt cell-pop-clear" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">נקה</button>`;
+  // board admin gets the same shortcut the built-in status column has
+  if(isBoardAdmin())
+    html+=`<button class="cell-pop-opt cell-pop-manage" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
   openCellPop(e.currentTarget,html);
 }
-function pickStatusCell(e,taskId,colId,label,color){
+function pickStatusCell(e,taskId,colId,optIdx){
   e.stopPropagation();closeCellPops();
-  setCell(taskId,colId,label?{label,color}:null);renderView();
+  const o=optIdx>=0?statusColOpts(colId)[optIdx]:null;
+  setCell(taskId,colId,o?{label:o.label,color:o.color}:null);renderView();
+}
+/* ===== board-admin editor for one status column's own vocabulary ===== */
+const STATUS_COL_MAX=20;
+const STATUS_PALETTE=['#0073ea','#fdab3d','#e2445c','#00c875','#a25ddc','#579bfc','#037f4c','#ff642e','#00c2b8','#bb3354','#9699a6','#808080'];
+let _csDraft=[], _csCol=null;
+function manageColStatuses(colId){
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך סטטוסים');return;}
+  const c=customColumns().find(x=>x.id===colId); if(!c||c.type!=='status')return;
+  _csCol=colId;
+  // `orig` remembers the label as opened (saved or default), so a rename can
+  // follow through to the cells that already carry it
+  _csDraft=statusColOpts(c).map(o=>({label:o.label,color:o.color,orig:o.label}));
+  _renderColStatusModal();
+}
+function _renderColStatusModal(){
+  const c=customColumns().find(x=>x.id===_csCol); if(!c)return;
+  const rows=_csDraft.map((s,i)=>`
+    <div class="st-row">
+      <div class="st-ord">
+        <button title="למעלה" ${i===0?'disabled':''} onclick="_csMove(${i},-1)"><i class="fa-solid fa-chevron-up"></i></button>
+        <button title="למטה" ${i===_csDraft.length-1?'disabled':''} onclick="_csMove(${i},1)"><i class="fa-solid fa-chevron-down"></i></button>
+      </div>
+      <input type="color" value="${s.color}" title="צבע" oninput="_csSet(${i},'color',this.value)">
+      <input class="st-lbl" value="${esc(s.label)}" maxlength="40" placeholder="שם הסטטוס" oninput="_csSet(${i},'label',this.value)">
+      <button class="st-del" title="הסר" ${_csDraft.length<=1?'disabled':''} onclick="_csRemove(${i})"><i class="fa-solid fa-trash-can"></i></button>
+    </div>`).join('');
+  const addBtn=_csDraft.length<STATUS_COL_MAX
+    ? `<button class="btn btn-ghost" onclick="_csAdd()"><i class="fa-solid fa-plus"></i> הוסף סטטוס</button>`
+    : `<span style="color:var(--text-light);font-size:12px">הגעת למספר הסטטוסים המרבי (${STATUS_COL_MAX})</span>`;
+  showModal(`
+    <h2><i class="fa-solid fa-sliders"></i> ניהול סטטוסים · ${esc(c.title||'')}</h2>
+    <div class="mbody">
+      <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">שם, צבע וסדר הסטטוסים של עמודה זו בלבד. שינוי שם יעודכן גם בפריטים שכבר סומנו בו; סטטוס שיוסר יישאר בפריטים הקיימים אך לא יוצע לבחירה.</p>
+      <div id="cs-rows">${rows}</div>
+      <div style="margin-top:12px">${addBtn}</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="_csSave()"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+function _csSet(i,k,v){if(_csDraft[i])_csDraft[i][k]=v;}          // no re-render → inputs keep focus
+function _csMove(i,d){const j=i+d;if(j<0||j>=_csDraft.length)return;const t=_csDraft[i];_csDraft[i]=_csDraft[j];_csDraft[j]=t;_renderColStatusModal();}
+function _csRemove(i){if(_csDraft.length<=1)return;_csDraft.splice(i,1);_renderColStatusModal();}
+function _csAdd(){
+  if(_csDraft.length>=STATUS_COL_MAX)return;
+  const used=new Set(_csDraft.map(s=>s.color));
+  _csDraft.push({label:'סטטוס חדש',color:STATUS_PALETTE.find(c=>!used.has(c))||STATUS_PALETTE[0],orig:null});
+  _renderColStatusModal();
+}
+async function _csSave(){
+  const colId=_csCol, seen=new Set(), opts=[], ren=new Map();
+  for(const s of _csDraft){
+    const label=(s.label||'').trim();
+    if(!label||seen.has(label))continue;                          // blank/duplicate names are dropped
+    seen.add(label);
+    const o={label,color:s.color||'#c4c4c4'};
+    opts.push(o);
+    if(s.orig&&s.orig!==label)ren.set(s.orig,o);
+  }
+  if(!opts.length){toast('חובה סטטוס אחד לפחות');return;}
+  const cols=customColumns().map(c=>c.id===colId?{...c,options:opts}:c);
+  closeModals();
+  await saveColumns(cols);
+  if(ren.size)await _csMigrate(colId,ren);
+  toast('הסטטוסים של העמודה עודכנו ✓');renderView();
+}
+/* a renamed status follows through to every cell that already carries it */
+async function _csMigrate(colId,ren){
+  const rows=[];
+  (st.board.tasks||[]).forEach(t=>{rows.push(t);(t.subtasks||[]).forEach(s=>rows.push(s));});
+  for(const t of rows){
+    const v=(t.custom_fields||{})[colId];
+    const o=v&&v.label?ren.get(v.label):null;
+    if(o)await setCell(t.id,colId,{label:o.label,color:o.color});
+  }
 }
 /* ===== board-admin editor for the built-in status vocabulary ===== */
 let _stDraft=[];
@@ -3748,8 +3924,24 @@ function addColMenu(e){
   }).join('')+'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>'):'';
   const subCfg=`<button class="coltype" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i><span><b>עמודות תת-פריט</b><small>אילו עמודות יופיעו בשורות תת-הפריט</small></span></button>`
     +'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>';
-  const html=hiddenHTML+subCfg+'<div class="pop-title">בחר סוג עמודה</div>'+types.map(c=>`<button class="coltype" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${c.he}</b><small>${c.desc}</small></span></button>`).join('');
+  // the column center is searchable — type to narrow the list, then pick a type
+  const search=`<input class="col-type-q" id="col-type-q" placeholder="חיפוש סוג עמודה…" autocomplete="off"
+      oninput="filterColTypes(this.value)" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">`;
+  const html=hiddenHTML+subCfg+'<div class="pop-title">בחר סוג עמודה</div>'+search
+    +types.map(c=>`<button class="coltype" data-q="${esc((c.he+' '+c.desc+' '+c.type).toLowerCase())}" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${esc(c.he)}</b><small>${esc(c.desc)}</small></span></button>`).join('')
+    +'<div class="col-type-none" id="col-type-none" style="display:none">לא נמצא סוג עמודה מתאים</div>';
   openCellPop(e.currentTarget,html,'col-add-pop');
+  setTimeout(()=>{const q=document.getElementById('col-type-q'); if(q)q.focus();},30);
+}
+/* filter the column-type list as the user types */
+function filterColTypes(q){
+  q=(q||'').trim().toLowerCase();
+  let shown=0;
+  document.querySelectorAll('.col-add-pop .coltype[data-q]').forEach(b=>{
+    const hit=!q||b.dataset.q.includes(q);
+    b.style.display=hit?'':'none'; if(hit)shown++;
+  });
+  const none=document.getElementById('col-type-none'); if(none)none.style.display=shown?'none':'';
 }
 async function addColumn(type){
   closeCellPops();
@@ -3760,8 +3952,10 @@ async function addColumn(type){
     if(f===null)return; col.formula=f.trim();
   }
   if(type==='dropdown')col.options=[];
+  if(type==='item_id')col.copy_mode='id';   // numeric id is the only mode; a click copies the number
   const cols=customColumns().slice();cols.push(col);
-  await saveColumns(cols);toast('עמודה נוספה');
+  await saveColumns(cols);
+  toast(type==='item_id'?'עמודת מזהה פריט נוספה — מזהה הונפק לכל פריט':'עמודה נוספה');
 }
 /* connect column config: choose the target board(s) + single/multi (sys admin) */
 function openConnectConfig(existingColId){
@@ -3795,12 +3989,60 @@ function colMenu(e,colId){
   e.stopPropagation();
   const c=customColumns().find(x=>x.id===colId);
   const isAdmin=st.board&&st.board.my_role==='admin';
+  // "מזהה פריט": הגדרות ← התאמות עמודת מזהה פריט (copy behaviour only)
+  const idSettings=(c&&c.type==='item_id')?`<div class="pop-sub">
+      <button class="cell-pop-opt2"><i class="fa-solid fa-sliders"></i> הגדרות<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
+      <div class="pop-subm"><button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();itemIdSettings('${colId}')"><i class="fa-solid fa-hashtag"></i> התאמות עמודת מזהה פריט</button></div>
+    </div>
+    <button class="cell-pop-opt2" onclick="duplicateColumn(event,'${colId}')"><i class="fa-regular fa-clone"></i> שכפל עמודה</button>`:'';
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
+    +idSettings
+    +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     +(c&&c.type==='connect'&&isSysAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
     +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   openCellPop(e.currentTarget,html);
+}
+/* "התאמות עמודת מזהה פריט" — the only setting the column has: what a click on a
+   cell copies. The identifier itself is generated by the system and read-only. */
+function itemIdSettings(colId){
+  const c=customColumns().find(x=>x.id===colId); if(!c)return;
+  if(!isBoardAdmin()){toast('רק מנהל הלוח');return;}
+  const mode=c.copy_mode==='url'?'url':'id';
+  const opt=(v,t,d)=>`<label class="subc-opt" style="align-items:flex-start">
+      <input type="radio" name="iid-mode" class="iid-mode" value="${v}" ${mode===v?'checked':''}>
+      <span style="display:flex;flex-direction:column;gap:2px"><b style="font-weight:600">${t}</b><small style="color:var(--text-light);font-size:11.5px">${d}</small></span>
+    </label>`;
+  showModal(`<h2><i class="fa-solid fa-hashtag" style="color:var(--primary)"></i> התאמות עמודת מזהה פריט</h2>
+    <div class="mbody">
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        מזהה הפריט הוא מספר בן 11 ספרות שהמערכת מייצרת אוטומטית לכל פריט ותת-פריט בלוח. אין לו קידומת או משמעות עסקית, ולא ניתן לערוך אותו ידנית. כאן נקבע רק מה תעתיק לחיצה על התא.</div>
+      <div class="subc-list">
+        ${opt('id','מזהה פריט','לחיצה על התא תעתיק את המספר עצמו')}
+        ${opt('url','קישור לפריט','לחיצה על התא תעתיק כתובת שפותחת את הפריט')}
+      </div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="saveItemIdSettings('${colId}')"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+async function saveItemIdSettings(colId){
+  const sel=document.querySelector('.iid-mode:checked');
+  const copy_mode=sel?sel.value:'id';
+  const cols=customColumns().map(x=>x.id===colId?{...x,copy_mode}:x);
+  closeModals();
+  await saveColumns(cols); toast('ההגדרה נשמרה');
+}
+/* duplicating a "מזהה פריט" column adds another one; since the identifier lives
+   on the item, both columns show the same number for the same item */
+async function duplicateColumn(e,colId){
+  e.stopPropagation(); closeCellPops();
+  const c=customColumns().find(x=>x.id===colId); if(!c)return;
+  const cols=customColumns().slice();
+  cols.push({type:c.type,title:(c.title||'')+' (עותק)',options:c.options,formula:c.formula,copy_mode:c.copy_mode});
+  await saveColumns(cols); toast('העמודה שוכפלה');
 }
 async function editFormula(e,colId){
   e.stopPropagation();closeCellPops();
@@ -3820,7 +4062,11 @@ function deleteColumn(e,colId){
 async function saveColumns(cols){
   try{
     const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({columns:cols})});
-    st.board.columns=r.columns;renderView();
+    st.board.columns=r.columns;
+    // adding a "מזהה פריט" column issues an identifier to every item already on
+    // the board, so the loaded items have to be refreshed to show them
+    if((r.columns||[]).some(c=>c.type==='item_id')) await refreshBoardItems();
+    renderView();
   }catch(e){toast(String(e.message||'').includes('403')?'רק מנהל הלוח יכול לערוך עמודות':'שגיאה בשמירת עמודות');}
 }
 function toggleSubs(e,id){
@@ -3886,12 +4132,36 @@ function itemRowMenu(e,id){
   const others=(st.board.groups||[]).filter(g=>g.id!==t.group_id);
   const moveOpts=others.length?`<div class="rm-sep"><i class="fa-solid fa-arrow-right-arrow-left"></i> העבר לקבוצה</div>`
     + others.map(g=>`<button class="rm-item" onclick="moveItemToGroup(event,${id},${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('') : '';
+  // moving to another board is only offered for a top-level item (its sub-items
+  // travel with it) and only to boards the user may edit
+  const boards=t.parent_id?[]:(st.boards||[]).filter(b=>b.id!==st.board.id&&(b.my_role==='admin'||b.my_role==='editor'));
+  const boardOpts=boards.length?`<div class="rm-sep"><i class="fa-solid fa-right-left"></i> העבר ללוח אחר</div>`
+    + boards.map(b=>`<button class="rm-item" onclick="moveItemToBoard(event,${id},${b.id})">${esc(b.icon||'📋')} ${esc(b.name)}</button>`).join('') : '';
   const items=[
     `<button class="rm-item" onclick="closeCellPops();Chat.open(${id})"><i class="fa-regular fa-comment"></i> פתח שיחה</button>`,
     moveOpts,
+    boardOpts,
     `<button class="rm-item danger" onclick="deleteItem(event,${id})"><i class="fa-regular fa-trash-can"></i> מחק פריט</button>`,
   ];
   openCellPop(e.currentTarget,`<div class="row-menu">${items.join('')}</div>`,'row-menu-pop');
+}
+/* move an item (with its sub-items) to another board. The item leaves this
+   board, so its "מזהה פריט" is re-issued there — and re-issued again if it ever
+   comes back here. */
+function moveItemToBoard(e,id,boardId){
+  e.stopPropagation(); closeCellPops();
+  const t=findAnyTask(id), b=(st.boards||[]).find(x=>x.id===boardId); if(!t||!b)return;
+  const n=(t.subtasks||[]).length;
+  askConfirm(`להעביר את הפריט "${t.title}" ללוח "${b.name}"?`,async()=>{
+    try{
+      await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({board_id:boardId,actor_id:meId()})});
+      removeTaskLocal(id);
+      if(!removeRowsLocal(id))renderView();
+      toast('הפריט הועבר ללוח '+b.name);
+    }catch(err){ toast(err&&err.detail?err.detail:'שגיאה בהעברת הפריט'); }
+  },{title:'העברת פריט ללוח אחר',confirmText:'העבר',danger:false,icon:'fa-right-left',
+     note:(n?`${n} תת-הפריטים יעברו יחד עם הפריט. `:'')+'מזהה הפריט יונפק מחדש בלוח היעד — המזהה הנוכחי לא יישמר, גם אם הפריט יוחזר לכאן.'});
 }
 async function moveItemToGroup(e,id,gid){
   e.stopPropagation(); closeCellPops();
@@ -4464,7 +4734,11 @@ const Forms={
     else if(f.type==='date') inp=`<input id="${id}" type="date" ${f.min?`min="${f.min}"`:''} ${f.max?`max="${f.max}"`:''}>${(f.min||f.max)?`<div style="font-size:11px;color:var(--text-light);margin-top:3px">מוגבל ${f.min?'מ־'+f.min:''} ${f.max?'עד '+f.max:''}</div>`:''}`;
     else if(f.type==='checkbox') inp=`<input id="${id}" type="checkbox" style="width:auto">`;
     else if(f.type==='rating') inp=`<select id="${id}"><option value="">—</option>${[1,2,3,4,5].map(n=>`<option value="${n}">${'★'.repeat(n)}</option>`).join('')}</select>`;
-    else if(f.type==='status') inp=`<select id="${id}">${Object.entries(STATUS).map(([k,v])=>`<option value="${k}">${v.he}</option>`).join('')}</select>`;
+    // built-in status field → the board's vocabulary (value = enum key);
+    // a status column → that column's own vocabulary (value = option index)
+    else if(f.type==='status') inp=f.col
+      ? `<select id="${id}"><option value="">—</option>${statusColOpts(f.col).map((o,i)=>`<option value="${i}">${esc(o.label)}</option>`).join('')}</select>`
+      : `<select id="${id}">${boardStatusList().map(s=>`<option value="${s.key}">${esc(s.he)}</option>`).join('')}</select>`;
     else if(f.type==='priority') inp=`<select id="${id}">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select>`;
     else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${(st.users||[]).map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${avatarInner(u)}</span> ${esc(u.name)}</label>`).join('')}</div>`;
     else if(f.type==='tags') inp=`<input id="${id}" placeholder="מופרד בפסיקים">`;
@@ -4482,6 +4756,7 @@ const Forms={
       else if(f.type==='checkbox'){ val=el.checked?true:null; }
       else if(f.type==='tags'){ val=(el.value||'').split(',').map(s=>s.trim()).filter(Boolean); if(!val.length)val=null; }
       else if(f.type==='rating'||f.type==='number'){ val=el.value===''?null:Number(el.value); }
+      else if(f.type==='status'&&f.col){ const o=el.value===''?null:statusColOpts(f.col)[+el.value]; val=o?{label:o.label,color:o.color}:null; }
       else { val=el.value||null; }
       if(f.required && (val==null||val===''||(Array.isArray(val)&&!val.length))){ missing.push(f.label); continue; }
       if(f.key==='title') payload.title=val;

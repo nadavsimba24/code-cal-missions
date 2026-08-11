@@ -252,6 +252,11 @@ class Task(Base):
     location_lng = Column(Float)
     address = Column(String(500))
     gis_layer_id = Column(String(100))  # Reference to GeoLibre layer
+    # "מזהה פריט" column: an automatic 11-digit identifier, unique inside the
+    # board it was minted for. Never editable by hand; item_uid_board records
+    # the board so an item that changes boards is issued a fresh identifier.
+    item_uid = Column(String(11))
+    item_uid_board = Column(Integer)
     custom_fields = Column(JSON, default=dict)
     tags = Column(JSON, default=list)
     permissions = Column(JSON, default=dict)  # item-level per-user perms {"<uid>":"view|edit|none"}

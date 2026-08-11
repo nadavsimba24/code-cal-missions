@@ -1,7 +1,7 @@
 """
 CityOS — FastAPI Backend Server
 """
-import os, sys, json, uuid, csv, io
+import os, sys, json, uuid, csv, io, secrets
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request
@@ -65,6 +65,11 @@ def _migrate():
         tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
         if "permissions" not in tcols:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN permissions JSON"))
+        # "מזהה פריט" — automatic 11-digit item identifier (+ the board it belongs to)
+        if "item_uid" not in tcols:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN item_uid VARCHAR(11)"))
+        if "item_uid_board" not in tcols:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN item_uid_board INTEGER"))
         # boards: environment membership (Monday-style environments/workspaces)
         bcols = {r[1] for r in conn.execute(text("PRAGMA table_info(boards)"))}
         if "environment_id" not in bcols:
@@ -112,20 +117,28 @@ def _migrate():
 if IS_SQLITE:
     _migrate()
 else:
-    # Postgres: create_all builds new tables fully, but seen_by (read receipts)
-    # was added to the already-existing comments table — add it if missing.
+    # Postgres: create_all builds new tables fully, but columns added later to
+    # already-existing tables must be back-filled. Each ALTER runs in its OWN
+    # transaction so one failure can't roll back the others (notably item_uid,
+    # which the current model always SELECTs — if it's missing, task loads break).
     from sqlalchemy import text as _text
-    try:
-        with engine.begin() as _conn:
-            _conn.execute(_text("ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON"))
-            _conn.execute(_text("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER"))
-            _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER"))
-            _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER"))
-            _conn.execute(_text("ALTER TABLE boards ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0"))
-            _conn.execute(_text("ALTER TABLE environments ADD COLUMN IF NOT EXISTS is_primary BOOLEAN DEFAULT FALSE"))
-            _conn.execute(_text("ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'"))
-    except Exception:
-        pass
+    _PG_MIGRATIONS = [
+        "ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON",
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER",
+        "ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER",
+        "ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER",
+        "ALTER TABLE boards ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0",
+        "ALTER TABLE environments ADD COLUMN IF NOT EXISTS is_primary BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid_board INTEGER",
+    ]
+    for _sql in _PG_MIGRATIONS:
+        try:
+            with engine.begin() as _conn:
+                _conn.execute(_text(_sql))
+        except Exception as _e:
+            print(f"⚠️  pg migration skipped: {_sql!r} → {_e}", flush=True)
 
 # Seed on first run only — on a persistent DB (Postgres) skip if data exists,
 # so real data isn't duplicated or overwritten on every cold start.
@@ -176,7 +189,16 @@ def _purge_removed_demo_users():
         db.query(User).filter(User.id.in_(ids)).delete(synchronize_session=False)
         db.commit()
 
-_purge_removed_demo_users()
+def _safe_startup(fn):
+    """Run a one-time startup/seed step; never let it crash the whole process.
+    On a persistent prod DB these are mostly idempotent no-ops, so a failure
+    against existing data must not take the server down — log and carry on."""
+    try:
+        fn()
+    except Exception as _e:
+        print(f"⚠️  startup step {getattr(fn,'__name__',fn)} failed: {_e}", flush=True)
+
+_safe_startup(_purge_removed_demo_users)
 
 def _seed_memberships():
     """One-time: give existing boards their members so nothing disappears.
@@ -198,7 +220,7 @@ def _seed_memberships():
                     role = "viewer" if u.role == "viewer" else ("admin" if u.role in ("admin", "manager") else "editor")
                     db.add(BoardMember(board_id=b.id, user_id=u.id, role=role))
             db.commit()
-_seed_memberships()
+_safe_startup(_seed_memberships)
 
 # The municipality's environments (Monday-style workspaces, like 'עיריית הוד השרון').
 # Seeded once; sysadmins manage them afterwards via /api/environments.
@@ -246,7 +268,7 @@ def _seed_environments():
             for u in db.query(User).all():
                 db.add(EnvironmentMember(environment_id=primary.id, user_id=u.id))
         db.commit()
-_seed_environments()
+_safe_startup(_seed_environments)
 
 # ── Configurable capability matrix (role → feature) ──────────────────
 # 'admin' always has every capability (implicit, never stored). These roles are
@@ -274,7 +296,7 @@ def _seed_role_permissions():
                     added = True
         if added:
             db.commit()
-_seed_role_permissions()
+_safe_startup(_seed_role_permissions)
 
 def _role_perms(db):
     """Return {role: {capability: bool}} for the editable roles."""
@@ -420,6 +442,32 @@ def _valid_hex(c):
             return False
     return False
 
+# A custom "status" column carries its own vocabulary — the board admin names and
+# colours the labels of every such column separately (the built-in status column
+# has its own, board-wide list above). Stored on the column as
+# options=[{label,color}]; an empty/absent list means "use the client defaults".
+STATUS_COL_MAX = 20
+
+def _status_col_options(raw):
+    """Normalise a status column's own label vocabulary, or None when unset."""
+    if not isinstance(raw, list):
+        return None
+    out, seen = [], set()
+    for it in raw:
+        if isinstance(it, str):
+            it = {"label": it}
+        if not isinstance(it, dict):
+            continue
+        label = (str(it.get("label") or "").strip())[:40]
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        out.append({"label": label,
+                    "color": it.get("color") if _valid_hex(it.get("color")) else "#c4c4c4"})
+        if len(out) >= STATUS_COL_MAX:
+            break
+    return out or None
+
 def _board_statuses(b):
     """The board's ordered status list (defaults when the admin hasn't customised)."""
     raw = (b.settings or {}).get("statuses")
@@ -537,6 +585,47 @@ def list_boards(user_id: Optional[int] = None):
             })
         return result
 
+# ── "מזהה פריט" (item id column) ─────────────────────────────────────
+# A purely technical identifier: 11 digits, generated automatically, unique
+# inside its board, with no prefix and no business meaning. It cannot be edited
+# by hand. Sub-items are issued one by the same logic. Because the identifier is
+# tied to the board it was minted for, an item that lands in another board (and
+# later comes back) is issued a new one rather than keeping the old number.
+ITEM_UID_MIN = 10_000_000_000     # smallest 11-digit number
+ITEM_UID_MAX = 99_999_999_999
+
+def _new_item_uid(db, board_id):
+    for _ in range(60):
+        cand = str(secrets.randbelow(ITEM_UID_MAX - ITEM_UID_MIN + 1) + ITEM_UID_MIN)
+        taken = db.query(Task.id).filter(Task.board_id == board_id, Task.item_uid == cand).first()
+        if not taken:
+            return cand
+    return str(secrets.randbelow(ITEM_UID_MAX - ITEM_UID_MIN + 1) + ITEM_UID_MIN)
+
+def _ensure_item_uid(db, task):
+    """Give the task an identifier if it has none, or a fresh one if the one it
+    carries was minted for a different board. Returns the identifier."""
+    if task.item_uid and task.item_uid_board == task.board_id:
+        return task.item_uid
+    task.item_uid = _new_item_uid(db, task.board_id)
+    task.item_uid_board = task.board_id
+    return task.item_uid
+
+def _board_has_item_id_col(board):
+    return any(c.get("type") == "item_id" for c in ((board.settings or {}).get("columns") or []))
+
+def _backfill_item_uids(db, board_id):
+    """Every item and sub-item on the board gets an identifier — used when the
+    column is added to a board that already holds items."""
+    rows = db.query(Task).filter(Task.board_id == board_id).all()
+    changed = False
+    for t in rows:
+        before = t.item_uid
+        _ensure_item_uid(db, t)
+        changed = changed or (t.item_uid != before)
+    if changed:
+        db.commit()
+
 def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, columns=None):
     assignees = [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in t.assignees] if t.assignees else []
     subtask_count = db.query(Task).filter(Task.parent_id == t.id).count()
@@ -553,6 +642,7 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
     d = {
         "id": t.id, "board_id": t.board_id, "group_id": t.group_id,
         "parent_id": t.parent_id,
+        "item_uid": t.item_uid,          # "מזהה פריט" — automatic, read-only
         "title": t.title, "description": t.description,
         "status": t.status.value if hasattr(t.status, 'value') else t.status,
         "priority": t.priority.value if hasattr(t.priority, 'value') else t.priority,
@@ -593,6 +683,10 @@ def get_board(board_id: int, user_id: Optional[int] = None):
                                       Task.parent_id == None).order_by(Task.position).all()
         dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
         columns = (b.settings or {}).get("columns", [])
+        # a board carrying a "מזהה פריט" column shows an identifier for every
+        # item — including ones that predate the column, or arrived from elsewhere
+        if _board_has_item_id_col(b):
+            _backfill_item_uids(db, b.id)
         # hide items the user has no view permission on
         if user_id is not None:
             tasks = [t for t in tasks if _item_perm(t, user_id, my_role) != "none"]
@@ -817,18 +911,30 @@ def update_board(board_id: int, data: dict):
                     changed = (not prev) or prev.get("type") != "connect" or prev.get("connect") != c.get("connect")
                     if changed and not is_ws_admin:
                         raise HTTPException(403, "רק מנהל מערכת יכול להוסיף או לשנות עמודת קישור בין לוחות")
+                # a status column's options are its own {label,color} vocabulary;
+                # every other type keeps its options untouched (dropdown: strings)
+                opts = _status_col_options(c.get("options")) if c["type"] == "status" else c.get("options")
                 cols.append({
                     "id": cid,
                     "type": c["type"],
                     "title": c.get("title") or c["type"],
-                    "options": c.get("options"),
+                    "options": opts,
                     "formula": c.get("formula"),
                     "connect": c.get("connect") if c["type"] == "connect" else None,
+                    # "מזהה פריט": what a click on the cell copies — the number
+                    # itself ("id", the default) or a link to the item ("url")
+                    "copy_mode": (c.get("copy_mode") if c.get("copy_mode") in ("id", "url") else "id")
+                                 if c["type"] == "item_id" else None,
                     "perms": c.get("perms") or {},
                 })
             s = dict(b.settings or {})
             s["columns"] = cols
             b.settings = s
+            # adding the column issues an identifier to every item already on the
+            # board (and to its sub-items)
+            if any(c.get("type") == "item_id" for c in cols):
+                for t in db.query(Task).filter(Task.board_id == board_id).all():
+                    _ensure_item_uid(db, t)
         if data.get("sub_cols") is not None:
             # Sub-items have their own column structure: identical for every
             # sub-item on the board, but not necessarily the item's columns.
@@ -1525,6 +1631,9 @@ def create_task(data: dict):
         task.position = (maxpos + 1) if maxpos is not None else 0
         db.add(task)
         db.flush()   # get task.id for assignment notifications
+        # a brand-new item (or sub-item) gets its own automatic identifier — an
+        # item created after another was deleted never reuses that one's number
+        _ensure_item_uid(db, task)
         # notify anyone assigned at creation time (skip the creator), honoring the switch
         if ids:
             board = db.query(Board).filter(Board.id == board_id).first()
@@ -2177,7 +2286,37 @@ def move_task(task_id: int, data: dict):
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404)
-        _require_board_edit(db, task.board_id, data.get("actor_id") or data.get("user_id"))
+        actor = data.get("actor_id") or data.get("user_id")
+        _require_board_edit(db, task.board_id, actor)
+        target = data.get("board_id")
+        if target and int(target) != task.board_id:
+            # ── move the item to another board ──
+            target = int(target)
+            if task.parent_id:
+                raise HTTPException(400, "תת-פריט עובר יחד עם הפריט שלו")
+            tb = db.query(Board).filter(Board.id == target).first()
+            if not tb:
+                raise HTTPException(404, "לוח היעד לא נמצא")
+            _require_board_edit(db, target, actor)
+            groups = db.query(Group).filter(Group.board_id == target).order_by(Group.position).all()
+            wanted = data.get("group_id")
+            grp = next((g for g in groups if g.id == wanted), None) or (groups[0] if groups else None)
+            subs = db.query(Task).filter(Task.parent_id == task.id).all()
+            for t in [task] + subs:
+                t.board_id = target
+                t.group_id = grp.id if grp else None
+            if grp:
+                task.status = grp.task_status
+            maxpos = (db.query(func.max(Task.position))
+                      .filter(Task.board_id == target, Task.parent_id == None,
+                              Task.group_id == (grp.id if grp else None)).scalar())
+            task.position = (maxpos + 1) if maxpos is not None else 0
+            # the identifier belongs to the board it was minted for: the item (and
+            # its sub-items) get new ones here, and new ones again if they return
+            for t in [task] + subs:
+                _ensure_item_uid(db, t)
+            db.commit()
+            return {"status": "moved", "board_id": target, "item_uid": task.item_uid}
         if "group_id" in data:
             task.group_id = data["group_id"]
         if "position" in data:
