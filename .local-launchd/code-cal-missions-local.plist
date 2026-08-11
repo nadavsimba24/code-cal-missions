@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>code-cal-missions-local</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/mashcal/Downloads/code-cal-missions/scripts/start-local-server.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mashcal/Downloads/code-cal-missions</string>
+  <key>StandardOutPath</key>
+  <string>/Users/mashcal/Downloads/code-cal-missions/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mashcal/Downloads/code-cal-missions/server.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

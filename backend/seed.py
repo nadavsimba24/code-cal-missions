@@ -48,12 +48,7 @@ def seed_database(engine):
         # ── Users ───────────────────────────────────────────────────
         users_data = [
             ("admin@hodhasharon.gov.il", "משה כהן", "admin", "הנדסה ותשתיות"),
-            ("rachel@hodhasharon.gov.il", "רחל לוי", "manager", "תחבורה"),
             ("dan@hodhasharon.gov.il", "דן מזרחי", "manager", "פיתוח עסקי"),
-            ("sarah@hodhasharon.gov.il", "שרה ברק", "member", "שירות לתושב"),
-            ("yossi@hodhasharon.gov.il", "יוסי אברהם", "member", "הנדסה ותשתיות"),
-            ("noa@hodhasharon.gov.il", "נעה שטרן", "member", "תחבורה"),
-            ("omer@hodhasharon.gov.il", "עומר גולן", "member", "תברואה ואיכות סביבה"),
         ]
         users = {}
         for email, name, role, dept_name in users_data:
@@ -141,7 +136,7 @@ def seed_database(engine):
                 "title": "שיקום כביש רמתיים — קטע מרכזי",
                 "desc": "שיקום יסודי של קטע הכביש מרחוב הרצל עד צומת סוקולוב. כולל החלפת תשתיות תת-קרקעיות.",
                 "priority": Priority.CRITICAL, "location": (34.8930, 32.1587),
-                "assignees": ["יוסי אברהם"], "due": now + timedelta(days=45),
+                "assignees": [], "due": now + timedelta(days=45),
                 "tags": ["כבישים", "תשתית", "דחוף"]
             },
             {
@@ -157,7 +152,7 @@ def seed_database(engine):
                 "title": "חידוש תאורה — פארק גורדון",
                 "desc": "החלפת 24 עמודי תאורה לפאנלים סולאריים בפארק ע\"ש גורדון.",
                 "priority": Priority.MEDIUM, "location": (34.8860, 32.1600),
-                "assignees": ["יוסי אברהם"], "due": now - timedelta(days=5),
+                "assignees": [], "due": now - timedelta(days=5),
                 "tags": ["תאורה", "פארק", "סולארי"]
             },
             # Citizen requests
@@ -173,14 +168,14 @@ def seed_database(engine):
                 "title": "פנס רחוב לא עובד — רחוב הנרקיסים",
                 "desc": "פנס רחוב מספר 14-22 לא דולק כבר שבוע. רחוב חשוך.",
                 "priority": Priority.HIGH, "location": (34.8880, 32.1620),
-                "assignees": ["שרה ברק"], "tags": ["תאורה", "רחוב"]
+                "assignees": [], "tags": ["תאורה", "רחוב"]
             },
             {
                 "board": "בקשות תושבים", "group": "טופל",
                 "title": "גינה ציבורית — ניקוי פסולת",
                 "desc": "דווח על הצטברות פסולת בגינה הציבורית ברחוב השושנים.",
                 "priority": Priority.LOW, "location": (34.8850, 32.1570),
-                "assignees": ["שרה ברק"],
+                "assignees": [],
                 "tags": ["גינה", "ניקיון"]
             },
             # Building permits
@@ -287,7 +282,7 @@ def seed_database(engine):
                 location_lat=32.1530, location_lng=34.8950,
                 address="רחוב העצמאות 12, הוד השרון",
                 status="in_progress", priority=Priority.EMERGENCY,
-                assigned_to=users["יוסי אברהם"].id,
+                assigned_to=None,
                 created_at=now - timedelta(hours=3),
             ),
             CitizenRequest(
@@ -298,7 +293,7 @@ def seed_database(engine):
                 location_lat=32.1620, location_lng=34.8880,
                 address="רחוב הנרקיסים, הוד השרון",
                 status="assigned", priority=Priority.HIGH,
-                assigned_to=users["שרה ברק"].id,
+                assigned_to=None,
                 created_at=now - timedelta(days=2),
             ),
         ]
@@ -419,7 +414,7 @@ def seed_work_plan(engine):
             "הנדסה ותשתיות": {"annual_budget": 50_000_000, "manager": "יוסי כהן", "planned": 42, "completed": 18},
             "תחבורה": {"annual_budget": 25_000_000, "manager": "אילן אברהם", "planned": 30, "completed": 14},
             "פיתוח עסקי": {"annual_budget": 15_000_000, "manager": "רונית דהן", "planned": 10, "completed": 5},
-            "שירות לתושב": {"annual_budget": 20_000_000, "manager": "שרה ברק", "planned": 15, "completed": 8},
+            "שירות לתושב": {"annual_budget": 20_000_000, "manager": "לא הוגדר", "planned": 15, "completed": 8},
             "חינוך": {"annual_budget": 30_000_000, "manager": "מיכל לוי", "planned": 22, "completed": 10},
             "תברואה ואיכות סביבה": {"annual_budget": 40_000_000, "manager": "אבי טל", "planned": 30, "completed": 14},
         }
@@ -472,9 +467,10 @@ def seed_work_plan(engine):
             return p
 
         def make_step(project, name, position, progress, owner_name=None, start=None, end=None, status="pending"):
+            owner = get_user(owner_name) if owner_name else None
             s = ProjectStep(
                 project_id=project.id, name=name, position=position,
-                progress=progress, owner_id=get_user(owner_name).id if owner_name else None,
+                progress=progress, owner_id=owner.id if owner else None,
                 start_date=start, end_date=end,
                 status=status,
             )
@@ -522,28 +518,28 @@ def seed_work_plan(engine):
         # ── 3. Projects ──
         # הנדסה
         p1 = make_project(
-            "שיקום כביש התחמים", "הנדסה ותשתיות", "יוסי אברהם",
+            "שיקום כביש התחמים", "הנדסה ותשתיות", None,
             2_000_000, 1_850_000, 1_200_000, 72, "in_progress", "high",
             now - d60, now + d30
         )
         for (name, pos, prog, owner, start, end, sta) in [
             ("תכנון", 1, 100, "משה כהן", now - d60, now - d50, "completed"),
-            ("מכרז", 2, 100, "יוסי אברהם", now - d50, now - d35, "completed"),
+            ("מכרז", 2, 100, None, now - d50, now - d35, "completed"),
             ("אישור תקציבי", 3, 100, "משה כהן", now - d35, now - d25, "completed"),
-            ("ביצוע", 4, 60, "יוסי אברהם", now - d25, now + d15, "in_progress"),
-            ("מסירה", 5, 0, "יוסי אברהם", now + d15, now + d30, "pending"),
+            ("ביצוע", 4, 60, None, now - d25, now + d15, "in_progress"),
+            ("מסירה", 5, 0, None, now + d15, now + d30, "pending"),
         ]:
             make_step(p1, name, pos, prog, owner, start, end, sta)
 
         p2 = make_project(
-            "הקמת גן ציבורי שכונת רמות", "הנדסה ותשתיות", "יוסי אברהם",
+            "הקמת גן ציבורי שכונת רמות", "הנדסה ותשתיות", None,
             1_500_000, 1_400_000, 600_000, 42, "in_progress", "high",
             now - d45, now + d45
         )
         for (name, pos, prog, owner, start, end, sta) in [
             ("תכנון נופי", 1, 100, "משה כהן", now - d45, now - d30, "completed"),
-            ("מכרז גינון", 2, 100, "יוסי אברהם", now - d30, now - d15, "completed"),
-            ("הקמה", 3, 30, "יוסי אברהם", now - d15, now + d30, "in_progress"),
+            ("מכרז גינון", 2, 100, None, now - d30, now - d15, "completed"),
+            ("הקמה", 3, 30, None, now - d15, now + d30, "in_progress"),
             ("נטיעות", 4, 0, None, now + d30, now + d45, "pending"),
         ]:
             make_step(p2, name, pos, prog, owner, start, end, sta)
@@ -561,38 +557,38 @@ def seed_work_plan(engine):
 
         # תחבורה
         p4 = make_project(
-            "שדרוג תאורת רחוב עירונית", "תחבורה", "נעה שטרן",
+            "שדרוג תאורת רחוב עירונית", "תחבורה", None,
             1_800_000, 1_600_000, 1_500_000, 92, "in_progress", "high",
             now - d60, now - d5
         )
         for (name, pos, prog, owner, start, end, sta) in [
-            ("סקר תאורה קיימת", 1, 100, "נעה שטרן", now - d60, now - d50, "completed"),
-            ("מכרז תאורה", 2, 100, "רחל לוי", now - d50, now - d35, "completed"),
-            ("התקנה", 3, 95, "נעה שטרן", now - d35, now - d10, "in_progress"),
-            ("בדיקות", 4, 80, "רחל לוי", now - d10, now - d5, "in_progress"),
+            ("סקר תאורה קיימת", 1, 100, None, now - d60, now - d50, "completed"),
+            ("מכרז תאורה", 2, 100, None, now - d50, now - d35, "completed"),
+            ("התקנה", 3, 95, None, now - d35, now - d10, "in_progress"),
+            ("בדיקות", 4, 80, None, now - d10, now - d5, "in_progress"),
         ]:
             make_step(p4, name, pos, prog, owner, start, end, sta)
 
         p5 = make_project(
-            "הקמת שבילי אופניים", "תחבורה", "רחל לוי",
+            "הקמת שבילי אופניים", "תחבורה", None,
             900_000, 850_000, 200_000, 24, "in_progress", "medium",
             now - d30, now + d45
         )
         for (name, pos, prog, owner, start, end, sta) in [
-            ("תכנון מסלולים", 1, 100, "רחל לוי", now - d30, now - d15, "completed"),
+            ("תכנון מסלולים", 1, 100, None, now - d30, now - d15, "completed"),
             ("מכרז", 2, 60, None, now - d15, now + d5, "in_progress"),
             ("סלילה", 3, 0, None, now + d5, now + d40, "pending"),
         ]:
             make_step(p5, name, pos, prog, owner, start, end, sta)
 
         p6 = make_project(
-            "פינוי מפגעים עירוני", "תחבורה", "נעה שטרן",
+            "פינוי מפגעים עירוני", "תחבורה", None,
             500_000, 500_000, 500_000, 100, "completed", "low",
             now - d90, now - d10
         )
         for (name, pos, prog, owner, start, end, sta) in [
-            ("איתור מפגעים", 1, 100, "נעה שטרן", now - d90, now - d75, "completed"),
-            ("ביצוע פינוי", 2, 100, "נעה שטרן", now - d75, now - d15, "completed"),
+            ("איתור מפגעים", 1, 100, None, now - d90, now - d75, "completed"),
+            ("ביצוע פינוי", 2, 100, None, now - d75, now - d15, "completed"),
             ("דיווח", 3, 100, None, now - d15, now - d10, "completed"),
         ]:
             make_step(p6, name, pos, prog, owner, start, end, sta)
@@ -609,12 +605,12 @@ def seed_work_plan(engine):
             now, now + d120
         )
         p9 = make_project(
-            "דיגיטציית שירות לתושב", "שירות לתושב", "שרה ברק",
+            "דיגיטציית שירות לתושב", "שירות לתושב", None,
             1_200_000, 1_100_000, 400_000, 38, "in_progress", "high",
             now - d45, now + d30
         )
         p10 = make_project(
-            "הנגשת מבני ציבור", "שירות לתושב", "שרה ברק",
+            "הנגשת מבני ציבור", "שירות לתושב", None,
             800_000, 750_000, 750_000, 100, "completed", "medium",
             now - d90, now - d5
         )
@@ -629,12 +625,12 @@ def seed_work_plan(engine):
             now - d120, now - d15
         )
         p13 = make_project(
-            "מערכת מיחזור עירונית", "תברואה ואיכות סביבה", "עומר גולן",
+            "מערכת מיחזור עירונית", "תברואה ואיכות סביבה", None,
             1_800_000, 1_700_000, 600_000, 35, "in_progress", "high",
             now - d45, now + d45
         )
         p14 = make_project(
-            "טיפול בשפכים תעשייתיים", "תברואה ואיכות סביבה", "עומר גולן",
+            "טיפול בשפכים תעשייתיים", "תברואה ואיכות סביבה", None,
             3_500_000, 3_200_000, 3_000_000, 88, "in_progress", "critical",
             now - d90, now + d20
         )
@@ -686,20 +682,20 @@ def seed_work_plan(engine):
         # ── 5. Approvals ──
         approval_chains = [
             (p1, [("מנהל מחלקה", "approved", "משה כהן"),
-                  ("מנהל אגף", "approved", "יוסי אברהם"),
+                  ("מנהל אגף", "approved", None),
                   ("גזבר", "approved", None),
                   ("מנכ\"ל", "pending", None),
                   ("ראש רשות", "pending", None)]),
             (p2, [("מנהל מחלקה", "approved", "משה כהן"),
-                  ("מנהל אגף", "approved", "יוסי אברהם"),
+                  ("מנהל אגף", "approved", None),
                   ("גזבר", "approved", None),
                   ("מנכ\"ל", "pending", None),
                   ("ראש רשות", "pending", None)]),
-            (p4, [("מנהל מחלקה", "approved", "רחל לוי"),
+            (p4, [("מנהל מחלקה", "approved", None),
                   ("מנהל אגף", "approved", None),
                   ("גזבר", "approved", None),
                   ("מנכ\"ל", "approved", None)]),
-            (p6, [("מנהל מחלקה", "approved", "רחל לוי"),
+            (p6, [("מנהל מחלקה", "approved", None),
                   ("מנהל אגף", "approved", None),
                   ("גזבר", "approved", None),
                   ("מנכ\"ל", "approved", None),
@@ -707,7 +703,7 @@ def seed_work_plan(engine):
             (p7, [("מנהל מחלקה", "approved", None),
                   ("מנהל אגף", "approved", None),
                   ("גזבר", "pending", None)]),
-            (p14, [("מנהל מחלקה", "approved", "עומר גולן"),
+            (p14, [("מנהל מחלקה", "approved", None),
                    ("מנהל אגף", "approved", None),
                    ("גזבר", "approved", None),
                    ("מנכ\"ל", "pending", None)]),
@@ -753,7 +749,7 @@ def seed_work_plan(engine):
                 amount_change=300_000,
                 reason="התייקרות חומרי גלם",
                 status=ChangeRequestStatus.SUBMITTED,
-                requested_by=get_user("יוסי אברהם").id if get_user("יוסי אברהם") else None,
+                requested_by=None,
             ))
             session.add(ChangeRequest(
                 project_id=p4.id,
@@ -762,8 +758,8 @@ def seed_work_plan(engine):
                 amount_change=150_000,
                 reason="תוספת עמודי תאורה",
                 status=ChangeRequestStatus.APPROVED,
-                requested_by=get_user("נעה שטרן").id if get_user("נעה שטרן") else None,
-                approved_by=get_user("רחל לוי").id if get_user("רחל לוי") else None,
+                requested_by=None,
+                approved_by=None,
                 approved_at=now - timedelta(days=10),
             ))
 
@@ -786,9 +782,9 @@ def seed_work_plan(engine):
             doc_data = [
                 (p1, "tender", "מכרז שיקום כבישים 2026", "מסמכי מכרז מלאים לשיקום כביש התחמים", "משה כהן"),
                 (p1, "agreement", "הסכם קבלן ראשי", "הסכם עם קבלן השיקום", "משה כהן"),
-                (p1, "plans", "תכניות הנדסיות", "תכניות ביצוע הנדסיות מאושרות", "יוסי אברהם"),
-                (p4, "plans", "מפרט טכני תאורה", "מפרט טכני לעמודי תאורה מסוג LED", "רחל לוי"),
-                (p4, "agreement", "הסכם תחזוקה", "הסכם תחזוקה שנתי מול קבלן תאורה", "רחל לוי"),
+                (p1, "plans", "תכניות הנדסיות", "תכניות ביצוע הנדסיות מאושרות", None),
+                (p4, "plans", "מפרט טכני תאורה", "מפרט טכני לעמודי תאורה מסוג LED", None),
+                (p4, "agreement", "הסכם תחזוקה", "הסכם תחזוקה שנתי מול קבלן תאורה", None),
             ]
             for proj, doc_type, name, desc, uploader_name in doc_data:
                 try:

@@ -1,0 +1,116 @@
+name: Deploy to Azure Container Apps
+
+# Safe, commit-triggered deploy:
+#   push to main  →  test + security gate  →  build image in ACR (immutable SHA
+#   tag)  →  roll out a new Container Apps revision  →  health check  →  auto
+#   roll back to the previous image if the new revision is unhealthy.
+#
+# Configure once (Settings → Secrets and variables → Actions):
+#   Variables:  AZURE_RESOURCE_GROUP, AZURE_ACR_NAME, AZURE_CONTAINERAPP_NAME,
+#               AZURE_CONTAINERAPP_URL
+#   Secrets:    AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  (OIDC)
+# See scripts/AZURE_DEPLOY.md for the one-time Azure setup.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.vercel/**'
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip the test/security gate (emergency hotfix only)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: azure-deploy
+  cancel-in-progress: false   # never cancel a deploy that's mid-flight
+
+permissions:
+  id-token: write   # required for OIDC login to Azure
+  contents: read
+
+jobs:
+  gate:
+    name: Tests + security gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps into ./venv (matches the local gate exactly)
+        run: |
+          python -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run gate — pytest + SAST + secrets
+        if: ${{ !inputs.skip_tests }}
+        run: ./run_tests.sh
+
+  deploy:
+    name: Build + roll out new revision
+    needs: gate
+    # run when the gate passed, or when a dispatch explicitly skipped it
+    if: ${{ always() && (needs.gate.result == 'success' || inputs.skip_tests) }}
+    runs-on: ubuntu-latest
+    env:
+      RG:      ${{ vars.AZURE_RESOURCE_GROUP }}
+      ACR:     ${{ vars.AZURE_ACR_NAME }}
+      APP:     ${{ vars.AZURE_CONTAINERAPP_NAME }}
+      APP_URL: ${{ vars.AZURE_CONTAINERAPP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight — required config present
+        run: |
+          missing=
+          for v in RG ACR APP; do [ -n "${!v}" ] || missing="$missing $v"; done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repo variables:$missing — set them under Settings → Variables → Actions"
+            exit 1
+          fi
+
+      - name: Azure login (OIDC — no stored password)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Record current image (for rollback)
+        id: current
+        run: |
+          PREV=$(az containerapp show -n "$APP" -g "$RG" \
+                 --query "properties.template.containers[0].image" -o tsv || true)
+          echo "image=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Current image: ${PREV:-<none>}"
+
+      - name: Build image in ACR (immutable SHA tag)
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          echo "IMAGE=${ACR}.azurecr.io/missions:${SHA}" >> "$GITHUB_ENV"
+          az acr build -r "$ACR" -t "missions:${SHA}" -t "missions:latest" .
+
+      - name: Deploy new revision
+        run: az containerapp update -n "$APP" -g "$RG" --image "$IMAGE"
+
+      - name: Health check (retries ~2 min)
+        run: |
+          URL="${APP_URL:-https://missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io}"
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/status" || echo 000)
+            echo "attempt $i → HTTP $code"
+            [ "$code" = "200" ] && { echo "healthy ✅"; exit 0; }
+            sleep 10
+          done
+          echo "::error::new revision failed health check"
+          exit 1
+
+      - name: Roll back to previous image on failure
+        if: failure() && steps.current.outputs.image != ''
+        run: |
+          echo "::warning::rolling back to ${{ steps.current.outputs.image }}"
+          az containerapp update -n "$APP" -g "$RG" --image "${{ steps.current.outputs.image }}"

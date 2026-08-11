@@ -2,7 +2,7 @@ import os, json, time, subprocess, urllib.request, urllib.error
 
 APP = "/home/erez/.openclaw/workspace/cityos"
 BASE = "http://localhost:8000"
-def sh(c): return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
+def sh(c): return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()  # nosec B602 — dev-only healthcheck; all commands are hardcoded (no user input)
 
 print("="*60); print(" CODE-CAL MISSIONS — health & sync check"); print("="*60)
 

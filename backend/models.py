@@ -5,7 +5,7 @@ Database Models
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float, Boolean,
-    DateTime, ForeignKey, JSON, Enum as SAEnum, Table
+    DateTime, ForeignKey, JSON, Enum as SAEnum, Table, LargeBinary
 )
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
@@ -149,6 +149,38 @@ class Department(Base):
     users = relationship("User", back_populates="department")
     projects = relationship("Project", back_populates="department")
 
+class Environment(Base):
+    """A top-level workspace/environment (Monday-style), e.g. 'עיריית הוד השרון'.
+    Contains boards. Only a system (workspace) admin may create/edit/delete."""
+    __tablename__ = "environments"
+    id = Column(Integer, primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    name = Column(String(200), nullable=False)
+    icon = Column(String(50), default="🏢")
+    color = Column(String(7), default="#6366f1")
+    position = Column(Integer, default=0)
+    is_primary = Column(Boolean, default=False)  # the default workspace that holds legacy/unassigned boards
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class Folder(Base):
+    """A folder groups boards within an environment. Managed by the environment's
+    manager (or a system admin). Deleting a folder detaches its boards, never deletes them."""
+    __tablename__ = "folders"
+    id = Column(Integer, primary_key=True)
+    environment_id = Column(Integer, ForeignKey("environments.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class EnvironmentMember(Base):
+    """Which users are permitted to access an environment. System admins see
+    every environment regardless; managers/members see only their own."""
+    __tablename__ = "environment_members"
+    id = Column(Integer, primary_key=True)
+    environment_id = Column(Integer, ForeignKey("environments.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    role = Column(String(20), default="member")  # manager | member (env-scoped)
+
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
@@ -157,6 +189,7 @@ class User(Base):
     email = Column(String(200), unique=True, nullable=False)
     name = Column(String(200), nullable=False)
     role = Column(String(50), default="member")  # admin, manager, member, viewer
+    is_active = Column(Boolean, default=True)  # deactivated users stay in the directory
     avatar_url = Column(String(500))
     phone = Column(String(20))
     title = Column(String(120))  # job title within the organization
@@ -171,6 +204,9 @@ class Board(Base):
     id = Column(Integer, primary_key=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"))
     department_id = Column(Integer, ForeignKey("departments.id"))
+    environment_id = Column(Integer, ForeignKey("environments.id"), nullable=True)
+    folder_id = Column(Integer, ForeignKey("folders.id"), nullable=True)  # optional grouping within an environment
+    position = Column(Integer, default=0)  # order within its container (folder or environment root)
     name = Column(String(200), nullable=False)
     description = Column(Text)
     board_type = Column(SAEnum(BoardType), default=BoardType.KANBAN)
@@ -216,6 +252,11 @@ class Task(Base):
     location_lng = Column(Float)
     address = Column(String(500))
     gis_layer_id = Column(String(100))  # Reference to GeoLibre layer
+    # "מזהה פריט" column: an automatic 11-digit identifier, unique inside the
+    # board it was minted for. Never editable by hand; item_uid_board records
+    # the board so an item that changes boards is issued a fresh identifier.
+    item_uid = Column(String(11))
+    item_uid_board = Column(Integer)
     custom_fields = Column(JSON, default=dict)
     tags = Column(JSON, default=list)
     permissions = Column(JSON, default=dict)  # item-level per-user perms {"<uid>":"view|edit|none"}
@@ -241,6 +282,7 @@ class Comment(Base):
     attachments = Column(JSON, default=list)   # [{name,url}]
     mentions = Column(JSON, default=list)      # [user_id, ...]
     likes = Column(JSON, default=list)         # [user_id, ...]
+    seen_by = Column(JSON, default=list)       # [user_id, ...] — read receipts
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     task = relationship("Task", back_populates="comments")
     replies = relationship("Comment", backref="parent", remote_side=[id])
@@ -266,6 +308,16 @@ class WorkspaceMember(Base):
     role = Column(String(20), default="member")  # admin | member | viewer
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     user = relationship("User")
+
+class RolePermission(Base):
+    """Configurable capability matrix: whether a given user role (manager/member/
+    viewer/guest) is granted a top-level capability. The 'admin' role always has
+    every capability and is not stored here."""
+    __tablename__ = "role_permissions"
+    id = Column(Integer, primary_key=True)
+    role = Column(String(50), nullable=False)        # manager | member | viewer | guest
+    capability = Column(String(50), nullable=False)  # manage_system | create_environment | create_board
+    allowed = Column(Boolean, default=False)
 
 # ── Municipal-Specific Models ────────────────────────────────────────
 
@@ -542,9 +594,48 @@ class AuditLog(Base):
     changer = relationship("User", foreign_keys=[changed_by])
 
 
+class LoginEvent(Base):
+    """A single successful login, recorded for the admin login-history view."""
+    __tablename__ = "login_events"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    logged_in_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    ip = Column(String(64))
+    user_agent = Column(String(400))
+
+
+class UploadedFile(Base):
+    """File attachments stored in the DB so they persist and are shared across
+    serverless instances (the local filesystem on Vercel is ephemeral/per-instance)."""
+    __tablename__ = "uploaded_files"
+    id = Column(Integer, primary_key=True)
+    token = Column(String(40), unique=True, index=True)
+    name = Column(String(300))
+    content_type = Column(String(150))
+    data = Column(LargeBinary)
+    size = Column(Integer)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Notification(Base):
+    """In-app notification for a single recipient (e.g. added/removed from a board)."""
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)   # recipient
+    type = Column(String(40))                                        # board_add | board_remove | ...
+    title = Column(String(200))
+    body = Column(Text)
+    board_id = Column(Integer, nullable=True)                        # deep-link target, if any
+    task_id = Column(Integer, nullable=True)                         # open this item's chat, if any
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 # ── Init DB ──────────────────────────────────────────────────────────
 
 def init_db(db_url="sqlite:///cityos.db"):
-    engine = create_engine(db_url, echo=False)
+    # pool_pre_ping keeps Postgres connections healthy across serverless cold
+    # starts / idle drops; harmless for SQLite.
+    engine = create_engine(db_url, echo=False, pool_pre_ping=True)
     Base.metadata.create_all(engine)
     return engine
