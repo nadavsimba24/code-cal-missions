@@ -1742,14 +1742,18 @@ function boardMenu(e){
   const envs=Env.items||[], cur=envs.find(x=>x.id===st.board.environment_id);
   const canMoveEnv=envs.some(x=>x.can_manage&&x.id!==st.board.environment_id)
                    && (!st.board.environment_id || !!(cur&&cur.can_manage));
-  const item=(icon,label,action,enabled,why)=>enabled
-    ? `<button class="rm-item" onclick="closeCellPops();${action}"><i class="fa-solid ${icon}"></i> ${label}</button>`
-    : `<button class="rm-item" disabled title="${esc(why||'')}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
+  // deleting mirrors the server rule: board admin, or a manager of its workspace
+  const canDelete=admin||!!(cur&&cur.can_manage);
+  const item=(icon,label,action,enabled,why,cls)=>enabled
+    ? `<button class="rm-item${cls?' '+cls:''}" onclick="closeCellPops();${action}"><i class="fa-solid ${icon}"></i> ${label}</button>`
+    : `<button class="rm-item${cls?' '+cls:''}" disabled title="${esc(why||'')}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
   const html=`<div class="row-menu" onclick="event.stopPropagation()">
     ${item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
     ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
+    <div class="rm-sep"></div>
+    ${item('fa-trash','מחק לוח','deleteBoardById('+st.board.id+')',canDelete,'רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו','danger')}
   </div>`;
   openCellPop(e.currentTarget,html,'row-menu-pop');
 }

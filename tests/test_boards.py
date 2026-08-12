@@ -22,6 +22,25 @@ def test_admin_can_create_and_delete_board(client, admin_id):
         assert r.status_code in (200, 204), r.text
 
 
+def test_board_admin_who_is_not_a_workspace_admin_can_delete(client, admin_id, guinea_id):
+    """The board menu offers "מחק לוח" to a board admin, so the API must allow it."""
+    bid = client.post("/api/boards", json={"name": "לוח של מנהל לוח", "user_id": admin_id}).json()["id"]
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "admin"})
+    assert client.get(f"/api/boards/{bid}?user_id={guinea_id}").json()["my_role"] == "admin"
+    assert client.delete(f"/api/boards/{bid}?user_id={guinea_id}").status_code in (200, 204)
+    assert client.get(f"/api/boards/{bid}?user_id={admin_id}").status_code == 404
+
+
+def test_editor_cannot_delete_a_board(client, admin_id, guinea_id):
+    bid = client.post("/api/boards", json={"name": "לוח של עורך", "user_id": admin_id}).json()["id"]
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    assert client.delete(f"/api/boards/{bid}?user_id={guinea_id}").status_code == 403
+    assert client.get(f"/api/boards/{bid}?user_id={admin_id}").status_code == 200
+    client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
 def test_board_owners_present(client, admin_id):
     """Board detail returns a non-empty owners list, each with a name."""
     b = client.get(f"/api/boards/1?user_id={admin_id}").json()
