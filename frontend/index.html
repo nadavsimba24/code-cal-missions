@@ -327,6 +327,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .avatars{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;height:28px}
 .av-add{display:inline-flex;align-items:center;justify-content:center;color:var(--text-light);font-size:16px}
 .created-at{font-size:12.5px;color:var(--text-muted);white-space:nowrap}
+.created-by{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.created-by .av{width:22px;height:22px;font-size:10px;flex-shrink:0}
 .item-id{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--text-muted);font-weight:600;font-variant-numeric:tabular-nums;cursor:pointer;border-radius:5px;padding:2px 8px;transition:background .12s,color .12s}
 .item-id:hover{background:var(--row-hover);color:var(--text)}
 .item-id .id-copy{font-size:10px;opacity:0;transition:opacity .12s}
@@ -1156,6 +1158,27 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   .sb-item,.sb-folder-head{padding:11px 10px}
 }
 @media (max-width:820px) and (display-mode:standalone){ body{padding-top:env(safe-area-inset-top)} }
+
+/* ===== Typography: one regular weight across the whole app =====
+   Every text in the system renders at the regular weight; board names are the
+   only thing that stays bold. Kept as one rule at the end of the sheet (rather
+   than editing ~190 scattered declarations) so the policy is in one readable
+   place, and as !important so it also beats font-weight set inline from JS
+   templates.
+
+   Deliberately written as a flat rule plus overrides, not as one selector with
+   a :not() chain: a long :not() chain inflates specificity, which would then
+   out-rank the single-class exceptions below and silently keep them regular. */
+body, body *{ font-weight:400!important; }
+
+/* Font Awesome is a webfont where the glyph variant IS the weight — forcing
+   400 on a solid icon asks for a regular glyph the free kit does not ship, and
+   renders an empty box. Restore the weights the icon font needs. */
+.fa-solid,.fas{ font-weight:900!important; }
+.fa-regular,.far,.fa-brands,.fab{ font-weight:400!important; }
+
+/* the exceptions that stay bold — board names, wherever a board is named */
+#bh-title, #bh-title *, .sb-item-name{ font-weight:700!important; }
 </style>
 </head>
 <body>
@@ -3065,6 +3088,7 @@ const COLUMN_TYPES=[
   {type:'rating',he:'דירוג',ic:'fa-star',desc:'דירוג בכוכבים'},
   {type:'connect',he:'קישור בין לוחות',ic:'fa-diagram-project',desc:'קישור לפריטים בלוחות אחרים (מנהל מערכת)'},
   {type:'created_at',he:'מועד יצירה',ic:'fa-calendar-plus',desc:'תאריך יצירת הרשומה (אוטומטי)'},
+  {type:'created_by',he:'יוצר הרשומה',ic:'fa-user-pen',desc:'מי יצר את הפריט (אוטומטי)'},
   {type:'item_id',he:'מזהה פריט',ic:'fa-hashtag',desc:'מזהה טכני אוטומטי בן 11 ספרות לכל פריט'},
 ];
 const STATUS_OPTS=[
@@ -3073,7 +3097,10 @@ const STATUS_OPTS=[
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
-  created_at:'מועד יצירה',item_id:'מזהה פריט'};
+  created_at:'מועד יצירה',created_by:'יוצר הרשומה',item_id:'מזהה פריט'};
+/* columns the system derives from the item itself — they have no value to fill
+   in, so they are read-only in the grid and never offered as form fields */
+const DERIVED_COLS=['created_at','created_by','item_id','formula'];
 function customColumns(){return (st.board&&st.board.columns)||[];}
 function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
 /* Unified, ordered column model: the 6 built-in columns (minus any the admin
@@ -3366,6 +3393,14 @@ function customCellHTML(c,t){
     return `<td class="cell cell-custom"><span class="item-id" title="${tip}" onclick="copyItemId(event,${t.id},'${mode}')">${esc(String(t.item_uid))}<i class="fa-regular fa-copy id-copy"></i></span></td>`;
   }
   if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
+  if(c.type==='created_by'){
+    // derived from the item's own creator — correct on every board and on items
+    // that predate the column. Items created before the system recorded a
+    // creator have none to show.
+    const u=(st.users||[]).find(x=>x.id===t.created_by);
+    if(!u)return `<td class="cell cell-custom"><span style="color:var(--text-light)" title="לא נרשם יוצר לפריט זה">—</span></td>`;
+    return `<td class="cell cell-custom"><span class="created-by" title="${esc(u.name)}"><span class="av">${avatarInner(u)}</span> ${esc(u.name)}</span></td>`;
+  }
   return `<td class="cell cell-custom">—</td>`;
 }
 /* every column cell for a row EXCEPT the item/name cell (which is rendered
@@ -3427,6 +3462,7 @@ function exportCell(c,t){
     case 'connect':  return (Array.isArray(v)?v:[]).map(id=>{const it=linkInfo(id);return it&&it.title?it.title:'#'+id;}).join(', ');
     case 'formula':{const r=evalFormula(col,t);return r==null?'':r;}
     case 'created_at': return t.created_at?fdatetime(t.created_at):'';
+    case 'created_by':{const u=(st.users||[]).find(x=>x.id===t.created_by);return u?u.name:'';}
     case 'item_id':  return t.item_uid?String(t.item_uid):'';
   }
   return '';
@@ -4800,7 +4836,10 @@ function formSchema(){
     {key:'due_date',label:'תאריך יעד',type:'date'},
     {key:'tags',label:'תגיות',type:'tags'},
   ];
-  customColumns().forEach(c=>{ if(c.type!=='formula') f.push({key:c.id,label:c.title,type:c.type,col:c}); });
+  // derived columns (creator, creation time, item id, formula) are filled by the
+  // system, so a form has nothing to ask for — offering them stored a value the
+  // grid then ignored
+  customColumns().forEach(c=>{ if(!DERIVED_COLS.includes(c.type)) f.push({key:c.id,label:c.title,type:c.type,col:c}); });
   return f;
 }
 function currentForm(){

@@ -769,8 +769,10 @@ def create_board(data: dict):
                 "columns": [
                     {"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
                     {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
-                    # a real people column (like "אחראים"), auto-assigned to the creator
-                    {"id": "sys_created_by", "type": "people", "title": "יוצר הרשומה"},
+                    # derived from the item's own creator, like "מועד יצירה" above:
+                    # nothing to fill in, so it is right on every item on every
+                    # board — including boards and items that predate the column
+                    {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"},
                 ],
             },
         )
@@ -903,7 +905,7 @@ def update_board(board_id: int, data: dict):
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
-                       "connect", "created_at", "item_id"}
+                       "connect", "created_at", "created_by", "item_id"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
             is_ws_admin = _ws_role(db, data.get("user_id")) == "admin"
             cols = []
@@ -1238,7 +1240,8 @@ def _xlsx_cell(ws, row, col, spec):
         cell.data_type = "s"          # never a formula, whatever the text is
     if color and _valid_hex(color):
         cell.fill = PatternFill("solid", fgColor=_xlsx_argb(color))
-        cell.font = Font(color="FFFFFFFF" if _xlsx_luma(color) < 150 else "FF1F2937", bold=True)
+        # one regular weight everywhere, as in the app — colour carries the meaning
+        cell.font = Font(color="FFFFFFFF" if _xlsx_luma(color) < 150 else "FF1F2937")
     cell.alignment = Alignment(vertical="center", wrap_text=False)
     return cell
 
@@ -1276,7 +1279,7 @@ def export_board_xlsx(board_id: int, data: dict):
     for i, h in enumerate(headers, start=1):
         c = ws.cell(row=1, column=i, value=h)
         c.data_type = "s"
-        c.font = Font(bold=True, color="FFFFFFFF")
+        c.font = Font(color="FFFFFFFF")     # regular weight; the fill marks the header
         c.fill = head_fill
         c.alignment = Alignment(vertical="center")
     ws.freeze_panes = "A2"
@@ -1294,7 +1297,7 @@ def export_board_xlsx(board_id: int, data: dict):
         for i, spec in enumerate(cells, start=1):
             cell = _xlsx_cell(ws, r, i, spec)
             if row.get("group"):
-                cell.font = Font(bold=True, color=_xlsx_argb(board_color))
+                cell.font = Font(color=_xlsx_argb(board_color))   # colour, not weight
             if i == 1 and level:
                 cell.alignment = Alignment(vertical="center", indent=level * 2)
             text = "" if cell.value is None else str(cell.value)
@@ -1742,14 +1745,17 @@ def create_task(data: dict):
         ids = data.get("assignee_ids") or []
         if ids:
             task.assignees = db.query(User).filter(User.id.in_(ids)).all()
-        # auto-assign the creator into the board's default "creator" people column
+        # Boards created before "יוצר הרשומה" became a derived column carry it as
+        # a plain people column, whose value has to be written on creation. The
+        # derived `created_by` column needs nothing — it reads task.created_by.
         creator = data.get("actor_id") or data.get("user_id")
         cf = dict(data.get("custom_fields") or {})
         if creator:
             board = db.query(Board).filter(Board.id == board_id).first()
             cols = (board.settings or {}).get("columns", []) if board else []
-            if any(c.get("id") == "sys_created_by" for c in cols):
-                cf.setdefault("sys_created_by", [creator])
+            for c in cols:
+                if c.get("id") == "sys_created_by" and c.get("type") == "people":
+                    cf.setdefault("sys_created_by", [creator])
         if cf:
             task.custom_fields = cf
         # place the new item last — bottom of its group (or its parent's sub-list)

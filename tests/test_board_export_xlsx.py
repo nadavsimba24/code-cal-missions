@@ -70,6 +70,13 @@ def test_status_color_and_rtl_and_freeze(client, admin_id):
     assert ws.freeze_panes == "A2"
 
 
+def test_nothing_in_the_file_is_bold(client, admin_id):
+    """One regular weight, matching the app — colour carries the hierarchy."""
+    ws = _sheet(_export(client, 1, admin_id))
+    bold = [(c.row, c.column) for row in ws.iter_rows() for c in row if c.font and c.font.bold]
+    assert bold == []
+
+
 def test_text_starting_with_equals_is_never_a_formula(client, admin_id):
     """Spreadsheet-injection guard: an item titled "=1+1" stays text."""
     ws = _sheet(_export(client, 1, admin_id, _grid([
