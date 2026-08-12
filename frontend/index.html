@@ -190,7 +190,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tb-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:6px;font-size:13px;color:var(--text-muted);white-space:nowrap}
 .tb-btn:hover{background:var(--row-hover);color:var(--text)}
 .tb-btn:disabled{opacity:.55;cursor:default}
-.tb-btn.busy i{animation:tb-spin .8s linear infinite}
+.tb-btn.busy i,.bh-menu.busy i{animation:tb-spin .8s linear infinite}
 @keyframes tb-spin{to{transform:rotate(360deg)}}
 .tb-sep{width:1px;height:22px;background:var(--border);margin:0 3px}
 /* inline search */
@@ -1027,6 +1027,11 @@ img.pf-av{object-fit:cover;background:#fff}
 .log-undo:hover{background:#fdebed;border-color:var(--red)}
 /* board members / permissions */
 .bh-perm{font-size:12px;font-weight:600;color:var(--primary);background:var(--primary-soft);border-radius:7px;padding:5px 11px;display:inline-flex;align-items:center;gap:6px;vertical-align:middle;margin-inline-start:6px}
+/* the board's own "..." menu, right after its name */
+.bh-menu{width:30px;height:30px;border-radius:7px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:inline-grid;place-items:center;font-size:15px;vertical-align:middle;margin-inline-start:8px}
+.bh-menu:hover{background:var(--row-hover);border-color:var(--border);color:var(--text)}
+.row-menu .rm-item[disabled]{opacity:.45;cursor:not-allowed}
+.row-menu .rm-item[disabled]:hover{background:none}
 .bh-perm:hover{background:var(--primary);color:#fff}
 .bh-owner{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;margin-inline-start:8px;padding:3px 10px 3px 4px;background:var(--bg);border:1px solid var(--border);border-radius:20px;font-size:12px;cursor:default}
 .bh-owner .bh-owner-lbl{font-size:10.5px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.03em}
@@ -1239,7 +1244,6 @@ body, body *{ font-weight:400!important; }
       </div>
       <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
       <div style="flex:1"></div>
-      <button class="tb-btn" id="tb-export" onclick="exportBoardExcel()" title="ייצוא הפריטים והתת-פריטים שמוצגים כעת"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא לאקסל</button>
       <button class="tb-btn" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
     </div>
 
@@ -1392,11 +1396,23 @@ function avatarColor(name){return AV_COLORS[_avHash(name||'user')%AV_COLORS.leng
    still wins; otherwise a colored circle with the person's initials
    (first letter of first + last name). */
 function avatarInner(u){
+  // A person's picture has ONE source of truth: the loaded users list. Payloads
+  // that embed a user (task assignees, board owners, comment authors, activity
+  // rows) carry a copy of the url from the moment they were fetched, so a photo
+  // changed after that would keep showing stale in those places. Resolving by id
+  // first means one change is reflected everywhere at once — every people column
+  // and every avatar, on every board.
+  if(u&&typeof u==='object'&&u.id!=null){
+    const fresh=(st.users||[]).find(x=>x.id===u.id);
+    if(fresh)u=fresh;
+  }
   const name=(u&&(u.name||u.user_name))||(typeof u==='string'?u:'');
   const url=(u&&typeof u==='object'&&u.avatar_url)?u.avatar_url:null;
   if(url) return `<img src="${esc(url)}" alt="" loading="lazy">`;
   return `<span class="av-ini" style="background:${avatarColor(name)}">${esc(initials(name)||'?')}</span>`;
 }
+/* Reload the users list — the single source every avatar renders from. */
+async function refreshUsers(){ try{ st.users=await api('/api/users'); }catch(e){} }
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
 const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set()};
 
@@ -1687,8 +1703,13 @@ async function openBoard(id){
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
   document.getElementById('view').innerHTML='<div class="spin"></div>';
+  // avatars are drawn from st.users, so refresh it alongside the board — a photo
+  // someone changed elsewhere then shows on this board too. Fetched in parallel
+  // so it never delays the board.
+  const usersReady=refreshUsers();
   try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); }
   catch(e){ document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-lock"></i><div>אין לך גישה ללוח זה</div></div>'; return; }
+  await usersReady;
   try{ localStorage.setItem('cc_board', id); }catch(e){}   // remember the open board across refreshes
   renderSidebar();
   renderBoardHead();
@@ -1706,7 +1727,81 @@ function renderBoardHead(){
     `<span class="bt-icon${canEdit?' editable':''}" ${canEdit?'onclick="editBoardIcon(event)" title="שנה אייקון"':''}>${st.board.icon||'📋'}</span> `+
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
     ownerChipHTML()+
-    (st.board.my_role==='admin'?`<button class="bh-perm" onclick="Members.open()" title="חברים והרשאות"><i class="fa-solid fa-user-shield"></i> הרשאות</button>`:'');
+    `<button class="bh-menu" id="bh-menu" onclick="boardMenu(event)" title="תפריט הלוח" aria-label="תפריט הלוח"><i class="fa-solid fa-ellipsis"></i></button>`;
+}
+/* ===== תפריט הלוח — the board's own actions, next to its name =====
+   Everything that acts on the whole board lives here instead of being spread
+   between the header and the toolbar. Entries the user may not perform are
+   shown disabled with the reason, rather than hidden, so the menu reads the
+   same for everyone. */
+function boardMenu(e){
+  e.stopPropagation();
+  if(!st.board)return;
+  const admin=st.board.my_role==='admin';
+  // moving needs both ends managed, exactly as the server enforces
+  const envs=Env.items||[], cur=envs.find(x=>x.id===st.board.environment_id);
+  const canMoveEnv=envs.some(x=>x.can_manage&&x.id!==st.board.environment_id)
+                   && (!st.board.environment_id || !!(cur&&cur.can_manage));
+  const item=(icon,label,action,enabled,why)=>enabled
+    ? `<button class="rm-item" onclick="closeCellPops();${action}"><i class="fa-solid ${icon}"></i> ${label}</button>`
+    : `<button class="rm-item" disabled title="${esc(why||'')}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
+  const html=`<div class="row-menu" onclick="event.stopPropagation()">
+    ${item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
+    ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
+    ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
+    ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
+  </div>`;
+  openCellPop(e.currentTarget,html,'row-menu-pop');
+}
+/* 1. העברה לסביבה אחרת */
+async function moveBoardEnv(){
+  if(!st.board)return;
+  if(!(Env.items||[]).length) await Env.load();
+  const envs=Env.items||[];
+  const targets=envs.filter(x=>x.can_manage&&x.id!==st.board.environment_id);
+  const cur=envs.find(x=>x.id===st.board.environment_id);
+  if(!targets.length){ alertModal('העברה לסביבה אחרת','אין סביבה אחרת שאתה מנהל. רק מנהל מערכת או מנהל סביבה יכול להעביר לוח אליה.'); return; }
+  showModal(`<h2><i class="fa-solid fa-right-left" style="color:var(--primary)"></i> העברה לסביבה אחרת</h2>
+    <div class="mbody">
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        הלוח <b>${esc(st.board.name)}</b> יעבור מהסביבה <b>${esc(cur?cur.name:'—')}</b> לסביבה שתבחר. הפריטים, החברים וההגדרות נשמרים; הלוח יוצא מהתיקייה שלו, כי תיקיות שייכות לסביבה.</div>
+      <div class="field"><label>סביבת היעד</label>
+        <select id="mv-env" style="width:100%;padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font-family:inherit;font-size:13.5px">
+          ${targets.map(x=>`<option value="${x.id}">${esc((x.icon||'🏢')+' '+x.name)}</option>`).join('')}
+        </select></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="saveBoardEnv()"><i class="fa-solid fa-check"></i> העבר</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+async function saveBoardEnv(){
+  const sel=document.getElementById('mv-env'); if(!sel||!sel.value)return;
+  const envId=+sel.value;
+  try{
+    const r=await api('/api/boards/'+st.board.id+'/environment',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:withMe({actor_id:meId(),environment_id:envId})});
+    st.board.environment_id=r.environment_id;
+    const b=(st.boards||[]).find(x=>x.id===st.board.id); if(b){b.environment_id=r.environment_id;b.folder_id=null;}
+    closeModals(); toast('הלוח הועבר לסביבה '+r.environment_name);
+    await Env.load();            // board counts per environment
+    await loadBoards();          // the sidebar lists boards of the active environment
+  }catch(err){ toast(err&&err.detail?err.detail:'שגיאה בהעברת הלוח'); }
+}
+/* 2. הגדרת התראות */
+function boardNotifSettings(){
+  if(!st.board)return;
+  const on=st.board.notifications_enabled!==false;
+  showModal(`<h2><i class="fa-regular fa-bell" style="color:var(--primary)"></i> הגדרת התראות — ${esc(st.board.name)}</h2>
+    <div class="mbody">
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        כיבוי משתיק את כל ההתראות של הלוח לכל חבריו — שיוך פריט, אזכור בשיחה ושינוי סטטוס. העדפות אישיות של כל משתמש נשמרות בנפרד בפרופיל שלו.</div>
+      <div class="pf-row pf-toggle" style="border:1px solid var(--border);border-radius:9px;padding:10px 12px">
+        <span><i class="fa-regular fa-bell"></i> התראות ללוח זה</span>
+        <label class="switch"><input type="checkbox" ${on?'checked':''} onchange="Members.toggleNotif(this.checked)"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
 }
 /* Board owner(s) chip — the board-admin members, visible to everyone. */
 function ownerChipHTML(){
@@ -1858,10 +1953,30 @@ async function newBoardQuick(){
 }
 
 /* ============ views ============ */
+/* Which board+view the scroll position on screen belongs to. Re-rendering the
+   same one (an edited cell, a deleted row, a refreshed board) must leave the
+   user where they were; switching board or view is a new place and starts at
+   the top. */
+let _viewScrollKey=null;
 function renderView(){
   const el=document.getElementById('view');
+  const key=(st.board?st.board.id:'-')+'/'+st.view;
+  const same=(key===_viewScrollKey);
+  // rebuilding innerHTML drops the scroll offset — remember it first
+  const top=same?el.scrollTop:0, left=same?el.scrollLeft:0;
   el.innerHTML='';
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
+  _viewScrollKey=key;
+  if(!same){ el.scrollTop=0; el.scrollLeft=0; }   // a new place starts at the top, explicitly
+  if(top||left){
+    el.scrollTop=top; el.scrollLeft=left;
+    // views that fill in asynchronously are still empty on the line above, so
+    // the offset would clamp to 0 — re-apply once the content is there
+    requestAnimationFrame(()=>{
+      if(el.scrollTop!==top) el.scrollTop=top;
+      if(el.scrollLeft!==left) el.scrollLeft=left;
+    });
+  }
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;const m=bStat(t.status);return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
@@ -1934,10 +2049,13 @@ const Profile = {
       const fd=new FormData(); fd.append('file',file);
       const up=await api('/api/upload',{method:'POST',body:fd});
       await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({avatar_url:up.url,actor_id:meId()})});
+      await refreshUsers();                       // the list every avatar renders from
       const u=(st.users||[]).find(x=>x.id===userId); if(u)u.avatar_url=up.url;
       if(st.me&&st.me.id===userId)st.me.avatar_url=up.url;
       toast('התמונה עודכנה');
-      this.open(userId); renderMe(); renderView();
+      // one change, every representation: board avatars, people columns, the
+      // sidebar, open modals and the chat panel all redraw from st.users
+      this.open(userId); renderMe(); renderSidebar(); renderView(); Chat.refreshAvatars();
     }catch(e){ toast(String(e.message||'').includes('403')?'אפשר להחליף רק את התמונה שלך':'שגיאה בהעלאת תמונה'); }
   },
   async setNotify(userId,on){
@@ -2484,7 +2602,7 @@ const SysAdmin = {
     let evs=[]; try{ evs=await api('/api/login-history?actor_id='+meId()); }
     catch(e){ const b=document.getElementById('sa-body'); if(b)b.innerHTML='<div class="empty" style="padding:24px">רק מנהל מערכת יכול לצפות</div>'; return; }
     const rows=evs.length?evs.map(ev=>`<tr>
-        <td><div class="sa-name"><span class="av" style="background:var(--primary)">${avatarInner({name:ev.user_name,avatar_url:ev.avatar_url})}</span><span style="font-weight:600">${esc(ev.user_name||'—')}</span></div></td>
+        <td><div class="sa-name"><span class="av" style="background:var(--primary)">${avatarInner({id:ev.user_id,name:ev.user_name,avatar_url:ev.avatar_url})}</span><span style="font-weight:600">${esc(ev.user_name||'—')}</span></div></td>
         <td style="white-space:nowrap;color:var(--text-muted)">${this.fdt(ev.logged_in_at)}</td>
         <td style="color:var(--text-muted)">${esc(ev.ip||'—')}</td>
         <td style="color:var(--text-light);font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(ev.user_agent||'')}">${esc(ev.user_agent||'—')}</td>
@@ -3488,7 +3606,7 @@ function exportGrid(){
 }
 async function exportBoardExcel(){
   if(!st.board)return;
-  const btn=document.getElementById('tb-export');
+  const btn=document.getElementById('bh-menu');   // export is reached from the board menu
   const grid=exportGrid();
   if(!grid.rows.length){toast('אין פריטים לייצוא');return;}
   if(btn){btn.disabled=true;btn.classList.add('busy');}
@@ -4995,6 +5113,12 @@ const Chat = {
   close(){ document.getElementById('chat-panel').classList.remove('open'); document.getElementById('chat-overlay').classList.remove('open'); this.taskId=null; Router.set(st.board&&st.board.id, null); },
   setTabUI(){ document.querySelectorAll('.chat-tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===this.tabName)); },
   tab(name){ this.tabName=name; this.setTabUI(); this.render(); },
+  /* comment/activity rows embed the author's picture from fetch time — redraw
+     the open panel when a photo changes so it matches the rest of the screen */
+  refreshAvatars(){
+    const p=document.getElementById('chat-panel');
+    if(this.taskId && p && p.classList.contains('open')) this.render();
+  },
   async render(){
     const body=document.getElementById('chat-body'); if(!this.taskId)return;
     if(this.tabName==='chat')return this.renderChat(body);
