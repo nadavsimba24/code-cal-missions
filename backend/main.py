@@ -1697,6 +1697,38 @@ def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
             })
         return result
 
+@app.post("/api/boards/{board_id}/environment")
+def move_board_to_environment(board_id: int, data: dict):
+    """Move a board to another environment (workspace).
+
+    Requires managing BOTH ends: you may not push a board into a workspace you
+    do not run, nor pull one out of a workspace you do not run. A board admin
+    who manages neither cannot move it. The board keeps its members, items and
+    settings; it only leaves its folder, which belongs to the old environment.
+    """
+    with Session(engine) as db:
+        actor = data.get("actor_id") or data.get("user_id")
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "לוח לא נמצא")
+        env_id = data.get("environment_id")
+        target = db.query(Environment).filter(Environment.id == env_id).first()
+        if not target:
+            raise HTTPException(404, "סביבה לא נמצאה")
+        if b.environment_id == target.id:
+            raise HTTPException(400, "הלוח כבר נמצא בסביבה הזו")
+        if not _can_manage_env(db, target.id, actor):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח לסביבה זו")
+        if b.environment_id and not _can_manage_env(db, b.environment_id, actor):
+            raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה הנוכחית יכול להוציא ממנה לוח")
+        maxpos = db.query(func.max(Board.position)).filter(Board.environment_id == target.id).scalar()
+        b.environment_id = target.id
+        b.folder_id = None            # folders belong to the environment it just left
+        b.position = (maxpos + 1) if maxpos is not None else 0
+        db.commit()
+        return {"status": "moved", "board_id": b.id,
+                "environment_id": target.id, "environment_name": target.name}
+
 @app.post("/api/tasks")
 def create_task(data: dict):
     with Session(engine) as db:
