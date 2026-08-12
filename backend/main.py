@@ -1,7 +1,7 @@
 """
 CityOS — FastAPI Backend Server
 """
-import os, sys, json, uuid, csv, io, secrets
+import os, sys, json, uuid, csv, io, re, secrets, urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request
@@ -234,19 +234,25 @@ ENVIRONMENTS_SEED = [
 ]
 _ENV_COLORS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6"]
 
-PRIMARY_ENV_NAME = "עיריית הוד השרון"
+# The primary workspace is matched BY NAME on every startup — renaming it in the
+# UI without changing this would make the seeder create a second primary
+# environment under the old name.
+PRIMARY_ENV_NAME = "בדיקה"
 
 def _seed_environments():
     """Seed environments on first run (idempotent by name):
-    - a primary workspace 'עיריית הוד השרון' that holds the existing/legacy boards
+    - a primary workspace (PRIMARY_ENV_NAME) that holds the existing/legacy boards
     - the municipality's 17 environments
     Also gives every current user access to the primary workspace so nothing
     disappears, and attaches legacy (unassigned) boards to the primary workspace."""
     with Session(engine) as db:
         org = db.query(Organization).first()
         existing = {e.name: e for e in db.query(Environment).all()}
-        # 1) primary workspace first
-        primary = existing.get(PRIMARY_ENV_NAME)
+        # 1) primary workspace first. An existing primary wins over the name:
+        # renaming it (it is an ordinary editable workspace) must not make this
+        # seeder mint a second primary under the old name on the next boot.
+        primary = db.query(Environment).filter(Environment.is_primary == True).first() \
+            or existing.get(PRIMARY_ENV_NAME)
         if not primary:
             primary = Environment(name=PRIMARY_ENV_NAME, icon="🏛️", color=_ENV_COLORS[0],
                                   position=0, is_primary=True, organization_id=org.id if org else None)
@@ -1179,6 +1185,132 @@ def read_all_notifications(data: dict):
                                       Notification.is_read == False).update({Notification.is_read: True})
         db.commit()
         return {"status": "ok"}
+
+# ── ייצוא הלוח לאקסל ────────────────────────────────────────────────
+# The client renders the board; the export therefore ships the grid it is
+# already showing (current filters, sort, column structure and the values it
+# computes — formulas, per-column status labels, linked-item titles) and this
+# endpoint only turns that grid into a real .xlsx. The caller can never see
+# more than the board API already handed it, so no data is widened here; the
+# limits below just keep a malformed payload from eating memory.
+XLSX_MAX_ROWS, XLSX_MAX_COLS, XLSX_MAX_TEXT = 20000, 80, 4000
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+def _xlsx_argb(hex_color):
+    """#rrggbb → opaque ARGB. Without the explicit FF alpha openpyxl writes 00,
+    which some viewers read as a fully transparent fill."""
+    return "FF" + hex_color[1:].upper()
+
+def _xlsx_luma(hex_color):
+    """Perceived brightness of #rrggbb (0–255) — picks black or white text."""
+    try:
+        r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    except (ValueError, IndexError):
+        return 255
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+def _xlsx_cell(ws, row, col, spec):
+    """Write one exported cell. `spec` is a scalar, or {v,c,t} with an optional
+    background colour and type hint. Text is always written as text — a value
+    starting with '=' must never become a live formula in the exported file."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    val, color, kind = spec, None, None
+    if isinstance(spec, dict):
+        val, color, kind = spec.get("v"), spec.get("c"), spec.get("t")
+    cell = ws.cell(row=row, column=col)
+    if val is None or val == "":
+        cell.value = None
+    elif kind == "date":
+        try:
+            cell.value = datetime.fromisoformat(str(val).replace("Z", "+00:00")).replace(tzinfo=None)
+            cell.number_format = "DD/MM/YYYY"
+        except ValueError:
+            cell.value = str(val)[:XLSX_MAX_TEXT]
+            cell.data_type = "s"
+    elif isinstance(val, bool):
+        cell.value = "כן" if val else ""
+        cell.data_type = "s"
+    elif isinstance(val, (int, float)):
+        cell.value = val
+    else:
+        cell.value = str(val)[:XLSX_MAX_TEXT]
+        cell.data_type = "s"          # never a formula, whatever the text is
+    if color and _valid_hex(color):
+        cell.fill = PatternFill("solid", fgColor=_xlsx_argb(color))
+        cell.font = Font(color="FFFFFFFF" if _xlsx_luma(color) < 150 else "FF1F2937", bold=True)
+    cell.alignment = Alignment(vertical="center", wrap_text=False)
+    return cell
+
+@app.post("/api/boards/{board_id}/export/xlsx")
+def export_board_xlsx(board_id: int, data: dict):
+    """Board → .xlsx: one sheet, sub-items nested (and collapsible) under their
+    item, groups as headers. See the note above on where the grid comes from."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "board not found")
+        user_id = data.get("user_id")
+        if user_id is not None and _board_role(db, board_id, user_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        board_color = b.color if _valid_hex(b.color) else "#0073ea"
+
+    headers = [str(h)[:XLSX_MAX_TEXT] for h in (data.get("columns") or [])][:XLSX_MAX_COLS]
+    rows = (data.get("rows") or [])[:XLSX_MAX_ROWS]
+    if not headers:
+        raise HTTPException(400, "אין עמודות לייצוא")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (re.sub(r"[\\/*?:\[\]]", " ", b.name or "לוח").strip() or "לוח")[:31]
+    ws.sheet_view.rightToLeft = True
+    # the parent row sits ABOVE its detail rows, so Excel's collapse arrows line
+    # up with the board: a group folds its items, an item folds its sub-items
+    ws.sheet_properties.outlinePr.summaryBelow = False
+
+    head_fill = PatternFill("solid", fgColor=_xlsx_argb(board_color))
+    for i, h in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=i, value=h)
+        c.data_type = "s"
+        c.font = Font(bold=True, color="FFFFFFFF")
+        c.fill = head_fill
+        c.alignment = Alignment(vertical="center")
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    widths = [len(h) + 2 for h in headers]
+    r = 1
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        r += 1
+        level = row.get("level")
+        level = level if isinstance(level, int) and 0 <= level <= 2 else 0
+        cells = (row.get("cells") or [])[:len(headers)]
+        for i, spec in enumerate(cells, start=1):
+            cell = _xlsx_cell(ws, r, i, spec)
+            if row.get("group"):
+                cell.font = Font(bold=True, color=_xlsx_argb(board_color))
+            if i == 1 and level:
+                cell.alignment = Alignment(vertical="center", indent=level * 2)
+            text = "" if cell.value is None else str(cell.value)
+            widths[i - 1] = max(widths[i - 1], min(len(text) + 2 + level * 2, 60))
+        if level:
+            ws.row_dimensions[r].outlineLevel = level
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    fname = re.sub(r"[^\w֐-׿ .()-]", "", (b.name or "board")).strip() or "board"
+    quoted = urllib.parse.quote(f"{fname}.xlsx")
+    return Response(content=buf.getvalue(), media_type=XLSX_MIME,
+                    headers={"Content-Disposition": f"attachment; filename=board_{board_id}.xlsx; "
+                                                    f"filename*=UTF-8''{quoted}"})
 
 # ── Column-level permissions (הרשאות עמודה) ─────────────────────────
 @app.post("/api/boards/{board_id}/columns/{col_id}/permissions")
