@@ -251,8 +251,25 @@ def _seed_environments():
         # 1) primary workspace first. An existing primary wins over the name:
         # renaming it (it is an ordinary editable workspace) must not make this
         # seeder mint a second primary under the old name on the next boot.
-        primary = db.query(Environment).filter(Environment.is_primary == True).first() \
-            or existing.get(PRIMARY_ENV_NAME)
+        #
+        # Repair first: more than one workspace flagged primary is never valid.
+        # It is the residue of the older name-matching logic — renaming the
+        # default workspace made the next boot mint another one under the old
+        # name, each flagged primary. A primary workspace cannot be renamed away
+        # from, moved out of or deleted, so every extra one is a workspace the
+        # admin can no longer get rid of. Keep the one that actually holds the
+        # boards (ties: the oldest) and demote the rest to ordinary workspaces.
+        prims = db.query(Environment).filter(Environment.is_primary == True).order_by(Environment.id).all()
+        if len(prims) > 1:
+            counts = {e.id: db.query(Board).filter(Board.environment_id == e.id).count() for e in prims}
+            keep = max(prims, key=lambda e: (counts[e.id], -e.id))
+            for e in prims:
+                if e.id != keep.id:
+                    e.is_primary = False
+            db.flush()
+            print(f"↻ demoted {len(prims) - 1} extra default workspace(s); kept '{keep.name}'")
+            prims = [keep]
+        primary = (prims[0] if prims else None) or existing.get(PRIMARY_ENV_NAME)
         if not primary:
             primary = Environment(name=PRIMARY_ENV_NAME, icon="🏛️", color=_ENV_COLORS[0],
                                   position=0, is_primary=True, organization_id=org.id if org else None)
