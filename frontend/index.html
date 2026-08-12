@@ -189,6 +189,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 #toolbar{background:var(--surface);display:flex;align-items:center;gap:7px;padding:9px 22px;border-bottom:1px solid var(--border)}
 .tb-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:6px;font-size:13px;color:var(--text-muted);white-space:nowrap}
 .tb-btn:hover{background:var(--row-hover);color:var(--text)}
+.tb-btn:disabled{opacity:.55;cursor:default}
+.tb-btn.busy i{animation:tb-spin .8s linear infinite}
+@keyframes tb-spin{to{transform:rotate(360deg)}}
 .tb-sep{width:1px;height:22px;background:var(--border);margin:0 3px}
 /* inline search */
 .tb-search{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border-strong);border-radius:7px;padding:0 10px;height:34px;width:210px;transition:border-color .12s,box-shadow .12s,width .15s}
@@ -298,6 +301,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .th-edit{opacity:0;margin-inline-start:6px;font-size:10.5px;color:var(--text-light);cursor:pointer;transition:opacity .13s,color .12s;flex-shrink:0}
 .tbl th:hover .th-edit{opacity:1}
 .th-edit:hover{color:var(--primary)}
+/* inline rename of an environment name, in the "סביבות" table */
+.env-name{cursor:text;border-radius:4px;padding:1px 3px}
+.env-name:hover{background:var(--primary-soft,rgba(0,115,234,.08))}
+.env-rename{max-width:260px;border:1px solid var(--primary);border-radius:6px;padding:3px 7px;font-family:inherit;font-size:13px;font-weight:600;outline:none;box-shadow:0 0 0 3px var(--primary-soft)}
 .th-rename{max-width:150px;border:1px solid var(--primary);border-radius:6px;padding:3px 7px;font-family:inherit;font-size:13px;font-weight:600;text-align:center;outline:none;box-shadow:0 0 0 3px var(--primary-soft)}
 .th-edit-dbl{cursor:text;border-radius:4px;transition:box-shadow .12s}
 .tbl th:hover .th-edit-dbl{box-shadow:inset 0 -1px 0 var(--border-strong)}
@@ -339,7 +346,11 @@ tr:hover .row-grip{opacity:.55}
 .sub-toggle:hover{background:var(--row-hover);color:var(--text)}
 .sub-toggle i{transition:transform .15s}
 .sub-toggle.open i{transform:rotate(-90deg)}
-.sub-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:11px;padding:1px 8px;font-weight:600;margin-inline-start:auto}
+.sub-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:11px;padding:1px 8px;font-weight:600;margin-inline-start:auto;cursor:pointer;user-select:none}
+/* the badge opens the sub-items too, so it reads as a control */
+.sub-badge:hover{color:var(--primary);border-color:var(--primary);background:color-mix(in srgb, var(--primary) 8%, var(--bg))}
+.sub-badge:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+.sub-badge.open{color:var(--primary);border-color:var(--primary)}
 .tbl tr.subrow td{background:var(--bg)}
 .tbl tr.subrow:hover td{background:var(--row-hover)}
 /* sub-items sit visibly indented from the parent so the hierarchy reads as its
@@ -1205,6 +1216,7 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
       </div>
       <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
       <div style="flex:1"></div>
+      <button class="tb-btn" id="tb-export" onclick="exportBoardExcel()" title="ייצוא הפריטים והתת-פריטים שמוצגים כעת"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא לאקסל</button>
       <button class="tb-btn" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
     </div>
 
@@ -2280,7 +2292,7 @@ const SysAdmin = {
     const admin=isSysAdmin();   // only a workspace admin may delete — same rule the API enforces
     const rows=envs.length ? envs.map(e=>`<tr>
         <td><span class="dp-swatch" style="background:${esc(e.color||'#0073ea')}"></span></td>
-        <td style="font-weight:600">${esc(e.icon||'🏢')} ${esc(e.name)}${e.is_primary?' <span class="perm-badge">ברירת מחדל</span>':''}</td>
+        <td style="font-weight:600">${esc(e.icon||'🏢')} <span class="env-name" data-env="${e.id}" title="לחיצה כפולה לשינוי שם" ondblclick="SysAdmin.renameEnv(${e.id})">${esc(e.name)}</span>${e.is_primary?' <span class="perm-badge">ברירת מחדל</span>':''}</td>
         <td style="color:var(--text-muted)">${e.board_count||0} <span style="color:var(--text-light)">לוחות</span></td>
         <td style="white-space:nowrap;text-align:left">
           <button class="sa-more" title="שנה שם" onclick="SysAdmin.renameEnv(${e.id})"><i class="fa-solid fa-pen"></i></button>
@@ -2304,12 +2316,34 @@ const SysAdmin = {
       toast('הסביבה נוצרה'); await this.reloadEnvs(); }
     catch(err){ toast(err&&err.detail?err.detail:'שגיאה ביצירת סביבה'); }
   },
-  async renameEnv(id){
+  /* rename in place: the name turns into an input right in the row (Enter or
+     blur saves, Esc cancels) — same feel as renaming a board column. Reached
+     from the pencil or by double-clicking the name. */
+  renameEnv(id){
     const e=(this.envs||[]).find(x=>x.id===id); if(!e)return;
-    const name=prompt('שם הסביבה:',e.name); if(!name||!name.trim())return;
-    try{ await api('/api/environments/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})});
-      toast('עודכן'); await this.reloadEnvs(); }
-    catch(err){ toast(err&&err.detail?err.detail:'שגיאה בעדכון'); }
+    // the id is always numeric, so the attribute selector needs no escaping
+    const span=document.querySelector('.env-name[data-env="'+Number(id)+'"]');
+    if(!span)return;                    // already editing (the span is swapped out) or not on screen
+    const cur=e.name, self=this;
+    const inp=document.createElement('input');
+    inp.className='env-rename'; inp.value=cur; inp.maxLength=200; inp.dir='auto';
+    let done=false;
+    const restore=()=>{ if(inp.parentNode)inp.replaceWith(span); };
+    const commit=async(save)=>{
+      if(done)return; done=true;
+      const v=inp.value.trim();
+      if(!save||!v||v===cur){ restore(); return; }
+      try{
+        await api('/api/environments/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({actor_id:meId(),name:v})});
+        toast('שם הסביבה עודכן'); await self.reloadEnvs();
+      }catch(err){ toast(err&&err.detail?err.detail:'שגיאה בעדכון'); restore(); }
+    };
+    inp.onkeydown=ev=>{ ev.stopPropagation();
+      if(ev.key==='Enter'){ ev.preventDefault(); commit(true); }
+      else if(ev.key==='Escape'){ ev.preventDefault(); commit(false); } };
+    inp.onblur=()=>commit(true);
+    span.replaceWith(inp); inp.focus(); inp.select();
   },
   deleteEnv(id){
     const e=(this.envs||[]).find(x=>x.id===id)||{}; const b=e.board_count||0;
@@ -2894,7 +2928,7 @@ function itemRow(t,col){
         <i class="fa-solid fa-grip-vertical row-grip itm-h" title="גרור להעברה בין קבוצות"></i>
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
         <span class="item-title editable itm-h" title="לחץ לעריכת השם · גרור להעברה" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
-        ${cnt?`<span class="sub-badge" title="${cnt} תת-פריטים"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
+        ${cnt?`<span class="sub-badge${open?' open':''}" role="button" tabindex="0" title="${cnt} תת-פריטים · לחץ להצגה/הסתרה" onclick="toggleSubs(event,${t.id})" onkeydown="if(event.key==='Enter'||event.key===' ')toggleSubs(event,${t.id})"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
       </div>${canEditItem(t)?`<button class="item-menu" title="אפשרויות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}</td>
       ${rowCellsAfterItem(t)}
@@ -3349,6 +3383,101 @@ function subRowCellsAfterItem(s){
   const pad=(orderedColumns().length-1)-cols.length;
   return html+(pad>0?`<td class="cell" colspan="${pad}"></td>`:'');
 }
+
+/* ============ ייצוא לאקסל ============
+   The board is rendered here, so the export is built here too: the grid below
+   is exactly what the screen shows — current filters and sort, the admin's
+   column structure, and the values this client computes (formulas, per-column
+   status labels, linked-item titles). The server only turns it into .xlsx. */
+const xdate=d=>{if(!d)return '';const x=new Date(d);if(isNaN(x))return String(d);
+  const p=n=>String(n).padStart(2,'0');return `${p(x.getDate())}/${p(x.getMonth()+1)}/${x.getFullYear()}`;};
+/* one exported cell: a scalar, or {v,c} to carry a status colour, or {v,t:'date'}
+   so Excel gets a real date it can sort and filter by */
+function exportCell(c,t){
+  if(c.kind==='builtin'){
+    if(c.key==='item')return t.title||'';
+    if(c.key==='assignees')return (t.assignees||[]).map(a=>a.name).filter(Boolean).join(', ');
+    if(c.key==='status'){
+      const cf=t.custom_fields||{};
+      if(cf.status_label)return {v:cf.status_label,c:cf.status_color||null};
+      const m=bStat(t.status); return {v:m.he,c:m.c};
+    }
+    if(c.key==='priority'){const p=PRIORITY[t.priority];return p?{v:p.he,c:p.c}:'';}
+    if(c.key==='due')return t.due_date?{v:t.due_date,t:'date'}:'';
+    if(c.key==='tags')return (t.tags||[]).join(', ');
+    return '';
+  }
+  const col=c.col, v=(t.custom_fields||{})[col.id];
+  switch(col.type){
+    case 'text':     return v==null?'':String(v);
+    case 'number':   return (v==null||v==='')?'':(isNaN(Number(v))?String(v):Number(v));
+    case 'date':     return v?{v,t:'date'}:'';
+    case 'rating':   return v?Number(v):'';
+    case 'status':{
+      if(!v||!v.label)return '';
+      const o=statusColOpts(col).find(x=>x.label===v.label);
+      return {v:v.label,c:(o&&o.color)||v.color||null};
+    }
+    case 'timeline': return (v&&v.from)?`${xdate(v.from)} – ${xdate(v.to||v.from)}`:'';
+    case 'checkbox': return v?'כן':'';
+    case 'people':   return (Array.isArray(v)?v:[]).map(id=>((st.users||[]).find(u=>u.id===id)||{}).name).filter(Boolean).join(', ');
+    case 'dropdown': return (Array.isArray(v)?v:[]).join(', ');
+    case 'files':    return (Array.isArray(v)?v:[]).map(f=>f&&f.name).filter(Boolean).join(', ');
+    case 'accounts': return (v&&v.label)?v.label:'';
+    case 'connect':  return (Array.isArray(v)?v:[]).map(id=>{const it=linkInfo(id);return it&&it.title?it.title:'#'+id;}).join(', ');
+    case 'formula':{const r=evalFormula(col,t);return r==null?'':r;}
+    case 'created_at': return t.created_at?fdatetime(t.created_at):'';
+    case 'item_id':  return t.item_uid?String(t.item_uid):'';
+  }
+  return '';
+}
+/* the whole grid: group header → its items → each item's sub-items, indented.
+   Sub-items keep their own (possibly narrower) column structure, so their values
+   are placed under the matching item columns and the rest stay blank. */
+function exportGrid(){
+  const cols=orderedColumns();
+  const subIds=new Set(subColumns().map(c=>String(c.id)));
+  const rows=[];
+  groupsOf().forEach(g=>{
+    if(g.id!==null||g.tasks.length)
+      rows.push({group:true,level:0,cells:[g.name].concat(cols.slice(1).map(()=>''))});
+    g.tasks.forEach(t=>{
+      rows.push({level:1,cells:cols.map(c=>exportCell(c,t))});
+      sortedSubs(t.subtasks||[]).forEach(s=>{
+        rows.push({level:2,cells:cols.map(c=>subIds.has(String(c.id))?exportCell(c,s):'')});
+      });
+    });
+  });
+  return {columns:cols.map(c=>c.kind==='builtin'?c.label:(c.col.title||'')),rows};
+}
+async function exportBoardExcel(){
+  if(!st.board)return;
+  const btn=document.getElementById('tb-export');
+  const grid=exportGrid();
+  if(!grid.rows.length){toast('אין פריטים לייצוא');return;}
+  if(btn){btn.disabled=true;btn.classList.add('busy');}
+  try{
+    const r=await fetch('/api/boards/'+st.board.id+'/export/xlsx',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:withMe({columns:grid.columns,rows:grid.rows})});
+    // only a real application error (400/403) carries a message worth showing;
+    // 404/405 means the server predates this endpoint — say that, don't echo
+    // FastAPI's English "Method Not Allowed", which reads like a permission error
+    if(!r.ok){
+      if(r.status===404||r.status===405)throw new Error('הייצוא לא זמין בשרת — יש להפעיל אותו מחדש');
+      let d='';try{d=(await r.json()).detail||'';}catch(_){ }
+      throw new Error((r.status===400||r.status===403)&&d?d:'שגיאה בייצוא לאקסל');
+    }
+    const blob=await r.blob(), url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=(st.board.name||'board')+'.xlsx';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    const items=grid.rows.filter(x=>!x.group).length;
+    toast(`יוצאו ${items} שורות לאקסל ✓`);
+  }catch(e){toast((e&&e.message)||'שגיאה בייצוא לאקסל');}
+  finally{if(btn){btn.disabled=false;btn.classList.remove('busy');}}
+}
 /* people column */
 function peopleDisp(ids){
   const users=(Array.isArray(ids)?ids:[]).map(uid=>(st.users||[]).find(u=>u.id===uid)).filter(Boolean);
@@ -3604,7 +3733,8 @@ function refreshSubBadge(view,parentId){
   const n=view.querySelectorAll(`tr[data-parent="${CSS.escape(String(parentId))}"][data-sid]`).length;
   const badge=parentRow.querySelector('.sub-badge');
   if(!n){ if(badge)badge.remove(); return; }
-  if(badge){ badge.innerHTML=`<i class="fa-solid fa-diagram-next"></i> ${n}`; badge.title=`${n} תת-פריטים`; }
+  if(badge){ badge.innerHTML=`<i class="fa-solid fa-diagram-next"></i> ${n}`;
+             badge.title=`${n} תת-פריטים · לחץ להצגה/הסתרה`; }   // the badge is a toggle
 }
 async function setCell(taskId,colId,value){
   const t=findAnyTask(taskId);
@@ -4069,13 +4199,20 @@ async function saveColumns(cols){
     renderView();
   }catch(e){toast(String(e.message||'').includes('403')?'רק מנהל הלוח יכול לערוך עמודות':'שגיאה בשמירת עמודות');}
 }
+/* Open/close a parent's sub-items. Triggered from the caret AND from the
+   "N תת-פריטים" badge, so the caret is looked up on the row rather than assumed
+   to be the clicked element. */
 function toggleSubs(e,id){
-  e.stopPropagation();
-  const btn=e.currentTarget;
+  e.stopPropagation(); if(e.preventDefault)e.preventDefault();
+  const src=e.currentTarget, row=src&&src.closest?src.closest('tr'):null;
   const open=!st.openSubs.has(id);
   if(open)st.openSubs.add(id); else st.openSubs.delete(id);
-  btn.classList.toggle('open',open);
-  btn.closest('table').querySelectorAll('.subrow[data-parent="'+id+'"]').forEach(r=>r.style.display=open?'table-row':'none');
+  const caret=row?row.querySelector('.sub-toggle'):null;
+  if(caret)caret.classList.toggle('open',open);
+  const badge=row?row.querySelector('.sub-badge'):null;
+  if(badge)badge.classList.toggle('open',open);
+  const table=(row||src).closest('table'); if(!table)return;
+  table.querySelectorAll('.subrow[data-parent="'+id+'"]').forEach(r=>r.style.display=open?'table-row':'none');
 }
 function findSub(id){
   for(const t of (st.board.tasks||[])) for(const s of (t.subtasks||[])) if(s.id===id) return {sub:s,parent:t};
