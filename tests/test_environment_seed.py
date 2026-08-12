@@ -55,6 +55,32 @@ def test_unassigned_boards_land_on_the_renamed_primary(client, admin_id):
         assert db.query(Board).filter(Board.id == bid).first().environment_id == pid
 
 
+def test_extra_default_workspaces_are_demoted_on_boot(client, admin_id):
+    """Residue of the old name-matching seeder: several workspaces flagged
+    primary, none of which the admin could rename away from or delete."""
+    with Session(cityos_main.engine) as db:
+        real = _primaries(db)[0]
+        real_id = real.id
+        extra1 = Environment(name="עודף א", is_primary=True, position=90)
+        extra2 = Environment(name="עודף ב", is_primary=True, position=91)
+        db.add_all([extra1, extra2]); db.commit()
+        ids = (extra1.id, extra2.id)
+        assert len(_primaries(db)) == 3
+
+    cityos_main._seed_environments()          # what every server boot does
+
+    with Session(cityos_main.engine) as db:
+        prims = _primaries(db)
+        assert len(prims) == 1, [p.name for p in prims]
+        assert prims[0].id == real_id          # the one holding the boards is kept
+        # the extras survive as ordinary workspaces — deletable, not deleted
+        left = db.query(Environment).filter(Environment.id.in_(ids)).all()
+        assert len(left) == 2 and not any(e.is_primary for e in left)
+
+    for eid in ids:                            # and the admin can now remove them
+        assert client.delete(f"/api/environments/{eid}?actor_id={admin_id}").status_code == 200
+
+
 def test_the_default_workspace_can_never_be_deleted(client, admin_id):
     with Session(cityos_main.engine) as db:
         pid = _primaries(db)[0].id
