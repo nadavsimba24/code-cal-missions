@@ -3691,7 +3691,9 @@ async function exportBoardExcel(){
     }
     const blob=await r.blob(), url=URL.createObjectURL(blob);
     const a=document.createElement('a');
-    a.href=url; a.download=(st.board.name||'board')+'.xlsx';
+    // a.download decides the saved name for a blob, so it has to match the
+    // server's Content-Disposition: "<שם הלוח>_<מספר הלוח>.xlsx"
+    a.href=url; a.download=((st.board.name||'board')+'_'+st.board.id+'.xlsx');
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
     const items=grid.rows.filter(x=>!x.group).length;

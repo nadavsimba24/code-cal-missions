@@ -42,6 +42,22 @@ def test_export_returns_a_real_xlsx(client, admin_id):
     assert r.content[:2] == b"PK"                      # a real zip/xlsx container
 
 
+def test_filename_is_the_board_name_and_number(client, admin_id):
+    """'<שם הלוח>_<מספר הלוח>.xlsx' — same-named boards stay apart on disk."""
+    import urllib.parse
+
+    name = "לוח בדיקות"
+    bid = client.post("/api/boards", json={"name": name, "user_id": admin_id}).json()["id"]
+    try:
+        cd = _export(client, bid, admin_id).headers["content-disposition"]
+        star = cd.split("filename*=UTF-8''")[1]
+        assert urllib.parse.unquote(star) == f"{name}_{bid}.xlsx"
+        # the plain ASCII fallback still names the board for clients that ignore filename*
+        assert f"filename=board_{bid}.xlsx" in cd
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
 def test_headers_values_and_hierarchy(client, admin_id):
     ws = _sheet(_export(client, 1, admin_id))
     assert [c.value for c in ws[1]] == HEADERS

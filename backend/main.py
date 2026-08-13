@@ -1422,8 +1422,10 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
 
     buf = io.BytesIO()
     wb.save(buf)
+    # "<שם הלוח>_<מספר הלוח>.xlsx" — the number keeps exports of same-named
+    # boards apart, and says which board a file on disk came from
     fname = re.sub(r"[^\w֐-׿ .()-]", "", (b.name or "board")).strip() or "board"
-    quoted = urllib.parse.quote(f"{fname}.xlsx")
+    quoted = urllib.parse.quote(f"{fname}_{board_id}.xlsx")
     return Response(content=buf.getvalue(), media_type=XLSX_MIME,
                     headers={"Content-Disposition": f"attachment; filename=board_{board_id}.xlsx; "
                                                     f"filename*=UTF-8''{quoted}"})
