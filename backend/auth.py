@@ -101,9 +101,21 @@ def _principal_easyauth(request: Request):
     return None
 
 
+DEV_COOKIE = "cityos_user"
+
 def _principal_dev(request: Request):
-    """Local development identity: X-CityOS-User is a user id or an email."""
+    """Local development identity: X-CityOS-User is a user id or an email.
+
+    The header only rides on requests the app makes itself (fetch). A browser
+    fetching a URL on its own — <img src>, a download link, a new tab — sends
+    no such header, so an uploaded avatar or attachment would come back 401 and
+    render broken. The same value is therefore also accepted from a cookie,
+    which the browser attaches to every request to this origin. Dev mode only:
+    in easyauth the ingress injects its headers on those requests too.
+    """
     raw = (request.headers.get("x-cityos-user") or "").strip()
+    if not raw:
+        raw = (request.cookies.get(DEV_COOKIE) or "").strip()
     if not raw:
         return None
     return {"email": raw, "name": None}
