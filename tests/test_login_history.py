@@ -12,9 +12,23 @@ def test_record_login(client, guinea_id):
     assert r.json().get("logged_in_at")
 
 
-def test_record_login_unknown_user_404(client):
-    """Recording a login for a non-existent user returns 404."""
-    assert client.post("/api/auth/login", json={"user_id": 999999}).status_code == 404
+def test_record_login_rejects_unknown_identity(client):
+    """An identity with no matching user cannot record a login.
+
+    The login event is now attributed to the authenticated caller rather than to
+    a user id chosen in the request body, so an unknown identity is refused
+    outright instead of being looked up."""
+    r = client.post("/api/auth/login", json={}, headers={"X-CityOS-User": "ghost@nowhere.test"})
+    assert r.status_code == 403
+
+
+def test_login_is_recorded_for_the_authenticated_user(client, guinea_id, admin_id):
+    """Naming another user in the body does not log them in — the header wins."""
+    r = client.post("/api/auth/login", json={"user_id": guinea_id},
+                    headers={"X-CityOS-User": str(admin_id)})
+    assert r.status_code == 200, r.text
+    events = client.get(f"/api/login-history?actor_id={admin_id}").json()
+    assert events and events[0]["user_id"] == admin_id
 
 
 def test_last_login_reflected(client, guinea_id):

@@ -2,9 +2,13 @@
 
 
 def test_create_board_requires_admin(client, member_id):
-    """Only a workspace admin may create a board — no user_id or a plain member → 403."""
-    # no user_id → not a workspace admin
-    assert client.post("/api/boards", json={"name": "nope"}).status_code == 403
+    """Only a workspace admin may create a board.
+
+    Anonymous is now rejected before the handler runs (401), and a signed-in
+    non-admin is rejected by the capability check (403). It used to be possible
+    to reach the handler with no identity at all."""
+    anon = client.post("/api/boards", json={"name": "nope"}, headers={"X-CityOS-User": ""})
+    assert anon.status_code == 401
     # explicit non-admin member
     r = client.post("/api/boards", json={"name": "nope", "user_id": member_id})
     assert r.status_code == 403

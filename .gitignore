@@ -12,6 +12,8 @@ __pycache__/
 server.log
 data/training/
 *.bak
+# dated DB backups (cityos.db.bak-...) — real resident data
+*.db.bak*
 frontend/index.html.old
 frontend/index.html.bak
 frontend/*.pre-monday.*.bak
@@ -20,3 +22,6 @@ node_modules/
 .pytest_cache/
 tests/_inline_check.js
 backend/uploads/
+
+# Strix pentest output (findings may contain sensitive reproduction data)
+strix_runs/
