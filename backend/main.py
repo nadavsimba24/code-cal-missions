@@ -1019,7 +1019,7 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
-                       "connect", "created_at", "created_by", "item_id"}
+                       "connect", "created_at", "created_by", "item_id", "item_kind"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
             is_ws_admin = _ws_role(db, actor_id) == "admin"
             cols = []
@@ -1033,9 +1033,10 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     changed = (not prev) or prev.get("type") != "connect" or prev.get("connect") != c.get("connect")
                     if changed and not is_ws_admin:
                         raise HTTPException(403, "רק מנהל מערכת יכול להוסיף או לשנות עמודת קישור בין לוחות")
-                # a status column's options are its own {label,color} vocabulary;
-                # every other type keeps its options untouched (dropdown: strings)
-                opts = _status_col_options(c.get("options")) if c["type"] == "status" else c.get("options")
+                # a status column and a "סוג" column carry their own {label,color}
+                # vocabulary; every other type keeps its options untouched
+                opts = (_status_col_options(c.get("options"))
+                        if c["type"] in ("status", "item_kind") else c.get("options"))
                 cols.append({
                     "id": cid,
                     "type": c["type"],
