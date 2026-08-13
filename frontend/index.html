@@ -3288,6 +3288,7 @@ async function saveSubCols(ids,msg){
 /* ============ custom columns (עמודות מותאמות, בהשראת Monday) ============ */
 const COLUMN_TYPES=[
   {type:'status',he:'סטטוס',ic:'fa-circle-half-stroke',desc:'תווית צבעונית'},
+  {type:'item_kind',he:'סוג',ic:'fa-tags',desc:'משימה / באג / שיפור'},
   {type:'text',he:'טקסט',ic:'fa-font',desc:'טקסט חופשי'},
   {type:'people',he:'אנשים',ic:'fa-user-group',desc:'שיוך משתמשים'},
   {type:'dropdown',he:'רשימה נפתחת',ic:'fa-list-check',desc:'בחירה מרשימת אפשרויות'},
@@ -3308,7 +3309,10 @@ const STATUS_OPTS=[
   {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
   {label:'תקוע',color:'#e2445c'},{label:'הושלם',color:'#00c875'},
 ];
-const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
+/* "סוג" — a status-shaped column that ships with its own three values.
+   The board admin can rename or recolour them from the same editor. */
+const ITEM_KIND_OPTS=[{label:'משימה',color:'#0073ea'},{label:'באג',color:'#e2445c'},{label:'שיפור',color:'#a25ddc'}];
+const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',item_kind:'סוג',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
   created_at:'מועד יצירה',created_by:'יוצר הרשומה',item_id:'מזהה פריט'};
 /* columns the system derives from the item itself — they have no value to fill
@@ -3587,7 +3591,7 @@ function customCellHTML(c,t){
   if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
   if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
   if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
-  if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
+  if(c.type==='status'||c.type==='item_kind') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
   if(c.type==='timeline')return `<td class="cell cell-custom"><div onclick="openTimeline(${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
   if(c.type==='checkbox')return `<td class="cell cell-custom"><input type="checkbox" class="cc-check" ${v?'checked':''} onchange="setCell(${id},'${c.id}',this.checked?true:null)"></td>`;
   if(c.type==='people')  return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="peopleCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${peopleDisp(v)}</span></td>`;
@@ -3661,6 +3665,7 @@ function exportCell(c,t){
     case 'number':   return (v==null||v==='')?'':(isNaN(Number(v))?String(v):Number(v));
     case 'date':     return v?{v,t:'date'}:'';
     case 'rating':   return v?Number(v):'';
+    case 'item_kind':
     case 'status':{
       if(!v||!v.label)return '';
       const o=statusColOpts(col).find(x=>x.label===v.label);
@@ -4088,12 +4093,18 @@ function setRating(taskId,colId,n){
 /* status cell — every status column carries its own label/color vocabulary
    (col.options=[{label,color}]); STATUS_OPTS is only the starting point for a
    column the board admin hasn't customised yet. */
+/* is this column the "סוג" type? — only changes the wording of the editor */
+function _colIsKind(colId){
+  const c=(colId&&typeof colId==='object')?colId:customColumns().find(x=>x.id===colId);
+  return !!(c&&c.type==='item_kind');
+}
 function statusColOpts(col){
   const c=(col&&typeof col==='object')?col:customColumns().find(x=>x.id===col);
   const raw=(c&&c.options)||[];
   const out=raw.map(o=>typeof o==='string'?{label:o,color:'#c4c4c4'}:{label:o&&o.label,color:(o&&o.color)||'#c4c4c4'})
                .filter(o=>o.label);
-  return out.length?out:STATUS_OPTS.map(o=>({label:o.label,color:o.color}));
+  const defs=(c&&c.type==='item_kind')?ITEM_KIND_OPTS:STATUS_OPTS;
+  return out.length?out:defs.map(o=>({label:o.label,color:o.color}));
 }
 function statusCellPill(v,colId){
   if(!v||!v.label)return '<span class="pill pill-empty">—</span>';
@@ -4108,7 +4119,7 @@ function statusCellMenu(e,taskId,colId){
     +`<button class="cell-pop-opt cell-pop-clear" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">נקה</button>`;
   // board admin gets the same shortcut the built-in status column has
   if(isBoardAdmin())
-    html+=`<button class="cell-pop-opt cell-pop-manage" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
+    html+=`<button class="cell-pop-opt cell-pop-manage" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ${_colIsKind(colId)?'ניהול ערכי הסוג':'ניהול סטטוסים'}</button>`;
   openCellPop(e.currentTarget,html);
 }
 function pickStatusCell(e,taskId,colId,optIdx){
@@ -4122,7 +4133,7 @@ const STATUS_PALETTE=['#0073ea','#fdab3d','#e2445c','#00c875','#a25ddc','#579bfc
 let _csDraft=[], _csCol=null;
 function manageColStatuses(colId){
   if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך סטטוסים');return;}
-  const c=customColumns().find(x=>x.id===colId); if(!c||c.type!=='status')return;
+  const c=customColumns().find(x=>x.id===colId); if(!c||(c.type!=='status'&&c.type!=='item_kind'))return;
   _csCol=colId;
   // `orig` remembers the label as opened (saved or default), so a rename can
   // follow through to the cells that already carry it
@@ -4145,7 +4156,7 @@ function _renderColStatusModal(){
     ? `<button class="btn btn-ghost" onclick="_csAdd()"><i class="fa-solid fa-plus"></i> הוסף סטטוס</button>`
     : `<span style="color:var(--text-light);font-size:12px">הגעת למספר הסטטוסים המרבי (${STATUS_COL_MAX})</span>`;
   showModal(`
-    <h2><i class="fa-solid fa-sliders"></i> ניהול סטטוסים · ${esc(c.title||'')}</h2>
+    <h2><i class="fa-solid fa-sliders"></i> ${c.type==='item_kind'?'ניהול ערכי הסוג':'ניהול סטטוסים'} · ${esc(c.title||'')}</h2>
     <div class="mbody">
       <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">שם, צבע וסדר הסטטוסים של עמודה זו בלבד. שינוי שם יעודכן גם בפריטים שכבר סומנו בו; סטטוס שיוסר יישאר בפריטים הקיימים אך לא יוצע לבחירה.</p>
       <div id="cs-rows">${rows}</div>
@@ -4349,6 +4360,7 @@ async function addColumn(type){
     if(f===null)return; col.formula=f.trim();
   }
   if(type==='dropdown')col.options=[];
+  if(type==='item_kind')col.options=ITEM_KIND_OPTS.map(o=>({...o}));   // ships with משימה/באג/שיפור
   if(type==='item_id')col.copy_mode='id';   // numeric id is the only mode; a click copies the number
   const cols=customColumns().slice();cols.push(col);
   await saveColumns(cols);
@@ -4394,7 +4406,7 @@ function colMenu(e,colId){
     <button class="cell-pop-opt2" onclick="duplicateColumn(event,'${colId}')"><i class="fa-regular fa-clone"></i> שכפל עמודה</button>`:'';
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +idSettings
-    +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
+    +(c&&(c.type==='status'||c.type==='item_kind')?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ${c.type==='item_kind'?'ניהול ערכי הסוג':'ניהול סטטוסים'}</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     +(c&&c.type==='connect'&&isSysAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
@@ -5080,7 +5092,7 @@ async function deleteGroup(gid){
 }
 
 /* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */
-const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',tags:'תגיות',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
+const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',item_kind:'סוג',priority:'עדיפות',date:'תאריך',tags:'תגיות',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
 function formSchema(){
   const f=[
     {key:'title',label:'שם הפריט',type:'text',locked:true},
@@ -5166,7 +5178,7 @@ const Forms={
     else if(f.type==='rating') inp=`<select id="${id}"><option value="">—</option>${[1,2,3,4,5].map(n=>`<option value="${n}">${'★'.repeat(n)}</option>`).join('')}</select>`;
     // built-in status field → the board's vocabulary (value = enum key);
     // a status column → that column's own vocabulary (value = option index)
-    else if(f.type==='status') inp=f.col
+    else if(f.type==='status'||f.type==='item_kind') inp=f.col
       ? `<select id="${id}"><option value="">—</option>${statusColOpts(f.col).map((o,i)=>`<option value="${i}">${esc(o.label)}</option>`).join('')}</select>`
       : `<select id="${id}">${boardStatusList().map(s=>`<option value="${s.key}">${esc(s.he)}</option>`).join('')}</select>`;
     else if(f.type==='priority') inp=`<select id="${id}">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select>`;
@@ -5186,7 +5198,7 @@ const Forms={
       else if(f.type==='checkbox'){ val=el.checked?true:null; }
       else if(f.type==='tags'){ val=(el.value||'').split(',').map(s=>s.trim()).filter(Boolean); if(!val.length)val=null; }
       else if(f.type==='rating'||f.type==='number'){ val=el.value===''?null:Number(el.value); }
-      else if(f.type==='status'&&f.col){ const o=el.value===''?null:statusColOpts(f.col)[+el.value]; val=o?{label:o.label,color:o.color}:null; }
+      else if((f.type==='status'||f.type==='item_kind')&&f.col){ const o=el.value===''?null:statusColOpts(f.col)[+el.value]; val=o?{label:o.label,color:o.color}:null; }
       else { val=el.value||null; }
       if(f.required && (val==null||val===''||(Array.isArray(val)&&!val.length))){ missing.push(f.label); continue; }
       if(f.key==='title') payload.title=val;
