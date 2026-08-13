@@ -22,25 +22,66 @@ this being theatre.
 
 ## Enabling it
 
-```bash
-RG=<resource-group>
-APP=<container-app-name>
+Concrete values for this deployment (discovered 2026-08-13):
 
-# 1. Register the app in Entra (one time). Note the returned appId.
-az ad app create --display-name "CityOS" \
-  --web-redirect-uris "https://<your-app-host>/.auth/login/aad/callback"
+| | |
+|---|---|
+| Tenant | `Mashcal - CSP` — `a8bf01d5-f36b-4b08-ad19-18fe50aa833c` (default domain `mashcal.co.il`) |
+| Resource group | `RG-Missions-POC` |
+| Container App | `missionspoccontainer` |
+| Host | `missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io` |
+
+**Step 1 requires a directory role** (Application Administrator, Cloud Application
+Administrator, or Global Administrator). A normal tenant member — including
+`shellyf@mashcal.co.il` — gets `Insufficient privileges to complete the operation`.
+Steps 2–3 only need contributor rights on the resource group.
+
+```bash
+RG=RG-Missions-POC
+APP=missionspoccontainer
+HOST=missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io
+TENANT=a8bf01d5-f36b-4b08-ad19-18fe50aa833c
+
+# 1. Register the app in Entra (needs the directory role above). Note the appId.
+az ad app create --display-name "CityOS Missions" \
+  --sign-in-audience AzureADMyOrg \
+  --web-redirect-uris "https://$HOST/.auth/login/aad/callback" \
+  --query appId -o tsv
 
 # 2. Turn on Easy Auth with Entra as the provider
 az containerapp auth microsoft update -g $RG -n $APP \
-  --client-id <appId> \
-  --tenant-id <tenantId> \
-  --yes
+  --client-id <appId> --tenant-id $TENANT --yes
 
 # 3. Require authentication for every request — the critical step
 az containerapp auth update -g $RG -n $APP \
   --unauthenticated-client-action RedirectToLoginPage \
   --redirect-provider azureactivedirectory
 ```
+
+## Before you switch it on: map the accounts
+
+The app matches the Entra identity to `users.email`. The seeded directory uses
+`@hodhasharon.gov.il` addresses, but the tenant signs people in as
+`@mashcal.co.il` — **nothing matches**, so with the default "refuse unknown
+users" policy the first sign-in after enabling auth returns 403 for everyone,
+including whoever needs to fix it.
+
+Give at least one workspace admin their real tenant address *before* step 3:
+
+```sql
+-- against the production DATABASE_URL, before enabling Easy Auth
+UPDATE users SET email = 'shellyf@mashcal.co.il' WHERE id = 1;
+```
+
+Verify the mapping resolves, then enable step 3:
+
+```bash
+curl -s https://$HOST/api/auth/me -H "X-MS-CLIENT-PRINCIPAL-NAME: shellyf@mashcal.co.il"
+# expect the user row, not "המשתמש אינו רשום במערכת"
+```
+
+Note the app is IP-restricted to six addresses, so run this from an allowlisted
+network.
 
 Verify it took effect:
 
