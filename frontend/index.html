@@ -1436,7 +1436,7 @@ function avatarInner(u){
 /* Reload the users list — the single source every avatar renders from. */
 async function refreshUsers(){ try{ st.users=await api('/api/users'); }catch(e){} }
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
-const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set(), selected:new Set()};
+const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set(), selected:new Set(), collapsedGroups:new Set()};
 
 /* ============ URL routing (hash-based deep links) ============
    #/board/{id}            — a board is open
@@ -1769,7 +1769,7 @@ function deleteBoardById(id){
   },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
 }
 async function openBoard(id){
-  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.colSort=null; st.subSort=null; }
+  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.collapsedGroups.clear(); st.colSort=null; st.subSort=null; }
   st.filters={q:'',people:[],status:'',priority:'',sort:''};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
@@ -3029,6 +3029,14 @@ function refreshToolbar(){
   const cl=document.getElementById('tb-clear'); if(cl)cl.classList.toggle('show',filtersActive());
 }
 
+/* Collapsed groups, kept in state rather than only in the DOM so a re-render
+   does not spring them open. The "ללא קבוצה" bucket has no id — it is keyed
+   under a fixed name of its own. */
+const _gKey=gid=>(gid===null||gid===undefined||gid==='')?'none':String(gid);
+function groupCollapsed(gid){ return st.collapsedGroups.has(_gKey(gid)); }
+function setGroupCollapsed(gid,shut){
+  if(shut)st.collapsedGroups.add(_gKey(gid)); else st.collapsedGroups.delete(_gKey(gid));
+}
 function groupsOf(){
   const gs = (st.board.groups||[]).slice();
   const tasks = applyFilters(st.board.tasks||[]);
@@ -3048,34 +3056,42 @@ function vTable(el){
     const col=g.color||'#0073ea';
     const rows=g.tasks.map(t=>itemRow(t,col)).join('');
     const real=g.id!==null;
+    // a collapsed group must survive a re-render (sorting, editing a value,
+    // refreshing the board) — otherwise it springs open and the rows below it
+    // jump, which reads as the view scrolling by itself
+    const shut=groupCollapsed(g.id);
     const head=real
-      ? `<div class="group-head" data-gid="${g.id}">
+      ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}">
           <i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>
           <i class="fa-solid fa-caret-down caret" style="color:${col}"></i>
           <span class="g-name g-handle" style="color:${col}" title="גרור לשינוי סדר · לחץ לכיווץ">${esc(g.name)}</span>
           <span class="g-count">${g.tasks.length}</span>
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
         </div>`
-      : `<div class="group-head">
+      : `<div class="group-head${shut?' collapsed':''}">
           <i class="fa-solid fa-caret-down caret" style="color:${col}"></i>
           <span class="g-name" style="color:${col}">${esc(g.name)}</span>
           <span class="g-count">${g.tasks.length}</span>
         </div>`;
     return `<div class="group" ${real?'':'data-orphan="1"'}>
       ${head}
-      <table class="tbl">
+      <table class="tbl" ${shut?'style="display:none"':''}>
         ${colgroupHTML()}
         <thead><tr class="col-head-row">${columnHeadersHTML(col)}<th class="th-spacer"></th></tr></thead>
         <tbody data-gid="${g.id===null?'':g.id}">${rows}
           <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
       </table>
-      <div style="margin-top:6px">${battery(g.tasks)}</div>
+      <div style="margin-top:6px"${shut?' hidden':''}>${battery(g.tasks)}</div>
     </div>`;
   }).join('') + `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`;
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
     if(e.target.closest('.g-menu-btn')||e.target.closest('.g-drag'))return;
-    h.classList.toggle('collapsed');const t=h.nextElementSibling;t.style.display=t.style.display==='none'?'':'none';
+    const shut=!h.classList.contains('collapsed');
+    h.classList.toggle('collapsed',shut);
+    const t=h.nextElementSibling; if(t)t.style.display=shut?'none':'';
+    const batt=t&&t.nextElementSibling; if(batt)batt.hidden=shut;
+    setGroupCollapsed(h.dataset.gid===undefined?null:h.dataset.gid,shut);   // remembered across re-renders
   });
   if(window.Sortable){
     // drag by the grip OR the group name to reorder groups
