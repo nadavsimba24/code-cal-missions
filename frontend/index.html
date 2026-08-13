@@ -1312,7 +1312,8 @@ body, body *{ font-weight:400!important; }
   <div class="chat-body" id="chat-body"></div>
 </div>
 
-<!-- Login screen (no real auth yet — pick who you are) -->
+<!-- Login screen — local dev only. In production Entra ID identifies the user
+     before the request reaches the app, and this screen is never shown. -->
 <div id="login">
   <div class="login-box">
     <div class="login-logo"><span class="dot"><i class="fa-solid fa-rocket"></i></span> CODE-CAL MISSIONS</div>
@@ -1380,8 +1381,18 @@ const VIEWS = [
   {id:'map',he:'מפה',ic:'fa-map-location-dot'},
   {id:'gis',he:'ניתוח שטח',ic:'fa-globe'},
 ];
-const api = async (p,o)=>{const r=await fetch(p,o);
+/* Identity is carried by the transport, never in the URL or body. In production
+   Azure Easy Auth injects the Entra headers before the request reaches us, so
+   there is nothing to add here. In local dev mode the picked user id travels in
+   X-CityOS-User — see backend/auth.py. */
+const AUTH = {mode:'easyauth', devUser:null};
+function authHeaders(){
+  return (AUTH.mode==='dev' && AUTH.devUser) ? {'X-CityOS-User':String(AUTH.devUser)} : {};
+}
+const api = async (p,o)=>{o=o||{};
+  const r=await fetch(p,{...o,headers:{...(o.headers||{}),...authHeaders()}});
   if(!r.ok){ let detail=''; try{ const j=await r.json(); detail=(j&&j.detail)||''; }catch(e){}
+    if(r.status===401){ Auth.onUnauthenticated(); }
     const err=new Error(p+' '+r.status+(detail?': '+detail:'')); err.status=r.status; err.detail=detail; throw err; }
   return r.json();};
 const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1478,26 +1489,37 @@ async function boot(){
   revealWhenFontsReady();
   try{ if(localStorage.getItem('cc_sb_collapsed')==='1') document.body.classList.add('sb-collapsed'); }catch(e){}
   try{
+    // Who are we? The server decides, from the Entra identity on the request.
+    // In dev mode it accepts the id the picker stored, so the picker still works.
+    try{ const s=await api('/api/status'); AUTH.mode=s.auth_mode||'easyauth'; }catch(e){}
+    if(AUTH.mode==='dev'){
+      const savedId=parseInt(localStorage.getItem('cc_uid')||'',10);
+      if(savedId) AUTH.devUser=savedId;
+    }
+    let me=null;
+    try{ me=await api('/api/auth/me'); }catch(e){ me=null; }
+    if(!me){
+      // dev: let the developer pick. production: Entra has not identified us,
+      // or the account is not provisioned — there is nothing to pick from.
+      if(AUTH.mode==='dev'){ await Auth.loadPickerUsers(); Auth.showLogin(); }
+      else Auth.showSignedOut();
+      return;
+    }
+    st.me=me;
     try{st.users = await api('/api/users');}catch(e){st.users=[];}
     try{st.depts = await api('/api/departments');}catch(e){st.depts=[];}
     try{st.rolePerms = await api('/api/role-permissions');}catch(e){st.rolePerms=null;}
     await loadWsMembers();
-    // no real auth yet: restore the last logged-in user, otherwise show login
-    const savedId=parseInt(localStorage.getItem('cc_uid')||'',10);
-    const saved=(st.users||[]).find(u=>u.id===savedId);
-    if(saved){
-      st.me=saved; renderMe();
-      // record a login on session-restore too (throttled to 30m) so "last login"
-      // reflects real usage — not only the rare trip through the login screen.
-      try{
-        const last=saved.last_login?new Date(saved.last_login).getTime():0;
-        if(Date.now()-last>30*60*1000){
-          api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:saved.id})}).catch(()=>{});
-        }
-      }catch(e){}
-      await enterApp();
-    }
-    else{ Auth.showLogin(); }
+    // keep "last login" reflecting real usage, throttled to 30m
+    try{
+      const last=parseInt(localStorage.getItem('cc_last_login')||'0',10);
+      if(Date.now()-last>30*60*1000){
+        localStorage.setItem('cc_last_login',String(Date.now()));
+        api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});
+      }
+    }catch(e){}
+    renderMe();
+    await enterApp();
   }catch(e){
     document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-plug-circle-xmark"></i><div>השרת לא זמין</div><div style="font-size:12px">'+esc(e.message)+'</div></div>';
   }
@@ -1519,9 +1541,21 @@ async function enterApp(){
   setTimeout(showAgentHint,3500);
 }
 const Auth = {
+  /* The picker exists only in local dev mode. In production the identity comes
+     from Entra ID via Azure Easy Auth and cannot be chosen in the browser. */
+  _pickerUsers: [],
+  async loadPickerUsers(){
+    // signed out, so /api/users is closed to us — dev mode signs in as the first
+    // seeded user to read the directory, then lets the developer switch.
+    for(const probe of [1,2,3]){
+      AUTH.devUser=probe;
+      try{ this._pickerUsers=await api('/api/users'); return; }catch(e){}
+    }
+    AUTH.devUser=null; this._pickerUsers=[];
+  },
   showLogin(){
     const box=document.getElementById('login-users');
-    box.innerHTML=(st.users||[]).map(u=>`
+    box.innerHTML=(this._pickerUsers||[]).map(u=>`
       <button class="login-user" onclick="Auth.login(${u.id})">
         <span class="av" style="background:var(--primary)">${avatarInner(u)}</span>
         <span class="lu-info"><span class="lu-name">${esc(u.name)}</span><span class="lu-role">${esc(ROLE_HE[u.role]||u.role)}</span></span>
@@ -1529,18 +1563,41 @@ const Auth = {
       </button>`).join('')||'<div class="empty" style="padding:20px">אין משתמשים</div>';
     document.getElementById('login').classList.add('open');
   },
-  async login(id){
-    const u=(st.users||[]).find(x=>x.id===id); if(!u)return;
-    st.me=u; localStorage.setItem('cc_uid',id);
-    try{ await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:id})}); }catch(e){}
+  showSignedOut(){
     document.getElementById('login').classList.remove('open');
+    document.getElementById('view').innerHTML='<div class="empty">'
+      +'<i class="fa-solid fa-user-lock"></i>'
+      +'<div>לא זוהית במערכת</div>'
+      +'<div style="font-size:12px">התחבר עם חשבון הארגון, או פנה למנהל המערכת כדי שיוסיף אותך.</div>'
+      +'<div style="margin-top:14px"><a class="btn primary" href="/.auth/login/aad?post_login_redirect_uri=/">התחברות</a></div>'
+      +'</div>';
+  },
+  onUnauthenticated(){
+    // the Entra session expired mid-session — bounce through the login endpoint
+    if(AUTH.mode!=='dev' && !Auth._bouncing){
+      Auth._bouncing=true;
+      location.href='/.auth/login/aad?post_login_redirect_uri='+encodeURIComponent(location.pathname+location.hash);
+    }
+  },
+  async login(id){
+    const u=(this._pickerUsers||[]).find(x=>x.id===id); if(!u)return;
+    AUTH.devUser=id; localStorage.setItem('cc_uid',id);
+    st.me=u;
+    try{ await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }catch(e){}
+    document.getElementById('login').classList.remove('open');
+    try{st.users = await api('/api/users');}catch(e){st.users=[];}
+    try{st.depts = await api('/api/departments');}catch(e){st.depts=[];}
+    try{st.rolePerms = await api('/api/role-permissions');}catch(e){st.rolePerms=null;}
+    await loadWsMembers();
     renderMe(); await enterApp();
     toast('שלום, '+u.name);
   },
   logout(){
     closePops();
-    askConfirm('להתנתק מהמערכת?',()=>{
+    askConfirm('להתנתק מהמערכת?',async()=>{
       localStorage.removeItem('cc_uid');
+      localStorage.removeItem('cc_last_login');
+      AUTH.devUser=null;
       st.me=null; st.board=null; st.boards=[];
       try{Notif.stop();}catch(e){}
       try{closeModals();AI.close();Chat.close();Term&&Term.close&&Term.close();}catch(e){}
@@ -1549,7 +1606,10 @@ const Auth = {
       document.getElementById('bh-desc').textContent='';
       document.getElementById('tabs').innerHTML='';
       document.getElementById('view').innerHTML='';
-      Auth.showLogin();
+      // production: end the Entra session too, otherwise the next request is
+      // silently re-authenticated and "logout" only cleared local state.
+      if(AUTH.mode!=='dev'){ location.href='/.auth/logout?post_logout_redirect_uri=/'; return; }
+      await Auth.loadPickerUsers(); Auth.showLogin();
     },{title:'התנתקות',confirmText:'התנתק',icon:'fa-right-from-bracket',danger:false});
   },
 };
@@ -2235,6 +2295,9 @@ const Notif={
 };
 /* ===== current user ("פועל בתור") ===== */
 function meId(){return st.me&&st.me.id;}
+/* The server ignores any identity in the body — it reads the authenticated
+   user from the request. user_id is still sent so an older backend keeps
+   working during a rolling deploy; it has no effect on a current one. */
 function withMe(body){return JSON.stringify({...(body||{}),user_id:meId()});}
 function canComment(){
   const r=st.board&&st.board.my_role;
@@ -3616,7 +3679,7 @@ async function exportBoardExcel(){
   if(btn){btn.disabled=true;btn.classList.add('busy');}
   try{
     const r=await fetch('/api/boards/'+st.board.id+'/export/xlsx',{
-      method:'POST',headers:{'Content-Type':'application/json'},
+      method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},
       body:withMe({columns:grid.columns,rows:grid.rows})});
     // only a real application error (400/403) carries a message worth showing;
     // 404/405 means the server predates this endpoint — say that, don't echo
@@ -3628,7 +3691,9 @@ async function exportBoardExcel(){
     }
     const blob=await r.blob(), url=URL.createObjectURL(blob);
     const a=document.createElement('a');
-    a.href=url; a.download=(st.board.name||'board')+'.xlsx';
+    // a.download decides the saved name for a blob, so it has to match the
+    // server's Content-Disposition: "<שם הלוח>_<מספר הלוח>.xlsx"
+    a.href=url; a.download=((st.board.name||'board')+'_'+st.board.id+'.xlsx');
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
     const items=grid.rows.filter(x=>!x.group).length;
@@ -3785,7 +3850,7 @@ function uploadFileCell(taskId,colId){
   inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
     if(fileTooBig(f))return;
     const fd=new FormData();fd.append('file',f);
-    try{const r=await fetch('/api/upload',{method:'POST',body:fd});if(!r.ok)throw 0;const data=await r.json();
+    try{const r=await fetch('/api/upload',{method:'POST',body:fd,headers:authHeaders()});if(!r.ok)throw 0;const data=await r.json();
       const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();arr.push(data);
       await setCell(taskId,colId,arr);renderView();toast('הקובץ הועלה');
     }catch(e){toast('שגיאה בהעלאת הקובץ');}
@@ -5388,7 +5453,7 @@ const Chat = {
     this._uploading=label||f.name; this.renderAtts();          // show loader while uploading
     const started=Date.now();
     const fd=new FormData(); fd.append('file',f,f.name);
-    try{ const r=await fetch('/api/upload',{method:'POST',body:fd}); if(!r.ok)throw 0; const data=await r.json(); this.atts.push(data); toast('קובץ צורף'); }
+    try{ const r=await fetch('/api/upload',{method:'POST',body:fd,headers:authHeaders()}); if(!r.ok)throw 0; const data=await r.json(); this.atts.push(data); toast('קובץ צורף'); }
     catch(e){ toast('שגיאה בהעלאה'); }
     finally{ // keep the loader visible for at least 0.7s so it's actually perceivable
       const wait=Math.max(0,700-(Date.now()-started));
@@ -5921,7 +5986,7 @@ function editPrompt(opts){
 
 async function apiGet(path){
   try{
-    const r=await fetch('/api'+path);
+    const r=await fetch('/api'+path,{headers:authHeaders()});
     if(!r.ok)throw new Error(r.status);
     return await r.json();
   }catch(e){console.error('API error',path,e);return null;}
@@ -6275,7 +6340,7 @@ async function vApprovals(el){
 
 async function approveApproval(approvalId){
   try{
-    const r=await fetch('/api/approvals/'+approvalId+'/approve',{method:'POST'});
+    const r=await fetch('/api/approvals/'+approvalId+'/approve',{method:'POST',headers:authHeaders()});
     if(!r.ok)throw new Error(r.status);
     toast('האישור אושר ✓');
     vApprovals(document.getElementById('view'));
@@ -6437,7 +6502,7 @@ async function renderAiInsights(projectId, projectName){
     `);
 
   try{
-    const r=await fetch('/api/ai/project-insights/'+projectId,{method:'POST'});
+    const r=await fetch('/api/ai/project-insights/'+projectId,{method:'POST',headers:authHeaders()});
     if(!r.ok)throw new Error(r.status);
     const data=await r.json();
 

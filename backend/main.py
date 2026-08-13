@@ -4,16 +4,17 @@ CityOS — FastAPI Backend Server
 import os, sys, json, uuid, csv, io, re, secrets, urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 import os
 from pydantic import BaseModel
 from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
+from auth import auth_mode, current_user, current_user_id, init_auth, resolve_user
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
@@ -33,13 +34,44 @@ except Exception:
     pass
 
 app = FastAPI(title="CODE-CAL MISSIONS", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# The SPA is served from the same origin as the API, so it needs no CORS grant at
+# all. Extra origins (a staging frontend, a local vite server) go in
+# CITYOS_CORS_ORIGINS as a comma-separated list. This was allow_origins=["*"].
+_cors_origins = [o.strip() for o in (os.environ.get("CITYOS_CORS_ORIGINS") or "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(CORSMiddleware, allow_origins=_cors_origins,
+                       allow_credentials=True,
+                       allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+                       allow_headers=["Content-Type", "X-CityOS-User"])
+
+# Endpoints that may be reached without an identity. Everything else under /api/
+# requires one — so a route added tomorrow is protected by default instead of
+# being protected only if its author remembered the dependency.
+PUBLIC_API_PATHS = {"/api/status"}
+
 
 @app.middleware("http")
-async def no_cache_html(request, call_next):
+async def require_authentication(request, call_next):
+    path = request.url.path
+    if (path.startswith("/api/")
+            and path not in PUBLIC_API_PATHS
+            and request.method != "OPTIONS"):
+        try:
+            with Session(engine) as db:
+                resolve_user(db, request)
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
     resp = await call_next(request)
     if "text/html" in resp.headers.get("content-type", ""):
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     return resp
 
 # Persistent Postgres (production) via DATABASE_URL; SQLite otherwise (local).
@@ -53,6 +85,14 @@ else:
     DB_PATH = os.environ.get("CITYOS_DB_PATH", os.path.join(os.path.dirname(__file__), "cityos.db"))
     engine = init_db(f"sqlite:///{DB_PATH}")
     IS_SQLITE = True
+
+# Identity comes from the transport (Entra ID via Azure Easy Auth), never from a
+# request parameter. See backend/auth.py for the two modes and why the default
+# fails closed.
+init_auth(engine)
+if auth_mode() == "dev":
+    print("[auth] DEV MODE — identity is taken from the X-CityOS-User header. "
+          "Never set CITYOS_AUTH_MODE=dev in production.")
 
 def _migrate():
     """Lightweight additive migrations for SQLite (create_all won't ALTER)."""
@@ -436,10 +476,13 @@ class DashboardOut(BaseModel):
 
 @app.get("/api/status")
 def status():
-    return {"status": "ok", "app": "CODE-CAL MISSIONS", "version": "0.1.0"}
+    # auth_mode lets the SPA know whether to show the local user picker or to
+    # expect an identity from Entra. It exposes no user data.
+    return {"status": "ok", "app": "CODE-CAL MISSIONS", "version": "0.1.0",
+            "auth_mode": auth_mode()}
 
 @app.get("/api/dashboard")
-def dashboard(user_id: Optional[int] = None):
+def dashboard(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         visible = _visible_board_ids(db, user_id)
         tasks = db.query(Task).filter(
@@ -574,10 +617,13 @@ def _is_board_admin(db, board_id, user_id):
 _BROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
 def _require_board_edit(db, board_id, actor, need="editor"):
     """Enforce board-level write permission (closes IDOR on board mutations).
-    Following the app convention it enforces only when an actor is supplied; the
-    supplied actor must be a board member whose role meets `need` (editor|admin)."""
+    The actor must be a board member whose role meets `need` (editor|admin).
+
+    This used to return silently when `actor` was None, which meant dropping the
+    parameter skipped the check entirely. Identity now comes from the transport,
+    so None means unauthenticated and must be refused."""
     if actor is None:
-        return
+        raise HTTPException(401, "נדרשת התחברות")
     role = _board_role(db, board_id, actor)
     if role is None or _BROLE_ORDER.get(role, -1) < _BROLE_ORDER.get(need, 1):
         raise HTTPException(403, "אין לך הרשאה לשנות לוח זה")
@@ -586,10 +632,11 @@ def _visible_board_ids(db, user_id):
     """Set of board IDs a user is allowed to see (membership-based).
     Mirrors /api/boards visibility so aggregate views (dashboard, CEO,
     insights) never leak boards the user was not invited to.
-    user_id=None keeps legacy 'all boards' behavior for internal callers."""
+    An unauthenticated caller (user_id=None) sees nothing — this used to return
+    every board, so omitting the parameter exposed the whole workspace."""
     all_ids = {b for (b,) in db.query(Board.id).filter(Board.is_archived == False).all()}
     if user_id is None:
-        return all_ids
+        return set()
     if _ws_role(db, user_id) == "admin":   # system admins see every board
         return all_ids
     member_ids = {m.board_id for m in db.query(BoardMember).filter(BoardMember.user_id == user_id).all()}
@@ -628,7 +675,7 @@ def _col_perm(col, user_id, board_role):
     return "edit" if "edit" in caps else ("view" if "view" in caps else "none")
 
 @app.get("/api/boards")
-def list_boards(user_id: Optional[int] = None):
+def list_boards(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         boards = db.query(Board).filter(Board.is_archived == False).order_by(
             Board.position, Board.id).all()
@@ -742,7 +789,7 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
     return d
 
 @app.get("/api/boards/{board_id}")
-def get_board(board_id: int, user_id: Optional[int] = None):
+def get_board(board_id: int, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
@@ -799,11 +846,11 @@ def get_board(board_id: int, user_id: Optional[int] = None):
         }
 
 @app.post("/api/boards")
-def create_board(data: dict):
+def create_board(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         # only a system (workspace) admin may create boards; the creator becomes
         # the board's first admin, so a board is never created without a manager.
-        creator = data.get("user_id")
+        creator = actor_id
         # a new board belongs to the environment it was created in (default: primary workspace)
         env_id = data.get("environment_id")
         if not env_id:
@@ -867,7 +914,7 @@ def create_board(data: dict):
         return {"id": b.id, "name": b.name, "icon": b.icon, "views": _board_views(b), "my_role": "admin"}
 
 @app.patch("/api/boards/{board_id}")
-def update_board(board_id: int, data: dict):
+def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
@@ -889,14 +936,14 @@ def update_board(board_id: int, data: dict):
             b.settings = s
         if "form" in data:
             # only a board admin can add/update the form
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך את הטופס")
             s = dict(b.settings or {})
             s["form"] = data["form"]
             b.settings = s
         if data.get("col_widths") is not None:
             # only a board admin may set column widths (drag-to-resize)
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לשנות רוחב עמודות")
             widths = {}
             for k, v in (data["col_widths"] or {}).items():
@@ -909,7 +956,7 @@ def update_board(board_id: int, data: dict):
             b.settings = s
         if data.get("col_labels") is not None:
             # rename a built-in column header (e.g. "פריט") — board admin
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לשנות שם עמודה")
             builtin = {"item", "assignees", "status", "priority", "due", "tags"}
             labels = {}
@@ -923,7 +970,7 @@ def update_board(board_id: int, data: dict):
             b.settings = s
         if data.get("col_hidden") is not None:
             # hide built-in columns (the "פריט" name column can never be hidden) — board admin
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול להסתיר עמודות")
             hideable = {"assignees", "status", "priority", "due", "tags"}
             hidden = [str(k) for k in (data["col_hidden"] or []) if str(k) in hideable]
@@ -932,7 +979,7 @@ def update_board(board_id: int, data: dict):
             b.settings = s
         if data.get("col_order") is not None:
             # persisted display order of columns (built-in keys + custom ids) — board admin
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לשנות סדר עמודות")
             order = [str(k) for k in (data["col_order"] or []) if isinstance(k, (str, int))]
             s = dict(b.settings or {})
@@ -940,14 +987,14 @@ def update_board(board_id: int, data: dict):
             b.settings = s
         if "notifications_enabled" in data:
             # board admin toggles all notifications for this board on/off
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לשנות התראות ללוח")
             s = dict(b.settings or {})
             s["notifications_enabled"] = bool(data["notifications_enabled"])
             b.settings = s
         if data.get("statuses") is not None:
             # only a board admin may rename/recolor/reorder/add statuses
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך סטטוסים")
             out, seen = [], set()
             for it in data["statuses"]:
@@ -967,14 +1014,14 @@ def update_board(board_id: int, data: dict):
             b.settings = s
         if data.get("columns") is not None:
             # only a board admin may add/edit/remove columns and their options
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
                        "connect", "created_at", "created_by", "item_id"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
-            is_ws_admin = _ws_role(db, data.get("user_id")) == "admin"
+            is_ws_admin = _ws_role(db, actor_id) == "admin"
             cols = []
             for c in data["columns"]:
                 if not isinstance(c, dict) or c.get("type") not in allowed:
@@ -1015,7 +1062,7 @@ def update_board(board_id: int, data: dict):
             # sub-item on the board, but not necessarily the item's columns.
             # Stored as ids picked from the board's column pool (built-in keys +
             # custom column ids); the name column is always present and first.
-            if _board_role(db, board_id, data.get("user_id")) != "admin":
+            if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול להגדיר את עמודות תת-הפריט")
             s = dict(b.settings or {})
             pool = {"assignees", "status", "priority", "due", "tags"}
@@ -1029,7 +1076,7 @@ def update_board(board_id: int, data: dict):
                 "views": _board_views(b), "columns": (b.settings or {}).get("columns", [])}
 
 @app.delete("/api/boards/{board_id}")
-def delete_board(board_id: int, user_id: Optional[int] = None):
+def delete_board(board_id: int, user_id: int = Depends(current_user_id)):
     """Delete a board and everything under it (groups, items, comments,
     memberships). Only a board admin may delete it."""
     with Session(engine) as db:
@@ -1144,9 +1191,9 @@ def list_board_members(board_id: int):
         return {"members": out, "available": available}
 
 @app.post("/api/boards/{board_id}/members")
-def add_board_member(board_id: int, data: dict):
+def add_board_member(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        if not _is_board_admin(db, board_id, data.get("actor_id")):
+        if not _is_board_admin(db, board_id, actor_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
         uid = data.get("user_id")
         role = data.get("role", "editor")
@@ -1159,7 +1206,7 @@ def add_board_member(board_id: int, data: dict):
         else:
             db.add(BoardMember(board_id=board_id, user_id=uid, role=role))
         board = db.query(Board).filter(Board.id == board_id).first()
-        inviter = db.query(User).filter(User.id == data.get("actor_id")).first()
+        inviter = db.query(User).filter(User.id == actor_id).first()
         # in-app notification to the added user — every role, only on a real add,
         # and only if the board hasn't switched notifications off
         if is_new and _board_notify_on(board):
@@ -1178,9 +1225,9 @@ def add_board_member(board_id: int, data: dict):
         return {"status": "ok", "invited": is_new}
 
 @app.patch("/api/boards/{board_id}/members/{uid}")
-def update_board_member(board_id: int, uid: int, data: dict):
+def update_board_member(board_id: int, uid: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        if not _is_board_admin(db, board_id, data.get("actor_id")):
+        if not _is_board_admin(db, board_id, actor_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
         m = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.user_id == uid).first()
         if not m:
@@ -1197,7 +1244,7 @@ def update_board_member(board_id: int, uid: int, data: dict):
         return {"status": "ok"}
 
 @app.delete("/api/boards/{board_id}/members/{uid}")
-def remove_board_member(board_id: int, uid: int, actor_id: Optional[int] = None):
+def remove_board_member(board_id: int, uid: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if not _is_board_admin(db, board_id, actor_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
@@ -1225,7 +1272,7 @@ def _serialize_notif(n):
             "is_read": bool(n.is_read), "created_at": n.created_at}
 
 @app.get("/api/notifications")
-def list_notifications(user_id: Optional[int] = None, limit: int = 30):
+def list_notifications(user_id: int = Depends(current_user_id), limit: int = 30):
     if user_id is None:
         raise HTTPException(400, "user_id required")
     with Session(engine) as db:
@@ -1235,20 +1282,18 @@ def list_notifications(user_id: Optional[int] = None, limit: int = 30):
         return {"notifications": [_serialize_notif(n) for n in items], "unread_count": unread}
 
 @app.post("/api/notifications/{nid}/read")
-def read_notification(nid: int, data: dict):
+def read_notification(nid: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         n = db.query(Notification).filter(Notification.id == nid,
-                                          Notification.user_id == data.get("user_id")).first()
+                                          Notification.user_id == actor_id).first()
         if n and not n.is_read:
             n.is_read = True
             db.commit()
         return {"status": "ok"}
 
 @app.post("/api/notifications/read-all")
-def read_all_notifications(data: dict):
-    uid = data.get("user_id")
-    if uid is None:
-        raise HTTPException(400, "user_id required")
+def read_all_notifications(data: dict, actor_id: int = Depends(current_user_id)):
+    uid = actor_id  # you may only clear your own notifications
     with Session(engine) as db:
         db.query(Notification).filter(Notification.user_id == uid,
                                       Notification.is_read == False).update({Notification.is_read: True})
@@ -1313,7 +1358,7 @@ def _xlsx_cell(ws, row, col, spec):
     return cell
 
 @app.post("/api/boards/{board_id}/export/xlsx")
-def export_board_xlsx(board_id: int, data: dict):
+def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Board → .xlsx: one sheet, sub-items nested (and collapsible) under their
     item, groups as headers. See the note above on where the grid comes from."""
     from openpyxl import Workbook
@@ -1324,8 +1369,9 @@ def export_board_xlsx(board_id: int, data: dict):
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
             raise HTTPException(404, "board not found")
-        user_id = data.get("user_id")
-        if user_id is not None and _board_role(db, board_id, user_id) is None:
+        # export is a full read of the board — require membership unconditionally
+        # (this used to skip the check when the caller omitted user_id)
+        if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
         board_color = b.color if _valid_hex(b.color) else "#0073ea"
 
@@ -1376,17 +1422,19 @@ def export_board_xlsx(board_id: int, data: dict):
 
     buf = io.BytesIO()
     wb.save(buf)
+    # "<שם הלוח>_<מספר הלוח>.xlsx" — the number keeps exports of same-named
+    # boards apart, and says which board a file on disk came from
     fname = re.sub(r"[^\w֐-׿ .()-]", "", (b.name or "board")).strip() or "board"
-    quoted = urllib.parse.quote(f"{fname}.xlsx")
+    quoted = urllib.parse.quote(f"{fname}_{board_id}.xlsx")
     return Response(content=buf.getvalue(), media_type=XLSX_MIME,
                     headers={"Content-Disposition": f"attachment; filename=board_{board_id}.xlsx; "
                                                     f"filename*=UTF-8''{quoted}"})
 
 # ── Column-level permissions (הרשאות עמודה) ─────────────────────────
 @app.post("/api/boards/{board_id}/columns/{col_id}/permissions")
-def set_col_permissions(board_id: int, col_id: str, data: dict):
+def set_col_permissions(board_id: int, col_id: str, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        if _board_role(db, board_id, data.get("actor_id")) != "admin":
+        if _board_role(db, board_id, actor_id) != "admin":
             raise HTTPException(403, "רק מנהל לוח יכול לקבוע הרשאות עמודה")
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
@@ -1425,9 +1473,9 @@ def workspace_members():
         return {"members": out, "available": available}
 
 @app.post("/api/workspace/members")
-def workspace_add(data: dict):
+def workspace_add(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        if _ws_role(db, data.get("actor_id")) != "admin":
+        if _ws_role(db, actor_id) != "admin":
             raise HTTPException(403, "רק מנהל סביבה יכול להזמין")
         uid = data.get("user_id"); role = data.get("role", "member")
         if role not in WS_ROLES:
@@ -1441,9 +1489,9 @@ def workspace_add(data: dict):
         return {"status": "ok"}
 
 @app.patch("/api/workspace/members/{uid}")
-def workspace_update(uid: int, data: dict):
+def workspace_update(uid: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        if _ws_role(db, data.get("actor_id")) != "admin":
+        if _ws_role(db, actor_id) != "admin":
             raise HTTPException(403, "רק מנהל סביבה")
         m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == uid).first()
         if not m:
@@ -1458,7 +1506,7 @@ def workspace_update(uid: int, data: dict):
         return {"status": "ok"}
 
 @app.delete("/api/workspace/members/{uid}")
-def workspace_remove(uid: int, actor_id: Optional[int] = None):
+def workspace_remove(uid: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if _ws_role(db, actor_id) != "admin":
             raise HTTPException(403, "רק מנהל סביבה")
@@ -1493,7 +1541,7 @@ def _env_out(e, board_count=0, my_role=None):
             "my_role": my_role, "can_manage": my_role in ("admin", "manager")}
 
 @app.get("/api/environments")
-def list_environments(user_id: Optional[int] = None):
+def list_environments(user_id: int = Depends(current_user_id)):
     """System admins see every environment; managers/members see only the
     environments they were granted access to."""
     with Session(engine) as db:
@@ -1517,9 +1565,9 @@ def list_environments(user_id: Optional[int] = None):
         return {"environments": [_env_out(e, counts.get(e.id, 0), _role_for(e)) for e in envs]}
 
 @app.post("/api/environments")
-def create_environment(data: dict):
+def create_environment(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        if not _cap(db, data.get("actor_id"), "create_environment"):
+        if not _cap(db, actor_id, "create_environment"):
             raise HTTPException(403, "אין לך הרשאה ליצור סביבה")
         name = (data.get("name") or "").strip()
         if not name:
@@ -1533,9 +1581,9 @@ def create_environment(data: dict):
         return _env_out(e, 0)
 
 @app.patch("/api/environments/{env_id}")
-def update_environment(env_id: int, data: dict):
+def update_environment(env_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        actor = data.get("actor_id")
+        actor = actor_id
         if not _can_manage_env(db, env_id, actor):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול לערוך אותה")
         e = db.query(Environment).filter(Environment.id == env_id).first()
@@ -1551,7 +1599,7 @@ def update_environment(env_id: int, data: dict):
         return _env_out(e, my_role=_env_role(db, env_id, actor))
 
 @app.delete("/api/environments/{env_id}")
-def delete_environment(env_id: int, actor_id: Optional[int] = None):
+def delete_environment(env_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if _ws_role(db, actor_id) != "admin":
             raise HTTPException(403, "רק מנהל מערכת יכול למחוק סביבה")
@@ -1573,7 +1621,7 @@ ENV_ROLE_HE = {"admin": "מנהל מערכת", "manager": "מנהל סביבה",
 
 # ── Environment members — system admins and environment managers ──
 @app.get("/api/environments/{env_id}/members")
-def environment_members(env_id: int, actor_id: Optional[int] = None):
+def environment_members(env_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if not _can_manage_env(db, env_id, actor_id):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
@@ -1594,9 +1642,9 @@ def environment_members(env_id: int, actor_id: Optional[int] = None):
         return {"members": members, "available": available, "can_set_manager": can_set_manager}
 
 @app.post("/api/environments/{env_id}/members")
-def environment_add_member(env_id: int, data: dict):
+def environment_add_member(env_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        actor = data.get("actor_id")
+        actor = actor_id
         if not _can_manage_env(db, env_id, actor):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
         if not db.query(Environment).filter(Environment.id == env_id).first():
@@ -1618,11 +1666,11 @@ def environment_add_member(env_id: int, data: dict):
         return {"status": "ok"}
 
 @app.patch("/api/environments/{env_id}/members/{uid}")
-def environment_set_member_role(env_id: int, uid: int, data: dict):
+def environment_set_member_role(env_id: int, uid: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Promote/demote an environment member (manager|member). System admin only —
     handing out the manager role is a system-level grant."""
     with Session(engine) as db:
-        if _ws_role(db, data.get("actor_id")) != "admin":
+        if _ws_role(db, actor_id) != "admin":
             raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד בסביבה")
         role = data.get("role") if data.get("role") in ENV_ROLES else "member"
         m = db.query(EnvironmentMember).filter(
@@ -1634,7 +1682,7 @@ def environment_set_member_role(env_id: int, uid: int, data: dict):
         return {"status": "ok", "role": role}
 
 @app.delete("/api/environments/{env_id}/members/{uid}")
-def environment_remove_member(env_id: int, uid: int, actor_id: Optional[int] = None):
+def environment_remove_member(env_id: int, uid: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if not _can_manage_env(db, env_id, actor_id):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
@@ -1663,7 +1711,7 @@ def _folder_out(db, f, user_id):
             "can_manage": _can_manage_env(db, f.environment_id, user_id)}
 
 @app.get("/api/folders")
-def list_folders(user_id: Optional[int] = None):
+def list_folders(user_id: int = Depends(current_user_id)):
     """Folders across every environment the user can access."""
     with Session(engine) as db:
         folders = db.query(Folder).order_by(Folder.position, Folder.id).all()
@@ -1674,9 +1722,9 @@ def list_folders(user_id: Optional[int] = None):
         return {"folders": [_folder_out(db, f, user_id) for f in folders]}
 
 @app.post("/api/folders")
-def create_folder(data: dict):
+def create_folder(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        actor = data.get("actor_id")
+        actor = actor_id
         env_id = data.get("environment_id")
         if not _can_manage_env(db, env_id, actor):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול ליצור תיקייה")
@@ -1689,20 +1737,20 @@ def create_folder(data: dict):
         return _folder_out(db, f, actor)
 
 @app.patch("/api/folders/{folder_id}")
-def update_folder(folder_id: int, data: dict):
+def update_folder(folder_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         f = db.query(Folder).filter(Folder.id == folder_id).first()
         if not f:
             raise HTTPException(404, "תיקייה לא נמצאה")
-        if not _can_manage_env(db, f.environment_id, data.get("actor_id")):
+        if not _can_manage_env(db, f.environment_id, actor_id):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה")
         if (data.get("name") or "").strip():
             f.name = data["name"].strip()
         db.commit()
-        return _folder_out(db, f, data.get("actor_id"))
+        return _folder_out(db, f, actor_id)
 
 @app.delete("/api/folders/{folder_id}")
-def delete_folder(folder_id: int, actor_id: Optional[int] = None):
+def delete_folder(folder_id: int, actor_id: int = Depends(current_user_id)):
     """Delete a folder. Its boards are detached to the environment root — never deleted."""
     with Session(engine) as db:
         f = db.query(Folder).filter(Folder.id == folder_id).first()
@@ -1715,12 +1763,12 @@ def delete_folder(folder_id: int, actor_id: Optional[int] = None):
         return {"status": "deleted", "id": folder_id}
 
 @app.post("/api/environments/{env_id}/reorder")
-def reorder_environment(env_id: int, data: dict):
+def reorder_environment(env_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Persist the ordering of folders and boards in an environment. Body:
     {folders:[{id,position}], boards:[{id,folder_id,position}]}. Only items that
     belong to this environment are touched. Env managers / sysadmins only."""
     with Session(engine) as db:
-        if not _can_manage_env(db, env_id, data.get("actor_id")):
+        if not _can_manage_env(db, env_id, actor_id):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול לסדר")
         env_folder_ids = {f.id for f in db.query(Folder).filter(Folder.environment_id == env_id).all()}
         for row in (data.get("folders") or []):
@@ -1765,7 +1813,7 @@ def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
         return result
 
 @app.post("/api/boards/{board_id}/environment")
-def move_board_to_environment(board_id: int, data: dict):
+def move_board_to_environment(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Move a board to another environment (workspace).
 
     Requires managing BOTH ends: you may not push a board into a workspace you
@@ -1774,7 +1822,7 @@ def move_board_to_environment(board_id: int, data: dict):
     settings; it only leaves its folder, which belongs to the old environment.
     """
     with Session(engine) as db:
-        actor = data.get("actor_id") or data.get("user_id")
+        actor = actor_id
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
             raise HTTPException(404, "לוח לא נמצא")
@@ -1797,7 +1845,7 @@ def move_board_to_environment(board_id: int, data: dict):
                 "environment_id": target.id, "environment_name": target.name}
 
 @app.post("/api/tasks")
-def create_task(data: dict):
+def create_task(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         parent_id = data.get("parent_id")
         board_id = data.get("board_id")
@@ -1827,7 +1875,7 @@ def create_task(data: dict):
             location_lat=data.get("location_lat"),
             location_lng=data.get("location_lng"),
             address=data.get("address"),
-            created_by=data.get("actor_id") or data.get("user_id"),  # record the creator
+            created_by=actor_id,  # record the creator
         )
         due = data.get("due_date")
         if due:
@@ -1847,7 +1895,7 @@ def create_task(data: dict):
         # Boards created before "יוצר הרשומה" became a derived column carry it as
         # a plain people column, whose value has to be written on creation. The
         # derived `created_by` column needs nothing — it reads task.created_by.
-        creator = data.get("actor_id") or data.get("user_id")
+        creator = actor_id
         cf = dict(data.get("custom_fields") or {})
         if creator:
             board = db.query(Board).filter(Board.id == board_id).first()
@@ -1875,7 +1923,7 @@ def create_task(data: dict):
         if ids:
             board = db.query(Board).filter(Board.id == board_id).first()
             if _board_notify_on(board):
-                actor = data.get("actor_id") or data.get("user_id")
+                actor = actor_id
                 for aid in set(ids):
                     if aid != actor:
                         _notify(db, aid, "assign", "שויכת למשימה",
@@ -1968,29 +2016,30 @@ def _rollup_parent(db, parent_id):
 
 
 @app.patch("/api/tasks/{task_id}")
-def update_task(task_id: int, data: dict):
+def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Generic item update — title, priority, status, due_date, and custom column
     values (merged into custom_fields). Used by the editable board columns."""
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404, "task not found")
-        actor = data.get("user_id")
+        actor = actor_id
         # ── permission enforcement (item level, and column level for custom_fields) ──
-        actor_role = _board_role(db, task.board_id, actor) if actor is not None else None
+        # Previously the whole block was skipped when the caller omitted user_id,
+        # so an anonymous PATCH could edit any item on any board.
+        actor_role = _board_role(db, task.board_id, actor)
         editing_builtin = any(k in data for k in ("title", "description", "priority", "status", "due_date", "tags"))
-        if actor is not None:
-            iperm = _item_perm(task, actor, actor_role)
-            if editing_builtin and iperm not in ("edit", "delete"):
-                raise HTTPException(403, "אין לך הרשאת עריכה לפריט זה")
-            if "custom_fields" in data and isinstance(data["custom_fields"], dict):
-                cols = {c["id"]: c for c in (db.query(Board).filter(Board.id == task.board_id).first().settings or {}).get("columns", [])}
-                for k in list(data["custom_fields"].keys()):
-                    col = cols.get(k)
-                    if col is not None and _col_perm(col, actor, actor_role) != "edit":
-                        del data["custom_fields"][k]      # silently drop cols the user can't edit
-                if iperm not in ("edit", "delete"):
-                    data["custom_fields"] = {}
+        iperm = _item_perm(task, actor, actor_role)
+        if editing_builtin and iperm not in ("edit", "delete"):
+            raise HTTPException(403, "אין לך הרשאת עריכה לפריט זה")
+        if "custom_fields" in data and isinstance(data["custom_fields"], dict):
+            cols = {c["id"]: c for c in (db.query(Board).filter(Board.id == task.board_id).first().settings or {}).get("columns", [])}
+            for k in list(data["custom_fields"].keys()):
+                col = cols.get(k)
+                if col is not None and _col_perm(col, actor, actor_role) != "edit":
+                    del data["custom_fields"][k]      # silently drop cols the user can't edit
+            if iperm not in ("edit", "delete"):
+                data["custom_fields"] = {}
         st_val = lambda v: (v.value if hasattr(v, "value") else v)
         if data.get("title") is not None and data["title"] != task.title:
             _audit(db, task_id, "update", "title", task.title, data["title"], actor)
@@ -2079,42 +2128,68 @@ MAX_UPLOAD_BYTES = 4 * 1024 * 1024  # 4MB per file — the serverless host (Verc
 # rejects request bodies larger than ~4.5MB at the edge before they reach us, so
 # keep our own ceiling safely under that. Larger files need external blob storage.
 
+# Only these render in the browser. Anything else is served as a download, so an
+# uploaded .html/.svg cannot execute script on our origin and steal the session.
+# SVG is deliberately NOT here — it can carry <script> and would run same-origin.
+INLINE_SAFE_TYPES = {
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
+    "application/pdf", "text/plain",
+}
+
+
+def _safe_media_type(declared: str) -> tuple[str, bool]:
+    """Normalise a client-declared content type into (media_type, may_inline)."""
+    ct = (declared or "application/octet-stream").split(";")[0].strip().lower()
+    if ct in INLINE_SAFE_TYPES:
+        return ct, True
+    # Never echo back an active type — text/html, image/svg+xml and friends
+    # become an opaque download instead.
+    return "application/octet-stream", False
+
+
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), actor_id: int = Depends(current_user_id)):
     """Store the upload in the DB so it persists and is shared across serverless
     instances (Vercel's local filesystem is ephemeral and per-instance)."""
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "הקובץ גדול מדי (מקסימום 4MB)")
+    media_type, _ = _safe_media_type(file.content_type)
     token = uuid.uuid4().hex
     with Session(engine) as db:
         db.add(UploadedFile(token=token, name=file.filename or "file",
-                            content_type=file.content_type or "application/octet-stream",
+                            content_type=media_type,
                             data=content, size=len(content)))
         db.commit()
-    return {"name": file.filename, "url": f"/api/files/{token}",
-            "type": file.content_type or "application/octet-stream"}
+    return {"name": file.filename, "url": f"/api/files/{token}", "type": media_type}
 
 @app.get("/api/files/{token}")
-def serve_file(token: str):
+def serve_file(token: str, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         f = db.query(UploadedFile).filter(UploadedFile.token == token).first()
         if not f:
             raise HTTPException(404, "file not found")
         from urllib.parse import quote
-        disp = f"inline; filename*=UTF-8''{quote(f.name or 'file')}"
-        return Response(content=f.data, media_type=f.content_type or "application/octet-stream",
-                        headers={"Content-Disposition": disp, "Cache-Control": "public, max-age=31536000"})
+        media_type, may_inline = _safe_media_type(f.content_type)
+        how = "inline" if may_inline else "attachment"
+        disp = f"{how}; filename*=UTF-8''{quote(f.name or 'file')}"
+        return Response(content=f.data, media_type=media_type,
+                        headers={"Content-Disposition": disp,
+                                 # stop the browser sniffing a download back into HTML
+                                 "X-Content-Type-Options": "nosniff",
+                                 "Content-Security-Policy": "default-src 'none'; sandbox",
+                                 # attachments are per-user now — keep them out of shared caches
+                                 "Cache-Control": "private, max-age=31536000"})
 
 @app.post("/api/tasks/{task_id}/permissions")
-def set_item_permissions(task_id: int, data: dict):
+def set_item_permissions(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Set/clear a per-user permission on a single item. Board managers (admin) only.
     perm ∈ view|edit|delete|none  (none = pass to null to remove the override)."""
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404, "task not found")
-        actor = data.get("actor_id")
+        actor = actor_id
         if _board_role(db, task.board_id, actor) != "admin":
             raise HTTPException(403, "רק מנהל לוח יכול לקבוע הרשאות פריט")
         perms = dict(task.permissions or {})
@@ -2129,7 +2204,7 @@ def set_item_permissions(task_id: int, data: dict):
         return {"id": task.id, "permissions": task.permissions}
 
 @app.delete("/api/tasks/{task_id}")
-def delete_task(task_id: int, user_id: Optional[int] = None):
+def delete_task(task_id: int, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
@@ -2147,9 +2222,9 @@ def delete_task(task_id: int, user_id: Optional[int] = None):
 
 # ── Item conversation (comments), files & activity log ──────────────
 
-def _acting_user(db, data=None, uid=None):
-    if data and data.get("user_id") is not None:
-        uid = data.get("user_id")
+def _acting_user(db, uid):
+    """The User row for the authenticated caller. `uid` now always comes from the
+    auth dependency — it used to be read from the request body."""
     return db.query(User).filter(User.id == uid).first() if uid is not None else None
 
 def _can_comment(db, board, user):
@@ -2208,13 +2283,13 @@ def list_comments(task_id: int):
         return {"comments": roots, "count": len(items)}
 
 @app.post("/api/tasks/{task_id}/comments")
-def add_comment(task_id: int, data: dict):
+def add_comment(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404, "task not found")
         board = db.query(Board).filter(Board.id == task.board_id).first()
-        user = _acting_user(db, data)
+        user = _acting_user(db, actor_id)
         if not _can_comment(db, board, user):
             raise HTTPException(403, "אין הרשאת תגובה (צפייה בלבד)")
         content = (data.get("content") or "").strip()
@@ -2249,12 +2324,12 @@ def add_comment(task_id: int, data: dict):
         return _serialize_comment(c, db)
 
 @app.post("/api/comments/{cid}/like")
-def like_comment(cid: int, data: dict):
+def like_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         c = db.query(Comment).filter(Comment.id == cid).first()
         if not c:
             raise HTTPException(404, "comment not found")
-        user = _acting_user(db, data)
+        user = _acting_user(db, actor_id)
         if not user:
             raise HTTPException(403, "אין משתמש")
         likes = list(c.likes or [])
@@ -2267,11 +2342,11 @@ def like_comment(cid: int, data: dict):
         return {"id": cid, "likes": likes}
 
 @app.post("/api/tasks/{task_id}/comments/seen")
-def mark_comments_seen(task_id: int, data: dict):
+def mark_comments_seen(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Mark every message in the item as seen by the acting user (read receipts).
     A user's own messages are skipped — you don't 'see' your own."""
     with Session(engine) as db:
-        user = _acting_user(db, data)
+        user = _acting_user(db, actor_id)
         if not user:
             raise HTTPException(403, "אין משתמש")
         changed = False
@@ -2288,12 +2363,12 @@ def mark_comments_seen(task_id: int, data: dict):
         return {"ok": True}
 
 @app.patch("/api/comments/{cid}")
-def update_comment(cid: int, data: dict):
+def update_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         c = db.query(Comment).filter(Comment.id == cid).first()
         if not c:
             raise HTTPException(404, "comment not found")
-        user = _acting_user(db, data)
+        user = _acting_user(db, actor_id)
         if not user or (c.user_id != user.id and user.role not in ("admin", "manager")):
             raise HTTPException(403, "אין הרשאה לערוך תגובה")
 
@@ -2333,7 +2408,7 @@ def update_comment(cid: int, data: dict):
         return _serialize_comment(c, db)
 
 @app.delete("/api/comments/{cid}")
-def delete_comment(cid: int, user_id: Optional[int] = None):
+def delete_comment(cid: int, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         c = db.query(Comment).filter(Comment.id == cid).first()
         if not c:
@@ -2369,7 +2444,7 @@ def task_files(task_id: int):
         return {"files": out}
 
 @app.post("/api/tasks/{task_id}/files/delete")
-def delete_task_file(task_id: int, data: dict):
+def delete_task_file(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Remove a file from the item — from the comment it's attached to or a files
     column — and delete the stored blob. The uploader or a board admin/manager may
     delete a chat attachment; a board editor+/admin may delete a column file."""
@@ -2377,7 +2452,7 @@ def delete_task_file(task_id: int, data: dict):
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404, "task not found")
-        user = _acting_user(db, data)
+        user = _acting_user(db, actor_id)
         if not user:
             raise HTTPException(403, "אין משתמש")
         url = (data.get("url") or "").strip()
@@ -2415,7 +2490,7 @@ def delete_task_file(task_id: int, data: dict):
         return {"status": "deleted", "removed": removed}
 
 @app.get("/api/tasks/{task_id}/activity")
-def task_activity(task_id: int, user_id: Optional[int] = None, date: Optional[str] = None):
+def task_activity(task_id: int, user_id: int = Depends(current_user_id), date: Optional[str] = None):
     with Session(engine) as db:
         q = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id == task_id)
         if user_id:
@@ -2469,9 +2544,9 @@ def _revert_field(task, field, old):
     return False
 
 @app.post("/api/activity/{log_id}/undo")
-def undo_activity(log_id: int, data: dict):
+def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        user = _acting_user(db, data)
+        user = _acting_user(db, actor_id)
         if not user or user.role not in ("admin", "manager"):
             raise HTTPException(403, "רק מנהל יכול לבצע ביטול")
         log = db.query(AuditLog).filter(AuditLog.id == log_id).first()
@@ -2487,7 +2562,7 @@ def undo_activity(log_id: int, data: dict):
         return {"status": "reverted", "field": log.field_name}
 
 @app.post("/api/tasks/{task_id}/assignees")
-def task_assignees(task_id: int, data: dict):
+def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Add or remove a user from a task (monday-style people column)."""
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
@@ -2496,7 +2571,7 @@ def task_assignees(task_id: int, data: dict):
         user = db.query(User).filter(User.id == data.get("user_id")).first()
         if not user:
             raise HTTPException(404, "user not found")
-        actor = data.get("actor_id")
+        actor = actor_id
         _require_board_edit(db, task.board_id, actor)   # only board editors may (un)assign
         was = user in task.assignees
         if data.get("action") == "remove":
@@ -2518,12 +2593,12 @@ def task_assignees(task_id: int, data: dict):
                               for u in task.assignees]}
 
 @app.post("/api/tasks/{task_id}/move")
-def move_task(task_id: int, data: dict):
+def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404)
-        actor = data.get("actor_id") or data.get("user_id")
+        actor = actor_id
         _require_board_edit(db, task.board_id, actor)
         target = data.get("board_id")
         if target and int(target) != task.board_id:
@@ -2570,13 +2645,13 @@ def _group_dict(g):
             "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status}
 
 @app.post("/api/groups")
-def create_group_api(data: dict):
+def create_group_api(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         board_id = data.get("board_id")
         board = db.query(Board).filter(Board.id == board_id).first()
         if not board:
             raise HTTPException(404, "board not found")
-        _require_board_edit(db, board_id, data.get("actor_id") or data.get("user_id"))
+        _require_board_edit(db, board_id, actor_id)
         pos = data.get("position")
         if pos is None:
             pos = db.query(Group).filter(Group.board_id == board_id).count()
@@ -2597,12 +2672,12 @@ def create_group_api(data: dict):
         return _group_dict(g)
 
 @app.patch("/api/groups/{group_id}")
-def update_group_api(group_id: int, data: dict):
+def update_group_api(group_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         g = db.query(Group).filter(Group.id == group_id).first()
         if not g:
             raise HTTPException(404, "group not found")
-        _require_board_edit(db, g.board_id, data.get("actor_id") or data.get("user_id"))
+        _require_board_edit(db, g.board_id, actor_id)
         if data.get("name") is not None:
             g.name = data["name"]
         if data.get("color") is not None:
@@ -2614,11 +2689,11 @@ def update_group_api(group_id: int, data: dict):
         return _group_dict(g)
 
 @app.post("/api/groups/reorder")
-def reorder_groups_api(data: dict):
+def reorder_groups_api(data: dict, actor_id: int = Depends(current_user_id)):
     """Persist a new group ordering. data = {order: [groupId, ...]}"""
     with Session(engine) as db:
         order = data.get("order") or []
-        actor = data.get("actor_id") or data.get("user_id")
+        actor = actor_id
         if order and actor is not None:
             first = db.query(Group).filter(Group.id == order[0]).first()
             if first:
@@ -2631,7 +2706,7 @@ def reorder_groups_api(data: dict):
         return {"status": "reordered", "order": order}
 
 @app.delete("/api/groups/{group_id}")
-def delete_group_api(group_id: int, actor_id: Optional[int] = None):
+def delete_group_api(group_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         g = db.query(Group).filter(Group.id == group_id).first()
         if not g:
@@ -2736,19 +2811,17 @@ def list_users():
         } for u in users]
 
 @app.post("/api/auth/login")
-async def record_login(request: Request):
-    """Record a successful login for the admin login-history view."""
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    uid = data.get("user_id")
+async def record_login(request: Request, actor_id: int = Depends(current_user_id)):
+    """Record a successful login for the admin login-history view.
+
+    The recorded identity is the authenticated one — the client used to name the
+    user it wanted logged, which made the audit trail forgeable."""
     with Session(engine) as db:
-        u = db.query(User).filter(User.id == uid).first()
+        u = db.query(User).filter(User.id == actor_id).first()
         if not u:
             raise HTTPException(404, "user not found")
         ev = LoginEvent(
-            user_id=uid,
+            user_id=actor_id,
             ip=(request.client.host if request.client else None),
             user_agent=(request.headers.get("user-agent") or "")[:400],
         )
@@ -2756,8 +2829,22 @@ async def record_login(request: Request):
         db.commit()
         return {"status": "ok", "logged_in_at": ev.logged_in_at.isoformat()}
 
+@app.get("/api/auth/me")
+def whoami(request: Request):
+    """The signed-in user, resolved from the Entra identity on the request.
+    The SPA calls this at boot instead of letting the visitor pick a user."""
+    u = current_user(request)
+    with Session(engine) as db:
+        return {
+            "id": u.id, "name": u.name, "email": u.email, "role": u.role,
+            "avatar_url": u.avatar_url, "title": u.title,
+            "ws_role": _ws_role(db, u.id),
+            "auth_mode": auth_mode(),
+        }
+
+
 @app.get("/api/users/{uid}/login-history")
-def login_history(uid: int, actor_id: Optional[int] = None, limit: int = 50):
+def login_history(uid: int, actor_id: int = Depends(current_user_id), limit: int = 50):
     """Login history for a user — visible to system (workspace) admins only."""
     with Session(engine) as db:
         if not _cap(db, actor_id, "manage_system"):
@@ -2772,7 +2859,7 @@ def login_history(uid: int, actor_id: Optional[int] = None, limit: int = 50):
         } for e in evs]
 
 @app.get("/api/login-history")
-def all_login_history(actor_id: Optional[int] = None, limit: int = 100):
+def all_login_history(actor_id: int = Depends(current_user_id), limit: int = 100):
     """Consolidated login history across all users — system admins only."""
     with Session(engine) as db:
         if not _cap(db, actor_id, "manage_system"):
@@ -2789,10 +2876,10 @@ def all_login_history(actor_id: Optional[int] = None, limit: int = 100):
         } for e in evs]
 
 @app.post("/api/users")
-def create_user(data: dict):
+def create_user(data: dict, actor_id: int = Depends(current_user_id)):
     """Create a new user in the workspace directory. System (workspace) admin only."""
     with Session(engine) as db:
-        actor = data.get("actor_id")
+        actor = actor_id
         if not _cap(db, actor, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול להוסיף משתמש")
         name = (data.get("name") or "").strip()
@@ -2823,11 +2910,11 @@ def create_user(data: dict):
                 "is_active": True, "avatar_url": u.avatar_url}
 
 @app.patch("/api/users/{uid}")
-def update_user(uid: int, data: dict):
+def update_user(uid: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Update a user's profile. A user may edit their own profile; a system
     (workspace) admin may edit anyone's."""
     with Session(engine) as db:
-        actor = data.get("actor_id")
+        actor = actor_id
         if actor != uid and not _cap(db, actor, "manage_system"):
             raise HTTPException(403, "אפשר לעדכן רק את הפרופיל שלך")
         u = db.query(User).filter(User.id == uid).first()
@@ -2890,10 +2977,10 @@ DEPT_COLORS = ("#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981",
 
 
 @app.post("/api/departments")
-def create_department(data: dict):
+def create_department(data: dict, actor_id: int = Depends(current_user_id)):
     """Create an organizational unit (department). System (workspace) admin only."""
     with Session(engine) as db:
-        if not _cap(db, data.get("actor_id"), "manage_system"):
+        if not _cap(db, actor_id, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול להוסיף יחידה ארגונית")
         name = (data.get("name") or "").strip()
         if not name:
@@ -2912,10 +2999,10 @@ def create_department(data: dict):
 
 
 @app.patch("/api/departments/{dept_id}")
-def update_department(dept_id: int, data: dict):
+def update_department(dept_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Rename / recolor an organizational unit. System (workspace) admin only."""
     with Session(engine) as db:
-        if not _cap(db, data.get("actor_id"), "manage_system"):
+        if not _cap(db, actor_id, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול לערוך יחידה ארגונית")
         d = db.query(Department).filter(Department.id == dept_id).first()
         if not d:
@@ -2937,7 +3024,7 @@ def update_department(dept_id: int, data: dict):
 
 
 @app.delete("/api/departments/{dept_id}")
-def delete_department(dept_id: int, actor_id: Optional[int] = None):
+def delete_department(dept_id: int, actor_id: int = Depends(current_user_id)):
     """Delete an organizational unit. System admin only. Any users/boards attached
     to it are detached (department set to none) rather than deleted."""
     with Session(engine) as db:
@@ -2972,10 +3059,10 @@ def get_role_permissions():
     }
 
 @app.put("/api/role-permissions")
-def set_role_permission(data: dict):
+def set_role_permission(data: dict, actor_id: int = Depends(current_user_id)):
     """Toggle one (role, capability) cell. System-management capability required."""
     with Session(engine) as db:
-        if not _cap(db, data.get("actor_id"), "manage_system"):
+        if not _cap(db, actor_id, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול לשנות הרשאות תפקידים")
         role = data.get("role")
         cap = data.get("capability")
@@ -3006,7 +3093,7 @@ def list_agents():
     ]}
 
 @app.post("/api/swarm/think")
-def swarm_think(data: dict):
+def swarm_think(data: dict, actor_id: int = Depends(current_user_id)):
     """Run agents on a task. mode: single|all|coordinated"""
     from swarm import swarm_api
     result = swarm_api(
@@ -3099,7 +3186,7 @@ def submit_form(data: dict):
 # ── Visualization Engine ─────────────────────────────────────────────
 
 @app.get("/api/viz/board-insights")
-def board_insights(user_id: Optional[int] = None):
+def board_insights(user_id: int = Depends(current_user_id)):
     """Generate visualization data and insights for boards the user may see."""
     with Session(engine) as db:
         visible = _visible_board_ids(db, user_id)
@@ -3395,13 +3482,34 @@ AI_TOOLS = [
 ]
 
 
+def _ai_board_guard(db, board_id, actor, need="editor"):
+    """Board permission check for the AI tools. Returns a Hebrew refusal string
+    (not an exception) so the model can relay it, or None when allowed."""
+    role = _board_role(db, board_id, actor)
+    if role is None:
+        return "❌ אין לך גישה ללוח זה."
+    if _BROLE_ORDER.get(role, -1) < _BROLE_ORDER.get(need, 1):
+        return "❌ אין לך הרשאת עריכה בלוח זה."
+    return None
+
+
 def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
-    """Execute an AI tool by name with the given arguments. Returns a descriptive Hebrew result string."""
+    """Execute an AI tool by name with the given arguments. Returns a descriptive Hebrew result string.
+
+    Every tool runs with the *caller's* permissions. These tools used to ignore
+    `actor` entirely, so anyone who could reach the chat endpoint could read or
+    delete items on boards they were never invited to — including by way of
+    prompt injection planted in a task description the model later read."""
     from datetime import datetime, timezone
+
+    if actor is None:
+        return "❌ נדרשת התחברות."
 
     if name == "list_boards":
         with Session(engine) as db:
-            boards = db.query(Board).filter(Board.is_archived == False).all()
+            visible = _visible_board_ids(db, actor)
+            boards = [b for b in db.query(Board).filter(Board.is_archived == False).all()
+                      if b.id in visible]
             if not boards:
                 return "❌ לא נמצאו לוחות במערכת."
             lines = []
@@ -3417,6 +3525,8 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             b = db.query(Board).filter(Board.id == board_id).first()
             if not b:
                 return f"❌ לוח {board_id} לא נמצא."
+            if _board_role(db, board_id, actor) is None:
+                return "❌ אין לך גישה ללוח זה."
             dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
             groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
             tasks = db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False).all()
@@ -3498,6 +3608,9 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             board = db.query(Board).filter(Board.id == board_id).first()
             if not board:
                 return f"❌ לוח {board_id} לא נמצא."
+            denied = _ai_board_guard(db, board_id, actor)
+            if denied:
+                return denied
             g = Group(
                 board_id=board_id,
                 name=name,
@@ -3539,6 +3652,9 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             board = db.query(Board).filter(Board.id == board_id).first()
             if not board:
                 return f"❌ לוח {board_id} לא נמצא."
+            denied = _ai_board_guard(db, board_id, actor)
+            if denied:
+                return denied
             # group_id is optional — fall back to the board's first group so the
             # agent can add an item without needing to resolve column ids first.
             g = None
@@ -3569,6 +3685,9 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             t = db.query(Task).filter(Task.id == task_id).first()
             if not t:
                 return f"❌ משימה {task_id} לא נמצאה."
+            role = _board_role(db, t.board_id, actor)
+            if _item_perm(t, actor, role) not in ("edit", "delete"):
+                return "❌ אין לך הרשאת עריכה לפריט זה."
             changed = []
             for field in ["title", "description", "due_date"]:
                 if field in args:
@@ -3616,11 +3735,14 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             t = db.query(Task).filter(Task.id == task_id).first()
             if not t:
                 return f"❌ משימה {task_id} לא נמצאה."
+            role = _board_role(db, t.board_id, actor)
+            if _item_perm(t, actor, role) != "delete":
+                return "❌ אין לך הרשאת מחיקה לפריט זה."
             t.is_archived = True
             db.add(AuditLog(
                 entity_type="task", entity_id=task_id,
                 action="archive", field_name="is_archived",
-                new_value="True",
+                new_value="True", changed_by=actor,
             ))
             db.commit()
             return f"✅ משימה '{t.title}' (מזהה: {task_id}) אורכבה בהצלחה."
@@ -3733,7 +3855,7 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
 
 
 @app.post("/api/ai/query")
-def ai_query(data: dict):
+def ai_query(data: dict, actor_id: int = Depends(current_user_id)):
     """CODE-CAL MISSIONS agent — DeepSeek (cloud) with tool calling, Gemini fallback, or local Ollama."""
     import subprocess
     prompt = data.get("prompt", "")
@@ -3808,7 +3930,7 @@ def ai_query(data: dict):
                             fn_args = json.loads(tc["function"]["arguments"])
                         except Exception:
                             fn_args = {}
-                        result_text = execute_ai_tool(fn_name, fn_args, data.get("user_id"))
+                        result_text = execute_ai_tool(fn_name, fn_args, actor_id)
                         tool_results.append({
                             "tool_call_id": tc.get("id", ""),
                             "function_name": fn_name,
@@ -3970,7 +4092,7 @@ def ai_models():
     return {"models": models, "available": bool(models), "default": default}
 
 @app.post("/api/llm/v1/chat/completions")
-async def llm_proxy(request: Request):
+async def llm_proxy(request: Request, actor_id: int = Depends(current_user_id)):
     """Server-side LLM proxy so in-browser clients (e.g. page-agent) can use the
     model WITHOUT ever seeing the API key. Frontend sets baseURL=/api/llm/v1 and a
     dummy apiKey; the real DEEPSEEK_API_KEY is injected here, server-side only."""
@@ -3998,12 +4120,16 @@ async def llm_proxy(request: Request):
         raise HTTPException(502, "LLM upstream error")
 
 @app.post("/api/ai/train")
-def ai_train(data: dict):
+def ai_train(data: dict, actor_id: int = Depends(current_user_id)):
     """Prepare a LOCAL fine-tuning dataset (JSONL) from board data.
     Data stays on-device and is used only to train the user's own local models."""
     import json as _json
     if not data.get("confirm"):
         raise HTTPException(400, "training requires explicit confirmation")
+    # this bulk-exports item content to disk — system admins only
+    with Session(engine) as _db:
+        if not _cap(_db, actor_id, "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול לייצא נתוני אימון")
     board_id = data.get("board_id")
     out_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "training")
     os.makedirs(out_dir, exist_ok=True)
@@ -4150,7 +4276,7 @@ def bim_bcf_topics():
 # ── CEO Dashboard — City-Wide Command Center ─────────────────────────
 
 @app.get("/api/ceo/dashboard")
-def ceo_dashboard(user_id: Optional[int] = None):
+def ceo_dashboard(user_id: int = Depends(current_user_id)):
     """Comprehensive CEO dashboard — city-wide view across boards the user may see."""
     with Session(engine) as db:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -4385,7 +4511,7 @@ def get_work_plan(wp_id: int):
         }
 
 @app.post("/api/work-plans")
-def create_work_plan(data: dict):
+def create_work_plan(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         wp = AnnualWorkPlan(
             organization_id=data.get("organization_id", 1),
@@ -4402,7 +4528,7 @@ def create_work_plan(data: dict):
         # Audit log
         db.add(AuditLog(entity_type="work_plan", entity_id=wp.id,
             action="create", field_name="name", new_value=wp.name,
-            changed_by=data.get("user_id")))
+            changed_by=actor_id))
         db.commit()
         return {"id": wp.id, "status": "created", "name": wp.name}
 
@@ -4537,7 +4663,7 @@ def get_project(project_id: int):
         }
 
 @app.post("/api/projects")
-def create_project(data: dict):
+def create_project(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         status_val = data.get("status", "draft")
         try:
@@ -4571,12 +4697,12 @@ def create_project(data: dict):
         db.refresh(p)
         db.add(AuditLog(entity_type="project", entity_id=p.id,
             action="create", field_name="name", new_value=p.name,
-            changed_by=data.get("user_id")))
+            changed_by=actor_id))
         db.commit()
         return {"id": p.id, "status": "created", "name": p.name}
 
 @app.patch("/api/projects/{project_id}")
-def update_project(project_id: int, data: dict):
+def update_project(project_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
@@ -4595,7 +4721,7 @@ def update_project(project_id: int, data: dict):
                         action="update", field_name=field,
                         old_value=str(old_val) if old_val else None,
                         new_value=str(data[field]) if data.get(field) else None,
-                        changed_by=data.get("user_id")))
+                        changed_by=actor_id))
         if "status" in data:
             try:
                 p.status = ProjectStatus(data["status"])
@@ -4604,7 +4730,7 @@ def update_project(project_id: int, data: dict):
             db.add(AuditLog(entity_type="project", entity_id=p.id,
                 action="update", field_name="status",
                 new_value=data["status"],
-                changed_by=data.get("user_id")))
+                changed_by=actor_id))
         if "priority" in data:
             try:
                 p.priority = Priority(data["priority"])
@@ -4846,7 +4972,7 @@ def create_approval_chain(data: dict):
         return {"created": created, "count": len(created)}
 
 @app.post("/api/approvals/{approval_id}/approve")
-def approve_step(approval_id: int, data: dict):
+def approve_step(approval_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         a = db.query(Approval).filter(Approval.id == approval_id).first()
         if not a:
@@ -4855,7 +4981,7 @@ def approve_step(approval_id: int, data: dict):
             a.status = ApprovalStatus(data.get("status", "approved"))
         except ValueError:
             a.status = ApprovalStatus.APPROVED
-        a.approver_user_id = data.get("user_id")
+        a.approver_user_id = actor_id   # the approver is whoever is signed in
         a.notes = data.get("notes", "")
         a.approved_at = datetime.now(timezone.utc)
         db.add(AuditLog(
@@ -4863,7 +4989,7 @@ def approve_step(approval_id: int, data: dict):
             action=data.get("status", "approved"),
             field_name=f"approval.{a.approver_role}",
             new_value=data.get("status", "approved"),
-            changed_by=data.get("user_id"),
+            changed_by=actor_id,
         ))
         db.commit()
         return {"id": a.id, "status": a.status.value, "approved_at": a.approved_at.isoformat()}
@@ -4948,7 +5074,7 @@ def create_change_request(data: dict):
         return {"id": cr.id, "status": "created"}
 
 @app.patch("/api/change-requests/{cr_id}")
-def update_change_request(cr_id: int, data: dict):
+def update_change_request(cr_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         cr = db.query(ChangeRequest).filter(ChangeRequest.id == cr_id).first()
         if not cr:
@@ -4959,7 +5085,7 @@ def update_change_request(cr_id: int, data: dict):
             except ValueError:
                 pass
             if data["status"] in ("approved", "rejected"):
-                cr.approved_by = data.get("user_id")
+                cr.approved_by = actor_id
                 cr.approved_at = datetime.now(timezone.utc)
         for field in ["title", "description", "amount_change", "reason"]:
             if field in data:
@@ -5392,7 +5518,7 @@ def gantt_data(work_plan_id: Optional[int] = None):
 # ── 14. AI Project Insights ──────────────────────────────────────────
 
 @app.post("/api/ai/project-insights/{project_id}")
-def ai_project_insights(project_id: int):
+def ai_project_insights(project_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
