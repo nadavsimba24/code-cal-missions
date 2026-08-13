@@ -293,6 +293,56 @@ def _seed_environments():
         db.commit()
 _safe_startup(_seed_environments)
 
+
+AUTO_COLS = (("created_at", "מועד יצירה", "sys_created_at"),
+             ("created_by", "יוצר הרשומה", "sys_created_by"))
+
+def _backfill_auto_columns():
+    """Give every board the two automatic columns — who created an item and when.
+
+    New boards ship with them; boards that predate them did not have them at
+    all, and the creator column on the oldest ones is a plain people column
+    that only auto-filled for items created while it existed. Both are derived
+    from the item itself, so adding them is enough — no values to write, and
+    they are right for items that predate the column.
+
+    Runs once per board (`auto_cols_v1`): an admin who then removes a column
+    must not have it come back on the next restart.
+    """
+    with Session(engine) as db:
+        added = 0
+        for b in db.query(Board).all():
+            s = dict(b.settings or {})
+            cols = [dict(c) for c in (s.get("columns") or [])]
+            changed = False
+            # the legacy creator column is a people column that has to be written
+            # on creation — the derived type reads the item's own creator instead
+            for c in cols:
+                if c.get("id") == "sys_created_by" and c.get("type") == "people":
+                    c["type"] = "created_by"
+                    changed = True
+            if not s.get("auto_cols_v1"):
+                have = {c.get("type") for c in cols}
+                used = {c.get("id") for c in cols}
+                for typ, title, sid in AUTO_COLS:
+                    if typ in have:
+                        continue
+                    cid = sid if sid not in used else ("col_" + uuid.uuid4().hex[:8])
+                    cols.append({"id": cid, "type": typ, "title": title, "options": None,
+                                 "formula": None, "connect": None, "copy_mode": None, "perms": {}})
+                    used.add(cid)
+                    added += 1
+                    changed = True
+                s["auto_cols_v1"] = True
+                changed = True
+            if changed:
+                s["columns"] = cols
+                b.settings = s
+        db.commit()
+        if added:
+            print(f"↻ added {added} automatic column(s) across boards", flush=True)
+_safe_startup(_backfill_auto_columns)
+
 # ── Configurable capability matrix (role → feature) ──────────────────
 # 'admin' always has every capability (implicit, never stored). These roles are
 # editable by a system admin from the SysAdmin → role-permissions panel.
