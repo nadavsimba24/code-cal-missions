@@ -693,6 +693,8 @@ img.pf-av{object-fit:cover;background:#fff}
 .pf-av-btn:hover .pf-av{filter:brightness(.85)}
 .pf-av-cam{position:absolute;inset-inline-end:-2px;bottom:-2px;width:24px;height:24px;border-radius:50%;background:#fff;color:var(--primary);display:grid;place-items:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.3);border:1.5px solid var(--primary)}
 .pf-av-btn:hover .pf-av-cam{background:var(--primary);color:#fff}
+.pf-av-rm{position:absolute;inset-inline-start:-2px;bottom:-2px;width:24px;height:24px;border-radius:50%;background:#fff;color:var(--red,#e2445c);display:grid;place-items:center;font-size:11px;box-shadow:0 1px 4px rgba(0,0,0,.3);border:1.5px solid var(--red,#e2445c);cursor:pointer}
+.pf-av-rm:hover{background:var(--red,#e2445c);color:#fff}
 .av img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
 .av-ini{width:100%;height:100%;display:grid;place-items:center;border-radius:50%;color:#fff;font-size:inherit;font-weight:inherit;line-height:1;letter-spacing:.3px;text-transform:uppercase}
 .pf-name{font-size:19px;font-weight:800;line-height:1.2}
@@ -1397,6 +1399,19 @@ const VIEWS = [
    there is nothing to add here. In local dev mode the picked user id travels in
    X-CityOS-User — see backend/auth.py. */
 const AUTH = {mode:'easyauth', devUser:null};
+/* The dev identity is kept in a cookie as well as in memory. The header below
+   only rides on requests the app makes itself (fetch); <img src="/api/files/…">,
+   download links and new tabs are plain browser requests that carry no header
+   and would come back 401 — which is why uploaded avatars rendered broken.
+   See backend/auth.py. */
+function setDevUser(id){
+  AUTH.devUser=id||null;
+  try{
+    document.cookie = id
+      ? 'cityos_user='+encodeURIComponent(id)+'; path=/; max-age=2592000; SameSite=Lax'
+      : 'cityos_user=; path=/; max-age=0; SameSite=Lax';
+  }catch(e){}
+}
 function authHeaders(){
   return (AUTH.mode==='dev' && AUTH.devUser) ? {'X-CityOS-User':String(AUTH.devUser)} : {};
 }
@@ -1505,7 +1520,7 @@ async function boot(){
     try{ const s=await api('/api/status'); AUTH.mode=s.auth_mode||'easyauth'; }catch(e){}
     if(AUTH.mode==='dev'){
       const savedId=parseInt(localStorage.getItem('cc_uid')||'',10);
-      if(savedId) AUTH.devUser=savedId;
+      if(savedId) setDevUser(savedId);
     }
     let me=null;
     try{ me=await api('/api/auth/me'); }catch(e){ me=null; }
@@ -1559,10 +1574,10 @@ const Auth = {
     // signed out, so /api/users is closed to us — dev mode signs in as the first
     // seeded user to read the directory, then lets the developer switch.
     for(const probe of [1,2,3]){
-      AUTH.devUser=probe;
+      setDevUser(probe);
       try{ this._pickerUsers=await api('/api/users'); return; }catch(e){}
     }
-    AUTH.devUser=null; this._pickerUsers=[];
+    setDevUser(null); this._pickerUsers=[];
   },
   showLogin(){
     const box=document.getElementById('login-users');
@@ -1592,7 +1607,7 @@ const Auth = {
   },
   async login(id){
     const u=(this._pickerUsers||[]).find(x=>x.id===id); if(!u)return;
-    AUTH.devUser=id; localStorage.setItem('cc_uid',id);
+    setDevUser(id); localStorage.setItem('cc_uid',id);
     st.me=u;
     try{ await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }catch(e){}
     document.getElementById('login').classList.remove('open');
@@ -1608,7 +1623,7 @@ const Auth = {
     askConfirm('להתנתק מהמערכת?',async()=>{
       localStorage.removeItem('cc_uid');
       localStorage.removeItem('cc_last_login');
-      AUTH.devUser=null;
+      setDevUser(null);
       st.me=null; st.board=null; st.boards=[];
       try{Notif.stop();}catch(e){}
       try{closeModals();AI.close();Chat.close();Term&&Term.close&&Term.close();}catch(e){}
@@ -2076,7 +2091,11 @@ const Profile = {
       ||'<span style="color:var(--text-light);font-size:12.5px">אין משימות משויכות בלוח זה</span>';
     const avInner=u.avatar_url?`<img class="pf-av" src="${esc(u.avatar_url)}" alt="">`:`<span class="pf-av">${avatarInner(u)}</span>`;
     const canEditAv=(userId===meId()||isSysAdmin());
-    const avHtml=canEditAv?`<button class="pf-av-btn" onclick="Profile.pickAvatar(${userId})" title="לחץ להעלאת תמונה">${avInner}<span class="pf-av-cam"><i class="fa-solid fa-camera"></i></span></button>`:avInner;
+    // the camera uploads; the × removes and falls back to the initials avatar
+    const rmBtn=(canEditAv&&u.avatar_url)
+      ? `<span class="pf-av-rm" role="button" tabindex="0" title="הסר תמונה — חזרה לתצוגת ברירת המחדל" onclick="event.stopPropagation();Profile.removeAvatar(${userId})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();Profile.removeAvatar(${userId});}"><i class="fa-solid fa-xmark"></i></span>`
+      : '';
+    const avHtml=canEditAv?`<button class="pf-av-btn" onclick="Profile.pickAvatar(${userId})" title="לחץ להעלאת תמונה">${avInner}<span class="pf-av-cam"><i class="fa-solid fa-camera"></i></span>${rmBtn}</button>`:avInner;
     const sysRole=(ROLE_HE[u.role]||u.role)+(wsRole?` · ${wsRole}`:'');
     const emailOn=u.email_notifications!==false;
     const np=u.notif_prefs||{};
@@ -2132,6 +2151,23 @@ const Profile = {
       // sidebar, open modals and the chat panel all redraw from st.users
       this.open(userId); renderMe(); renderSidebar(); renderView(); Chat.refreshAvatars();
     }catch(e){ toast(String(e.message||'').includes('403')?'אפשר להחליף רק את התמונה שלך':'שגיאה בהעלאת תמונה'); }
+  },
+  /* Remove the picture — the person falls back to the default representation,
+     the coloured initials circle. Applied everywhere at once, like a change. */
+  removeAvatar(userId){
+    const u=(st.users||[]).find(x=>x.id===userId); if(!u||!u.avatar_url)return;
+    askConfirm(`להסיר את תמונת הפרופיל של ${u.name}?`,async()=>{
+      try{
+        await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({avatar_url:null})});
+        await refreshUsers();
+        const fresh=(st.users||[]).find(x=>x.id===userId); if(fresh)fresh.avatar_url=null;
+        if(st.me&&st.me.id===userId)st.me.avatar_url=null;
+        toast('התמונה הוסרה — חזרה לתצוגת ברירת המחדל');
+        this.open(userId); renderMe(); renderSidebar(); renderView(); Chat.refreshAvatars();
+      }catch(e){ toast(String(e.message||'').includes('403')?'אפשר להסיר רק את התמונה שלך':'שגיאה בהסרת התמונה'); }
+    },{title:'הסרת תמונת פרופיל',confirmText:'הסר',
+       note:'במקום התמונה יוצגו ראשי התיבות בעיגול צבעוני, בכל הלוחות ובכל עמודות האנשים.'});
   },
   async setNotify(userId,on){
     try{
