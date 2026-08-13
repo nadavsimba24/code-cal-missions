@@ -314,10 +314,12 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tbl td{padding:0;border-bottom:1px solid var(--border);border-inline-start:1px solid var(--border);font-size:14px;height:40px}
 .tbl tr:hover td{background:var(--row-hover)}
 .tbl .c-item{position:relative;font-weight:500;padding:6px 12px;min-width:0;border-inline-start:4px solid var(--gcolor,var(--primary));vertical-align:middle}
-/* 3-dots item menu — appears on row hover, just outside the item on the right (RTL start) */
-.item-menu{opacity:0;pointer-events:none;position:absolute;inset-inline-start:-11px;top:50%;transform:translateY(-50%);width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:var(--text-light);background:var(--surface);border:1px solid var(--border);box-shadow:0 1px 5px rgba(0,0,0,.18);font-size:12px;z-index:5;transition:opacity .12s,color .12s,border-color .12s}
-.tbl tr:hover .item-menu{opacity:1;pointer-events:auto}
-.item-menu:hover{color:var(--primary);border-color:var(--primary)}
+/* item selection checkbox — first thing in the row itself. Ticking it selects
+   the item and opens its actions. Dimmed until the row is hovered or ticked, so
+   a quiet board stays quiet, but it always takes up its place in the row. */
+.item-check{flex-shrink:0;width:15px;height:15px;margin:0 0 0 2px;cursor:pointer;accent-color:var(--primary);opacity:.25;transition:opacity .12s}
+.tbl tr:hover .item-check,.item-check:checked,.item-check:focus-visible{opacity:1}
+.tbl tr.row-sel td{background:var(--primary-soft)}
 .tbl .cell{padding:6px 10px;text-align:center}
 /* trailing cell so the row's bottom border reaches the end of the table
    (covers the add-column + flexible spacer columns); no vertical divider */
@@ -437,16 +439,25 @@ body.coldragging .col-grip{opacity:1}
 .st-del:disabled{opacity:.35;cursor:default;color:var(--text-muted)}
 .cell-pop-opt2{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;font-size:13px;color:var(--text)}
 .cell-pop-opt2:hover{background:var(--row-hover)}
-/* nested menu: hovering "הגדרות" reveals its options. The options open inside
-   the menu (not flying out) because the popup itself scrolls, which would clip
-   an absolutely-positioned flyout. */
+/* Nested menu: hovering an entry flies its options out SIDEWAYS, continuing the
+   reading direction (leftwards in RTL) instead of pushing the menu downwards.
+   `inset-inline-start:100%` puts the flyout past the parent's far edge in both
+   directions. A popup holding one must not clip it, so openCellPop marks it
+   .has-flyout and the scrolling moves into each flyout instead. */
+.pop-sub{position:relative}
 .pop-sub>.cell-pop-opt2{width:100%;cursor:default}
 .pop-sub:hover>.cell-pop-opt2{background:var(--row-hover)}
-.pop-sub-caret{margin-inline-start:auto;font-size:9px;color:var(--text-light);transition:transform .12s}
-.pop-sub:hover .pop-sub-caret{transform:rotate(-90deg)}
-.pop-subm{display:none;margin:2px 0 2px 0;padding-inline-start:10px;border-inline-start:2px solid var(--border)}
-.pop-sub:hover .pop-subm{display:block}
+.pop-sub-caret{margin-inline-start:auto;font-size:9px;color:var(--text-light)}
+.pop-subm{display:none;position:absolute;inset-inline-start:100%;top:-6px;min-width:186px;
+  max-height:min(58vh,320px);overflow-y:auto;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;box-shadow:var(--shadow);padding:5px;z-index:6}
+.pop-sub:hover > .pop-subm,.pop-sub.open > .pop-subm{display:block}
+.pop-sub.open > .rm-item,.pop-sub.open > .cell-pop-opt2{background:var(--row-hover)}
 .pop-subm .cell-pop-opt2{width:100%;font-size:12.5px}
+/* a menu that holds a flyout must not clip it — that applies to a flyout that
+   itself holds one (העבר → קבוצה → the groups), so the scrolling only ever
+   lives on the deepest level, the one that actually holds a long list */
+.cell-pop.has-flyout,.pop-subm.has-flyout{overflow:visible;max-height:none}
 .col-add-pop{min-width:230px;inset-inline-start:auto;inset-inline-end:0;transform:none}
 .col-type-q{padding:7px 10px;border:1px solid var(--border-strong);border-radius:7px;font-size:12.5px;font-family:inherit;width:100%;margin-bottom:2px}
 .col-type-q:focus{outline:none;border-color:var(--primary)}
@@ -1425,7 +1436,7 @@ function avatarInner(u){
 /* Reload the users list — the single source every avatar renders from. */
 async function refreshUsers(){ try{ st.users=await api('/api/users'); }catch(e){} }
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
-const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set()};
+const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set(), selected:new Set()};
 
 /* ============ URL routing (hash-based deep links) ============
    #/board/{id}            — a board is open
@@ -1758,7 +1769,7 @@ function deleteBoardById(id){
   },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
 }
 async function openBoard(id){
-  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.colSort=null; st.subSort=null; }
+  if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.colSort=null; st.subSort=null; }
   st.filters={q:'',people:[],status:'',priority:'',sort:''};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
@@ -3133,12 +3144,13 @@ function itemRow(t,col){
   const parent=`
     <tr data-tid="${t.id}">
       <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
+        ${canEditItem(t)?`<input type="checkbox" class="item-check" title="סימון פריט — פותח את פעולות הפריט" ${st.selected.has(t.id)?'checked':''} onclick="toggleItemSelect(event,${t.id})">`:''}
         <i class="fa-solid fa-grip-vertical row-grip itm-h" title="גרור להעברה בין קבוצות"></i>
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
         <span class="item-title editable itm-h" title="לחץ לעריכת השם · גרור להעברה" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
         ${cnt?`<span class="sub-badge${open?' open':''}" role="button" tabindex="0" title="${cnt} תת-פריטים · לחץ להצגה/הסתרה" onclick="toggleSubs(event,${t.id})" onkeydown="if(event.key==='Enter'||event.key===' ')toggleSubs(event,${t.id})"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
-      </div>${canEditItem(t)?`<button class="item-menu" title="אפשרויות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}</td>
+      </div></td>
       ${rowCellsAfterItem(t)}
       <td class="cell"></td>
       <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
@@ -4212,6 +4224,16 @@ async function _stSave(){
     closeModals();toast('הסטטוסים עודכנו ✓');renderView();
   }catch(e){toast('שגיאה בשמירת הסטטוסים');}
 }
+/* Open a submenu by clicking its entry, not only by hovering it — steadier to
+   aim at across two levels, and the only way that works by touch. The click
+   must not reach the document listener that closes the whole menu. */
+function togglePopSub(e){
+  e.stopPropagation(); e.preventDefault();
+  const sub=e.currentTarget.closest('.pop-sub'); if(!sub)return;
+  const parent=sub.parentElement;
+  if(parent) parent.querySelectorAll(':scope > .pop-sub').forEach(s=>{ if(s!==sub)s.classList.remove('open'); });
+  sub.classList.toggle('open');
+}
 function closeCellPops(){document.querySelectorAll('.cell-pop').forEach(p=>p.remove());}
 /* Fixed-positioned cell popover appended to <body> so it never gets clipped by
    the table's overflow:hidden. Returns the pop element (pop._anchor = cell). */
@@ -4219,7 +4241,13 @@ function openCellPop(anchor,html,extraClass,above){
   closeCellPops();
   const pop=document.createElement('div');
   pop.className='cell-pop cell-pop-fixed'+(extraClass?' '+extraClass:'');
-  pop.innerHTML=html; pop._anchor=anchor; document.body.appendChild(pop);
+  pop.innerHTML=html; pop._anchor=anchor;
+  // a menu whose entries fly out sideways must not clip them — its own
+  // scrolling moves into the flyouts (see .has-flyout). Same one level down:
+  // a flyout that holds another flyout must not clip it either.
+  if(pop.querySelector('.pop-sub')) pop.classList.add('has-flyout');
+  pop.querySelectorAll('.pop-subm').forEach(m=>{ if(m.querySelector('.pop-sub')) m.classList.add('has-flyout'); });
+  document.body.appendChild(pop);
   const r=anchor.getBoundingClientRect();
   let left=r.right-pop.offsetWidth; if(left<8)left=8;
   if(r.left<8&&r.right-pop.offsetWidth<8) left=r.left;
@@ -4344,7 +4372,7 @@ function colMenu(e,colId){
   const isAdmin=st.board&&st.board.my_role==='admin';
   // "מזהה פריט": הגדרות ← התאמות עמודת מזהה פריט (copy behaviour only)
   const idSettings=(c&&c.type==='item_id')?`<div class="pop-sub">
-      <button class="cell-pop-opt2"><i class="fa-solid fa-sliders"></i> הגדרות<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
+      <button class="cell-pop-opt2" onclick="togglePopSub(event)"><i class="fa-solid fa-sliders"></i> הגדרות<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
       <div class="pop-subm"><button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();itemIdSettings('${colId}')"><i class="fa-solid fa-hashtag"></i> התאמות עמודת מזהה פריט</button></div>
     </div>
     <button class="cell-pop-opt2" onclick="duplicateColumn(event,'${colId}')"><i class="fa-regular fa-clone"></i> שכפל עמודה</button>`:'';
@@ -4486,24 +4514,47 @@ function deleteSubItem(e,id){
   },{title:'מחיקת תת-פריט',confirmText:'מחק',note:'תת-הפריט יימחק ולא ניתן לשחזר.'});
 }
 /* item options menu — opened by right-click on the row or the hover 3-dots button */
+/* Item menu: "העבר" opens קבוצה / לוח, each leading to its own targets, then
+   "מחק פריט" in red. Reached by right-clicking the item (the row now carries a
+   selection checkbox where the "..." button used to be). */
 function itemRowMenu(e,id){
   e.preventDefault(); e.stopPropagation();
   const t=findAnyTask(id); if(!t||!canEditItem(t))return;
-  const others=(st.board.groups||[]).filter(g=>g.id!==t.group_id);
-  const moveOpts=others.length?`<div class="rm-sep"><i class="fa-solid fa-arrow-right-arrow-left"></i> העבר לקבוצה</div>`
-    + others.map(g=>`<button class="rm-item" onclick="moveItemToGroup(event,${id},${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('') : '';
+  const note=txt=>`<div class="rm-note">${esc(txt)}</div>`;
+  const groups=(st.board.groups||[]).filter(g=>g.id!==t.group_id);
+  const groupList=groups.length
+    ? groups.map(g=>`<button class="rm-item" onclick="moveItemToGroup(event,${id},${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('')
+    : note('אין קבוצה אחרת בלוח');
   // moving to another board is only offered for a top-level item (its sub-items
   // travel with it) and only to boards the user may edit
   const boards=t.parent_id?[]:(st.boards||[]).filter(b=>b.id!==st.board.id&&(b.my_role==='admin'||b.my_role==='editor'));
-  const boardOpts=boards.length?`<div class="rm-sep"><i class="fa-solid fa-right-left"></i> העבר ללוח אחר</div>`
-    + boards.map(b=>`<button class="rm-item" onclick="moveItemToBoard(event,${id},${b.id})">${esc(b.icon||'📋')} ${esc(b.name)}</button>`).join('') : '';
-  const items=[
-    `<button class="rm-item" onclick="closeCellPops();Chat.open(${id})"><i class="fa-regular fa-comment"></i> פתח שיחה</button>`,
-    moveOpts,
-    boardOpts,
-    `<button class="rm-item danger" onclick="deleteItem(event,${id})"><i class="fa-regular fa-trash-can"></i> מחק פריט</button>`,
-  ];
-  openCellPop(e.currentTarget,`<div class="row-menu">${items.join('')}</div>`,'row-menu-pop');
+  const boardList=t.parent_id
+    ? note('תת-פריט עובר יחד עם הפריט שלו')
+    : (boards.length
+        ? boards.map(b=>`<button class="rm-item" onclick="moveItemToBoard(event,${id},${b.id})">${esc(b.icon||'📋')} ${esc(b.name)}</button>`).join('')
+        : note('אין לוח אחר שאתה יכול לערוך'));
+  const sub=(icon,label,inner)=>`<div class="pop-sub">
+      <button class="rm-item" onclick="togglePopSub(event)"><i class="fa-solid ${icon}"></i> ${label}<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
+      <div class="pop-subm">${inner}</div>
+    </div>`;
+  const html=`<div class="row-menu">
+    ${sub('fa-arrow-right-arrow-left','העבר',
+        sub('fa-layer-group','קבוצה',groupList)+sub('fa-table-columns','לוח',boardList))}
+    <button class="rm-item danger" onclick="deleteItem(event,${id})"><i class="fa-regular fa-trash-can"></i> מחק פריט</button>
+  </div>`;
+  openCellPop(e.currentTarget,html,'row-menu-pop');
+}
+/* ===== סימון פריטים =====
+   The checkbox replaced the 3-dots button, so it is also the way into the
+   item's actions: ticking selects the row and opens the menu next to it;
+   unticking clears the selection and closes it. */
+function toggleItemSelect(e,id){
+  e.stopPropagation();
+  const box=e.currentTarget, on=!!box.checked;
+  if(on)st.selected.add(id); else st.selected.delete(id);
+  const row=box.closest('tr'); if(row)row.classList.toggle('row-sel',on);
+  if(!on){ closeCellPops(); return; }
+  itemRowMenu({preventDefault(){},stopPropagation(){},currentTarget:box},id);
 }
 /* move an item (with its sub-items) to another board. The item leaves this
    board, so its "מזהה פריט" is re-issued there — and re-issued again if it ever
