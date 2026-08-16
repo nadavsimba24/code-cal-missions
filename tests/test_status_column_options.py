@@ -4,6 +4,7 @@ A board admin names and colours the statuses of every status column on its
 own (col.options = [{label,color}]), independently of the board-wide status
 list that drives the built-in "סטטוס" column.
 """
+import main as cityos_main
 
 
 def _make_board(client, admin_id, name="סטטוסים לעמודה"):
@@ -27,8 +28,11 @@ def test_status_column_keeps_its_own_labels_and_colors(client, admin_id):
     bid = _make_board(client, admin_id)
     opts = [{"label": "טרם החל", "color": "#579bfc"}, {"label": "בביצוע", "color": "#fdab3d"}]
     col = _status_col(client, bid, admin_id, options=opts)
-    assert col["options"] == opts
-    assert _cols(client, bid, admin_id)[0]["options"] == opts
+    # each option also carries a stable id — a cell references that, so renaming
+    # an option is one change rather than a rewrite of every cell using it
+    assert [{k: o[k] for k in ("label", "color")} for o in col["options"]] == opts
+    assert all(o["id"] for o in col["options"])
+    assert _cols(client, bid, admin_id)[0]["options"] == col["options"]
 
 
 def test_two_status_columns_are_independent(client, admin_id):
@@ -59,13 +63,13 @@ def test_labels_are_trimmed_deduped_and_capped(client, admin_id):
     bid = _make_board(client, admin_id)
     opts = ([{"label": "  כפול  ", "color": "#00c875"}, {"label": "כפול", "color": "#e2445c"},
              {"label": "", "color": "#00c875"}, {"label": "x" * 60, "color": "#00c875"}]
-            + [{"label": f"s{i}", "color": "#00c875"} for i in range(30)])
+            + [{"label": f"s{i}", "color": "#00c875"} for i in range(cityos_main.STATUS_COL_MAX + 5)])
     col = _status_col(client, bid, admin_id, options=opts)
     labels = [o["label"] for o in col["options"]]
     assert labels[0] == "כפול" and labels.count("כפול") == 1
     assert "" not in labels
     assert len(labels[1]) == 40                      # long label truncated
-    assert len(labels) == 20                         # STATUS_COL_MAX
+    assert len(labels) == cityos_main.STATUS_COL_MAX   # the cap, whatever it is set to
 
 
 def test_bad_color_falls_back_and_empty_options_reset(client, admin_id):
@@ -82,8 +86,9 @@ def test_plain_string_options_are_accepted(client, admin_id):
     """A dropdown-shaped options list still yields a usable status vocabulary."""
     bid = _make_board(client, admin_id)
     col = _status_col(client, bid, admin_id, options=["אחד", "שתיים"])
-    assert col["options"] == [{"label": "אחד", "color": "#c4c4c4"},
-                              {"label": "שתיים", "color": "#c4c4c4"}]
+    assert [{k: o[k] for k in ("label", "color")} for o in col["options"]] == [
+        {"label": "אחד", "color": "#c4c4c4"}, {"label": "שתיים", "color": "#c4c4c4"}]
+    assert all(o["id"] for o in col["options"])
 
 
 def test_dropdown_options_stay_plain_strings(client, admin_id):

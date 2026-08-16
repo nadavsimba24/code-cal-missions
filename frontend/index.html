@@ -417,12 +417,19 @@ body.coldragging .col-grip{opacity:1}
 .rating .fa-regular{color:var(--border-strong)}
 .rating i:hover{transform:scale(1.18)}
 .pill-empty{background:transparent!important;color:var(--text-light);border:1px dashed var(--border-strong);min-width:auto;width:auto;padding:0 14px}
+/* the default of a status column — grey, and clearly not a chosen value */
+.pill-unset{color:#fff;opacity:.85}
 .tl-bar{display:flex;align-items:center;justify-content:center;height:28px;border-radius:14px;background:linear-gradient(90deg,#0073ea,#00c875);color:#fff;font-size:12px;font-weight:600;padding:0 12px;min-width:120px;box-shadow:var(--shadow-sm)}
 .tl-txt{white-space:nowrap}
 /* in-cell popovers */
 .cell-pop{position:absolute;top:calc(100% + 4px);inset-inline-start:50%;transform:translateX(50%);background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow);padding:7px;z-index:130;min-width:150px;display:flex;flex-direction:column;gap:5px}
 .cell-pop.cell-pop-fixed{position:fixed;top:auto;left:auto;right:auto;inset-inline-start:auto;inset-inline-end:auto;transform:none;z-index:250;max-height:min(60vh,360px);overflow-y:auto}
 .cell-pop-opt{color:#fff;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:600;text-align:center}
+/* past a handful of options a stacked list gets too tall — lay them out three
+   to a row instead. Full-width entries ("נקה", the manage shortcut) span it. */
+.cell-pop.pop-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;min-width:min(330px,86vw)}
+.cell-pop.pop-grid .cell-pop-opt{padding:7px 6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell-pop.pop-grid .pop-span{grid-column:1/-1}
 .cell-pop-opt:hover{filter:brightness(1.06)}
 .cell-pop-clear{background:var(--bg)!important;color:var(--text-muted)!important;border:1px solid var(--border)}
 .cell-pop-manage{background:var(--bg)!important;color:var(--text)!important;border:1px solid var(--border);display:flex;align-items:center;gap:7px;justify-content:center;margin-top:2px}
@@ -876,7 +883,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .wp-detail-panel h3{font-size:15px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .subsection{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:12px}
 
-/* ===== "פועל בתור" switcher ===== */
+/* ===== the signed-in user chip ===== */
 .me-btn{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border-radius:20px}
 .me-btn:hover{background:var(--row-hover)}
 .me-btn .av{width:30px;height:30px;margin:0;font-size:12px}
@@ -1236,7 +1243,7 @@ body, body *{ font-weight:400!important; }
         <div class="tb-pop notif-pop" id="pop-notif" style="inset-inline-start:auto;inset-inline-end:0"></div>
       </div>
       <div class="tb-ctl" id="ctl-me">
-        <button class="me-btn" onclick="togglePop('me')" title="פועל בתור"><span class="av" id="me-av" style="background:var(--primary)">?</span><span class="me-name" id="me-name"></span><i class="fa-solid fa-chevron-down" style="font-size:10px;color:var(--text-light)"></i></button>
+        <button class="me-btn" onclick="togglePop('me')" title="החשבון שלי"><span class="av" id="me-av" style="background:var(--primary)">?</span><span class="me-name" id="me-name"></span><i class="fa-solid fa-chevron-down" style="font-size:10px;color:var(--text-light)"></i></button>
         <div class="tb-pop" id="pop-me" style="inset-inline-start:auto;inset-inline-end:0"></div>
       </div>
     </div>
@@ -1373,10 +1380,20 @@ const STATUS_STAGE={backlog:'todo',todo:'todo',in_progress:'active',review:'acti
    Keys stay the underlying enum values so auto-move/kanban/charts keep working. */
 function boardStatusList(){
   const s=st.board&&st.board.statuses;
-  if(s&&s.length)return s.map(x=>({key:x.key,he:x.label,c:x.color}));
-  return Object.entries(STATUS).map(([k,v])=>({key:k,he:v.he,c:v.c}));
+  if(s&&s.length)return s.map(x=>({key:x.key,he:x.label,c:x.color,base:x.base||x.key}));
+  return Object.entries(STATUS).map(([k,v])=>({key:k,he:v.he,c:v.c,base:k}));
 }
-function boardStatusMap(){const m={};boardStatusList().forEach(x=>m[x.key]={he:x.he,c:x.c});return m;}
+function boardStatusMap(){const m={};boardStatusList().forEach(x=>m[x.key]={he:x.he,c:x.c,base:x.base});return m;}
+/* Only seven statuses can be a value the engine understands (group auto-move,
+   kanban, charts). A board-defined status beyond those behaves as one of them —
+   its `base` — while the item carries the chosen label and colour for display. */
+function statusEntry(key){ return boardStatusList().find(x=>x.key===key)||null; }
+function statusKeyOf(t){
+  const cf=(t&&t.custom_fields)||{};
+  if(cf.status_unset)return null;      // nothing chosen yet — tick nothing
+  if(cf.status_key)return cf.status_key;
+  return t&&t.status;
+}
 /* single status descriptor: board label first, else global, else the raw key */
 function bStat(key){const m=boardStatusMap();return m[key]||STATUS[key]||{he:key,c:'#c4c4c4'};}
 /* the full status vocabulary a board admin may draw from (mirrors STATUS_DEFAULTS
@@ -1400,10 +1417,11 @@ const VIEWS = [
   {id:'map',he:'מפה',ic:'fa-map-location-dot'},
   {id:'gis',he:'ניתוח שטח',ic:'fa-globe'},
 ];
-/* Identity is carried by the transport, never in the URL or body. In production
-   Azure Easy Auth injects the Entra headers before the request reaches us, so
-   there is nothing to add here. In local dev mode the picked user id travels in
-   X-CityOS-User — see backend/auth.py. */
+/* Identity is carried by the transport, never in the URL or body. With `entra`
+   the browser holds a session cookie the backend signed after the SSO round
+   trip; with `easyauth` the Azure ingress injects the Entra headers before the
+   request reaches us. Either way there is nothing to add here. Only local dev
+   mode needs a header — the picked user id in X-CityOS-User. See backend/auth.py. */
 const AUTH = {mode:'easyauth', devUser:null};
 /* The dev identity is kept in a cookie as well as in memory. The header below
    only rides on requests the app makes itself (fetch); <img src="/api/files/…">,
@@ -1420,6 +1438,18 @@ function setDevUser(id){
 }
 function authHeaders(){
   return (AUTH.mode==='dev' && AUTH.devUser) ? {'X-CityOS-User':String(AUTH.devUser)} : {};
+}
+/* Where sign-in and sign-out live differs per identity source: `entra` is the
+   app's own SSO module (backend/entra.py), `easyauth` is the Azure ingress
+   doing the same job one layer up. Both end at Entra ID; only the URLs differ. */
+function loginUrl(next){
+  next = next || (location.pathname+location.hash) || '/';
+  return AUTH.mode==='entra'
+    ? '/auth/login?next='+encodeURIComponent(next)
+    : '/.auth/login/aad?post_login_redirect_uri='+encodeURIComponent(next);
+}
+function logoutUrl(){
+  return AUTH.mode==='entra' ? '/auth/logout' : '/.auth/logout?post_logout_redirect_uri=/';
 }
 const api = async (p,o)=>{o=o||{};
   const r=await fetch(p,{...o,headers:{...(o.headers||{}),...authHeaders()}});
@@ -1596,19 +1626,27 @@ const Auth = {
     document.getElementById('login').classList.add('open');
   },
   showSignedOut(){
+    /* Reached when Entra knows the person but CityOS does not (403). Offering
+       "sign in" alone would loop them straight back to the same refusal, so the
+       way out is to sign in as someone else — which needs the Entra session
+       ended first, hence the logout URL. */
     document.getElementById('login').classList.remove('open');
     document.getElementById('view').innerHTML='<div class="empty">'
       +'<i class="fa-solid fa-user-lock"></i>'
       +'<div>לא זוהית במערכת</div>'
       +'<div style="font-size:12px">התחבר עם חשבון הארגון, או פנה למנהל המערכת כדי שיוסיף אותך.</div>'
-      +'<div style="margin-top:14px"><a class="btn primary" href="/.auth/login/aad?post_login_redirect_uri=/">התחברות</a></div>'
-      +'</div>';
+      +'<div style="margin-top:14px;display:flex;gap:8px;justify-content:center">'
+        +'<a class="btn primary" href="'+esc(loginUrl('/'))+'">התחברות</a>'
+        +'<a class="btn" href="'+esc(logoutUrl())+'">התחבר עם חשבון אחר</a>'
+      +'</div></div>';
   },
   onUnauthenticated(){
-    // the Entra session expired mid-session — bounce through the login endpoint
+    // No session, or it expired mid-session — bounce through the login endpoint.
+    // Guarded so that several in-flight requests failing at once cause one
+    // redirect rather than fighting over location.href.
     if(AUTH.mode!=='dev' && !Auth._bouncing){
       Auth._bouncing=true;
-      location.href='/.auth/login/aad?post_login_redirect_uri='+encodeURIComponent(location.pathname+location.hash);
+      location.href=loginUrl();
     }
   },
   async login(id){
@@ -1640,7 +1678,7 @@ const Auth = {
       document.getElementById('view').innerHTML='';
       // production: end the Entra session too, otherwise the next request is
       // silently re-authenticated and "logout" only cleared local state.
-      if(AUTH.mode!=='dev'){ location.href='/.auth/logout?post_logout_redirect_uri=/'; return; }
+      if(AUTH.mode!=='dev'){ location.href=logoutUrl(); return; }
       await Auth.loadPickerUsers(); Auth.showLogin();
     },{title:'התנתקות',confirmText:'התנתק',icon:'fa-right-from-bracket',danger:false});
   },
@@ -2075,7 +2113,23 @@ function renderView(){
   }
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
-function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;const m=bStat(t.status);return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
+/* What a task's status looks like right now. A board-defined status is stored
+   on the task by key plus a copy of its label and colour; the board's current
+   vocabulary wins over that copy, so renaming or recolouring one in the editor
+   shows on every item that already carries it, with nothing to migrate. The
+   copy is the fallback for a status that has since been removed. */
+function taskStatusView(t){
+  const cf=(t&&t.custom_fields)||{};
+  if(cf.status_unset)return {he:STATUS_UNSET.label,c:STATUS_UNSET.color,unset:true};
+  if(cf.status_key){
+    const e=statusEntry(cf.status_key);
+    if(e)return {he:e.he,c:e.c};
+    return {he:cf.status_label||cf.status_key,c:cf.status_color||'#c4c4c4'};
+  }
+  if(cf.status_label)return {he:cf.status_label,c:cf.status_color||'#c4c4c4'};
+  return bStat(t&&t.status);
+}
+function statusPill(t){const m=taskStatusView(t);return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span class="av-add" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span></span>';
   // clicking an assignee avatar opens the assignee editor (click bubbles to the
   // cell's openPeople) rather than the person's profile
@@ -2246,7 +2300,7 @@ function applyFilters(tasks){
       || (t.tags||[]).some(x=>String(x).toLowerCase().includes(q))
       || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q)));}
   if(f.people.length)out=out.filter(t=>(t.assignees||[]).some(a=>f.people.includes(a.id)));
-  if(f.status)out=out.filter(t=>t.status===f.status);
+  if(f.status)out=out.filter(t=>statusKeyOf(t)===f.status);
   if(f.priority)out=out.filter(t=>t.priority===f.priority);
   if(st.colSort&&st.colSort.key){
     const {key,dir}=st.colSort, s=dir==='desc'?-1:1;
@@ -2346,7 +2400,7 @@ const Notif={
   start(){ clearInterval(this._timer); this.load(); this._timer=setInterval(()=>this.load(),45000); },
   stop(){ clearInterval(this._timer); this.items=[]; this.unread=0; this.badge(); },
 };
-/* ===== current user ("פועל בתור") ===== */
+/* ===== the signed-in user ===== */
 function meId(){return st.me&&st.me.id;}
 /* The server ignores any identity in the body — it reads the authenticated
    user from the request. user_id is still sent so an older backend keeps
@@ -3021,16 +3075,7 @@ function renderMe(){
   if(av)av.innerHTML=u.avatar_url?`<img src="${esc(u.avatar_url)}" alt="">`:avatarInner(u); if(nm)nm.textContent=u.name;
   updateNewBoardBtn();
 }
-async function setMe(id){
-  st.me=(st.users||[]).find(u=>u.id===id)||st.me; renderMe(); closePops();
-  Notif.start();
-  await loadBoards();
-  if(st.board && st.boards.some(b=>b.id===st.board.id)){ await openBoard(st.board.id); }
-  else if(st.boards.length){ st.board=null; await openBoard(st.boards[0].id); }
-  else{ st.board=null; document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-lock"></i><div>אין לך גישה ללוחות</div></div>'; }
-  if(Chat.taskId)Chat.close();
-  toast('פועל בתור '+(st.me&&st.me.name));
-}
+
 function renderPop(name){
   if(name==='me'){
     const el=document.getElementById('pop-me'); if(!el)return;
@@ -3038,7 +3083,9 @@ function renderPop(name){
         <span class="av" style="background:var(--primary);width:34px;height:34px;font-size:12px">${avatarInner(st.me)}</span>
         <span style="flex:1;text-align:start"><div style="font-weight:700">${esc(st.me.name)}</div><div style="font-size:11px;color:var(--text-light)">${esc(st.me.title||ROLE_HE[st.me.role]||'')} · הצג פרופיל</div></span>
         <i class="fa-solid fa-chevron-left" style="color:var(--text-light);font-size:11px"></i>
-      </button>`:'')+'<div class="pop-title">פועל בתור</div><div class="pop-people">'+(st.users||[]).map(u=>`<label class="pop-row" onclick="setMe(${u.id})"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span style="flex:1">${esc(u.name)}<div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></span>${meId()===u.id?'<i class="fa-solid fa-check" style="color:var(--green)"></i>':''}</label>`).join('')+'</div>'
+      </button>`:'')
+      // No "act as someone else" list: identity comes from the sign-in, not
+      // from a menu. Switching users is not something the app offers.
       +'<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px"><button class="pop-row" style="width:100%;color:var(--red);font-weight:600" onclick="Auth.logout()"><span style="width:26px;text-align:center"><i class="fa-solid fa-right-from-bracket"></i></span> התנתק</button></div>';
     return;
   }
@@ -3693,7 +3740,7 @@ function exportCell(c,t){
     if(c.key==='assignees')return (t.assignees||[]).map(a=>a.name).filter(Boolean).join(', ');
     if(c.key==='status'){
       const cf=t.custom_fields||{};
-      if(cf.status_label)return {v:cf.status_label,c:cf.status_color||null};
+      if(cf.status_key||cf.status_label){const m=taskStatusView(t);return {v:m.he,c:m.c};}
       const m=bStat(t.status); return {v:m.he,c:m.c};
     }
     if(c.key==='priority'){const p=PRIORITY[t.priority];return p?{v:p.he,c:p.c}:'';}
@@ -3709,9 +3756,8 @@ function exportCell(c,t){
     case 'rating':   return v?Number(v):'';
     case 'item_kind':
     case 'status':{
-      if(!v||!v.label)return '';
-      const o=statusColOpts(col).find(x=>x.label===v.label);
-      return {v:v.label,c:(o&&o.color)||v.color||null};
+      const m=statusCellView(v,col);
+      return m?{v:m.label,c:m.color}:{v:STATUS_UNSET.label,c:STATUS_UNSET.color};
     }
     case 'timeline': return (v&&v.from)?`${xdate(v.from)} – ${xdate(v.to||v.from)}`:'';
     case 'checkbox': return v?'כן':'';
@@ -4049,7 +4095,23 @@ function canEditItem(t){ const p=itemPerm(t); return p==='edit'||p==='delete'; }
 function canDeleteItem(t){ return itemPerm(t)==='delete'; }
 function canEditCol(t,colId){ if(!canEditItem(t))return false; const cp=(t&&t.col_perms||{})[colId]; return cp?cp==='edit':true; }
 async function setField(id,field,value){
-  const t=findAnyTask(id); if(t)t[field]=value;
+  const t=findAnyTask(id);
+  // A board-defined status (one of the extra ones) is stored as its base value
+  // so the engine keeps working, plus the label/colour the grid renders.
+  let extra=null;
+  if(field==='status'){
+    const e=statusEntry(value);
+    if(e&&e.base&&e.base!==e.key){
+      extra={status_key:e.key,status_label:e.he,status_color:e.c,status_unset:null};
+      value=e.base;
+    }else{
+      extra={status_key:null,status_label:null,status_color:null,status_unset:null};
+    }
+    if(t){ t.custom_fields=t.custom_fields||{};
+      for(const k of ['status_key','status_label','status_color','status_unset'])
+        if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
+  }
+  if(t)t[field]=value;
   // mirror the backend auto-move: a top-level item whose status changes jumps to
   // the group matching that status (exact status first, else same stage —
   // e.g. "הושלם"→Done group; "לביצוע" on a 3-group board → the "בתכנון" group)
@@ -4069,17 +4131,20 @@ async function setField(id,field,value){
       if(g) parent.group_id=g.id;
     }
   }
-  try{ await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({[field]:value})}); renderView(); }
+  const body={[field]:value}; if(extra)body.custom_fields=extra;
+  try{ await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)}); renderView(); }
   catch(e){ toast('שגיאה בעדכון'); }
 }
 function fieldPicker(e,id,field,map){
   e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
-  const cur=(findAnyTask(id)||{})[field];
-  let html=Object.entries(map).map(([k,v])=>`<button class="cell-pop-opt" style="background:${v.c}" onclick="pickField(event,${id},'${field}','${k}')">${esc(v.he)}${cur===k?' <i class="fa-solid fa-check"></i>':''}</button>`).join('');
+  const _t=findAnyTask(id)||{};
+  const cur=field==='status'?statusKeyOf(_t):_t[field];
+  const entries=Object.entries(map);
+  let html=entries.map(([k,v])=>`<button class="cell-pop-opt" style="background:${v.c}" title="${esc(v.he)}" onclick="pickField(event,${id},'${field}','${k}')">${esc(v.he)}${cur===k?' <i class="fa-solid fa-check"></i>':''}</button>`).join('');
   // board admin gets a shortcut to manage the status vocabulary
   if(field==='status'&&isBoardAdmin())
-    html+=`<button class="cell-pop-opt cell-pop-manage" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
-  openCellPop(e.currentTarget,html);
+    html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
+  openCellPop(e.currentTarget,html,entries.length>POP_GRID_FROM?'pop-grid':'');
 }
 function pickField(e,id,field,key){ e.stopPropagation(); closeCellPops(); setField(id,field,key); }
 function duePicker(e,id){
@@ -4143,34 +4208,57 @@ function _colIsKind(colId){
 function statusColOpts(col){
   const c=(col&&typeof col==='object')?col:customColumns().find(x=>x.id===col);
   const raw=(c&&c.options)||[];
-  const out=raw.map(o=>typeof o==='string'?{label:o,color:'#c4c4c4'}:{label:o&&o.label,color:(o&&o.color)||'#c4c4c4'})
+  const out=raw.map(o=>typeof o==='string'?{id:null,label:o,color:'#c4c4c4'}
+                                          :{id:(o&&o.id)||null,label:o&&o.label,color:(o&&o.color)||'#c4c4c4'})
                .filter(o=>o.label);
   const defs=(c&&c.type==='item_kind')?ITEM_KIND_OPTS:STATUS_OPTS;
-  return out.length?out:defs.map(o=>({label:o.label,color:o.color}));
+  return out.length?out:defs.map(o=>({id:null,label:o.label,color:o.color}));
+}
+/* Every status column has a default: a cell with nothing chosen is not blank,
+   it reads "טרם הוגדר" in grey. Choosing it again clears the stored value, so
+   the default costs nothing in the data. */
+const STATUS_UNSET={label:'טרם הוגדר',color:'#c4c4c4'};
+/* What a status cell shows now. The column's vocabulary is the source: match
+   the option the cell points at (by id, or by label for cells written before
+   ids existed) and use its current label and colour, so renaming or
+   recolouring shows on every cell at once. The copy stored on the cell is the
+   fallback for an option that has since been removed. */
+function statusCellView(v,colId){
+  if(!v||!v.label)return null;
+  const opts=colId==null?[]:statusColOpts(colId);
+  const o=(v.id&&opts.find(x=>x.id===v.id))||opts.find(x=>x.label===v.label);
+  return o?{label:o.label,color:o.color}:{label:v.label,color:v.color||'#c4c4c4'};
 }
 function statusCellPill(v,colId){
-  if(!v||!v.label)return '<span class="pill pill-empty">—</span>';
-  // the column's vocabulary wins on color, so a recolor shows on existing cells
-  const o=colId==null?null:statusColOpts(colId).find(x=>x.label===v.label);
-  return `<span class="pill" style="background:${(o&&o.color)||v.color||'#c4c4c4'}">${esc(v.label)}</span>`;
+  const m=statusCellView(v,colId);
+  if(!m)return `<span class="pill pill-unset" style="background:${STATUS_UNSET.color}">${esc(STATUS_UNSET.label)}</span>`;
+  return `<span class="pill" style="background:${m.color}">${esc(m.label)}</span>`;
 }
+/* A short list reads best stacked; past six it gets too tall, so the options
+   move into a grid three to a row. "נקה" and the manage shortcut always span
+   the full width so they stay findable at the bottom. */
+const POP_GRID_FROM=6;
 function statusCellMenu(e,taskId,colId){
   e.stopPropagation();
   const cur=((findAnyTask(taskId)||{}).custom_fields||{})[colId];
-  let html=statusColOpts(colId).map((o,i)=>`<button class="cell-pop-opt" style="background:${o.color}" onclick="pickStatusCell(event,${taskId},'${colId}',${i})">${esc(o.label)}${cur&&cur.label===o.label?' <i class="fa-solid fa-check"></i>':''}</button>`).join('')
-    +`<button class="cell-pop-opt cell-pop-clear" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">נקה</button>`;
+  const opts=statusColOpts(colId);
+  const isCur=o=>!!cur&&((cur.id&&o.id)?cur.id===o.id:cur.label===o.label);
+  let html=opts.map((o,i)=>`<button class="cell-pop-opt" style="background:${o.color}" title="${esc(o.label)}" onclick="pickStatusCell(event,${taskId},'${colId}',${i})">${esc(o.label)}${isCur(o)?' <i class="fa-solid fa-check"></i>':''}</button>`).join('')
+    +`<button class="cell-pop-opt pop-span" style="background:${STATUS_UNSET.color}" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">${esc(STATUS_UNSET.label)}${!cur||!cur.label?' <i class="fa-solid fa-check"></i>':''}</button>`;
   // board admin gets the same shortcut the built-in status column has
   if(isBoardAdmin())
-    html+=`<button class="cell-pop-opt cell-pop-manage" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ${_colIsKind(colId)?'ניהול ערכי הסוג':'ניהול סטטוסים'}</button>`;
-  openCellPop(e.currentTarget,html);
+    html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ${_colIsKind(colId)?'ניהול ערכי הסוג':'ניהול סטטוסים'}</button>`;
+  openCellPop(e.currentTarget,html,opts.length>POP_GRID_FROM?'pop-grid':'');
 }
 function pickStatusCell(e,taskId,colId,optIdx){
   e.stopPropagation();closeCellPops();
   const o=optIdx>=0?statusColOpts(colId)[optIdx]:null;
-  setCell(taskId,colId,o?{label:o.label,color:o.color}:null);renderView();
+  // the id is the reference; label and colour ride along only as a fallback for
+  // an option that is later removed from the column
+  setCell(taskId,colId,o?{id:o.id||null,label:o.label,color:o.color}:null);renderView();
 }
 /* ===== board-admin editor for one status column's own vocabulary ===== */
-const STATUS_COL_MAX=20;
+const STATUS_COL_MAX=30;
 const STATUS_PALETTE=['#0073ea','#fdab3d','#e2445c','#00c875','#a25ddc','#579bfc','#037f4c','#ff642e','#00c2b8','#bb3354','#9699a6','#808080'];
 let _csDraft=[], _csCol=null;
 function manageColStatuses(colId){
@@ -4179,7 +4267,7 @@ function manageColStatuses(colId){
   _csCol=colId;
   // `orig` remembers the label as opened (saved or default), so a rename can
   // follow through to the cells that already carry it
-  _csDraft=statusColOpts(c).map(o=>({label:o.label,color:o.color,orig:o.label}));
+  _csDraft=statusColOpts(c).map(o=>({id:o.id||null,label:o.label,color:o.color,orig:o.label}));
   _renderColStatusModal();
 }
 function _renderColStatusModal(){
@@ -4224,7 +4312,7 @@ async function _csSave(){
     const label=(s.label||'').trim();
     if(!label||seen.has(label))continue;                          // blank/duplicate names are dropped
     seen.add(label);
-    const o={label,color:s.color||'#c4c4c4'};
+    const o={id:s.id||undefined,label,color:s.color||'#c4c4c4'};
     opts.push(o);
     if(s.orig&&s.orig!==label)ren.set(s.orig,o);
   }
@@ -4247,9 +4335,10 @@ async function _csMigrate(colId,ren){
 }
 /* ===== board-admin editor for the built-in status vocabulary ===== */
 let _stDraft=[];
+const BOARD_STATUS_MAX=30;
 function manageStatuses(){
   if(!isBoardAdmin()||!st.board)return;
-  _stDraft=boardStatusList().map(x=>({key:x.key,label:x.he,color:x.c}));
+  _stDraft=boardStatusList().map(x=>({key:x.key,label:x.he,color:x.c,base:x.base||x.key}));
   _renderStatusModal();
 }
 function _renderStatusModal(){
@@ -4263,15 +4352,13 @@ function _renderStatusModal(){
       <input class="st-lbl" value="${esc(s.label)}" maxlength="40" placeholder="שם הסטטוס" oninput="_stSet(${i},'label',this.value)">
       <button class="st-del" title="הסר" ${_stDraft.length<=1?'disabled':''} onclick="_stRemove(${i})"><i class="fa-solid fa-trash-can"></i></button>
     </div>`).join('');
-  const used=new Set(_stDraft.map(s=>s.key));
-  const avail=STATUS_ALL.filter(s=>!used.has(s.key));
-  const addBtn=avail.length
+  const addBtn=_stDraft.length<BOARD_STATUS_MAX
     ? `<button class="btn btn-ghost" onclick="_stAdd()"><i class="fa-solid fa-plus"></i> הוסף סטטוס</button>`
-    : `<span style="color:var(--text-light);font-size:12px">הגעת למספר הסטטוסים המרבי (7)</span>`;
+    : `<span style="color:var(--text-light);font-size:12px">הגעת למספר הסטטוסים המרבי (${BOARD_STATUS_MAX})</span>`;
   showModal(`
     <h2><i class="fa-solid fa-sliders"></i> ניהול סטטוסים · ${esc(st.board.name)}</h2>
     <div class="mbody">
-      <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">שנה שם, צבע וסדר של הסטטוסים בלוח. שינוי סטטוס של פריט ימשיך להעביר אותו לקבוצה המתאימה.</p>
+      <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">שנה שם, צבע וסדר של הסטטוסים בלוח (עד ${BOARD_STATUS_MAX}). שינוי סטטוס של פריט ימשיך להעביר אותו לקבוצה המתאימה.</p>
       <div id="st-rows">${rows}</div>
       <div style="margin-top:12px">${addBtn}</div>
     </div>
@@ -4283,13 +4370,26 @@ function _renderStatusModal(){
 function _stSet(i,k,v){if(_stDraft[i])_stDraft[i][k]=v;}         // no re-render → inputs keep focus
 function _stMove(i,d){const j=i+d;if(j<0||j>=_stDraft.length)return;const t=_stDraft[i];_stDraft[i]=_stDraft[j];_stDraft[j]=t;_renderStatusModal();}
 function _stRemove(i){if(_stDraft.length<=1)return;_stDraft.splice(i,1);_renderStatusModal();}
-function _stAdd(){const used=new Set(_stDraft.map(s=>s.key));const nx=STATUS_ALL.find(s=>!used.has(s.key));if(!nx)return;_stDraft.push({key:nx.key,label:nx.he,color:nx.c});_renderStatusModal();}
+function _stAdd(){
+  if(_stDraft.length>=BOARD_STATUS_MAX)return;
+  const used=new Set(_stDraft.map(s=>s.key));
+  const nx=STATUS_ALL.find(s=>!used.has(s.key));      // use up the seven engine values first
+  if(nx){ _stDraft.push({key:nx.key,label:nx.he,color:nx.c,base:nx.key}); }
+  else{
+    // Beyond those seven the status is the board's own: it is stored against an
+    // engine value so group auto-move and the kanban keep working, but that is
+    // an implementation detail — nothing in the editor exposes it.
+    const pal=STATUS_PALETTE.filter(c=>!_stDraft.some(s=>s.color===c));
+    _stDraft.push({key:'',label:'סטטוס חדש',color:pal[0]||STATUS_PALETTE[0],base:'in_progress'});
+  }
+  _renderStatusModal();
+}
 async function _stSave(){
-  const payload=_stDraft.map(s=>({key:s.key,label:(s.label||'').trim()||s.key,color:s.color}));
+  const payload=_stDraft.map(s=>({key:s.key||undefined,label:(s.label||'').trim()||'סטטוס',color:s.color,base:s.base}));
   if(!payload.length)return;
   try{
-    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({statuses:payload})});
-    st.board.statuses=payload.map(s=>({key:s.key,label:s.label,color:s.color}));
+    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({statuses:payload})});
+    st.board.statuses=r.statuses||payload;   // the server mints keys for new ones
     closeModals();toast('הסטטוסים עודכנו ✓');renderView();
   }catch(e){toast('שגיאה בשמירת הסטטוסים');}
 }
@@ -5057,8 +5157,11 @@ async function openNewItem(group){
   const g=((st.board.groups)||[]).find(x=>x.id===gid);
   const status=(g&&g.task_status)||undefined;           // new item's status matches its group
   try{
+    // the status above places the item; nobody has chosen one yet, so it shows
+    // the "טרם הוגדר" default until someone does
     const t=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:withMe({board_id:st.board.id,group_id:gid,title:'פריט חדש',status})});
+      body:withMe({board_id:st.board.id,group_id:gid,title:'פריט חדש',status,
+                   custom_fields:{status_unset:true}})});
     if(t&&t.id){
       // insert the new row in place — no full-board refetch/refresh
       (st.board.tasks=st.board.tasks||[]).push(t);

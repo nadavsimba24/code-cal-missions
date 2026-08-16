@@ -14,7 +14,8 @@ from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
-from auth import auth_mode, current_user, current_user_id, init_auth, resolve_user
+from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
+                  init_auth, resolve_user)
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
@@ -93,6 +94,18 @@ init_auth(engine)
 if auth_mode() == "dev":
     print("[auth] DEV MODE — identity is taken from the X-CityOS-User header. "
           "Never set CITYOS_AUTH_MODE=dev in production.")
+elif auth_mode() == "entra":
+    # The SSO routes live at /auth/* — outside /api/, so the middleware above
+    # lets them through unauthenticated, which is the whole point of a login
+    # page. They are registered here, well before the StaticFiles mount at "/",
+    # because the first matching route wins.
+    import entra
+    app.include_router(entra.router)
+    if entra.is_configured():
+        print(f"[auth] ENTRA SSO — tenant {entra.tenant_id()}, client {entra.client_id()}")
+    else:
+        print("[auth] ENTRA SSO selected but not configured — set ENTRA_TENANT_ID, "
+              "ENTRA_CLIENT_ID and ENTRA_CLIENT_SECRET. Every request will be refused.")
 
 def _migrate():
     """Lightweight additive migrations for SQLite (create_all won't ALTER)."""
@@ -475,11 +488,12 @@ class DashboardOut(BaseModel):
 # ── API Routes ───────────────────────────────────────────────────────
 
 @app.get("/api/status")
-def status():
-    # auth_mode lets the SPA know whether to show the local user picker or to
-    # expect an identity from Entra. It exposes no user data.
+def status(request: Request):
+    # The SPA shows the local user picker only in dev mode, so this has to be
+    # the mode THIS request is actually authenticated under — dev is honoured
+    # only when the app is served locally. It exposes no user data.
     return {"status": "ok", "app": "CODE-CAL MISSIONS", "version": "0.1.0",
-            "auth_mode": auth_mode()}
+            "auth_mode": effective_auth_mode(request)}
 
 @app.get("/api/dashboard")
 def dashboard(user_id: int = Depends(current_user_id)):
@@ -562,13 +576,19 @@ def _valid_hex(c):
 # colours the labels of every such column separately (the built-in status column
 # has its own, board-wide list above). Stored on the column as
 # options=[{label,color}]; an empty/absent list means "use the client defaults".
-STATUS_COL_MAX = 20
+STATUS_COL_MAX = 30
 
 def _status_col_options(raw):
-    """Normalise a status column's own label vocabulary, or None when unset."""
+    """Normalise a status column's own vocabulary, or None when unset.
+
+    Each option carries a stable id. A cell stores that id, so renaming or
+    recolouring the option is a change in one place that every cell already
+    referencing it picks up — no rewriting of item data, and nothing to go
+    stale if a rewrite were to fail halfway.
+    """
     if not isinstance(raw, list):
         return None
-    out, seen = [], set()
+    out, seen, ids = [], set(), set()
     for it in raw:
         if isinstance(it, str):
             it = {"label": it}
@@ -578,24 +598,60 @@ def _status_col_options(raw):
         if not label or label in seen:
             continue
         seen.add(label)
-        out.append({"label": label,
+        oid = str(it.get("id") or "").strip()
+        if not oid or oid in ids:
+            oid = "o_" + uuid.uuid4().hex[:8]
+        ids.add(oid)
+        out.append({"id": oid, "label": label,
                     "color": it.get("color") if _valid_hex(it.get("color")) else "#c4c4c4"})
         if len(out) >= STATUS_COL_MAX:
             break
     return out or None
 
+# A board may define up to this many statuses. Only seven of them can be a
+# TaskStatus value — the ones the engine keys off for group auto-move, kanban
+# columns and charts. Any status beyond those seven is a board-defined label
+# that *behaves as* one of the seven (its `base`): the item stores the base in
+# task.status so all of that keeps working, and carries the chosen label and
+# colour in custom_fields, which is what the grid renders.
+BOARD_STATUS_MAX = 30
+
+def _norm_board_status(it, seen):
+    """One validated {key,label,color,base} entry, or None to skip it."""
+    if not isinstance(it, dict):
+        return None
+    key = str(it.get("key") or "").strip()
+    label = (str(it.get("label") or "").strip())[:40]
+    if key in _STATUS_KEYS:                       # one of the seven built-ins
+        base = key
+    elif not key or key.startswith("x_"):          # a board-defined status
+        # no key means "newly added" — the server mints it. An arbitrary
+        # unknown key is still a client mistake and is dropped, as before.
+        base = it.get("base") if it.get("base") in _STATUS_KEYS else "in_progress"
+        key = key or ("x_" + uuid.uuid4().hex[:8])
+    else:
+        return None
+    if not label:
+        label = key
+    if key in seen:
+        return None
+    seen.add(key)
+    color = it.get("color") if _valid_hex(it.get("color")) else "#c4c4c4"
+    return {"key": key, "label": label, "color": color, "base": base}
+
 def _board_statuses(b):
     """The board's ordered status list (defaults when the admin hasn't customised)."""
     raw = (b.settings or {}).get("statuses")
     if not raw:
-        return [dict(x) for x in STATUS_DEFAULTS]
+        return [dict(x, base=x["key"]) for x in STATUS_DEFAULTS]
     out, seen = [], set()
     for it in raw:
-        k = (it or {}).get("key")
-        if k in _STATUS_KEYS and k not in seen:
-            seen.add(k)
-            out.append({"key": k, "label": (it.get("label") or k), "color": (it.get("color") or "#c4c4c4")})
-    return out or [dict(x) for x in STATUS_DEFAULTS]
+        e = _norm_board_status(it, seen)
+        if e:
+            out.append(e)
+        if len(out) >= BOARD_STATUS_MAX:
+            break
+    return out or [dict(x, base=x["key"]) for x in STATUS_DEFAULTS]
 
 def _board_role(db, board_id, user_id):
     """Board-scoped role (admin/editor/viewer) for a user, or None if not a member."""
@@ -998,15 +1054,11 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך סטטוסים")
             out, seen = [], set()
             for it in data["statuses"]:
-                if not isinstance(it, dict):
-                    continue
-                k = it.get("key")
-                if k not in _STATUS_KEYS or k in seen:
-                    continue
-                seen.add(k)
-                label = (str(it.get("label") or "").strip())[:40] or k
-                color = it.get("color") if _valid_hex(it.get("color")) else "#c4c4c4"
-                out.append({"key": k, "label": label, "color": color})
+                e = _norm_board_status(it, seen)
+                if e:
+                    out.append(e)
+                if len(out) >= BOARD_STATUS_MAX:
+                    break
             if not out:
                 raise HTTPException(400, "חובה סטטוס אחד לפחות")
             s = dict(b.settings or {})
@@ -1073,8 +1125,11 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             b.settings = s
         db.commit()
         db.refresh(b)
+        # statuses come back because the server mints the key for a newly added
+        # board-defined status — the client cannot know it otherwise
         return {"id": b.id, "name": b.name, "icon": b.icon, "color": b.color,
-                "views": _board_views(b), "columns": (b.settings or {}).get("columns", [])}
+                "views": _board_views(b), "columns": (b.settings or {}).get("columns", []),
+                "statuses": _board_statuses(b)}
 
 @app.delete("/api/boards/{board_id}")
 def delete_board(board_id: int, user_id: int = Depends(current_user_id)):
@@ -1898,6 +1953,13 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # derived `created_by` column needs nothing — it reads task.created_by.
         creator = actor_id
         cf = dict(data.get("custom_fields") or {})
+        # A new item has no status yet — it shows "טרם הוגדר" until someone picks
+        # one. task.status still holds the group's value so grouping, kanban and
+        # the charts behave normally; this only says a human has not chosen. It
+        # is cleared the moment a status is set. A caller that names a status on
+        # creation (the form, a move) is choosing one, so the flag is not set.
+        if not data.get("status"):
+            cf.setdefault("status_unset", True)
         if creator:
             board = db.query(Board).filter(Board.id == board_id).first()
             cols = (board.settings or {}).get("columns", []) if board else []

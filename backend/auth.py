@@ -5,7 +5,14 @@ Until now the answer came from the client: every endpoint took an `actor_id`
 query/body parameter and trusted it, so `?actor_id=1` was system admin. This
 module replaces that with an identity the client cannot choose.
 
-Two modes, selected by CITYOS_AUTH_MODE:
+Three modes, selected by CITYOS_AUTH_MODE:
+
+  entra
+      The app signs people in itself, against an Entra ID app registration:
+      /auth/login → Entra → /auth/callback → a signed session cookie. Nothing
+      outside the process has to be configured, so this works on any host —
+      a laptop, Container Apps, Railway. See backend/entra.py and
+      scripts/ENTRA_SSO.md.
 
   easyauth (default)
       Production on Azure Container Apps with Entra ID. The platform's built-in
@@ -24,6 +31,11 @@ Two modes, selected by CITYOS_AUTH_MODE:
 
 The default is `easyauth` deliberately: an unconfigured deployment denies every
 request instead of granting every request. Failing closed is the whole point.
+
+Whichever mode is active, the job here is identical and deliberately small:
+turn the request into an email, look up the `User` row, and refuse if there
+isn't one. Everything downstream — boards, environments, roles — is unchanged
+and does not know or care how the identity arrived.
 """
 import base64
 import json
@@ -62,7 +74,32 @@ def init_auth(engine):
 
 def auth_mode():
     mode = (os.environ.get("CITYOS_AUTH_MODE") or "easyauth").strip().lower()
-    return "dev" if mode == "dev" else "easyauth"
+    return mode if mode in ("dev", "entra", "easyauth") else "easyauth"
+
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]", "0.0.0.0", "host.docker.internal")
+
+def _is_local(request: Request) -> bool:
+    """Is this request being served to the machine the app runs on?"""
+    host = (request.headers.get("host") or "").split(":")[0].strip().lower()
+    return host in _LOCAL_HOSTS
+
+
+def effective_auth_mode(request: Request) -> str:
+    """The mode this particular request is authenticated under.
+
+    Dev mode hands identity to whoever asks for it — that is what the local
+    user picker is. It is meant for a developer on their own machine, so it is
+    honoured only when the app is being served locally. Anywhere reachable by
+    someone else falls back to easyauth: identity comes from the platform, and
+    a request without one is refused. Without this, shipping a .env with
+    CITYOS_AUTH_MODE=dev to a host (which `vercel deploy` does, since it
+    uploads the working directory) turns the picker into a public door.
+    """
+    mode = auth_mode()
+    if mode == "dev" and not _is_local(request):
+        return "easyauth"
+    return mode
 
 
 def _autoprovision():
@@ -121,14 +158,31 @@ def _principal_dev(request: Request):
     return {"email": raw, "name": None}
 
 
+def _principal_entra(request: Request):
+    """In-app SSO: identity comes from the session cookie we signed at /auth/callback.
+
+    Imported lazily so that a deployment which never uses this mode does not
+    pay for the import, and a missing optional dependency cannot break boot.
+    """
+    from entra import session_principal
+    return session_principal(request)
+
+
+_PRINCIPAL_SOURCES = {
+    "dev": _principal_dev,
+    "entra": _principal_entra,
+    "easyauth": _principal_easyauth,
+}
+
+
 def resolve_user(db: Session, request: Request):
     """The authenticated User for this request, or raise 401/403.
 
     Never consults query parameters or the request body — identity comes only
     from the transport, which the browser cannot forge.
     """
-    mode = auth_mode()
-    principal = _principal_dev(request) if mode == "dev" else _principal_easyauth(request)
+    mode = effective_auth_mode(request)
+    principal = _PRINCIPAL_SOURCES[mode](request)
     if not principal or not principal.get("email"):
         raise HTTPException(401, "נדרשת התחברות")
 
