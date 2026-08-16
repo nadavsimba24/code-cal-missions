@@ -579,10 +579,16 @@ def _valid_hex(c):
 STATUS_COL_MAX = 30
 
 def _status_col_options(raw):
-    """Normalise a status column's own label vocabulary, or None when unset."""
+    """Normalise a status column's own vocabulary, or None when unset.
+
+    Each option carries a stable id. A cell stores that id, so renaming or
+    recolouring the option is a change in one place that every cell already
+    referencing it picks up — no rewriting of item data, and nothing to go
+    stale if a rewrite were to fail halfway.
+    """
     if not isinstance(raw, list):
         return None
-    out, seen = [], set()
+    out, seen, ids = [], set(), set()
     for it in raw:
         if isinstance(it, str):
             it = {"label": it}
@@ -592,7 +598,11 @@ def _status_col_options(raw):
         if not label or label in seen:
             continue
         seen.add(label)
-        out.append({"label": label,
+        oid = str(it.get("id") or "").strip()
+        if not oid or oid in ids:
+            oid = "o_" + uuid.uuid4().hex[:8]
+        ids.add(oid)
+        out.append({"id": oid, "label": label,
                     "color": it.get("color") if _valid_hex(it.get("color")) else "#c4c4c4"})
         if len(out) >= STATUS_COL_MAX:
             break
@@ -1943,6 +1953,13 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # derived `created_by` column needs nothing — it reads task.created_by.
         creator = actor_id
         cf = dict(data.get("custom_fields") or {})
+        # A new item has no status yet — it shows "טרם הוגדר" until someone picks
+        # one. task.status still holds the group's value so grouping, kanban and
+        # the charts behave normally; this only says a human has not chosen. It
+        # is cleared the moment a status is set. A caller that names a status on
+        # creation (the form, a move) is choosing one, so the flag is not set.
+        if not data.get("status"):
+            cf.setdefault("status_unset", True)
         if creator:
             board = db.query(Board).filter(Board.id == board_id).first()
             cols = (board.settings or {}).get("columns", []) if board else []

@@ -1,0 +1,51 @@
+# What `vercel deploy` may upload. Without this file the CLI uploads the whole
+# working directory — including .env, which carries CITYOS_AUTH_MODE=dev and
+# real secrets. A production deployment must take its configuration from the
+# Vercel project's environment variables, never from a developer's .env.
+
+# secrets & local configuration — production reads these from Vercel env vars
+.env
+.env.*
+*.key
+
+# VCS & tooling
+.git
+.github
+.vercel
+.claude
+
+# python virtualenv & caches
+venv
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+
+# local SQLite DB and its dated backups (prod uses DATABASE_URL / Postgres)
+*.db
+*.db.bak*
+backend/*.db
+backend/uploads
+server.log
+
+# tests, docs & scratch — nothing the lambda runs
+tests
+docs
+scripts
+data
+strix_runs
+*.md
+
+# the React frontend is not what this deployment serves
+frontend-react
+frontend/*.bak
+frontend/*.old
+
+# large reference/cloned repos
+GeoLibre
+hod-hasharon-siri
+
+# node / misc
+node_modules
+.DS_Store

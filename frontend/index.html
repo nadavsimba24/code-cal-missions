@@ -417,6 +417,8 @@ body.coldragging .col-grip{opacity:1}
 .rating .fa-regular{color:var(--border-strong)}
 .rating i:hover{transform:scale(1.18)}
 .pill-empty{background:transparent!important;color:var(--text-light);border:1px dashed var(--border-strong);min-width:auto;width:auto;padding:0 14px}
+/* the default of a status column — grey, and clearly not a chosen value */
+.pill-unset{color:#fff;opacity:.85}
 .tl-bar{display:flex;align-items:center;justify-content:center;height:28px;border-radius:14px;background:linear-gradient(90deg,#0073ea,#00c875);color:#fff;font-size:12px;font-weight:600;padding:0 12px;min-width:120px;box-shadow:var(--shadow-sm)}
 .tl-txt{white-space:nowrap}
 /* in-cell popovers */
@@ -1388,6 +1390,7 @@ function boardStatusMap(){const m={};boardStatusList().forEach(x=>m[x.key]={he:x
 function statusEntry(key){ return boardStatusList().find(x=>x.key===key)||null; }
 function statusKeyOf(t){
   const cf=(t&&t.custom_fields)||{};
+  if(cf.status_unset)return null;      // nothing chosen yet — tick nothing
   if(cf.status_key)return cf.status_key;
   return t&&t.status;
 }
@@ -2110,7 +2113,23 @@ function renderView(){
   }
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
-function statusPill(t){const cf=t.custom_fields||{};if(cf.status_label)return `<span class="pill" style="background:${cf.status_color||'#c4c4c4'}">${esc(cf.status_label)}</span>`;const m=bStat(t.status);return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
+/* What a task's status looks like right now. A board-defined status is stored
+   on the task by key plus a copy of its label and colour; the board's current
+   vocabulary wins over that copy, so renaming or recolouring one in the editor
+   shows on every item that already carries it, with nothing to migrate. The
+   copy is the fallback for a status that has since been removed. */
+function taskStatusView(t){
+  const cf=(t&&t.custom_fields)||{};
+  if(cf.status_unset)return {he:STATUS_UNSET.label,c:STATUS_UNSET.color,unset:true};
+  if(cf.status_key){
+    const e=statusEntry(cf.status_key);
+    if(e)return {he:e.he,c:e.c};
+    return {he:cf.status_label||cf.status_key,c:cf.status_color||'#c4c4c4'};
+  }
+  if(cf.status_label)return {he:cf.status_label,c:cf.status_color||'#c4c4c4'};
+  return bStat(t&&t.status);
+}
+function statusPill(t){const m=taskStatusView(t);return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
 function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span class="av-add" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span></span>';
   // clicking an assignee avatar opens the assignee editor (click bubbles to the
   // cell's openPeople) rather than the person's profile
@@ -3721,7 +3740,7 @@ function exportCell(c,t){
     if(c.key==='assignees')return (t.assignees||[]).map(a=>a.name).filter(Boolean).join(', ');
     if(c.key==='status'){
       const cf=t.custom_fields||{};
-      if(cf.status_label)return {v:cf.status_label,c:cf.status_color||null};
+      if(cf.status_key||cf.status_label){const m=taskStatusView(t);return {v:m.he,c:m.c};}
       const m=bStat(t.status); return {v:m.he,c:m.c};
     }
     if(c.key==='priority'){const p=PRIORITY[t.priority];return p?{v:p.he,c:p.c}:'';}
@@ -3737,9 +3756,8 @@ function exportCell(c,t){
     case 'rating':   return v?Number(v):'';
     case 'item_kind':
     case 'status':{
-      if(!v||!v.label)return '';
-      const o=statusColOpts(col).find(x=>x.label===v.label);
-      return {v:v.label,c:(o&&o.color)||v.color||null};
+      const m=statusCellView(v,col);
+      return m?{v:m.label,c:m.color}:{v:STATUS_UNSET.label,c:STATUS_UNSET.color};
     }
     case 'timeline': return (v&&v.from)?`${xdate(v.from)} – ${xdate(v.to||v.from)}`:'';
     case 'checkbox': return v?'כן':'';
@@ -4084,13 +4102,13 @@ async function setField(id,field,value){
   if(field==='status'){
     const e=statusEntry(value);
     if(e&&e.base&&e.base!==e.key){
-      extra={status_key:e.key,status_label:e.he,status_color:e.c};
+      extra={status_key:e.key,status_label:e.he,status_color:e.c,status_unset:null};
       value=e.base;
     }else{
-      extra={status_key:null,status_label:null,status_color:null};   // back to a built-in
+      extra={status_key:null,status_label:null,status_color:null,status_unset:null};
     }
     if(t){ t.custom_fields=t.custom_fields||{};
-      for(const k of ['status_key','status_label','status_color'])
+      for(const k of ['status_key','status_label','status_color','status_unset'])
         if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
   }
   if(t)t[field]=value;
@@ -4190,16 +4208,31 @@ function _colIsKind(colId){
 function statusColOpts(col){
   const c=(col&&typeof col==='object')?col:customColumns().find(x=>x.id===col);
   const raw=(c&&c.options)||[];
-  const out=raw.map(o=>typeof o==='string'?{label:o,color:'#c4c4c4'}:{label:o&&o.label,color:(o&&o.color)||'#c4c4c4'})
+  const out=raw.map(o=>typeof o==='string'?{id:null,label:o,color:'#c4c4c4'}
+                                          :{id:(o&&o.id)||null,label:o&&o.label,color:(o&&o.color)||'#c4c4c4'})
                .filter(o=>o.label);
   const defs=(c&&c.type==='item_kind')?ITEM_KIND_OPTS:STATUS_OPTS;
-  return out.length?out:defs.map(o=>({label:o.label,color:o.color}));
+  return out.length?out:defs.map(o=>({id:null,label:o.label,color:o.color}));
+}
+/* Every status column has a default: a cell with nothing chosen is not blank,
+   it reads "טרם הוגדר" in grey. Choosing it again clears the stored value, so
+   the default costs nothing in the data. */
+const STATUS_UNSET={label:'טרם הוגדר',color:'#c4c4c4'};
+/* What a status cell shows now. The column's vocabulary is the source: match
+   the option the cell points at (by id, or by label for cells written before
+   ids existed) and use its current label and colour, so renaming or
+   recolouring shows on every cell at once. The copy stored on the cell is the
+   fallback for an option that has since been removed. */
+function statusCellView(v,colId){
+  if(!v||!v.label)return null;
+  const opts=colId==null?[]:statusColOpts(colId);
+  const o=(v.id&&opts.find(x=>x.id===v.id))||opts.find(x=>x.label===v.label);
+  return o?{label:o.label,color:o.color}:{label:v.label,color:v.color||'#c4c4c4'};
 }
 function statusCellPill(v,colId){
-  if(!v||!v.label)return '<span class="pill pill-empty">—</span>';
-  // the column's vocabulary wins on color, so a recolor shows on existing cells
-  const o=colId==null?null:statusColOpts(colId).find(x=>x.label===v.label);
-  return `<span class="pill" style="background:${(o&&o.color)||v.color||'#c4c4c4'}">${esc(v.label)}</span>`;
+  const m=statusCellView(v,colId);
+  if(!m)return `<span class="pill pill-unset" style="background:${STATUS_UNSET.color}">${esc(STATUS_UNSET.label)}</span>`;
+  return `<span class="pill" style="background:${m.color}">${esc(m.label)}</span>`;
 }
 /* A short list reads best stacked; past six it gets too tall, so the options
    move into a grid three to a row. "נקה" and the manage shortcut always span
@@ -4209,8 +4242,9 @@ function statusCellMenu(e,taskId,colId){
   e.stopPropagation();
   const cur=((findAnyTask(taskId)||{}).custom_fields||{})[colId];
   const opts=statusColOpts(colId);
-  let html=opts.map((o,i)=>`<button class="cell-pop-opt" style="background:${o.color}" title="${esc(o.label)}" onclick="pickStatusCell(event,${taskId},'${colId}',${i})">${esc(o.label)}${cur&&cur.label===o.label?' <i class="fa-solid fa-check"></i>':''}</button>`).join('')
-    +`<button class="cell-pop-opt cell-pop-clear pop-span" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">נקה</button>`;
+  const isCur=o=>!!cur&&((cur.id&&o.id)?cur.id===o.id:cur.label===o.label);
+  let html=opts.map((o,i)=>`<button class="cell-pop-opt" style="background:${o.color}" title="${esc(o.label)}" onclick="pickStatusCell(event,${taskId},'${colId}',${i})">${esc(o.label)}${isCur(o)?' <i class="fa-solid fa-check"></i>':''}</button>`).join('')
+    +`<button class="cell-pop-opt pop-span" style="background:${STATUS_UNSET.color}" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">${esc(STATUS_UNSET.label)}${!cur||!cur.label?' <i class="fa-solid fa-check"></i>':''}</button>`;
   // board admin gets the same shortcut the built-in status column has
   if(isBoardAdmin())
     html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ${_colIsKind(colId)?'ניהול ערכי הסוג':'ניהול סטטוסים'}</button>`;
@@ -4219,7 +4253,9 @@ function statusCellMenu(e,taskId,colId){
 function pickStatusCell(e,taskId,colId,optIdx){
   e.stopPropagation();closeCellPops();
   const o=optIdx>=0?statusColOpts(colId)[optIdx]:null;
-  setCell(taskId,colId,o?{label:o.label,color:o.color}:null);renderView();
+  // the id is the reference; label and colour ride along only as a fallback for
+  // an option that is later removed from the column
+  setCell(taskId,colId,o?{id:o.id||null,label:o.label,color:o.color}:null);renderView();
 }
 /* ===== board-admin editor for one status column's own vocabulary ===== */
 const STATUS_COL_MAX=30;
@@ -4231,7 +4267,7 @@ function manageColStatuses(colId){
   _csCol=colId;
   // `orig` remembers the label as opened (saved or default), so a rename can
   // follow through to the cells that already carry it
-  _csDraft=statusColOpts(c).map(o=>({label:o.label,color:o.color,orig:o.label}));
+  _csDraft=statusColOpts(c).map(o=>({id:o.id||null,label:o.label,color:o.color,orig:o.label}));
   _renderColStatusModal();
 }
 function _renderColStatusModal(){
@@ -4276,7 +4312,7 @@ async function _csSave(){
     const label=(s.label||'').trim();
     if(!label||seen.has(label))continue;                          // blank/duplicate names are dropped
     seen.add(label);
-    const o={label,color:s.color||'#c4c4c4'};
+    const o={id:s.id||undefined,label,color:s.color||'#c4c4c4'};
     opts.push(o);
     if(s.orig&&s.orig!==label)ren.set(s.orig,o);
   }
@@ -5121,8 +5157,11 @@ async function openNewItem(group){
   const g=((st.board.groups)||[]).find(x=>x.id===gid);
   const status=(g&&g.task_status)||undefined;           // new item's status matches its group
   try{
+    // the status above places the item; nobody has chosen one yet, so it shows
+    // the "טרם הוגדר" default until someone does
     const t=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:withMe({board_id:st.board.id,group_id:gid,title:'פריט חדש',status})});
+      body:withMe({board_id:st.board.id,group_id:gid,title:'פריט חדש',status,
+                   custom_fields:{status_unset:true}})});
     if(t&&t.id){
       // insert the new row in place — no full-board refetch/refresh
       (st.board.tasks=st.board.tasks||[]).push(t);
