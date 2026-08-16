@@ -4,6 +4,7 @@ A board admin names and colours the statuses of every status column on its
 own (col.options = [{label,color}]), independently of the board-wide status
 list that drives the built-in "סטטוס" column.
 """
+import main as cityos_main
 
 
 def _make_board(client, admin_id, name="סטטוסים לעמודה"):
@@ -59,13 +60,13 @@ def test_labels_are_trimmed_deduped_and_capped(client, admin_id):
     bid = _make_board(client, admin_id)
     opts = ([{"label": "  כפול  ", "color": "#00c875"}, {"label": "כפול", "color": "#e2445c"},
              {"label": "", "color": "#00c875"}, {"label": "x" * 60, "color": "#00c875"}]
-            + [{"label": f"s{i}", "color": "#00c875"} for i in range(30)])
+            + [{"label": f"s{i}", "color": "#00c875"} for i in range(cityos_main.STATUS_COL_MAX + 5)])
     col = _status_col(client, bid, admin_id, options=opts)
     labels = [o["label"] for o in col["options"]]
     assert labels[0] == "כפול" and labels.count("כפול") == 1
     assert "" not in labels
     assert len(labels[1]) == 40                      # long label truncated
-    assert len(labels) == 20                         # STATUS_COL_MAX
+    assert len(labels) == cityos_main.STATUS_COL_MAX   # the cap, whatever it is set to
 
 
 def test_bad_color_falls_back_and_empty_options_reset(client, admin_id):
