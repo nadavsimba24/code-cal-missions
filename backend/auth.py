@@ -77,6 +77,31 @@ def auth_mode():
     return mode if mode in ("dev", "entra", "easyauth") else "easyauth"
 
 
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]", "0.0.0.0", "host.docker.internal")
+
+def _is_local(request: Request) -> bool:
+    """Is this request being served to the machine the app runs on?"""
+    host = (request.headers.get("host") or "").split(":")[0].strip().lower()
+    return host in _LOCAL_HOSTS
+
+
+def effective_auth_mode(request: Request) -> str:
+    """The mode this particular request is authenticated under.
+
+    Dev mode hands identity to whoever asks for it — that is what the local
+    user picker is. It is meant for a developer on their own machine, so it is
+    honoured only when the app is being served locally. Anywhere reachable by
+    someone else falls back to easyauth: identity comes from the platform, and
+    a request without one is refused. Without this, shipping a .env with
+    CITYOS_AUTH_MODE=dev to a host (which `vercel deploy` does, since it
+    uploads the working directory) turns the picker into a public door.
+    """
+    mode = auth_mode()
+    if mode == "dev" and not _is_local(request):
+        return "easyauth"
+    return mode
+
+
 def _autoprovision():
     return (os.environ.get("CITYOS_AUTH_AUTOPROVISION") or "").strip() in ("1", "true", "yes")
 
@@ -156,7 +181,7 @@ def resolve_user(db: Session, request: Request):
     Never consults query parameters or the request body — identity comes only
     from the transport, which the browser cannot forge.
     """
-    mode = auth_mode()
+    mode = effective_auth_mode(request)
     principal = _PRINCIPAL_SOURCES[mode](request)
     if not principal or not principal.get("email"):
         raise HTTPException(401, "נדרשת התחברות")

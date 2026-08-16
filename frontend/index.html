@@ -881,7 +881,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .wp-detail-panel h3{font-size:15px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .subsection{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:12px}
 
-/* ===== "פועל בתור" switcher ===== */
+/* ===== the signed-in user chip ===== */
 .me-btn{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border-radius:20px}
 .me-btn:hover{background:var(--row-hover)}
 .me-btn .av{width:30px;height:30px;margin:0;font-size:12px}
@@ -1241,7 +1241,7 @@ body, body *{ font-weight:400!important; }
         <div class="tb-pop notif-pop" id="pop-notif" style="inset-inline-start:auto;inset-inline-end:0"></div>
       </div>
       <div class="tb-ctl" id="ctl-me">
-        <button class="me-btn" onclick="togglePop('me')" title="פועל בתור"><span class="av" id="me-av" style="background:var(--primary)">?</span><span class="me-name" id="me-name"></span><i class="fa-solid fa-chevron-down" style="font-size:10px;color:var(--text-light)"></i></button>
+        <button class="me-btn" onclick="togglePop('me')" title="החשבון שלי"><span class="av" id="me-av" style="background:var(--primary)">?</span><span class="me-name" id="me-name"></span><i class="fa-solid fa-chevron-down" style="font-size:10px;color:var(--text-light)"></i></button>
         <div class="tb-pop" id="pop-me" style="inset-inline-start:auto;inset-inline-end:0"></div>
       </div>
     </div>
@@ -2381,7 +2381,7 @@ const Notif={
   start(){ clearInterval(this._timer); this.load(); this._timer=setInterval(()=>this.load(),45000); },
   stop(){ clearInterval(this._timer); this.items=[]; this.unread=0; this.badge(); },
 };
-/* ===== current user ("פועל בתור") ===== */
+/* ===== the signed-in user ===== */
 function meId(){return st.me&&st.me.id;}
 /* The server ignores any identity in the body — it reads the authenticated
    user from the request. user_id is still sent so an older backend keeps
@@ -3056,16 +3056,7 @@ function renderMe(){
   if(av)av.innerHTML=u.avatar_url?`<img src="${esc(u.avatar_url)}" alt="">`:avatarInner(u); if(nm)nm.textContent=u.name;
   updateNewBoardBtn();
 }
-async function setMe(id){
-  st.me=(st.users||[]).find(u=>u.id===id)||st.me; renderMe(); closePops();
-  Notif.start();
-  await loadBoards();
-  if(st.board && st.boards.some(b=>b.id===st.board.id)){ await openBoard(st.board.id); }
-  else if(st.boards.length){ st.board=null; await openBoard(st.boards[0].id); }
-  else{ st.board=null; document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-lock"></i><div>אין לך גישה ללוחות</div></div>'; }
-  if(Chat.taskId)Chat.close();
-  toast('פועל בתור '+(st.me&&st.me.name));
-}
+
 function renderPop(name){
   if(name==='me'){
     const el=document.getElementById('pop-me'); if(!el)return;
@@ -3073,7 +3064,9 @@ function renderPop(name){
         <span class="av" style="background:var(--primary);width:34px;height:34px;font-size:12px">${avatarInner(st.me)}</span>
         <span style="flex:1;text-align:start"><div style="font-weight:700">${esc(st.me.name)}</div><div style="font-size:11px;color:var(--text-light)">${esc(st.me.title||ROLE_HE[st.me.role]||'')} · הצג פרופיל</div></span>
         <i class="fa-solid fa-chevron-left" style="color:var(--text-light);font-size:11px"></i>
-      </button>`:'')+'<div class="pop-title">פועל בתור</div><div class="pop-people">'+(st.users||[]).map(u=>`<label class="pop-row" onclick="setMe(${u.id})"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span style="flex:1">${esc(u.name)}<div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></span>${meId()===u.id?'<i class="fa-solid fa-check" style="color:var(--green)"></i>':''}</label>`).join('')+'</div>'
+      </button>`:'')
+      // No "act as someone else" list: identity comes from the sign-in, not
+      // from a menu. Switching users is not something the app offers.
       +'<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px"><button class="pop-row" style="width:100%;color:var(--red);font-weight:600" onclick="Auth.logout()"><span style="width:26px;text-align:center"><i class="fa-solid fa-right-from-bracket"></i></span> התנתק</button></div>';
     return;
   }

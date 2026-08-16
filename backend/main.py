@@ -14,7 +14,8 @@ from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.dirname(__file__))
-from auth import auth_mode, current_user, current_user_id, init_auth, resolve_user
+from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
+                  init_auth, resolve_user)
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
@@ -487,11 +488,12 @@ class DashboardOut(BaseModel):
 # ── API Routes ───────────────────────────────────────────────────────
 
 @app.get("/api/status")
-def status():
-    # auth_mode lets the SPA know whether to show the local user picker or to
-    # expect an identity from Entra. It exposes no user data.
+def status(request: Request):
+    # The SPA shows the local user picker only in dev mode, so this has to be
+    # the mode THIS request is actually authenticated under — dev is honoured
+    # only when the app is served locally. It exposes no user data.
     return {"status": "ok", "app": "CODE-CAL MISSIONS", "version": "0.1.0",
-            "auth_mode": auth_mode()}
+            "auth_mode": effective_auth_mode(request)}
 
 @app.get("/api/dashboard")
 def dashboard(user_id: int = Depends(current_user_id)):

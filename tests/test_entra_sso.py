@@ -349,7 +349,10 @@ def test_entra_session_signs_you_into_the_real_app(monkeypatch):
     import main as cityos_main
     raw = _RawClient(cityos_main.app)
 
-    known = raw.get("/api/users", headers={"X-CityOS-User": "1"}).json()[0]["email"]
+    # this one read happens in dev mode, which is honoured only for a locally
+    # served app — the raw client would otherwise present itself as remote
+    known = raw.get("/api/users",
+                    headers={"X-CityOS-User": "1", "host": "localhost"}).json()[0]["email"]
     monkeypatch.setenv("CITYOS_AUTH_MODE", "entra")
 
     # no cookie at all → refused, and the dev header no longer works either

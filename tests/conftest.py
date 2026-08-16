@@ -41,6 +41,12 @@ class TestClient(_RawTestClient):
     """
 
     def request(self, method, url, **kw):
+        # The picker's identity is honoured only for a locally served app, and
+        # the suite stands in for exactly that. TestClient would otherwise send
+        # host: testserver, which is (rightly) treated as remote. A test that
+        # wants the remote behaviour passes its own host header.
+        if "host" not in {k.lower() for k in (kw.get("headers") or {})}:
+            kw["headers"] = {**(kw.get("headers") or {}), "host": "localhost"}
         if "x-cityos-user" not in {k.lower() for k in (kw.get("headers") or {})}:
             actor = _actor_from(url, kw.get("json"))
             if actor is None:
