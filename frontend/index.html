@@ -912,7 +912,8 @@ img.pf-av{object-fit:cover;background:#fff}
 .cmt-main{flex:1;min-width:0}
 .cmt-head{display:flex;align-items:center;gap:7px;font-size:13px;flex-wrap:wrap}
 .cmt-role{font-size:11px;color:var(--text-light);background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:0 7px}
-.cmt-time{font-size:11px;color:var(--text-light);margin-inline-start:auto}
+/* the time sits next to the name, not pushed to the far edge of the row */
+.cmt-time{font-size:11px;color:var(--text-light)}
 .cmt-body{background:var(--surface);border:1px solid var(--border);border-radius:10px;border-start-start-radius:2px;padding:9px 12px;margin-top:5px;font-size:13.5px;line-height:1.55;word-break:break-word}
 .cmt-body .bullet{position:relative;padding-inline-start:16px}
 .cmt-body .bullet::before{content:'•';position:absolute;inset-inline-start:2px;color:var(--primary)}
@@ -962,7 +963,12 @@ img.pf-av{object-fit:cover;background:#fff}
 .chat-noperm i{color:var(--text-light)}
 .composer{background:var(--surface);border-top:1px solid var(--border);padding:10px 12px 10px 24px;position:relative}
 /* the same rich composer, rendered inline when editing an existing comment */
-.composer.composer-edit{border-top:none;border:1px solid var(--primary);border-radius:10px;padding:8px;margin-top:5px;box-shadow:0 0 0 3px var(--primary-soft)}
+/* editing a comment: the frame belongs to .composer-input alone — the wrapper
+   drew a second border around it. The ring is a touch tighter too, so the edge
+   reads thinner. */
+.composer.composer-edit{border:none;border-radius:10px;padding:0;margin-top:5px;box-shadow:none;background:none}
+.composer-edit .composer-input{border-color:var(--primary)}
+.composer-edit .composer-input:focus-within{box-shadow:0 0 0 2px var(--primary-soft)}
 /* drag-and-drop import zone (files / Outlook emails) */
 .comp-drop{position:absolute;inset:6px;z-index:6;display:none;flex-direction:column;align-items:center;justify-content:center;gap:6px;border:2px dashed var(--primary);border-radius:11px;background:color-mix(in srgb,var(--primary) 9%,var(--surface));color:var(--primary);font-weight:700;font-size:14px;pointer-events:none;text-align:center}
 .comp-drop.show{display:flex}
@@ -5383,7 +5389,7 @@ const Chat = {
     return `<div class="cmt ${isReply?'cmt-reply':''}">
       <span class="av av-click" style="background:var(--primary)" title="הצג פרופיל" onclick="Profile.open(${c.user_id})">${avatarInner(c)}</span>
       <div class="cmt-main">
-        <div class="cmt-head"><b>${esc(c.user_name)}</b><span class="cmt-role">${ROLE_HE[c.user_role]||''}</span><span class="cmt-time">${fdatetime(c.created_at)}</span></div>
+        <div class="cmt-head"><b>${esc(c.user_name)}</b>${ROLE_HE[c.user_role]?`<span class="cmt-role">${ROLE_HE[c.user_role]}</span>`:''}<span class="cmt-time">${fdatetime(c.created_at)}</span></div>
         ${bodyOrEdit}
         ${replies?`<div class="cmt-replies">${replies}</div>`:''}
       </div>
