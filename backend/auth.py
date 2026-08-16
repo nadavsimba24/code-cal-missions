@@ -5,7 +5,14 @@ Until now the answer came from the client: every endpoint took an `actor_id`
 query/body parameter and trusted it, so `?actor_id=1` was system admin. This
 module replaces that with an identity the client cannot choose.
 
-Two modes, selected by CITYOS_AUTH_MODE:
+Three modes, selected by CITYOS_AUTH_MODE:
+
+  entra
+      The app signs people in itself, against an Entra ID app registration:
+      /auth/login → Entra → /auth/callback → a signed session cookie. Nothing
+      outside the process has to be configured, so this works on any host —
+      a laptop, Container Apps, Railway. See backend/entra.py and
+      scripts/ENTRA_SSO.md.
 
   easyauth (default)
       Production on Azure Container Apps with Entra ID. The platform's built-in
@@ -24,6 +31,11 @@ Two modes, selected by CITYOS_AUTH_MODE:
 
 The default is `easyauth` deliberately: an unconfigured deployment denies every
 request instead of granting every request. Failing closed is the whole point.
+
+Whichever mode is active, the job here is identical and deliberately small:
+turn the request into an email, look up the `User` row, and refuse if there
+isn't one. Everything downstream — boards, environments, roles — is unchanged
+and does not know or care how the identity arrived.
 """
 import base64
 import json
@@ -62,7 +74,7 @@ def init_auth(engine):
 
 def auth_mode():
     mode = (os.environ.get("CITYOS_AUTH_MODE") or "easyauth").strip().lower()
-    return "dev" if mode == "dev" else "easyauth"
+    return mode if mode in ("dev", "entra", "easyauth") else "easyauth"
 
 
 def _autoprovision():
@@ -121,6 +133,23 @@ def _principal_dev(request: Request):
     return {"email": raw, "name": None}
 
 
+def _principal_entra(request: Request):
+    """In-app SSO: identity comes from the session cookie we signed at /auth/callback.
+
+    Imported lazily so that a deployment which never uses this mode does not
+    pay for the import, and a missing optional dependency cannot break boot.
+    """
+    from entra import session_principal
+    return session_principal(request)
+
+
+_PRINCIPAL_SOURCES = {
+    "dev": _principal_dev,
+    "entra": _principal_entra,
+    "easyauth": _principal_easyauth,
+}
+
+
 def resolve_user(db: Session, request: Request):
     """The authenticated User for this request, or raise 401/403.
 
@@ -128,7 +157,7 @@ def resolve_user(db: Session, request: Request):
     from the transport, which the browser cannot forge.
     """
     mode = auth_mode()
-    principal = _principal_dev(request) if mode == "dev" else _principal_easyauth(request)
+    principal = _PRINCIPAL_SOURCES[mode](request)
     if not principal or not principal.get("email"):
         raise HTTPException(401, "נדרשת התחברות")
 

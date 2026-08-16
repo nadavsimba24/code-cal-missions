@@ -1,7 +1,13 @@
-# Entra ID (Azure AD) authentication for CityOS
+# Entra ID via Azure Easy Auth (platform-terminated login)
 
 The app no longer decides who you are from a request parameter. Identity arrives
 from the platform, and the backend maps it to a `User` row by email.
+
+> **This is one of two ways to run Entra ID.** Here the Azure Container Apps
+> ingress performs the login and the app just reads the result, so it requires no
+> code but only works on Azure. The other way — `CITYOS_AUTH_MODE=entra`, where
+> the app performs the login itself against an app registration and therefore
+> runs anywhere — is [ENTRA_SSO.md](ENTRA_SSO.md). Enable one, not both.
 
 ## The one setting that matters
 
@@ -111,7 +117,7 @@ Two ways to onboard:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CITYOS_AUTH_MODE` | `easyauth` | `dev` trusts an `X-CityOS-User` header. Local only. |
+| `CITYOS_AUTH_MODE` | `easyauth` | `entra` = the app signs people in itself ([ENTRA_SSO.md](ENTRA_SSO.md)). `dev` trusts an `X-CityOS-User` header, local only. |
 | `CITYOS_AUTH_AUTOPROVISION` | off | Create a user row on first successful sign-in. |
 | `CITYOS_CORS_ORIGINS` | empty | Comma-separated extra origins. The SPA is same-origin and needs none. |
 
