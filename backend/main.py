@@ -2140,26 +2140,16 @@ def tasks_lookup(ids: str = ""):
         return {"items": [{"id": t.id, "title": t.title, "board_id": t.board_id,
                            "board_name": bnames.get(t.board_id, "")} for t in rows]}
 
-# A status with no group of its own normally leaves the item where it is (see
-# _group_for_status). The one deliberate exception is "back to development": a
-# `todo` status ("חזרה לפיתוח") means active work, so if the board has no todo
-# group it pulls the item into the in_progress group. This is NOT the old stage
-# guess — todo routes only to in_progress ("בביצוע"), never to the planning /
-# backlog group, so renaming "לביצוע"→"חזרה לפיתוח" can never eject an item into
-# "בתכנון". Every other status without a matching group still stays put.
-_STATUS_GROUP_FALLBACK = {
-    "todo": "in_progress",
-}
-
-
 def _group_for_status(db, board_id, status_val):
-    """The group a top-level item moves to for a status.
+    """The group a top-level item moves to for a status — the one whose own status
+    matches exactly, or None to leave the item exactly where it is.
 
-    1. A group whose own status matches the value exactly wins.
-    2. Otherwise a small, explicit fallback may still route it — currently only a
-       todo, which pulls the item into the in_progress group so it returns to
-       active development from wherever it was.
-    3. No exact group and no fallback → None, and the item stays where it is.
+    No fallback by stage or by status family. A "back to development" style route
+    (todo → the in_progress group) was tried and removed: a board can have more
+    than one in_progress group — e.g. a "בביצוע" and a "roadmap" — and picking one
+    by status alone is a guess that lands items in the wrong place (roadmap). A
+    group either stands for the exact status or it does not, so "חזרה לפיתוח" on
+    an item already in "בביצוע" keeps it there, and never relocates it elsewhere.
     """
     sv = status_val.value if hasattr(status_val, "value") else status_val
     groups = db.query(Group).filter(Group.board_id == board_id).order_by(Group.position).all()
@@ -2167,11 +2157,6 @@ def _group_for_status(db, board_id, status_val):
     for g in groups:
         if gs_of(g) == sv:
             return g
-    target = _STATUS_GROUP_FALLBACK.get(sv)
-    if target:
-        for g in groups:
-            if gs_of(g) == target:
-                return g
     return None
 
 
@@ -2251,9 +2236,8 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 if st_val(task.status) != st_val(nv):
                     _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
                 task.status = nv
-                # auto-move a top-level item to the group that matches its status
-                # (exact group first, else the fallback in _STATUS_GROUP_FALLBACK
-                # — e.g. "חזרה לפיתוח" pulls it back into the in_progress group)
+                # auto-move a top-level item only to the group that stands for its
+                # exact status; with no such group it stays where it is
                 if task.parent_id is None:
                     g = _group_for_status(db, task.board_id, nv)
                     if g:

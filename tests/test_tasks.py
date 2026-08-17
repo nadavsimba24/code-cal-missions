@@ -155,8 +155,7 @@ def test_assign_at_creation_notifies(client, admin_id, member_id):
 
 def test_status_change_auto_moves_to_matching_group(client):
     """Changing a top-level item's status moves it to the group that stands for
-    that status. A groupless status leaves the item alone, with one deliberate
-    exception: `todo` ("חזרה לפיתוח") pulls it back into the in_progress group."""
+    that status — and leaves it alone when no group does."""
     b = client.get("/api/boards/1?user_id=1").json()
     by_status = {g["task_status"]: g["id"] for g in b["groups"]}
     gid = b["groups"][0]["id"]
@@ -172,9 +171,10 @@ def test_status_change_auto_moves_to_matching_group(client):
             r = client.patch(f"/api/tasks/{tid}", json={"status": status, "user_id": 1})
             assert r.status_code == 200, r.text
             assert where() == gid_for, f"status {status} did not land in its own group"
-        # a status with no group of its own leaves the item where it is —
-        # except `todo`, which is pulled into the in_progress group below
-        homeless = [s for s in ("review", "on_hold", "cancelled", "backlog")
+        # a status with no group of its own does not relocate the item — no
+        # status-family fallback (a board may have two in_progress groups, so a
+        # guess would land the item in the wrong one, e.g. "roadmap")
+        homeless = [s for s in ("todo", "review", "on_hold", "cancelled", "backlog")
                     if s not in by_status]
         assert homeless, "board 1 has a group for every status — nothing to check"
         stayed = where()
@@ -182,12 +182,6 @@ def test_status_change_auto_moves_to_matching_group(client):
             assert client.patch(f"/api/tasks/{tid}",
                                 json={"status": status, "user_id": 1}).status_code == 200
             assert where() == stayed, f"status {status} moved the item out of its group"
-        # "back to development": a groupless todo pulls the item into in_progress
-        in_prog = by_status.get("in_progress")
-        if "todo" not in by_status and in_prog is not None:
-            assert client.patch(f"/api/tasks/{tid}",
-                                json={"status": "todo", "user_id": 1}).status_code == 200
-            assert where() == in_prog, "todo did not pull the item into in_progress"
     finally:
         client.delete(f"/api/tasks/{tid}")
 

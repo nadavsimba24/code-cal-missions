@@ -4186,16 +4186,14 @@ async function setField(id,field,value){
         if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
   }
   if(t)t[field]=value;
-  // mirror the backend auto-move: a top-level item moves to the group that
-  // stands for its new status, and stays where it is when no group does.
-  // The one fallback matches _STATUS_GROUP_FALLBACK in backend/main.py: a
-  // `todo` ("חזרה לפיתוח") with no todo group pulls the item back into the
-  // in_progress group — never into planning/backlog.
+  // mirror the backend auto-move: a top-level item moves only to the group that
+  // stands for its exact status, and stays where it is when no group does — no
+  // status-family fallback (a board may have two in_progress groups, e.g.
+  // "בביצוע" and "roadmap", so a guess lands items in the wrong one).
+  // (see _group_for_status in backend/main.py)
   if(field==='status' && t && !t.parent_id){
     const gs=(st.board&&st.board.groups)||[];
-    const FALLBACK={todo:'in_progress'};
-    let g=gs.find(x=>x.task_status===value);
-    if(!g && FALLBACK[value]) g=gs.find(x=>x.task_status===FALLBACK[value]);
+    const g=gs.find(x=>x.task_status===value);
     if(g) t.group_id=g.id;
   }
   // roll up: when all sub-items are done, the parent item moves to "done" too
