@@ -653,6 +653,79 @@ def _board_statuses(b):
             break
     return out or [dict(x, base=x["key"]) for x in STATUS_DEFAULTS]
 
+# ── Priority is a status column too ──────────────────────────────────────
+# "עדיפות" is the same kind of thing as "סטטוס": one value out of a named,
+# coloured vocabulary. So it gets the same treatment — a board admin renames,
+# recolours, reorders, adds and removes its values, up to BOARD_PRIORITY_MAX,
+# exactly as with the statuses above. Five of them can be a Priority enum value
+# (what sorting and the charts key off); anything beyond behaves as one of those
+# five (its `base`), with the chosen label and colour carried on the item.
+PRIORITY_DEFAULTS = [
+    {"key": "low", "label": "נמוכה", "color": "#579bfc"},
+    {"key": "medium", "label": "בינונית", "color": "#5559df"},
+    {"key": "high", "label": "גבוהה", "color": "#fdab3d"},
+    {"key": "critical", "label": "קריטית", "color": "#e2445c"},
+    {"key": "emergency", "label": "חירום", "color": "#bb3354"},
+]
+_PRIORITY_KEYS = {p["key"] for p in PRIORITY_DEFAULTS}
+BOARD_PRIORITY_MAX = 30
+
+def _norm_board_priority(it, seen):
+    """One validated {key,label,color,base} priority, or None to skip it."""
+    if not isinstance(it, dict):
+        return None
+    key = str(it.get("key") or "").strip()
+    label = (str(it.get("label") or "").strip())[:40]
+    if key in _PRIORITY_KEYS:                      # one of the five built-ins
+        base = key
+    elif not key or key.startswith("x_"):           # a board-defined priority
+        base = it.get("base") if it.get("base") in _PRIORITY_KEYS else "medium"
+        key = key or ("x_" + uuid.uuid4().hex[:8])
+    else:
+        return None
+    if not label:
+        label = key
+    if key in seen:
+        return None
+    seen.add(key)
+    color = it.get("color") if _valid_hex(it.get("color")) else "#c4c4c4"
+    return {"key": key, "label": label, "color": color, "base": base}
+
+def _board_priorities(b):
+    """The board's ordered priority list (defaults when it hasn't customised)."""
+    raw = (b.settings or {}).get("priorities")
+    if not raw:
+        return [dict(x, base=x["key"]) for x in PRIORITY_DEFAULTS]
+    out, seen = [], set()
+    for it in raw:
+        e = _norm_board_priority(it, seen)
+        if e:
+            out.append(e)
+        if len(out) >= BOARD_PRIORITY_MAX:
+            break
+    return out or [dict(x, base=x["key"]) for x in PRIORITY_DEFAULTS]
+
+def _resolve_priority(board, value):
+    """Map a chosen priority key to (engine value, the fields the item carries).
+
+    A board-defined priority is not a Priority enum value, so it is stored as its
+    `base` with the chosen label and colour on the item — the same arrangement as
+    a board-defined status. Returns (None, None) for a key this board does not
+    know, so the caller can leave the priority alone rather than crash on it.
+    """
+    key = str(value or "").strip()
+    if not key:
+        return None, None
+    cleared = {"priority_key": None, "priority_label": None,
+               "priority_color": None, "priority_unset": None}
+    if key in _PRIORITY_KEYS:
+        return key, cleared
+    e = next((p for p in _board_priorities(board) if p["key"] == key), None) if board else None
+    if not e:
+        return None, None
+    return e["base"], {"priority_key": e["key"], "priority_label": e["label"],
+                       "priority_color": e["color"], "priority_unset": None}
+
 def _board_role(db, board_id, user_id):
     """Board-scoped role (admin/editor/viewer) for a user, or None if not a member."""
     if user_id is None:
@@ -896,6 +969,7 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "col_order": (b.settings or {}).get("col_order", []),
             "notifications_enabled": bool((b.settings or {}).get("notifications_enabled", True)),
             "statuses": _board_statuses(b),
+            "priorities": _board_priorities(b),
             "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             "tasks": tasks_out,
@@ -957,12 +1031,16 @@ def create_board(data: dict, actor_id: int = Depends(current_user_id)):
         ])
         db.flush()
         # 3 starter items in the first group so the board isn't blank — the creator
-        # is recorded as their author and auto-filled into the "יוצר הרשומה" column
+        # is recorded as their author and auto-filled into the "יוצר הרשומה" column.
+        # Nobody has chosen a status or a priority for them, so both read
+        # "טרם הוגדר" until someone does, exactly like an item added by hand.
         for i in range(1, 4):
+            cf = {"status_unset": True, "priority_unset": True}
+            if creator:
+                cf["sys_created_by"] = [creator]
             db.add(Task(board_id=b.id, group_id=g1.id, title=f"פריט {i}",
                         status=TaskStatus.BACKLOG, priority=Priority.MEDIUM, position=i,
-                        created_by=creator,
-                        custom_fields={"sys_created_by": [creator]} if creator else {}))
+                        created_by=creator, custom_fields=cf))
         # creator becomes the board admin; the board is private until they invite others
         db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
         db.commit()
@@ -1064,6 +1142,23 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             s = dict(b.settings or {})
             s["statuses"] = out
             b.settings = s
+        if data.get("priorities") is not None:
+            # the priority column is a status column, so it is edited under the
+            # same rule: only a board admin may rename/recolor/reorder/add
+            if _board_role(db, board_id, actor_id) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לערוך עדיפויות")
+            out, seen = [], set()
+            for it in data["priorities"]:
+                e = _norm_board_priority(it, seen)
+                if e:
+                    out.append(e)
+                if len(out) >= BOARD_PRIORITY_MAX:
+                    break
+            if not out:
+                raise HTTPException(400, "חובה עדיפות אחת לפחות")
+            s = dict(b.settings or {})
+            s["priorities"] = out
+            b.settings = s
         if data.get("columns") is not None:
             # only a board admin may add/edit/remove columns and their options
             if _board_role(db, board_id, actor_id) != "admin":
@@ -1125,11 +1220,11 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             b.settings = s
         db.commit()
         db.refresh(b)
-        # statuses come back because the server mints the key for a newly added
-        # board-defined status — the client cannot know it otherwise
+        # statuses and priorities come back because the server mints the key for
+        # a newly added one — the client cannot know it otherwise
         return {"id": b.id, "name": b.name, "icon": b.icon, "color": b.color,
                 "views": _board_views(b), "columns": (b.settings or {}).get("columns", []),
-                "statuses": _board_statuses(b)}
+                "statuses": _board_statuses(b), "priorities": _board_priorities(b)}
 
 @app.delete("/api/boards/{board_id}")
 def delete_board(board_id: int, user_id: int = Depends(current_user_id)):
@@ -1918,15 +2013,19 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # orphan tasks instead of silently creating board-less junk data
         if not board_id:
             raise HTTPException(422, "board_id (or a valid parent_id) is required")
-        if not db.query(Board.id).filter(Board.id == board_id).scalar():
+        board = db.query(Board).filter(Board.id == board_id).first()
+        if not board:
             raise HTTPException(404, "board not found")
+        # a board-defined priority is not an enum value — resolve it to the one
+        # it behaves as, and carry its label/colour on the item
+        prio, prio_cf = _resolve_priority(board, data.get("priority"))
         task = Task(
             board_id=board_id,
             group_id=group_id,
             parent_id=parent_id,
             title=data.get("title", "Untitled"),
             description=data.get("description", ""),
-            priority=data.get("priority", "medium"),
+            priority=prio or "medium",
             tags=data.get("tags", []),
             location_lat=data.get("location_lat"),
             location_lng=data.get("location_lng"),
@@ -1960,8 +2059,18 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # creation (the form, a move) is choosing one, so the flag is not set.
         if not data.get("status"):
             cf.setdefault("status_unset", True)
+        # and the same for the priority column, for the same reason: task.priority
+        # keeps its "medium" default so sorting and the charts behave, while the
+        # cell reads "טרם הוגדר" until someone actually picks a priority.
+        if not data.get("priority"):
+            cf.setdefault("priority_unset", True)
+        elif prio_cf:
+            for k, v in prio_cf.items():
+                if v is None:
+                    cf.pop(k, None)
+                else:
+                    cf.setdefault(k, v)
         if creator:
-            board = db.query(Board).filter(Board.id == board_id).first()
             cols = (board.settings or {}).get("columns", []) if board else []
             for c in cols:
                 if c.get("id") == "sys_created_by" and c.get("type") == "people":
@@ -2110,11 +2219,22 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         if data.get("description") is not None:
             task.description = data["description"]
         if data.get("priority"):
+            # a board-defined priority arrives as its own key: store the engine
+            # value it behaves as, and let its label/colour ride on the item
+            pboard = db.query(Board).filter(Board.id == task.board_id).first()
+            pval, pcf = _resolve_priority(pboard, data["priority"])
             try:
-                nv = Priority(data["priority"])
+                nv = Priority(pval)
                 if st_val(task.priority) != st_val(nv):
                     _audit(db, task_id, "update", "priority", st_val(task.priority), st_val(nv), actor)
                 task.priority = nv
+                if pcf:
+                    cfd = data.get("custom_fields")
+                    if not isinstance(cfd, dict):
+                        cfd = {}
+                        data["custom_fields"] = cfd
+                    for k, v in pcf.items():
+                        cfd.setdefault(k, v)
             except ValueError:
                 pass
         if data.get("status"):
