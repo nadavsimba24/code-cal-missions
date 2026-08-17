@@ -1409,6 +1409,32 @@ const PRIORITY = {
   high:{he:'גבוהה',c:'#fdab3d'}, critical:{he:'קריטית',c:'#e2445c'},
   emergency:{he:'חירום',c:'#bb3354'},
 };
+/* "עדיפות" is a status column: one value out of a named, coloured vocabulary
+   the board admin owns. Everything the built-in status column does, it does —
+   per-board labels/colours/order, up to 30 values, and the grey "טרם הוגדר"
+   default until someone picks. Five keys are Priority enum values (what sorting
+   and the charts read); a board-defined one beyond those is stored as its
+   `base`, with the chosen label and colour carried on the item. */
+function boardPriorityList(){
+  const p=st.board&&st.board.priorities;
+  if(p&&p.length)return p.map(x=>({key:x.key,he:x.label,c:x.color,base:x.base||x.key}));
+  return Object.entries(PRIORITY).map(([k,v])=>({key:k,he:v.he,c:v.c,base:k}));
+}
+function boardPriorityMap(){const m={};boardPriorityList().forEach(x=>m[x.key]={he:x.he,c:x.c,base:x.base});return m;}
+function priorityEntry(key){ return boardPriorityList().find(x=>x.key===key)||null; }
+function priorityKeyOf(t){
+  const cf=(t&&t.custom_fields)||{};
+  if(cf.priority_unset)return null;    // nothing chosen yet — tick nothing
+  if(cf.priority_key)return cf.priority_key;
+  return t&&t.priority;
+}
+/* the five engine values, in the order a board starts with — the pool the
+   editor draws from before it has to mint a board-defined priority */
+const PRIORITY_ALL=[
+  {key:'low',he:'נמוכה',c:'#579bfc'},{key:'medium',he:'בינונית',c:'#5559df'},
+  {key:'high',he:'גבוהה',c:'#fdab3d'},{key:'critical',he:'קריטית',c:'#e2445c'},
+  {key:'emergency',he:'חירום',c:'#bb3354'},
+];
 const VIEWS = [
   {id:'table',he:'טבלה ראשית',ic:'fa-table-list'},
   {id:'kanban',he:'קנבן',ic:'fa-columns'},
@@ -2130,6 +2156,22 @@ function taskStatusView(t){
   return bStat(t&&t.status);
 }
 function statusPill(t){const m=taskStatusView(t);return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
+/* the same resolution for the priority cell: the board's vocabulary is the
+   source of truth, so renaming or recolouring a priority lands on every item
+   already using it without touching a single row of item data */
+function taskPriorityView(t){
+  const cf=(t&&t.custom_fields)||{};
+  if(cf.priority_unset)return {he:STATUS_UNSET.label,c:STATUS_UNSET.color,unset:true};
+  if(cf.priority_key){
+    const e=priorityEntry(cf.priority_key);
+    if(e)return {he:e.he,c:e.c};
+    return {he:cf.priority_label||cf.priority_key,c:cf.priority_color||'#c4c4c4'};
+  }
+  if(cf.priority_label)return {he:cf.priority_label,c:cf.priority_color||'#c4c4c4'};
+  const m=boardPriorityMap()[t&&t.priority]||PRIORITY[t&&t.priority];
+  return m?{he:m.he,c:m.c}:{he:(t&&t.priority)||'',c:'#c4c4c4'};
+}
+function priorityPill(t){const m=taskPriorityView(t);return `<span class="pill${m.unset?' pill-unset':''}" style="background:${m.c}">${esc(m.he)}</span>`;}
 function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span class="av-add" title="הוסף אחראי"><i class="fa-solid fa-circle-plus"></i></span></span>';
   // clicking an assignee avatar opens the assignee editor (click bubbles to the
   // cell's openPeople) rather than the person's profile
@@ -2301,15 +2343,14 @@ function applyFilters(tasks){
       || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q)));}
   if(f.people.length)out=out.filter(t=>(t.assignees||[]).some(a=>f.people.includes(a.id)));
   if(f.status)out=out.filter(t=>statusKeyOf(t)===f.status);
-  if(f.priority)out=out.filter(t=>t.priority===f.priority);
+  if(f.priority)out=out.filter(t=>priorityKeyOf(t)===f.priority);
   if(st.colSort&&st.colSort.key){
     const {key,dir}=st.colSort, s=dir==='desc'?-1:1;
     out.sort((a,b)=>colCompare(a,b,key)*s);
   } else if(f.sort){
-    const pr={emergency:0,critical:1,high:2,medium:3,low:4};
     const cmp={
       due:(a,b)=>(a.due_date||'9999-99-99').localeCompare(b.due_date||'9999-99-99'),
-      priority:(a,b)=>(pr[a.priority]??9)-(pr[b.priority]??9),
+      priority:(a,b)=>prioOrder(a)-prioOrder(b),
       title:(a,b)=>(a.title||'').localeCompare(b.title||'','he'),
     }[f.sort];
     if(cmp)out.sort(cmp);
@@ -2317,13 +2358,31 @@ function applyFilters(tasks){
   return out;
 }
 /* ===== per-column sorting (click the round arrows on a header) ===== */
-const STATUS_ORDER={backlog:0,todo:1,in_progress:2,review:3,done:4,cancelled:5,on_hold:6};
-const PRIO_ORDER={emergency:0,critical:1,high:2,medium:3,low:4};
+/* Statuses sort in the order the board lists them, like the priorities below.
+   Sorting on the underlying enum value instead got three things wrong, all of
+   them visible inside a group: a board-defined status tied with the status it
+   behaves as (both are "in_progress" underneath), an item with nothing chosen
+   sorted as its group's status rather than last, and the order was the enum's
+   rather than the one the admin set in "ניהול סטטוסים" — which is why "בהמתנה"
+   landed after "הושלם". */
+function statusOrder(t){
+  const k=statusKeyOf(t); if(k==null)return 999;
+  const i=boardStatusList().findIndex(x=>x.key===k);
+  return i<0?998:i;
+}
+/* Priorities sort in the order the board lists them — the order a board admin
+   sets in "ניהול עדיפויות" is the order the column sorts by. An item with no
+   priority chosen sorts last, where an empty cell belongs. */
+function prioOrder(t){
+  const k=priorityKeyOf(t); if(k==null)return 999;
+  const i=boardPriorityList().findIndex(x=>x.key===k);
+  return i<0?998:i;
+}
 function sortVal(t,key){
   if(key==='item')return (t.title||'').toLowerCase();
   if(key==='assignees')return (((t.assignees||[])[0]||{}).name||'').toLowerCase();
-  if(key==='status')return STATUS_ORDER[t.status]??99;
-  if(key==='priority')return PRIO_ORDER[t.priority]??99;
+  if(key==='status')return statusOrder(t);
+  if(key==='priority')return prioOrder(t);
   if(key==='due')return t.due_date||'9999-99-99';
   if(key==='tags')return (t.tags||[]).join(', ').toLowerCase();
   const v=(t.custom_fields||{})[key];          // custom column, by id
@@ -3092,7 +3151,7 @@ function renderPop(name){
   if(name!=='arrange')return;
   const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
   const sChips=boardStatusList().map(v=>`<button class="pop-chip ${f.status===v.key?'sel':''}" style="--c:${v.c}" onclick="setStatusFilter('${v.key}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
-  const pChips=Object.entries(PRIORITY).map(([k,v])=>`<button class="pop-chip ${f.priority===k?'sel':''}" style="--c:${v.c}" onclick="setPriorityFilter('${k}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
+  const pChips=boardPriorityList().map(v=>`<button class="pop-chip ${f.priority===v.key?'sel':''}" style="--c:${v.c}" onclick="setPriorityFilter('${v.key}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
   const people=(st.users||[]).map(u=>`<label class="pop-row"><input type="checkbox" ${f.people.includes(u.id)?'checked':''} onchange="toggleFilterPerson(${u.id},this.checked)"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span>${esc(u.name)}</span></label>`).join('')||'<div style="padding:8px;color:var(--text-light);font-size:13px">אין משתמשים</div>';
   const sortOpts=[['','ללא מיון','fa-ban'],['due','תאריך יעד','fa-calendar-day'],['priority','עדיפות','fa-flag'],['title','שם (א-ת)','fa-arrow-down-a-z']];
   const sort=sortOpts.map(([k,he,ic])=>`<label class="pop-row"><input type="radio" name="sortby" ${(f.sort||'')===k?'checked':''} onchange="setSort('${k}')"><i class="fa-solid ${ic}" style="width:16px;color:var(--text-light)"></i><span>${he}</span></label>`).join('');
@@ -3505,6 +3564,7 @@ function builtinColMenu(e,key){
   const canHide=key!=='item';
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('builtin','${key}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +(key==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
+    +(key==='priority'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();managePriorities()"><i class="fa-solid fa-sliders"></i> ניהול עדיפויות</button>`:'')
     +(canHide?`<button class="cell-pop-opt2" style="color:var(--red)" onclick="hideBuiltinCol(event,'${key}')"><i class="fa-solid fa-eye-slash"></i> מחק עמודה</button>`:'');
   openCellPop(e.currentTarget,html);
 }
@@ -3668,7 +3728,7 @@ function builtinCellHTML(key,t){
   const tagcell=(arr)=>(arr||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>';
   if(key==='assignees')return `<td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(event,${t.id})">${avatars(t.assignees)}</td>`;
   if(key==='status')   return `<td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',boardStatusMap())">${statusPill(t)}</td>`;
-  if(key==='priority') return `<td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',PRIORITY)">${pill(PRIORITY,t.priority)}</td>`;
+  if(key==='priority') return `<td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',boardPriorityMap())">${priorityPill(t)}</td>`;
   if(key==='due')      return `<td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${t.id})">${fdate(t.due_date)}</td>`;
   if(key==='tags')     return `<td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>`;
   return '';
@@ -3743,7 +3803,7 @@ function exportCell(c,t){
       if(cf.status_key||cf.status_label){const m=taskStatusView(t);return {v:m.he,c:m.c};}
       const m=bStat(t.status); return {v:m.he,c:m.c};
     }
-    if(c.key==='priority'){const p=PRIORITY[t.priority];return p?{v:p.he,c:p.c}:'';}
+    if(c.key==='priority'){const p=taskPriorityView(t);return p?{v:p.he,c:p.c}:'';}
     if(c.key==='due')return t.due_date?{v:t.due_date,t:'date'}:'';
     if(c.key==='tags')return (t.tags||[]).join(', ');
     return '';
@@ -4111,6 +4171,19 @@ async function setField(id,field,value){
       for(const k of ['status_key','status_label','status_color','status_unset'])
         if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
   }
+  // the priority column is a status column — same storage, same rules
+  if(field==='priority'){
+    const e=priorityEntry(value);
+    if(e&&e.base&&e.base!==e.key){
+      extra={priority_key:e.key,priority_label:e.he,priority_color:e.c,priority_unset:null};
+      value=e.base;
+    }else{
+      extra={priority_key:null,priority_label:null,priority_color:null,priority_unset:null};
+    }
+    if(t){ t.custom_fields=t.custom_fields||{};
+      for(const k of ['priority_key','priority_label','priority_color','priority_unset'])
+        if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
+  }
   if(t)t[field]=value;
   // mirror the backend auto-move: a top-level item whose status changes jumps to
   // the group matching that status (exact status first, else same stage —
@@ -4138,12 +4211,14 @@ async function setField(id,field,value){
 function fieldPicker(e,id,field,map){
   e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
   const _t=findAnyTask(id)||{};
-  const cur=field==='status'?statusKeyOf(_t):_t[field];
+  const cur=field==='status'?statusKeyOf(_t):field==='priority'?priorityKeyOf(_t):_t[field];
   const entries=Object.entries(map);
   let html=entries.map(([k,v])=>`<button class="cell-pop-opt" style="background:${v.c}" title="${esc(v.he)}" onclick="pickField(event,${id},'${field}','${k}')">${esc(v.he)}${cur===k?' <i class="fa-solid fa-check"></i>':''}</button>`).join('');
-  // board admin gets a shortcut to manage the status vocabulary
+  // board admin gets a shortcut to manage the vocabulary behind the column
   if(field==='status'&&isBoardAdmin())
     html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
+  if(field==='priority'&&isBoardAdmin())
+    html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();managePriorities()"><i class="fa-solid fa-sliders"></i> ניהול עדיפויות</button>`;
   openCellPop(e.currentTarget,html,entries.length>POP_GRID_FROM?'pop-grid':'');
 }
 function pickField(e,id,field,key){ e.stopPropagation(); closeCellPops(); setField(id,field,key); }
@@ -4392,6 +4467,63 @@ async function _stSave(){
     st.board.statuses=r.statuses||payload;   // the server mints keys for new ones
     closeModals();toast('הסטטוסים עודכנו ✓');renderView();
   }catch(e){toast('שגיאה בשמירת הסטטוסים');}
+}
+/* ===== the same editor, for the priority column ===== */
+let _prDraft=[];
+const BOARD_PRIORITY_MAX=30;
+function managePriorities(){
+  if(!isBoardAdmin()||!st.board)return;
+  _prDraft=boardPriorityList().map(x=>({key:x.key,label:x.he,color:x.c,base:x.base||x.key}));
+  _renderPriorityModal();
+}
+function _renderPriorityModal(){
+  const rows=_prDraft.map((s,i)=>`
+    <div class="st-row">
+      <div class="st-ord">
+        <button title="למעלה" ${i===0?'disabled':''} onclick="_prMove(${i},-1)"><i class="fa-solid fa-chevron-up"></i></button>
+        <button title="למטה" ${i===_prDraft.length-1?'disabled':''} onclick="_prMove(${i},1)"><i class="fa-solid fa-chevron-down"></i></button>
+      </div>
+      <input type="color" value="${s.color}" title="צבע" oninput="_prSet(${i},'color',this.value)">
+      <input class="st-lbl" value="${esc(s.label)}" maxlength="40" placeholder="שם העדיפות" oninput="_prSet(${i},'label',this.value)">
+      <button class="st-del" title="הסר" ${_prDraft.length<=1?'disabled':''} onclick="_prRemove(${i})"><i class="fa-solid fa-trash-can"></i></button>
+    </div>`).join('');
+  const addBtn=_prDraft.length<BOARD_PRIORITY_MAX
+    ? `<button class="btn btn-ghost" onclick="_prAdd()"><i class="fa-solid fa-plus"></i> הוסף עדיפות</button>`
+    : `<span style="color:var(--text-light);font-size:12px">הגעת למספר העדיפויות המרבי (${BOARD_PRIORITY_MAX})</span>`;
+  showModal(`
+    <h2><i class="fa-solid fa-sliders"></i> ניהול עדיפויות · ${esc(st.board.name)}</h2>
+    <div class="mbody">
+      <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">שנה שם, צבע וסדר של העדיפויות בלוח (עד ${BOARD_PRIORITY_MAX}). הסדר כאן הוא גם סדר המיון בעמודה.</p>
+      <div id="pr-rows">${rows}</div>
+      <div style="margin-top:12px">${addBtn}</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="_prSave()"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+function _prSet(i,k,v){if(_prDraft[i])_prDraft[i][k]=v;}         // no re-render → inputs keep focus
+function _prMove(i,d){const j=i+d;if(j<0||j>=_prDraft.length)return;const t=_prDraft[i];_prDraft[i]=_prDraft[j];_prDraft[j]=t;_renderPriorityModal();}
+function _prRemove(i){if(_prDraft.length<=1)return;_prDraft.splice(i,1);_renderPriorityModal();}
+function _prAdd(){
+  if(_prDraft.length>=BOARD_PRIORITY_MAX)return;
+  const used=new Set(_prDraft.map(s=>s.key));
+  const nx=PRIORITY_ALL.find(s=>!used.has(s.key));    // use up the five engine values first
+  if(nx){ _prDraft.push({key:nx.key,label:nx.he,color:nx.c,base:nx.key}); }
+  else{
+    const pal=STATUS_PALETTE.filter(c=>!_prDraft.some(s=>s.color===c));
+    _prDraft.push({key:'',label:'עדיפות חדשה',color:pal[0]||STATUS_PALETTE[0],base:'medium'});
+  }
+  _renderPriorityModal();
+}
+async function _prSave(){
+  const payload=_prDraft.map(s=>({key:s.key||undefined,label:(s.label||'').trim()||'עדיפות',color:s.color,base:s.base}));
+  if(!payload.length)return;
+  try{
+    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({priorities:payload})});
+    st.board.priorities=r.priorities||payload;   // the server mints keys for new ones
+    closeModals();toast('העדיפויות עודכנו ✓');renderView();
+  }catch(e){toast('שגיאה בשמירת העדיפויות');}
 }
 /* Open a submenu by clicking its entry, not only by hovering it — steadier to
    aim at across two levels, and the only way that works by touch. The click
@@ -4791,7 +4923,7 @@ function vKanban(el){
 }
 function kcard(t){return `<div class="kcard" data-id="${t.id}">
   <div class="kt">${esc(t.title)}</div>
-  <div class="kmeta"><span class="pill sm-pill" style="background:${PRIORITY[t.priority]?PRIORITY[t.priority].c:'#c4c4c4'}">${PRIORITY[t.priority]?PRIORITY[t.priority].he:t.priority}</span>
+  <div class="kmeta"><span class="pill sm-pill" style="background:${taskPriorityView(t).c}">${esc(taskPriorityView(t).he)}</span>
   <span onclick="openPeople(event,${t.id})" style="cursor:pointer" title="אחראים">${avatars(t.assignees)}</span></div></div>`;}
 
 async function vDashboard(el){
@@ -5326,7 +5458,8 @@ const Forms={
     else if(f.type==='status'||f.type==='item_kind') inp=f.col
       ? `<select id="${id}"><option value="">—</option>${statusColOpts(f.col).map((o,i)=>`<option value="${i}">${esc(o.label)}</option>`).join('')}</select>`
       : `<select id="${id}">${boardStatusList().map(s=>`<option value="${s.key}">${esc(s.he)}</option>`).join('')}</select>`;
-    else if(f.type==='priority') inp=`<select id="${id}">${Object.entries(PRIORITY).map(([k,v])=>`<option value="${k}" ${k==='medium'?'selected':''}>${v.he}</option>`).join('')}</select>`;
+    // built-in priority field → the board's vocabulary, exactly like status
+    else if(f.type==='priority') inp=`<select id="${id}">${boardPriorityList().map(p=>`<option value="${p.key}">${esc(p.he)}</option>`).join('')}</select>`;
     else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${(st.users||[]).map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${avatarInner(u)}</span> ${esc(u.name)}</label>`).join('')}</div>`;
     else if(f.type==='tags') inp=`<input id="${id}" placeholder="מופרד בפסיקים">`;
     else if(f.type==='dropdown') inp=`<div class="ff-multi" id="${id}">${((f.col&&f.col.options)||[]).map(o=>`<label class="ff-chip"><input type="checkbox" value="${esc(o)}"> ${esc(o)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין אפשרויות בעמודה</span>'}</div>`;
@@ -5874,8 +6007,8 @@ const Chat = {
   },
   fieldHe(f){ if(!f)return ''; const m={title:'כותרת',status:'סטטוס',priority:'עדיפות',due_date:'תאריך יעד',tags:'תגיות'}; if(m[f])return m[f]; if(f.startsWith('col:')){const c=customColumns().find(x=>x.id===f.slice(4));return 'עמודה '+(c?'"'+c.title+'"':'');} return f; },
   transVal(f,v){ if(v==null||v==='')return '—'; v=String(v).replace(/^"|"$/g,'');
-    if(f==='status'&&STATUS[v])return STATUS[v].he;
-    if(f==='priority'&&PRIORITY[v])return PRIORITY[v].he;
+    if(f==='status')return (boardStatusMap()[v]||STATUS[v]||{}).he||this.short(v);
+    if(f==='priority')return (boardPriorityMap()[v]||PRIORITY[v]||{}).he||this.short(v);
     if(f==='due_date'){const d=new Date(v);if(!isNaN(d))return d.toLocaleDateString('he-IL');}
     return this.short(v); },
   short(v){ if(v==null||v==='')return '—'; v=String(v).replace(/^"|"$/g,''); return v.length>26?v.slice(0,25)+'…':v; },
