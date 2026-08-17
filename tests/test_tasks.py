@@ -154,27 +154,70 @@ def test_assign_at_creation_notifies(client, admin_id, member_id):
 
 
 def test_status_change_auto_moves_to_matching_group(client):
-    """Changing a top-level item's status moves it to the group for that status:
-    exact task_status match first, else the same coarse stage (todo/active/done)."""
+    """Changing a top-level item's status moves it to the group that stands for
+    that status. A groupless status leaves the item alone, with one deliberate
+    exception: `todo` ("חזרה לפיתוח") pulls it back into the in_progress group."""
     b = client.get("/api/boards/1?user_id=1").json()
-    stage = {"backlog": "todo", "todo": "todo", "in_progress": "active",
-             "review": "active", "on_hold": "active", "done": "done", "cancelled": "done"}
     by_status = {g["task_status"]: g["id"] for g in b["groups"]}
     gid = b["groups"][0]["id"]
     r = client.post("/api/tasks", json={"title": "move-me", "board_id": 1, "group_id": gid})
     tid = r.json()["id"]
+
+    def where():
+        board = client.get("/api/boards/1?user_id=1").json()
+        return next(t for t in board["tasks"] if t["id"] == tid)["group_id"]
+
     try:
-        for status in ("done", "in_progress", "review", "cancelled", "todo"):
+        for status, gid_for in by_status.items():
             r = client.patch(f"/api/tasks/{tid}", json={"status": status, "user_id": 1})
             assert r.status_code == 200, r.text
-            board = client.get("/api/boards/1?user_id=1").json()
-            task = next(t for t in board["tasks"] if t["id"] == tid)
-            landed = board["groups"][[g["id"] for g in board["groups"]].index(task["group_id"])]
-            # the group it landed in must share the status' stage
-            assert stage.get(landed["task_status"]) == stage.get(status), \
-                f"status {status} landed in {landed['task_status']}"
+            assert where() == gid_for, f"status {status} did not land in its own group"
+        # a status with no group of its own leaves the item where it is —
+        # except `todo`, which is pulled into the in_progress group below
+        homeless = [s for s in ("review", "on_hold", "cancelled", "backlog")
+                    if s not in by_status]
+        assert homeless, "board 1 has a group for every status — nothing to check"
+        stayed = where()
+        for status in homeless:
+            assert client.patch(f"/api/tasks/{tid}",
+                                json={"status": status, "user_id": 1}).status_code == 200
+            assert where() == stayed, f"status {status} moved the item out of its group"
+        # "back to development": a groupless todo pulls the item into in_progress
+        in_prog = by_status.get("in_progress")
+        if "todo" not in by_status and in_prog is not None:
+            assert client.patch(f"/api/tasks/{tid}",
+                                json={"status": "todo", "user_id": 1}).status_code == 200
+            assert where() == in_prog, "todo did not pull the item into in_progress"
     finally:
         client.delete(f"/api/tasks/{tid}")
+
+
+def test_a_renamed_status_does_not_throw_the_item_out_of_its_group(client, admin_id):
+    """Her board: "לביצוע" renamed to "חזרה לפיתוח", groups בתכנון/בביצוע/הושלם.
+
+    Setting it used to file the item under the `todo` stage and drop it into the
+    planning group, out of the development group where it belongs. A status with
+    no group of its own leaves the item exactly where it is.
+    """
+    bid = client.post("/api/boards", json={"name": "פיתוח", "user_id": admin_id}).json()["id"]
+    client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "statuses": [
+        {"key": "backlog", "label": "בתכנון"},
+        {"key": "in_progress", "label": "בפיתוח"},
+        {"key": "todo", "label": "חזרה לפיתוח", "color": "#e2445c"},
+        {"key": "done", "label": "הושלם"},
+    ]})
+    board = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
+    dev = next(g["id"] for g in board["groups"] if g["task_status"] == "in_progress")
+    t = client.post("/api/tasks", json={"board_id": bid, "title": "משימה",
+                                        "group_id": dev, "status": "in_progress",
+                                        "user_id": admin_id}).json()
+    assert t["group_id"] == dev
+
+    client.patch(f"/api/tasks/{t['id']}", json={"user_id": admin_id, "status": "todo"})
+    fresh = [x for x in client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["tasks"]
+             if x["id"] == t["id"]][0]
+    assert fresh["status"] == "todo"        # the status did change
+    assert fresh["group_id"] == dev         # the item did not move
 
 
 def test_parent_rolls_up_to_done_when_all_subitems_done(client):

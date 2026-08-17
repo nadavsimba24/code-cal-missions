@@ -1017,7 +1017,11 @@ img.pf-av{object-fit:cover;background:#fff}
 .file-row .ext-badge{min-width:34px;height:18px;font-size:9.5px}
 .att-name{font-size:10.5px;color:var(--text-muted);max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .comp-foot{display:flex;justify-content:flex-start;margin-top:8px}
-.chat-float{inset-inline-start:0;inset-inline-end:auto;transform:none;bottom:calc(100% + 6px);top:auto;max-height:230px;overflow-y:auto;min-width:190px}
+/* the tag/emoji popovers. Position is left to openCellPop (fixed, placed against
+   the anchor and flipped to whichever side has room) — pinning them above the
+   button here meant that editing a comment near the top of the thread opened
+   the list into the scroll container's ceiling, where it was cut off. */
+.chat-float{max-height:230px;overflow-y:auto;min-width:190px}
 .chat-float button{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;width:100%;text-align:start}
 .chat-float button:hover{background:var(--row-hover)}
 .chat-float button.active{background:var(--primary-soft);box-shadow:inset 0 0 0 1px var(--primary)}
@@ -1372,9 +1376,6 @@ const STATUS = {
   done:{he:'הושלם',c:'#00c875'}, cancelled:{he:'בוטל',c:'#e2445c'},
   on_hold:{he:'בהמתנה',c:'#808080'},
 };
-// coarse stage per status — lets a status change find a sensible group even
-// when the board has fewer groups than statuses (mirrors STATUS_STAGE on the server)
-const STATUS_STAGE={backlog:'todo',todo:'todo',in_progress:'active',review:'active',on_hold:'active',done:'done',cancelled:'done'};
 /* Per-board statuses: the open board defines its own label/color/order for the
    built-in status column (falls back to the global STATUS when uncustomised).
    Keys stay the underlying enum values so auto-move/kanban/charts keep working. */
@@ -4185,13 +4186,16 @@ async function setField(id,field,value){
         if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
   }
   if(t)t[field]=value;
-  // mirror the backend auto-move: a top-level item whose status changes jumps to
-  // the group matching that status (exact status first, else same stage —
-  // e.g. "הושלם"→Done group; "לביצוע" on a 3-group board → the "בתכנון" group)
+  // mirror the backend auto-move: a top-level item moves to the group that
+  // stands for its new status, and stays where it is when no group does.
+  // The one fallback matches _STATUS_GROUP_FALLBACK in backend/main.py: a
+  // `todo` ("חזרה לפיתוח") with no todo group pulls the item back into the
+  // in_progress group — never into planning/backlog.
   if(field==='status' && t && !t.parent_id){
     const gs=(st.board&&st.board.groups)||[];
+    const FALLBACK={todo:'in_progress'};
     let g=gs.find(x=>x.task_status===value);
-    if(!g){const stage=STATUS_STAGE[value]; if(stage)g=gs.find(x=>STATUS_STAGE[x.task_status]===stage);}
+    if(!g && FALLBACK[value]) g=gs.find(x=>x.task_status===FALLBACK[value]);
     if(g) t.group_id=g.id;
   }
   // roll up: when all sub-items are done, the parent item moves to "done" too
@@ -4200,7 +4204,7 @@ async function setField(id,field,value){
     if(parent && subs.length && subs.every(s=>s.status==='done') && parent.status!=='done'){
       parent.status='done';
       const gs=(st.board&&st.board.groups)||[];
-      const g=gs.find(x=>x.task_status==='done')||gs.find(x=>STATUS_STAGE[x.task_status]==='done');
+      const g=gs.find(x=>x.task_status==='done');   // same rule: only its own group
       if(g) parent.group_id=g.id;
     }
   }
@@ -4555,12 +4559,28 @@ function openCellPop(anchor,html,extraClass,above){
   let top;
   if(above){                                   // open above the anchor, centered, scrolling if tall
     left=Math.max(8,Math.min(r.left+r.width/2-pop.offsetWidth/2,window.innerWidth-pop.offsetWidth-8));  // center over the circle
-    const room=Math.max(120,r.top-12);         // usable space above the circle
-    if(pop.offsetHeight>room) pop.style.maxHeight=room+'px';   // cap height → scroll
-    top=Math.max(8,r.top-pop.offsetHeight-4);
+    const roomAbove=r.top-12, roomBelow=window.innerHeight-r.bottom-12;
+    // Near the top of the screen there is nothing to open into, and squeezing
+    // the list into whatever slice is left is exactly what "cut off" looks
+    // like — so when it does not fit above, and below is roomier, drop below.
+    if(pop.offsetHeight>roomAbove&&roomBelow>roomAbove){
+      if(pop.offsetHeight>roomBelow) pop.style.maxHeight=roomBelow+'px';
+      top=r.bottom+4;
+    }else{
+      const room=Math.max(120,roomAbove);       // usable space above the anchor
+      if(pop.offsetHeight>room) pop.style.maxHeight=room+'px';   // cap height → scroll
+      top=Math.max(8,r.top-pop.offsetHeight-4);
+    }
   }else{
     top=r.bottom+4;
-    if(top+pop.offsetHeight>window.innerHeight-8) top=Math.max(8,r.top-pop.offsetHeight-4);
+    if(top+pop.offsetHeight>window.innerHeight-8){
+      // no room below. Above only if it is genuinely roomier there; otherwise
+      // stay below and scroll inside, rather than hang off the bottom edge.
+      const roomAbove=r.top-12, roomBelow=window.innerHeight-r.bottom-12;
+      if(roomAbove>roomBelow) top=Math.max(8,r.top-Math.min(pop.offsetHeight,roomAbove)-4);
+      if(pop.offsetHeight>Math.max(roomAbove,roomBelow))
+        pop.style.maxHeight=Math.max(120,Math.max(roomAbove,roomBelow))+'px';
+    }
   }
   pop.style.left=left+'px'; pop.style.top=top+'px';
   setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0);
@@ -5765,7 +5785,17 @@ const Chat = {
   startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
   cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
   // toolbar @ button: insert "@" at the caret and open the autocomplete
-  mentionMenu(e){ e.stopPropagation(); this.insert('@'); const ta=document.getElementById('comp-text'); const ctx=ta&&this.mentionCtx(ta); if(ctx)this._openMention(ctx); },
+  /* A tag is only recognised at the start of a word, so pressing the button with
+     the caret straight after a letter used to insert a "@" that opened nothing.
+     Give it the space it needs. */
+  mentionMenu(e){
+    e.stopPropagation();
+    const ta=document.getElementById('comp-text');
+    const s=ta?(ta.selectionStart==null?ta.value.length:ta.selectionStart):0;
+    const before=ta?ta.value.slice(0,s):'';
+    this.insert((before===''||/\s$/.test(before)?'':' ')+'@');
+    const ctx=ta&&this.mentionCtx(ta); if(ctx)this._openMention(ctx);
+  },
   // is the caret inside an "@…" token? (returns {query,start,pos} or null)
   mentionCtx(ta){
     const pos=ta.selectionStart||0;
@@ -5913,7 +5943,13 @@ const Chat = {
     if(this._uploading) h+=`<span class="file-chip uploading"><i class="fa-solid fa-spinner fa-spin"></i> ${esc(this._uploading)} — מעלה…</span>`;
     el.innerHTML=h; },
   rmAtt(i){ this.atts.splice(i,1); this.renderAtts(); },
-  _float(anchor,html){ closeCellPops(); const p=document.createElement('div'); p.className='cell-pop chat-float'; p.innerHTML=html; anchor.appendChild(p); setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0); },
+  /* The tag list and the emoji grid open DOWNWARD from the toolbar button.
+     They used to be appended inside the button and pinned above it, which the
+     chat's own scrolling then clipped — editing a comment near the top of the
+     thread left the list cut in half. Downward has room in every position the
+     composer can be in except the last few pixels of the screen, and
+     openCellPop puts the list on <body> so nothing can clip it either way. */
+  _float(anchor,html){ return openCellPop(anchor,html,'chat-float'); },
   async post(){
     if(this._posting)return;                 // guard: ignore rapid repeat clicks / Enter while sending
     const ta=document.getElementById('comp-text'); let content=(ta?ta.value:'').trim();
