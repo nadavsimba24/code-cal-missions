@@ -214,6 +214,29 @@ def test_a_renamed_status_does_not_throw_the_item_out_of_its_group(client, admin
     assert fresh["group_id"] == dev         # the item did not move
 
 
+def test_a_new_group_does_not_steal_todo_items(client, admin_id):
+    """A freshly added group is created with the default `todo` status. Setting a
+    todo-family status ("חזרה לפיתוח") must not yank an item out of "בביצוע" into
+    that new last group — a group left at the default status is a plain section,
+    never an auto-move destination."""
+    bid = client.post("/api/boards", json={"name": "מגנט", "user_id": admin_id}).json()["id"]
+    board = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
+    dev = next(g["id"] for g in board["groups"] if g["task_status"] == "in_progress")
+
+    # add a new group — it defaults to `todo`, becoming the last group
+    new_g = client.post("/api/groups", json={"board_id": bid, "name": "קבוצה חדשה",
+                                             "actor_id": admin_id}).json()
+    assert new_g["task_status"] == "todo"
+
+    t = client.post("/api/tasks", json={"board_id": bid, "title": "משימה",
+                                        "group_id": dev, "status": "in_progress",
+                                        "user_id": admin_id}).json()
+    client.patch(f"/api/tasks/{t['id']}", json={"user_id": admin_id, "status": "todo"})
+    fresh = [x for x in client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["tasks"]
+             if x["id"] == t["id"]][0]
+    assert fresh["group_id"] == dev, "a todo status pulled the item into the new group"
+
+
 def test_parent_rolls_up_to_done_when_all_subitems_done(client):
     """A parent item auto-completes (status done, moved to the done group) only
     once every one of its sub-items is done."""

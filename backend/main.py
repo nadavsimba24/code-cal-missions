@@ -2144,17 +2144,23 @@ def _group_for_status(db, board_id, status_val):
     """The group a top-level item moves to for a status — the one whose own status
     matches exactly, or None to leave the item exactly where it is.
 
-    No fallback by stage or by status family. A "back to development" style route
-    (todo → the in_progress group) was tried and removed: a board can have more
-    than one in_progress group — e.g. a "בביצוע" and a "roadmap" — and picking one
-    by status alone is a guess that lands items in the wrong place (roadmap). A
-    group either stands for the exact status or it does not, so "חזרה לפיתוח" on
-    an item already in "בביצוע" keeps it there, and never relocates it elsewhere.
+    No fallback by stage or by status family. A "back to development" route (todo →
+    the in_progress group) was tried and removed: a board can have more than one
+    in_progress group — e.g. "בביצוע" and "roadmap" — and picking one by status
+    alone is a guess that lands items in the wrong place.
+
+    A group left at the default `todo` status is treated as a plain section, never
+    an auto-move destination. Every new group is created as `todo` (see
+    create_group_api), so without this a freshly added group silently becomes a
+    magnet: setting a todo-family status like "חזרה לפיתוח" would yank the item out
+    of "בביצוע" into that new last group. Skipping todo groups keeps the item put.
     """
     sv = status_val.value if hasattr(status_val, "value") else status_val
     groups = db.query(Group).filter(Group.board_id == board_id).order_by(Group.position).all()
     gs_of = lambda g: (g.task_status.value if hasattr(g.task_status, "value") else g.task_status)
     for g in groups:
+        if gs_of(g) == "todo":
+            continue
         if gs_of(g) == sv:
             return g
     return None
