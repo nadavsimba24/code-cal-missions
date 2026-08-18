@@ -1698,8 +1698,11 @@ def list_environments(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         counts = dict(db.query(Board.environment_id, func.count(Board.id))
                         .group_by(Board.environment_id).all())
-        allenvs = db.query(Environment).order_by(
-            Environment.is_primary.desc(), Environment.position, Environment.id).all()
+        # Environments always read in alphabetical (א-ב) order by name — including
+        # newly created ones. Sorted in Python so SQLite (local) and Postgres (prod)
+        # order Hebrew identically, regardless of the DB's collation.
+        allenvs = db.query(Environment).all()
+        allenvs.sort(key=lambda e: (e.name or "").strip().casefold())
         is_sysadmin = _ws_role(db, user_id) == "admin"
         roles = {}
         if user_id is not None:
