@@ -264,7 +264,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* ===== Table / board view ===== */
 .group{margin-bottom:22px}
 .group-head{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;margin-bottom:6px;cursor:pointer}
-.group-head .caret{transition:.15s;font-size:12px}
+.group-head .caret{transition:.15s;font-size:12px;cursor:pointer;padding:4px;margin:-4px;border-radius:5px}
+.group-head .caret:hover{background:var(--row-hover)}
 .group-head.collapsed .caret{transform:rotate(-90deg)}
 .group-head .g-drag{font-size:14px;color:var(--text-muted);cursor:grab;opacity:.7;transition:.12s;padding:4px 3px;border-radius:5px;margin-inline-end:-4px}
 .group:hover .g-drag{opacity:1}
@@ -3276,13 +3277,13 @@ function vTable(el){
     const head=real
       ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}">
           <i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>
-          <i class="fa-solid fa-caret-down caret" style="color:${col}"></i>
-          <span class="g-name g-handle" style="color:${col}" title="גרור לשינוי סדר · לחץ לכיווץ">${esc(g.name)}</span>
+          <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
+          <span class="g-name g-handle" style="color:${col}" title="גרור לשינוי סדר">${esc(g.name)}</span>
           <span class="g-count">${g.tasks.length}</span>
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
         </div>`
       : `<div class="group-head${shut?' collapsed':''}">
-          <i class="fa-solid fa-caret-down caret" style="color:${col}"></i>
+          <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-name" style="color:${col}">${esc(g.name)}</span>
           <span class="g-count">${g.tasks.length}</span>
         </div>`;
@@ -3299,7 +3300,7 @@ function vTable(el){
     </div>`;
   }).join('') + `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`;
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
-    if(e.target.closest('.g-menu-btn')||e.target.closest('.g-drag'))return;
+    if(!e.target.closest('.caret'))return;   // collapse/expand only from the arrow
     const shut=!h.classList.contains('collapsed');
     h.classList.toggle('collapsed',shut);
     const t=h.nextElementSibling; if(t)t.style.display=shut?'none':'';
