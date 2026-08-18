@@ -237,6 +237,24 @@ def test_a_new_group_does_not_steal_todo_items(client, admin_id):
     assert fresh["group_id"] == dev, "a todo status pulled the item into the new group"
 
 
+def test_creating_an_item_logs_a_creation_entry(client, admin_id):
+    """A new item (and sub-item) opens its activity log with a non-undoable
+    "create" entry recording who created it and its title."""
+    bid = client.post("/api/boards", json={"name": "לוג יצירה", "user_id": admin_id}).json()["id"]
+    t = client.post("/api/tasks", json={"board_id": bid, "title": "חדש", "user_id": admin_id}).json()
+    acts = client.get(f"/api/tasks/{t['id']}/activity?user_id={admin_id}").json()["activity"]
+    created = [a for a in acts if a["action"] == "create"]
+    assert created, "no creation entry in the activity log"
+    assert created[0]["field"] == "item" and created[0]["new"] == "חדש"
+    assert created[0]["can_undo"] is False       # creation is history, not undoable
+
+    sub = client.post("/api/tasks", json={"board_id": bid, "title": "תת", "parent_id": t["id"],
+                                          "user_id": admin_id}).json()
+    sacts = client.get(f"/api/tasks/{sub['id']}/activity?user_id={admin_id}").json()["activity"]
+    screated = [a for a in sacts if a["action"] == "create"]
+    assert screated and screated[0]["field"] == "subitem"
+
+
 def test_parent_rolls_up_to_done_when_all_subitems_done(client):
     """A parent item auto-completes (status done, moved to the done group) only
     once every one of its sub-items is done."""

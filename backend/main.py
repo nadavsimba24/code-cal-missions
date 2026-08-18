@@ -2094,6 +2094,10 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # a brand-new item (or sub-item) gets its own automatic identifier — an
         # item created after another was deleted never reuses that one's number
         _ensure_item_uid(db, task)
+        # record the creation itself, so the item's activity log opens with a
+        # "created" entry (not undoable — it is history, not a field change)
+        _audit(db, task.id, "create", field=("subitem" if parent_id else "item"),
+               old=None, new=task.title, user_id=actor_id)
         # notify anyone assigned at creation time (skip the creator), honoring the switch
         if ids:
             board = db.query(Board).filter(Board.id == board_id).first()
