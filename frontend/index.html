@@ -2086,7 +2086,8 @@ function openNewBoard(){
     <div class="field"><label>אייקון</label><div class="icon-grid" id="nb-icons">${BOARD_ICONS.map((ic,i)=>`<button type="button" class="icon-sw ${i===0?'sel':''}" data-ic="${ic}" onclick="pickBoardIcon('${ic}')">${ic}</button>`).join('')}</div></div>
     <div class="field"><label>אגף</label><select id="nb-dept"><option value="">טוען…</option></select></div>
     <div style="font-size:12.5px;color:var(--text-light);margin-top:4px"><i class="fa-solid fa-circle-info"></i> הלוח ייפתח עם תצוגת טבלה ראשית בלבד. תצוגות נוספות אפשר להוסיף דרך כפתור ה־＋ שליד הלשוניות.</div>
-  </div><div class="mfoot"><button class="btn btn-primary" onclick="createBoard()">צור לוח</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+    <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-file-import"></i> יש כבר נתונים? ייבא קובץ CSV/Excel — השורה הראשונה תהפוך לעמודות, והעמודה הראשונה לשם הפריט.</div>
+  </div><div class="mfoot"><button class="btn btn-primary" onclick="createBoard()">צור לוח</button><button class="btn btn-ghost" onclick="importBoardFile()"><i class="fa-solid fa-file-import"></i> ייבוא מקובץ</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
   api('/api/departments').then(ds=>{const s=document.getElementById('nb-dept');if(s)s.innerHTML=(ds||[]).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')||'<option value="">—</option>';}).catch(()=>{const s=document.getElementById('nb-dept');if(s)s.innerHTML='<option value="">—</option>';});
   setTimeout(()=>{const n=document.getElementById('nb-name');if(n)n.focus();},30);
 }
@@ -2114,6 +2115,32 @@ async function newBoardQuick(){
     toast('לוח חדש נוצר — הקלד שם');
     setTimeout(startBoardRename,180);
   }catch(e){toast('שגיאה ביצירת לוח');}
+}
+/* Import a board from a CSV / Excel file: the server reads the header row into
+   columns (type inferred per column) and one item per data row. */
+async function importBoardFile(){
+  if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
+  const inp=document.createElement('input');
+  inp.type='file';
+  inp.accept='.csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  inp.onchange=async()=>{
+    const f=inp.files&&inp.files[0]; if(!f)return;
+    const fd=new FormData(); fd.append('file',f);
+    const env=(Env.active()||{}).id; if(env)fd.append('environment_id',env);
+    toast('מייבא את הקובץ…');
+    try{
+      const r=await fetch('/api/boards/import',{method:'POST',headers:{...authHeaders()},body:fd});
+      if(!r.ok){ let d=''; try{ d=(await r.json()).detail||''; }catch(_){}
+        throw new Error(d || (r.status===413?'הקובץ גדול מדי (מקסימום 8MB)':'שגיאה בייבוא הקובץ')); }
+      const b=await r.json();
+      closeModals();
+      st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
+      renderSidebar();
+      await openBoard(b.id);
+      toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות');
+    }catch(e){ toast((e&&e.message)||'שגיאה בייבוא הקובץ'); }
+  };
+  inp.click();
 }
 
 /* ============ views ============ */
