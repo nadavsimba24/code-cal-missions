@@ -393,7 +393,7 @@ tr:hover .row-grip{opacity:.55}
 .subc-opt input{width:auto}
 .subc-opt small{margin-inline-start:auto;color:var(--text-light);font-size:11px}
 /* custom columns */
-.tbl th.th-custom,.tbl th.th-add{position:relative}
+.tbl th.th-custom,.tbl th.th-add{position:sticky;top:0}   /* stay sticky like the rest of the header row (sticky is still a containing block for the resizer/add button) */
 .th-wrap{display:inline-flex;align-items:center;gap:5px}
 .th-menu{opacity:0;color:var(--text-light);width:18px;height:18px;border-radius:4px;font-size:11px;transition:.12s;flex-shrink:0}
 .tbl th:hover .th-menu{opacity:1}
