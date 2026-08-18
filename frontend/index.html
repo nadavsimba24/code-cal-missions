@@ -468,6 +468,9 @@ body.coldragging .col-grip{opacity:1}
 .pop-sub:hover > .pop-subm,.pop-sub.open > .pop-subm{display:block}
 .pop-sub.open > .rm-item,.pop-sub.open > .cell-pop-opt2{background:var(--row-hover)}
 .pop-subm .cell-pop-opt2{width:100%;font-size:12.5px}
+/* when the menu itself opened upward (e.g. the bottom selection bar), its
+   side flyouts must grow up too, so a long קבוצה/לוח list stays fully visible */
+.cell-pop.subm-up .pop-subm{top:auto;bottom:-6px}
 /* a menu that holds a flyout must not clip it — that applies to a flyout that
    itself holds one (העבר → קבוצה → the groups), so the scrolling only ever
    lives on the deepest level, the one that actually holds a long list */
@@ -4618,6 +4621,7 @@ function openCellPop(anchor,html,extraClass,above){
   // a flyout that holds another flyout must not clip it either.
   if(pop.querySelector('.pop-sub')) pop.classList.add('has-flyout');
   pop.querySelectorAll('.pop-subm').forEach(m=>{ if(m.querySelector('.pop-sub')) m.classList.add('has-flyout'); });
+  if(above) pop.classList.add('subm-up');   // bottom-anchored flyouts so they grow up, not off-screen
   document.body.appendChild(pop);
   const r=anchor.getBoundingClientRect();
   let left=r.right-pop.offsetWidth; if(left<8)left=8;
