@@ -3768,7 +3768,7 @@ function customCellHTML(c,t){
     const tip=mode==='url'?'לחיצה מעתיקה קישור לפריט':'לחיצה מעתיקה את מזהה הפריט';
     return `<td class="cell cell-custom"><span class="item-id" title="${tip}" onclick="copyItemId(event,${t.id},'${mode}')">${esc(String(t.item_uid))}<i class="fa-regular fa-copy id-copy"></i></span></td>`;
   }
-  if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
+  if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetimeY(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
   if(c.type==='created_by'){
     // derived from the item's own creator — correct on every board and on items
     // that predate the column. Items created before the system recorded a
@@ -3837,7 +3837,7 @@ function exportCell(c,t){
     case 'accounts': return (v&&v.label)?v.label:'';
     case 'connect':  return (Array.isArray(v)?v:[]).map(id=>{const it=linkInfo(id);return it&&it.title?it.title:'#'+id;}).join(', ');
     case 'formula':{const r=evalFormula(col,t);return r==null?'':r;}
-    case 'created_at': return t.created_at?fdatetime(t.created_at):'';
+    case 'created_at': return t.created_at?fdatetimeY(t.created_at):'';
     case 'created_by':{const u=(st.users||[]).find(x=>x.id===t.created_by);return u?u.name:'';}
     case 'item_id':  return t.item_uid?String(t.item_uid):'';
   }
@@ -5541,6 +5541,8 @@ function openForms(){ Forms.open(); }
 // doesn't read them as local, then always render in Israel (Jerusalem) time
 function _utc(d){ return (typeof d==='string' && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(d)) ? d.replace(' ','T')+'Z' : d; }
 const fdatetime = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
+// same, but with the year — used by the "מועד יצירה" (created_at) column
+const fdatetimeY = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
   taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'', editing:null,
