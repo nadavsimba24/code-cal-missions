@@ -320,7 +320,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .item-check{flex-shrink:0;width:15px;height:15px;margin:0 0 0 2px;cursor:pointer;accent-color:var(--primary);opacity:.25;transition:opacity .12s}
 .tbl tr:hover .item-check,.item-check:checked,.item-check:focus-visible{opacity:1}
 /* per-item 3-dots menu button — opens the item's actions (move/delete) */
-.item-menu{width:22px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;opacity:0;transition:.12s;flex-shrink:0;cursor:pointer}
+.item-menu{width:20px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;opacity:0;transition:.12s;flex-shrink:0;cursor:pointer;margin-inline-start:-2px}
 .tbl tr:hover .item-menu{opacity:.7}
 .item-menu:hover{background:var(--row-hover);opacity:1;color:var(--text)}
 /* the whole item row is draggable between groups (Sortable, interactive cells filtered) */
@@ -348,7 +348,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .add-row td{padding:8px 12px;color:var(--text-muted);font-size:13px;cursor:pointer;border-inline-start:4px solid transparent}
 .add-row:hover td{color:var(--primary)}
 /* sub-items (תת-פריטים) */
-.tbl .c-item .ci-flex{display:flex;align-items:center;gap:8px;min-height:28px}
+.tbl .c-item .ci-flex{display:flex;align-items:center;gap:5px;min-height:28px}
 .row-grip{color:var(--text-light);font-size:12px;cursor:grab;opacity:0;transition:.12s;margin-inline-end:-3px}
 tr:hover .row-grip{opacity:.55}
 .row-grip:hover{opacity:1;color:var(--text)}
