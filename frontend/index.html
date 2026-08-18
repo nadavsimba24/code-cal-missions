@@ -1541,13 +1541,13 @@ const Router={
 };
 window.addEventListener('hashchange',()=>{ try{Router.apply();}catch(e){} });
 
-/* Uploads go through the serverless function, which caps the request body at
-   ~4.5MB (Vercel). Gate client-side so oversized files get a clear message
-   instead of a silent edge-level 413 (which left broken, 404-on-open links). */
-const MAX_UPLOAD_BYTES=4*1024*1024;   // 4MB — safely under the platform limit
+/* Gate client-side so oversized files get a clear message instead of a silent
+   server 413 (which left broken, 404-on-open links). Note: on Vercel the edge
+   still rejects bodies over ~4.5MB regardless; the full 10MB applies on Azure. */
+const MAX_UPLOAD_BYTES=10*1024*1024;   // 10MB per file
 function fileTooBig(f){
   if(f && f.size>MAX_UPLOAD_BYTES){
-    toast(`הקובץ גדול מדי (${(f.size/1048576).toFixed(1)}MB). הגודל המרבי הוא 4MB.`);
+    toast(`הקובץ גדול מדי (${(f.size/1048576).toFixed(1)}MB). הגודל המרבי הוא 10MB.`);
     return true;
   }
   return false;

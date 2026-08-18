@@ -52,6 +52,21 @@ def test_file_upload_and_serve_roundtrip(client):
     assert client.get("/api/files/nope").status_code == 404
 
 
+def test_upload_size_limit_is_10mb(client):
+    """Per-file cap is 10MB: a 6MB file (above the old 4MB ceiling) is accepted,
+    and a file just over 10MB is rejected with 413."""
+    from main import MAX_UPLOAD_BYTES
+    assert MAX_UPLOAD_BYTES == 10 * 1024 * 1024
+
+    six_mb = b"x" * (6 * 1024 * 1024)
+    ok = client.post("/api/upload", files={"file": ("big.bin", six_mb, "application/octet-stream")})
+    assert ok.status_code == 200, ok.text
+
+    over = b"x" * (MAX_UPLOAD_BYTES + 1)
+    r = client.post("/api/upload", files={"file": ("toobig.bin", over, "application/octet-stream")})
+    assert r.status_code == 413, r.text
+
+
 def test_chat_file_delete_and_permissions(client):
     """A chat attachment appears in the item's files, can be deleted by its
     uploader (removing it from the comment + files list + the stored blob), and a

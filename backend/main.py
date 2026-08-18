@@ -2306,9 +2306,10 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
 
 # ── File uploads (for the Files column) ─────────────────────────────
-MAX_UPLOAD_BYTES = 4 * 1024 * 1024  # 4MB per file — the serverless host (Vercel)
-# rejects request bodies larger than ~4.5MB at the edge before they reach us, so
-# keep our own ceiling safely under that. Larger files need external blob storage.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB per file.
+# NOTE: on Vercel the serverless edge rejects request bodies larger than ~4.5MB
+# before they reach us, so the full 10MB only applies on hosts without that cap
+# (e.g. Azure Container Apps). Larger files would need external blob storage.
 
 # Only these render in the browser. Anything else is served as a download, so an
 # uploaded .html/.svg cannot execute script on our origin and steal the session.
@@ -2335,7 +2336,7 @@ async def upload_file(file: UploadFile = File(...), actor_id: int = Depends(curr
     instances (Vercel's local filesystem is ephemeral and per-instance)."""
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 4MB)")
+        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 10MB)")
     media_type, _ = _safe_media_type(file.content_type)
     token = uuid.uuid4().hex
     with Session(engine) as db:
