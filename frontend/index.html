@@ -4994,8 +4994,21 @@ function bulkMoveMenu(e){
   e.stopPropagation();
   if(!st.selected.size)return;
   const groups=(st.board&&st.board.groups)||[];
+  const groupList=groups.length
+    ? groups.map(g=>`<button class="rm-item" onclick="bulkMoveToGroup(event,${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('')
+    : `<div class="rm-note">אין קבוצה בלוח</div>`;
+  // moving to another board is offered only to boards the user may edit; sub-items travel with their parent
+  const boards=(st.boards||[]).filter(b=>b.id!==(st.board&&st.board.id)&&(b.my_role==='admin'||b.my_role==='editor'));
+  const boardList=boards.length
+    ? boards.map(b=>`<button class="rm-item" onclick="bulkMoveToBoard(event,${b.id})">${esc(b.icon||'📋')} ${esc(b.name)}</button>`).join('')
+    : `<div class="rm-note">אין לוח אחר שאתה יכול לערוך</div>`;
+  const sub=(icon,label,inner)=>`<div class="pop-sub">
+      <button class="rm-item" onclick="togglePopSub(event)"><i class="fa-solid ${icon}"></i> ${label}<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
+      <div class="pop-subm">${inner}</div>
+    </div>`;
   const html=`<div class="row-menu" onclick="event.stopPropagation()">`
-    +groups.map(g=>`<button class="rm-item" onclick="bulkMoveToGroup(event,${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('')
+    +sub('fa-layer-group','קבוצה',groupList)
+    +sub('fa-table-columns','לוח',boardList)
     +`</div>`;
   openCellPop(e.currentTarget,html,'row-menu-pop');
 }
@@ -5009,6 +5022,19 @@ async function bulkMoveToGroup(e,gid){
   }
   try{ const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh; }catch(e){}
   clearSelection(); renderView(); toast(`${ok} פריטים הועברו`);
+}
+async function bulkMoveToBoard(e,boardId){
+  e.stopPropagation(); closeCellPops();
+  const items=_selectedTopItems(); const b=(st.boards||[]).find(x=>x.id===boardId);
+  if(!items.length||!b)return;
+  askConfirm(`להעביר ${items.length} פריטים ללוח "${b.name}"?`,async()=>{
+    let ok=0;
+    for(const t of items){
+      try{ await api('/api/tasks/'+t.id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:boardId,actor_id:meId()})}); removeTaskLocal(t.id); ok++; }catch(err){}
+    }
+    clearSelection(); renderView(); toast(`${ok} פריטים הועברו ללוח ${b.name}`);
+  },{title:'העברת פריטים ללוח אחר',confirmText:'העבר',icon:'fa-right-left',
+     note:'מזהה הפריט יונפק מחדש בלוח היעד. תת-פריטים עוברים יחד עם הפריט.'});
 }
 /* move an item (with its sub-items) to another board. The item leaves this
    board, so its "מזהה פריט" is re-issued there — and re-issued again if it ever
