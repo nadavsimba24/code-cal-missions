@@ -1743,7 +1743,7 @@ function renderSidebar(){
   const inContainer=fid=>envBoards.filter(b=>(b.folder_id||null)===fid).sort((a,b)=>(a.position-b.position)||a.id-b.id);
   const boardItem=b=>`<div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" data-bid="${b.id}" onclick="openBoard(${b.id})" oncontextmenu="boardRowMenu(event,${b.id});return false">
       <span class="ic">${b.icon||'📋'}</span>
-      <span class="sb-item-name">${esc(b.name)}</span>
+      <span class="sb-item-name" title="${esc(b.name)}">${esc(b.name)}</span>
       <button class="sb-more" title="אפשרויות לוח" onclick="boardRowMenu(event,${b.id})" aria-label="אפשרויות לוח"><i class="fa-solid fa-ellipsis-vertical"></i></button>
     </div>`;
   const folderHTML=f=>{
@@ -2539,13 +2539,13 @@ const Env = {
     const manageAny=admin||this.items.some(e=>e.can_manage);
     // a single environment with no management options needs no dropdown — show it statically
     if(this.items.length===1 && !manageAny && !hasCap('create_environment')){
-      wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(a?a.name:'')}</span></div>`;
+      wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(a?a.name:'')}">${esc(a?a.name:'')}</span></div>`;
       return;
     }
     const rows=this.items.map(e=>`
       <button class="ws-opt ${a&&a.id===e.id?'active':''}" onclick="Env.select(${e.id})">
         <span class="ic">${e.icon||'🏢'}</span>
-        <span class="ws-opt-name">${esc(e.name)}${e.my_role==='manager'?' <span class="ws-opt-badge">מנהל</span>':''}</span>
+        <span class="ws-opt-name" title="${esc(e.name)}">${esc(e.name)}${e.my_role==='manager'?' <span class="ws-opt-badge">מנהל</span>':''}</span>
         ${e.can_manage?`<span class="ws-opt-act">
           <i class="fa-solid fa-user-gear" title="ניהול משתמשים" onclick="event.stopPropagation();Env.members(${e.id})"></i>
           <i class="fa-solid fa-pen" title="שנה שם" onclick="event.stopPropagation();Env.rename(${e.id})"></i>
@@ -2556,7 +2556,7 @@ const Env = {
     wrap.innerHTML=`
       <div class="sb-item ws-btn active" onclick="Env.toggle(event)" title="החלפת סביבה">
         <span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span>
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(a?a.name:'')}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(a?a.name:'')}">${esc(a?a.name:'')}</span>
         <i class="fa-solid fa-chevron-down ws-caret ${this.open?'up':''}"></i>
       </div>
       <div class="ws-dd" ${this.open?'':'hidden'}>
