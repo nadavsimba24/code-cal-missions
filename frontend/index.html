@@ -1226,7 +1226,7 @@ body, body *{ font-weight:400!important; }
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
     <div class="sb-section">סביבת עבודה</div>
     <div id="ws-switch"></div>
-    <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="openNewBoard()"></i></span></div>
+    <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="newBoardQuick()"></i></span></div>
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
       <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
@@ -1912,6 +1912,7 @@ function boardMenu(e){
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
     ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
+    ${item('fa-file-import','ייבוא לוח מקובץ','importBoardFile()',hasCap('create_board'),'אין לך הרשאה ליצור לוח חדש')}
     <div class="rm-sep"></div>
     ${item('fa-trash','מחק לוח','deleteBoardById('+st.board.id+')',canDelete,'רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו','danger')}
   </div>`;
@@ -2086,8 +2087,7 @@ function openNewBoard(){
     <div class="field"><label>אייקון</label><div class="icon-grid" id="nb-icons">${BOARD_ICONS.map((ic,i)=>`<button type="button" class="icon-sw ${i===0?'sel':''}" data-ic="${ic}" onclick="pickBoardIcon('${ic}')">${ic}</button>`).join('')}</div></div>
     <div class="field"><label>אגף</label><select id="nb-dept"><option value="">טוען…</option></select></div>
     <div style="font-size:12.5px;color:var(--text-light);margin-top:4px"><i class="fa-solid fa-circle-info"></i> הלוח ייפתח עם תצוגת טבלה ראשית בלבד. תצוגות נוספות אפשר להוסיף דרך כפתור ה־＋ שליד הלשוניות.</div>
-    <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-file-import"></i> יש כבר נתונים? ייבא קובץ CSV/Excel — השורה הראשונה תהפוך לעמודות, והעמודה הראשונה לשם הפריט.</div>
-  </div><div class="mfoot"><button class="btn btn-primary" onclick="createBoard()">צור לוח</button><button class="btn btn-ghost" onclick="importBoardFile()"><i class="fa-solid fa-file-import"></i> ייבוא מקובץ</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+  </div><div class="mfoot"><button class="btn btn-primary" onclick="createBoard()">צור לוח</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
   api('/api/departments').then(ds=>{const s=document.getElementById('nb-dept');if(s)s.innerHTML=(ds||[]).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')||'<option value="">—</option>';}).catch(()=>{const s=document.getElementById('nb-dept');if(s)s.innerHTML='<option value="">—</option>';});
   setTimeout(()=>{const n=document.getElementById('nb-name');if(n)n.focus();},30);
 }
