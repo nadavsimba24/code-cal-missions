@@ -777,6 +777,20 @@ img.pf-av{object-fit:cover;background:#fff}
 #agent-hint .hint-x{position:absolute;top:8px;left:10px;background:none;border:none;color:var(--text-light);cursor:pointer;font-size:13px;padding:2px 5px;border-radius:5px}
 #agent-hint .hint-x:hover{background:var(--row-hover)}
 #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(140%);opacity:0;visibility:hidden;pointer-events:none;background:#323338;color:#fff;padding:12px 20px;border-radius:9px;z-index:300;transition:transform .3s,opacity .3s,visibility .3s;font-weight:600;font-size:13px}
+/* ===== bulk-selection action bar ===== */
+#sel-bar{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(150%);opacity:0;visibility:hidden;z-index:190;display:flex;align-items:center;gap:4px;background:var(--surface,#fff);border:1px solid var(--border);border-radius:14px;box-shadow:0 14px 40px rgba(0,0,0,.24);padding:8px 10px;transition:transform .28s cubic-bezier(.2,.9,.3,1.3),opacity .2s,visibility .2s}
+#sel-bar.show{transform:translateX(-50%) translateY(0);opacity:1;visibility:visible}
+#sel-bar .sel-count{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);padding:0 6px 0 4px;white-space:nowrap}
+#sel-bar .sel-count b{display:grid;place-items:center;min-width:24px;height:24px;padding:0 6px;border-radius:7px;background:var(--primary);color:#fff;font-size:12px;font-weight:700}
+#sel-bar .sel-sep{width:1px;height:28px;background:var(--border);margin:0 2px}
+.sel-act{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;cursor:pointer;color:var(--text);font-size:11px;font-family:inherit;padding:6px 12px;border-radius:9px;transition:.12s;min-width:56px}
+.sel-act i{font-size:15px;color:var(--text-muted)}
+.sel-act:hover{background:var(--row-hover)}
+.sel-act.danger:hover{background:#fdebed}
+.sel-act.danger:hover i,.sel-act.danger:hover span{color:var(--red)}
+.sel-x{width:30px;height:30px;border-radius:8px;border:none;background:none;cursor:pointer;color:var(--text-light);font-size:15px;margin-inline-start:2px;flex-shrink:0}
+.sel-x:hover{background:var(--row-hover);color:var(--text)}
+@media(max-width:640px){#sel-bar{left:8px;right:8px;transform:translateY(150%);width:auto;justify-content:center;flex-wrap:wrap}#sel-bar.show{transform:translateY(0)}.sel-act span{display:none}.sel-act{min-width:44px;padding:6px 10px}}
 #toast.show{transform:translateX(-50%) translateY(0);opacity:1;visibility:visible}
 .empty{text-align:center;color:var(--text-light);padding:60px 20px}
 .empty i{font-size:40px;margin-bottom:14px;opacity:.5;display:block}
@@ -1361,6 +1375,15 @@ body, body *{ font-weight:400!important; }
 </div>
 
 <!-- Floating agent bubble (bottom-left) -->
+<!-- bulk-selection action bar (appears when items are ticked) -->
+<div id="sel-bar" aria-hidden="true">
+  <span class="sel-count"><b id="sel-n">0</b> נבחרו</span>
+  <div class="sel-sep"></div>
+  <button class="sel-act" onclick="bulkDuplicate()"><i class="fa-regular fa-copy"></i><span>שכפול</span></button>
+  <button class="sel-act" onclick="bulkMoveMenu(event)"><i class="fa-solid fa-arrow-right-arrow-left"></i><span>העברה</span></button>
+  <button class="sel-act danger" onclick="bulkDelete()"><i class="fa-regular fa-trash-can"></i><span>מחיקה</span></button>
+  <button class="sel-x" title="ביטול בחירה" onclick="clearSelection()"><i class="fa-solid fa-xmark"></i></button>
+</div>
 <button id="agent-fab" style="display:none" onclick="onAgentFab()" title="עוזר עמוד (page-agent) — שליטה בממשק בשפה טבעית" aria-label="עוזר עמוד">
   <i class="fa-solid fa-robot"></i>
   <span class="fab-spin" aria-hidden="true"></span>
@@ -2164,6 +2187,7 @@ function renderView(){
   const top=same?el.scrollTop:0, left=same?el.scrollLeft:0;
   el.innerHTML='';
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
+  renderSelBar();
   _viewScrollKey=key;
   if(!same){ el.scrollTop=0; el.scrollLeft=0; }   // a new place starts at the top, explicitly
   if(top||left){
@@ -3344,7 +3368,7 @@ function itemRow(t,col){
   const cnt=subs.length;
   const open=st.openSubs.has(t.id);
   const parent=`
-    <tr data-tid="${t.id}">
+    <tr data-tid="${t.id}" class="${st.selected.has(t.id)?'row-sel':''}">
       <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
         ${canEditItem(t)?`<input type="checkbox" class="item-check" title="סימון פריט" ${st.selected.has(t.id)?'checked':''} onclick="toggleItemSelect(event,${t.id})">`:''}
         ${canEditItem(t)?`<button class="item-menu" title="פעולות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}
@@ -4930,7 +4954,61 @@ function toggleItemSelect(e,id){
   const box=e.currentTarget, on=!!box.checked;
   if(on)st.selected.add(id); else st.selected.delete(id);
   const row=box.closest('tr'); if(row)row.classList.toggle('row-sel',on);
-  // selection only — the item's actions live on the 3-dots (itemRowMenu) now
+  renderSelBar();
+}
+/* ===== bulk-selection action bar ===== */
+function renderSelBar(){
+  const bar=document.getElementById('sel-bar'); if(!bar)return;
+  const n=st.selected.size;
+  const nEl=document.getElementById('sel-n'); if(nEl)nEl.textContent=n;
+  bar.classList.toggle('show',n>0);
+  bar.setAttribute('aria-hidden',n>0?'false':'true');
+}
+function clearSelection(){
+  st.selected.clear();
+  document.querySelectorAll('tr.row-sel').forEach(r=>r.classList.remove('row-sel'));
+  document.querySelectorAll('.item-check:checked').forEach(c=>{c.checked=false;});
+  closeCellPops(); renderSelBar();
+}
+function _selectedTopItems(){ return [...st.selected].map(id=>findAnyTask(id)).filter(t=>t&&!t.parent_id); }
+async function bulkDelete(){
+  const items=_selectedTopItems(); if(!items.length)return;
+  askConfirm(`למחוק ${items.length} פריטים?`,async()=>{
+    let ok=0;
+    for(const t of items){ try{ await api('/api/tasks/'+t.id,{method:'DELETE'}); removeTaskLocal(t.id); ok++; }catch(e){} }
+    clearSelection(); renderView(); toast(`${ok} פריטים נמחקו`);
+  },{title:'מחיקת פריטים',confirmText:'מחק',note:'הפריטים וכל תת-הפריטים שלהם יימחקו ולא ניתן לשחזר.'});
+}
+async function bulkDuplicate(){
+  const items=_selectedTopItems(); if(!items.length)return;
+  let ok=0;
+  for(const t of items){
+    const body={board_id:st.board.id,group_id:t.group_id,title:(t.title||'')+' (עותק)',
+                status:t.status,priority:t.priority,tags:(t.tags||[]).slice(),
+                custom_fields:{...(t.custom_fields||{})}};
+    try{ const nt=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)}); (st.board.tasks=st.board.tasks||[]).push(nt); ok++; }catch(e){}
+  }
+  clearSelection(); renderView(); toast(`${ok} פריטים שוכפלו`);
+}
+function bulkMoveMenu(e){
+  e.stopPropagation();
+  if(!st.selected.size)return;
+  const groups=(st.board&&st.board.groups)||[];
+  const html=`<div class="row-menu" onclick="event.stopPropagation()">`
+    +groups.map(g=>`<button class="rm-item" onclick="bulkMoveToGroup(event,${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('')
+    +`</div>`;
+  openCellPop(e.currentTarget,html,'row-menu-pop');
+}
+async function bulkMoveToGroup(e,gid){
+  e.stopPropagation(); closeCellPops();
+  const items=_selectedTopItems(); const grp=(st.board.groups||[]).find(g=>g.id===gid);
+  let ok=0, pos=(st.board.tasks||[]).filter(x=>x.group_id===gid&&!x.parent_id).length;
+  for(const t of items){
+    const body={group_id:gid,position:pos++}; if(grp)body.status=grp.task_status;
+    try{ await api('/api/tasks/'+t.id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})}); ok++; }catch(e){}
+  }
+  try{ const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh; }catch(e){}
+  clearSelection(); renderView(); toast(`${ok} פריטים הועברו`);
 }
 /* move an item (with its sub-items) to another board. The item leaves this
    board, so its "מזהה פריט" is re-issued there — and re-issued again if it ever
