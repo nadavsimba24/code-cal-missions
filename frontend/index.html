@@ -5010,7 +5010,7 @@ function bulkMoveMenu(e){
     +sub('fa-layer-group','קבוצה',groupList)
     +sub('fa-table-columns','לוח',boardList)
     +`</div>`;
-  openCellPop(e.currentTarget,html,'row-menu-pop');
+  openCellPop(e.currentTarget,html,'row-menu-pop',true);   // bar is at the bottom → open upward
 }
 async function bulkMoveToGroup(e,gid){
   e.stopPropagation(); closeCellPops();
