@@ -319,6 +319,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
    a quiet board stays quiet, but it always takes up its place in the row. */
 .item-check{flex-shrink:0;width:15px;height:15px;margin:0 0 0 2px;cursor:pointer;accent-color:var(--primary);opacity:.25;transition:opacity .12s}
 .tbl tr:hover .item-check,.item-check:checked,.item-check:focus-visible{opacity:1}
+/* per-item 3-dots menu button — opens the item's actions (move/delete) */
+.item-menu{width:22px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;opacity:0;transition:.12s;flex-shrink:0;cursor:pointer}
+.tbl tr:hover .item-menu{opacity:.7}
+.item-menu:hover{background:var(--row-hover);opacity:1;color:var(--text)}
 .tbl tr.row-sel td{background:var(--primary-soft)}
 .tbl .cell{padding:6px 10px;text-align:center}
 /* trailing cell so the row's bottom border reaches the end of the table
@@ -3339,12 +3343,13 @@ function itemRow(t,col){
   const parent=`
     <tr data-tid="${t.id}">
       <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
-        ${canEditItem(t)?`<input type="checkbox" class="item-check" title="סימון פריט — פותח את פעולות הפריט" ${st.selected.has(t.id)?'checked':''} onclick="toggleItemSelect(event,${t.id})">`:''}
+        ${canEditItem(t)?`<input type="checkbox" class="item-check" title="סימון פריט" ${st.selected.has(t.id)?'checked':''} onclick="toggleItemSelect(event,${t.id})">`:''}
         <i class="fa-solid fa-grip-vertical row-grip itm-h" title="גרור להעברה בין קבוצות"></i>
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
         <span class="item-title editable itm-h" title="לחץ לעריכת השם · גרור להעברה" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
         ${cnt?`<span class="sub-badge${open?' open':''}" role="button" tabindex="0" title="${cnt} תת-פריטים · לחץ להצגה/הסתרה" onclick="toggleSubs(event,${t.id})" onkeydown="if(event.key==='Enter'||event.key===' ')toggleSubs(event,${t.id})"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
+        ${canEditItem(t)?`<button class="item-menu" title="פעולות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}
       </div></td>
       ${rowCellsAfterItem(t)}
       <td class="cell"></td>
@@ -4915,16 +4920,15 @@ function itemRowMenu(e,id){
   openCellPop(e.currentTarget,html,'row-menu-pop');
 }
 /* ===== סימון פריטים =====
-   The checkbox replaced the 3-dots button, so it is also the way into the
-   item's actions: ticking selects the row and opens the menu next to it;
-   unticking clears the selection and closes it. */
+   The checkbox marks the row for bulk selection only. The item's actions
+   (move to group/board, delete) open from the per-row 3-dots button
+   (itemRowMenu), and from a right-click on the item cell. */
 function toggleItemSelect(e,id){
   e.stopPropagation();
   const box=e.currentTarget, on=!!box.checked;
   if(on)st.selected.add(id); else st.selected.delete(id);
   const row=box.closest('tr'); if(row)row.classList.toggle('row-sel',on);
-  if(!on){ closeCellPops(); return; }
-  itemRowMenu({preventDefault(){},stopPropagation(){},currentTarget:box},id);
+  // selection only — the item's actions live on the 3-dots (itemRowMenu) now
 }
 /* move an item (with its sub-items) to another board. The item leaves this
    board, so its "מזהה פריט" is re-issued there — and re-issued again if it ever
