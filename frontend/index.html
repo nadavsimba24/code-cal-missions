@@ -288,7 +288,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* width = sum of column widths (not 100%), so resizing one column only changes
    the table's total width; the rest stay put and #view scrolls horizontally */
 .tbl{width:max-content;min-width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;background:var(--surface);border-radius:var(--radius);overflow:visible;box-shadow:var(--shadow-sm)}
-.tbl th{position:relative;font-size:12px;color:var(--text-muted);font-weight:600;text-align:center;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap;overflow:visible}
+.tbl th{position:sticky;top:0;z-index:3;font-size:12px;color:var(--text-muted);font-weight:600;text-align:center;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap;overflow:visible}
 /* drag-to-resize handle on column headers (board admin only) */
 .tbl th.th-spacer{padding:0;background:var(--surface)}
 /* per-column sort control — a small badge that floats ABOVE the column name on
