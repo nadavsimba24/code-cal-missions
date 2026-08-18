@@ -1229,7 +1229,7 @@ body, body *{ font-weight:400!important; }
     <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="newBoardQuick()"></i></span></div>
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
-      <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
+      <div class="sb-item" style="display:none" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
       <div class="sb-item" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
       <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
@@ -1242,7 +1242,7 @@ body, body *{ font-weight:400!important; }
       <button class="sb-toggle" id="sb-toggle" title="צמצום/הרחבת תפריט" aria-label="צמצום או הרחבת התפריט הצדדי" onclick="toggleSidebar()"><i class="fa-solid fa-chevron-right"></i></button>
       <div class="ab-title"><i class="fa-solid fa-table-cells-large" style="color:var(--primary)"></i> מרכז העבודה</div>
       <div class="ab-spacer"></div>
-      <button class="btn btn-ai" onclick="AI.open()"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>
+      <button class="btn btn-ai" style="display:none" onclick="AI.open()"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>
       <div class="tb-ctl" id="ctl-notif">
         <button class="icon-btn notif-btn" title="התראות" onclick="Notif.toggle(event)"><i class="fa-regular fa-bell"></i><span class="notif-badge" id="notif-badge" style="display:none">0</span></button>
         <div class="tb-pop notif-pop" id="pop-notif" style="inset-inline-start:auto;inset-inline-end:0"></div>
