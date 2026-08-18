@@ -1017,7 +1017,11 @@ img.pf-av{object-fit:cover;background:#fff}
 .file-row .ext-badge{min-width:34px;height:18px;font-size:9.5px}
 .att-name{font-size:10.5px;color:var(--text-muted);max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .comp-foot{display:flex;justify-content:flex-start;margin-top:8px}
-.chat-float{inset-inline-start:0;inset-inline-end:auto;transform:none;bottom:calc(100% + 6px);top:auto;max-height:230px;overflow-y:auto;min-width:190px}
+/* the tag/emoji popovers. Position is left to openCellPop (fixed, placed against
+   the anchor and flipped to whichever side has room) — pinning them above the
+   button here meant that editing a comment near the top of the thread opened
+   the list into the scroll container's ceiling, where it was cut off. */
+.chat-float{max-height:230px;overflow-y:auto;min-width:190px}
 .chat-float button{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;width:100%;text-align:start}
 .chat-float button:hover{background:var(--row-hover)}
 .chat-float button.active{background:var(--primary-soft);box-shadow:inset 0 0 0 1px var(--primary)}
@@ -1045,6 +1049,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .log-ic{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:12px;flex-shrink:0;background:var(--primary-soft);color:var(--primary)}
 .log-ic.comment{background:#e6f7ef;color:var(--green-d)}
 .log-ic.undo{background:#fdebed;color:var(--red)}
+.log-ic.create{background:#e8f0ff;color:var(--primary-hover,#0060c9)}
 .log-txt{font-size:13px;line-height:1.5}
 .log-time{font-size:11px;color:var(--text-light);margin-top:2px}
 .log-old{color:var(--text-light);text-decoration:line-through}
@@ -1224,8 +1229,8 @@ body, body *{ font-weight:400!important; }
     <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="newBoardQuick()"></i></span></div>
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
-      <div class="sb-item" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
-      <div class="sb-item" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
+      <div class="sb-item" style="display:none" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
+      <div class="sb-item" style="display:none" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
       <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
     </div>
@@ -1237,7 +1242,7 @@ body, body *{ font-weight:400!important; }
       <button class="sb-toggle" id="sb-toggle" title="צמצום/הרחבת תפריט" aria-label="צמצום או הרחבת התפריט הצדדי" onclick="toggleSidebar()"><i class="fa-solid fa-chevron-right"></i></button>
       <div class="ab-title"><i class="fa-solid fa-table-cells-large" style="color:var(--primary)"></i> מרכז העבודה</div>
       <div class="ab-spacer"></div>
-      <button class="btn btn-ai" onclick="AI.open()"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>
+      <button class="btn btn-ai" style="display:none" onclick="AI.open()"><i class="fa-solid fa-wand-magic-sparkles"></i> AI</button>
       <div class="tb-ctl" id="ctl-notif">
         <button class="icon-btn notif-btn" title="התראות" onclick="Notif.toggle(event)"><i class="fa-regular fa-bell"></i><span class="notif-badge" id="notif-badge" style="display:none">0</span></button>
         <div class="tb-pop notif-pop" id="pop-notif" style="inset-inline-start:auto;inset-inline-end:0"></div>
@@ -1270,7 +1275,7 @@ body, body *{ font-weight:400!important; }
       </div>
       <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
       <div style="flex:1"></div>
-      <button class="tb-btn" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
+      <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
     </div>
 
     <div id="view"><div class="spin"></div></div>
@@ -1349,7 +1354,7 @@ body, body *{ font-weight:400!important; }
 </div>
 
 <!-- Floating agent bubble (bottom-left) -->
-<button id="agent-fab" onclick="onAgentFab()" title="עוזר עמוד (page-agent) — שליטה בממשק בשפה טבעית" aria-label="עוזר עמוד">
+<button id="agent-fab" style="display:none" onclick="onAgentFab()" title="עוזר עמוד (page-agent) — שליטה בממשק בשפה טבעית" aria-label="עוזר עמוד">
   <i class="fa-solid fa-robot"></i>
   <span class="fab-spin" aria-hidden="true"></span>
 </button>
@@ -1372,9 +1377,6 @@ const STATUS = {
   done:{he:'הושלם',c:'#00c875'}, cancelled:{he:'בוטל',c:'#e2445c'},
   on_hold:{he:'בהמתנה',c:'#808080'},
 };
-// coarse stage per status — lets a status change find a sensible group even
-// when the board has fewer groups than statuses (mirrors STATUS_STAGE on the server)
-const STATUS_STAGE={backlog:'todo',todo:'todo',in_progress:'active',review:'active',on_hold:'active',done:'done',cancelled:'done'};
 /* Per-board statuses: the open board defines its own label/color/order for the
    built-in status column (falls back to the global STATUS when uncustomised).
    Keys stay the underlying enum values so auto-move/kanban/charts keep working. */
@@ -1540,13 +1542,13 @@ const Router={
 };
 window.addEventListener('hashchange',()=>{ try{Router.apply();}catch(e){} });
 
-/* Uploads go through the serverless function, which caps the request body at
-   ~4.5MB (Vercel). Gate client-side so oversized files get a clear message
-   instead of a silent edge-level 413 (which left broken, 404-on-open links). */
-const MAX_UPLOAD_BYTES=4*1024*1024;   // 4MB — safely under the platform limit
+/* Gate client-side so oversized files get a clear message instead of a silent
+   server 413 (which left broken, 404-on-open links). Note: on Vercel the edge
+   still rejects bodies over ~4.5MB regardless; the full 10MB applies on Azure. */
+const MAX_UPLOAD_BYTES=10*1024*1024;   // 10MB per file
 function fileTooBig(f){
   if(f && f.size>MAX_UPLOAD_BYTES){
-    toast(`הקובץ גדול מדי (${(f.size/1048576).toFixed(1)}MB). הגודל המרבי הוא 4MB.`);
+    toast(`הקובץ גדול מדי (${(f.size/1048576).toFixed(1)}MB). הגודל המרבי הוא 10MB.`);
     return true;
   }
   return false;
@@ -1739,10 +1741,12 @@ function renderSidebar(){
   const collapsed=st._foldersCollapsed;
   const envFolders=(st.folders||[]).filter(f=>f.environment_id===active.id).sort((a,b)=>(a.position-b.position)||a.id-b.id);
   const envBoards=(st.boards||[]).filter(b=>b.environment_id===active.id);
-  const inContainer=fid=>envBoards.filter(b=>(b.folder_id||null)===fid).sort((a,b)=>(a.position-b.position)||a.id-b.id);
+  // boards in the sidebar are always listed alphabetically (א-ב) by name,
+  // including newly created ones (drag still moves a board between folders)
+  const inContainer=fid=>envBoards.filter(b=>(b.folder_id||null)===fid).sort((a,b)=>(a.name||'').localeCompare(b.name||'','he',{numeric:true,sensitivity:'base'}));
   const boardItem=b=>`<div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" data-bid="${b.id}" onclick="openBoard(${b.id})" oncontextmenu="boardRowMenu(event,${b.id});return false">
       <span class="ic">${b.icon||'📋'}</span>
-      <span class="sb-item-name">${esc(b.name)}</span>
+      <span class="sb-item-name" title="${esc(b.name)}">${esc(b.name)}</span>
       <button class="sb-more" title="אפשרויות לוח" onclick="boardRowMenu(event,${b.id})" aria-label="אפשרויות לוח"><i class="fa-solid fa-ellipsis-vertical"></i></button>
     </div>`;
   const folderHTML=f=>{
@@ -1908,6 +1912,7 @@ function boardMenu(e){
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
     ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
+    ${item('fa-file-import','ייבוא לוח מקובץ','importBoardFile()',hasCap('create_board'),'אין לך הרשאה ליצור לוח חדש')}
     <div class="rm-sep"></div>
     ${item('fa-trash','מחק לוח','deleteBoardById('+st.board.id+')',canDelete,'רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו','danger')}
   </div>`;
@@ -2110,6 +2115,32 @@ async function newBoardQuick(){
     toast('לוח חדש נוצר — הקלד שם');
     setTimeout(startBoardRename,180);
   }catch(e){toast('שגיאה ביצירת לוח');}
+}
+/* Import a board from a CSV / Excel file: the server reads the header row into
+   columns (type inferred per column) and one item per data row. */
+async function importBoardFile(){
+  if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
+  const inp=document.createElement('input');
+  inp.type='file';
+  inp.accept='.csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  inp.onchange=async()=>{
+    const f=inp.files&&inp.files[0]; if(!f)return;
+    const fd=new FormData(); fd.append('file',f);
+    const env=(Env.active()||{}).id; if(env)fd.append('environment_id',env);
+    toast('מייבא את הקובץ…');
+    try{
+      const r=await fetch('/api/boards/import',{method:'POST',headers:{...authHeaders()},body:fd});
+      if(!r.ok){ let d=''; try{ d=(await r.json()).detail||''; }catch(_){}
+        throw new Error(d || (r.status===413?'הקובץ גדול מדי (מקסימום 8MB)':'שגיאה בייבוא הקובץ')); }
+      const b=await r.json();
+      closeModals();
+      st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
+      renderSidebar();
+      await openBoard(b.id);
+      toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות');
+    }catch(e){ toast((e&&e.message)||'שגיאה בייבוא הקובץ'); }
+  };
+  inp.click();
 }
 
 /* ============ views ============ */
@@ -2538,13 +2569,13 @@ const Env = {
     const manageAny=admin||this.items.some(e=>e.can_manage);
     // a single environment with no management options needs no dropdown — show it statically
     if(this.items.length===1 && !manageAny && !hasCap('create_environment')){
-      wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(a?a.name:'')}</span></div>`;
+      wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(a?a.name:'')}">${esc(a?a.name:'')}</span></div>`;
       return;
     }
     const rows=this.items.map(e=>`
       <button class="ws-opt ${a&&a.id===e.id?'active':''}" onclick="Env.select(${e.id})">
         <span class="ic">${e.icon||'🏢'}</span>
-        <span class="ws-opt-name">${esc(e.name)}${e.my_role==='manager'?' <span class="ws-opt-badge">מנהל</span>':''}</span>
+        <span class="ws-opt-name" title="${esc(e.name)}">${esc(e.name)}${e.my_role==='manager'?' <span class="ws-opt-badge">מנהל</span>':''}</span>
         ${e.can_manage?`<span class="ws-opt-act">
           <i class="fa-solid fa-user-gear" title="ניהול משתמשים" onclick="event.stopPropagation();Env.members(${e.id})"></i>
           <i class="fa-solid fa-pen" title="שנה שם" onclick="event.stopPropagation();Env.rename(${e.id})"></i>
@@ -2555,7 +2586,7 @@ const Env = {
     wrap.innerHTML=`
       <div class="sb-item ws-btn active" onclick="Env.toggle(event)" title="החלפת סביבה">
         <span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span>
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(a?a.name:'')}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(a?a.name:'')}">${esc(a?a.name:'')}</span>
         <i class="fa-solid fa-chevron-down ws-caret ${this.open?'up':''}"></i>
       </div>
       <div class="ws-dd" ${this.open?'':'hidden'}>
@@ -3350,7 +3381,7 @@ function subHeadRowHTML(parentId,disp){
   return `<tr class="subrow subhead" data-parent="${parentId}" style="display:${disp}">
       <td class="c-sub subh-cell subh-name" data-subcol="item"><span class="sub-twig"></span><span class="th-in">תת-פריט${gear}${subSortBtn('item')}</span></td>
       ${rest}${pad>0?`<td class="subh-cell" colspan="${pad}"></td>`:''}
-      <td class="subh-cell"></td>
+      <td class="subh-cell">${admin?`<div class="th-add-wrap"><button class="th-add-btn" title="הוסף עמודה — נשמרת בפריט האב" onclick="event.stopPropagation();addColMenu(event,true)"><i class="fa-solid fa-plus"></i></button></div>`:''}</td>
       <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`;
 }
@@ -3550,10 +3581,10 @@ function columnHeadersHTML(boardColor){
       const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startColRename('builtin','${c.key}')"`:' class="th-lbl"';
       return `<th data-colkey="${c.key}" ${fixed} ${style}><span class="th-in">${grip}<span${dbl}>${esc(c.label)}</span>${menu}${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
     }
-    const cc=c.col, m=COLUMN_TYPES.find(x=>x.type===cc.type)||{ic:'fa-table-columns'};
+    const cc=c.col;
     const menu=admin?`<button class="th-menu" title="עמודה" onclick="colMenu(event,'${cc.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
     const dblc=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startColRename('custom','${cc.id}')"`:' class="th-lbl"';
-    return `<th class="th-custom" data-colkey="${cc.id}"><span class="th-in">${grip}<span class="th-wrap"><i class="fa-solid ${m.ic}" style="color:var(--text-light);font-size:11px"></i> <span${dblc}>${esc(cc.title)}</span></span>${menu}${sortBtn(cc.id)}</span>${resizerHTML(cc.id)}</th>`;
+    return `<th class="th-custom" data-colkey="${cc.id}"><span class="th-in">${grip}<span class="th-wrap"><span${dblc}>${esc(cc.title)}</span></span>${menu}${sortBtn(cc.id)}</span>${resizerHTML(cc.id)}</th>`;
   }).join('');
   const add=admin?`<th class="th-add"><div class="th-add-wrap"><button class="th-add-btn" title="הוסף עמודה" onclick="addColMenu(event)"><i class="fa-solid fa-plus"></i></button></div></th>`:'';
   return ths+add;
@@ -3601,11 +3632,18 @@ async function hideBuiltinCol(e,key){
     st.board.col_hidden=hidden; toast('העמודה הוסתרה — ניתן להחזירה מכפתור +'); renderView();
   }catch(err){ toast('שגיאה בהסתרת העמודה'); }
 }
-async function unhideBuiltinCol(key){
+async function unhideBuiltinCol(key,forSub){
   const hidden=(((st.board&&st.board.col_hidden)||[]).map(String)).filter(k=>k!==key);
   try{
     await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({col_hidden:hidden})});
-    st.board.col_hidden=hidden; toast('העמודה הוחזרה'); renderView();
+    st.board.col_hidden=hidden;
+    // restored from a sub-item "+": also surface it on sub-item rows when a
+    // sub_cols subset is configured (otherwise the sub already mirrors items)
+    const ids=st.board&&st.board.sub_cols;
+    if(forSub&&Array.isArray(ids)&&!ids.map(String).includes(String(key))){
+      await saveSubCols([...ids.map(String).filter(id=>id!=='item'),String(key)],'העמודה הוחזרה לפריט ולתת-הפריט'); return;
+    }
+    toast('העמודה הוחזרה'); renderView();
   }catch(err){ toast('שגיאה'); }
 }
 /* persist a new column order (built-in keys + custom ids); item is forced first */
@@ -3758,7 +3796,7 @@ function customCellHTML(c,t){
     const tip=mode==='url'?'לחיצה מעתיקה קישור לפריט':'לחיצה מעתיקה את מזהה הפריט';
     return `<td class="cell cell-custom"><span class="item-id" title="${tip}" onclick="copyItemId(event,${t.id},'${mode}')">${esc(String(t.item_uid))}<i class="fa-regular fa-copy id-copy"></i></span></td>`;
   }
-  if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetime(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
+  if(c.type==='created_at')return `<td class="cell cell-custom"><span class="created-at">${t.created_at?fdatetimeY(t.created_at):'<span style=\"color:var(--text-light)\">—</span>'}</span></td>`;
   if(c.type==='created_by'){
     // derived from the item's own creator — correct on every board and on items
     // that predate the column. Items created before the system recorded a
@@ -3827,7 +3865,7 @@ function exportCell(c,t){
     case 'accounts': return (v&&v.label)?v.label:'';
     case 'connect':  return (Array.isArray(v)?v:[]).map(id=>{const it=linkInfo(id);return it&&it.title?it.title:'#'+id;}).join(', ');
     case 'formula':{const r=evalFormula(col,t);return r==null?'':r;}
-    case 'created_at': return t.created_at?fdatetime(t.created_at):'';
+    case 'created_at': return t.created_at?fdatetimeY(t.created_at):'';
     case 'created_by':{const u=(st.users||[]).find(x=>x.id===t.created_by);return u?u.name:'';}
     case 'item_id':  return t.item_uid?String(t.item_uid):'';
   }
@@ -4185,13 +4223,14 @@ async function setField(id,field,value){
         if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
   }
   if(t)t[field]=value;
-  // mirror the backend auto-move: a top-level item whose status changes jumps to
-  // the group matching that status (exact status first, else same stage —
-  // e.g. "הושלם"→Done group; "לביצוע" on a 3-group board → the "בתכנון" group)
+  // mirror the backend auto-move (see _group_for_status in backend/main.py): a
+  // top-level item moves only to the group that stands for its exact status, and
+  // stays put when none does. A group left at the default `todo` status is a
+  // plain section, never a destination — so a todo-family status like
+  // "חזרה לפיתוח" never yanks the item out of "בביצוע" into a freshly added group.
   if(field==='status' && t && !t.parent_id){
     const gs=(st.board&&st.board.groups)||[];
-    let g=gs.find(x=>x.task_status===value);
-    if(!g){const stage=STATUS_STAGE[value]; if(stage)g=gs.find(x=>STATUS_STAGE[x.task_status]===stage);}
+    const g=gs.find(x=>x.task_status===value && x.task_status!=='todo');
     if(g) t.group_id=g.id;
   }
   // roll up: when all sub-items are done, the parent item moves to "done" too
@@ -4200,7 +4239,7 @@ async function setField(id,field,value){
     if(parent && subs.length && subs.every(s=>s.status==='done') && parent.status!=='done'){
       parent.status='done';
       const gs=(st.board&&st.board.groups)||[];
-      const g=gs.find(x=>x.task_status==='done')||gs.find(x=>STATUS_STAGE[x.task_status]==='done');
+      const g=gs.find(x=>x.task_status==='done');   // same rule: only its own group
       if(g) parent.group_id=g.id;
     }
   }
@@ -4555,12 +4594,28 @@ function openCellPop(anchor,html,extraClass,above){
   let top;
   if(above){                                   // open above the anchor, centered, scrolling if tall
     left=Math.max(8,Math.min(r.left+r.width/2-pop.offsetWidth/2,window.innerWidth-pop.offsetWidth-8));  // center over the circle
-    const room=Math.max(120,r.top-12);         // usable space above the circle
-    if(pop.offsetHeight>room) pop.style.maxHeight=room+'px';   // cap height → scroll
-    top=Math.max(8,r.top-pop.offsetHeight-4);
+    const roomAbove=r.top-12, roomBelow=window.innerHeight-r.bottom-12;
+    // Near the top of the screen there is nothing to open into, and squeezing
+    // the list into whatever slice is left is exactly what "cut off" looks
+    // like — so when it does not fit above, and below is roomier, drop below.
+    if(pop.offsetHeight>roomAbove&&roomBelow>roomAbove){
+      if(pop.offsetHeight>roomBelow) pop.style.maxHeight=roomBelow+'px';
+      top=r.bottom+4;
+    }else{
+      const room=Math.max(120,roomAbove);       // usable space above the anchor
+      if(pop.offsetHeight>room) pop.style.maxHeight=room+'px';   // cap height → scroll
+      top=Math.max(8,r.top-pop.offsetHeight-4);
+    }
   }else{
     top=r.bottom+4;
-    if(top+pop.offsetHeight>window.innerHeight-8) top=Math.max(8,r.top-pop.offsetHeight-4);
+    if(top+pop.offsetHeight>window.innerHeight-8){
+      // no room below. Above only if it is genuinely roomier there; otherwise
+      // stay below and scroll inside, rather than hang off the bottom edge.
+      const roomAbove=r.top-12, roomBelow=window.innerHeight-r.bottom-12;
+      if(roomAbove>roomBelow) top=Math.max(8,r.top-Math.min(pop.offsetHeight,roomAbove)-4);
+      if(pop.offsetHeight>Math.max(roomAbove,roomBelow))
+        pop.style.maxHeight=Math.max(120,Math.max(roomAbove,roomBelow))+'px';
+    }
   }
   pop.style.left=left+'px'; pop.style.top=top+'px';
   setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0);
@@ -4594,7 +4649,7 @@ async function saveTimeline(taskId,colId,clear){
   await setCell(taskId,colId,val);closeModals();renderView();
 }
 /* add / rename / delete columns */
-function addColMenu(e){
+function addColMenu(e,forSub){
   e.stopPropagation();
   // the connect (cross-board) column is a system-admin-only capability
   const types=COLUMN_TYPES.filter(c=>c.type!=='connect'||isSysAdmin());
@@ -4602,7 +4657,7 @@ function addColMenu(e){
   const hidden=((st.board&&st.board.col_hidden)||[]).map(String);
   const hiddenHTML=hidden.length?('<div class="pop-title">עמודות מוסתרות — החזרה</div>'+hidden.map(k=>{
     const bc=BUILTIN_COLS.find(c=>c.key===k)||{}; const lbl=builtinLabel(k,bc.label||k);
-    return `<button class="coltype" onclick="closeCellPops();unhideBuiltinCol('${k}')"><i class="fa-solid fa-eye"></i><span><b>${esc(lbl)}</b><small>החזרת עמודת ברירת מחדל</small></span></button>`;
+    return `<button class="coltype" onclick="closeCellPops();unhideBuiltinCol('${k}'${forSub?',true':''})"><i class="fa-solid fa-eye"></i><span><b>${esc(lbl)}</b><small>החזרת עמודת ברירת מחדל</small></span></button>`;
   }).join('')+'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>'):'';
   const subCfg=`<button class="coltype" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i><span><b>עמודות תת-פריט</b><small>אילו עמודות יופיעו בשורות תת-הפריט</small></span></button>`
     +'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>';
@@ -4610,7 +4665,7 @@ function addColMenu(e){
   const search=`<input class="col-type-q" id="col-type-q" placeholder="חיפוש סוג עמודה…" autocomplete="off"
       oninput="filterColTypes(this.value)" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">`;
   const html=hiddenHTML+subCfg+'<div class="pop-title">בחר סוג עמודה</div>'+search
-    +types.map(c=>`<button class="coltype" data-q="${esc((c.he+' '+c.desc+' '+c.type).toLowerCase())}" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${esc(c.he)}</b><small>${esc(c.desc)}</small></span></button>`).join('')
+    +types.map(c=>`<button class="coltype" data-q="${esc((c.he+' '+c.desc+' '+c.type).toLowerCase())}" onclick="addColumn('${c.type}'${forSub?',true':''})"><i class="fa-solid ${c.ic}"></i><span><b>${esc(c.he)}</b><small>${esc(c.desc)}</small></span></button>`).join('')
     +'<div class="col-type-none" id="col-type-none" style="display:none">לא נמצא סוג עמודה מתאים</div>';
   openCellPop(e.currentTarget,html,'col-add-pop');
   setTimeout(()=>{const q=document.getElementById('col-type-q'); if(q)q.focus();},30);
@@ -4625,7 +4680,7 @@ function filterColTypes(q){
   });
   const none=document.getElementById('col-type-none'); if(none)none.style.display=shown?'none':'';
 }
-async function addColumn(type){
+async function addColumn(type,forSub){
   closeCellPops();
   if(type==='connect'){ if(!isSysAdmin()){toast('רק מנהל מערכת');return;} openConnectConfig(); return; }
   const col={type,title:COL_DEFAULTS[type]||type};
@@ -4636,8 +4691,21 @@ async function addColumn(type){
   if(type==='dropdown')col.options=[];
   if(type==='item_kind')col.options=ITEM_KIND_OPTS.map(o=>({...o}));   // ships with משימה/באג/שיפור
   if(type==='item_id')col.copy_mode='id';   // numeric id is the only mode; a click copies the number
+  const before=new Set(customColumns().map(c=>c.id));
   const cols=customColumns().slice();cols.push(col);
   await saveColumns(cols);
+  // Added from a sub-item header "+": the column is a real parent/board column
+  // (its logic lives on the item) and we also surface it on the sub-item rows.
+  // With no sub_cols subset the sub-items mirror the item columns, so the new one
+  // already shows — only an explicit subset needs the new id appended.
+  if(forSub){
+    const added=(st.board.columns||[]).filter(c=>!before.has(c.id)).map(c=>String(c.id));
+    const ids=st.board&&st.board.sub_cols;
+    if(added.length&&Array.isArray(ids)){
+      const cur=ids.map(String).filter(id=>id!=='item');
+      await saveSubCols([...cur,...added],'עמודה נוספה לפריט ולתת-הפריט'); return;
+    }
+  }
   toast(type==='item_id'?'עמודת מזהה פריט נוספה — מזהה הונפק לכל פריט':'עמודה נוספה');
 }
 /* connect column config: choose the target board(s) + single/multi (sys admin) */
@@ -5501,6 +5569,8 @@ function openForms(){ Forms.open(); }
 // doesn't read them as local, then always render in Israel (Jerusalem) time
 function _utc(d){ return (typeof d==='string' && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(d)) ? d.replace(' ','T')+'Z' : d; }
 const fdatetime = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
+// same, but with the year — used by the "מועד יצירה" (created_at) column
+const fdatetimeY = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
   taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'', editing:null,
@@ -5765,7 +5835,17 @@ const Chat = {
   startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
   cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
   // toolbar @ button: insert "@" at the caret and open the autocomplete
-  mentionMenu(e){ e.stopPropagation(); this.insert('@'); const ta=document.getElementById('comp-text'); const ctx=ta&&this.mentionCtx(ta); if(ctx)this._openMention(ctx); },
+  /* A tag is only recognised at the start of a word, so pressing the button with
+     the caret straight after a letter used to insert a "@" that opened nothing.
+     Give it the space it needs. */
+  mentionMenu(e){
+    e.stopPropagation();
+    const ta=document.getElementById('comp-text');
+    const s=ta?(ta.selectionStart==null?ta.value.length:ta.selectionStart):0;
+    const before=ta?ta.value.slice(0,s):'';
+    this.insert((before===''||/\s$/.test(before)?'':' ')+'@');
+    const ctx=ta&&this.mentionCtx(ta); if(ctx)this._openMention(ctx);
+  },
   // is the caret inside an "@…" token? (returns {query,start,pos} or null)
   mentionCtx(ta){
     const pos=ta.selectionStart||0;
@@ -5913,7 +5993,13 @@ const Chat = {
     if(this._uploading) h+=`<span class="file-chip uploading"><i class="fa-solid fa-spinner fa-spin"></i> ${esc(this._uploading)} — מעלה…</span>`;
     el.innerHTML=h; },
   rmAtt(i){ this.atts.splice(i,1); this.renderAtts(); },
-  _float(anchor,html){ closeCellPops(); const p=document.createElement('div'); p.className='cell-pop chat-float'; p.innerHTML=html; anchor.appendChild(p); setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0); },
+  /* The tag list and the emoji grid open DOWNWARD from the toolbar button.
+     They used to be appended inside the button and pinned above it, which the
+     chat's own scrolling then clipped — editing a comment near the top of the
+     thread left the list cut in half. Downward has room in every position the
+     composer can be in except the last few pixels of the screen, and
+     openCellPop puts the list on <body> so nothing can clip it either way. */
+  _float(anchor,html){ return openCellPop(anchor,html,'chat-float'); },
   async post(){
     if(this._posting)return;                 // guard: ignore rapid repeat clicks / Enter while sending
     const ta=document.getElementById('comp-text'); let content=(ta?ta.value:'').trim();
@@ -5990,7 +6076,7 @@ const Chat = {
     let d={activity:[]}; try{ d=await api('/api/tasks/'+this.taskId+'/activity'+(qs.length?'?'+qs.join('&'):'')); }catch(e){}
     const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
     const rows=d.activity.map(a=>`<div class="log-row">
-      <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':'fa-pen'}"></i></div>
+      <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':a.action==='create'?'fa-plus':'fa-pen'}"></i></div>
       <div style="flex:1;min-width:0"><div class="log-txt"><b>${esc(a.user_name)}</b> ${this.logText(a)}</div><div class="log-time">${fdatetime(a.created_at)}</div></div>
       ${a.can_undo&&isMgr?`<button class="log-undo" onclick="Chat.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
     </div>`).join('')||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות</div></div>';
@@ -6002,6 +6088,7 @@ const Chat = {
   },
   logText(a){
     if(a.action==='comment')return a.field==='reply'?'הגיב/ה בשרשור':'הוסיף/ה תגובה';
+    if(a.action==='create')return a.field==='subitem'?'יצר/ה את תת-הפריט':'יצר/ה את הפריט';
     if(a.action==='undo')return 'ביטל/ה שינוי ב'+this.fieldHe(a.field);
     return `שינה/תה ${this.fieldHe(a.field)}: <span class="log-old">${esc(this.transVal(a.field,a.old))}</span> ← <span class="log-new">${esc(this.transVal(a.field,a.new))}</span>`;
   },

@@ -4,7 +4,7 @@ CityOS — FastAPI Backend Server
 import os, sys, json, uuid, csv, io, re, secrets, urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response
@@ -1047,6 +1047,186 @@ def create_board(data: dict, actor_id: int = Depends(current_user_id)):
         db.refresh(b)
         return {"id": b.id, "name": b.name, "icon": b.icon, "views": _board_views(b), "my_role": "admin"}
 
+# ── Import a board from a CSV / Excel file ───────────────────────────────
+# First row = column headers. First column = the item name; every other column
+# becomes a board column whose type is inferred from its values (number / date /
+# text). One item is created per data row. Reuses the same board scaffolding as
+# create_board (3 default groups, creator becomes admin).
+
+def _imp_to_number(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    s = str(v).strip().replace(",", "")
+    if not s:
+        return None
+    try:
+        f = float(s)
+        return int(f) if f.is_integer() else f
+    except ValueError:
+        return None
+
+
+def _imp_to_date_iso(v):
+    import datetime as _dt
+    if isinstance(v, _dt.datetime):
+        return v.date().isoformat()
+    if isinstance(v, _dt.date):
+        return v.isoformat()
+    s = str(v).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%Y/%m/%d", "%d-%m-%Y", "%m/%d/%Y"):
+        try:
+            return _dt.datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return None
+
+
+def _imp_infer_type(values):
+    non_empty = [v for v in values if v is not None and str(v).strip() != ""]
+    if not non_empty:
+        return "text"
+    if all(_imp_to_number(v) is not None for v in non_empty):
+        return "number"
+    if all(_imp_to_date_iso(v) is not None for v in non_empty):
+        return "date"
+    return "text"
+
+
+def _imp_coerce(v, ctype):
+    if v is None:
+        return None
+    if ctype == "number":
+        return _imp_to_number(v)
+    if ctype == "date":
+        return _imp_to_date_iso(v)
+    s = str(v).strip()
+    return s or None
+
+
+def _imp_parse_tabular(raw, filename):
+    """Return a list of rows (each a list of cell values) from CSV or XLSX bytes."""
+    name = (filename or "").lower()
+    if name.endswith((".xlsx", ".xlsm")):
+        import io as _io
+        from openpyxl import load_workbook
+        wb = load_workbook(_io.BytesIO(raw), data_only=True, read_only=True)
+        ws = wb.active
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        wb.close()
+        return rows
+    # CSV / TSV / plain text
+    import csv as _csv, io as _io
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "cp1255", "iso-8859-8"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
+    sample = text[:4096]
+    delim = ","
+    if sample.count(";") > sample.count(","):
+        delim = ";"
+    elif sample.count("\t") > max(sample.count(","), sample.count(";")):
+        delim = "\t"
+    return [list(r) for r in _csv.reader(_io.StringIO(text), delimiter=delim)]
+
+
+IMPORT_MAX_ROWS = 2000
+IMPORT_MAX_COLS = 40
+
+
+@app.post("/api/boards/import")
+async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(None),
+                       environment_id: Optional[int] = Form(None),
+                       folder_id: Optional[int] = Form(None),
+                       actor_id: int = Depends(current_user_id)):
+    raw = await file.read()
+    if len(raw) > 8 * 1024 * 1024:
+        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 8MB)")
+    try:
+        rows = _imp_parse_tabular(raw, file.filename)
+    except Exception:
+        raise HTTPException(400, "לא ניתן לקרוא את הקובץ — ודא שהוא CSV או Excel תקין")
+    # drop fully-empty rows
+    rows = [r for r in rows if any(c is not None and str(c).strip() != "" for c in r)]
+    if not rows:
+        raise HTTPException(400, "הקובץ ריק")
+    ncols = min(max(len(r) for r in rows), IMPORT_MAX_COLS)
+    if ncols < 1:
+        raise HTTPException(400, "לא נמצאו עמודות בקובץ")
+    header, data = rows[0], rows[1:IMPORT_MAX_ROWS + 1]
+
+    def _cell(r, i):
+        return (str(r[i]).strip() if i < len(r) and r[i] is not None else "")
+
+    labels = [(_cell(header, i) or f"עמודה {i + 1}") for i in range(ncols)]
+    col_types = [_imp_infer_type([(r[i] if i < len(r) else None) for r in data])
+                 for i in range(1, ncols)]
+
+    with Session(engine) as db:
+        creator = actor_id
+        env_id = environment_id
+        if not env_id:
+            primary = db.query(Environment).filter(Environment.is_primary == True).first()
+            env_id = primary.id if primary else None
+        if not (_cap(db, creator, "create_board") or _can_manage_env(db, env_id, creator)):
+            raise HTTPException(403, "אין לך הרשאה ליצור לוח חדש")
+        dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
+        maxpos = (db.query(func.max(Board.position))
+                  .filter(Board.environment_id == env_id, Board.folder_id == folder_id).scalar())
+        base = os.path.splitext(os.path.basename(file.filename or ""))[0]
+        board_name = (name or "").strip() or base or "לוח מיובא"
+        col_ids = ["col_" + uuid.uuid4().hex[:8] for _ in col_types]
+        custom_cols = [{"id": cid, "type": ctype, "title": labels[j + 1], "options": None,
+                        "formula": None, "connect": None, "copy_mode": None, "perms": {}}
+                       for j, (cid, ctype) in enumerate(zip(col_ids, col_types))]
+        settings = {
+            "views": ["table"],
+            "columns": [
+                {"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
+                {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
+                {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"},
+            ] + custom_cols,
+            "col_labels": {"item": labels[0]},   # name the item column after the first header
+        }
+        b = Board(name=board_name, description="", department_id=dept_id, environment_id=env_id,
+                  folder_id=folder_id, position=(maxpos + 1) if maxpos is not None else 0,
+                  board_type=BoardType.KANBAN, icon="\U0001F4CB", color="#0073ea", settings=settings)
+        db.add(b)
+        db.flush()
+        g1 = Group(board_id=b.id, name="בתכנון", position=0, color="#579bfc", task_status=TaskStatus.BACKLOG)
+        db.add_all([g1,
+            Group(board_id=b.id, name="בביצוע", position=1, color="#fdab3d", task_status=TaskStatus.IN_PROGRESS),
+            Group(board_id=b.id, name="הושלם", position=2, color="#00c875", task_status=TaskStatus.DONE)])
+        db.flush()
+        pos = 0
+        for r in data:
+            title = _cell(r, 0) or f"פריט {pos + 1}"
+            cf = {"status_unset": True, "priority_unset": True}
+            for j, ctype in enumerate(col_types):
+                val = _imp_coerce(r[j + 1] if (j + 1) < len(r) else None, ctype)
+                if val is not None and val != "":
+                    cf[col_ids[j]] = val
+            t = Task(board_id=b.id, group_id=g1.id, title=title[:500], status=TaskStatus.BACKLOG,
+                     priority=Priority.MEDIUM, position=pos, created_by=creator, custom_fields=cf)
+            db.add(t)
+            db.flush()
+            _ensure_item_uid(db, t)
+            _audit(db, t.id, "create", field="item", old=None, new=t.title, user_id=creator)
+            pos += 1
+        db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
+        db.commit()
+        db.refresh(b)
+        return {"id": b.id, "name": b.name, "icon": b.icon, "items": pos, "columns": len(custom_cols)}
+
+
 @app.patch("/api/boards/{board_id}")
 def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -1698,8 +1878,11 @@ def list_environments(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         counts = dict(db.query(Board.environment_id, func.count(Board.id))
                         .group_by(Board.environment_id).all())
-        allenvs = db.query(Environment).order_by(
-            Environment.is_primary.desc(), Environment.position, Environment.id).all()
+        # Environments always read in alphabetical (א-ב) order by name — including
+        # newly created ones. Sorted in Python so SQLite (local) and Postgres (prod)
+        # order Hebrew identically, regardless of the DB's collation.
+        allenvs = db.query(Environment).all()
+        allenvs.sort(key=lambda e: (e.name or "").strip().casefold())
         is_sysadmin = _ws_role(db, user_id) == "admin"
         roles = {}
         if user_id is not None:
@@ -2091,6 +2274,10 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # a brand-new item (or sub-item) gets its own automatic identifier — an
         # item created after another was deleted never reuses that one's number
         _ensure_item_uid(db, task)
+        # record the creation itself, so the item's activity log opens with a
+        # "created" entry (not undoable — it is history, not a field change)
+        _audit(db, task.id, "create", field=("subitem" if parent_id else "item"),
+               old=None, new=task.title, user_id=actor_id)
         # notify anyone assigned at creation time (skip the creator), honoring the switch
         if ids:
             board = db.query(Board).filter(Board.id == board_id).first()
@@ -2140,30 +2327,29 @@ def tasks_lookup(ids: str = ""):
         return {"items": [{"id": t.id, "title": t.title, "board_id": t.board_id,
                            "board_name": bnames.get(t.board_id, "")} for t in rows]}
 
-# each status belongs to a coarse stage, so a status change can still find a
-# sensible group even when the board has fewer groups than statuses (e.g. the
-# 3 default groups). Exact task_status match is always preferred over the stage.
-STATUS_STAGE = {
-    "backlog": "todo", "todo": "todo",
-    "in_progress": "active", "review": "active", "on_hold": "active",
-    "done": "done", "cancelled": "done",
-}
-
-
 def _group_for_status(db, board_id, status_val):
-    """Return the group a top-level item should move to for the given status:
-    first a group whose task_status matches exactly, else one in the same stage."""
+    """The group a top-level item moves to for a status — the one whose own status
+    matches exactly, or None to leave the item exactly where it is.
+
+    No fallback by stage or by status family. A "back to development" route (todo →
+    the in_progress group) was tried and removed: a board can have more than one
+    in_progress group — e.g. "בביצוע" and "roadmap" — and picking one by status
+    alone is a guess that lands items in the wrong place.
+
+    A group left at the default `todo` status is treated as a plain section, never
+    an auto-move destination. Every new group is created as `todo` (see
+    create_group_api), so without this a freshly added group silently becomes a
+    magnet: setting a todo-family status like "חזרה לפיתוח" would yank the item out
+    of "בביצוע" into that new last group. Skipping todo groups keeps the item put.
+    """
     sv = status_val.value if hasattr(status_val, "value") else status_val
     groups = db.query(Group).filter(Group.board_id == board_id).order_by(Group.position).all()
     gs_of = lambda g: (g.task_status.value if hasattr(g.task_status, "value") else g.task_status)
-    for g in groups:                       # 1) exact status match
+    for g in groups:
+        if gs_of(g) == "todo":
+            continue
         if gs_of(g) == sv:
             return g
-    stage = STATUS_STAGE.get(sv)           # 2) same-stage fallback
-    if stage:
-        for g in groups:
-            if STATUS_STAGE.get(gs_of(g)) == stage:
-                return g
     return None
 
 
@@ -2243,8 +2429,8 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 if st_val(task.status) != st_val(nv):
                     _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
                 task.status = nv
-                # auto-move a top-level item to the group that matches its status
-                # (exact status first, else same stage — e.g. "done" → "הושלם")
+                # auto-move a top-level item only to the group that stands for its
+                # exact status; with no such group it stays where it is
                 if task.parent_id is None:
                     g = _group_for_status(db, task.board_id, nv)
                     if g:
@@ -2307,9 +2493,10 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
 
 # ── File uploads (for the Files column) ─────────────────────────────
-MAX_UPLOAD_BYTES = 4 * 1024 * 1024  # 4MB per file — the serverless host (Vercel)
-# rejects request bodies larger than ~4.5MB at the edge before they reach us, so
-# keep our own ceiling safely under that. Larger files need external blob storage.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB per file.
+# NOTE: on Vercel the serverless edge rejects request bodies larger than ~4.5MB
+# before they reach us, so the full 10MB only applies on hosts without that cap
+# (e.g. Azure Container Apps). Larger files would need external blob storage.
 
 # Only these render in the browser. Anything else is served as a download, so an
 # uploaded .html/.svg cannot execute script on our origin and steal the session.
@@ -2336,7 +2523,7 @@ async def upload_file(file: UploadFile = File(...), actor_id: int = Depends(curr
     instances (Vercel's local filesystem is ephemeral and per-instance)."""
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 4MB)")
+        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 10MB)")
     media_type, _ = _safe_media_type(file.content_type)
     token = uuid.uuid4().hex
     with Session(engine) as db:
