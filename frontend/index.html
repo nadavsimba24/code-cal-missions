@@ -3802,7 +3802,9 @@ function builtinCellHTML(key,t){
   if(key==='assignees')return `<td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(event,${t.id})">${avatars(t.assignees)}</td>`;
   if(key==='status')   return `<td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',boardStatusMap())">${statusPill(t)}</td>`;
   if(key==='priority') return `<td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',boardPriorityMap())">${priorityPill(t)}</td>`;
-  if(key==='due')      return `<td class="cell edit-cell" title="לחץ לשינוי תאריך" onclick="duePicker(event,${t.id})">${fdate(t.due_date)}</td>`;
+  if(key==='due')      return canEditItem(t)
+    ? `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${t.due_date?String(t.due_date).slice(0,10):''}" onchange="setDue(${t.id},this.value||null)"></td>`
+    : `<td class="cell">${fdate(t.due_date)}</td>`;
   if(key==='tags')     return `<td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>`;
   return '';
 }
@@ -4296,15 +4298,7 @@ function fieldPicker(e,id,field,map){
   openCellPop(e.currentTarget,html,entries.length>POP_GRID_FROM?'pop-grid':'');
 }
 function pickField(e,id,field,key){ e.stopPropagation(); closeCellPops(); setField(id,field,key); }
-function duePicker(e,id){
-  e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
-  const t=findAnyTask(id), cur=t&&t.due_date?String(t.due_date).slice(0,10):'';
-  const html=`<input type="date" value="${cur}" style="border:1px solid var(--border-strong);border-radius:6px;padding:6px;font-family:inherit" onchange="pickDue(event,${id},this.value)"><button class="cell-pop-opt2" style="justify-content:center;margin-top:6px" onclick="pickDue(event,${id},'')"><i class="fa-solid fa-xmark"></i> נקה</button>`;
-  const pop=openCellPop(e.currentTarget,html); pop.style.padding='9px';
-  pop.addEventListener('click',ev=>ev.stopPropagation());   // clicking the date field must not close the popover before the calendar opens
-  const i=pop.querySelector('input'); if(i){ i.focus(); try{ i.showPicker&&i.showPicker(); }catch(_){} }
-}
-function pickDue(e,id,val){ e.stopPropagation(); closeCellPops(); setField(id,'due_date',val?new Date(val+'T12:00:00').toISOString():null); }
+function setDue(id,val){ setField(id,'due_date',val?new Date(val+'T12:00:00').toISOString():null); }
 function tagsEditor(e,id){
   e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
   const t=findAnyTask(id), tags=(t&&t.tags)||[];
