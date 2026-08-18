@@ -5570,7 +5570,7 @@ function openForms(){ Forms.open(); }
 function _utc(d){ return (typeof d==='string' && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(d)) ? d.replace(' ','T')+'Z' : d; }
 const fdatetime = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
 // same, but with the year — used by the "מועד יצירה" (created_at) column
-const fdatetimeY = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
+const fdatetimeY = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}).replace(/\./g,'/'):'';
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
   taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'', editing:null,
