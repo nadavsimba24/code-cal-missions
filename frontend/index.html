@@ -3353,7 +3353,7 @@ function subHeadRowHTML(parentId,disp){
   return `<tr class="subrow subhead" data-parent="${parentId}" style="display:${disp}">
       <td class="c-sub subh-cell subh-name" data-subcol="item"><span class="sub-twig"></span><span class="th-in">תת-פריט${gear}${subSortBtn('item')}</span></td>
       ${rest}${pad>0?`<td class="subh-cell" colspan="${pad}"></td>`:''}
-      <td class="subh-cell"></td>
+      <td class="subh-cell">${admin?`<div class="th-add-wrap"><button class="th-add-btn" title="הוסף עמודה — נשמרת בפריט האב" onclick="event.stopPropagation();addColMenu(event,true)"><i class="fa-solid fa-plus"></i></button></div>`:''}</td>
       <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`;
 }
@@ -3604,11 +3604,18 @@ async function hideBuiltinCol(e,key){
     st.board.col_hidden=hidden; toast('העמודה הוסתרה — ניתן להחזירה מכפתור +'); renderView();
   }catch(err){ toast('שגיאה בהסתרת העמודה'); }
 }
-async function unhideBuiltinCol(key){
+async function unhideBuiltinCol(key,forSub){
   const hidden=(((st.board&&st.board.col_hidden)||[]).map(String)).filter(k=>k!==key);
   try{
     await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({col_hidden:hidden})});
-    st.board.col_hidden=hidden; toast('העמודה הוחזרה'); renderView();
+    st.board.col_hidden=hidden;
+    // restored from a sub-item "+": also surface it on sub-item rows when a
+    // sub_cols subset is configured (otherwise the sub already mirrors items)
+    const ids=st.board&&st.board.sub_cols;
+    if(forSub&&Array.isArray(ids)&&!ids.map(String).includes(String(key))){
+      await saveSubCols([...ids.map(String).filter(id=>id!=='item'),String(key)],'העמודה הוחזרה לפריט ולתת-הפריט'); return;
+    }
+    toast('העמודה הוחזרה'); renderView();
   }catch(err){ toast('שגיאה'); }
 }
 /* persist a new column order (built-in keys + custom ids); item is forced first */
@@ -4614,7 +4621,7 @@ async function saveTimeline(taskId,colId,clear){
   await setCell(taskId,colId,val);closeModals();renderView();
 }
 /* add / rename / delete columns */
-function addColMenu(e){
+function addColMenu(e,forSub){
   e.stopPropagation();
   // the connect (cross-board) column is a system-admin-only capability
   const types=COLUMN_TYPES.filter(c=>c.type!=='connect'||isSysAdmin());
@@ -4622,7 +4629,7 @@ function addColMenu(e){
   const hidden=((st.board&&st.board.col_hidden)||[]).map(String);
   const hiddenHTML=hidden.length?('<div class="pop-title">עמודות מוסתרות — החזרה</div>'+hidden.map(k=>{
     const bc=BUILTIN_COLS.find(c=>c.key===k)||{}; const lbl=builtinLabel(k,bc.label||k);
-    return `<button class="coltype" onclick="closeCellPops();unhideBuiltinCol('${k}')"><i class="fa-solid fa-eye"></i><span><b>${esc(lbl)}</b><small>החזרת עמודת ברירת מחדל</small></span></button>`;
+    return `<button class="coltype" onclick="closeCellPops();unhideBuiltinCol('${k}'${forSub?',true':''})"><i class="fa-solid fa-eye"></i><span><b>${esc(lbl)}</b><small>החזרת עמודת ברירת מחדל</small></span></button>`;
   }).join('')+'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>'):'';
   const subCfg=`<button class="coltype" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i><span><b>עמודות תת-פריט</b><small>אילו עמודות יופיעו בשורות תת-הפריט</small></span></button>`
     +'<div class="pop-sep" style="height:1px;background:var(--border);margin:6px 0"></div>';
@@ -4630,7 +4637,7 @@ function addColMenu(e){
   const search=`<input class="col-type-q" id="col-type-q" placeholder="חיפוש סוג עמודה…" autocomplete="off"
       oninput="filterColTypes(this.value)" onclick="event.stopPropagation()" onkeydown="event.stopPropagation()">`;
   const html=hiddenHTML+subCfg+'<div class="pop-title">בחר סוג עמודה</div>'+search
-    +types.map(c=>`<button class="coltype" data-q="${esc((c.he+' '+c.desc+' '+c.type).toLowerCase())}" onclick="addColumn('${c.type}')"><i class="fa-solid ${c.ic}"></i><span><b>${esc(c.he)}</b><small>${esc(c.desc)}</small></span></button>`).join('')
+    +types.map(c=>`<button class="coltype" data-q="${esc((c.he+' '+c.desc+' '+c.type).toLowerCase())}" onclick="addColumn('${c.type}'${forSub?',true':''})"><i class="fa-solid ${c.ic}"></i><span><b>${esc(c.he)}</b><small>${esc(c.desc)}</small></span></button>`).join('')
     +'<div class="col-type-none" id="col-type-none" style="display:none">לא נמצא סוג עמודה מתאים</div>';
   openCellPop(e.currentTarget,html,'col-add-pop');
   setTimeout(()=>{const q=document.getElementById('col-type-q'); if(q)q.focus();},30);
@@ -4645,7 +4652,7 @@ function filterColTypes(q){
   });
   const none=document.getElementById('col-type-none'); if(none)none.style.display=shown?'none':'';
 }
-async function addColumn(type){
+async function addColumn(type,forSub){
   closeCellPops();
   if(type==='connect'){ if(!isSysAdmin()){toast('רק מנהל מערכת');return;} openConnectConfig(); return; }
   const col={type,title:COL_DEFAULTS[type]||type};
@@ -4656,8 +4663,21 @@ async function addColumn(type){
   if(type==='dropdown')col.options=[];
   if(type==='item_kind')col.options=ITEM_KIND_OPTS.map(o=>({...o}));   // ships with משימה/באג/שיפור
   if(type==='item_id')col.copy_mode='id';   // numeric id is the only mode; a click copies the number
+  const before=new Set(customColumns().map(c=>c.id));
   const cols=customColumns().slice();cols.push(col);
   await saveColumns(cols);
+  // Added from a sub-item header "+": the column is a real parent/board column
+  // (its logic lives on the item) and we also surface it on the sub-item rows.
+  // With no sub_cols subset the sub-items mirror the item columns, so the new one
+  // already shows — only an explicit subset needs the new id appended.
+  if(forSub){
+    const added=(st.board.columns||[]).filter(c=>!before.has(c.id)).map(c=>String(c.id));
+    const ids=st.board&&st.board.sub_cols;
+    if(added.length&&Array.isArray(ids)){
+      const cur=ids.map(String).filter(id=>id!=='item');
+      await saveSubCols([...cur,...added],'עמודה נוספה לפריט ולתת-הפריט'); return;
+    }
+  }
   toast(type==='item_id'?'עמודת מזהה פריט נוספה — מזהה הונפק לכל פריט':'עמודה נוספה');
 }
 /* connect column config: choose the target board(s) + single/multi (sys admin) */
