@@ -323,6 +323,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .item-menu{width:22px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;opacity:0;transition:.12s;flex-shrink:0;cursor:pointer}
 .tbl tr:hover .item-menu{opacity:.7}
 .item-menu:hover{background:var(--row-hover);opacity:1;color:var(--text)}
+/* the whole item row is draggable between groups (Sortable, interactive cells filtered) */
+.tbl tr[data-tid] .c-item{cursor:grab}
+.tbl tr[data-tid].sortable-drag .c-item,.tbl tr[data-tid]:active .c-item{cursor:grabbing}
 .tbl tr.row-sel td{background:var(--primary-soft)}
 .tbl .cell{padding:6px 10px;text-align:center}
 /* trailing cell so the row's bottom border reaches the end of the table
@@ -3292,7 +3295,7 @@ function vTable(el){
       }});
     // drag items between groups — grab an item by its name, drop into any group
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      new Sortable(tb,{group:'board-items',handle:'.itm-h',draggable:'tr[data-tid]',
+      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         onEnd:async(evt)=>{
           const tid=+evt.item.dataset.tid; if(!tid)return;
@@ -3344,12 +3347,11 @@ function itemRow(t,col){
     <tr data-tid="${t.id}">
       <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
         ${canEditItem(t)?`<input type="checkbox" class="item-check" title="סימון פריט" ${st.selected.has(t.id)?'checked':''} onclick="toggleItemSelect(event,${t.id})">`:''}
-        <i class="fa-solid fa-grip-vertical row-grip itm-h" title="גרור להעברה בין קבוצות"></i>
+        ${canEditItem(t)?`<button class="item-menu" title="פעולות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
-        <span class="item-title editable itm-h" title="לחץ לעריכת השם · גרור להעברה" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
+        <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
         ${cnt?`<span class="sub-badge${open?' open':''}" role="button" tabindex="0" title="${cnt} תת-פריטים · לחץ להצגה/הסתרה" onclick="toggleSubs(event,${t.id})" onkeydown="if(event.key==='Enter'||event.key===' ')toggleSubs(event,${t.id})"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
-        ${canEditItem(t)?`<button class="item-menu" title="פעולות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}
       </div></td>
       ${rowCellsAfterItem(t)}
       <td class="cell"></td>
