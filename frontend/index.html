@@ -1740,7 +1740,9 @@ function renderSidebar(){
   const collapsed=st._foldersCollapsed;
   const envFolders=(st.folders||[]).filter(f=>f.environment_id===active.id).sort((a,b)=>(a.position-b.position)||a.id-b.id);
   const envBoards=(st.boards||[]).filter(b=>b.environment_id===active.id);
-  const inContainer=fid=>envBoards.filter(b=>(b.folder_id||null)===fid).sort((a,b)=>(a.position-b.position)||a.id-b.id);
+  // boards in the sidebar are always listed alphabetically (א-ב) by name,
+  // including newly created ones (drag still moves a board between folders)
+  const inContainer=fid=>envBoards.filter(b=>(b.folder_id||null)===fid).sort((a,b)=>(a.name||'').localeCompare(b.name||'','he',{numeric:true,sensitivity:'base'}));
   const boardItem=b=>`<div class="sb-item ${st.board&&st.board.id===b.id?'active':''}" data-bid="${b.id}" onclick="openBoard(${b.id})" oncontextmenu="boardRowMenu(event,${b.id});return false">
       <span class="ic">${b.icon||'📋'}</span>
       <span class="sb-item-name" title="${esc(b.name)}">${esc(b.name)}</span>
