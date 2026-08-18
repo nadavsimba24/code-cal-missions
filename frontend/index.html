@@ -3554,10 +3554,10 @@ function columnHeadersHTML(boardColor){
       const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startColRename('builtin','${c.key}')"`:' class="th-lbl"';
       return `<th data-colkey="${c.key}" ${fixed} ${style}><span class="th-in">${grip}<span${dbl}>${esc(c.label)}</span>${menu}${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
     }
-    const cc=c.col, m=COLUMN_TYPES.find(x=>x.type===cc.type)||{ic:'fa-table-columns'};
+    const cc=c.col;
     const menu=admin?`<button class="th-menu" title="עמודה" onclick="colMenu(event,'${cc.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
     const dblc=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startColRename('custom','${cc.id}')"`:' class="th-lbl"';
-    return `<th class="th-custom" data-colkey="${cc.id}"><span class="th-in">${grip}<span class="th-wrap"><i class="fa-solid ${m.ic}" style="color:var(--text-light);font-size:11px"></i> <span${dblc}>${esc(cc.title)}</span></span>${menu}${sortBtn(cc.id)}</span>${resizerHTML(cc.id)}</th>`;
+    return `<th class="th-custom" data-colkey="${cc.id}"><span class="th-in">${grip}<span class="th-wrap"><span${dblc}>${esc(cc.title)}</span></span>${menu}${sortBtn(cc.id)}</span>${resizerHTML(cc.id)}</th>`;
   }).join('');
   const add=admin?`<th class="th-add"><div class="th-add-wrap"><button class="th-add-btn" title="הוסף עמודה" onclick="addColMenu(event)"><i class="fa-solid fa-plus"></i></button></div></th>`:'';
   return ths+add;
