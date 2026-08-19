@@ -809,6 +809,8 @@ img.pf-av{object-fit:cover;background:#fff}
 @keyframes errpop{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .errpage .err-code{font-size:92px;font-weight:800;line-height:1;letter-spacing:2px;background:linear-gradient(135deg,var(--primary),#00c875);-webkit-background-clip:text;background-clip:text;color:transparent}
 .errpage .err-badge{width:50px;height:50px;margin:8px auto 18px;border-radius:50%;display:grid;place-items:center;background:var(--primary-soft);color:var(--primary);font-size:20px}
+.errpage .err-illus{width:110px;height:110px;margin:0 auto 18px;display:grid;place-items:center;filter:drop-shadow(0 10px 18px rgba(0,115,234,.14))}
+.errpage .err-illus svg{width:110px;height:110px}
 .errpage h2{font-size:21px;font-weight:700;margin:0 0 10px;color:var(--text)}
 .errpage p{font-size:13.5px;color:var(--text-muted);line-height:1.65;margin:0 0 24px}
 .errpage .err-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
@@ -2493,7 +2495,20 @@ function sortBtn(key){
 function filtersActive(){const f=st.filters;return !!(f.q||f.people.length||f.status||f.priority||f.sort);}
 function noMatchHTML(){
   return `<div class="errpage">
-    <div class="err-badge"><i class="fa-solid fa-inbox"></i></div>
+    <div class="err-illus">
+      <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="לא נמצאו תוצאות">
+        <circle cx="60" cy="58" r="41" fill="url(#nrGlass)" opacity=".10"/>
+        <circle cx="53" cy="51" r="27" fill="var(--surface)" stroke="url(#nrGlass)" stroke-width="5"/>
+        <line x1="42" y1="46" x2="64" y2="46" stroke="url(#nrGlass)" stroke-width="3.4" stroke-linecap="round" opacity=".38"/>
+        <line x1="42" y1="56" x2="57" y2="56" stroke="url(#nrGlass)" stroke-width="3.4" stroke-linecap="round" opacity=".22"/>
+        <line x1="72.5" y1="70.5" x2="93" y2="91" stroke="url(#nrGlass)" stroke-width="7.5" stroke-linecap="round"/>
+        <defs>
+          <linearGradient id="nrGlass" x1="22" y1="22" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#0073ea"/><stop offset="1" stop-color="#00c875"/>
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
     <h2>לא נמצאו תוצאות</h2>
     <p>נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.</p>
     <div class="err-actions">
