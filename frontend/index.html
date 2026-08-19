@@ -329,6 +329,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* the whole item row is draggable between groups (Sortable, interactive cells filtered) */
 .tbl tr[data-tid] .c-item{cursor:grab}
 .tbl tr[data-tid].sortable-drag .c-item,.tbl tr[data-tid]:active .c-item{cursor:grabbing}
+/* sub-items reorder within their parent's frame — grab from the sub-item cell */
+.tbl tr.subrow[data-sid] .c-sub{cursor:grab}
+.tbl tr.subrow[data-sid].sortable-drag .c-sub,.tbl tr.subrow[data-sid]:active .c-sub{cursor:grabbing}
 .tbl tr.row-sel td{background:var(--primary-soft)}
 .tbl .cell{padding:6px 10px;text-align:center}
 /* trailing cell so the row's bottom border reaches the end of the table
@@ -3398,12 +3401,39 @@ function vTable(el){
       }});
     // drag items between groups — grab an item by its name, drop into any group
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
+      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid], tr.subrow[data-sid]',filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
+        // Keep a drag inside its lane: a sub-item may only pass over its own
+        // parent's sub-items (never leaving the parent's frame), and a top-level
+        // item never slides into another item's sub-block.
+        onMove:evt=>{
+          const d=evt.dragged, r=evt.related;
+          if(d.classList.contains('subrow'))
+            return !!r && r.classList.contains('subrow') && r.hasAttribute('data-sid')
+                   && r.getAttribute('data-parent')===d.getAttribute('data-parent');
+          return !(r && r.classList.contains('subrow'));
+        },
         onEnd:async(evt)=>{
-          const tid=+evt.item.dataset.tid; if(!tid)return;
+          const it=evt.item;
+          if(it.classList.contains('subrow')){          // reordered a sub-item within its parent
+            const pid=+it.dataset.parent, tb2=evt.to;
+            const ids=[...tb2.querySelectorAll('tr.subrow[data-sid][data-parent="'+pid+'"]')].map(r=>+r.dataset.sid);
+            try{
+              await api('/api/tasks/'+pid+'/subitems/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
+              const parent=findAnyTask(pid);            // mirror the new order locally so a re-render keeps it
+              if(parent&&Array.isArray(parent.subtasks)){
+                const byId=new Map(parent.subtasks.map(s=>[s.id,s]));
+                parent.subtasks=ids.map(id=>byId.get(id)).filter(Boolean);
+              }
+              // a manual order overrides any active column-sort of the sub-items
+              if(st.subSort){ st.subSort=null; renderView(); }
+              toast('סדר תת-הפריטים עודכן');
+            }catch(e){ toast('שגיאה בעדכון סדר תת-הפריטים'); renderView(); }
+            return;
+          }
+          const tid=+it.dataset.tid; if(!tid)return;
           const toBody=evt.to, gid=toBody.dataset.gid?+toBody.dataset.gid:null;
-          const pos=[...toBody.querySelectorAll('tr[data-tid]')].indexOf(evt.item);
+          const pos=[...toBody.querySelectorAll('tr[data-tid]')].indexOf(it);
           const grp=(st.board.groups||[]).find(g=>g.id===gid);
           const body={group_id:gid,position:pos<0?0:pos}; if(grp)body.status=grp.task_status;
           try{

@@ -3008,6 +3008,28 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
         db.commit()
         return {"status": "moved"}
 
+@app.post("/api/tasks/{parent_id}/subitems/reorder")
+def reorder_subitems(parent_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+    """Persist a new ordering for one parent's sub-items. data = {order: [subId, ...]}.
+    Only ids that truly belong to this parent are repositioned, so a crafted
+    payload can never drag a sub-item across parents — the reorder stays inside
+    the parent's own frame, exactly like the drag does in the UI."""
+    with Session(engine) as db:
+        parent = db.query(Task).filter(Task.id == parent_id).first()
+        if not parent:
+            raise HTTPException(404, "פריט האב לא נמצא")
+        _require_board_edit(db, parent.board_id, actor_id)
+        order = data.get("order") or []
+        subs = {s.id: s for s in db.query(Task).filter(Task.parent_id == parent_id).all()}
+        idx = 0
+        for sid in order:
+            s = subs.get(sid)
+            if s is not None:
+                s.position = idx
+                idx += 1
+        db.commit()
+        return {"status": "reordered", "order": [sid for sid in order if sid in subs]}
+
 # ── Groups (board columns / קבוצות) ─────────────────────────────────
 
 def _group_dict(g):
