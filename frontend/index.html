@@ -395,7 +395,11 @@ tr:hover .row-grip{opacity:.55}
 .subc-opt input{width:auto}
 .subc-opt small{margin-inline-start:auto;color:var(--text-light);font-size:11px}
 /* custom columns */
-.tbl th.th-custom,.tbl th.th-add{position:sticky;top:32px}   /* stay sticky like the rest of the header row (sticky is still a containing block for the resizer/add button) */
+.tbl th.th-custom,.tbl th.th-add{position:sticky;top:32px}
+/* the sticky group-name and column-header sit 32px apart; pull the sticky wrapper's
+   bottom up by that 32px so the name un-sticks together with its header (no lone name) */
+.grp-stick>.tbl{margin-bottom:-32px}
+.grp-batt{margin-top:38px !important}   /* stay sticky like the rest of the header row (sticky is still a containing block for the resizer/add button) */
 .th-wrap{display:inline-flex;align-items:center;gap:5px}
 .th-menu{opacity:0;color:var(--text-light);width:18px;height:18px;border-radius:4px;font-size:11px;transition:.12s;flex-shrink:0}
 .tbl th:hover .th-menu{opacity:1}
@@ -3290,6 +3294,7 @@ function vTable(el){
           <span class="g-count">${g.tasks.length}</span>
         </div>`;
     return `<div class="group" ${real?'':'data-orphan="1"'}>
+      <div class="grp-stick">
       ${head}
       <table class="tbl" ${shut?'style="display:none"':''}>
         ${colgroupHTML()}
@@ -3298,15 +3303,16 @@ function vTable(el){
           <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
       </table>
-      <div style="margin-top:6px"${shut?' hidden':''}>${battery(g.tasks)}</div>
+      </div>
+      <div class="grp-batt" style="margin-top:6px"${shut?' hidden':''}>${battery(g.tasks)}</div>
     </div>`;
   }).join('') + `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`;
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
     if(!e.target.closest('.caret'))return;   // collapse/expand only from the arrow
     const shut=!h.classList.contains('collapsed');
     h.classList.toggle('collapsed',shut);
-    const t=h.nextElementSibling; if(t)t.style.display=shut?'none':'';
-    const batt=t&&t.nextElementSibling; if(batt)batt.hidden=shut;
+    const t=h.nextElementSibling; if(t)t.style.display=shut?'none':'';   // the table (sibling within .grp-stick)
+    const grp=h.closest('.group'); const batt=grp&&grp.querySelector('.grp-batt'); if(batt)batt.hidden=shut;
     setGroupCollapsed(h.dataset.gid===undefined?null:h.dataset.gid,shut);   // remembered across re-renders
   });
   if(window.Sortable){
