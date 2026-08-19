@@ -265,7 +265,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 
 /* ===== Table / board view ===== */
 .group{margin-bottom:22px}
-.group-head{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;padding-bottom:6px;cursor:pointer;position:sticky;top:0;z-index:5;background:#fff}
+.group-head{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;padding-bottom:6px;cursor:pointer;position:sticky;top:0;z-index:5;background:var(--bg)}
 .group-head .caret{transition:.15s;font-size:12px;cursor:pointer;padding:4px;margin:-4px;border-radius:5px}
 .group-head .caret:hover{background:var(--row-hover)}
 .group-head.collapsed .caret{transform:rotate(-90deg)}
@@ -290,9 +290,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* width = sum of column widths (not 100%), so resizing one column only changes
    the table's total width; the rest stay put and #view scrolls horizontally */
 .tbl{width:max-content;min-width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;background:var(--surface);border-radius:var(--radius);overflow:visible;box-shadow:var(--shadow-sm)}
-.tbl th{position:sticky;top:32px;z-index:3;font-size:12px;color:var(--text-muted);font-weight:600;text-align:center;padding:8px 12px;border-bottom:1px solid var(--border);background:#fff;white-space:nowrap;overflow:visible}
+.tbl th{position:sticky;top:32px;z-index:3;font-size:12px;color:var(--text-muted);font-weight:600;text-align:center;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap;overflow:visible}
 /* drag-to-resize handle on column headers (board admin only) */
-.tbl th.th-spacer{padding:0;background:#fff}
+.tbl th.th-spacer{padding:0;background:var(--surface)}
 /* per-column sort control — a small badge that floats ABOVE the column name on
    hover (absolute, so it adds no height to the header row) */
 .th-in{position:relative;display:inline-flex;align-items:center;justify-content:center;max-width:100%;vertical-align:middle}
@@ -1159,8 +1159,8 @@ img.pf-av{object-fit:cover;background:#fff}
 #view{padding:0 26px 22px}
 /* table — premium data grid: hairline frame, soft depth, refined header */
 .tbl{border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(29,42,68,.04), 0 8px 24px rgba(29,42,68,.055)}
-.tbl th{background:#fff;color:var(--text-muted);font-weight:600;font-size:13px;letter-spacing:.02em;padding:11px 12px;border-bottom:1px solid var(--border-strong)}
-.tbl th.th-spacer{background:#fff;border-bottom:1px solid var(--border-strong)}   /* keep the header strip continuous to the row end */
+.tbl th{background:var(--surface);color:var(--text-muted);font-weight:600;font-size:13px;letter-spacing:.02em;padding:11px 12px;border-bottom:1px solid var(--border-strong)}
+.tbl th.th-spacer{background:var(--surface);border-bottom:1px solid var(--border-strong)}   /* keep the header strip continuous to the row end */
 .tbl td{height:46px;border-inline-start-color:color-mix(in srgb, var(--border) 55%, transparent)}
 .tbl .c-item{font-weight:600;border-inline-start-width:3px}
 .tbl tr:hover td{background:color-mix(in srgb, var(--primary) 5%, var(--surface))}
