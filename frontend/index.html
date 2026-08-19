@@ -2491,7 +2491,18 @@ function sortBtn(key){
   return `<button class="col-sort${on?' on':''}" title="${tip}" onclick="columnSort(event,'${key}')"><i class="fa-solid ${ic}"></i></button>`;
 }
 function filtersActive(){const f=st.filters;return !!(f.q||f.people.length||f.status||f.priority||f.sort);}
-function noMatchHTML(){return '<div class="empty"><i class="fa-solid fa-filter-circle-xmark"></i><div>אין פריטים שתואמים את הסינון</div><button class="btn btn-primary" style="margin-top:14px" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button></div>';}
+function noMatchHTML(){
+  const q=((st.filters&&st.filters.q)||'').trim();
+  const lead=q?`אין פריטים שתואמים ל־<b style="color:var(--text)">${esc(q)}</b>.`:'אין פריטים שתואמים לסינון הנוכחי.';
+  return `<div class="errpage">
+    <div class="err-badge"><i class="fa-solid fa-magnifying-glass"></i></div>
+    <h2>לא נמצאו תוצאות</h2>
+    <p>${lead} נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.</p>
+    <div class="err-actions">
+      <button class="btn btn-primary" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> ניקוי חיפוש וסינון</button>
+    </div>
+  </div>`;
+}
 /* Access-denied page — shown when the user reached something they may not
    view (e.g. a board they are not a member of). Styled like a 404 page. */
 function accessDeniedHTML(msg){
