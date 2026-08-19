@@ -2258,6 +2258,32 @@ function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span c
   // cell's openPeople) rather than the person's profile
   return '<span class="avatars">'+arr.slice(0,3).map(a=>`<span class="av av-click" title="${esc(a.name)} — לחץ לשינוי אחראים">${avatarInner(a)}</span>`).join('')+(arr.length>3?`<span class="av av-more">+${arr.length-3}</span>`:'')+'</span>';}
 function findTask(id){return ((st.board&&st.board.tasks)||[]).find(t=>t.id==id);}
+/* Turn a picked photo into a crisp square avatar. The circle shows a
+   center-cropped square via object-fit:cover, so we crop to that same square
+   and rescale to a fixed high resolution (good on any display and DPI) with
+   high-quality smoothing, then re-encode. Returns a Blob (JPEG); falls back to
+   the original file if anything about decoding/encoding fails. */
+async function normalizeAvatar(file, size){
+  size = size || 512;
+  let src;
+  try{ src = await createImageBitmap(file, {imageOrientation:'from-image'}); }
+  catch(e){
+    src = await new Promise((res,rej)=>{ const im=new Image();
+      im.onload=()=>res(im); im.onerror=rej; im.src=URL.createObjectURL(file); });
+  }
+  const iw=src.width||src.naturalWidth, ih=src.height||src.naturalHeight;
+  if(!iw||!ih) throw new Error('bad image');
+  const side=Math.min(iw,ih), sx=(iw-side)/2, sy=(ih-side)/2;   // largest centered square
+  const cv=document.createElement('canvas'); cv.width=cv.height=size;
+  const ctx=cv.getContext('2d');
+  ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);            // transparency → white, never black
+  ctx.drawImage(src, sx,sy,side,side, 0,0,size,size);
+  if(src.close) src.close();
+  const blob=await new Promise(res=>cv.toBlob(res,'image/jpeg',0.92));
+  return blob || file;
+}
+
 /* ===== personal profile card (click a user's avatar) ===== */
 const Profile = {
   async open(userId){
@@ -2320,10 +2346,16 @@ const Profile = {
     inp.click();
   },
   async uploadAvatar(userId,file){
-    if(file.size>4*1024*1024){ toast('התמונה גדולה מדי (עד 4MB)'); return; }
+    if(file.size>15*1024*1024){ toast('התמונה גדולה מדי (עד 15MB)'); return; }
     toast('מעלה תמונה…');
     try{
-      const fd=new FormData(); fd.append('file',file);
+      // Normalise before upload — a center-cropped square at a fixed high
+      // resolution. This is what keeps avatars crisp: one controlled, high
+      // quality downscale instead of the browser squashing a huge, oddly
+      // shaped photo into a tiny circular <img> (which looks soft on Retina).
+      let blob=file, fname='avatar.jpg';
+      try{ blob=await normalizeAvatar(file,512); }catch(e){ blob=file; fname=file.name||'avatar'; }
+      const fd=new FormData(); fd.append('file',blob,fname);
       const up=await api('/api/upload',{method:'POST',body:fd});
       await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({avatar_url:up.url,actor_id:meId()})});
       await refreshUsers();                       // the list every avatar renders from
