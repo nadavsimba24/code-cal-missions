@@ -2496,7 +2496,6 @@ function noMatchHTML(){return '<div class="empty"><i class="fa-solid fa-filter-c
    view (e.g. a board they are not a member of). Styled like a 404 page. */
 function accessDeniedHTML(msg){
   return `<div class="errpage">
-    <div class="err-code">403</div>
     <div class="err-badge"><i class="fa-solid fa-lock"></i></div>
     <h2>אין לך הרשאה לעמוד זה</h2>
     <p>${esc(msg||'ניסית לגשת למשהו שאין לך אליו גישה. ייתכן שההרשאה הוגבלה או שהפריט הוסר. אם לדעתך זו טעות — פנה למנהל המערכת.')}</p>
