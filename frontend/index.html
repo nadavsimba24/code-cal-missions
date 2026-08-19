@@ -3669,7 +3669,14 @@ function subColumns(){
   if(!Array.isArray(ids))return all;
   const by=new Map(all.map(c=>[String(c.id),c]));
   const name=by.get('item')||all[0];
-  return [name].concat(ids.map(String).filter(id=>id!=='item'&&by.has(id)).map(id=>by.get(id)));
+  const picked=ids.map(String).filter(id=>id!=='item'&&by.has(id)).map(id=>by.get(id));
+  // An empty subset — only the name survives, e.g. a board whose stored sub_cols
+  // ended up as ["item"], or a subset that points only at columns since removed —
+  // is treated as "not configured": the sub-items mirror the item columns. That
+  // way every board shows its columns on sub-items; a real, non-empty subset is
+  // still honoured exactly as chosen.
+  if(!picked.length)return all;
+  return [name].concat(picked);
 }
 function subColLabel(c){return c.kind==='builtin'?c.label:(c.col&&c.col.title)||'';}
 /* Board vocabulary of tags = every tag already used across the board's items.
