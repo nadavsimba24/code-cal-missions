@@ -297,7 +297,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
    hover (absolute, so it adds no height to the header row) */
 .th-in{position:relative;display:inline-flex;align-items:center;justify-content:center;max-width:100%;vertical-align:middle}
 .th-lbl,.th-wrap{overflow:hidden;text-overflow:ellipsis;max-width:100%;min-width:0}
-.col-sort{opacity:0;pointer-events:none;position:absolute;left:50%;bottom:calc(100% - 1px);transform:translateX(-50%) translateY(4px);width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:var(--text);background:var(--surface);border:1px solid var(--border);box-shadow:0 2px 7px rgba(0,0,0,.2);font-size:10px;transition:opacity .13s,transform .13s,background .12s,color .12s;z-index:9}
+.col-sort{opacity:0;pointer-events:none;position:absolute;left:50%;top:calc(100% - 1px);transform:translateX(-50%) translateY(-4px);width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:var(--text);background:var(--surface);border:1px solid var(--border);box-shadow:0 2px 7px rgba(0,0,0,.2);font-size:10px;transition:opacity .13s,transform .13s,background .12s,color .12s;z-index:9}
 .tbl th:hover .col-sort{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
 .col-sort:hover{color:var(--primary);border-color:var(--primary)}
 .col-sort.on{opacity:1;pointer-events:auto;color:#fff;background:var(--primary);border-color:var(--primary);transform:translateX(-50%) translateY(0)}
