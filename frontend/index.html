@@ -2492,12 +2492,10 @@ function sortBtn(key){
 }
 function filtersActive(){const f=st.filters;return !!(f.q||f.people.length||f.status||f.priority||f.sort);}
 function noMatchHTML(){
-  const q=((st.filters&&st.filters.q)||'').trim();
-  const lead=q?`אין פריטים שתואמים ל־<b style="color:var(--text)">${esc(q)}</b>.`:'אין פריטים שתואמים לסינון הנוכחי.';
   return `<div class="errpage">
-    <div class="err-badge"><i class="fa-solid fa-magnifying-glass"></i></div>
+    <div class="err-badge"><i class="fa-solid fa-inbox"></i></div>
     <h2>לא נמצאו תוצאות</h2>
-    <p>${lead} נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.</p>
+    <p>נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.</p>
     <div class="err-actions">
       <button class="btn btn-primary" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> ניקוי חיפוש וסינון</button>
     </div>
