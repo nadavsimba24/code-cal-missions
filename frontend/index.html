@@ -212,6 +212,18 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tb-ctl.open .tb-pop{display:block}
 /* notifications bell + dropdown */
 .notif-btn{position:relative}
+.au-row{display:flex;align-items:flex-start;gap:12px;padding:12px 2px;border-bottom:1px solid var(--border)}
+.au-row:last-child{border-bottom:none}
+.au-row.off .au-sent{opacity:.55}
+.au-sent{flex:1;min-width:0;font-size:13.5px;line-height:1.65}
+.au-sent b{font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:4px;padding:1px 6px;white-space:nowrap}
+.au-meta{font-size:11px;color:var(--text-light);margin-top:5px}
+.au-in{font-size:12.5px;padding:3px 7px;border:1px solid var(--primary);border-radius:6px;background:var(--card);color:var(--text);font-family:inherit;max-width:190px;vertical-align:middle}
+.au-recipe{display:block;width:100%;text-align:start;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin-bottom:8px;cursor:pointer;font-size:13.5px;line-height:1.6;color:var(--text);font-family:inherit;transition:.12s}
+.au-recipe:hover{border-color:var(--primary);background:color-mix(in srgb, var(--primary) 6%, var(--bg))}
+.au-recipe .ph{font-weight:700;color:var(--primary)}
+.au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
+.au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
 .trash-badge{min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:var(--border);color:var(--text-muted);font-size:10.5px;font-weight:700;display:inline-grid;place-items:center;margin-inline-start:auto;box-sizing:border-box;line-height:1}
 .sb-item:hover .trash-badge{background:var(--text-muted);color:#fff}
 .notif-badge{position:absolute;top:-3px;inset-inline-end:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--red,#e2445c);color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;box-sizing:border-box;line-height:1}
@@ -1982,6 +1994,7 @@ function boardMenu(e){
   const html=`<div class="row-menu" onclick="event.stopPropagation()">
     ${item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
+    ${item('fa-bolt','אוטומציות','Automations.open()',true)}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
     ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
     ${item('fa-file-import','ייבוא לוח מקובץ','importBoardFile()',hasCap('create_board'),'אין לך הרשאה ליצור לוח חדש')}
@@ -2674,6 +2687,150 @@ const Workspace = {
     try{ await api('/api/workspace/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('הוזמן לסביבה'); this.refresh(); }catch(e){toast('רק מנהל סביבה יכול להזמין');} },
   async setRole(uid,role){ try{ await api('/api/workspace/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('התפקיד עודכן'); this.refresh(); }catch(e){toast('שגיאה');this.refresh();} },
   remove(uid){ askConfirm('להסיר את המשתמש מהסביבה?',async()=>{ try{ await api('/api/workspace/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר'); this.refresh(); }catch(e){toast('לא ניתן להסיר');} },{title:'הסרה מהסביבה',confirmText:'הסר'}); },
+};
+
+/* ===== automations (אוטומציות) — Monday-style if-then rules per board ===== */
+const Automations = {
+  data:{automations:[],can_manage:false}, recipes:[], members:[], building:null,
+
+  async open(){
+    if(!st.board){ toast('פתח לוח תחילה'); return; }
+    showModal('<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
+    document.getElementById('modal').classList.add('modal-wide');
+    await this.load();
+    this.building=null;
+    this.render();
+  },
+
+  async load(){
+    const bid=st.board.id, q=meId()?('?user_id='+meId()):'';
+    try{ this.data=await api('/api/boards/'+bid+'/automations'+q); }
+    catch(e){ this.data={automations:[],can_manage:false}; }
+    if(!this.recipes.length){
+      try{ this.recipes=(await api('/api/automations/recipes'+q)).recipes||[]; }catch(e){ this.recipes=[]; }
+    }
+    // the person picker offers the board's own members, matching who can be assigned
+    try{ this.members=(await api('/api/boards/'+bid+'/members')).members||[]; }catch(e){ this.members=[]; }
+  },
+
+  render(){
+    const m=document.getElementById('modal'); if(!m||!m.classList.contains('open'))return;
+    const can=this.data.can_manage;
+    m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+
+      `<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות — ${esc(st.board.name)}</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> כלל "אם–אז" שרץ על הלוח הזה בלבד.${can?'':' <b>רק מנהל הלוח יכול להגדיר או לשנות.</b>'}</div>
+        ${this.building?this.buildHTML():`
+          <div id="au-list">${this.listHTML()}</div>
+          ${can?`<div style="margin-top:14px"><button class="btn btn-primary" onclick="Automations.startNew()"><i class="fa-solid fa-plus"></i> אוטומציה חדשה</button></div>`:''}
+        `}
+      </div>`;
+  },
+
+  listHTML(){
+    const rows=this.data.automations||[], can=this.data.can_manage;
+    if(!rows.length) return '<div class="empty" style="padding:26px 0"><i class="fa-solid fa-bolt"></i><div>אין אוטומציות בלוח הזה</div></div>';
+    return rows.map(a=>{
+      const on=a.is_active;
+      // «value» markers come from the server — render them as highlighted chips
+      const sent=esc(a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>');
+      const created=a.created_by_name?`נוצר ע"י ${esc(a.created_by_name)}`:'';
+      const upd=a.updated_by_name?` · עודכן לאחרונה ע"י ${esc(a.updated_by_name)}`:'';
+      const when=a.updated_at?' · '+new Date(a.updated_at).toLocaleDateString('he-IL'):'';
+      const runs=a.run_count?` · הופעלה ${a.run_count} פעמים`:' · טרם הופעלה';
+      return `<div class="au-row ${on?'':'off'}">
+        <label class="sa-toggle ${on?'on':''}" title="${on?'פעיל':'לא פעיל'}" ${can?`onclick="event.preventDefault();Automations.toggle(${a.id},${!on})"`:'style="opacity:.6;cursor:default"'}>
+          <span class="sa-tk"></span><span class="sa-tl">${on?'פעיל':'כבוי'}</span>
+        </label>
+        <div class="au-sent">${sent}
+          <div class="au-meta">${created}${upd}${when}${runs}</div>
+        </div>
+        ${can?`<button class="mem-del" title="מחק אוטומציה" onclick="Automations.del(${a.id})"><i class="fa-solid fa-trash"></i></button>`:''}
+      </div>`;
+    }).join('');
+  },
+
+  async toggle(id,on){
+    try{
+      await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
+                {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:on})});
+      toast(on?'האוטומציה הופעלה':'האוטומציה כובתה');
+    }catch(e){ toast('רק מנהל הלוח יכול לשנות אוטומציות'); }
+    await this.load(); this.render();
+  },
+
+  del(id){
+    const a=(this.data.automations||[]).find(x=>x.id===id);
+    askConfirm('למחוק את האוטומציה?',async()=>{
+      try{ await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),{method:'DELETE'}); toast('האוטומציה נמחקה'); }
+      catch(e){ toast('לא ניתן למחוק'); }
+      await this.load(); this.render();
+    },{title:'מחיקת אוטומציה',confirmText:'מחק',note:a?a.sentence.replace(/[«»]/g,'"'):''});
+  },
+
+  /* ---- creating one from a recipe ---- */
+  startNew(){ this.building={recipe:null}; this.render(); },
+  cancelNew(){ this.building=null; this.render(); },
+  pick(rid){ this.building={recipe:this.recipes.find(r=>r.id===rid)||null}; this.render(); },
+
+  buildHTML(){
+    const r=this.building.recipe;
+    if(!r){
+      // the catalog, grouped by trigger so related recipes read together
+      const byTrig={};
+      this.recipes.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
+      const TRIG_HE={item_created:'כאשר נוצר פריט',status_changes_to:'כאשר הסטטוס משתנה',
+                     priority_changes_to:'כאשר העדיפות משתנה',person_assigned:'כאשר משויך אדם',
+                     due_date_arrives:'כאשר מגיע תאריך היעד'};
+      const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc(TRIG_HE[t]||t)}</div>`+
+        byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
+          esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
+            const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
+        }</button>`).join('')).join('');
+      return `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:6px">בחר מתכון:</div>${blocks}
+        <div style="margin-top:14px"><button class="btn btn-ghost" onclick="Automations.cancelNew()">ביטול</button></div>`;
+    }
+    // the chosen recipe, with its placeholders turned into inline pickers
+    let sent=esc(r.sentence);
+    r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.fieldHTML(f)); });
+    return `<div class="au-group-h">אוטומציה חדשה</div>
+      <div class="au-build">${sent}</div>
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור אוטומציה</button>
+        <button class="btn btn-ghost" onclick="Automations.startNew()">חזרה למתכונים</button>
+      </div>`;
+  },
+
+  fieldHTML(f){
+    const id='auf-'+f.key;
+    if(f.type==='text') return `<input id="${id}" class="au-in" placeholder="${esc(f.label)}">`;
+    let opts='';
+    if(f.type==='status')        opts=boardStatusList().map(x=>`<option value="${esc(x.key)}">${esc(x.he)}</option>`).join('');
+    else if(f.type==='priority') opts=boardPriorityList().map(x=>`<option value="${esc(x.key)}">${esc(x.he)}</option>`).join('');
+    else if(f.type==='group')    opts=(st.board.groups||[]).map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('');
+    else if(f.type==='person')   opts=this.members.map(m=>`<option value="${m.user_id}">${esc(m.name)}</option>`).join('');
+    if(!opts) opts='<option value="">— אין אפשרויות —</option>';
+    return `<select id="${id}" class="au-in">${opts}</select>`;
+  },
+
+  async save(){
+    const r=this.building&&this.building.recipe; if(!r)return;
+    const config={};
+    for(const f of r.fields){
+      const el=document.getElementById('auf-'+f.key);
+      const v=el?String(el.value||'').trim():'';
+      if(!v){ toast('יש למלא את כל השדות'); return; }
+      config[f.key]=(f.type==='person'||f.type==='group')?+v:v;
+    }
+    try{
+      await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
+                {method:'POST',headers:{'Content-Type':'application/json'},
+                 body:JSON.stringify({recipe_id:r.id,config})});
+      toast('האוטומציה נוצרה');
+      this.building=null;
+    }catch(e){ toast('לא ניתן ליצור אוטומציה'); return; }
+    await this.load(); this.render();
+  },
 };
 
 /* ===== recycle bin (סל מחזור) — deleted boards, restorable for RETENTION days ===== */

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
                   init_auth, resolve_user)
 from models import (
-    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission,
+    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -932,6 +932,9 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             raise HTTPException(404, "Board not found")
         if b.deleted_at:                     # in the recycle bin — restore it first
             raise HTTPException(404, "הלוח נמצא בסל המחזור")
+        # date-based automations have no scheduler — opening the board is when
+        # "the due date arrived" is noticed (each rule fires once per item)
+        _sweep_due_date_automations(db, board_id, user_id)
         my_role = _board_role(db, board_id, user_id)
         if user_id is not None and my_role is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
@@ -2438,6 +2441,8 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
                     if aid != actor:
                         _notify(db, aid, "assign", "שויכת למשימה",
                                 f"שויכת למשימה '{task.title}'.", board_id=board_id, task_id=task.id)
+        # ── automations ── a new item can trigger rules (assign, set status, notify)
+        _run_automations(db, task, {"type": "item_created"}, actor_id)
         db.commit()
         db.refresh(task)
         # return the fully-serialized task so the client can insert the new row
@@ -2524,6 +2529,351 @@ def _rollup_parent(db, parent_id):
             parent.group_id = g.id
 
 
+# ── Automations engine (אוטומציות) ──────────────────────────────────
+# A board admin builds if-then rules from the recipe catalog in automations.py.
+# Rules fire inline, inside the same transaction as the change that triggered
+# them, so an item never lands in a half-automated state.
+import automations as recipes   # noqa: E402  (pure data — no app imports)
+
+# An action can itself be a trigger (set status → a status rule). That is
+# deliberate and useful, but two rules can point at each other, so cascades are
+# bounded rather than trusted.
+AUTOMATION_MAX_DEPTH = 3
+
+
+def _task_status_key(task):
+    """The vocabulary key an item's status actually shows as — a board-defined
+    status rides in custom_fields with the enum kept as its base."""
+    return (task.custom_fields or {}).get("status_key") or _st_of(task)
+
+
+def _task_priority_key(task):
+    pv = task.priority.value if hasattr(task.priority, "value") else task.priority
+    return (task.custom_fields or {}).get("priority_key") or pv
+
+
+def _automation_matches(a, event):
+    r = recipes.recipe(a.recipe_id)
+    if not r or r["trigger"] != event.get("type"):
+        return False
+    cfg = a.config or {}
+    if event["type"] == "status_changes_to":
+        return str(cfg.get("t_status")) == str(event.get("status"))
+    if event["type"] == "priority_changes_to":
+        return str(cfg.get("t_priority")) == str(event.get("priority"))
+    return True
+
+
+def _apply_status_key(db, task, key):
+    """Set an item's status from a board vocabulary key. Mirrors what the board
+    UI writes, so an automated change is indistinguishable from a manual one."""
+    board = db.query(Board).filter(Board.id == task.board_id).first()
+    entry = next((e for e in _board_statuses(board) if e["key"] == str(key)), None) if board else None
+    if not entry:
+        return False
+    try:
+        nv = TaskStatus(entry["base"])
+    except ValueError:
+        return False
+    task.status = nv
+    cf = dict(task.custom_fields or {})
+    if entry["key"] in _STATUS_KEYS:              # a built-in — clear any override
+        for k in ("status_key", "status_label", "status_color", "status_unset"):
+            cf.pop(k, None)
+    else:
+        cf.update({"status_key": entry["key"], "status_label": entry["label"],
+                   "status_color": entry["color"]})
+        cf.pop("status_unset", None)
+    task.custom_fields = cf
+    if task.parent_id is None:
+        g = _group_for_status(db, task.board_id, nv)
+        if g:
+            task.group_id = g.id
+    return True
+
+
+def _apply_priority_key(db, task, key):
+    board = db.query(Board).filter(Board.id == task.board_id).first()
+    pval, pcf = _resolve_priority(board, key)
+    if not pval:
+        return False
+    try:
+        task.priority = Priority(pval)
+    except ValueError:
+        return False
+    if pcf:
+        cf = dict(task.custom_fields or {})
+        cf.update({k: v for k, v in pcf.items() if v is not None})
+        for k, v in pcf.items():
+            if v is None:
+                cf.pop(k, None)
+        task.custom_fields = cf
+    return True
+
+
+def _automation_label(db, board, a):
+    """The rule as a readable Hebrew sentence with its values filled in — shown
+    in the list and quoted in the notifications it sends."""
+    text = recipes.sentence(a.recipe_id)
+    cfg = a.config or {}
+    r = recipes.recipe(a.recipe_id)
+    for f in (r or {}).get("fields", []):
+        v = cfg.get(f["key"])
+        if f["type"] == "status":
+            e = next((x for x in _board_statuses(board) if x["key"] == str(v)), None)
+            shown = e["label"] if e else str(v)
+        elif f["type"] == "priority":
+            e = next((x for x in _board_priorities(board) if x["key"] == str(v)), None)
+            shown = e["label"] if e else str(v)
+        elif f["type"] == "person":
+            shown = db.query(User.name).filter(User.id == v).scalar() or "—"
+        elif f["type"] == "group":
+            shown = db.query(Group.name).filter(Group.id == v).scalar() or "—"
+        else:
+            shown = str(v)
+        text = text.replace("{" + f["key"] + "}", f"«{shown}»")
+    return text
+
+
+def _run_action(db, a, task, actor_id, board):
+    """Perform one rule's action. Returns follow-up events so a rule can trigger
+    another (bounded by AUTOMATION_MAX_DEPTH)."""
+    r = recipes.recipe(a.recipe_id)
+    cfg = a.config or {}
+    act = r["action"]
+    out = []
+    label = _automation_label(db, board, a)
+    body = f"אוטומציה בלוח '{board.name}': {label} — פריט '{task.title}'."
+
+    if act == "notify_person":
+        _notify(db, cfg.get("a_person"), "automation", "אוטומציה הופעלה", body,
+                board_id=task.board_id, task_id=task.id)
+    elif act == "notify_assignees":
+        for u in list(task.assignees):
+            _notify(db, u.id, "automation", "אוטומציה הופעלה", body,
+                    board_id=task.board_id, task_id=task.id)
+    elif act == "assign_person":
+        u = db.query(User).filter(User.id == cfg.get("a_person")).first()
+        if u and u not in task.assignees:
+            task.assignees.append(u)
+            _notify(db, u.id, "assign", "שויכת למשימה", body,
+                    board_id=task.board_id, task_id=task.id)
+            out.append({"type": "person_assigned", "user_id": u.id})
+    elif act == "set_status":
+        if _task_status_key(task) != str(cfg.get("a_status")) and _apply_status_key(db, task, cfg.get("a_status")):
+            out.append({"type": "status_changes_to", "status": str(cfg.get("a_status"))})
+    elif act == "set_priority":
+        if _task_priority_key(task) != str(cfg.get("a_priority")) and _apply_priority_key(db, task, cfg.get("a_priority")):
+            out.append({"type": "priority_changes_to", "priority": str(cfg.get("a_priority"))})
+    elif act == "move_to_group":
+        g = db.query(Group).filter(Group.id == cfg.get("a_group"),
+                                   Group.board_id == task.board_id).first()
+        if g:
+            task.group_id = g.id
+    elif act == "create_subitem":
+        db.add(Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
+                    title=cfg.get("a_text") or "תת־פריט", status=TaskStatus.TODO,
+                    priority=Priority.MEDIUM, created_by=actor_id))
+    return out
+
+
+def _run_one_automation(db, a, task, actor_id):
+    """Run a single rule against one item, then let its result cascade."""
+    board = db.query(Board).filter(Board.id == task.board_id).first()
+    if not board:
+        return
+    try:
+        follow = _run_action(db, a, task, actor_id, board)
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  automation {a.id} ({a.recipe_id}) failed: {e}", flush=True)
+        return
+    a.last_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    a.run_count = (a.run_count or 0) + 1
+    for ev in follow or []:
+        _run_automations(db, task, ev, actor_id, 1)
+
+
+# How many fired item ids a date rule remembers. Bounded so the marker cannot
+# grow without limit on a long-lived board; older entries fall off the front.
+_DUE_FIRED_MAX = 500
+
+
+def _sweep_due_date_automations(db, board_id, actor_id):
+    """Fire "כאשר מגיע תאריך היעד" rules for items whose due date has passed.
+
+    There is no scheduler here, so this runs when the board is read. Each rule
+    remembers which items it already fired for, so re-opening a board cannot
+    notify the same person about the same item twice.
+    """
+    rules = [a for a in db.query(Automation).filter(
+                Automation.board_id == board_id,
+                Automation.is_active == True).all()                      # noqa: E712
+             if (recipes.recipe(a.recipe_id) or {}).get("trigger") == "due_date_arrives"]
+    if not rules:
+        return
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    due = db.query(Task).filter(Task.board_id == board_id, Task.is_archived == False,  # noqa: E712
+                                Task.due_date != None, Task.due_date <= now).all()     # noqa: E711
+    if not due:
+        return
+    fired_any = False
+    for a in rules:
+        state = dict(a.state or {})
+        fired = list(state.get("fired") or [])
+        seen = set(fired)
+        for t in due:
+            # a finished item is not "overdue" in any sense the user cares about
+            if t.id in seen or _st_of(t) in ("done", "cancelled"):
+                continue
+            _run_one_automation(db, a, t, actor_id)
+            fired.append(t.id)
+            seen.add(t.id)
+            fired_any = True
+        if len(fired) > _DUE_FIRED_MAX:
+            fired = fired[-_DUE_FIRED_MAX:]
+        state["fired"] = fired
+        a.state = state
+    if fired_any:
+        db.commit()
+
+
+def _run_automations(db, task, event, actor_id, depth=0):
+    """Fire every active rule on the item's board that matches this event.
+
+    Never raises: a broken rule must not take down the edit that triggered it,
+    so a failure is logged and the remaining rules still run.
+    """
+    if task is None or depth >= AUTOMATION_MAX_DEPTH:
+        return
+    board = db.query(Board).filter(Board.id == task.board_id).first()
+    if not board or board.deleted_at:
+        return
+    rules = db.query(Automation).filter(Automation.board_id == task.board_id,
+                                        Automation.is_active == True).order_by(Automation.id).all()  # noqa: E712
+    for a in rules:
+        if not _automation_matches(a, event):
+            continue
+        try:
+            follow = _run_action(db, a, task, actor_id, board)
+        except Exception as e:                     # noqa: BLE001 — one bad rule must not break the request
+            print(f"⚠️  automation {a.id} ({a.recipe_id}) failed: {e}", flush=True)
+            continue
+        a.last_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        a.run_count = (a.run_count or 0) + 1
+        for ev in follow or []:
+            _run_automations(db, task, ev, actor_id, depth + 1)
+
+
+# ── Automations API ─────────────────────────────────────────────────
+def _can_manage_automations(db, board, user_id):
+    """Who may add, edit, switch off or delete a board's rules: a board admin,
+    a manager of its environment, or a system admin. Deliberately the same bar
+    as deleting the board — a rule can rewrite every item on it."""
+    if user_id is None:
+        return True                                # auth disabled → no per-user gate
+    return (_board_role(db, board.id, user_id) == "admin"
+            or _can_manage_env(db, board.environment_id, user_id))
+
+
+def _automation_json(db, board, a):
+    r = recipes.recipe(a.recipe_id) or {}
+    uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+    return {
+        "id": a.id, "board_id": a.board_id, "recipe_id": a.recipe_id,
+        "sentence": _automation_label(db, board, a),
+        "trigger": r.get("trigger"), "action": r.get("action"),
+        "fields": r.get("fields", []), "config": a.config or {},
+        "is_active": bool(a.is_active),
+        "created_by": a.created_by, "created_by_name": uname(a.created_by),
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "updated_by": a.updated_by, "updated_by_name": uname(a.updated_by),
+        "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+        "run_count": a.run_count or 0,
+        "last_run_at": a.last_run_at.isoformat() if a.last_run_at else None,
+    }
+
+
+@app.get("/api/automations/recipes")
+def automation_recipes(user_id: int = Depends(current_user_id)):
+    """The if-then catalog the 'new automation' picker is built from."""
+    return {"recipes": recipes.catalog()}
+
+
+@app.get("/api/boards/{board_id}/automations")
+def list_board_automations(board_id: int, user_id: int = Depends(current_user_id)):
+    """Every rule on the board. Visible to any member; editable only by admins —
+    the client uses can_manage to decide whether to render the controls."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if user_id is not None and _board_role(db, board_id, user_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        rows = db.query(Automation).filter(Automation.board_id == board_id).order_by(Automation.id).all()
+        return {"automations": [_automation_json(db, b, a) for a in rows],
+                "can_manage": _can_manage_automations(db, b, user_id)}
+
+
+@app.post("/api/boards/{board_id}/automations")
+def create_automation(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול להגדיר אוטומציות")
+        cfg, err = recipes.validate(data.get("recipe_id"), data.get("config") or {})
+        if err:
+            raise HTTPException(400, err)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        a = Automation(board_id=board_id, recipe_id=data["recipe_id"], config=cfg,
+                       is_active=bool(data.get("is_active", True)),
+                       created_by=user_id, updated_by=user_id,
+                       created_at=now, updated_at=now, run_count=0, state={})
+        db.add(a)
+        db.commit()
+        db.refresh(a)
+        return _automation_json(db, b, a)
+
+
+@app.patch("/api/automations/{automation_id}")
+def update_automation(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Switch a rule on/off, or change the values it was built with."""
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לשנות אוטומציות")
+        if "is_active" in data:
+            a.is_active = bool(data["is_active"])
+        if "config" in data:
+            cfg, err = recipes.validate(a.recipe_id, data.get("config") or {})
+            if err:
+                raise HTTPException(400, err)
+            a.config = cfg
+        a.updated_by = user_id
+        a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+        db.refresh(a)
+        return _automation_json(db, b, a)
+
+
+@app.delete("/api/automations/{automation_id}")
+def delete_automation(automation_id: int, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול למחוק אוטומציות")
+        db.delete(a)
+        db.commit()
+        return {"status": "deleted", "id": automation_id}
+
+
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Generic item update — title, priority, status, due_date, and custom column
@@ -2549,6 +2899,11 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                     del data["custom_fields"][k]      # silently drop cols the user can't edit
             if iperm not in ("edit", "delete"):
                 data["custom_fields"] = {}
+        # what the item shows now — compared after the edit so automations fire on
+        # the real change, whichever route set it (built-in or board-defined value)
+        _before_status = _task_status_key(task)
+        _before_priority = _task_priority_key(task)
+        _before_assignees = {u.id for u in task.assignees}
         st_val = lambda v: (v.value if hasattr(v, "value") else v)
         if data.get("title") is not None and data["title"] != task.title:
             _audit(db, task_id, "update", "title", task.title, data["title"], actor)
@@ -2640,6 +2995,16 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                                     f"שויכת לעמודת '{col.get('title', 'אנשים')}' במשימה '{task.title}'.",
                                     board_id=task.board_id, task_id=task_id)
             task.custom_fields = cf
+        # ── automations ── fire on what actually changed, before the commit so a
+        # rule's own writes land in the same transaction as the edit
+        if _task_status_key(task) != _before_status:
+            _run_automations(db, task, {"type": "status_changes_to",
+                                        "status": _task_status_key(task)}, actor)
+        if _task_priority_key(task) != _before_priority:
+            _run_automations(db, task, {"type": "priority_changes_to",
+                                        "priority": _task_priority_key(task)}, actor)
+        if {u.id for u in task.assignees} - _before_assignees:
+            _run_automations(db, task, {"type": "person_assigned"}, actor)
         db.commit()
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
 
@@ -3109,6 +3474,8 @@ def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_use
                         _notify(db, user.id, "assign", "שויכת למשימה",
                                 f"{(actor_u.name + ' ') if actor_u else ''}שייך/ה אותך למשימה '{task.title}'.",
                                 board_id=task.board_id, task_id=task_id)
+                _run_automations(db, task, {"type": "person_assigned",
+                                            "user_id": user.id}, actor)
         db.commit()
         return {"assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
                               for u in task.assignees]}

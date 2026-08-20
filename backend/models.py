@@ -276,6 +276,34 @@ class Task(Base):
     subtasks = relationship("Task", backref="parent", remote_side=[id])
     comments = relationship("Comment", back_populates="task")
 
+class Automation(Base):
+    """A board-scoped if-then rule ("כאשר… אז…"), built from a recipe.
+
+    `recipe_id` names the template (which trigger pairs with which action) and
+    `config` holds the values the board admin filled into its placeholders — a
+    status key, a user id, a group id. Keeping the recipe by id rather than
+    copying its wording means a recipe's phrasing can be improved later without
+    rewriting stored rules.
+    """
+    __tablename__ = "automations"
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False)
+    recipe_id = Column(String(60), nullable=False)
+    config = Column(JSON, default=dict)
+    is_active = Column(Boolean, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # light run telemetry — helps a board admin see whether a rule actually fires
+    last_run_at = Column(DateTime, nullable=True)
+    run_count = Column(Integer, default=0)
+    # engine bookkeeping (not user config) — e.g. which items a date trigger
+    # already fired for, so a due date cannot notify the same item twice
+    state = Column(JSON, default=dict)
+    board = relationship("Board")
+
+
 class Comment(Base):
     __tablename__ = "comments"
     id = Column(Integer, primary_key=True)
