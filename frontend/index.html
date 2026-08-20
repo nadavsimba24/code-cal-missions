@@ -1266,7 +1266,7 @@ body, body *{ font-weight:400!important; }
   <aside id="sidebar">
     <div class="sb-logo" style="font-size:15px"><span class="dot"><i class="fa-solid fa-rocket"></i></span> Missions</div>
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
-    <div class="sb-section">סביבת עבודה</div>
+    <div class="sb-section">סביבת עבודה <span class="sb-sec-acts"><i id="env-manage-btn" class="fa-solid fa-user-gear" title="ניהול משתמשים והרשאות בסביבה" style="display:none" onclick="Env.manageActive()"></i></span></div>
     <div id="ws-switch"></div>
     <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="newBoardQuick()"></i></span></div>
     <div class="sb-list" id="board-list"></div>
@@ -1788,6 +1788,9 @@ function renderSidebar(){
   const el=document.getElementById('board-list');
   const canManage = !!(active && (isSysAdmin() || active.can_manage));
   const fbtn=document.getElementById('new-folder-btn'); if(fbtn)fbtn.style.display=canManage?'':'none';
+  // the environment-management icon sits by the "סביבת עבודה" title — visible only
+  // when the active environment is one this user may manage
+  const embtn=document.getElementById('env-manage-btn'); if(embtn)embtn.style.display=canManage?'':'none';
   if(!active){ el.innerHTML=`<div class="sb-empty">אין לוחות שהוזמנת אליהם</div>`; return; }
   if(!st._foldersCollapsed){ try{ st._foldersCollapsed=new Set(JSON.parse(localStorage.getItem('cc_folders_collapsed')||'[]')); }catch(e){ st._foldersCollapsed=new Set(); } }
   const collapsed=st._foldersCollapsed;
@@ -2668,6 +2671,9 @@ const Env = {
     this.render();
   },
   active(){ return st.env||this.items[0]||null; },
+  // open members/permissions management for the active environment — the entry
+  // point next to the "סביבת עבודה" title. members() re-checks the permission.
+  manageActive(){ const a=this.active(); if(!a){ toast('בחר סביבה'); return; } this.members(a.id); },
   render(){
     const wrap=document.getElementById('ws-switch'); if(!wrap)return;
     const admin=isSysAdmin();
