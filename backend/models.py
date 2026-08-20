@@ -213,6 +213,10 @@ class Board(Base):
     icon = Column(String(50), default="📋")
     color = Column(String(7), default="#6366f1")
     is_archived = Column(Boolean, default=False)
+    # Recycle bin: a deleted board is kept (with its groups, items and comments)
+    # for RECYCLE_BIN_DAYS before being purged for good. NULL = live board.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     settings = Column(JSON, default=dict)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     organization = relationship("Organization", back_populates="boards")

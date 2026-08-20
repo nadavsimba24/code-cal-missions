@@ -212,6 +212,8 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tb-ctl.open .tb-pop{display:block}
 /* notifications bell + dropdown */
 .notif-btn{position:relative}
+.trash-badge{min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:var(--border);color:var(--text-muted);font-size:10.5px;font-weight:700;display:inline-grid;place-items:center;margin-inline-start:auto;box-sizing:border-box;line-height:1}
+.sb-item:hover .trash-badge{background:var(--text-muted);color:#fff}
 .notif-badge{position:absolute;top:-3px;inset-inline-end:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--red,#e2445c);color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;box-sizing:border-box;line-height:1}
 .notif-pop{min-width:330px;max-width:360px;padding:0;overflow:hidden}
 .notif-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px}
@@ -1286,6 +1288,7 @@ body, body *{ font-weight:400!important; }
       <div class="sb-item" style="display:none" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
       <div class="sb-item" style="display:none" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
+      <div class="sb-item" id="nav-trash" onclick="Trash.open()" title="לוחות שנמחקו — ניתנים לשחזור"><span class="ic"><i class="fa-solid fa-trash-can" style="color:var(--text-muted)"></i></span> סל מחזור <span id="trash-count" class="trash-badge" style="display:none"></span></div>
       <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
       <div class="sb-item" onclick="window.open('https://assistcal.mashcal.co.il/servicePortal/submitSR','_blank','noopener,noreferrer')" title="פתיחת קריאת שירות במערכת סייאיד"><span class="ic"><i class="fa-solid fa-circle-question" style="color:var(--primary)"></i></span> עזרה</div>
     </div>
@@ -1674,6 +1677,7 @@ async function boot(){
     }catch(e){}
     renderMe();
     await enterApp();
+    Trash.load().catch(()=>{});   // recycle-bin counter, non-blocking
   }catch(e){
     document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-plug-circle-xmark"></i><div>השרת לא זמין</div><div style="font-size:12px">'+esc(e.message)+'</div></div>';
   }
@@ -1913,7 +1917,8 @@ function deleteBoardById(id){
   askConfirm(`למחוק את הלוח "${name}"?`,async()=>{
     try{
       await api('/api/boards/'+id+'?user_id='+meId(),{method:'DELETE'});
-      closeModals(); toast('הלוח נמחק');
+      closeModals(); toast('הלוח הועבר לסל המחזור');
+      Trash.load().catch(()=>{});
       if(st.board&&st.board.id===id) st.board=null;
       st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
       renderSidebar();
@@ -1922,7 +1927,7 @@ function deleteBoardById(id){
         else{ document.getElementById('bh-title').textContent=''; document.getElementById('bh-desc').textContent=''; document.getElementById('tabs').innerHTML=''; document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות</div></div>'; }
       }
     }catch(e){ toast('רק מנהל הלוח או הסביבה יכול למחוק'); }
-  },{title:'מחיקת לוח',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן לשחזר.'});
+  },{title:'מחיקת לוח',confirmText:'העבר לסל המחזור',note:'הלוח יעבור לסל המחזור ל-60 יום. כל הקבוצות, הפריטים והשיחות יישמרו וניתן לשחזר אותו משם.',icon:'fa-trash-arrow-up'});
 }
 async function openBoard(id){
   if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.collapsedGroups.clear(); st.colSort=null; st.subSort=null; }
@@ -2669,6 +2674,78 @@ const Workspace = {
     try{ await api('/api/workspace/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('הוזמן לסביבה'); this.refresh(); }catch(e){toast('רק מנהל סביבה יכול להזמין');} },
   async setRole(uid,role){ try{ await api('/api/workspace/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('התפקיד עודכן'); this.refresh(); }catch(e){toast('שגיאה');this.refresh();} },
   remove(uid){ askConfirm('להסיר את המשתמש מהסביבה?',async()=>{ try{ await api('/api/workspace/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר'); this.refresh(); }catch(e){toast('לא ניתן להסיר');} },{title:'הסרה מהסביבה',confirmText:'הסר'}); },
+};
+
+/* ===== recycle bin (סל מחזור) — deleted boards, restorable for RETENTION days ===== */
+const Trash = {
+  data:{boards:[],retention_days:60},
+  async load(){
+    try{ this.data = await api('/api/trash/boards'+(meId()?'?user_id='+meId():'')); }
+    catch(e){ this.data={boards:[],retention_days:60}; }
+    this.badge();
+    return this.data;
+  },
+  // small counter next to the sidebar entry, so a full bin is visible without opening it
+  badge(){
+    const el=document.getElementById('trash-count'); if(!el)return;
+    const n=(this.data.boards||[]).length;
+    el.textContent=n; el.style.display=n?'':'none';
+  },
+  async open(){
+    showModal('<h2><i class="fa-solid fa-trash-can" style="color:var(--text-muted)"></i> סל מחזור</h2><div class="mbody"><div class="spin"></div></div>');
+    await this.load();
+    this.render();
+  },
+  render(){
+    const m=document.getElementById('modal'); if(!m||!m.classList.contains('open'))return;
+    const d=this.data, days=d.retention_days||60;
+    m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+
+      `<h2><i class="fa-solid fa-trash-can" style="color:var(--text-muted)"></i> סל מחזור</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> לוח שנמחק נשמר כאן ${days} יום על כל התוכן שלו — קבוצות, פריטים ושיחות. אחרי ${days} יום הוא נמחק לצמיתות.</div>
+        <div id="trash-list">${this.listHTML()}</div>
+      </div>`;
+  },
+  listHTML(){
+    const rows=this.data.boards||[];
+    if(!rows.length) return '<div class="empty" style="padding:28px 0"><i class="fa-regular fa-trash-can"></i><div>סל המחזור ריק</div></div>';
+    return rows.map(b=>{
+      const left=b.days_left, urgent=left<=7;
+      const when=b.deleted_at?new Date(b.deleted_at).toLocaleDateString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric'}):'';
+      const by=b.deleted_by_name?` · נמחק ע"י ${esc(b.deleted_by_name)}`:'';
+      return `<div class="mem-row">
+        <span class="ic" style="font-size:18px;width:28px;text-align:center">${b.icon||'📋'}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13.5px">${esc(b.name)}</div>
+          <div style="font-size:11px;color:var(--text-light)">${esc(b.environment_name||'')} · ${b.task_count} פריטים · ${when}${by}</div>
+        </div>
+        <span class="perm-badge" style="${urgent?'background:var(--red-soft,#fee);color:var(--red,#c00)':''}" title="הזמן שנותר לשחזור">${left} ימים</span>
+        <button class="btn btn-ghost" style="padding:5px 10px;font-size:12px" onclick="Trash.restore(${b.id})"><i class="fa-solid fa-rotate-left"></i> שחזר</button>
+        <button class="mem-del" title="מחק לצמיתות" onclick="Trash.purge(${b.id})"><i class="fa-solid fa-trash"></i></button>
+      </div>`;
+    }).join('');
+  },
+  async restore(id){
+    try{
+      await api('/api/trash/boards/'+id+'/restore'+(meId()?'?user_id='+meId():''),{method:'POST'});
+      toast('הלוח שוחזר');
+      // the board is live again — refresh the sidebar and the per-environment counts
+      st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
+      if(typeof Env!=='undefined' && Env.load) await Env.load();
+      renderSidebar();
+    }catch(e){ toast('לא ניתן לשחזר את הלוח'); }
+    await this.load(); this.render();   // the bin stays open for further restores
+  },
+  purge(id){
+    const b=(this.data.boards||[]).find(x=>x.id===id), name=b?b.name:'';
+    askConfirm(`למחוק לצמיתות את הלוח "${name}"?`,async()=>{
+      try{
+        await api('/api/trash/boards/'+id+(meId()?'?user_id='+meId():''),{method:'DELETE'});
+        toast('הלוח נמחק לצמיתות');
+      }catch(e){ toast('לא ניתן למחוק'); }
+      await this.open();
+    },{title:'מחיקה לצמיתות',confirmText:'מחק לצמיתות',note:'כל הקבוצות, הפריטים והשיחות יימחקו ולא ניתן יהיה לשחזר.'});
+  },
 };
 
 /* ===== environments (Monday-style workspaces) — sysadmin=all, others=granted only ===== */

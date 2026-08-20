@@ -2,7 +2,7 @@
 CityOS — FastAPI Backend Server
 """
 import os, sys, json, uuid, csv, io, re, secrets, urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -131,6 +131,11 @@ def _migrate():
             conn.execute(text("ALTER TABLE boards ADD COLUMN folder_id INTEGER"))
         if "position" not in bcols:
             conn.execute(text("ALTER TABLE boards ADD COLUMN position INTEGER DEFAULT 0"))
+        # boards: recycle bin (soft delete) — NULL deleted_at means a live board
+        if "deleted_at" not in bcols:
+            conn.execute(text("ALTER TABLE boards ADD COLUMN deleted_at DATETIME"))
+        if "deleted_by" not in bcols:
+            conn.execute(text("ALTER TABLE boards ADD COLUMN deleted_by INTEGER"))
         # environments: primary-workspace flag (may predate the column)
         ecols = {r[1] for r in conn.execute(text("PRAGMA table_info(environments)"))}
         if ecols and "is_primary" not in ecols:
@@ -181,6 +186,8 @@ else:
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0",
+        "ALTER TABLE boards ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE boards ADD COLUMN IF NOT EXISTS deleted_by INTEGER",
         "ALTER TABLE environments ADD COLUMN IF NOT EXISTS is_primary BOOLEAN DEFAULT FALSE",
         "ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
@@ -763,7 +770,7 @@ def _visible_board_ids(db, user_id):
     insights) never leak boards the user was not invited to.
     An unauthenticated caller (user_id=None) sees nothing — this used to return
     every board, so omitting the parameter exposed the whole workspace."""
-    all_ids = {b for (b,) in db.query(Board.id).filter(Board.is_archived == False).all()}
+    all_ids = {b for (b,) in db.query(Board.id).filter(Board.is_archived == False, Board.deleted_at == None).all()}
     if user_id is None:
         return set()
     if _ws_role(db, user_id) == "admin":   # system admins see every board
@@ -806,7 +813,7 @@ def _col_perm(col, user_id, board_role):
 @app.get("/api/boards")
 def list_boards(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        boards = db.query(Board).filter(Board.is_archived == False).order_by(
+        boards = db.query(Board).filter(Board.is_archived == False, Board.deleted_at == None).order_by(
             Board.position, Board.id).all()
         # system (workspace) admins see every board; everyone else only the boards
         # they were invited to (membership-based visibility)
@@ -923,6 +930,8 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
             raise HTTPException(404, "Board not found")
+        if b.deleted_at:                     # in the recycle bin — restore it first
+            raise HTTPException(404, "הלוח נמצא בסל המחזור")
         my_role = _board_role(db, board_id, user_id)
         if user_id is not None and my_role is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
@@ -1422,32 +1431,157 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                 "views": _board_views(b), "columns": (b.settings or {}).get("columns", []),
                 "statuses": _board_statuses(b), "priorities": _board_priorities(b)}
 
+# ── Recycle bin (סל מחזור) ──────────────────────────────────────────
+# A deleted board is not destroyed: it keeps its groups, items, comments and
+# memberships and only stops being listed. After RECYCLE_BIN_DAYS it is purged
+# for good. Restoring simply clears the deletion stamp.
+RECYCLE_BIN_DAYS = int(os.getenv("RECYCLE_BIN_DAYS", "60"))   # "חודשיים"
+
+
+def _hard_delete_board(db, board_id: int):
+    """Destroy a board and everything under it. Irreversible — only ever called
+    for a board already in the recycle bin (expired, or purged on request)."""
+    b = db.query(Board).filter(Board.id == board_id).first()
+    if not b:
+        return False
+    tasks = db.query(Task).filter(Task.board_id == board_id).all()
+    task_ids = [t.id for t in tasks]
+    if task_ids:
+        db.query(Comment).filter(Comment.task_id.in_(task_ids)).delete(synchronize_session=False)
+    for t in tasks:          # clear assignee links via the ORM relationship
+        t.assignees = []
+    db.flush()
+    db.query(Task).filter(Task.board_id == board_id).delete(synchronize_session=False)
+    db.query(Group).filter(Group.board_id == board_id).delete(synchronize_session=False)
+    db.query(BoardMember).filter(BoardMember.board_id == board_id).delete(synchronize_session=False)
+    db.delete(b)
+    return True
+
+
+def _purge_expired_boards(db):
+    """Hard-delete boards whose retention window has passed. Cheap enough to run
+    whenever the bin is read, so no scheduler is needed."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=RECYCLE_BIN_DAYS)
+    expired = [b.id for b in db.query(Board).filter(
+        Board.deleted_at != None, Board.deleted_at < cutoff).all()]   # noqa: E711
+    for bid in expired:
+        _hard_delete_board(db, bid)
+    if expired:
+        db.commit()
+    return expired
+
+
+# One sweep at boot, so expired boards are cleared even if nobody opens the bin.
+with Session(engine) as _bin_db:
+    try:
+        _expired = _purge_expired_boards(_bin_db)
+        if _expired:
+            print(f"🗑️  purged {len(_expired)} board(s) past the {RECYCLE_BIN_DAYS}-day window", flush=True)
+    except Exception as _e:
+        print(f"⚠️  recycle-bin purge skipped: {_e}", flush=True)
+
+
+def _can_delete_board(db, b, user_id):
+    """A board admin, a manager of the board's environment, or a system admin."""
+    if user_id is None:
+        return True                        # auth disabled → no per-user gate
+    return (_board_role(db, b.id, user_id) == "admin"
+            or _can_manage_env(db, b.environment_id, user_id))
+
+
+def _trash_board_json(db, b):
+    days_left = RECYCLE_BIN_DAYS - (datetime.now(timezone.utc).replace(tzinfo=None) - b.deleted_at).days
+    return {
+        "id": b.id, "name": b.name, "icon": b.icon, "color": b.color,
+        "description": b.description,
+        "environment_id": b.environment_id,
+        "environment_name": db.query(Environment.name).filter(
+            Environment.id == b.environment_id).scalar() or "",
+        "deleted_at": b.deleted_at.isoformat() if b.deleted_at else None,
+        "deleted_by": b.deleted_by,
+        "deleted_by_name": (db.query(User.name).filter(User.id == b.deleted_by).scalar() or "")
+                           if b.deleted_by else "",
+        "task_count": db.query(Task).filter(
+            Task.board_id == b.id, Task.parent_id == None).count(),   # noqa: E711
+        "days_left": max(0, days_left),
+        "retention_days": RECYCLE_BIN_DAYS,
+    }
+
+
 @app.delete("/api/boards/{board_id}")
 def delete_board(board_id: int, user_id: int = Depends(current_user_id)):
-    """Delete a board and everything under it (groups, items, comments,
-    memberships). Only a board admin may delete it."""
+    """Move a board to the recycle bin. Nothing under it is destroyed — groups,
+    items, comments and memberships are kept so a restore is lossless. Only a
+    board admin or an environment manager may delete it."""
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
             raise HTTPException(404, "board not found")
-        # a board admin, an environment manager (of the board's environment), or a
-        # system admin may delete a board
-        if user_id is not None and _board_role(db, board_id, user_id) != "admin" \
-                and not _can_manage_env(db, b.environment_id, user_id):
+        if not _can_delete_board(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו")
-        tasks = db.query(Task).filter(Task.board_id == board_id).all()
-        task_ids = [t.id for t in tasks]
-        if task_ids:
-            db.query(Comment).filter(Comment.task_id.in_(task_ids)).delete(synchronize_session=False)
-        for t in tasks:          # clear assignee links via the ORM relationship
-            t.assignees = []
-        db.flush()
-        db.query(Task).filter(Task.board_id == board_id).delete(synchronize_session=False)
-        db.query(Group).filter(Group.board_id == board_id).delete(synchronize_session=False)
-        db.query(BoardMember).filter(BoardMember.board_id == board_id).delete(synchronize_session=False)
-        db.delete(b)
+        if b.deleted_at:
+            return {"status": "deleted", "id": board_id, "days_left": RECYCLE_BIN_DAYS}
+        b.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        b.deleted_by = user_id
         db.commit()
-        return {"status": "deleted", "id": board_id}
+        return {"status": "deleted", "id": board_id,
+                "restorable_until_days": RECYCLE_BIN_DAYS}
+
+
+@app.get("/api/trash/boards")
+def list_trash_boards(user_id: int = Depends(current_user_id)):
+    """Boards currently in the recycle bin that this user may act on."""
+    with Session(engine) as db:
+        _purge_expired_boards(db)
+        rows = db.query(Board).filter(Board.deleted_at != None).order_by(   # noqa: E711
+            Board.deleted_at.desc()).all()
+        rows = [b for b in rows if _can_delete_board(db, b, user_id)]
+        return {"boards": [_trash_board_json(db, b) for b in rows],
+                "retention_days": RECYCLE_BIN_DAYS}
+
+
+@app.post("/api/trash/boards/{board_id}/restore")
+def restore_board(board_id: int, user_id: int = Depends(current_user_id)):
+    """Bring a board back out of the recycle bin, with all of its content."""
+    with Session(engine) as db:
+        _purge_expired_boards(db)
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "הלוח לא נמצא — ייתכן שנמחק לצמיתות")
+        if not b.deleted_at:
+            raise HTTPException(400, "הלוח אינו בסל המחזור")
+        if not _can_delete_board(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח או מנהל הסביבה יכול לשחזר אותו")
+        # the board's environment may itself have been removed meanwhile — fall
+        # back to the primary workspace so a restored board is never orphaned
+        if b.environment_id and not db.query(Environment).filter(
+                Environment.id == b.environment_id).first():
+            primary = db.query(Environment).filter(Environment.is_primary == True).first()  # noqa: E712
+            b.environment_id = primary.id if primary else None
+            b.folder_id = None
+        elif b.folder_id and not db.query(Folder).filter(Folder.id == b.folder_id).first():
+            b.folder_id = None
+        b.deleted_at = None
+        b.deleted_by = None
+        db.commit()
+        return {"status": "restored", "id": b.id, "name": b.name,
+                "environment_id": b.environment_id}
+
+
+@app.delete("/api/trash/boards/{board_id}")
+def purge_board(board_id: int, user_id: int = Depends(current_user_id)):
+    """Empty a single board out of the recycle bin — destroys it for good."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "board not found")
+        if not b.deleted_at:
+            raise HTTPException(400, "הלוח אינו בסל המחזור")
+        if not _can_delete_board(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו")
+        _hard_delete_board(db, board_id)
+        db.commit()
+        return {"status": "purged", "id": board_id}
 
 # ── Board membership & per-board permissions ────────────────────────
 BOARD_ROLES = ("admin", "editor", "viewer")
@@ -1893,6 +2027,7 @@ def list_environments(user_id: int = Depends(current_user_id)):
     environments they were granted access to."""
     with Session(engine) as db:
         counts = dict(db.query(Board.environment_id, func.count(Board.id))
+                        .filter(Board.deleted_at == None)   # noqa: E711 — skip the recycle bin
                         .group_by(Board.environment_id).all())
         # Environments always read in alphabetical (א-ב) order by name — including
         # newly created ones. Sorted in Python so SQLite (local) and Postgres (prod)
@@ -2039,7 +2174,7 @@ def environment_remove_member(env_id: int, uid: int, actor_id: int = Depends(cur
         # a user may be removed from an environment only if they don't belong to any
         # board within it — otherwise they'd lose access to boards they're part of
         env_boards = {b.id: b.name for b in db.query(Board).filter(
-            Board.environment_id == env_id, Board.is_archived == False).all()}
+            Board.environment_id == env_id, Board.is_archived == False, Board.deleted_at == None).all()}
         if env_boards:
             linked = (db.query(BoardMember)
                       .filter(BoardMember.user_id == uid,
@@ -3599,7 +3734,7 @@ def board_insights(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         visible = _visible_board_ids(db, user_id)
         boards = db.query(Board).filter(
-            Board.is_archived == False, Board.id.in_(visible)
+            Board.is_archived == False, Board.deleted_at == None, Board.id.in_(visible)
         ).all() if visible else []
         insights = []
         for b in boards:
@@ -3665,7 +3800,7 @@ def viz_timeline(days: int = 30):
 def graph_context():
     """Generate a knowledge graph of all tasks, boards, and their connections."""
     with Session(engine) as db:
-        boards = db.query(Board).filter(Board.is_archived == False).all()
+        boards = db.query(Board).filter(Board.is_archived == False, Board.deleted_at == None).all()
         tasks = db.query(Task).filter(Task.is_archived == False).all()
         users = db.query(User).all()
         
@@ -3916,7 +4051,7 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
     if name == "list_boards":
         with Session(engine) as db:
             visible = _visible_board_ids(db, actor)
-            boards = [b for b in db.query(Board).filter(Board.is_archived == False).all()
+            boards = [b for b in db.query(Board).filter(Board.is_archived == False, Board.deleted_at == None).all()
                       if b.id in visible]
             if not boards:
                 return "❌ לא נמצאו לוחות במערכת."
@@ -4692,7 +4827,7 @@ def ceo_dashboard(user_id: int = Depends(current_user_id)):
         # ── Board & Task Breakdown (membership-scoped, no leaks) ──
         visible = _visible_board_ids(db, user_id)
         boards = db.query(Board).filter(
-            Board.is_archived == False, Board.id.in_(visible)
+            Board.is_archived == False, Board.deleted_at == None, Board.id.in_(visible)
         ).all() if visible else []
         all_tasks = db.query(Task).filter(
             Task.is_archived == False, Task.board_id.in_(visible)
