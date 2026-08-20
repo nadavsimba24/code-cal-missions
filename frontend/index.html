@@ -368,24 +368,31 @@ tr:hover .row-grip{opacity:.55}
 .sub-badge:hover{color:var(--primary);border-color:var(--primary);background:color-mix(in srgb, var(--primary) 8%, var(--bg))}
 .sub-badge:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
 .sub-badge.open{color:var(--primary);border-color:var(--primary)}
-.tbl tr.subrow td{background:var(--bg)}
-.tbl tr.subrow:hover td{background:var(--row-hover)}
-/* sub-items sit visibly indented from the parent so the hierarchy reads as its
-   own tabular level; dropping the group color bar sets them apart from top rows */
-.tbl .c-sub{padding-inline-start:52px;font-weight:400;color:var(--text);position:relative}
-.tbl .c-item.c-sub{border-inline-start-color:transparent}
-/* Monday-style nesting: one continuous vertical rail runs down the whole
-   sub-item block (header → rows → "add"), and each sub-item row branches off it
-   with a short horizontal tick — so the hierarchy reads at a glance. */
-.tbl tr.subrow .c-sub::before{content:'';position:absolute;inset-inline-start:28px;top:0;bottom:0;width:2px;background:var(--border-strong);opacity:.6}
-.tbl tr.subrow[data-sid] .c-sub::after{content:'';position:absolute;inset-inline-start:28px;top:50%;width:15px;height:2px;background:var(--border-strong);opacity:.6}
-.sub-twig{display:none}
+/* ===== sub-items: a separate, narrower table nested under the parent (Monday) ===== */
+/* the wrapper cell carries no grid styling — it just hosts the indented panel */
+.tbl td.sub-wrap-cell{padding:0 !important;background:var(--bg);border-inline-start:none}
+.tbl tr.sub-wrap:hover td{background:var(--bg)}
+/* the panel: inset from the start edge, framed, with an accent bar (group colour) */
+.sub-panel{position:relative;margin-block:3px 12px;margin-inline-start:46px;margin-inline-end:10px;
+  width:max-content;border:1px solid var(--border-strong);border-radius:10px;
+  overflow:hidden;background:var(--surface);box-shadow:0 1px 3px rgba(29,42,68,.05)}
+.sub-panel::before{content:'';position:absolute;inset-inline-start:0;top:0;bottom:0;width:4px;background:var(--gcolor,var(--primary));z-index:2}
+/* the nested table reuses .tbl cell styling but is NOT sticky and sizes to its columns */
+.subtbl{width:max-content;min-width:0;table-layout:fixed;border-radius:0;box-shadow:none;background:transparent}
+.subtbl th{position:static;top:auto;z-index:auto;background:var(--bg);padding:7px 12px;text-align:center;border-bottom:1px solid var(--border-strong)}
+.subtbl thead th:first-child,.subtbl tbody td:first-child{padding-inline-start:18px;text-align:start}
+.subtbl td{height:38px;border-bottom:1px solid var(--border);border-inline-start:1px solid var(--border)}
+.subtbl tbody tr:last-child td{border-bottom:none}
+.subtbl .sub-name-cell{font-weight:500;padding:6px 12px 6px 18px;cursor:grab}
+.subtbl .sub-item-row.sortable-drag .sub-name-cell,.subtbl .sub-item-row:active .sub-name-cell{cursor:grabbing}
+.subtbl .sub-name-cell .ci-flex{display:flex;align-items:center;gap:6px;min-height:26px}
+.subtbl .sub-h-add,.subtbl .sub-endcell{border-inline-start:none;background:var(--bg)}
+.sub-add-cell{padding:9px 18px;color:var(--text-muted);font-size:13px;cursor:pointer;text-align:start}
+.sub-add-row:hover .sub-add-cell{color:var(--primary)}
 .sub-del{margin-inline-start:auto;color:var(--text-light);opacity:0;transition:.12s;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px}
-.subrow:hover .sub-del{opacity:1}
+.sub-item-row:hover .sub-del{opacity:1}
 .sub-del:hover{background:#fdebed;color:var(--red)}
 .status-clik{cursor:pointer;display:inline-block;width:100%}
-.subrow.subadd td{color:var(--text-muted);cursor:pointer;font-size:13px}
-.subrow.subadd:hover td{color:var(--primary)}
 /* sub-item header row — the sub-item column titles, mirroring the main header */
 .tbl tr.subhead td{background:var(--bg);color:var(--text-light);font-size:11.5px;font-weight:700;
   letter-spacing:.2px;padding-top:7px;padding-bottom:7px;border-bottom:1px solid var(--border-strong);white-space:nowrap}
@@ -3380,7 +3387,7 @@ function vTable(el){
       <table class="tbl" ${shut?'style="display:none"':''}>
         ${colgroupHTML()}
         <thead><tr class="col-head-row">${columnHeadersHTML(col)}<th class="th-spacer"></th></tr></thead>
-        <tbody data-gid="${g.id===null?'':g.id}">${rows}
+        <tbody data-gid="${g.id===null?'':g.id}" style="--gcolor:${col}">${rows}
           <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
       </table>
@@ -3412,37 +3419,12 @@ function vTable(el){
       }});
     // drag items between groups — grab an item by its name, drop into any group
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid], tr.subrow[data-sid]',filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
+      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
-        // Keep a drag inside its lane: a sub-item may only pass over its own
-        // parent's sub-items (never leaving the parent's frame), and a top-level
-        // item never slides into another item's sub-block.
-        onMove:evt=>{
-          const d=evt.dragged, r=evt.related;
-          if(d.classList.contains('subrow'))
-            return !!r && r.classList.contains('subrow') && r.hasAttribute('data-sid')
-                   && r.getAttribute('data-parent')===d.getAttribute('data-parent');
-          return !(r && r.classList.contains('subrow'));
-        },
+        // a top-level item never lands inside a sub-item panel row
+        onMove:evt=>!(evt.related&&evt.related.classList.contains('sub-wrap')),
         onEnd:async(evt)=>{
-          const it=evt.item;
-          if(it.classList.contains('subrow')){          // reordered a sub-item within its parent
-            const pid=+it.dataset.parent, tb2=evt.to;
-            const ids=[...tb2.querySelectorAll('tr.subrow[data-sid][data-parent="'+pid+'"]')].map(r=>+r.dataset.sid);
-            try{
-              await api('/api/tasks/'+pid+'/subitems/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
-              const parent=findAnyTask(pid);            // mirror the new order locally so a re-render keeps it
-              if(parent&&Array.isArray(parent.subtasks)){
-                const byId=new Map(parent.subtasks.map(s=>[s.id,s]));
-                parent.subtasks=ids.map(id=>byId.get(id)).filter(Boolean);
-              }
-              // a manual order overrides any active column-sort of the sub-items
-              if(st.subSort){ st.subSort=null; renderView(); }
-              toast('סדר תת-הפריטים עודכן');
-            }catch(e){ toast('שגיאה בעדכון סדר תת-הפריטים'); renderView(); }
-            return;
-          }
-          const tid=+it.dataset.tid; if(!tid)return;
+          const it=evt.item, tid=+it.dataset.tid; if(!tid)return;
           const toBody=evt.to, gid=toBody.dataset.gid?+toBody.dataset.gid:null;
           const pos=[...toBody.querySelectorAll('tr[data-tid]')].indexOf(it);
           const grp=(st.board.groups||[]).find(g=>g.id===gid);
@@ -3452,6 +3434,26 @@ function vTable(el){
             const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
             toast('הפריט הועבר'); renderView();
           }catch(e){ toast('שגיאה בהעברת הפריט'); renderView(); }
+        }});
+    });
+    // reorder sub-items — each parent's panel is its own table, so the drag is
+    // naturally bounded to that parent (no cross-parent moves possible)
+    el.querySelectorAll('.sub-body[data-parent]').forEach(sb=>{
+      new Sortable(sb,{draggable:'tr[data-sid]',filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
+        forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
+        onEnd:async(evt)=>{
+          const pid=+evt.to.dataset.parent; if(!pid)return;
+          const ids=[...evt.to.querySelectorAll('tr[data-sid]')].map(r=>+r.dataset.sid);
+          try{
+            await api('/api/tasks/'+pid+'/subitems/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
+            const parent=findAnyTask(pid);            // mirror the new order locally so a re-render keeps it
+            if(parent&&Array.isArray(parent.subtasks)){
+              const byId=new Map(parent.subtasks.map(s=>[s.id,s]));
+              parent.subtasks=ids.map(id=>byId.get(id)).filter(Boolean);
+            }
+            if(st.subSort){ st.subSort=null; renderView(); }   // manual order overrides a column sort
+            toast('סדר תת-הפריטים עודכן');
+          }catch(e){ toast('שגיאה בעדכון סדר תת-הפריטים'); renderView(); }
         }});
     });
   }
@@ -3501,39 +3503,57 @@ function itemRow(t,col){
       <td class="cell"></td>
       <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
     </tr>`;
-  const disp=open?'table-row':'none';
-  const subRows=subs.map(s=>`
-    <tr class="subrow" data-parent="${t.id}" data-sid="${s.id}" style="display:${disp}">
-      <td class="c-item c-sub"><div class="ci-flex"><span class="sub-twig"></span><span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
-        <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
-        <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button></div></td>
-      ${subRowCellsAfterItem(s)}
-      <td class="cell"></td>
-      <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
-    </tr>`).join('');
-  const addSub=`<tr class="subrow subadd" data-parent="${t.id}" style="display:${disp}"><td class="c-sub" colspan="${totalCols()+1}" onclick="addSubItem(${t.id})"><span class="sub-twig"></span>+ הוסף תת-פריט</td></tr>`;
-  return parent+subHeadRowHTML(t.id,disp)+subRows+addSub;
+  // The sub-items live in their OWN table — a narrower, indented panel nested
+  // under the parent (Monday-style). One wrapper row spans the full width and is
+  // shown/hidden by toggling its display.
+  const wrap=`<tr class="sub-wrap" data-parent="${t.id}" style="display:${open?'table-row':'none'}">
+      <td class="sub-wrap-cell" colspan="${totalCols()+1}">${subPanelHTML(t,subs,col)}</td></tr>`;
+  return parent+wrap;
 }
-/* Header row for a parent's sub-items — the sub-item columns get their own
-   titles, exactly like the main table's header, so it's clear what each cell
-   holds while adding or filling a sub-item. The headers behave like the main
-   ones: rename in place, remove from the sub-item structure, drag to reorder
-   and sort the sub-items by the column. */
-function subHeadRowHTML(parentId,disp){
+/* One parent's sub-items as an independent, indented panel: a narrower table
+   with its own columns, an accent bar down its start edge (the group colour) and
+   a light frame — set in from the parent row, exactly like Monday. */
+function subPanelHTML(t,subs,col){
   const cols=subColumns(), admin=isBoardAdmin();
+  const rows=subs.map(s=>subItemRowHTML(s,cols,admin,t.id)).join('');
+  const addRow=`<tr class="sub-add-row"><td class="sub-add-cell" colspan="${cols.length+(admin?1:0)}" onclick="addSubItem(${t.id})">+ הוסף תת-פריט</td></tr>`;
+  return `<div class="sub-panel" style="--gcolor:${col}">
+    <table class="tbl subtbl">${subColgroupHTML(cols,admin)}
+      <thead>${subHeadHTML(t.id,cols,admin)}</thead>
+      <tbody class="sub-body" data-parent="${t.id}">${rows}${addRow}</tbody>
+    </table></div>`;
+}
+function subColgroupHTML(cols,admin){
+  const m=colWidthMap();
+  const w=c=> c.id==='item' ? 260 : (m[String(c.id)]||140);
+  let cg=cols.map(c=>`<col style="width:${w(c)}px">`).join('');
+  if(admin)cg+=`<col style="width:44px">`;
+  return `<colgroup>${cg}</colgroup>`;
+}
+/* the sub-table's own header row — its columns behave like the main header
+   (rename in place, "..." menu, sort), but they are the sub-item column set */
+function subHeadHTML(parentId,cols,admin){
   const gear=admin?`<button class="th-menu" title="הגדרת עמודות תת-פריט" onclick="event.stopPropagation();subColsConfig()"><i class="fa-solid fa-gear"></i></button>`:'';
+  const name=`<th class="sub-h-name" data-subcol="item"><span class="th-in"><span class="th-lbl">תת-פריט</span>${gear}${subSortBtn('item')}</span></th>`;
   const rest=cols.filter(c=>c.id!=='item').map(c=>{
-    const grip=admin?`<i class="fa-solid fa-grip-vertical col-grip" title="גרור לשינוי מיקום העמודה"></i>`:'';
     const menu=admin?`<button class="th-menu" title="עמודת תת-פריט" onclick="subColMenu(event,'${c.id}',${parentId})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
     const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startSubColRename('${c.kind}','${c.id}',${parentId})"`:' class="th-lbl"';
-    return `<td class="subh-cell" data-subcol="${esc(String(c.id))}"><span class="th-in">${grip}<span${dbl}>${esc(subColLabel(c))}</span>${menu}${subSortBtn(c.id)}</span></td>`;
+    return `<th class="sub-h-cell" data-subcol="${esc(String(c.id))}"><span class="th-in"><span${dbl}>${esc(subColLabel(c))}</span>${menu}${subSortBtn(c.id)}</span></th>`;
   }).join('');
-  const pad=(orderedColumns().length-1)-(cols.length-1);
-  return `<tr class="subrow subhead" data-parent="${parentId}" style="display:${disp}">
-      <td class="c-sub subh-cell subh-name" data-subcol="item"><span class="sub-twig"></span><span class="th-in">תת-פריט${gear}${subSortBtn('item')}</span></td>
-      ${rest}${pad>0?`<td class="subh-cell" colspan="${pad}"></td>`:''}
-      <td class="subh-cell">${admin?`<div class="th-add-wrap"><button class="th-add-btn" title="הוסף עמודה — נשמרת בפריט האב" onclick="event.stopPropagation();addColMenu(event,true)"><i class="fa-solid fa-plus"></i></button></div>`:''}</td>
-      <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
+  const add=admin?`<th class="sub-h-add"><button class="th-add-btn" title="הוסף עמודה — קיימת רק בתת-הפריט" onclick="event.stopPropagation();addColMenu(event,true)"><i class="fa-solid fa-plus"></i></button></th>`:'';
+  return `<tr class="sub-h">${name}${rest}${add}</tr>`;
+}
+function subItemRowHTML(s,cols,admin,parentId){
+  const rest=cols.filter(c=>c.id!=='item')
+    .map(c=>c.kind==='builtin'?builtinCellHTML(c.key,s):customCellHTML(c.col,s)).join('');
+  return `<tr class="sub-item-row" data-sid="${s.id}" data-parent="${parentId}">
+      <td class="sub-name-cell"><div class="ci-flex">
+        <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
+        <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
+        <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button>
+      </div></td>
+      ${rest}
+      ${admin?'<td class="sub-endcell"></td>':''}
     </tr>`;
 }
 /* sub-item rows are sorted on their own, so sorting them never reorders the items */
@@ -3577,7 +3597,7 @@ function subColMenu(e,id,parentId){
 function startSubColRename(kind,id,parentId){
   if(!isBoardAdmin())return;
   let cell=null;
-  try{ cell=document.querySelector('.subrow.subhead[data-parent="'+CSS.escape(String(parentId))+'"] td[data-subcol="'+CSS.escape(String(id))+'"]'); }catch(_){ }
+  try{ cell=document.querySelector('.sub-wrap[data-parent="'+CSS.escape(String(parentId))+'"] th[data-subcol="'+CSS.escape(String(id))+'"]'); }catch(_){ }
   startColRename(kind,id,cell);
 }
 /* board admin — pick which of the board's columns exist on sub-item rows */
@@ -3679,10 +3699,6 @@ function orderedColumns(){
   all.sort((a,b)=>(a.id==='item'?-1:b.id==='item'?1:0));
   return all;
 }
-/* Sub-item column model. An item's structure is the same down the whole board,
-   and so is a sub-item's — but the two need not match: the board admin picks
-   which of the board's columns exist on sub-item rows (board.sub_cols, ids in
-   display order). Never configured → sub-items mirror the item columns. */
 /* Custom columns that live ONLY on sub-items (board.sub_only) — they never
    appear among the parent's item columns, so adding one from a sub-item does
    not touch the parent, and each can be deleted on its own. */
@@ -3691,19 +3707,22 @@ function subOnlyColumns(){
   if(!ids.size)return [];
   return customColumns().filter(c=>ids.has(String(c.id))).map(c=>({kind:'custom',id:String(c.id),col:c}));
 }
+/* Sub-item column model. By default a sub-item inherits the parent item's
+   columns (mirror). A board admin may narrow that to a chosen subset
+   (board.sub_cols); either way, any sub-item-only columns (board.sub_only) are
+   always appended, since they exist nowhere else. */
 function subColumns(){
   const all=orderedColumns();
   const subOnly=subOnlyColumns();
   const ids=st.board&&st.board.sub_cols;
-  // base = which of the ITEM columns show on sub-items (mirror, or a chosen subset)
   let base;
-  if(!Array.isArray(ids)) base=all;                       // never configured → mirror the item columns
+  if(!Array.isArray(ids)) base=all;                       // default → inherit the parent item's columns
   else {
     const by=new Map(all.map(c=>[String(c.id),c]));
     const name=by.get('item')||all[0];
     const picked=ids.map(String).filter(id=>id!=='item'&&by.has(id)).map(id=>by.get(id));
     // An empty subset (only the name survives — a stale ["item"], or ids since
-    // removed) is treated as "not configured" and mirrors the item columns.
+    // removed) falls back to inheriting all item columns, so columns never vanish.
     base = picked.length ? [name].concat(picked) : all;
   }
   // sub-item-only columns always appear on sub-items (they exist nowhere else)
@@ -5004,7 +5023,8 @@ function toggleSubs(e,id){
   const badge=row?row.querySelector('.sub-badge'):null;
   if(badge)badge.classList.toggle('open',open);
   const table=(row||src).closest('table'); if(!table)return;
-  table.querySelectorAll('.subrow[data-parent="'+id+'"]').forEach(r=>r.style.display=open?'table-row':'none');
+  const wrap=table.querySelector('.sub-wrap[data-parent="'+id+'"]');
+  if(wrap)wrap.style.display=open?'table-row':'none';
 }
 function findSub(id){
   for(const t of (st.board.tasks||[])) for(const s of (t.subtasks||[])) if(s.id===id) return {sub:s,parent:t};
