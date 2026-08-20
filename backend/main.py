@@ -963,6 +963,8 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             # which columns sub-items show (ids, name column first). None = never
             # configured → sub-items mirror the item columns.
             "sub_cols": (b.settings or {}).get("sub_cols"),
+            # custom columns that live ONLY on sub-items, never on the parent items
+            "sub_only": (b.settings or {}).get("sub_only", []),
             "col_widths": (b.settings or {}).get("col_widths", {}),
             "col_labels": (b.settings or {}).get("col_labels", {}),
             "col_hidden": (b.settings or {}).get("col_hidden", []),
@@ -1379,6 +1381,10 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                 })
             s = dict(b.settings or {})
             s["columns"] = cols
+            # a deleted column can't linger in the sub-item-only set
+            if s.get("sub_only"):
+                live = {str(c.get("id")) for c in cols if c.get("id")}
+                s["sub_only"] = [i for i in s["sub_only"] if str(i) in live]
             b.settings = s
             # adding the column issues an identifier to every item already on the
             # board (and to its sub-items)
@@ -1397,6 +1403,16 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             pool |= {str(c.get("id")) for c in s.get("columns", []) if c.get("id")}
             picked = [str(k) for k in (data["sub_cols"] or []) if str(k) in pool]
             s["sub_cols"] = ["item"] + list(dict.fromkeys(picked))
+            b.settings = s
+        if data.get("sub_only") is not None:
+            # Sub-item-only columns: custom columns that exist on sub-item rows
+            # but never on the parent items. Stored as a list of custom column
+            # ids; only ids that are real columns on this board are kept.
+            if _board_role(db, board_id, actor_id) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול להגדיר עמודות תת-פריט")
+            s = dict(b.settings or {})
+            live = {str(c.get("id")) for c in s.get("columns", []) if c.get("id")}
+            s["sub_only"] = [str(k) for k in (data["sub_only"] or []) if str(k) in live]
             b.settings = s
         db.commit()
         db.refresh(b)

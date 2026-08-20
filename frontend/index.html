@@ -372,9 +372,14 @@ tr:hover .row-grip{opacity:.55}
 .tbl tr.subrow:hover td{background:var(--row-hover)}
 /* sub-items sit visibly indented from the parent so the hierarchy reads as its
    own tabular level; dropping the group color bar sets them apart from top rows */
-.tbl .c-sub{padding-inline-start:56px;font-weight:400;color:var(--text)}
+.tbl .c-sub{padding-inline-start:52px;font-weight:400;color:var(--text);position:relative}
 .tbl .c-item.c-sub{border-inline-start-color:transparent}
-.sub-twig{width:14px;height:14px;border-inline-start:2px solid var(--border-strong);border-bottom:2px solid var(--border-strong);border-end-start-radius:5px;display:inline-block;margin-inline-end:8px;flex-shrink:0;margin-bottom:4px}
+/* Monday-style nesting: one continuous vertical rail runs down the whole
+   sub-item block (header → rows → "add"), and each sub-item row branches off it
+   with a short horizontal tick — so the hierarchy reads at a glance. */
+.tbl tr.subrow .c-sub::before{content:'';position:absolute;inset-inline-start:28px;top:0;bottom:0;width:2px;background:var(--border-strong);opacity:.6}
+.tbl tr.subrow[data-sid] .c-sub::after{content:'';position:absolute;inset-inline-start:28px;top:50%;width:15px;height:2px;background:var(--border-strong);opacity:.6}
+.sub-twig{display:none}
 .sub-del{margin-inline-start:auto;color:var(--text-light);opacity:0;transition:.12s;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px}
 .subrow:hover .sub-del{opacity:1}
 .sub-del:hover{background:#fdebed;color:var(--red)}
@@ -3557,9 +3562,14 @@ function subSortBtn(key){
 function subColMenu(e,id,parentId){
   e.stopPropagation(); if(!isBoardAdmin())return;
   const c=subColumns().find(x=>String(x.id)===String(id)); if(!c)return;
+  // delete works like the item column menu: a custom column is removed from the
+  // board (including any sub-item-only one), a built-in one is hidden
+  const del=c.kind==='builtin'
+    ? `<button class="cell-pop-opt2" style="color:var(--red)" onclick="hideBuiltinCol(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`
+    : `<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startSubColRename('${c.kind}','${c.id}',${parentId})"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +`<button class="cell-pop-opt2" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i> בחר עמודות תת-פריט</button>`
-    +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="removeSubCol(event,'${c.id}')"><i class="fa-solid fa-eye-slash"></i> הסר מתת-פריט</button>`;
+    +del;
   openCellPop(e.currentTarget,html);
 }
 /* renaming a sub-item header renames the board column itself (it is the same
@@ -3569,13 +3579,6 @@ function startSubColRename(kind,id,parentId){
   let cell=null;
   try{ cell=document.querySelector('.subrow.subhead[data-parent="'+CSS.escape(String(parentId))+'"] td[data-subcol="'+CSS.escape(String(id))+'"]'); }catch(_){ }
   startColRename(kind,id,cell);
-}
-/* remove a column from the sub-item structure only — the item columns are untouched */
-async function removeSubCol(e,id){
-  e.stopPropagation(); closeCellPops();
-  if(!isBoardAdmin())return;
-  const ids=subColumns().map(c=>String(c.id)).filter(x=>x!=='item'&&x!==String(id));
-  await saveSubCols(ids,'העמודה הוסרה מתת-הפריט');
 }
 /* board admin — pick which of the board's columns exist on sub-item rows */
 function subColsConfig(){
@@ -3608,6 +3611,15 @@ async function saveSubCols(ids,msg){
     st.board.sub_cols=['item',...ids];
     closeModals(); toast(msg||'עמודות תת-הפריט עודכנו'); renderView();
   }catch(err){ toast(err&&err.detail?err.detail:'שגיאה בשמירת העמודות'); renderView(); }
+}
+/* persist the set of custom columns that live only on sub-items (board.sub_only) */
+async function saveSubOnly(ids,msg){
+  ids=[...new Set((ids||[]).map(String))];
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({sub_only:ids})});
+    st.board.sub_only=ids;
+    toast(msg||'עודכן'); renderView();
+  }catch(err){ toast(err&&err.detail?err.detail:'שגיאה בשמירת עמודת תת-פריט'); renderView(); }
 }
 
 /* ============ custom columns (עמודות מותאמות, בהשראת Monday) ============ */
@@ -3654,7 +3666,9 @@ function orderedColumns(){
   const builtins=BUILTIN_COLS
     .filter(c=>c.key==='item'||!hidden.has(c.key))
     .map(c=>({kind:'builtin',id:c.key,key:c.key,label:builtinLabel(c.key,c.label)}));
-  const customs=customColumns().map(c=>({kind:'custom',id:String(c.id),col:c}));
+  // sub-item-only columns never appear among the parent's item columns
+  const soIds=new Set(((st.board&&st.board.sub_only)||[]).map(String));
+  const customs=customColumns().filter(c=>!soIds.has(String(c.id))).map(c=>({kind:'custom',id:String(c.id),col:c}));
   let all=builtins.concat(customs);
   const order=((st.board&&st.board.col_order)||[]).map(String);
   if(order.length){
@@ -3669,20 +3683,32 @@ function orderedColumns(){
    and so is a sub-item's — but the two need not match: the board admin picks
    which of the board's columns exist on sub-item rows (board.sub_cols, ids in
    display order). Never configured → sub-items mirror the item columns. */
+/* Custom columns that live ONLY on sub-items (board.sub_only) — they never
+   appear among the parent's item columns, so adding one from a sub-item does
+   not touch the parent, and each can be deleted on its own. */
+function subOnlyColumns(){
+  const ids=new Set(((st.board&&st.board.sub_only)||[]).map(String));
+  if(!ids.size)return [];
+  return customColumns().filter(c=>ids.has(String(c.id))).map(c=>({kind:'custom',id:String(c.id),col:c}));
+}
 function subColumns(){
   const all=orderedColumns();
+  const subOnly=subOnlyColumns();
   const ids=st.board&&st.board.sub_cols;
-  if(!Array.isArray(ids))return all;
-  const by=new Map(all.map(c=>[String(c.id),c]));
-  const name=by.get('item')||all[0];
-  const picked=ids.map(String).filter(id=>id!=='item'&&by.has(id)).map(id=>by.get(id));
-  // An empty subset — only the name survives, e.g. a board whose stored sub_cols
-  // ended up as ["item"], or a subset that points only at columns since removed —
-  // is treated as "not configured": the sub-items mirror the item columns. That
-  // way every board shows its columns on sub-items; a real, non-empty subset is
-  // still honoured exactly as chosen.
-  if(!picked.length)return all;
-  return [name].concat(picked);
+  // base = which of the ITEM columns show on sub-items (mirror, or a chosen subset)
+  let base;
+  if(!Array.isArray(ids)) base=all;                       // never configured → mirror the item columns
+  else {
+    const by=new Map(all.map(c=>[String(c.id),c]));
+    const name=by.get('item')||all[0];
+    const picked=ids.map(String).filter(id=>id!=='item'&&by.has(id)).map(id=>by.get(id));
+    // An empty subset (only the name survives — a stale ["item"], or ids since
+    // removed) is treated as "not configured" and mirrors the item columns.
+    base = picked.length ? [name].concat(picked) : all;
+  }
+  // sub-item-only columns always appear on sub-items (they exist nowhere else)
+  const have=new Set(base.map(c=>String(c.id)));
+  return base.concat(subOnly.filter(c=>!have.has(String(c.id))));
 }
 function subColLabel(c){return c.kind==='builtin'?c.label:(c.col&&c.col.title)||'';}
 /* Board vocabulary of tags = every tag already used across the board's items.
@@ -4842,16 +4868,13 @@ async function addColumn(type,forSub){
   const before=new Set(customColumns().map(c=>c.id));
   const cols=customColumns().slice();cols.push(col);
   await saveColumns(cols);
-  // Added from a sub-item header "+": the column is a real parent/board column
-  // (its logic lives on the item) and we also surface it on the sub-item rows.
-  // With no sub_cols subset the sub-items mirror the item columns, so the new one
-  // already shows — only an explicit subset needs the new id appended.
+  // Added from a sub-item header "+": the column is sub-item-only — it shows on
+  // sub-item rows but is kept off the parent's item columns (marked in sub_only).
   if(forSub){
     const added=(st.board.columns||[]).filter(c=>!before.has(c.id)).map(c=>String(c.id));
-    const ids=st.board&&st.board.sub_cols;
-    if(added.length&&Array.isArray(ids)){
-      const cur=ids.map(String).filter(id=>id!=='item');
-      await saveSubCols([...cur,...added],'עמודה נוספה לפריט ולתת-הפריט'); return;
+    if(added.length){
+      const cur=((st.board&&st.board.sub_only)||[]).map(String);
+      await saveSubOnly([...cur,...added],'עמודה נוספה לתת-הפריט בלבד'); return;
     }
   }
   toast(type==='item_id'?'עמודת מזהה פריט נוספה — מזהה הונפק לכל פריט':'עמודה נוספה');
