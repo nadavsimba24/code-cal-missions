@@ -979,6 +979,11 @@ img.pf-av{object-fit:cover;background:#fff}
 .chat-btn:hover{background:var(--row-hover);color:var(--primary)}
 
 /* ===== conversation slideover ===== */
+/* The item whose conversation is open. The panel covers part of the board, so
+   the row it belongs to is banded and tinted — you can still see which item you
+   are talking about without closing the panel. */
+tr.chat-open>td{background:var(--primary-soft)!important;box-shadow:inset 0 2px 0 var(--primary),inset 0 -2px 0 var(--primary)}
+.kcard.chat-open{box-shadow:0 0 0 2px var(--primary)}
 .chat-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:190;display:none}
 .chat-overlay.open{display:block}
 #chat-panel{position:fixed;top:50%;left:18px;right:auto;height:calc(100vh - 36px);width:460px;max-width:calc(96vw - 36px);background:var(--bg);border-radius:16px;overflow:hidden;box-shadow:0 14px 44px rgba(0,0,0,.26);transform:translateY(-50%) translateX(-120%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
@@ -2256,6 +2261,7 @@ function renderView(){
   el.innerHTML='';
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
   renderSelBar();
+  try{ Chat.markOpenRow(); }catch(e){}   // rows were rebuilt — re-mark the open item
   _viewScrollKey=key;
   if(!same){ el.scrollTop=0; el.scrollLeft=0; }   // a new place starts at the top, explicitly
   if(top||left){
@@ -6148,6 +6154,7 @@ const Chat = {
     const pb=document.getElementById('chat-perm'); if(pb)pb.style.display=(st.board&&st.board.my_role==='admin')?'inline-flex':'none';
     this.bindDnd();
     this.setTabUI(); this.render();
+    this.markOpenRow();
     Router.set(st.board&&st.board.id, id);   // reflect the open item in the URL
   },
   // drag & drop files/screenshots anywhere onto the chat panel (bound once).
@@ -6165,7 +6172,37 @@ const Chat = {
       files.forEach(f=>this._upload(f));
     });
   },
-  close(){ document.getElementById('chat-panel').classList.remove('open'); document.getElementById('chat-overlay').classList.remove('open'); this.taskId=null; Router.set(st.board&&st.board.id, null); },
+  close(){
+    this.saveDraft();          // keep whatever was typed — before taskId is cleared
+    document.getElementById('chat-panel').classList.remove('open');
+    document.getElementById('chat-overlay').classList.remove('open');
+    this.taskId=null; this.markOpenRow();
+    Router.set(st.board&&st.board.id, null);
+  },
+  /* Highlight the open item on the board behind. Re-applied after every render
+     (renderView rebuilds the rows, which drops the class). */
+  markOpenRow(){
+    document.querySelectorAll('.chat-open').forEach(n=>n.classList.remove('chat-open'));
+    const id=this.taskId; if(id==null)return;
+    const n=document.querySelector(`tr[data-tid="${id}"], tr[data-sid="${id}"], .kcard[data-id="${id}"]`);
+    if(n)n.classList.add('chat-open');
+  },
+  /* An unsent message survives closing the panel. Kept per item and in
+     localStorage, so it also survives a reload — closing a panel by accident
+     must never cost what you typed. Editing an existing comment reuses the same
+     textarea, so drafts stay out of the way while this.editing is set. */
+  _draftKey(id){ return 'cc_draft_'+(id==null?this.taskId:id); },
+  saveDraft(){
+    if(this.editing!=null||this.taskId==null)return;
+    const ta=document.getElementById('comp-text'); if(!ta)return;
+    try{ const v=ta.value||''; if(v.trim())localStorage.setItem(this._draftKey(),v); else localStorage.removeItem(this._draftKey()); }catch(e){}
+  },
+  restoreDraft(){
+    if(this.editing!=null||this.taskId==null)return;
+    const ta=document.getElementById('comp-text'); if(!ta||ta.value)return;
+    try{ const v=localStorage.getItem(this._draftKey()); if(v){ ta.value=v; this.syncHL(); } }catch(e){}
+  },
+  clearDraft(){ try{ localStorage.removeItem(this._draftKey()); }catch(e){} },
   setTabUI(){ document.querySelectorAll('.chat-tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===this.tabName)); },
   tab(name){ this.tabName=name; this.setTabUI(); this.render(); },
   /* comment/activity rows embed the author's picture from fetch time — redraw
@@ -6195,6 +6232,7 @@ const Chat = {
     body.innerHTML=`<div class="chat-list">${list}</div>${bottom}`;
     this.renderAtts();
     if(this.editing!=null){ const ec=this._commentsById[this.editing]; const ta=document.getElementById('comp-text'); if(ta){ if(ec&&ta.value==='')ta.value=ec.content||''; this.syncHL(); } }
+    else this.restoreDraft();
     this.markSeen();   // record that I viewed the thread (updates others' receipts)
   },
   async markSeen(){ if(!this.taskId)return; try{ await api('/api/tasks/'+this.taskId+'/comments/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){} },
@@ -6229,7 +6267,7 @@ const Chat = {
         <div class="comp-check" id="comp-check"></div>
         <div class="comp-hl-wrap">
           <div class="comp-hl" id="comp-hl" aria-hidden="true"></div>
-          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…  (Ctrl+S לשמירה)':'כתוב הודעה…  (Ctrl+S לשליחה · Enter לשורה חדשה · ניתן להדביק או לגרור צילום מסך)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
+          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…  (Ctrl+S לשמירה)':'כתוב הודעה…  (Ctrl+S לשליחה · Enter לשורה חדשה · ניתן להדביק או לגרור צילום מסך)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL();Chat.saveDraft()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
         </div>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
@@ -6573,6 +6611,7 @@ const Chat = {
     const btn=document.querySelector('.composer .comp-foot .btn-primary'); if(btn)btn.disabled=true;
     try{
       await api('/api/tasks/'+this.taskId+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({content,parent_id:this.replyTo,mentions:this.mentions,attachments:this.atts})});
+      this.clearDraft();
       this.atts=[]; this.mentions=[]; this.replyTo=null; await this.bump(); this.renderChat(document.getElementById('chat-body'));
     }catch(e){ toast(String(e.message||'').includes('403')?'אין הרשאת תגובה':'שגיאה בשליחה'); if(btn)btn.disabled=false; }
     finally{ this._posting=false; }
