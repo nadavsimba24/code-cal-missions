@@ -151,6 +151,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .icon-btn:disabled{opacity:.35;cursor:not-allowed}
 .icon-btn:disabled:hover{background:transparent;color:var(--text-muted)}
 .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:7px;font-weight:600;font-size:13px;transition:.12s}
+/* a disabled button must look disabled — without this it is indistinguishable
+   from an active one, and only the missing click tells you it was refused */
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none;filter:grayscale(.35)}
 .btn-primary{background:var(--primary);color:#fff}
 .btn-primary:hover{background:var(--primary-hover)}
 .btn-ghost{color:var(--text-muted)}
@@ -219,9 +222,19 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .au-sent b{font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:4px;padding:1px 6px;white-space:nowrap}
 .au-meta{font-size:11px;color:var(--text-light);margin-top:5px}
 .au-in{font-size:12.5px;padding:3px 7px;border:1px solid var(--primary);border-radius:6px;background:var(--card);color:var(--text);font-family:inherit;max-width:190px;vertical-align:middle}
+/* A recipe reads as a sentence with blanks. An unfilled blank names what belongs
+   there; a filled one becomes a chip in the value's own colour. */
+.au-blank{display:inline-block;font:inherit;font-weight:700;font-size:13px;line-height:1.5;padding:2px 10px;margin:0 3px;border-radius:14px;cursor:pointer;vertical-align:middle;transition:.12s;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--primary);background:var(--primary-soft);border:1px dashed var(--primary)}
+.au-blank:hover{filter:brightness(.96)}
+.au-blank.filled{border-style:solid;background:var(--primary);color:#fff;border-color:var(--primary)}
+.au-blank:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.au-dot{width:11px;height:11px;border-radius:50%;flex-shrink:0;display:inline-block}
+.au-hint{font-size:11.5px;color:var(--text-light);margin-top:9px}
+.av.av-xs{width:20px;height:20px;font-size:9px;border-width:1px;margin:0}
 .au-recipe{display:block;width:100%;text-align:start;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin-bottom:8px;cursor:pointer;font-size:13.5px;line-height:1.6;color:var(--text);font-family:inherit;transition:.12s}
 .au-recipe:hover{border-color:var(--primary);background:color-mix(in srgb, var(--primary) 6%, var(--bg))}
-.au-recipe .ph{font-weight:700;color:var(--primary)}
+.au-recipe .ph{font-weight:700;color:var(--primary);background:var(--primary-soft);border:1px dashed var(--primary);border-radius:12px;padding:1px 8px;margin:0 2px;white-space:nowrap}
 .au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
 .au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
 .trash-badge{min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:var(--border);color:var(--text-muted);font-size:10.5px;font-weight:700;display:inline-grid;place-items:center;margin-inline-start:auto;box-sizing:border-box;line-height:1}
@@ -2768,59 +2781,101 @@ const Automations = {
     },{title:'מחיקת אוטומציה',confirmText:'מחק',note:a?a.sentence.replace(/[«»]/g,'"'):''});
   },
 
-  /* ---- creating one from a recipe ---- */
-  startNew(){ this.building={recipe:null}; this.render(); },
+  /* ---- creating one from a recipe: fill in the blanks ----
+     The recipe reads as one sentence whose values are blanks. An unfilled blank
+     shows the placeholder's name; clicking it opens the choices in place, and it
+     becomes a chip in the value's own colour. "צור" stays disabled until the
+     sentence is complete, so a half-built rule can never be saved. */
+  startNew(){ this.building={recipe:null,values:{}}; this.render(); },
   cancelNew(){ this.building=null; this.render(); },
-  pick(rid){ this.building={recipe:this.recipes.find(r=>r.id===rid)||null}; this.render(); },
+  pick(rid){ this.building={recipe:this.recipes.find(r=>r.id===rid)||null,values:{}}; this.render(); },
 
   buildHTML(){
     const r=this.building.recipe;
-    if(!r){
-      // the catalog, grouped by trigger so related recipes read together
-      const byTrig={};
-      this.recipes.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
-      const TRIG_HE={item_created:'כאשר נוצר פריט',status_changes_to:'כאשר הסטטוס משתנה',
-                     priority_changes_to:'כאשר העדיפות משתנה',person_assigned:'כאשר משויך אדם',
-                     due_date_arrives:'כאשר מגיע תאריך היעד'};
-      const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc(TRIG_HE[t]||t)}</div>`+
-        byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
-          esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
-            const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
-        }</button>`).join('')).join('');
-      return `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:6px">בחר מתכון:</div>${blocks}
-        <div style="margin-top:14px"><button class="btn btn-ghost" onclick="Automations.cancelNew()">ביטול</button></div>`;
-    }
-    // the chosen recipe, with its placeholders turned into inline pickers
+    if(!r) return this.catalogHTML();
     let sent=esc(r.sentence);
-    r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.fieldHTML(f)); });
+    r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.blankHTML(f)); });
+    const ready=r.fields.every(f=>this.building.values[f.key]!==undefined);
     return `<div class="au-group-h">אוטומציה חדשה</div>
       <div class="au-build">${sent}</div>
+      ${ready?'':'<div class="au-hint"><i class="fa-solid fa-circle-info"></i> לחץ על כל שדה מודגש כדי להשלים אותו</div>'}
       <div style="margin-top:14px;display:flex;gap:8px">
-        <button class="btn btn-primary" onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור אוטומציה</button>
+        <button class="btn btn-primary" ${ready?'':'disabled title="יש להשלים את כל השדות"'} onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור אוטומציה</button>
         <button class="btn btn-ghost" onclick="Automations.startNew()">חזרה למתכונים</button>
       </div>`;
   },
 
-  fieldHTML(f){
-    const id='auf-'+f.key;
-    if(f.type==='text') return `<input id="${id}" class="au-in" placeholder="${esc(f.label)}">`;
-    let opts='';
-    if(f.type==='status')        opts=boardStatusList().map(x=>`<option value="${esc(x.key)}">${esc(x.he)}</option>`).join('');
-    else if(f.type==='priority') opts=boardPriorityList().map(x=>`<option value="${esc(x.key)}">${esc(x.he)}</option>`).join('');
-    else if(f.type==='group')    opts=(st.board.groups||[]).map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('');
-    else if(f.type==='person')   opts=this.members.map(m=>`<option value="${m.user_id}">${esc(m.name)}</option>`).join('');
-    if(!opts) opts='<option value="">— אין אפשרויות —</option>';
-    return `<select id="${id}" class="au-in">${opts}</select>`;
+  catalogHTML(){
+    const byTrig={};
+    this.recipes.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
+    const TRIG_HE={item_created:'כאשר נוצר פריט',status_changes_to:'כאשר הסטטוס משתנה',
+                   priority_changes_to:'כאשר העדיפות משתנה',person_assigned:'כאשר משויך אדם',
+                   due_date_arrives:'כאשר מגיע תאריך היעד'};
+    const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc(TRIG_HE[t]||t)}</div>`+
+      byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
+        esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
+          const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
+      }</button>`).join('')).join('');
+    return `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:6px">בחר מתכון:</div>${blocks}
+      <div style="margin-top:14px"><button class="btn btn-ghost" onclick="Automations.cancelNew()">ביטול</button></div>`;
+  },
+
+  blankHTML(f){
+    const cur=this.building.values[f.key];
+    // a filled blank wears the value's own colour, exactly as the board shows it
+    const style=(cur&&cur.color)?` style="background:${cur.color};border-color:${cur.color};color:#fff"`:'';
+    return `<button class="au-blank${cur?' filled':''}"${style} onclick="Automations.pickField(event,'${f.key}')" title="${esc(f.label)}">${esc(cur?cur.label:f.label)}</button>`;
+  },
+
+  pickField(e,key){
+    e.preventDefault(); e.stopPropagation();
+    const r=this.building.recipe, f=r&&r.fields.find(x=>x.key===key); if(!f)return;
+    if(f.type==='text'){
+      const cur=this.building.values[key];
+      openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
+        <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setText('${key}');}">
+        <button class="rm-item" onclick="Automations.setText('${key}')"><i class="fa-solid fa-check"></i> אישור</button>
+      </div>`,'row-menu-pop');
+      setTimeout(()=>{const i=document.getElementById('au-txt'); if(i){i.focus();i.select();}},30);
+      return;
+    }
+    let items=[];
+    if(f.type==='status')        items=boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    else if(f.type==='priority') items=boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    else if(f.type==='group')    items=(st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
+    else if(f.type==='person')   items=this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
+    // referenced by index so a name with quotes can never break out of the handler
+    this._popItems=items;
+    const body=items.length
+      ? items.map((it,i)=>`<button class="rm-item" onclick="Automations.setField('${key}',${i})">${
+          it.person?`<span class="av av-xs">${avatarInner(it.person)}</span>`
+                   :`<span class="au-dot" style="background:${it.color||'var(--border)'}"></span>`
+        } ${esc(it.label)}</button>`).join('')
+      : '<div class="rm-note">אין אפשרויות זמינות</div>';
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+
+  setField(key,idx){
+    const it=(this._popItems||[])[idx]; if(!it)return;
+    this.building.values[key]={v:it.v,label:it.label,color:it.color||''};
+    closeCellPops(); this.render();
+  },
+
+  setText(key){
+    const el=document.getElementById('au-txt'); const v=(el?el.value:'').trim();
+    if(!v){ toast('יש להזין טקסט'); return; }
+    this.building.values[key]={v:v,label:v,color:''};
+    closeCellPops(); this.render();
   },
 
   async save(){
     const r=this.building&&this.building.recipe; if(!r)return;
     const config={};
     for(const f of r.fields){
-      const el=document.getElementById('auf-'+f.key);
-      const v=el?String(el.value||'').trim():'';
-      if(!v){ toast('יש למלא את כל השדות'); return; }
-      config[f.key]=(f.type==='person'||f.type==='group')?+v:v;
+      const cur=this.building.values[f.key];
+      if(cur===undefined){ toast('יש להשלים את כל השדות'); return; }
+      config[f.key]=(f.type==='person'||f.type==='group')?+cur.v:cur.v;
     }
     try{
       await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
