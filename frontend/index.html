@@ -2801,7 +2801,7 @@ const Automations = {
       ${ready?'':'<div class="au-hint"><i class="fa-solid fa-circle-info"></i> לחץ על כל שדה מודגש כדי להשלים אותו</div>'}
       <div style="margin-top:14px;display:flex;gap:8px">
         <button class="btn btn-primary" ${ready?'':'disabled title="יש להשלים את כל השדות"'} onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור אוטומציה</button>
-        <button class="btn btn-ghost" onclick="Automations.startNew()">חזרה למתכונים</button>
+        <button class="btn btn-ghost" onclick="Automations.cancelNew()">חזרה לאוטומציות</button>
       </div>`;
   },
 
