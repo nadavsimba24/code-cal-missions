@@ -1719,6 +1719,7 @@ async function boot(){
     renderMe();
     await enterApp();
     Trash.load().catch(()=>{});   // recycle-bin counter, non-blocking
+    try{ Live.start(); }catch(e){}   // live updates — events, with polling as the fallback
   }catch(e){
     document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-plug-circle-xmark"></i><div>השרת לא זמין</div><div style="font-size:12px">'+esc(e.message)+'</div></div>';
   }
@@ -2643,6 +2644,7 @@ const Notif={
   items:[], unread:0, _timer:null,
   async load(){
     if(!meId())return;
+    this._lastLoad=Date.now();
     try{ const d=await api('/api/notifications?user_id='+meId()); this.items=d.notifications||[]; this.unread=d.unread_count||0; }
     catch(e){ this.items=[]; this.unread=0; }
     this.badge();
@@ -2677,7 +2679,17 @@ const Notif={
     } else this.render();
   },
   async readAll(e){ e&&e.stopPropagation(); try{ await api('/api/notifications/read-all',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){} this.items.forEach(n=>n.is_read=true); this.unread=0; this.badge(); this.render(); },
-  start(){ clearInterval(this._timer); this.load(); this._timer=setInterval(()=>this.load(),45000); },
+  start(){
+    clearInterval(this._timer); this.load();
+    /* Polling is no longer the mechanism — it is the safety net. While the event
+       stream is up this ticks without fetching, and only re-checks occasionally
+       in case an event was missed; with the stream down it falls back to the
+       old 45s behaviour so the app still works. */
+    this._timer=setInterval(()=>{
+      const live=!!(window.Live&&Live.connected);
+      if(!live || Date.now()-(this._lastLoad||0)>300000) this.load();
+    },45000);
+  },
   stop(){ clearInterval(this._timer); this.items=[]; this.unread=0; this.badge(); },
 };
 /* ===== the signed-in user ===== */
@@ -2733,6 +2745,121 @@ const Workspace = {
     try{ await api('/api/workspace/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('הוזמן לסביבה'); this.refresh(); }catch(e){toast('רק מנהל סביבה יכול להזמין');} },
   async setRole(uid,role){ try{ await api('/api/workspace/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('התפקיד עודכן'); this.refresh(); }catch(e){toast('שגיאה');this.refresh();} },
   remove(uid){ askConfirm('להסיר את המשתמש מהסביבה?',async()=>{ try{ await api('/api/workspace/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר'); this.refresh(); }catch(e){toast('לא ניתן להסיר');} },{title:'הסרה מהסביבה',confirmText:'הסר'}); },
+};
+
+/* ===== live updates (עדכון אוטומטי) — events in, refetch out =====
+   An event is a doorbell, never a delivery: the server says "item 42 on board 7
+   changed", and we refetch it through the ordinary endpoint. Permissions are
+   therefore enforced in exactly one place (the REST handler), and the stream can
+   never hand us a field this user may not see.
+   Polling is not gone — it is demoted to the fallback for when the stream is
+   down (see Notifications.start). */
+const Live = {
+  es:null, connected:false, backoff:1000, _pending:new Map(), _flush:null, _notifT:null, _retryT:null,
+
+  start(){
+    if(this.es || !window.EventSource || !meId())return;
+    this.connect();
+    // a backgrounded tab misses events (and the socket often dies silently) —
+    // reconcile whenever the user comes back rather than trusting the stream
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden)return;
+      if(!this.connected) this.connect();
+      this.refreshBoard();
+    });
+  },
+
+  connect(){
+    if(this.es){ try{this.es.close();}catch(e){} this.es=null; }
+    clearTimeout(this._retryT);
+    // EventSource cannot set headers — identity rides on the cookie, which both
+    // dev mode and the Entra session already use.
+    let es; try{ es=new EventSource('/api/events'); }catch(e){ return; }
+    this.es=es;
+    es.onopen=()=>{ this.connected=true; this.backoff=1000; };
+    es.onmessage=e=>{ try{ this.onEvent(JSON.parse(e.data)); }catch(err){} };
+    es.onerror=()=>{
+      this.connected=false;
+      try{ es.close(); }catch(e){}
+      if(this.es===es) this.es=null;
+      // jittered backoff: without the jitter every client reconnects in lockstep
+      // after a deploy and stampedes the new instance
+      const wait=this.backoff+Math.random()*1000;
+      this.backoff=Math.min(this.backoff*2,30000);
+      this._retryT=setTimeout(()=>this.connect(),wait);
+    };
+  },
+
+  stop(){ clearTimeout(this._retryT); if(this.es){try{this.es.close();}catch(e){}} this.es=null; this.connected=false; },
+
+  onEvent(ev){
+    if(!ev||!ev.type)return;
+    if(ev.type==='resync'){ this.refreshBoard(); return; }
+    // something happened somewhere — my own notification list may have grown
+    if(ev.actor_id!==meId()) this.bumpNotifications();
+    // I already see the result of my own edit; re-applying it only causes flicker
+    if(ev.actor_id===meId())return;
+    if(!st.board || ev.board_id!==st.board.id)return;
+    this._pending.set(ev.type+':'+(ev.task_id||0), ev);
+    clearTimeout(this._flush);
+    // coalesce: a bulk change of 200 rows should cost a handful of refetches
+    this._flush=setTimeout(()=>this.apply(),150);
+  },
+
+  async apply(){
+    if(!st.board){ this._pending.clear(); return; }
+    // never redraw over an open editor or picker — that eats what is being typed
+    if(this.busy()){ clearTimeout(this._flush); this._flush=setTimeout(()=>this.apply(),700); return; }
+    const evs=[...this._pending.values()]; this._pending.clear();
+    let whole=false, changed=false;
+    for(const ev of evs){
+      if(ev.type==='task.created'||ev.type==='task.deleted'){ whole=true; break; }
+    }
+    if(whole){ await this.refreshBoard(); return; }
+    for(const ev of evs){
+      if(!ev.task_id)continue;
+      let fresh=null;
+      try{ fresh=await api('/api/tasks/'+ev.task_id); }
+      catch(e){ whole=true; break; }            // gone, or no longer visible to me
+      if(this.replace(fresh)) changed=true; else { whole=true; break; }
+    }
+    if(whole){ await this.refreshBoard(); return; }
+    if(changed) renderView();
+  },
+
+  /* swap one item in place, top-level or sub-item. Returns false when it isn't
+     on this board at all, which means the board itself has to be refetched. */
+  replace(fresh){
+    const list=(st.board&&st.board.tasks)||[];
+    for(let i=0;i<list.length;i++){
+      if(list[i].id==fresh.id){ list[i]=fresh; return true; }
+      const subs=list[i].subtasks||[];
+      for(let j=0;j<subs.length;j++) if(subs[j].id==fresh.id){ subs[j]=fresh; return true; }
+    }
+    return false;
+  },
+
+  async refreshBoard(){
+    if(!st.board)return;
+    if(this.busy()){ clearTimeout(this._flush); this._flush=setTimeout(()=>this.refreshBoard(),700); return; }
+    const id=st.board.id;
+    try{ st.board=await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); }catch(e){ return; }
+    if(!st.board || st.board.id!==id)return;
+    refreshToolbar(); renderView();
+  },
+
+  busy(){
+    if(document.querySelector('.cell-pop'))return true;             // a picker is open
+    const ae=document.activeElement;
+    if(ae&&/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))return true; // mid-edit
+    if(ae&&ae.isContentEditable)return true;
+    return false;
+  },
+
+  bumpNotifications(){
+    clearTimeout(this._notifT);
+    this._notifT=setTimeout(()=>{ try{ Notifications.load(); }catch(e){} },400);
+  },
 };
 
 /* ===== automations (אוטומציות) — Monday-style if-then rules per board ===== */

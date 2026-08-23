@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 import os
 from pydantic import BaseModel
 from sqlalchemy import create_engine, func, or_
@@ -202,6 +202,8 @@ else:
 
 # Seed on first run only — on a persistent DB (Postgres) skip if data exists,
 # so real data isn't duplicated or overwritten on every cold start.
+from events import bus, EVENTS_ENABLED, HEARTBEAT_SECONDS
+import asyncio
 from seed import seed_database, seed_work_plan
 with Session(engine) as _seed_db:
     _db_empty = _seed_db.query(Board).count() == 0
@@ -2443,7 +2445,9 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
                                 f"שויכת למשימה '{task.title}'.", board_id=board_id, task_id=task.id)
         # ── automations ── a new item can trigger rules (assign, set status, notify)
         _run_automations(db, task, {"type": "item_created"}, actor_id)
+        _bid, _tid = task.board_id, task.id
         db.commit()
+        bus.publish("task.created", board_id=_bid, task_id=_tid, actor_id=actor_id)
         db.refresh(task)
         # return the fully-serialized task so the client can insert the new row
         # in place (no full-board refetch/re-render on every add)
@@ -2874,6 +2878,81 @@ def delete_automation(automation_id: int, user_id: int = Depends(current_user_id
         return {"status": "deleted", "id": automation_id}
 
 
+@app.get("/api/tasks/{task_id}")
+def get_task(task_id: int, user_id: int = Depends(current_user_id)):
+    """One item, serialized exactly as the board serializes it.
+
+    This is what a client calls after an event tells it something changed, so
+    it is the place per-item and per-column permissions are enforced — the event
+    itself carries no data.
+    """
+    with Session(engine) as db:
+        t = db.query(Task).filter(Task.id == task_id).first()
+        if not t:
+            raise HTTPException(404, "task not found")
+        board = db.query(Board).filter(Board.id == t.board_id).first()
+        if not board or board.deleted_at:
+            raise HTTPException(404, "task not found")
+        role = _board_role(db, t.board_id, user_id)
+        if user_id is not None and role is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        if user_id is not None and _item_perm(t, user_id, role) == "none":
+            raise HTTPException(403, "אין לך גישה לפריט זה")
+        cols = (board.settings or {}).get("columns", [])
+        return _serialize_task(t, db, user_id=user_id, board_role=role, columns=cols)
+
+
+@app.get("/api/events")
+async def events_stream(request: Request, user_id: int = Depends(current_user_id)):
+    """Server-sent events: the doorbell for live updates.
+
+    Deliberately `async def`. Almost every other endpoint here is a sync `def`,
+    which FastAPI runs on a bounded worker thread pool — a sync stream would
+    hold one of those threads for the entire life of the connection and starve
+    the whole API after a few dozen viewers. This coroutine holds no thread and
+    no database session while idle.
+    """
+    if not EVENTS_ENABLED:
+        raise HTTPException(503, "live updates disabled")
+    # Bound once, here, because this is the only place we are certainly on the
+    # serving loop; publish() runs on worker threads and needs it to hop over.
+    bus.bind_loop(asyncio.get_running_loop())
+    # Which boards this connection is allowed to hear about. Taken once, at
+    # connect: it only decides which doorbells ring, never what they carry, and
+    # the refetch re-checks access anyway. A board shared with you mid-session
+    # starts streaming on the next reconnect.
+    with Session(engine) as db:
+        visible = _visible_board_ids(db, user_id)
+
+    q = bus.subscribe()
+
+    async def gen():
+        try:
+            yield ": connected\n\n"
+            yield "retry: 3000\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"      # keep proxies from closing an idle stream
+                    continue
+                bid = ev.get("board_id")
+                if ev.get("type") != "resync" and bid is not None and bid not in visible:
+                    continue
+                yield (f"id: {ev['seq']}\nevent: {ev['type']}\n"
+                       f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
+        finally:
+            bus.unsubscribe(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",     # without this a proxy buffers and nothing arrives
+    })
+
+
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Generic item update — title, priority, status, due_date, and custom column
@@ -3005,7 +3084,11 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                                         "priority": _task_priority_key(task)}, actor)
         if {u.id for u in task.assignees} - _before_assignees:
             _run_automations(db, task, {"type": "person_assigned"}, actor)
+        _bid, _tid = task.board_id, task.id
         db.commit()
+        # the write landed — only now is it safe to tell anyone, or a listener
+        # could refetch and read the pre-commit row
+        bus.publish("task.changed", board_id=_bid, task_id=_tid, actor_id=actor)
         return {"id": task.id, "custom_fields": task.custom_fields or {}}
 
 # ── File uploads (for the Files column) ─────────────────────────────
@@ -3100,10 +3183,12 @@ def delete_task(task_id: int, user_id: int = Depends(current_user_id)):
             if _item_perm(task, user_id, role) != "delete":
                 raise HTTPException(403, "אין לך הרשאת מחיקה לפריט זה")
         # remove sub-items along with the parent
+        _bid = task.board_id
         for s in db.query(Task).filter(Task.parent_id == task_id).all():
             db.delete(s)
         db.delete(task)
         db.commit()
+        bus.publish("task.deleted", board_id=_bid, task_id=task_id, actor_id=user_id)
         return {"status": "deleted"}
 
 # ── Item conversation (comments), files & activity log ──────────────
@@ -3206,7 +3291,9 @@ def add_comment(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 _notify(db, mid, "mention", "תויגת בשיחה",
                         f"{user.name} תייג/ה אותך במשימה '{task.title}'.",
                         board_id=task.board_id, task_id=task_id)
+        _bid = task.board_id if task else None
         db.commit(); db.refresh(c)
+        bus.publish("comment.added", board_id=_bid, task_id=task_id, actor_id=actor_id)
         return _serialize_comment(c, db)
 
 @app.post("/api/comments/{cid}/like")
@@ -3476,7 +3563,9 @@ def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_use
                                 board_id=task.board_id, task_id=task_id)
                 _run_automations(db, task, {"type": "person_assigned",
                                             "user_id": user.id}, actor)
+        _bid = task.board_id
         db.commit()
+        bus.publish("task.changed", board_id=_bid, task_id=task_id, actor_id=actor)
         return {"assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
                               for u in task.assignees]}
 
@@ -3488,6 +3577,7 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             raise HTTPException(404)
         actor = actor_id
         _require_board_edit(db, task.board_id, actor)
+        _src_board = task.board_id          # remembered before any reassignment
         target = data.get("board_id")
         if target and int(target) != task.board_id:
             # ── move the item to another board ──
@@ -3516,6 +3606,9 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             for t in [task] + subs:
                 _ensure_item_uid(db, t)
             db.commit()
+            # the item left one board and arrived on another — both need telling
+            bus.publish("task.deleted", board_id=_src_board, task_id=task_id, actor_id=actor)
+            bus.publish("task.created", board_id=target, task_id=task_id, actor_id=actor)
             return {"status": "moved", "board_id": target, "item_uid": task.item_uid}
         if "group_id" in data:
             task.group_id = data["group_id"]
@@ -3524,6 +3617,7 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
         if "status" in data:
             task.status = data["status"]
         db.commit()
+        bus.publish("task.changed", board_id=_src_board, task_id=task_id, actor_id=actor)
         return {"status": "moved"}
 
 @app.post("/api/tasks/{parent_id}/subitems/reorder")
