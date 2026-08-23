@@ -982,8 +982,8 @@ img.pf-av{object-fit:cover;background:#fff}
 /* The item whose conversation is open. The panel covers part of the board, so
    the row it belongs to is banded and tinted — you can still see which item you
    are talking about without closing the panel. */
-tr.chat-open>td{background:var(--primary-soft)!important;box-shadow:inset 0 2px 0 var(--primary),inset 0 -2px 0 var(--primary)}
-.kcard.chat-open{box-shadow:0 0 0 2px var(--primary)}
+tr.chat-open>td{background:var(--primary-soft)!important}
+.kcard.chat-open{background:var(--primary-soft)}
 /* No dimming behind the conversation: the board stays fully readable while the
    panel is open (its row is highlighted, see tr.chat-open). The layer is kept
    only as the open/closed marker, and lets clicks through — a transparent layer
