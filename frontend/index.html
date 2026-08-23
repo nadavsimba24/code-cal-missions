@@ -1282,6 +1282,13 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   .kcol{width:76vw;min-width:76vw}
   /* comfortable touch targets in the sidebar */
   .sb-item,.sb-folder-head{padding:11px 10px}
+  /* Desktop-only controls. !important because renderSidebar sets display inline
+     from the user's permissions — the breakpoint has to win over that. */
+  #new-board-btn,#new-folder-btn,#env-manage-btn,#nav-sysadmin{display:none!important}
+  .ws-opt-act,.ws-dd-foot{display:none!important}   /* env rename/members/new, not the switcher */
+  /* Only the button goes; its column stays, so colgroup widths and the
+     row-end colspan still line up with the header. */
+  .th-add-btn{display:none}
 }
 @media (max-width:820px) and (display-mode:standalone){ body{padding-top:env(safe-area-inset-top)} }
 
@@ -1818,8 +1825,21 @@ async function loadBoards(){
   try{ const d=await api('/api/folders'+(meId()?'?user_id='+meId():'')); st.folders=d.folders||[]; }catch(e){ st.folders=[]; }
   renderSidebar();
 }
+/* One definition of "narrow screen", matching the CSS breakpoint below.
+   Mobile is for working the board — reading it, changing values — not for
+   configuring it. Structural actions (new column, new board, environment and
+   system administration) are desktop-only; everything else still follows the
+   user's own permissions, unchanged. Board membership is deliberately NOT here:
+   a board admin manages their board's people from the phone too. */
+const MOBILE_Q='(max-width:820px)';
+function isMobile(){ return !!(window.matchMedia && window.matchMedia(MOBILE_Q).matches); }
+function mobileBlocked(what){
+  if(!isMobile())return false;
+  toast((what||'הפעולה')+' זמינה במחשב בלבד');
+  return true;
+}
 function toggleSidebar(force){
-  if(window.matchMedia && window.matchMedia('(max-width:820px)').matches){
+  if(isMobile()){
     // mobile: slide-in drawer
     const open = (force===undefined) ? !document.body.classList.contains('sb-open') : !!force;
     document.body.classList.toggle('sb-open', open);
@@ -1831,7 +1851,7 @@ function toggleSidebar(force){
   }
 }
 function closeSidebarMobile(){
-  if(window.matchMedia && window.matchMedia('(max-width:820px)').matches) document.body.classList.remove('sb-open');
+  if(isMobile()) document.body.classList.remove('sb-open');
 }
 function renderSidebar(){
   const active = (typeof Env!=='undefined') ? Env.active() : null;
@@ -1884,7 +1904,7 @@ const Folders = {
       </div>
       <div class="mfoot"><button class="btn btn-primary" onclick="Folders.save(${edit?fid:'null'})"><i class="fa-solid fa-check"></i> ${edit?'שמור':'צור תיקייה'}</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
     setTimeout(()=>{const n=document.getElementById('fld-name');if(n){n.focus();n.select&&n.select();}},40); },
-  create(){ this.folderModal(null); },
+  create(){ if(mobileBlocked('ניהול תיקיות'))return; this.folderModal(null); },
   async save(fid){
     const name=(document.getElementById('fld-name').value||'').trim(); if(!name){toast('צריך שם לתיקייה');return;}
     const env=Env.active();
@@ -2013,13 +2033,14 @@ function boardMenu(e){
   const item=(icon,label,action,enabled,why,cls)=>enabled
     ? `<button class="rm-item${cls?' '+cls:''}" onclick="closeCellPops();${action}"><i class="fa-solid ${icon}"></i> ${label}</button>`
     : `<button class="rm-item${cls?' '+cls:''}" disabled title="${esc(why||'')}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
+  const mob=isMobile();   // moving a board and importing one are desktop-only
   const html=`<div class="row-menu" onclick="event.stopPropagation()">
-    ${item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
+    ${mob?'':item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
     ${item('fa-bolt','אוטומציות','Automations.open()',true)}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
     ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
-    ${item('fa-file-import','ייבוא לוח מקובץ','importBoardFile()',hasCap('create_board'),'אין לך הרשאה ליצור לוח חדש')}
+    ${mob?'':item('fa-file-import','ייבוא לוח מקובץ','importBoardFile()',hasCap('create_board'),'אין לך הרשאה ליצור לוח חדש')}
     <div class="rm-sep"></div>
     ${item('fa-trash','מחק לוח','deleteBoardById('+st.board.id+')',canDelete,'רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו','danger')}
   </div>`;
@@ -2213,6 +2234,7 @@ async function createBoard(){
    creator becomes its admin, it lands at the bottom of the list and opens ready
    for inline rename. */
 async function newBoardQuick(){
+  if(mobileBlocked('יצירת לוח'))return;
   if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
   try{
     const r=await api('/api/boards',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'לוח חדש',icon:'📋',environment_id:(Env.active()||{}).id||null,user_id:meId()})});
@@ -2226,6 +2248,7 @@ async function newBoardQuick(){
 /* Import a board from a CSV / Excel file: the server reads the header row into
    columns (type inferred per column) and one item per data row. */
 async function importBoardFile(){
+  if(mobileBlocked('ייבוא לוח'))return;
   if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
   const inp=document.createElement('input');
   inp.type='file';
@@ -2984,7 +3007,8 @@ const Env = {
   active(){ return st.env||this.items[0]||null; },
   // open members/permissions management for the active environment — the entry
   // point next to the "סביבת עבודה" title. members() re-checks the permission.
-  manageActive(){ const a=this.active(); if(!a){ toast('בחר סביבה'); return; } this.members(a.id); },
+  manageActive(){ if(mobileBlocked('ניהול סביבה'))return;
+    const a=this.active(); if(!a){ toast('בחר סביבה'); return; } this.members(a.id); },
   render(){
     const wrap=document.getElementById('ws-switch'); if(!wrap)return;
     const admin=isSysAdmin();
@@ -3028,7 +3052,8 @@ const Env = {
   _onDoc(ev){ const sw=document.getElementById('ws-switch'); if(!sw||!sw.contains(ev.target)) Env._set(false); },
   toggle(e){ e&&e.stopPropagation(); this._set(!this.open); },
   select(id){ st.env=this.items.find(x=>x.id===id)||st.env; this._set(false); renderSidebar(); closeSidebarMobile(); },
-  add(){ if(!hasCap('create_environment')){ toast('אין לך הרשאה ליצור סביבה'); return; }
+  add(){ if(mobileBlocked('יצירת סביבה'))return;
+    if(!hasCap('create_environment')){ toast('אין לך הרשאה ליצור סביבה'); return; }
     const name=prompt('שם הסביבה החדשה:'); if(!name||!name.trim())return;
     api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})})
       .then(()=>{ toast('הסביבה נוצרה'); this.load(); }).catch(()=>toast('שגיאה ביצירת סביבה')); },
@@ -3042,7 +3067,8 @@ const Env = {
       catch(e){ toast('לא ניתן למחוק סביבה זו'); }
     },{title:'מחיקת סביבה',confirmText:'מחק',note:'הלוחות יעברו לסביבת ברירת המחדל — לא יימחקו.'}); },
   // ── members management (who may access the environment) — sysadmin + env manager ──
-  async members(id){ this._set(false);
+  async members(id){ if(mobileBlocked('ניהול סביבה'))return;
+    this._set(false);
     const env=this.items.find(x=>x.id===id);
     if(!(isSysAdmin()||(env&&env.can_manage))){ toast('רק מנהל מערכת או מנהל הסביבה'); return; }
     this.membersFor=id;
@@ -3089,6 +3115,7 @@ const Env = {
 const SysAdmin = {
   tab:'users',
   async open(tab){
+    if(mobileBlocked('ניהול המערכת'))return;
     if(!hasCap('manage_system')){ toast('רק מנהל מערכת'); return; }
     closeCellPops();
     this.tab = tab || this.tab || 'users';
@@ -5142,6 +5169,7 @@ async function saveTimeline(taskId,colId,clear){
 }
 /* add / rename / delete columns */
 function addColMenu(e,forSub){
+  if(mobileBlocked('הוספת עמודה'))return;
   e.stopPropagation();
   // the connect (cross-board) column is a system-admin-only capability
   const types=COLUMN_TYPES.filter(c=>c.type!=='connect'||isSysAdmin());
