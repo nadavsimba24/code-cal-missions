@@ -131,3 +131,41 @@ def test_unpublishing_takes_it_back(client, admin_id):
     client.patch(f"/api/boards/{bid}", json={"actor_id": admin_id, "visibility": "private"})
     assert bid not in _board_ids_for(client, out)
     assert client.get(f"/api/boards/{bid}?user_id={out}").status_code == 403
+
+
+def test_a_public_board_does_not_make_the_environment_taggable(client, admin_id):
+    """Reading a board is not being part of the work on it.
+
+    A public board is visible to the whole environment, but tagging still
+    follows the invitation: someone who can only *see* the board may not be
+    assigned to an item, named in a people column, or @-mentioned on it.
+    """
+    from models import Task
+    bid = _mk_board(client, admin_id, "לוח ציבורי לתיוג")
+    out = _outsider(client, admin_id, "vis.taggable@cityos.test")
+    _join_env(bid, out)
+    client.patch(f"/api/boards/{bid}", json={"actor_id": admin_id, "visibility": "public"})
+
+    # they really can see it
+    assert client.get(f"/api/boards/{bid}?user_id={out}").status_code == 200
+
+    tid = client.post("/api/tasks", json={"board_id": bid, "title": "פריט",
+                                          "user_id": admin_id}).json()["id"]
+
+    # …but cannot be assigned
+    r = client.post(f"/api/tasks/{tid}/assignees",
+                    json={"actor_id": admin_id, "user_id": out})
+    assert r.status_code == 403
+
+    # …and cannot be tagged in a conversation
+    c = client.post(f"/api/tasks/{tid}/comments",
+                    json={"actor_id": admin_id, "content": "שלום", "mentions": [out]})
+    assert c.status_code == 200
+    assert out not in (c.json().get("mentions") or [])
+
+    # inviting them to the board is what makes tagging possible
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": out, "role": "editor"})
+    ok = client.post(f"/api/tasks/{tid}/comments",
+                     json={"actor_id": admin_id, "content": "עכשיו כן", "mentions": [out]})
+    assert out in (ok.json().get("mentions") or [])

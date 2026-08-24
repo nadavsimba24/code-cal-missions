@@ -775,13 +775,25 @@ def _is_board_admin(db, board_id, user_id):
     return _board_role(db, board_id, user_id) == "admin"
 
 def _can_be_assigned(db, board_id, user_id):
-    """May this user be tagged on this board's items? Only people who were
-    invited to the board. Tagging an outsider used to be possible from any people
-    column: it notified someone who then could not open the board, and it put a
-    name on an item its owner had no way to reach. `_board_role` is the same
-    definition of access used everywhere else, so workspace admins — who reach
-    every board without an explicit invite — stay taggable."""
-    return _board_role(db, board_id, user_id) is not None
+    """May this user be tagged on this board's items? Only people INVITED to it.
+
+    Deliberately not `_board_role`, which a public board satisfies for everyone
+    in the environment. Being able to read a board is not the same as being part
+    of the work on it: on a busy public board, "everyone in the environment"
+    would turn every people column and every @-menu into a directory of hundreds,
+    and would let anyone put a colleague's name on an item they never agreed to
+    own. Tagging follows the invitation, not the audience.
+
+    Workspace admins stay taggable — they reach every board without an explicit
+    invite, and excluding them would make it impossible to tag the very people
+    who administer the system."""
+    if user_id is None:
+        return False
+    m = db.query(BoardMember).filter(BoardMember.board_id == board_id,
+                                     BoardMember.user_id == user_id).first()
+    if m:
+        return True
+    return _ws_role(db, user_id) == "admin"
 
 def _filter_people_values(db, board_id, cf, before):
     """Drop non-members from people-column values in `cf` (in place).
