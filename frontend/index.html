@@ -2776,7 +2776,14 @@ const Live = {
     // dev mode and the Entra session already use.
     let es; try{ es=new EventSource('/api/events'); }catch(e){ return; }
     this.es=es;
-    es.onopen=()=>{ this.connected=true; this.backoff=1000; };
+    es.onopen=()=>{
+      const returning=this._everConnected;
+      this.connected=true; this.backoff=1000; this._everConnected=true;
+      // Events missed while the stream was down are gone — the server keeps no
+      // log to replay. Coming back is therefore always a reconcile, not a
+      // resume; without this the board silently stays stale after a blip.
+      if(returning) this.refreshBoard();
+    };
     es.onmessage=e=>{ try{ this.onEvent(JSON.parse(e.data)); }catch(err){} };
     es.onerror=()=>{
       this.connected=false;
@@ -2813,7 +2820,9 @@ const Live = {
     const evs=[...this._pending.values()]; this._pending.clear();
     let whole=false, changed=false;
     for(const ev of evs){
-      if(ev.type==='task.created'||ev.type==='task.deleted'){ whole=true; break; }
+      // a new or removed row changes the list itself, and a board change can
+      // alter its columns or groups — neither is a single-row swap
+      if(ev.type==='task.created'||ev.type==='task.deleted'||ev.type==='board.changed'){ whole=true; break; }
     }
     if(whole){ await this.refreshBoard(); return; }
     for(const ev of evs){
@@ -2821,10 +2830,58 @@ const Live = {
       let fresh=null;
       try{ fresh=await api('/api/tasks/'+ev.task_id); }
       catch(e){ whole=true; break; }            // gone, or no longer visible to me
-      if(this.replace(fresh)) changed=true; else { whole=true; break; }
+      const before=this.find(fresh.id);
+      // a move between groups, or an edit that pushes the item out of the active
+      // filter, changes more than one row — those need the full view
+      const moved=before && before.group_id!==fresh.group_id;
+      if(!this.replace(fresh)){ whole=true; break; }
+      if(moved || this.dropsOutOfView(fresh) || st.colSort){ whole=true; break; }
+      if(!this.patchRow(fresh)){ whole=true; break; }
+      changed=true;
     }
     if(whole){ await this.refreshBoard(); return; }
-    if(changed) renderView();
+    if(changed) Chat.markOpenRow();     // the replaced row lost the marker
+  },
+
+  find(id){
+    for(const t of ((st.board&&st.board.tasks)||[])){
+      if(t.id==id)return t;
+      const s=(t.subtasks||[]).find(x=>x.id==id); if(s)return s;
+    }
+    return null;
+  },
+
+  /* would this item disappear under the active filters? then the row count
+     changes and a single-row swap is not enough */
+  dropsOutOfView(t){
+    try{ return t.parent_id==null && applyFilters([t]).length===0; }catch(e){ return false; }
+  },
+
+  /* Replace just this row in the DOM. Re-rendering the whole view for one
+     changed cell is what "targeted" is meant to avoid — it rebuilds every group
+     on the board and throws away scroll position and open sub-lists. */
+  patchRow(t){
+    try{
+      const sub=document.querySelector(`tr[data-sid="${t.id}"]`);
+      if(sub){
+        const parentId=sub.getAttribute('data-parent');
+        const tmp=document.createElement('tbody');
+        tmp.innerHTML=subItemRowHTML(t,subColumns(),isBoardAdmin(),parentId);
+        const fresh=tmp.firstElementChild; if(!fresh)return false;
+        sub.replaceWith(fresh); return true;
+      }
+      const row=document.querySelector(`tr[data-tid="${t.id}"]`);
+      if(!row)return false;
+      const g=((st.board&&st.board.groups)||[]).find(x=>x.id===t.group_id);
+      const tmp=document.createElement('tbody');
+      tmp.innerHTML=itemRow(t,(g&&g.color)||'#0073ea');
+      const news=[...tmp.children]; if(!news.length)return false;
+      // itemRow renders the row plus its sub-items panel — swap both together
+      const wrap=document.querySelector(`tr.sub-wrap[data-parent="${t.id}"]`);
+      if(wrap)wrap.remove();
+      row.replaceWith(...news);
+      return true;
+    }catch(e){ return false; }
   },
 
   /* swap one item in place, top-level or sub-item. Returns false when it isn't

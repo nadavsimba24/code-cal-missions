@@ -1429,6 +1429,9 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             s["sub_only"] = [str(k) for k in (data["sub_only"] or []) if str(k) in live]
             b.settings = s
         db.commit()
+        # columns, statuses, the board's own settings — everyone on it is looking
+        # at a board that just changed shape
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
         db.refresh(b)
         # statuses and priorities come back because the server mints the key for
         # a newly added one — the client cannot know it otherwise
@@ -3672,6 +3675,7 @@ def create_group_api(data: dict, actor_id: int = Depends(current_user_id)):
         )
         db.add(g)
         db.commit()
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
         db.refresh(g)
         return _group_dict(g)
 
@@ -3688,7 +3692,9 @@ def update_group_api(group_id: int, data: dict, actor_id: int = Depends(current_
             g.color = data["color"]
         if data.get("position") is not None:
             g.position = data["position"]
+        _bid = g.board_id
         db.commit()
+        bus.publish("board.changed", board_id=_bid, actor_id=actor_id)
         db.refresh(g)
         return _group_dict(g)
 
@@ -3702,11 +3708,14 @@ def reorder_groups_api(data: dict, actor_id: int = Depends(current_user_id)):
             first = db.query(Group).filter(Group.id == order[0]).first()
             if first:
                 _require_board_edit(db, first.board_id, actor)
+        _bid = None
         for idx, gid in enumerate(order):
             g = db.query(Group).filter(Group.id == gid).first()
             if g:
                 g.position = idx
+                _bid = g.board_id
         db.commit()
+        bus.publish("board.changed", board_id=_bid, actor_id=actor_id)
         return {"status": "reordered", "order": order}
 
 @app.delete("/api/groups/{group_id}")
@@ -3717,10 +3726,12 @@ def delete_group_api(group_id: int, actor_id: int = Depends(current_user_id)):
             raise HTTPException(404, "group not found")
         _require_board_edit(db, g.board_id, actor_id)   # board editors+ only
         # Detach tasks instead of deleting them — they fall back to "ללא קבוצה"
+        _bid = g.board_id
         for t in db.query(Task).filter(Task.group_id == group_id).all():
             t.group_id = None
         db.delete(g)
         db.commit()
+        bus.publish("board.changed", board_id=_bid, actor_id=actor_id)
         return {"status": "deleted"}
 
 # ── Citizens & Permits ──────────────────────────────────────────────
