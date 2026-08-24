@@ -19,6 +19,18 @@ variables:
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
 
+  # ── deploy target ────────────────────────────────────────────────────
+  containerAppName: 'missionsprdcontainerapp'
+  # TODO set this: the production resource group. Left blank on purpose — the
+  # deploy fails fast and says so rather than guessing at a prod resource name.
+  containerAppResourceGroup: ''
+  azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'   # "Misssions"
+
+  # ARM service connection for the deploy stage. Reuses the SAME service
+  # principal that already backs the prod registry connection above, via
+  # workload identity federation — no new app registration, no client secret.
+  azureServiceConnection: 'Missions-PROD-ARM'
+
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
 
@@ -40,3 +52,99 @@ stages:
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
+
+- stage: Deploy
+  displayName: Deploy to the production Container App
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: Deploy
+    displayName: Roll production onto the image this run built
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: AzureCLI@2
+      displayName: az containerapp update + wait for the revision to serve
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+
+          RG="$(containerAppResourceGroup)"
+          if [ -z "$RG" ]; then
+            echo "##vso[task.logissue type=error]containerAppResourceGroup is not set — refusing to guess at a production resource group"
+            exit 1
+          fi
+
+          # `containerapp` is a CLI extension and a hosted agent starts clean.
+          # Without this the install prompt blocks and the job hangs to timeout.
+          az config set extension.use_dynamic_install=yes_without_prompt
+
+          IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
+          COMMON=(--subscription "$(azureSubscriptionId)"
+                  --resource-group "$RG"
+                  --name "$(containerAppName)")
+
+          # Say what is being replaced before replacing it. On production the
+          # previous image is the thing you need in your hand to roll back, and
+          # the run log is where someone will look for it at a bad moment.
+          PREV=$(az containerapp show "${COMMON[@]}" \
+                   --query "properties.template.containers[0].image" -o tsv)
+          echo "── current : $PREV"
+          echo "── deploying: $IMAGE"
+
+          # Deliberately the build-id tag, never :latest. A Container App creates
+          # a new revision only when the image STRING changes, so deploying
+          # :latest twice is a silent no-op: the run goes green while the old
+          # container keeps serving. A unique tag per run makes that impossible.
+          az containerapp update "${COMMON[@]}" --image "$IMAGE" --output none
+
+          REV=$(az containerapp show "${COMMON[@]}" \
+                  --query "properties.latestRevisionName" -o tsv)
+          echo "── new revision: $REV"
+
+          # Wait on the revision's own state, not a stopwatch. Provisioning plus
+          # the traffic shift takes minutes, and this reports WHY a revision
+          # failed instead of only that a URL stayed quiet.
+          for i in $(seq 1 60); do
+            RUNNING=$(az containerapp revision show "${COMMON[@]}" --revision "$REV" \
+                        --query "properties.runningState" -o tsv)
+            echo "  [$i] running=$RUNNING"
+            case "$RUNNING" in
+              Running) break ;;
+              Failed|Degraded)
+                echo "##vso[task.logissue type=error]revision $REV came up $RUNNING — production still serves $PREV"
+                az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
+                echo "roll back with: az containerapp update ${COMMON[*]} --image $PREV"
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+          # Ask the app for its own hostname rather than hardcoding one. A wrong
+          # constant here would health-check some other environment and pass.
+          FQDN=$(az containerapp show "${COMMON[@]}" \
+                   --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "── health check https://$FQDN/api/status"
+
+          # 403 counts as reachable: if this ingress carries an IP allow-list the
+          # way QA does, a hosted agent is never on it — its address comes from
+          # Azure's dynamic ranges. A 403 still proves the ingress is up and
+          # routing for the new revision. It cannot prove the app behind it is
+          # healthy, because the allow-list rejects before routing; the
+          # revision-state wait above is what covers that.
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$FQDN/api/status" || echo 000)
+            echo "  health attempt $i → HTTP $code"
+            case "$code" in
+              200) echo "✅ $REV is serving $IMAGE"; exit 0 ;;
+              403) echo "✅ $REV is up and routing $IMAGE (403 = ingress allow-list refusing this agent)"; exit 0 ;;
+            esac
+            sleep 10
+          done
+          echo "##vso[task.logissue type=error]$REV answered neither 200 nor 403"
+          az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
+          echo "roll back with: az containerapp update ${COMMON[*]} --image $PREV"
+          exit 1
