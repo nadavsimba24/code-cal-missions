@@ -67,6 +67,13 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 ::-webkit-scrollbar-thumb{background:#d0d4e4;border-radius:6px}
 ::-webkit-scrollbar-track{background:transparent}
 
+.vis-opt{display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border:1px solid var(--border-strong);border-radius:9px;cursor:pointer;margin-bottom:8px;transition:border-color .12s,background .12s}
+.vis-opt:hover{background:var(--row-hover)}
+.vis-opt.sel{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 7%,transparent)}
+.vis-opt input{width:auto;margin-top:3px}
+.vis-opt>i{font-size:15px;color:var(--text-muted);margin-top:2px}
+.vis-opt.sel>i{color:var(--primary)}
+.vis-opt small{display:block;color:var(--text-muted);font-size:12px;margin-top:2px;font-weight:400}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -2120,6 +2127,9 @@ function boardMenu(e){
   const mob=isMobile();   // moving a board and importing one are desktop-only
   const html=`<div class="row-menu" onclick="event.stopPropagation()">
     ${mob?'':item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
+    ${item(st.board.visibility==='public'?'fa-globe':'fa-lock',
+           'חשיפת הלוח · '+(st.board.visibility==='public'?'ציבורי':'פרטי'),
+           'boardVisibility()',admin,'רק מנהל הלוח יכול לשנות את חשיפת הלוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
     ${item('fa-bolt','אוטומציות','Automations.open()',true)}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
@@ -2129,6 +2139,53 @@ function boardMenu(e){
     ${item('fa-trash','מחק לוח','deleteBoardById('+st.board.id+')',canDelete,'רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו','danger')}
   </div>`;
   openCellPop(e.currentTarget,html,'row-menu-pop');
+}
+/* חשיפת הלוח — פרטי (מוזמנים בלבד) או ציבורי (כל מי שבסביבה) */
+async function boardVisibility(){
+  if(!st.board)return;
+  const cur=st.board.visibility==='public'?'public':'private';
+  const env=(Env.items||[]).find(x=>x.id===st.board.environment_id);
+  // named when we know it, omitted when we do not — "בסביבה" alone reads fine,
+  // "בהסביבה" does not
+  const envName=env?(' '+(env.icon||'🏢')+' '+env.name):'';
+  const opt=(val,icon,title,desc)=>`
+    <label class="vis-opt${cur===val?' sel':''}" for="vis-${val}" onclick="pickVisOpt('${val}')">
+      <input type="radio" name="bvis" id="vis-${val}" value="${val}" ${cur===val?'checked':''}>
+      <i class="fa-solid ${icon}"></i>
+      <span><b>${title}</b><small>${desc}</small></span>
+    </label>`;
+  showModal(`<h2><i class="fa-solid fa-lock" style="color:var(--primary)"></i> חשיפת הלוח</h2>
+    <div class="mbody">
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        מי יכול לראות את <b>${esc(st.board.name)}</b>. ההגדרה משפיעה על צפייה בלבד —
+        עריכה עדיין דורשת הזמנה ללוח עם הרשאת עריכה.</div>
+      ${opt('private','fa-lock','לוח פרטי','רק מי שהוזמן ללוח רואה אותו.')}
+      ${opt('public','fa-globe','לוח ציבורי','כל מי שחבר בסביבה'+esc(envName)+' יכול לראות אותו, בצפייה בלבד.')}
+    </div>
+    <div class="mfoot">
+      <button class="btn ghost" onclick="closeModals()">ביטול</button>
+      <button class="btn" onclick="saveBoardVisibility()">שמירה</button>
+    </div>`);
+}
+/* move the highlight with the choice — the class is rendered once, the radio
+   changes on every click */
+function pickVisOpt(val){
+  document.querySelectorAll('.vis-opt').forEach(n=>
+    n.classList.toggle('sel', n.getAttribute('for')==='vis-'+val));
+}
+async function saveBoardVisibility(){
+  const el=document.querySelector('input[name="bvis"]:checked'); if(!el)return;
+  const v=el.value;
+  if(v===(st.board.visibility||'private')){ closeModals(); return; }
+  try{
+    await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:withMe({visibility:v})});
+    st.board.visibility=v;
+    const lb=(st.boards||[]).find(b=>b.id===st.board.id); if(lb)lb.visibility=v;
+    closeModals();
+    toast(v==='public'?'הלוח ציבורי — כל מי שבסביבה רואה אותו':'הלוח פרטי — רק מוזמנים רואים אותו');
+    renderSidebar();
+  }catch(err){ toast(err.detail||'שינוי החשיפה נכשל'); }
 }
 /* 1. העברה לסביבה אחרת */
 async function moveBoardEnv(){

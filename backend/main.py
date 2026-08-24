@@ -735,8 +735,21 @@ def _resolve_priority(board, value):
     return e["base"], {"priority_key": e["key"], "priority_label": e["label"],
                        "priority_color": e["color"], "priority_unset": None}
 
+BOARD_VISIBILITY = ("private", "public")
+
+def _board_visibility(b):
+    """'private' — only people invited to the board — or 'public' — anyone who
+    belongs to the board's environment.
+
+    Unset reads as private, which is exactly how every board behaved before this
+    setting existed. Boards that predate it therefore keep their audience, and
+    nothing becomes visible to anyone because of an upgrade.
+    """
+    v = ((b.settings or {}).get("visibility") if b else None)
+    return v if v in BOARD_VISIBILITY else "private"
+
 def _board_role(db, board_id, user_id):
-    """Board-scoped role (admin/editor/viewer) for a user, or None if not a member."""
+    """Board-scoped role (admin/editor/viewer) for a user, or None if no access."""
     if user_id is None:
         return None
     m = db.query(BoardMember).filter(BoardMember.board_id == board_id,
@@ -747,6 +760,15 @@ def _board_role(db, board_id, user_id):
     # they were never explicitly added to
     if _ws_role(db, user_id) == "admin":
         return "admin"
+    # A public board is readable by everyone in its environment, with no invite.
+    # Deliberately 'viewer': being able to see a board is not permission to
+    # change it, so contributing still requires being invited. An explicit
+    # BoardMember row wins, above, so inviting someone to a public board as an
+    # editor still upgrades them.
+    b = db.query(Board).filter(Board.id == board_id).first()
+    if (b is not None and b.deleted_at is None and _board_visibility(b) == "public"
+            and _env_role(db, b.environment_id, user_id) is not None):
+        return "viewer"
     return None
 
 def _is_board_admin(db, board_id, user_id):
@@ -798,13 +820,19 @@ def _visible_board_ids(db, user_id):
     insights) never leak boards the user was not invited to.
     An unauthenticated caller (user_id=None) sees nothing — this used to return
     every board, so omitting the parameter exposed the whole workspace."""
-    all_ids = {b for (b,) in db.query(Board.id).filter(Board.is_archived == False, Board.deleted_at == None).all()}
+    live = db.query(Board).filter(Board.is_archived == False, Board.deleted_at == None).all()
+    all_ids = {b.id for b in live}
     if user_id is None:
         return set()
     if _ws_role(db, user_id) == "admin":   # system admins see every board
         return all_ids
     member_ids = {m.board_id for m in db.query(BoardMember).filter(BoardMember.user_id == user_id).all()}
-    return {i for i in all_ids if i in member_ids}
+    # plus every public board in an environment this user belongs to
+    env_ids = {m.environment_id for m in
+               db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
+    public_ids = {b.id for b in live
+                  if b.environment_id in env_ids and _board_visibility(b) == "public"}
+    return {i for i in all_ids if i in member_ids or i in public_ids}
 
 def _ws_role(db, user_id):
     if user_id is None:
@@ -846,8 +874,8 @@ def list_boards(user_id: int = Depends(current_user_id)):
         # system (workspace) admins see every board; everyone else only the boards
         # they were invited to (membership-based visibility)
         if user_id is not None and _ws_role(db, user_id) != "admin":
-            member_ids = {m.board_id for m in db.query(BoardMember).filter(BoardMember.user_id == user_id).all()}
-            boards = [b for b in boards if b.id in member_ids]
+            visible = _visible_board_ids(db, user_id)   # membership + public boards
+            boards = [b for b in boards if b.id in visible]
         result = []
         for b in boards:
             task_count = db.query(Task).filter(Task.board_id == b.id, Task.parent_id == None).count()
@@ -863,6 +891,7 @@ def list_boards(user_id: int = Depends(current_user_id)):
                 "folder_id": b.folder_id,
                 "position": b.position or 0,
                 "task_count": task_count,
+                "visibility": _board_visibility(b),
                 "my_role": _board_role(db, b.id, user_id) if user_id is not None else None,
                 "can_manage_env": _can_manage_env(db, b.environment_id, user_id) if user_id is not None else False,
                 "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
@@ -997,6 +1026,7 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "department_name": dept_name,
             "views": _board_views(b),
             "view_only": (b.settings or {}).get("view_only", False),
+            "visibility": _board_visibility(b),
             "my_role": my_role,
             "owners": owners,
             # who may be tagged in a people column — the pickers build from this
@@ -1057,6 +1087,10 @@ def create_board(data: dict, actor_id: int = Depends(current_user_id)):
             color=data.get("color", "#0073ea"),
             settings={
                 "views": ["table"],  # new boards start with only the main table
+                # A new board is private: only the people invited to it can see
+                # it. Publishing is a decision its admin makes deliberately from
+                # the board menu, never the state a board is born in.
+                "visibility": ("public" if data.get("visibility") == "public" else "private"),
                 # every new board ships with these auto columns (read-only, from the item's metadata)
                 "columns": [
                     {"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
@@ -1295,6 +1329,18 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
         if "view_only" in data:
             s = dict(b.settings or {})
             s["view_only"] = bool(data["view_only"])
+            b.settings = s
+        if "visibility" in data:
+            # Board admins only. Publishing a board hands it to everyone in the
+            # environment at once, which is not something an editor should be
+            # able to do on their own.
+            if _board_role(db, board_id, actor_id) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לשנות את חשיפת הלוח")
+            v = data["visibility"]
+            if v not in BOARD_VISIBILITY:
+                raise HTTPException(400, "ערך חשיפה לא תקין")
+            s = dict(b.settings or {})
+            s["visibility"] = v
             b.settings = s
         if "form" in data:
             # only a board admin can add/update the form
@@ -2390,6 +2436,13 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         board = db.query(Board).filter(Board.id == board_id).first()
         if not board:
             raise HTTPException(404, "board not found")
+        # Creating an item is a write, and this endpoint never checked. Anyone
+        # authenticated could add an item to ANY board, including one they were
+        # never invited to — the same IDOR the other board mutations already
+        # close via _require_board_edit. It also has to hold now that a public
+        # board grants an implicit viewer role: being able to SEE a board must
+        # not mean being able to add to it.
+        _require_board_edit(db, board_id, actor_id)
         # a board-defined priority is not an enum value — resolve it to the one
         # it behaves as, and carry its label/colour on the item
         prio, prio_cf = _resolve_priority(board, data.get("priority"))
