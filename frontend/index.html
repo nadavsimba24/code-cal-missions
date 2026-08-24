@@ -4035,15 +4035,47 @@ function subSortBtn(key){
 function subColMenu(e,id,parentId){
   e.stopPropagation(); if(!isBoardAdmin())return;
   const c=subColumns().find(x=>String(x.id)===String(id)); if(!c)return;
-  // delete works like the item column menu: a custom column is removed from the
-  // board (including any sub-item-only one), a built-in one is hidden
-  const del=c.kind==='builtin'
-    ? `<button class="cell-pop-opt2" style="color:var(--red)" onclick="hideBuiltinCol(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`
-    : `<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
+  // Deleting here must not touch the parent item. The two headers show the same
+  // board column, so deleting it board-wide (hide for a built-in, remove for a
+  // custom one) took it off the item as well — removeSubCol narrows the
+  // sub-item's own column list instead. The exception is a sub-item-only
+  // column: it exists nowhere else, so removing it really is deleting it.
+  const subOnly=new Set(((st.board&&st.board.sub_only)||[]).map(String));
+  const onlyHere=c.kind==='custom'&&subOnly.has(String(c.id));
+  const del=onlyHere
+    ? `<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`
+    : `<button class="cell-pop-opt2" style="color:var(--red)" onclick="removeSubCol(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startSubColRename('${c.kind}','${c.id}',${parentId})"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +`<button class="cell-pop-opt2" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i> בחר עמודות תת-פריט</button>`
     +del;
   openCellPop(e.currentTarget,html);
+}
+/* Remove a column from the sub-items only, leaving it on the parent item.
+   The sub-item's columns are board.sub_cols — a subset of the board's columns.
+   When it was never configured the sub-items simply mirror the item columns, so
+   the list is materialised from what they show right now, minus this one. */
+async function removeSubCol(e,id){
+  e.stopPropagation(); closeCellPops();
+  if(!isBoardAdmin()){toast('רק מנהל הלוח');return;}
+  const subOnly=new Set(((st.board&&st.board.sub_only)||[]).map(String));
+  const cur=subColumns();
+  const c=cur.find(x=>String(x.id)===String(id));
+  const label=c?subColLabel(c):'';
+  // sub-item-only columns are appended automatically and are not part of
+  // sub_cols, so they are left out of the saved list
+  const keep=cur.filter(x=>String(x.id)!=='item'
+                        && String(x.id)!==String(id)
+                        && !subOnly.has(String(x.id)))
+               .map(x=>String(x.id));
+  if(!keep.length){
+    // an empty subset is read as "inherit the item columns", which would bring
+    // this one straight back — so the last shared column cannot be removed
+    toast('לא ניתן להסיר את העמודה האחרונה — תת-הפריט חייב עמודה אחת לפחות');
+    return;
+  }
+  askConfirm(`להסיר את "${label}" מתת-הפריטים?`,async()=>{
+    await saveSubCols(keep,'העמודה הוסרה מתת-הפריטים');
+  },{title:'מחיקת עמודת תת-פריט',note:'העמודה תישאר בפריט האב.',confirmText:'מחק'});
 }
 /* renaming a sub-item header renames the board column itself (it is the same
    column), so it is committed exactly like a rename from the main header */

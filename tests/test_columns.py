@@ -94,3 +94,34 @@ def test_non_admin_cannot_manage_columns(client, admin_id, member_id):
         payload["user_id"] = member_id
         r = client.patch(f"/api/boards/{bid}", json=payload)
         assert r.status_code == 403, f"{payload} -> {r.status_code}"
+
+
+def test_narrowing_sub_item_columns_leaves_the_item_columns_alone(client, admin_id):
+    """Deleting a column from the sub-item header must not take it off the parent.
+
+    The two headers render the same board column, so the fix routes the sub-item
+    delete through sub_cols. This pins the server side of that: writing sub_cols
+    must never touch board.columns, col_hidden, or sub_only.
+    """
+    bid = client.post("/api/boards", json={"name": "לוח עמודות תת-פריט", "user_id": admin_id}).json()["id"]
+    client.post(f"/api/boards/{bid}/columns",
+                json={"actor_id": admin_id, "title": "תקציב", "type": "text"})
+    client.post(f"/api/boards/{bid}/columns",
+                json={"actor_id": admin_id, "title": "קבלן", "type": "text"})
+
+    before = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
+    ids_before = [c["id"] for c in before["columns"]]
+    assert len(ids_before) >= 2
+
+    # the sub-items keep everything except "status"
+    keep = ["assignees", "priority", "due", "tags"] + ids_before
+    r = client.patch(f"/api/boards/{bid}", json={"actor_id": admin_id, "sub_cols": keep})
+    assert r.status_code == 200
+
+    after = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
+    assert [c["id"] for c in after["columns"]] == ids_before, "the item's columns changed"
+    assert "status" not in (after.get("sub_cols") or []), "status still on the sub-items"
+    assert "status" not in (after.get("col_hidden") or []), "status was hidden board-wide"
+    # everything else still reaches the sub-items
+    for cid in ids_before:
+        assert cid in after["sub_cols"]
