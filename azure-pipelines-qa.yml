@@ -16,6 +16,22 @@ variables:
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
 
+  # ── deploy target ────────────────────────────────────────────────────
+  # The Container App that serves QA. It pulls from the registry above, so the
+  # only thing a release does is point it at the image this run just built.
+  containerAppName: 'missionspoccontainer'
+  containerAppResourceGroup: 'rg-missions-qa'
+  # The RG was moved to its own subscription and renamed on 2026-08-24. Naming
+  # the subscription explicitly means a service connection scoped elsewhere
+  # fails loudly here instead of updating something else.
+  azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'   # "Misssions"
+  healthUrl: 'https://missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io/api/status'
+
+  # ARM service connection for the deploy stage. It reuses the SAME service
+  # principal that already backs the registry connection above, via workload
+  # identity federation — no new app registration, no client secret anywhere.
+  azureServiceConnection: 'Missions-QA-ARM'
+
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
 
@@ -37,3 +53,54 @@ stages:
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
+
+- stage: Deploy
+  displayName: Deploy to the QA Container App
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: Deploy
+    displayName: Roll the Container App onto the image this run built
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: AzureCLI@2
+      displayName: az containerapp update
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          # `containerapp` is a CLI extension and a hosted agent starts clean.
+          # Without this the install prompt blocks and the job hangs to timeout.
+          az config set extension.use_dynamic_install=yes_without_prompt
+
+          IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
+          echo "── deploying $IMAGE ──"
+
+          # Deliberately the build-id tag, never :latest. A Container App creates
+          # a new revision only when the image STRING changes, so deploying
+          # :latest twice is a silent no-op: the pipeline goes green and the old
+          # container keeps serving. A unique tag per run makes that impossible,
+          # and makes the running revision say exactly what code it is.
+          az containerapp update \
+            --subscription "$(azureSubscriptionId)" \
+            --name "$(containerAppName)" \
+            --resource-group "$(containerAppResourceGroup)" \
+            --image "$IMAGE"
+
+    - task: Bash@3
+      displayName: Health check the new revision
+      inputs:
+        targetType: inline
+        script: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$(healthUrl)" || echo 000)
+            echo "attempt $i → HTTP $code"
+            if [ "$code" = "200" ]; then echo "✅ healthy"; exit 0; fi
+            sleep 6
+          done
+          echo "##vso[task.logissue type=error]the new revision never returned 200"
+          exit 1
