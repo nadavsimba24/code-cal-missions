@@ -21,9 +21,7 @@ variables:
 
   # ── deploy target ────────────────────────────────────────────────────
   containerAppName: 'missionsprdcontainerapp'
-  # TODO set this: the production resource group. Left blank on purpose — the
-  # deploy fails fast and says so rather than guessing at a prod resource name.
-  containerAppResourceGroup: ''
+  containerAppResourceGroup: 'RG-Missions-PRD'
   azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'   # "Misssions"
 
   # ARM service connection for the deploy stage. Reuses the SAME service
