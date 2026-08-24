@@ -752,6 +752,32 @@ def _board_role(db, board_id, user_id):
 def _is_board_admin(db, board_id, user_id):
     return _board_role(db, board_id, user_id) == "admin"
 
+def _can_be_assigned(db, board_id, user_id):
+    """May this user be tagged on this board's items? Only people who were
+    invited to the board. Tagging an outsider used to be possible from any people
+    column: it notified someone who then could not open the board, and it put a
+    name on an item its owner had no way to reach. `_board_role` is the same
+    definition of access used everywhere else, so workspace admins — who reach
+    every board without an explicit invite — stay taggable."""
+    return _board_role(db, board_id, user_id) is not None
+
+def _filter_people_values(db, board_id, cf, before):
+    """Drop non-members from people-column values in `cf` (in place).
+    Only *newly added* ids are rejected: ids already stored on the item survive so
+    that items tagged before this rule stay editable and can be cleaned up by
+    hand, instead of a legacy value making the whole cell impossible to save."""
+    board = db.query(Board).filter(Board.id == board_id).first()
+    cols = {c["id"]: c for c in ((board.settings or {}).get("columns", []) if board else [])}
+    for key, val in list(cf.items()):
+        if not isinstance(val, list):
+            continue
+        col = cols.get(key)
+        if not col or col.get("type") != "people":
+            continue
+        kept = [c for c in (before or {}).get(key, []) if c in val]   # preserved, order-safe
+        cf[key] = [uid for uid in val
+                   if uid in kept or _can_be_assigned(db, board_id, uid)]
+
 _BROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
 def _require_board_edit(db, board_id, actor, need="editor"):
     """Enforce board-level write permission (closes IDOR on board mutations).
@@ -973,6 +999,12 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "view_only": (b.settings or {}).get("view_only", False),
             "my_role": my_role,
             "owners": owners,
+            # who may be tagged in a people column — the pickers build from this
+            "members": [{"id": mu.id, "name": mu.name, "avatar_url": mu.avatar_url}
+                        for mu in (db.query(User)
+                                     .join(BoardMember, BoardMember.user_id == User.id)
+                                     .filter(BoardMember.board_id == b.id)
+                                     .order_by(User.name).all())],
             "columns": (b.settings or {}).get("columns", []),
             # which columns sub-items show (ids, name column first). None = never
             # configured → sub-items mirror the item columns.
@@ -1362,7 +1394,7 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
-                       "connect", "created_at", "created_by", "item_id", "item_kind"}
+                       "connect", "created_at", "created_by", "item_id"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
             is_ws_admin = _ws_role(db, actor_id) == "admin"
             cols = []
@@ -1376,10 +1408,10 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     changed = (not prev) or prev.get("type") != "connect" or prev.get("connect") != c.get("connect")
                     if changed and not is_ws_admin:
                         raise HTTPException(403, "רק מנהל מערכת יכול להוסיף או לשנות עמודת קישור בין לוחות")
-                # a status column and a "סוג" column carry their own {label,color}
-                # vocabulary; every other type keeps its options untouched
+                # a status column carries its own {label,color} vocabulary;
+                # every other type keeps its options untouched
                 opts = (_status_col_options(c.get("options"))
-                        if c["type"] in ("status", "item_kind") else c.get("options"))
+                        if c["type"] == "status" else c.get("options"))
                 cols.append({
                     "id": cid,
                     "type": c["type"],
@@ -2386,7 +2418,8 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
                 task.status = TaskStatus(status)
             except ValueError:
                 pass
-        ids = data.get("assignee_ids") or []
+        ids = [i for i in (data.get("assignee_ids") or [])
+               if _can_be_assigned(db, board_id, i)]   # invited members only
         if ids:
             task.assignees = db.query(User).filter(User.id.in_(ids)).all()
         # Boards created before "יוצר הרשומה" became a derived column carry it as
@@ -2394,6 +2427,7 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # derived `created_by` column needs nothing — it reads task.created_by.
         creator = actor_id
         cf = dict(data.get("custom_fields") or {})
+        _filter_people_values(db, board_id, cf, None)   # invited members only
         # A new item has no status yet — it shows "טרם הוגדר" until someone picks
         # one. task.status still holds the group's value so grouping, kanban and
         # the charts behave normally; this only says a human has not chosen. It
@@ -2981,6 +3015,8 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                     del data["custom_fields"][k]      # silently drop cols the user can't edit
             if iperm not in ("edit", "delete"):
                 data["custom_fields"] = {}
+            # people columns may only name board members (see _can_be_assigned)
+            _filter_people_values(db, task.board_id, data["custom_fields"], task.custom_fields or {})
         # what the item shows now — compared after the edit so automations fire on
         # the real change, whichever route set it (built-in or board-defined value)
         _before_status = _task_status_key(task)
@@ -3550,6 +3586,10 @@ def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_use
         actor = actor_id
         _require_board_edit(db, task.board_id, actor)   # only board editors may (un)assign
         was = user in task.assignees
+        # removal stays open regardless, so an assignment made before this rule
+        # existed can still be taken off the item
+        if data.get("action") != "remove" and not was and not _can_be_assigned(db, task.board_id, user.id):
+            raise HTTPException(403, "אפשר לשייך רק משתמשים שהוזמנו ללוח")
         if data.get("action") == "remove":
             if was:
                 task.assignees.remove(user)

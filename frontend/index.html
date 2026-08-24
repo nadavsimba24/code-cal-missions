@@ -68,7 +68,14 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 ::-webkit-scrollbar-track{background:transparent}
 
 /* ===== Sidebar ===== */
-#sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
+#sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
+/* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
+   does not fight the sidebar list's scrollbar, which RTL puts on this same edge. */
+#sb-resizer{position:absolute;inset-block:0;inset-inline-end:-3px;width:7px;cursor:col-resize;z-index:60;touch-action:none}
+#sb-resizer::after{content:"";position:absolute;inset-block:0;inset-inline-end:3px;width:2px;background:transparent;transition:background .12s}
+#sb-resizer:hover::after,#sb-resizer.dragging::after{background:var(--primary)}
+body.sb-resizing{cursor:col-resize;user-select:none}
+body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .sb-logo{height:var(--header-h);display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border);font-weight:800;font-size:17px}
 .sb-logo .dot{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff;font-size:13px}
 .sb-search{padding:10px 12px}
@@ -1247,6 +1254,8 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
 /* desktop collapse */
 @media (min-width:821px){
   #sidebar{transition:width .2s ease, min-width .2s ease}
+  /* the collapse animation would lag a pointer-driven resize into rubber-banding */
+  body.sb-resizing #sidebar{transition:none}
   body.sb-collapsed #sidebar{width:0;min-width:0;border-inline-start:none;overflow:hidden}
 }
 
@@ -1285,6 +1294,7 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   .kcol{width:76vw;min-width:76vw}
   /* comfortable touch targets in the sidebar */
   .sb-item,.sb-folder-head{padding:11px 10px}
+  #sb-resizer{display:none}                      /* the drawer has its own width */
   /* Desktop-only controls. !important because renderSidebar sets display inline
      from the user's permissions — the breakpoint has to win over that. */
   #new-board-btn,#new-folder-btn,#env-manage-btn,#nav-sysadmin{display:none!important}
@@ -1325,8 +1335,10 @@ body, body *{ font-weight:400!important; }
 .fa-solid,.fas{ font-weight:900!important; }
 .fa-regular,.far,.fa-brands,.fab{ font-weight:400!important; }
 
-/* the exceptions that stay bold — board names, wherever a board is named */
-#bh-title, #bh-title *, .sb-item-name{ font-weight:700!important; }
+/* the exception that stays bold — the open board's title in the header. The
+   sidebar list is a list, not a heading: bolding every board name there flattened
+   the contrast that marks which one is actually open. */
+#bh-title, #bh-title *{ font-weight:700!important; }
 </style>
 </head>
 <body>
@@ -1334,6 +1346,7 @@ body, body *{ font-weight:400!important; }
   <div id="sb-overlay" onclick="toggleSidebar(false)"></div>
   <!-- Sidebar -->
   <aside id="sidebar">
+    <div id="sb-resizer" title="גרור לשינוי רוחב התפריט" aria-hidden="true"></div>
     <div class="sb-logo" style="font-size:15px"><span class="dot"><i class="fa-solid fa-rocket"></i></span> Missions</div>
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
     <div class="sb-section">סביבת עבודה <span class="sb-sec-acts"><i id="env-manage-btn" class="fa-solid fa-user-gear" title="ניהול משתמשים והרשאות בסביבה" style="display:none" onclick="Env.manageActive()"></i></span></div>
@@ -1701,6 +1714,7 @@ async function boot(){
   Settings.load();
   revealWhenFontsReady();
   try{ if(localStorage.getItem('cc_sb_collapsed')==='1') document.body.classList.add('sb-collapsed'); }catch(e){}
+  initSidebarResize();
   try{
     // Who are we? The server decides, from the Entra identity on the request.
     // In dev mode it accepts the id the picker stored, so the picker still works.
@@ -1886,6 +1900,42 @@ function toggleSidebar(force){
 }
 function closeSidebarMobile(){
   if(isMobile()) document.body.classList.remove('sb-open');
+}
+/* ===== sidebar width — drag the inner edge (desktop) =====
+   Floor is the width the sidebar has always had, so "narrowest" is exactly
+   today's look and nothing shifts for anyone who never drags. Ceiling is a third
+   of the window: past that the sidebar starts competing with the board itself. */
+const SB_MIN=240;
+function sbMax(){ return Math.max(SB_MIN, Math.round(window.innerWidth/3)); }
+function sbWidth(){ return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'))||SB_MIN; }
+function setSidebarWidth(w,save){
+  const v=Math.max(SB_MIN, Math.min(sbMax(), Math.round(w)));
+  document.documentElement.style.setProperty('--sidebar-w', v+'px');
+  if(save){ try{ localStorage.setItem('cc_sb_w', v); }catch(e){} }
+  return v;
+}
+function initSidebarResize(){
+  try{ const w=parseInt(localStorage.getItem('cc_sb_w')||'',10); if(Number.isFinite(w)) setSidebarWidth(w,false); }catch(e){}
+  const rz=document.getElementById('sb-resizer'); if(!rz)return;
+  rz.onmousedown=(e)=>{
+    if(isMobile()||document.body.classList.contains('sb-collapsed'))return;
+    e.preventDefault();
+    // RTL puts the sidebar on the right, so dragging its edge *left* widens it
+    const rtl=(document.documentElement.getAttribute('dir')||document.dir||'rtl')==='rtl';
+    const startX=e.clientX, startW=sbWidth();
+    let w=startW;
+    rz.classList.add('dragging'); document.body.classList.add('sb-resizing');
+    const move=(ev)=>{ const d=rtl?(startX-ev.clientX):(ev.clientX-startX); w=setSidebarWidth(startW+d,false); };
+    const up=()=>{
+      document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up);
+      rz.classList.remove('dragging'); document.body.classList.remove('sb-resizing');
+      setSidebarWidth(w,true);   // persist only the width the drag settled on
+    };
+    document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+  };
+  // a narrower window lowers the ceiling — re-clamp so a stored width can't
+  // outgrow a third of the screen
+  window.addEventListener('resize',()=>{ if(!isMobile()) setSidebarWidth(sbWidth(),false); });
 }
 function renderSidebar(){
   const active = (typeof Env!=='undefined') ? Env.active() : null;
@@ -2520,6 +2570,20 @@ const Profile = {
   }
 };
 /* compact assignee picker — a popover anchored right above the clicked circle */
+/* Who a people column may offer: the board's own members. Anyone already tagged
+   is appended even if they are not a member, so a tag made before this rule can
+   still be found and removed — the server allows removal for the same reason. */
+function boardPeople(alsoInclude){
+  const mem=(st.board&&st.board.members)||[];
+  const out=mem.map(m=>(st.users||[]).find(u=>u.id===m.id)||m);
+  const have=new Set(out.map(u=>u.id));
+  (alsoInclude||[]).forEach(id=>{
+    if(have.has(id))return;
+    const u=(st.users||[]).find(x=>x.id===id); if(u){out.push(u);have.add(id);}
+  });
+  return out;
+}
+const NO_BOARD_PEOPLE='<div style="padding:6px;color:var(--text-light);font-size:12px">אין חברי לוח — הזמן משתמשים ללוח כדי לשייך אותם</div>';
 function openPeople(e,id){
   if(e&&e.stopPropagation)e.stopPropagation();
   const t=findAnyTask(id); if(!t)return;   // findAnyTask → works for sub-items too
@@ -2529,7 +2593,7 @@ function openPeople(e,id){
 }
 function assigneePopHTML(id){
   const t=findAnyTask(id); const cur=new Set(((t&&t.assignees)||[]).map(a=>a.id));
-  return (st.users||[]).map(u=>`<button class="pl-opt ${cur.has(u.id)?'sel':''}" onclick="togglePersonPop(event,${id},${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${cur.has(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||'<div style="padding:6px;color:var(--text-light);font-size:12px">אין משתמשים</div>';
+  return boardPeople([...cur]).map(u=>`<button class="pl-opt ${cur.has(u.id)?'sel':''}" onclick="togglePersonPop(event,${id},${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${cur.has(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||NO_BOARD_PEOPLE;
 }
 async function togglePersonPop(e,taskId,uid){
   e.stopPropagation();
@@ -4220,7 +4284,6 @@ async function saveSubOnly(ids,msg){
 /* ============ custom columns (עמודות מותאמות, בהשראת Monday) ============ */
 const COLUMN_TYPES=[
   {type:'status',he:'סטטוס',ic:'fa-circle-half-stroke',desc:'תווית צבעונית'},
-  {type:'item_kind',he:'סוג',ic:'fa-tags',desc:'משימה / באג / שיפור'},
   {type:'text',he:'טקסט',ic:'fa-font',desc:'טקסט חופשי'},
   {type:'people',he:'אנשים',ic:'fa-user-group',desc:'שיוך משתמשים'},
   {type:'dropdown',he:'רשימה נפתחת',ic:'fa-list-check',desc:'בחירה מרשימת אפשרויות'},
@@ -4241,10 +4304,7 @@ const STATUS_OPTS=[
   {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
   {label:'תקוע',color:'#e2445c'},{label:'הושלם',color:'#00c875'},
 ];
-/* "סוג" — a status-shaped column that ships with its own three values.
-   The board admin can rename or recolour them from the same editor. */
-const ITEM_KIND_OPTS=[{label:'משימה',color:'#0073ea'},{label:'באג',color:'#e2445c'},{label:'שיפור',color:'#a25ddc'}];
-const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',item_kind:'סוג',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
+const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
   created_at:'מועד יצירה',created_by:'יוצר הרשומה',item_id:'מזהה פריט'};
 /* columns the system derives from the item itself — they have no value to fill
@@ -4553,7 +4613,7 @@ function customCellHTML(c,t){
   if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
   if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
   if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
-  if(c.type==='status'||c.type==='item_kind') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
+  if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
   if(c.type==='timeline')return `<td class="cell cell-custom"><div onclick="openTimeline(${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
   if(c.type==='checkbox')return `<td class="cell cell-custom"><input type="checkbox" class="cc-check" ${v?'checked':''} onchange="setCell(${id},'${c.id}',this.checked?true:null)"></td>`;
   if(c.type==='people')  return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="peopleCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${peopleDisp(v)}</span></td>`;
@@ -4627,7 +4687,6 @@ function exportCell(c,t){
     case 'number':   return (v==null||v==='')?'':(isNaN(Number(v))?String(v):Number(v));
     case 'date':     return v?{v,t:'date'}:'';
     case 'rating':   return v?Number(v):'';
-    case 'item_kind':
     case 'status':{
       const m=statusCellView(v,col);
       return m?{v:m.label,c:m.color}:{v:STATUS_UNSET.label,c:STATUS_UNSET.color};
@@ -4703,7 +4762,7 @@ function peopleDisp(ids){
 }
 function buildPeoplePop(pop,taskId,colId){
   const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];
-  pop.innerHTML=(st.users||[]).map(u=>`<button class="pl-opt ${vals.includes(u.id)?'sel':''}" onclick="togglePeopleCell(event,${taskId},'${colId}',${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${vals.includes(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||'<div style="padding:6px;color:var(--text-light);font-size:12px">אין משתמשים</div>';
+  pop.innerHTML=boardPeople(vals).map(u=>`<button class="pl-opt ${vals.includes(u.id)?'sel':''}" onclick="togglePeopleCell(event,${taskId},'${colId}',${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${vals.includes(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||NO_BOARD_PEOPLE;
 }
 function peopleCellMenu(e,taskId,colId){
   e.stopPropagation();
@@ -5081,19 +5140,13 @@ function setRating(taskId,colId,n){
 /* status cell — every status column carries its own label/color vocabulary
    (col.options=[{label,color}]); STATUS_OPTS is only the starting point for a
    column the board admin hasn't customised yet. */
-/* is this column the "סוג" type? — only changes the wording of the editor */
-function _colIsKind(colId){
-  const c=(colId&&typeof colId==='object')?colId:customColumns().find(x=>x.id===colId);
-  return !!(c&&c.type==='item_kind');
-}
 function statusColOpts(col){
   const c=(col&&typeof col==='object')?col:customColumns().find(x=>x.id===col);
   const raw=(c&&c.options)||[];
   const out=raw.map(o=>typeof o==='string'?{id:null,label:o,color:'#c4c4c4'}
                                           :{id:(o&&o.id)||null,label:o&&o.label,color:(o&&o.color)||'#c4c4c4'})
                .filter(o=>o.label);
-  const defs=(c&&c.type==='item_kind')?ITEM_KIND_OPTS:STATUS_OPTS;
-  return out.length?out:defs.map(o=>({id:null,label:o.label,color:o.color}));
+  return out.length?out:STATUS_OPTS.map(o=>({id:null,label:o.label,color:o.color}));
 }
 /* Every status column has a default: a cell with nothing chosen is not blank,
    it reads "טרם הוגדר" in grey. Choosing it again clears the stored value, so
@@ -5128,7 +5181,7 @@ function statusCellMenu(e,taskId,colId){
     +`<button class="cell-pop-opt pop-span" style="background:${STATUS_UNSET.color}" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">${esc(STATUS_UNSET.label)}${!cur||!cur.label?' <i class="fa-solid fa-check"></i>':''}</button>`;
   // board admin gets the same shortcut the built-in status column has
   if(isBoardAdmin())
-    html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ${_colIsKind(colId)?'ניהול ערכי הסוג':'ניהול סטטוסים'}</button>`;
+    html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
   openCellPop(e.currentTarget,html,opts.length>POP_GRID_FROM?'pop-grid':'');
 }
 function pickStatusCell(e,taskId,colId,optIdx){
@@ -5144,7 +5197,7 @@ const STATUS_PALETTE=['#0073ea','#fdab3d','#e2445c','#00c875','#a25ddc','#579bfc
 let _csDraft=[], _csCol=null;
 function manageColStatuses(colId){
   if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך סטטוסים');return;}
-  const c=customColumns().find(x=>x.id===colId); if(!c||(c.type!=='status'&&c.type!=='item_kind'))return;
+  const c=customColumns().find(x=>x.id===colId); if(!c||c.type!=='status')return;
   _csCol=colId;
   // `orig` remembers the label as opened (saved or default), so a rename can
   // follow through to the cells that already carry it
@@ -5167,7 +5220,7 @@ function _renderColStatusModal(){
     ? `<button class="btn btn-ghost" onclick="_csAdd()"><i class="fa-solid fa-plus"></i> הוסף סטטוס</button>`
     : `<span style="color:var(--text-light);font-size:12px">הגעת למספר הסטטוסים המרבי (${STATUS_COL_MAX})</span>`;
   showModal(`
-    <h2><i class="fa-solid fa-sliders"></i> ${c.type==='item_kind'?'ניהול ערכי הסוג':'ניהול סטטוסים'} · ${esc(c.title||'')}</h2>
+    <h2><i class="fa-solid fa-sliders"></i> ניהול סטטוסים · ${esc(c.title||'')}</h2>
     <div class="mbody">
       <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">שם, צבע וסדר הסטטוסים של עמודה זו בלבד. שינוי שם יעודכן גם בפריטים שכבר סומנו בו; סטטוס שיוסר יישאר בפריטים הקיימים אך לא יוצע לבחירה.</p>
       <div id="cs-rows">${rows}</div>
@@ -5420,8 +5473,12 @@ async function saveTimeline(taskId,colId,clear){
 function addColMenu(e,forSub){
   if(mobileBlocked('הוספת עמודה'))return;
   e.stopPropagation();
-  // the connect (cross-board) column is a system-admin-only capability
-  const types=COLUMN_TYPES.filter(c=>c.type!=='connect'||isSysAdmin());
+  // the connect (cross-board) column is a system-admin-only capability.
+  // Sorted here rather than in the COLUMN_TYPES literal so a type added later
+  // lands in its alphabetical place instead of at the bottom. filter() already
+  // returns a fresh array, so the sort never touches the constant.
+  const types=COLUMN_TYPES.filter(c=>c.type!=='connect'||isSysAdmin())
+                          .sort((a,b)=>a.he.localeCompare(b.he,'he'));
   // any built-in columns the admin hid can be restored from here
   const hidden=((st.board&&st.board.col_hidden)||[]).map(String);
   const hiddenHTML=hidden.length?('<div class="pop-title">עמודות מוסתרות — החזרה</div>'+hidden.map(k=>{
@@ -5458,7 +5515,6 @@ async function addColumn(type,forSub){
     if(f===null)return; col.formula=f.trim();
   }
   if(type==='dropdown')col.options=[];
-  if(type==='item_kind')col.options=ITEM_KIND_OPTS.map(o=>({...o}));   // ships with משימה/באג/שיפור
   if(type==='item_id')col.copy_mode='id';   // numeric id is the only mode; a click copies the number
   const before=new Set(customColumns().map(c=>c.id));
   const cols=customColumns().slice();cols.push(col);
@@ -5514,7 +5570,7 @@ function colMenu(e,colId){
     <button class="cell-pop-opt2" onclick="duplicateColumn(event,'${colId}')"><i class="fa-regular fa-clone"></i> שכפל עמודה</button>`:'';
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +idSettings
-    +(c&&(c.type==='status'||c.type==='item_kind')?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ${c.type==='item_kind'?'ניהול ערכי הסוג':'ניהול סטטוסים'}</button>`:'')
+    +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     +(c&&c.type==='connect'&&isSysAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
@@ -6283,7 +6339,7 @@ async function deleteGroup(gid){
 }
 
 /* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */
-const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',item_kind:'סוג',priority:'עדיפות',date:'תאריך',tags:'תגיות',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
+const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',tags:'תגיות',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
 function formSchema(){
   const f=[
     {key:'title',label:'שם הפריט',type:'text',locked:true},
@@ -6369,12 +6425,12 @@ const Forms={
     else if(f.type==='rating') inp=`<select id="${id}"><option value="">—</option>${[1,2,3,4,5].map(n=>`<option value="${n}">${'★'.repeat(n)}</option>`).join('')}</select>`;
     // built-in status field → the board's vocabulary (value = enum key);
     // a status column → that column's own vocabulary (value = option index)
-    else if(f.type==='status'||f.type==='item_kind') inp=f.col
+    else if(f.type==='status') inp=f.col
       ? `<select id="${id}"><option value="">—</option>${statusColOpts(f.col).map((o,i)=>`<option value="${i}">${esc(o.label)}</option>`).join('')}</select>`
       : `<select id="${id}">${boardStatusList().map(s=>`<option value="${s.key}">${esc(s.he)}</option>`).join('')}</select>`;
     // built-in priority field → the board's vocabulary, exactly like status
     else if(f.type==='priority') inp=`<select id="${id}">${boardPriorityList().map(p=>`<option value="${p.key}">${esc(p.he)}</option>`).join('')}</select>`;
-    else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${(st.users||[]).map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${avatarInner(u)}</span> ${esc(u.name)}</label>`).join('')}</div>`;
+    else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${boardPeople().map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${avatarInner(u)}</span> ${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין חברי לוח לשיוך</span>'}</div>`;
     else if(f.type==='tags') inp=`<input id="${id}" placeholder="מופרד בפסיקים">`;
     else if(f.type==='dropdown') inp=`<div class="ff-multi" id="${id}">${((f.col&&f.col.options)||[]).map(o=>`<label class="ff-chip"><input type="checkbox" value="${esc(o)}"> ${esc(o)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין אפשרויות בעמודה</span>'}</div>`;
     else inp=`<input id="${id}" placeholder="(${FIELD_TYPE_HE[f.type]||f.type})">`;
@@ -6390,7 +6446,7 @@ const Forms={
       else if(f.type==='checkbox'){ val=el.checked?true:null; }
       else if(f.type==='tags'){ val=(el.value||'').split(',').map(s=>s.trim()).filter(Boolean); if(!val.length)val=null; }
       else if(f.type==='rating'||f.type==='number'){ val=el.value===''?null:Number(el.value); }
-      else if((f.type==='status'||f.type==='item_kind')&&f.col){ const o=el.value===''?null:statusColOpts(f.col)[+el.value]; val=o?{label:o.label,color:o.color}:null; }
+      else if(f.type==='status'&&f.col){ const o=el.value===''?null:statusColOpts(f.col)[+el.value]; val=o?{label:o.label,color:o.color}:null; }
       else { val=el.value||null; }
       if(f.required && (val==null||val===''||(Array.isArray(val)&&!val.length))){ missing.push(f.label); continue; }
       if(f.key==='title') payload.title=val;
