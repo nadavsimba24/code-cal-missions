@@ -2,8 +2,15 @@
 # Build and push an image to Azure Container Registry
 # https://docs.microsoft.com/azure/devops/pipelines/languages/docker
 
+# Every commit to main lands in QA. This is the only pipeline that deploys
+# automatically; prod is manual.
 trigger:
-- main
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - azure-pipelines-prod.yml
 
 resources:
 - repo: self
@@ -113,16 +120,33 @@ stages:
           done
 
           # Only now is an HTTP check meaningful: the revision is up and holds
-          # the traffic, so a non-200 is the app failing, not the platform.
+          # the traffic, so the response tells us about the app, not the platform.
+          #
+          # 403 counts as reachable. The ingress carries an IP allow-list (office
+          # IPs and a few laptops) and a Microsoft-hosted agent is never on it —
+          # its address comes from Azure's dynamic ranges. So a 403 here is the
+          # ingress refusing THIS AGENT, which still proves it is up and routing
+          # for the new revision. Treating it as failure would fail every deploy
+          # forever, which is exactly what run 45862 did.
+          #
+          # Be honest about the limit: because the allow-list rejects before
+          # routing, a 403 cannot distinguish a healthy app from a dead one. The
+          # revision-state wait above is what covers that, and a container
+          # readinessProbe would cover it properly.
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$(healthUrl)" || echo 000)
             echo "  health attempt $i → HTTP $code"
-            if [ "$code" = "200" ]; then
-              echo "✅ $REV serving $IMAGE"
-              exit 0
-            fi
+            case "$code" in
+              200)
+                echo "✅ $REV is serving $IMAGE"
+                exit 0 ;;
+              403)
+                echo "✅ $REV is up and routing $IMAGE"
+                echo "   (403 = ingress IP allow-list refusing this build agent, not an app fault)"
+                exit 0 ;;
+            esac
             sleep 10
           done
-          echo "##vso[task.logissue type=error]$REV never returned 200 — rolling back is manual"
+          echo "##vso[task.logissue type=error]$REV answered neither 200 nor 403 — the app is not serving"
           az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
           exit 1

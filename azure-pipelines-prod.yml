@@ -2,8 +2,11 @@
 # Build and push an image to Azure Container Registry
 # https://docs.microsoft.com/azure/devops/pipelines/languages/docker
 
-trigger:
-- main
+# Manual only. Every commit to main goes to QA automatically (see
+# azure-pipelines-qa.yml); production is a deliberate act, so this pipeline is
+# started by hand from the Run pipeline button. Until it was separated, a single
+# push ran both pipelines and there was no moment where anyone chose to release.
+trigger: none
 
 resources:
 - repo: self
