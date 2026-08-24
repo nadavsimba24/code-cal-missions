@@ -1643,7 +1643,7 @@ const Router={
     const r=this.parse();
     if(r.boardId && (st.boards||[]).some(b=>b.id===r.boardId)){
       if(!st.board||st.board.id!==r.boardId) await openBoard(r.boardId);
-      if(r.itemId){ if(Chat.taskId!==r.itemId && findAnyTask(r.itemId)) Chat.open(r.itemId); }
+      if(r.itemId){ if(Chat.taskId!==r.itemId && findAnyTask(r.itemId)) Chat.open(r.itemId,{center:true}); }
       else if(Chat.taskId) Chat.close();
     }
   }
@@ -1734,7 +1734,7 @@ async function enterApp(){
     else { const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
            target=st.boards.some(b=>b.id===savedBoard)?savedBoard:st.boards[0].id; }
     await openBoard(target);
-    if(wantItem && findAnyTask(wantItem)) Chat.open(wantItem);   // deep link to a specific item
+    if(wantItem && findAnyTask(wantItem)) Chat.open(wantItem,{center:true});   // deep link to a specific item
   }
   else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
   Notif.start();
@@ -2675,7 +2675,7 @@ const Notif={
       if(!st.boards.some(b=>b.id===boardId)){ toast('אין לך גישה ללוח זה'); this.render(); return; }
       closePops();
       await openBoard(boardId);
-      if(taskId!=null) setTimeout(()=>{ if(findAnyTask(taskId))Chat.open(taskId); },120);  // open the item's chat
+      if(taskId!=null) setTimeout(()=>{ if(findAnyTask(taskId))Chat.open(taskId,{center:true}); },120);  // open the item's chat, centred on the board behind
     } else this.render();
   },
   async readAll(e){ e&&e.stopPropagation(); try{ await api('/api/notifications/read-all',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){} this.items.forEach(n=>n.is_read=true); this.unread=0; this.badge(); this.render(); },
@@ -4661,7 +4661,7 @@ async function openLinkedItem(tid){
   if(!bid){toast('הפריט המקושר לא נמצא');return;}
   if(!(st.boards||[]).some(b=>b.id===bid)){toast('אין לך גישה ללוח של הפריט המקושר');return;}
   closeModals(); await openBoard(bid);
-  setTimeout(()=>{ if(findAnyTask(tid))Chat.open(tid); },160);
+  setTimeout(()=>{ if(findAnyTask(tid))Chat.open(tid,{center:true}); },160);
 }
 let _connect=null,_cnTimer=null;
 function openConnectPicker(e,taskId,colId){
@@ -6298,7 +6298,10 @@ const fdatetimeY = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
   taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'', editing:null,
-  open(id){
+  /* opts.center — a deliberate jump (a notification, a deep link, a linked item)
+     always centres the row, even if it happens to be on screen already. Clicking
+     the bubble on a row you are looking at still does not move the board. */
+  open(id, opts){
     this.taskId=id; this.task=findAnyTask(id); this.tabName='chat';
     this.replyTo=null; this.atts=[]; this.mentions=[];
     document.getElementById('chat-panel').classList.add('open');
@@ -6313,7 +6316,7 @@ const Chat = {
     const pb=document.getElementById('chat-perm'); if(pb)pb.style.display=(st.board&&st.board.my_role==='admin')?'inline-flex':'none';
     this.bindDnd();
     this.setTabUI(); this.render();
-    this.revealOpenRow();
+    this.revealOpenRow(!!(opts && opts.center));
     Router.set(st.board&&st.board.id, id);   // reflect the open item in the URL
   },
   // drag & drop files/screenshots anywhere onto the chat panel (bound once).
@@ -6350,7 +6353,7 @@ const Chat = {
      notification the row is usually somewhere else entirely — and it may not be
      rendered at all, because its group is collapsed or it is a sub-item whose
      parent's list is closed. Open whatever hides it, then scroll it into view. */
-  revealOpenRow(){
+  revealOpenRow(center){
     const id=this.taskId;
     if(id==null||!st.board){ this.markOpenRow(); return; }
     let target=null, parent=null;
@@ -6377,7 +6380,7 @@ const Chat = {
     // exact geometry, 1px for sub-pixel rounding: a row flush with the top edge
     // is visible and must not be scrolled
     const hidden=!v || r.top<v.top-1 || r.bottom>v.bottom+1;
-    if(hidden) n.scrollIntoView({block:'center',behavior:'smooth'});
+    if(center || hidden) n.scrollIntoView({block:'center',behavior:'smooth'});
   },
   /* An unsent message survives closing the panel. Kept per item and in
      localStorage, so it also survives a reload — closing a panel by accident
