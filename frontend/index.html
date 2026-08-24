@@ -6716,7 +6716,7 @@ const Chat = {
     s=s.replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>');
     // mentions: color the FULL user name (incl. spaces) when it matches a known
     // user. One pass: known names (longest first) win over a single-token @handle.
-    const names=((st.users||[]).map(u=>u.name).filter(Boolean))
+    const names=(boardPeople().map(u=>u.name).filter(Boolean))
       .sort((a,b)=>b.length-a.length)
       .map(n=>esc(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
     const alt=names.length?'(?:'+names.join('|')+'|[^\\s@,.]{1,30})':'[^\\s@,.]{1,30}';
@@ -6727,7 +6727,7 @@ const Chat = {
   // + colored @mentions, newlines preserved by white-space:pre-wrap).
   highlightMentions(text){
     let s=esc(text||'');
-    const names=((st.users||[]).map(u=>u.name).filter(Boolean))
+    const names=(boardPeople().map(u=>u.name).filter(Boolean))
       .sort((a,b)=>b.length-a.length)
       .map(n=>esc(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
     const alt=names.length?'(?:'+names.join('|')+'|[^\\s@,.]{1,30})':'[^\\s@,.]{1,30}';
@@ -6831,7 +6831,10 @@ const Chat = {
   },
   _openMention(ctx){
     const q=ctx.query.trim().toLowerCase();
-    const matches=(st.users||[]).filter(u=>!q||(u.name||'').toLowerCase().includes(q));
+    // only people invited to this board — tagging anyone else notifies someone
+    // who cannot open the item they were tagged on. The server enforces the
+    // same rule; this just stops offering a choice that would be rejected.
+    const matches=boardPeople(this.mentions).filter(u=>!q||(u.name||'').toLowerCase().includes(q));
     this._mention={ctx, matches, idx:0};
     this._renderMentionMenu();
   },
@@ -6840,13 +6843,13 @@ const Chat = {
     const {matches,idx}=this._mention;
     const html=matches.length
       ? matches.map((u,i)=>`<button class="mention-opt${i===idx?' active':''}" onmousedown="event.preventDefault();Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')
-      : '<div style="padding:9px;color:var(--text-light);font-size:12.5px">אין תוצאות</div>';
+      : '<div style="padding:9px;color:var(--text-light);font-size:12.5px">אין חברי לוח תואמים — אפשר לתייג רק מי שהוזמן ללוח</div>';
     this._float(anchor, html);
     const a=document.querySelector('.chat-float .active'); if(a)a.scrollIntoView({block:'nearest'});
   },
   _closeMention(){ if(this._mention){ this._mention=null; closeCellPops(); } },
   pickMention(id){
-    const u=(st.users||[]).find(x=>x.id===id); if(!u)return;
+    const u=boardPeople(this.mentions).find(x=>x.id===id); if(!u)return;
     if(!this.mentions.includes(id))this.mentions.push(id);
     const ta=document.getElementById('comp-text'), ctx=this._mention&&this._mention.ctx;
     if(ta&&ctx){ const ins='@'+u.name+' '; ta.value=ta.value.slice(0,ctx.start)+ins+ta.value.slice(ctx.pos); const np=ctx.start+ins.length; ta.focus(); ta.setSelectionRange(np,np); this.syncHL(); }

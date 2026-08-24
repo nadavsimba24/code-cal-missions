@@ -2686,15 +2686,22 @@ def _run_action(db, a, task, actor_id, board):
     label = _automation_label(db, board, a)
     body = f"אוטומציה בלוח '{board.name}': {label} — פריט '{task.title}'."
 
+    # An automation is a stored rule: the person it names may have been chosen
+    # while they were a member and removed from the board since. Re-check at run
+    # time, or a rule becomes a standing way to reach someone who was taken off
+    # the board on purpose.
     if act == "notify_person":
-        _notify(db, cfg.get("a_person"), "automation", "אוטומציה הופעלה", body,
-                board_id=task.board_id, task_id=task.id)
+        if _can_be_assigned(db, task.board_id, cfg.get("a_person")):
+            _notify(db, cfg.get("a_person"), "automation", "אוטומציה הופעלה", body,
+                    board_id=task.board_id, task_id=task.id)
     elif act == "notify_assignees":
         for u in list(task.assignees):
             _notify(db, u.id, "automation", "אוטומציה הופעלה", body,
                     board_id=task.board_id, task_id=task.id)
     elif act == "assign_person":
         u = db.query(User).filter(User.id == cfg.get("a_person")).first()
+        if u and not _can_be_assigned(db, task.board_id, u.id):
+            u = None
         if u and u not in task.assignees:
             task.assignees.append(u)
             _notify(db, u.id, "assign", "שויכת למשימה", body,
@@ -2855,6 +2862,26 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
                 "can_manage": _can_manage_automations(db, b, user_id)}
 
 
+def _check_automation_person(db, board_id, cfg):
+    """A rule may only name someone invited to the board.
+
+    Rejected when the rule is saved rather than when it runs: a rule that
+    silently does nothing is worse than one that refuses to be written, because
+    nobody finds out until the notification they were counting on never arrives.
+    Run time re-checks anyway (see _run_automations) — membership can change
+    after the rule is stored.
+    """
+    pid = (cfg or {}).get("a_person")
+    if pid in (None, ""):
+        return
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "נמען האוטומציה אינו תקין")
+    if not _can_be_assigned(db, board_id, pid):
+        raise HTTPException(400, "אפשר לבחור רק משתמשים שהוזמנו ללוח")
+
+
 @app.post("/api/boards/{board_id}/automations")
 def create_automation(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -2866,6 +2893,7 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
         cfg, err = recipes.validate(data.get("recipe_id"), data.get("config") or {})
         if err:
             raise HTTPException(400, err)
+        _check_automation_person(db, board_id, cfg)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         a = Automation(board_id=board_id, recipe_id=data["recipe_id"], config=cfg,
                        is_active=bool(data.get("is_active", True)),
@@ -2893,6 +2921,7 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
             cfg, err = recipes.validate(a.recipe_id, data.get("config") or {})
             if err:
                 raise HTTPException(400, err)
+            _check_automation_person(db, a.board_id, cfg)
             a.config = cfg
         a.updated_by = user_id
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -3306,14 +3335,7 @@ def add_comment(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         atts = data.get("attachments") or []
         if not content and not atts:
             raise HTTPException(400, "תגובה ריקה")
-        c = Comment(task_id=task_id, user_id=user.id, parent_id=data.get("parent_id"),
-                    content=content, attachments=atts,
-                    mentions=data.get("mentions") or [], likes=[], seen_by=[])
-        db.add(c)
-        _audit(db, task_id, "comment", field="reply" if data.get("parent_id") else "comment",
-               new=(content[:120] or "(קובץ)"), user_id=user.id)
-        # notify every tagged user (explicit @-picks + any @Name typed in the text),
-        # excluding the author, honoring the board's notification switch
+        # Who is being tagged: explicit @-picks plus any @Name typed into the text.
         mentioned = set()
         for x in (data.get("mentions") or []):
             try:
@@ -3324,7 +3346,21 @@ def add_comment(task_id: int, data: dict, actor_id: int = Depends(current_user_i
             for u in sorted(db.query(User).all(), key=lambda x: -len(x.name or "")):
                 if u.name and ("@" + u.name) in content:
                     mentioned.add(u.id)
+        # Only people invited to this board may be tagged. Tagging an outsider
+        # sent them a notification for a board they cannot open, and put their
+        # name on an item whose owner had no way to reach them. Filtering here
+        # rather than in the picker is the point: the client cannot be trusted
+        # to have filtered, and typing "@Name" bypasses the picker entirely.
+        mentioned = {uid for uid in mentioned if _can_be_assigned(db, task.board_id, uid)}
         mentioned.discard(user.id)
+        c = Comment(task_id=task_id, user_id=user.id, parent_id=data.get("parent_id"),
+                    content=content, attachments=atts,
+                    # store only the tags that survived, so the comment never
+                    # claims to have tagged someone who was never notified
+                    mentions=sorted(mentioned), likes=[], seen_by=[])
+        db.add(c)
+        _audit(db, task_id, "comment", field="reply" if data.get("parent_id") else "comment",
+               new=(content[:120] or "(קובץ)"), user_id=user.id)
         if mentioned and _board_notify_on(board):
             for mid in mentioned:
                 _notify(db, mid, "mention", "תויגת בשיחה",
@@ -3384,8 +3420,19 @@ def update_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id
         if not user or (c.user_id != user.id and user.role not in ("admin", "manager")):
             raise HTTPException(403, "אין הרשאה לערוך תגובה")
 
-        def _mentioned(content, explicit):
-            """Users tagged either explicitly or via '@Name' inside the text."""
+        _c_board_id = None
+        _t = db.query(Task).filter(Task.id == c.task_id).first()
+        if _t:
+            _c_board_id = _t.board_id
+
+        def _mentioned(content, explicit, members_only=True):
+            """Users tagged either explicitly or via '@Name' inside the text.
+
+            members_only mirrors the rule in create_comment: an edit may not tag
+            somebody who was never invited to the board. It is off when reading
+            the tags that were *already* on the comment, so a tag stored before
+            this rule still counts as pre-existing and does not re-notify.
+            """
             s = set()
             for x in (explicit or []):
                 try:
@@ -3396,15 +3443,22 @@ def update_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id
                 for u in db.query(User).all():
                     if u.name and ("@" + u.name) in content:
                         s.add(u.id)
+            if members_only and _c_board_id is not None:
+                s = {uid for uid in s if _can_be_assigned(db, _c_board_id, uid)}
             return s
 
-        before = _mentioned(c.content, c.mentions)   # who was already tagged
+        # pre-existing tags are read unfiltered: someone tagged before this rule
+        # must not be re-notified just because they are not a member today
+        before = _mentioned(c.content, c.mentions, members_only=False)
         if "content" in data:
             c.content = data["content"]
         if "attachments" in data:
             c.attachments = data.get("attachments") or []
         if "mentions" in data:
-            c.mentions = data.get("mentions") or []
+            kept = [uid for uid in (c.mentions or []) if uid in (data.get("mentions") or [])]
+            c.mentions = sorted({uid for uid in (data.get("mentions") or [])
+                                 if uid in kept or (_c_board_id is not None
+                                                    and _can_be_assigned(db, _c_board_id, uid))})
         # notify anyone newly tagged in this edit (not the editor, honoring the switch)
         newly = _mentioned(c.content, c.mentions) - before
         newly.discard(user.id)

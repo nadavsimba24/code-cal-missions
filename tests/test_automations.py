@@ -10,8 +10,19 @@ import main as cityos_main
 from models import Task, Notification, Automation
 
 
-def _mk_board(client, admin_id, name="לוח אוטומציות"):
-    return client.post("/api/boards", json={"name": name, "user_id": admin_id}).json()["id"]
+def _mk_board(client, admin_id, name="לוח אוטומציות", invite=None):
+    """A board, with `invite` enrolled on it.
+
+    A rule may only name someone invited to the board — the same rule that
+    governs assigning and tagging — so a rule whose target was never a member is
+    refused when saved. These tests are about rules firing, not about
+    membership, so the target is enrolled up front.
+    """
+    bid = client.post("/api/boards", json={"name": name, "user_id": admin_id}).json()["id"]
+    if invite is not None:
+        client.post(f"/api/boards/{bid}/members",
+                    json={"actor_id": admin_id, "user_id": invite, "role": "editor"})
+    return bid
 
 
 def _mk_item(client, bid, admin_id, title="פריט"):
@@ -63,7 +74,7 @@ def test_a_rule_records_who_created_and_who_last_changed_it(client, admin_id, gu
 
 
 def test_status_change_notifies_the_chosen_person(client, admin_id, guinea_id):
-    bid = _mk_board(client, admin_id)
+    bid = _mk_board(client, admin_id, invite=guinea_id)
     _add(client, bid, admin_id, "status_notify_person",
          {"t_status": "done", "a_person": guinea_id})
     tid = _mk_item(client, bid, admin_id)
@@ -75,7 +86,7 @@ def test_status_change_notifies_the_chosen_person(client, admin_id, guinea_id):
 
 
 def test_a_rule_only_fires_for_its_own_status(client, admin_id, guinea_id):
-    bid = _mk_board(client, admin_id)
+    bid = _mk_board(client, admin_id, invite=guinea_id)
     _add(client, bid, admin_id, "status_notify_person",
          {"t_status": "done", "a_person": guinea_id})
     tid = _mk_item(client, bid, admin_id)
@@ -84,7 +95,7 @@ def test_a_rule_only_fires_for_its_own_status(client, admin_id, guinea_id):
 
 
 def test_status_change_can_assign_a_person(client, admin_id, guinea_id):
-    bid = _mk_board(client, admin_id)
+    bid = _mk_board(client, admin_id, invite=guinea_id)
     _add(client, bid, admin_id, "status_assign_person",
          {"t_status": "review", "a_person": guinea_id})
     tid = _mk_item(client, bid, admin_id)
@@ -115,7 +126,7 @@ def test_a_new_item_can_get_a_subitem(client, admin_id):
 
 
 def test_an_inactive_rule_does_not_fire(client, admin_id, guinea_id):
-    bid = _mk_board(client, admin_id)
+    bid = _mk_board(client, admin_id, invite=guinea_id)
     aid = _add(client, bid, admin_id, "status_notify_person",
                {"t_status": "done", "a_person": guinea_id}).json()["id"]
     client.patch(f"/api/automations/{aid}?user_id={admin_id}", json={"is_active": False})
@@ -168,7 +179,7 @@ def test_rules_are_scoped_to_their_own_board(client, admin_id, guinea_id):
 
 
 def test_the_list_shows_a_filled_in_sentence(client, admin_id, guinea_id):
-    bid = _mk_board(client, admin_id)
+    bid = _mk_board(client, admin_id, invite=guinea_id)
     _add(client, bid, admin_id, "status_notify_person",
          {"t_status": "done", "a_person": guinea_id})
     row = client.get(f"/api/boards/{bid}/automations?user_id={admin_id}").json()["automations"][0]
