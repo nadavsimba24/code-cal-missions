@@ -65,7 +65,7 @@ stages:
       vmImage: $(vmImageName)
     steps:
     - task: AzureCLI@2
-      displayName: az containerapp update
+      displayName: az containerapp update + wait for the revision to serve
       inputs:
         azureSubscription: $(azureServiceConnection)
         scriptType: bash
@@ -84,23 +84,45 @@ stages:
           # :latest twice is a silent no-op: the pipeline goes green and the old
           # container keeps serving. A unique tag per run makes that impossible,
           # and makes the running revision say exactly what code it is.
-          az containerapp update \
-            --subscription "$(azureSubscriptionId)" \
-            --name "$(containerAppName)" \
-            --resource-group "$(containerAppResourceGroup)" \
-            --image "$IMAGE"
+          COMMON=(--subscription "$(azureSubscriptionId)"
+                  --resource-group "$(containerAppResourceGroup)"
+                  --name "$(containerAppName)")
+          az containerapp update "${COMMON[@]}" --image "$IMAGE" --output none
 
-    - task: Bash@3
-      displayName: Health check the new revision
-      inputs:
-        targetType: inline
-        script: |
-          set -euo pipefail
-          for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$(healthUrl)" || echo 000)
-            echo "attempt $i → HTTP $code"
-            if [ "$code" = "200" ]; then echo "✅ healthy"; exit 0; fi
-            sleep 6
+          REV=$(az containerapp show "${COMMON[@]}" \
+                  --query "properties.latestRevisionName" -o tsv)
+          echo "── new revision: $REV ──"
+
+          # Provisioning plus the traffic shift takes minutes, not seconds. The
+          # first version of this polled HTTP for two minutes and failed a deploy
+          # that had in fact succeeded — so wait on the revision's own state
+          # first, which says WHY if it never comes up.
+          for i in $(seq 1 60); do
+            read -r RUNNING HEALTH < <(az containerapp revision show "${COMMON[@]}" \
+              --revision "$REV" \
+              --query "[properties.runningState, properties.healthState]" -o tsv)
+            echo "  [$i] running=$RUNNING health=$HEALTH"
+            case "$RUNNING" in
+              Running)  break ;;
+              Failed|Degraded)
+                echo "##vso[task.logissue type=error]revision $REV came up $RUNNING"
+                az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
+                exit 1 ;;
+            esac
+            sleep 10
           done
-          echo "##vso[task.logissue type=error]the new revision never returned 200"
+
+          # Only now is an HTTP check meaningful: the revision is up and holds
+          # the traffic, so a non-200 is the app failing, not the platform.
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$(healthUrl)" || echo 000)
+            echo "  health attempt $i → HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "✅ $REV serving $IMAGE"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "##vso[task.logissue type=error]$REV never returned 200 — rolling back is manual"
+          az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
           exit 1
