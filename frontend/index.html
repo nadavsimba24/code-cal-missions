@@ -6313,7 +6313,7 @@ const Chat = {
     const pb=document.getElementById('chat-perm'); if(pb)pb.style.display=(st.board&&st.board.my_role==='admin')?'inline-flex':'none';
     this.bindDnd();
     this.setTabUI(); this.render();
-    this.markOpenRow();
+    this.revealOpenRow();
     Router.set(st.board&&st.board.id, id);   // reflect the open item in the URL
   },
   // drag & drop files/screenshots anywhere onto the chat panel (bound once).
@@ -6345,6 +6345,39 @@ const Chat = {
     const id=this.taskId; if(id==null)return;
     const n=document.querySelector(`tr[data-tid="${id}"], tr[data-sid="${id}"], .kcard[data-id="${id}"]`);
     if(n)n.classList.add('chat-open');
+  },
+  /* Take the board behind to the item, not just mark it. Arriving from a
+     notification the row is usually somewhere else entirely — and it may not be
+     rendered at all, because its group is collapsed or it is a sub-item whose
+     parent's list is closed. Open whatever hides it, then scroll it into view. */
+  revealOpenRow(){
+    const id=this.taskId;
+    if(id==null||!st.board){ this.markOpenRow(); return; }
+    let target=null, parent=null;
+    for(const t of (st.board.tasks||[])){
+      if(t.id==id){ target=t; break; }
+      const sub=(t.subtasks||[]).find(x=>x.id==id);
+      if(sub){ target=sub; parent=t; break; }
+    }
+    if(!target){ this.markOpenRow(); return; }   // not on the open board
+    let changed=false;
+    const gid=(parent||target).group_id;
+    if(gid!=null && typeof groupCollapsed==='function' && groupCollapsed(gid)){
+      setGroupCollapsed(gid,false); changed=true;
+    }
+    if(parent && !st.openSubs.has(parent.id)){ st.openSubs.add(parent.id); changed=true; }
+    if(changed) renderView();                    // the row did not exist until now
+    this.markOpenRow();
+    const n=document.querySelector(`tr[data-tid="${id}"], tr[data-sid="${id}"], .kcard[data-id="${id}"]`);
+    if(!n)return;
+    // only move the board when the row is actually out of sight — clicking the
+    // chat bubble on a row you are already looking at should not jump the page
+    const view=document.getElementById('view');
+    const r=n.getBoundingClientRect(), v=view?view.getBoundingClientRect():null;
+    // exact geometry, 1px for sub-pixel rounding: a row flush with the top edge
+    // is visible and must not be scrolled
+    const hidden=!v || r.top<v.top-1 || r.bottom>v.bottom+1;
+    if(hidden) n.scrollIntoView({block:'center',behavior:'smooth'});
   },
   /* An unsent message survives closing the panel. Kept per item and in
      localStorage, so it also survives a reload — closing a panel by accident
