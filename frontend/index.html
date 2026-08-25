@@ -136,6 +136,36 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .bh-log:hover{background:var(--row-hover);border-color:var(--border);color:var(--primary)}
 .log-item{background:none;border:none;padding:0;font:inherit;color:var(--primary);cursor:pointer;font-weight:600}
 .log-item:hover{text-decoration:underline}
+/* ===== ציר זמן — a compact cell popover, the weight of the תאריך יעד editor
+   beside it rather than a dialog over the board ===== */
+.tl-pop{width:246px;padding:10px}
+.tl-inputs{display:flex;gap:6px;margin-bottom:8px}
+.tl-in{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
+.tl-in span{font-size:10.5px;font-weight:600;color:var(--text-muted)}
+.tl-in input{padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px;font:inherit;font-size:11.5px;width:100%}
+.tl-in input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
+.tl-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.tl-month{font-weight:700;font-size:12.5px}
+.tl-nav{width:22px;height:22px;border-radius:6px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:grid;place-items:center;font-size:10px}
+.tl-nav:hover{background:var(--row-hover);border-color:var(--border);color:var(--text)}
+/* direction:rtl so the week reads right to left, א on the right — the headers
+   and the cells then cannot fall out of step */
+.tl-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;direction:rtl}
+.tl-dow span{text-align:center;font-size:10px;font-weight:700;color:var(--text-light);padding:2px 0}
+.tl-day{height:26px;border:none;background:none;border-radius:6px;font:inherit;font-size:11.5px;color:var(--text);cursor:pointer;display:grid;place-items:center;padding:0}
+.tl-day.tl-blank{cursor:default}
+.tl-day:not(.tl-blank):hover{background:var(--row-hover)}
+.tl-day.today{font-weight:800;box-shadow:inset 0 0 0 1.5px var(--border-strong)}
+/* the days between the ends read as one band; the ends themselves are solid */
+.tl-day.in{background:var(--primary-soft);border-radius:0}
+.tl-day.sel{background:var(--primary);color:#fff;font-weight:700}
+.tl-day.sel.start{border-start-end-radius:6px;border-end-end-radius:6px;border-start-start-radius:0;border-end-start-radius:0}
+.tl-day.sel.end{border-start-start-radius:6px;border-end-start-radius:6px;border-start-end-radius:0;border-end-end-radius:0}
+.tl-day.sel.start.end{border-radius:6px}
+.tl-foot{display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:7px;border-top:1px solid var(--border)}
+.tl-len{font-size:11px;color:var(--text-muted)}
+.tl-clear{background:none;border:none;padding:0;font:inherit;font-size:11px;color:var(--text-muted);cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+.tl-clear:hover{color:var(--red)}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -4908,7 +4938,7 @@ function customCellHTML(c,t){
   if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
   if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
   if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
-  if(c.type==='timeline')return `<td class="cell cell-custom"><div onclick="openTimeline(${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
+  if(c.type==='timeline')return `<td class="cell cell-custom" ${cc}><div class="tl-cell" onclick="openTimeline(event,${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
   if(c.type==='checkbox')return `<td class="cell cell-custom"><input type="checkbox" class="cc-check" ${v?'checked':''} onchange="setCell(${id},'${c.id}',this.checked?true:null)"></td>`;
   if(c.type==='people')  return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="peopleCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${peopleDisp(v)}</span></td>`;
   if(c.type==='dropdown')return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="dropdownCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${dropdownDisp(v)}</span></td>`;
@@ -5776,25 +5806,131 @@ function timelineBar(v){
   const fmt=d=>d.toLocaleDateString('he-IL',{day:'2-digit',month:'short'});
   return `<div class="tl-bar" title="${days} ימים"><span class="tl-txt">${fmt(f)} – ${fmt(to)}</span></div>`;
 }
-function openTimeline(taskId,colId){
-  const t=findAnyTask(taskId);const v=(t&&t.custom_fields&&t.custom_fields[colId])||{};
-  const dstyle='padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%';
-  showModal(`<h2>ציר זמן</h2><div class="mbody">
-    <div class="field"><label>מתאריך</label><input type="date" id="tl-from" value="${v.from?String(v.from).slice(0,10):''}" style="${dstyle}"></div>
-    <div class="field"><label>עד תאריך</label><input type="date" id="tl-to" value="${v.to?String(v.to).slice(0,10):''}" style="${dstyle}"></div>
-  </div><div class="mfoot">
-    <button class="btn btn-primary" onclick="saveTimeline(${taskId},'${colId}')">שמור</button>
-    <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
-    <div style="flex:1"></div>
-    <button class="btn btn-ghost" style="color:var(--red)" onclick="saveTimeline(${taskId},'${colId}',true)">נקה</button>
-  </div>`);
-}
-async function saveTimeline(taskId,colId,clear){
-  let val=null;
-  if(!clear){const f=document.getElementById('tl-from').value,to=document.getElementById('tl-to').value;
-    if(f||to)val={from:f||to,to:to||f};}
-  await setCell(taskId,colId,val);closeModals();renderView();
-}
+/* ===== ציר זמן — a range picker, not two blind date boxes =====
+   The column stores {from,to}. Both ways in stay in sync with each other: type
+   a date into either box, or click the days in the calendar. Typing matters —
+   picking a date eight months out by paging a calendar is slow, and a keyboard
+   is faster when you already know the date. */
+const Timeline = {
+  taskId:null, colId:null, from:'', to:'', month:null,
+  _iso(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); },
+  _d(iso){ if(!iso)return null; const p=String(iso).slice(0,10).split('-'); const d=new Date(+p[0],+p[1]-1,+p[2]); return isNaN(d)?null:d; },
+  /* A popover on the cell, not a dialog over the board — the same weight as the
+     תאריך יעד column next to it. It applies as you pick, like that column does,
+     so there is no save button to forget. */
+  open(e,taskId,colId){
+    if(e&&e.stopPropagation)e.stopPropagation();
+    const t=findAnyTask(taskId);
+    if(t && !canEditCol(t,colId)){ toast('אין לך הרשאת עריכה לעמודה זו'); return; }
+    const v=(t&&t.custom_fields&&t.custom_fields[colId])||{};
+    this.taskId=taskId; this.colId=colId;
+    this.from=v.from?String(v.from).slice(0,10):'';
+    this.to  =v.to  ?String(v.to  ).slice(0,10):'';
+    const anchor=this._d(this.from)||new Date();
+    this.month=new Date(anchor.getFullYear(),anchor.getMonth(),1);
+    // openCellPop arms a one-shot document listener that closes on the NEXT click
+    // anywhere — correct for a pick-one menu, wrong for a calendar you keep
+    // clicking. Swallowing clicks inside the popover leaves that listener armed
+    // for a genuine click outside, which is exactly when it should close.
+    openCellPop((e&&e.currentTarget)||null,
+      `<div id="tl-body" onclick="event.stopPropagation()"></div>`, 'tl-pop');
+    this.render();
+  },
+  render(){
+    const host=document.getElementById('tl-body'); if(!host)return;
+    setHTML(host, `
+      <div class="tl-inputs">
+        <label class="tl-in"><span>מתאריך</span>
+          <input type="date" id="tl-from" value="${this.from}" onchange="Timeline.typed('from',this.value)"></label>
+        <label class="tl-in"><span>עד תאריך</span>
+          <input type="date" id="tl-to" value="${this.to}" onchange="Timeline.typed('to',this.value)"></label>
+      </div>
+      ${this._monthHTML()}
+      <div class="tl-foot"><span class="tl-len">${this._lenText()}</span>
+        <button class="tl-clear" onclick="Timeline.clear()"><i class="fa-solid fa-eraser"></i> נקה</button></div>`);
+  },
+  _lenText(){
+    const f=this._d(this.from), t=this._d(this.to);
+    if(!f&&!t)return 'לא נבחר טווח';
+    if(!f||!t)return 'בחר תאריך שני';
+    // A range typed end-first is straightened on save, so say what the result
+    // will be rather than calling it invalid — the count is the honest answer.
+    const a=f<t?f:t, b=f<t?t:f, back=f>t;
+    const days=Math.round((b-a)/86400000)+1;
+    const txt=days===1?'יום אחד':`${days} ימים`;
+    return back?txt+' · הטווח יסודר':txt;
+  },
+  /* Typing wins over whatever was clicked: an explicit value is never quietly
+     re-ordered, only flagged if it makes the range run backwards. */
+  typed(which,val){
+    this[which]=val||'';
+    const d=this._d(val); if(d) this.month=new Date(d.getFullYear(),d.getMonth(),1);
+    this.render(); this.apply();
+  },
+  nav(delta){ this.month=new Date(this.month.getFullYear(),this.month.getMonth()+delta,1); this.render(); },
+  /* One click starts a range, the next closes it. Clicking before the start
+     moves the start rather than refusing — that is what the user meant. */
+  day(iso){
+    if(!this.from || (this.from&&this.to)){ this.from=iso; this.to=''; }
+    else if(iso<this.from){ this.to=this.from; this.from=iso; }
+    else this.to=iso;
+    this.render(); this.apply();
+  },
+  _monthHTML(){
+    const y=this.month.getFullYear(), m=this.month.getMonth();
+    const first=new Date(y,m,1), lead=first.getDay();          // Sunday = 0, as the week starts here
+    const days=new Date(y,m+1,0).getDate();
+    const today=this._iso(new Date());
+    const cells=[];
+    for(let i=0;i<lead;i++) cells.push('<span class="tl-day tl-blank"></span>');
+    for(let d=1;d<=days;d++){
+      const iso=y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+      const isFrom=iso===this.from, isTo=iso===this.to;
+      const inRange=this.from&&this.to&&iso>this.from&&iso<this.to;
+      const cls=['tl-day'];
+      if(isFrom)cls.push('sel start'); if(isTo)cls.push('sel end');
+      if(inRange)cls.push('in');
+      if(iso===today)cls.push('today');
+      cells.push(`<button class="${cls.join(' ')}" onclick="Timeline.day('${iso}')">${d}</button>`);
+    }
+    const name=this.month.toLocaleDateString('he-IL',{month:'long',year:'numeric'});
+    return `<div class="tl-cal">
+      <div class="tl-cal-head">
+        <button class="tl-nav" title="חודש קודם" onclick="Timeline.nav(-1)"><i class="fa-solid fa-chevron-right"></i></button>
+        <span class="tl-month">${esc(name)}</span>
+        <button class="tl-nav" title="חודש הבא" onclick="Timeline.nav(1)"><i class="fa-solid fa-chevron-left"></i></button>
+      </div>
+      <div class="tl-grid tl-dow">${['א','ב','ג','ד','ה','ו','ש'].map(d=>`<span>${d}</span>`).join('')}</div>
+      <div class="tl-grid">${cells.join('')}</div>
+    </div>`;
+  },
+  _value(){
+    let f=this.from, t=this.to;
+    if(!f&&!t)return null;
+    f=f||t; t=t||f;
+    if(t<f){ const x=f; f=t; t=x; }   // a range picked or typed end-first is still a range
+    return {from:f,to:t};
+  },
+  /* Repaint just this cell. Calling refreshRow would rebuild the row and take
+     the popover's anchor with it, closing the calendar mid-pick. */
+  _paint(val){
+    const td=document.querySelector(`td[data-task="${this.taskId}"][data-col="${this.colId}"] .tl-cell`);
+    if(td) setHTML(td, timelineBar(val));
+  },
+  async apply(){
+    const val=this._value();
+    this._paint(val);
+    await setCell(this.taskId,this.colId,val);
+  },
+  async clear(){
+    this.from=''; this.to='';
+    this._paint(null);
+    await setCell(this.taskId,this.colId,null);
+    closeCellPops();
+  },
+};
+function openTimeline(e,taskId,colId){ Timeline.open(e,taskId,colId); }
+
 /* add / rename / delete columns */
 function addColMenu(e,forSub){
   if(mobileBlocked('הוספת עמודה'))return;
