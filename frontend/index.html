@@ -82,15 +82,6 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* in the list only the exception is marked — a lock on every private board
    would be ten identical icons saying nothing */
 .sb-vis{font-size:10px;color:var(--green);opacity:.85;flex:none;margin-inline-start:4px}
-/* display settings, now hosted inside the user's own profile rather than in a
-   dialog of their own — narrower than the old modal, so the swatches wrap */
-.pf-display{padding:2px 0 4px}
-.pf-display .set-sec{margin-bottom:12px}
-.pf-display .set-fonts{display:flex;flex-direction:column;gap:6px}
-.pf-display .set-themes{display:flex;gap:8px}
-.pf-display .set-bgs{display:flex;flex-wrap:wrap;gap:7px}
-.set-reset{display:inline-flex;align-items:center;gap:6px;background:none;border:none;padding:2px 0;color:var(--text-muted);font-family:inherit;font-size:12px;cursor:pointer}
-.set-reset:hover{color:var(--text);text-decoration:underline}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -1226,24 +1217,8 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .ff-chip.tag-on{border-color:var(--primary);background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .ff-chip input{accent-color:var(--primary)}
 /* settings modal */
-.set-sec{margin-bottom:20px}
 .set-label{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
 .set-label i{color:var(--primary)}
-.set-fonts{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
-.set-font{border:1.5px solid var(--border-strong);border-radius:9px;padding:10px 12px;text-align:start;font-size:14px;font-weight:600;color:var(--text);display:flex;flex-direction:column;gap:2px;background:var(--surface)}
-.set-font span{font-size:12px;color:var(--text-light);font-weight:400}
-.set-font:hover{border-color:var(--text-light)}
-.set-font.sel{border-color:var(--primary);background:var(--primary-soft)}
-.set-themes{display:flex;gap:10px}
-.set-theme{flex:1;border:1.5px solid var(--border-strong);border-radius:10px;padding:12px;font-weight:600;font-size:13px;display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--surface);color:var(--text)}
-.set-theme.sel{border-color:var(--primary);background:var(--primary-soft)}
-.th-prev{width:100%;height:42px;border-radius:7px;overflow:hidden;display:flex;border:1px solid var(--border)}
-.th-prev span{display:block}
-.th-prev.light{background:#f6f7fb}.th-prev.light span:first-child{width:34%;background:#fff;border-inline-end:1px solid #e6e9ef}.th-prev.light span:last-child{flex:1;background:#fff;margin:6px;border-radius:4px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
-.th-prev.dark{background:#12141c}.th-prev.dark span:first-child{width:34%;background:#1b1e27;border-inline-end:1px solid #2a2e3a}.th-prev.dark span:last-child{flex:1;background:#1b1e27;margin:6px;border-radius:4px}
-.set-bgs{display:flex;flex-wrap:wrap;gap:10px}
-.set-bg{width:40px;height:40px;border-radius:10px;border:2px solid var(--border-strong);cursor:pointer;display:grid;place-items:center;color:var(--primary);font-size:14px}
-.set-bg.sel{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
 
 /* ===== board screen — design polish (ui-ux-pro-max: clean · high-contrast · corporate) ===== */
 /* board header — calmer rhythm, more elegant title */
@@ -2596,7 +2571,9 @@ const Profile = {
           <label class="switch"><input type="checkbox" ${np.assign!==false?'checked':''} ${subDis} onchange="Profile.setPref(${userId},'assign',this.checked)"><span class="slider"></span></label>
         </div>
         ${userId===meId()?`<div class="pf-sec">תצוגה</div>
-        <div id="pf-display" class="pf-display">${Settings.sectionHTML()}</div>`:''}
+        <div class="pf-row pf-toggle"><span><i class="fa-solid fa-circle-half-stroke"></i> מצב כהה</span>
+          <label class="switch"><input type="checkbox" ${Settings.isDark()?'checked':''} onchange="Settings.setTheme(this.checked)"><span class="slider"></span></label>
+        </div>`:''}
         <div class="pf-sec">משימות בלוח "${esc((st.board&&st.board.name)||'')}" · ${tasks.length}</div>
         <div class="pf-stats">${chips}</div>
       </div>
@@ -3929,55 +3906,26 @@ const Members = {
 };
 
 /* ===== display settings (פונט / תצוגה / רקע) ===== */
-const FONTS=[
-  {id:'figtree',he:'ברירת מחדל',css:"'Figtree','Rubik','Heebo',sans-serif"},
-  {id:'heebo',he:'Heebo',css:"'Heebo',sans-serif"},
-  {id:'rubik',he:'Rubik',css:"'Rubik',sans-serif"},
-  {id:'assistant',he:'Assistant',css:"'Assistant',sans-serif"},
-  {id:'noto',he:'Noto עברית',css:"'Noto Sans Hebrew',sans-serif"},
-  {id:'system',he:'מערכת',css:"system-ui,'Segoe UI',Arial,sans-serif"},
-];
-const BGS=[
-  {id:'default',he:'ברירת מחדל',c:'#f6f7fb'},{id:'white',he:'לבן',c:'#ffffff'},
-  {id:'blue',he:'תכלת',c:'#eaf2fb'},{id:'green',he:'ירקרק',c:'#eaf6ef'},
-  {id:'warm',he:'חמים',c:'#faf5ee'},{id:'lav',he:'לבנדר',c:'#f1eefb'},{id:'slate',he:'אפרפר',c:'#eceef3'},
-];
+/* Appearance is one choice: light or dark.
+   Font and background pickers used to live here too. They were removed rather
+   than hidden — the CSS :root already defaults to exactly what their default
+   options set, so nothing changes for anyone, and a setting nobody can reach
+   is worse than a setting that does not exist. */
 const Settings={
-  data:{font:'figtree',theme:'light',bg:'default'},
-  load(){ try{ Object.assign(this.data,JSON.parse(localStorage.getItem('cc_settings')||'{}')); }catch(e){} this.apply(); },
+  data:{theme:'light'},
+  load(){
+    // read only the key we still honour, so stale font/bg values from an older
+    // build cannot come back and are dropped on the next save
+    try{
+      const raw=JSON.parse(localStorage.getItem('cc_settings')||'{}');
+      if(raw && (raw.theme==='dark'||raw.theme==='light')) this.data.theme=raw.theme;
+    }catch(e){}
+    this.apply();
+  },
   save(){ try{ localStorage.setItem('cc_settings',JSON.stringify(this.data)); }catch(e){} },
-  apply(){
-    const root=document.documentElement;
-    const f=FONTS.find(x=>x.id===this.data.font)||FONTS[0];
-    root.style.setProperty('--font',f.css);
-    root.setAttribute('data-theme',this.data.theme);
-    if(this.data.theme==='dark'){ root.style.removeProperty('--bg'); }   // dark palette controls --bg
-    else{ const b=BGS.find(x=>x.id===this.data.bg)||BGS[0]; root.style.setProperty('--bg',b.c); }
-  },
-  set(k,v){ this.data[k]=v; this.apply(); this.save(); this.refresh(); },
-  reset(){ this.data={font:'figtree',theme:'light',bg:'default'}; this.apply(); this.save(); this.refresh(); },
-  /* These controls used to be a dialog of their own, reached from the sidebar
-     footer. They now live inside the user's own profile, which is where
-     "how the app looks to me" belongs — next to the other personal
-     preferences, rather than in a menu beside board-level tools. */
-  refresh(){
-    const host=document.getElementById('pf-display');
-    if(host) host.innerHTML=this.sectionHTML();   // repaint in place, no modal churn
-  },
-  sectionHTML(){
-    const d=this.data;
-    return `
-      <div class="set-sec"><div class="set-label"><i class="fa-solid fa-font"></i> פונט</div>
-        <div class="set-fonts">${FONTS.map(f=>`<button class="set-font ${d.font===f.id?'sel':''}" style="font-family:${f.css}" onclick="Settings.set('font','${f.id}')">${esc(f.he)}<span>אבגד שלום · Aa 123</span></button>`).join('')}</div></div>
-      <div class="set-sec"><div class="set-label"><i class="fa-solid fa-circle-half-stroke"></i> תצוגה</div>
-        <div class="set-themes">
-          <button class="set-theme ${d.theme==='light'?'sel':''}" onclick="Settings.set('theme','light')"><span class="th-prev light"><span></span><span></span></span> בהיר</button>
-          <button class="set-theme ${d.theme==='dark'?'sel':''}" onclick="Settings.set('theme','dark')"><span class="th-prev dark"><span></span><span></span></span> כהה</button>
-        </div></div>
-      <div class="set-sec"><div class="set-label"><i class="fa-solid fa-fill-drip"></i> רקע ${d.theme==='dark'?'<span style="font-size:11px;color:var(--text-light);font-weight:400">— זמין במצב בהיר</span>':''}</div>
-        <div class="set-bgs">${BGS.map(b=>`<button class="set-bg ${d.theme!=='dark'&&d.bg===b.id?'sel':''}" title="${esc(b.he)}" style="background:${b.c}" ${d.theme==='dark'?'disabled style="opacity:.4;background:'+b.c+'"':''} onclick="Settings.set('bg','${b.id}')">${d.theme!=='dark'&&d.bg===b.id?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')}</div></div>
-      <button class="set-reset" onclick="Settings.reset()"><i class="fa-solid fa-rotate-left"></i> איפוס לברירת המחדל</button>`;
-  },
+  apply(){ document.documentElement.setAttribute('data-theme',this.data.theme); },
+  isDark(){ return this.data.theme==='dark'; },
+  setTheme(dark){ this.data.theme=dark?'dark':'light'; this.apply(); this.save(); },
 };
 
 const ROLE_HE={admin:'מנהל מערכת',manager:'מנהל',member:'חבר צוות',viewer:'צפייה בלבד',guest:'אורח'};
