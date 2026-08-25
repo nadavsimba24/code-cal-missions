@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
                   init_auth, resolve_user)
 from models import (
-    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation,
+    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, ItemLink,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -984,6 +984,12 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
     comment_count = db.query(Comment).filter(Comment.task_id == t.id).count()
     my_perm = _item_perm(t, user_id, board_role) if user_id is not None else "delete"
     cf = dict(t.custom_fields or {})
+    # A two-way connect cell is not stored on the item — it is the shared
+    # relationship rows, read from whichever side wrote them. That is what makes
+    # a link created on the other board appear here without anything copying it.
+    for c in (columns or []):
+        if _is_two_way(c):
+            cf[c["id"]] = _linked_ids(db, t.id, c["id"])
     col_perms = {}
     if user_id is not None:
         for c in (columns or []):
@@ -1510,6 +1516,13 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                                  if c["type"] == "item_id" else None,
                     "perms": c.get("perms") or {},
                 })
+            # A two-way column needs its counterpart to exist before it is saved:
+            # the map of WHERE the reverse link shows lives on the column itself,
+            # and the configuration screen reads it back to tell the admin.
+            for c in cols:
+                if _is_two_way(c):
+                    c["connect"] = {**_connect_cfg(c),
+                                    "mirror": _ensure_mirrors(db, board_id, c)}
             s = dict(b.settings or {})
             s["columns"] = cols
             # a deleted column can't linger in the sub-item-only set
@@ -2714,6 +2727,131 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         cols = (db.query(Board.settings).filter(Board.id == board_id).scalar() or {}).get("columns", [])
         return _serialize_task(task, db, user_id=creator, board_role=my_role, columns=cols)
 
+# ── two-way links ────────────────────────────────────────────────────
+# A one-way connect column keeps its links in custom_fields, unchanged. A
+# two-way column keeps them in item_links instead: one row per relationship,
+# read by both sides. Neither side holds a copy, so they cannot fall out of step.
+def _ensure_mirrors(db, board_id, col):
+    """Give a two-way column its counterpart on each target board.
+
+    The reverse link has to be shown somewhere, so every target board gets a
+    connect column pointing back. An existing one that already points here is
+    reused rather than duplicated. The resulting map — target board → column —
+    is stored on the column, and is what the configuration screen reads back to
+    tell the admin where the reverse will appear.
+    """
+    cfg = _connect_cfg(col)
+    if not cfg.get("two_way"):
+        return {}
+    src = db.query(Board).filter(Board.id == board_id).first()
+    mirror = dict(cfg.get("mirror") or {})
+    for bid in (cfg.get("board_ids") or []):
+        tb = db.query(Board).filter(Board.id == bid).first()
+        if not tb or tb.deleted_at:
+            continue
+        cols = list((tb.settings or {}).get("columns", []))
+        want = mirror.get(str(bid))
+        found = next((c for c in cols if c.get("id") == want and c.get("type") == "connect"), None)
+        if not found:
+            # reuse a connect column that already points back at this board and
+            # column, rather than adding a second one that says the same thing
+            found = next((c for c in cols
+                          if c.get("type") == "connect"
+                          and (_connect_cfg(c).get("mirror") or {}).get(str(board_id)) == col["id"]), None)
+        if not found:
+            found = {"id": "col_" + uuid.uuid4().hex[:8], "type": "connect",
+                     "title": (src.name if src else "קישור"),
+                     "options": None, "formula": None, "copy_mode": None, "perms": {},
+                     "connect": {}}
+            cols.append(found)
+        found["connect"] = {"board_ids": [board_id],
+                            "multiple": cfg.get("multiple", True),
+                            "two_way": True,
+                            "mirror": {str(board_id): col["id"]}}
+        st_ = dict(tb.settings or {})
+        st_["columns"] = cols
+        tb.settings = st_
+        mirror[str(bid)] = found["id"]
+        bus.publish("board.changed", board_id=bid)
+    return mirror
+
+
+def _connect_cfg(col):
+    return (col or {}).get("connect") or {}
+
+
+def _is_two_way(col):
+    return bool(col and col.get("type") == "connect" and _connect_cfg(col).get("two_way"))
+
+
+def _board_columns(db, board_id):
+    b = db.query(Board).filter(Board.id == board_id).first()
+    return (b.settings or {}).get("columns", []) if b else []
+
+
+def _find_col(db, board_id, col_id):
+    return next((c for c in _board_columns(db, board_id) if c.get("id") == col_id), None)
+
+
+def _link_pair(a_task, a_col, b_task, b_col):
+    """Canonical order, so one relationship can only be stored one way."""
+    if (a_task, a_col) <= (b_task, b_col):
+        return a_task, a_col, b_task, b_col
+    return b_task, b_col, a_task, a_col
+
+
+def _linked_ids(db, task_id, col_id):
+    """The items this cell links to, from whichever side the row was written."""
+    out = []
+    for l in db.query(ItemLink).filter(
+            or_((ItemLink.a_task_id == task_id) & (ItemLink.a_col == col_id),
+                (ItemLink.b_task_id == task_id) & (ItemLink.b_col == col_id))).all():
+        out.append(l.b_task_id if (l.a_task_id == task_id and l.a_col == col_id) else l.a_task_id)
+    return out
+
+
+def _mirror_col_for(db, col, target_board_id):
+    """Which column on the target board shows the other end of this link."""
+    return (_connect_cfg(col).get("mirror") or {}).get(str(target_board_id))
+
+
+def _set_links(db, task, col, wanted_ids, actor_id):
+    """Make this cell hold exactly `wanted_ids`, updating one shared row per pair.
+
+    Adding from either side creates the single row; removing from either side
+    deletes it, which is what makes a removal show on both boards.
+    """
+    col_id = col["id"]
+    current = set(_linked_ids(db, task.id, col_id))
+    wanted = set()
+    for tid in (wanted_ids or []):
+        try:
+            wanted.add(int(tid))
+        except (TypeError, ValueError):
+            continue
+
+    for tid in wanted - current:
+        other = db.query(Task).filter(Task.id == tid).first()
+        if not other:
+            continue
+        mirror = _mirror_col_for(db, col, other.board_id)
+        if not mirror:
+            continue                      # no column on that board to show it in
+        a_t, a_c, b_t, b_c = _link_pair(task.id, col_id, other.id, mirror)
+        exists = db.query(ItemLink).filter(
+            ItemLink.a_task_id == a_t, ItemLink.a_col == a_c,
+            ItemLink.b_task_id == b_t, ItemLink.b_col == b_c).first()
+        if not exists:
+            db.add(ItemLink(a_task_id=a_t, a_col=a_c, b_task_id=b_t, b_col=b_c,
+                            created_by=actor_id))
+
+    for tid in current - wanted:
+        db.query(ItemLink).filter(
+            or_((ItemLink.a_task_id == task.id) & (ItemLink.a_col == col_id) & (ItemLink.b_task_id == tid),
+                (ItemLink.b_task_id == task.id) & (ItemLink.b_col == col_id) & (ItemLink.a_task_id == tid))
+        ).delete(synchronize_session=False)
+
+
 # ── Cross-board item linking (connect column) ───────────────────────
 @app.get("/api/items/search")
 def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] = None, limit: int = 60):
@@ -3346,6 +3484,17 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 return out
             cf = dict(task.custom_fields or {})
             for k, v in data["custom_fields"].items():
+                _c = coldefs.get(k)
+                if _is_two_way(_c):
+                    # both ends of the pair change together, because there is only
+                    # one row behind them
+                    before = sorted(_linked_ids(db, task.id, k))
+                    _set_links(db, task, _c, v, actor)
+                    after = sorted(_linked_ids(db, task.id, k))
+                    if before != after:
+                        _audit(db, task_id, "update", "col:" + k,
+                               json.dumps(before), json.dumps(after), actor)
+                    continue
                 old = cf.get(k)
                 if v is None:
                     cf.pop(k, None)

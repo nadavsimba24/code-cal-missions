@@ -199,6 +199,13 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .lg-undo{flex:none;padding:4px 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);font:inherit;font-size:12px;color:var(--text-muted);cursor:pointer}
 .lg-undo:hover{border-color:var(--primary);color:var(--primary)}
 .lg-undo-gap{flex:none;width:56px}
+.cc-mirror{margin-top:10px}
+.cc-mirror-off{font-size:12px;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px}
+.cc-mirror-on{border:1px solid var(--primary);border-radius:8px;padding:9px 11px;background:var(--primary-soft)}
+.cc-mirror-h{font-size:11px;font-weight:700;color:var(--primary);margin-bottom:6px}
+.cc-mirror-row{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;line-height:1.6;margin-bottom:3px}
+.cc-mirror-row i{font-size:10px;color:var(--primary);margin-top:5px;flex:none}
+.cc-new{font-size:10.5px;font-weight:700;color:var(--green);background:var(--surface);border-radius:20px;padding:1px 7px}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -6179,6 +6186,51 @@ async function addColumn(type,forSub){
   }
   toast(type==='item_id'?'עמודת מזהה פריט נוספה — מזהה הונפק לכל פריט':'עמודה נוספה');
 }
+let _ccExisting=null, _ccCols={};
+/* The admin has to know WHERE the reverse link will appear, before saving —
+   otherwise "two-way" is a promise about a column they cannot see. Existing
+   counterparts are named; a board without one yet says so, with the name the
+   new column will take.
+
+   The target board's columns are fetched on demand: the board LIST payload
+   carries no columns, so reading them from it would report "new" for every
+   board, including ones that already have a counterpart. */
+function _ccChosen(existing){
+  const ids=[...document.querySelectorAll('.cc-board:checked')].map(x=>+x.value);
+  return ids.length?ids:((existing&&existing.connect&&existing.connect.board_ids)||[]);
+}
+function mirrorNoteHTML(existing,on){
+  if(!on)return `<div class="cc-mirror-off">הקישור יישמר ויוצג בלוח זה בלבד.</div>`;
+  const chosen=_ccChosen(existing);
+  if(!chosen.length)return `<div class="cc-mirror-off">בחר לוחות כדי לראות היכן יוצג הקשר ההפוך.</div>`;
+  const map=(existing&&existing.connect&&existing.connect.mirror)||{};
+  const here=(st.board&&st.board.name)||'הלוח הזה';
+  const rows=chosen.map(bid=>{
+    const b=(st.boards||[]).find(x=>x.id===bid);
+    const colId=map[String(bid)];
+    const col=colId?((_ccCols[bid]||[]).find(c=>c.id===colId)||null):null;
+    return `<div class="cc-mirror-row">
+      <i class="fa-solid fa-arrow-right-arrow-left"></i>
+      <span><b>${esc(b?b.name:'לוח '+bid)}</b> — הקשר ההפוך יוצג בעמודה
+      ${col?`<b>"${esc(col.title)}"</b>`:`<b>"${esc(here)}"</b> <span class="cc-new">תיווצר</span>`}</span>
+    </div>`;
+  }).join('');
+  return `<div class="cc-mirror-on"><div class="cc-mirror-h">היכן יוצג הקשר ההפוך</div>${rows}</div>`;
+}
+async function renderMirrorNote(){
+  const host=document.getElementById('cc-mirror'); if(!host)return;
+  const on=document.getElementById('cc-two'); const isOn=!!(on&&on.checked);
+  setHTML(host, mirrorNoteHTML(_ccExisting,isOn));
+  if(!isOn)return;
+  const need=_ccChosen(_ccExisting).filter(id=>!_ccCols[id]);
+  if(!need.length)return;
+  await Promise.all(need.map(async id=>{
+    try{ const b=await api('/api/boards/'+id); _ccCols[id]=b.columns||[]; }
+    catch(e){ _ccCols[id]=[]; }
+  }));
+  const host2=document.getElementById('cc-mirror');
+  if(host2) setHTML(host2, mirrorNoteHTML(_ccExisting,true));
+}
 /* connect column config: choose the target board(s) + single/multi (sys admin) */
 function openConnectConfig(existingColId){
   if(!isSysAdmin()){toast('רק מנהל מערכת');return;}
@@ -6186,22 +6238,30 @@ function openConnectConfig(existingColId){
   const existing=existingColId?customColumns().find(c=>c.id===existingColId):null;
   const sel=new Set((existing&&existing.connect&&existing.connect.board_ids)||[]);
   const multiple=existing?(existing.connect&&existing.connect.multiple!==false):true;
+  const twoWay=!!(existing&&existing.connect&&existing.connect.two_way);
+  _ccExisting=existing||null;
   const inp='padding:8px 10px;border:1px solid var(--border-strong);border-radius:7px;font-size:13px;font-family:inherit;width:100%';
   showModal(`<h2><i class="fa-solid fa-diagram-project" style="color:var(--primary)"></i> עמודת קישור בין לוחות</h2>
     <div class="mbody">
       <div class="field"><label>שם העמודה</label><input id="cc-title" value="${esc(existing?existing.title:'קישור')}" style="${inp}"></div>
       <div class="field"><label>לוחות מקושרים — בחר מהם ניתן לקשר פריטים</label>
-        <div style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px">${others.map(b=>`<label style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13.5px"><input type="checkbox" class="cc-board" value="${b.id}" ${sel.has(b.id)?'checked':''} style="width:auto"> ${esc(b.icon||'📋')} ${esc(b.name)}</label>`).join('')||'<div style="padding:8px;color:var(--text-light)">אין לוחות אחרים זמינים</div>'}</div>
+        <div style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:6px">${others.map(b=>`<label style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13.5px"><input type="checkbox" class="cc-board" value="${b.id}" ${sel.has(b.id)?'checked':''} style="width:auto" onchange="renderMirrorNote()"> ${esc(b.icon||'📋')} ${esc(b.name)}</label>`).join('')||'<div style="padding:8px;color:var(--text-light)">אין לוחות אחרים זמינים</div>'}</div>
       </div>
       <label style="display:flex;align-items:center;gap:9px;font-size:13.5px;cursor:pointer;margin-top:4px"><input type="checkbox" id="cc-multi" ${multiple?'checked':''} style="width:auto"> אפשר קישור למספר פריטים</label>
+      <label style="display:flex;align-items:center;gap:9px;font-size:13.5px;cursor:pointer;margin-top:10px"><input type="checkbox" id="cc-two" ${twoWay?'checked':''} style="width:auto" onchange="renderMirrorNote()"> קשר דו־כיווני</label>
+      <div id="cc-mirror" class="cc-mirror">${mirrorNoteHTML(existing,twoWay)}</div>
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="saveConnectCol('${existingColId||''}')"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+  renderMirrorNote();   // resolve the counterpart names for what is already configured
 }
 async function saveConnectCol(existingColId){
   const title=(document.getElementById('cc-title').value||'קישור').trim();
   const board_ids=[...document.querySelectorAll('.cc-board:checked')].map(x=>+x.value);
   if(!board_ids.length){toast('בחר לפחות לוח אחד לקישור');return;}
-  const connect={board_ids,multiple:document.getElementById('cc-multi').checked};
+  const connect={board_ids,multiple:document.getElementById('cc-multi').checked,
+                 two_way:document.getElementById('cc-two').checked};
+  if(_ccExisting&&_ccExisting.connect&&_ccExisting.connect.mirror)
+    connect.mirror=_ccExisting.connect.mirror;   // keep pointing at the same counterpart
   let cols;
   if(existingColId)cols=customColumns().map(c=>c.id===existingColId?{...c,title,connect}:c);
   else{cols=customColumns().slice();cols.push({type:'connect',title,connect});}

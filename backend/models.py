@@ -616,6 +616,28 @@ class Document(Base):
     uploader = relationship("User", foreign_keys=[uploaded_by])
 
 
+class ItemLink(Base):
+    """One row per RELATIONSHIP between two items, for two-way connect columns.
+
+    A one-way column keeps its links in the item's custom_fields, as it always
+    has. A two-way column does not: neither side stores a copy, both read this
+    table, and so the two sides cannot drift apart. That is what "a single
+    logical relationship, not two independent ones" has to mean — mirroring two
+    arrays on write only holds until something writes one of them directly.
+
+    The pair is stored once, in a canonical order (lower task id first), so
+    (A→B) and (B→A) cannot both exist.
+    """
+    __tablename__ = "item_links"
+    id = Column(Integer, primary_key=True)
+    a_task_id = Column(Integer, ForeignKey("tasks.id"), index=True, nullable=False)
+    a_col = Column(String(64), nullable=False)     # column on A's board
+    b_task_id = Column(Integer, ForeignKey("tasks.id"), index=True, nullable=False)
+    b_col = Column(String(64), nullable=False)     # the mirror column on B's board
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
 class AuditLog(Base):
     """Audit trail for changes across work plan entities."""
     __tablename__ = "audit_logs"
