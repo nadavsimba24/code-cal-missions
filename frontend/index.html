@@ -2830,7 +2830,7 @@ const Profile = {
           <label class="switch"><input type="checkbox" ${np.assign!==false?'checked':''} ${subDis} onchange="Profile.setPref(${userId},'assign',this.checked)"><span class="slider"></span></label>
         </div>
         ${userId===meId()?`<div class="pf-sec">תצוגה</div>
-        <div class="pf-row pf-toggle"><span><i id="theme-ic" class="fa-solid ${Settings.isDark()?'fa-moon':'fa-sun'} theme-ic ${Settings.isDark()?'moon':'sun'}"></i> מצב כהה</span>
+        <div class="pf-row pf-toggle"><span><i id="theme-ic" class="fa-solid ${Settings.isDark()?'fa-moon':'fa-sun'} theme-ic ${Settings.isDark()?'moon':'sun'}"></i> <span id="theme-lbl">${Settings.themeLabel()}</span></span>
           <label class="switch"><input type="checkbox" ${Settings.isDark()?'checked':''} onchange="Settings.setTheme(this.checked)"><span class="slider"></span></label>
         </div>`:''}
         <div class="pf-sec">משימות בלוח "${esc((st.board&&st.board.name)||'')}" · ${tasks.length}</div>
@@ -4368,12 +4368,18 @@ const Settings={
   save(){ try{ localStorage.setItem('cc_settings',JSON.stringify(this.data)); }catch(e){} },
   apply(){ document.documentElement.setAttribute('data-theme',this.data.theme); },
   isDark(){ return this.data.theme==='dark'; },
+  // The label names the mode that is ON, so it agrees with the icon beside it
+  // rather than describing a mode you are not in.
+  themeLabel(){ return this.isDark()?'מצב כהה':'מסך בהיר'; },
   setTheme(dark){
     this.data.theme=dark?'dark':'light'; this.apply(); this.save();
-    // the row is rendered once with the profile, so the icon has to be swapped
-    // by hand — otherwise the sun stays lit while the app turns dark
+    // the row is rendered once with the profile, so icon and label are swapped
+    // by hand — otherwise the sun stays lit, and the text keeps naming the mode
+    // you just left, while the app turns dark
     const ic=document.getElementById('theme-ic');
     if(ic) ic.className='fa-solid '+(dark?'fa-moon':'fa-sun')+' theme-ic '+(dark?'moon':'sun');
+    const lb=document.getElementById('theme-lbl');
+    if(lb) lb.textContent=this.themeLabel();
   },
 };
 
