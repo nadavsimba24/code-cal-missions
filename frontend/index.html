@@ -2558,13 +2558,19 @@ function renderView(){
   // are cached — most visibly when a status change moves a row between groups,
   // which is a full render by necessity. Detaching a node does not discard its
   // decoded image, so the old elements can simply be put back.
+  // A queue per src, not one node: the same person appears on several rows, and
+  // keeping only the first meant every repeat still built a fresh <img> and
+  // blinked. Sorting a board where one person owns four items replaced three of
+  // the four photos.
   const _oldImgs=new Map();
-  if(same) el.querySelectorAll('img[src]').forEach(im=>{ if(!_oldImgs.has(im.src)) _oldImgs.set(im.src,im); });
+  if(same) el.querySelectorAll('img[src]').forEach(im=>{
+    const q=_oldImgs.get(im.src); if(q) q.push(im); else _oldImgs.set(im.src,[im]);
+  });
   el.innerHTML='';
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
   if(_oldImgs.size) el.querySelectorAll('img[src]').forEach(im=>{
-    const old=_oldImgs.get(im.src); if(!old)return;
-    _oldImgs.delete(im.src);                 // each loaded node is reused once
+    const q=_oldImgs.get(im.src); if(!q||!q.length)return;
+    const old=q.shift();                     // hand out one loaded node per slot
     old.className=im.className; old.alt=im.alt; old.style.cssText=im.style.cssText;
     im.replaceWith(old);
   });
@@ -3120,12 +3126,14 @@ const Workspace = {
    node for an identical src keeps the decoded image on screen untouched. */
 function reuseImages(oldEl, newRoot){
   if(!oldEl || !newRoot) return;
-  const prev=new Map();
-  oldEl.querySelectorAll('img[src]').forEach(im=>{ if(!prev.has(im.src)) prev.set(im.src, im); });
+  const prev=new Map();                        // src → queue of loaded nodes
+  oldEl.querySelectorAll('img[src]').forEach(im=>{
+    const q=prev.get(im.src); if(q) q.push(im); else prev.set(im.src,[im]);
+  });
   if(!prev.size) return;
   newRoot.querySelectorAll('img[src]').forEach(im=>{
-    const old=prev.get(im.src); if(!old) return;
-    prev.delete(im.src);                       // each loaded node is reused once
+    const q=prev.get(im.src); if(!q||!q.length) return;
+    const old=q.shift();                       // one loaded node per slot
     old.className=im.className;                // the new markup still decides how it looks
     old.alt=im.alt;
     old.style.cssText=im.style.cssText;
