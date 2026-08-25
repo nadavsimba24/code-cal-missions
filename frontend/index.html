@@ -2188,9 +2188,13 @@ const BoardLog = {
     showModal(`<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> לוג פעילות — ${esc(st.board.name)}</h2>
       <div class="mbody"><div class="spin"></div></div>`);
     document.getElementById('modal').classList.add('modal-80');
-    let d={activity:[]};
+    let d={activity:[],people:[]};
     try{ d=await api('/api/boards/'+st.board.id+'/activity'+(qs.length?'?'+qs.join('&'):'')); }
     catch(e){ toast(e.detail||'טעינת הלוג נכשלה'); }
+    // The server decides who may be filtered on: people invited to this board,
+    // plus anyone already in its history. Listing every user in the workspace
+    // filled the menu with names that could only ever return an empty list.
+    const people=d.people||[];
     const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
     const rows=(d.activity||[]).map(a=>`<div class="log-row">
         <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':a.action==='create'?'fa-plus':'fa-pen'}"></i></div>
@@ -2203,7 +2207,7 @@ const BoardLog = {
       ||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות בלוח</div></div>';
     const body=document.querySelector('#modal .mbody'); if(!body)return;
     body.innerHTML=`<div class="log-filters">
-        <select onchange="BoardLog.user=this.value;BoardLog.render()"><option value="">כל המשתמשים</option>${(st.users||[]).map(u=>`<option value="${u.id}" ${this.user==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
+        <select onchange="BoardLog.user=this.value;BoardLog.render()"><option value="">כל חברי הלוח</option>${people.map(u=>`<option value="${u.id}" ${this.user==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
         <input type="date" value="${this.date}" onchange="BoardLog.date=this.value;BoardLog.render()">
         ${this.user||this.date?`<button class="btn btn-ghost" onclick="BoardLog.user='';BoardLog.date='';BoardLog.render()">נקה סינון</button>`:''}
         <button class="btn btn-ghost" onclick="BoardLog.exportCsv()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא</button>

@@ -3680,6 +3680,33 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400):
     return out
 
 
+def _board_log_people(db, board_id):
+    """Who the log's person-filter may offer.
+
+    Everyone invited to the board — anyone else cannot act on it, so listing the
+    whole workspace fills the menu with names that can only ever return nothing.
+
+    Plus anyone who actually appears in this board's log. A member who was
+    removed after doing work is still in the history, and dropping them from the
+    filter would leave rows nobody can filter to. So the rule is "could have
+    acted, or did".
+    """
+    members = (db.query(User)
+                 .join(BoardMember, BoardMember.user_id == User.id)
+                 .filter(BoardMember.board_id == board_id).all())
+    people = {u.id: {"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in members}
+    ids = _board_task_ids(db, board_id)
+    if ids:
+        actor_ids = {a for (a,) in db.query(AuditLog.changed_by)
+                     .filter(AuditLog.entity_type == "task",
+                             AuditLog.entity_id.in_(ids)).distinct().all() if a}
+        missing = actor_ids - set(people)
+        if missing:
+            for u in db.query(User).filter(User.id.in_(missing)).all():
+                people[u.id] = {"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
+    return sorted(people.values(), key=lambda p: (p["name"] or ""))
+
+
 @app.get("/api/boards/{board_id}/activity")
 def board_activity(board_id: int, actor_id: int = Depends(current_user_id),
                    user_id: Optional[int] = None, date: Optional[str] = None,
@@ -3691,7 +3718,10 @@ def board_activity(board_id: int, actor_id: int = Depends(current_user_id),
         # seeing the log means seeing the board — the same gate the board itself uses
         if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
-        return {"activity": _board_activity_rows(db, board_id, user_id, date, limit)}
+        return {"activity": _board_activity_rows(db, board_id, user_id, date, limit),
+                # sent alongside so the filter's options never depend on what the
+                # current filter happens to have returned
+                "people": _board_log_people(db, board_id)}
 
 
 @app.get("/api/boards/{board_id}/activity/export")

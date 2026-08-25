@@ -120,3 +120,41 @@ def test_export_returns_a_csv_with_the_item_column(client, admin_id):
     body = r.content.decode("utf-8-sig")
     assert "פריט" in body.splitlines()[0], "the CSV header should name the item column"
     assert "פריט ליצוא" in body
+
+
+def test_the_filter_offers_board_people_only(client, admin_id, guinea_id):
+    """A workspace is bigger than a board. Listing everyone fills the menu with
+    names that can only ever return an empty list."""
+    bid = _mk_board(client, admin_id, "לוח לסינון")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    stranger = _outsider(client, admin_id, "log.stranger@cityos.test")
+    _mk_item(client, bid, admin_id)
+
+    people = client.get(f"/api/boards/{bid}/activity").json()["people"]
+    ids = {p["id"] for p in people}
+    assert guinea_id in ids, "an invited member must be offered"
+    assert stranger not in ids, "someone with no access to the board was offered"
+    assert all(p.get("name") for p in people)
+
+
+def test_someone_removed_from_the_board_is_still_filterable(client, admin_id):
+    """Their work is still in the history — dropping them from the filter would
+    leave rows nobody can filter to."""
+    bid = _mk_board(client, admin_id, "לוח עוזבים")
+    uid = _outsider(client, admin_id, "log.left@cityos.test")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": uid, "role": "editor"})
+    tid = _mk_item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}?user_id={uid}", json={"title": "שיניתי לפני שעזבתי"})
+    client.delete(f"/api/boards/{bid}/members/{uid}?actor_id={admin_id}")
+
+    d = client.get(f"/api/boards/{bid}/activity",
+                   headers={"X-CityOS-User": str(admin_id)}).json()
+    assert uid in {p["id"] for p in d["people"]}, "an author of existing rows vanished from the filter"
+    assert any(a["user_id"] == uid for a in d["activity"])
+    # sign as the admin: the suite promotes ?user_id= into the auth header, and
+    # this user no longer has access to the board they are being filtered by
+    only = client.get(f"/api/boards/{bid}/activity?user_id={uid}",
+                      headers={"X-CityOS-User": str(admin_id)}).json()["activity"]
+    assert only and all(a["user_id"] == uid for a in only)
