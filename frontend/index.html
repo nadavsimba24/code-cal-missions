@@ -86,6 +86,51 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .theme-ic{transition:color .15s}
 .theme-ic.sun{color:#f5a623}
 .theme-ic.moon{color:#7b8cff}
+
+/* ===== wide boards: keep the row's identity on screen ==============
+   With enough columns the table scrolls sideways inside #view. Everything
+   scrolled with it, so the item name and the group name both left the screen
+   and every row became an anonymous line of values. These pin the parts that
+   say WHICH row and WHICH group you are looking at. */
+
+/* the item column stays at the start of the viewport, on both axes.
+   .tbl th is already sticky vertically (top:32px); adding the inline offset
+   makes the corner cell stick in both directions at once. */
+.tbl th[data-fixed]{inset-inline-start:0;z-index:6}
+.tbl td.c-item{position:sticky;inset-inline-start:0;z-index:2}
+/* Sub-item rows are deliberately NOT pinned. Their table sits inside
+   .sub-panel, which carries overflow:hidden for its rounded clip, and a sticky
+   element inside an overflow:hidden ancestor anchors to a box that never
+   scrolls — so the rule would look right and do nothing. Making it work means
+   restructuring the panel, which is not worth it for an indented sub-table. */
+
+/* A sticky cell paints over the cells sliding beneath it, so it needs its own
+   background — the table's would leave it transparent and the values would
+   show through. The row's own states have to be repeated for the same reason. */
+.tbl td.c-item{background:var(--surface)}
+.tbl tr:hover td.c-item{background:var(--row-hover)}
+.tbl tr.row-sel td.c-item{background:var(--primary-soft)}
+.tbl tr.chat-open td.c-item{background:var(--primary-soft)}
+
+/* an edge that appears only once there is something hidden behind it */
+.tbl th[data-fixed]::after,.tbl td.c-item::after{
+  content:"";position:absolute;top:0;bottom:0;inset-inline-end:-1px;width:10px;
+  pointer-events:none;opacity:0;transition:opacity .15s;
+  background:linear-gradient(to left,rgba(29,42,68,.13),transparent)}
+:root[dir="ltr"] .tbl th[data-fixed]::after,
+:root[dir="ltr"] .tbl td.c-item::after{background:linear-gradient(to right,rgba(29,42,68,.13),transparent)}
+#view.scrolled-x .tbl th[data-fixed]::after,
+#view.scrolled-x .tbl td.c-item::after{opacity:1}
+
+/* the group header spans the whole table, so pinning the box would be
+   meaningless — its CONTENT is what has to stay at the edge */
+/* The wrapper — and so the group header inside it — was only as wide as the
+   viewport, while the table it labels is as wide as its columns. A sticky
+   element can only travel inside its containing block, so the group name ran
+   out after one screen and left with it. Matching the wrapper to the table
+   gives the name the full width to stay pinned across. */
+.grp-stick{width:max-content;min-width:100%}
+.gh-in{position:sticky;inset-inline-start:0;display:inline-flex;align-items:center;gap:9px}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -1724,6 +1769,7 @@ async function boot(){
   revealWhenFontsReady();
   try{ if(localStorage.getItem('cc_sb_collapsed')==='1') document.body.classList.add('sb-collapsed'); }catch(e){}
   initSidebarResize();
+  initPinShadow();
   try{
     // Who are we? The server decides, from the Entra identity on the request.
     // In dev mode it accepts the id the picker stored, so the picker still works.
@@ -1945,6 +1991,16 @@ function initSidebarResize(){
   // a narrower window lowers the ceiling — re-clamp so a stored width can't
   // outgrow a third of the screen
   window.addEventListener('resize',()=>{ if(!isMobile()) setSidebarWidth(sbWidth(),false); });
+}
+/* The pinned column's edge shadow should appear only once there is something
+   hidden behind it — otherwise every board carries a shadow for no reason.
+   RTL reports scrollLeft as negative, hence the abs(). */
+function initPinShadow(){
+  const v=document.getElementById('view'); if(!v||v._pinBound)return;
+  v._pinBound=true;
+  const upd=()=>v.classList.toggle('scrolled-x', Math.abs(v.scrollLeft)>1);
+  v.addEventListener('scroll',upd,{passive:true});
+  upd();
 }
 function renderSidebar(){
   const active = (typeof Env!=='undefined') ? Env.active() : null;
@@ -4062,18 +4118,18 @@ function vTable(el){
     // jump, which reads as the view scrolling by itself
     const shut=groupCollapsed(g.id);
     const head=real
-      ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}">
+      ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}"><span class="gh-in">
           <i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-name g-handle" style="color:${col}" title="גרור לשינוי סדר">${esc(g.name)}</span>
           <span class="g-count">${g.tasks.length}</span>
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
-        </div>`
-      : `<div class="group-head${shut?' collapsed':''}">
+        </span></div>`
+      : `<div class="group-head${shut?' collapsed':''}"><span class="gh-in">
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-name" style="color:${col}">${esc(g.name)}</span>
           <span class="g-count">${g.tasks.length}</span>
-        </div>`;
+        </span></div>`;
     return `<div class="group" ${real?'':'data-orphan="1"'}>
       <div class="grp-stick">
       ${head}
