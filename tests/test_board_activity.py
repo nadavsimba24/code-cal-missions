@@ -1,0 +1,122 @@
+"""Board-level activity: the same audit records the item log reads, gathered
+across every item on the board."""
+from sqlalchemy.orm import Session
+import main as cityos_main
+from models import EnvironmentMember, Board
+
+
+def _mk_board(client, admin_id, name="לוח לוגים"):
+    return client.post("/api/boards", json={"name": name, "user_id": admin_id}).json()["id"]
+
+
+def _mk_item(client, bid, admin_id, title="פריט"):
+    return client.post("/api/tasks", json={"board_id": bid, "title": title,
+                                           "user_id": admin_id}).json()["id"]
+
+
+def _outsider(client, admin_id, email):
+    for u in client.get("/api/users").json():
+        if u.get("email") == email:
+            uid = u["id"]; break
+    else:
+        uid = client.post("/api/users", json={"actor_id": admin_id, "name": "זר ללוג",
+                                              "email": email, "role": "member"}).json()["id"]
+    client.delete(f"/api/boards/1/members/{uid}?actor_id={admin_id}")
+    return uid
+
+
+def test_it_gathers_changes_from_every_item(client, admin_id):
+    bid = _mk_board(client, admin_id)
+    a = _mk_item(client, bid, admin_id, "פריט א")
+    b = _mk_item(client, bid, admin_id, "פריט ב")
+    client.patch(f"/api/tasks/{a}?user_id={admin_id}", json={"title": "פריט א מעודכן"})
+    client.patch(f"/api/tasks/{b}?user_id={admin_id}", json={"status": "done"})
+
+    acts = client.get(f"/api/boards/{bid}/activity").json()["activity"]
+    ids = {x["task_id"] for x in acts}
+    assert a in ids and b in ids, "the board log missed one of its items"
+    assert len(acts) >= 4, "creations and updates should both be recorded"
+
+
+def test_each_line_names_the_item_it_belongs_to(client, admin_id):
+    """At board level 'changed status' is meaningless without saying of what."""
+    bid = _mk_board(client, admin_id)
+    tid = _mk_item(client, bid, admin_id, "פריט מזוהה")
+    client.patch(f"/api/tasks/{tid}?user_id={admin_id}", json={"status": "done"})
+    acts = client.get(f"/api/boards/{bid}/activity").json()["activity"]
+    assert all(x.get("task_title") for x in acts)
+    assert any(x["task_title"] == "פריט מזוהה" for x in acts)
+
+
+def test_newest_first(client, admin_id):
+    bid = _mk_board(client, admin_id)
+    tid = _mk_item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}?user_id={admin_id}", json={"title": "אחרי"})
+    acts = client.get(f"/api/boards/{bid}/activity").json()["activity"]
+    stamps = [x["created_at"] for x in acts if x["created_at"]]
+    assert stamps == sorted(stamps, reverse=True)
+
+
+def test_filtering_by_user_actually_filters(client, admin_id, guinea_id):
+    """The item endpoint bound this to the caller, so it always showed only your
+    own changes. Board level must honour the query parameter."""
+    bid = _mk_board(client, admin_id)
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    tid = _mk_item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}?user_id={guinea_id}", json={"title": "שינוי של גינאה"})
+
+    mine = client.get(f"/api/boards/{bid}/activity?user_id={admin_id}").json()["activity"]
+    theirs = client.get(f"/api/boards/{bid}/activity?user_id={guinea_id}").json()["activity"]
+    assert all(x["user_id"] == admin_id for x in mine)
+    assert all(x["user_id"] == guinea_id for x in theirs)
+    assert theirs, "the other user's change is missing"
+    assert len(theirs) < len(client.get(f"/api/boards/{bid}/activity").json()["activity"])
+
+
+def test_the_item_log_now_honours_its_filter_too(client, admin_id, guinea_id):
+    bid = _mk_board(client, admin_id)
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    tid = _mk_item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}?user_id={guinea_id}", json={"title": "שונה"})
+    unfiltered = client.get(f"/api/tasks/{tid}/activity",
+                            headers={"X-CityOS-User": str(admin_id)}).json()["activity"]
+    assert {x["user_id"] for x in unfiltered} >= {admin_id, guinea_id}, \
+        "the unfiltered item log should show everyone's changes"
+
+
+def test_a_non_member_cannot_read_the_log(client, admin_id):
+    bid = _mk_board(client, admin_id)
+    _mk_item(client, bid, admin_id)
+    out = _outsider(client, admin_id, "log.outsider@cityos.test")
+    assert client.get(f"/api/boards/{bid}/activity?user_id={out}",
+                      headers={"X-CityOS-User": str(out)}).status_code == 403
+
+
+def test_a_public_board_viewer_may_read_it(client, admin_id):
+    """Seeing the board means seeing its history — the same gate as the board."""
+    bid = _mk_board(client, admin_id)
+    _mk_item(client, bid, admin_id)
+    out = _outsider(client, admin_id, "log.viewer@cityos.test")
+    with Session(cityos_main.engine) as db:
+        env_id = db.query(Board).filter(Board.id == bid).first().environment_id
+        if not db.query(EnvironmentMember).filter(
+                EnvironmentMember.environment_id == env_id,
+                EnvironmentMember.user_id == out).first():
+            db.add(EnvironmentMember(environment_id=env_id, user_id=out, role="member"))
+            db.commit()
+    client.patch(f"/api/boards/{bid}", json={"actor_id": admin_id, "visibility": "public"})
+    r = client.get(f"/api/boards/{bid}/activity", headers={"X-CityOS-User": str(out)})
+    assert r.status_code == 200
+
+
+def test_export_returns_a_csv_with_the_item_column(client, admin_id):
+    bid = _mk_board(client, admin_id)
+    _mk_item(client, bid, admin_id, "פריט ליצוא")
+    r = client.get(f"/api/boards/{bid}/activity/export")
+    assert r.status_code == 200
+    assert "text/csv" in r.headers["content-type"]
+    body = r.content.decode("utf-8-sig")
+    assert "פריט" in body.splitlines()[0], "the CSV header should name the item column"
+    assert "פריט ליצוא" in body

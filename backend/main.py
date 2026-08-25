@@ -3621,7 +3621,15 @@ def delete_task_file(task_id: int, data: dict, actor_id: int = Depends(current_u
         return {"status": "deleted", "removed": removed}
 
 @app.get("/api/tasks/{task_id}/activity")
-def task_activity(task_id: int, user_id: int = Depends(current_user_id), date: Optional[str] = None):
+def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
+                  user_id: Optional[int] = None, date: Optional[str] = None):
+    """One item's history.
+
+    `user_id` is the person to FILTER BY, from the query string. It used to be
+    bound to Depends(current_user_id), which meant it was always the caller —
+    so the log silently showed only your own changes and the "all users" option
+    in the filter did nothing. The actor is now a separate parameter.
+    """
     with Session(engine) as db:
         q = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id == task_id)
         if user_id:
@@ -3636,6 +3644,77 @@ def task_activity(task_id: int, user_id: int = Depends(current_user_id), date: O
                         "user_id": l.changed_by, "user_name": u.name if u else "מערכת",
                         "can_undo": l.action == "update", "created_at": l.created_at})
         return {"activity": out}
+
+def _board_task_ids(db, board_id):
+    """Ids of every item on the board, sub-items included — they are Tasks too."""
+    return [i for (i,) in db.query(Task.id).filter(Task.board_id == board_id).all()]
+
+
+def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400):
+    """Every audited change on the board, newest first.
+
+    Same records the item log reads — AuditLog rows for tasks — only gathered
+    across the whole board instead of one item. Each row carries the item it
+    belongs to, because at board level "changed status" means nothing without
+    saying of what.
+    """
+    ids = _board_task_ids(db, board_id)
+    if not ids:
+        return []
+    q = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id.in_(ids))
+    if user_id:
+        q = q.filter(AuditLog.changed_by == user_id)
+    titles = {i: t for (i, t) in db.query(Task.id, Task.title).filter(Task.id.in_(ids)).all()}
+    users = {u.id: u.name for u in db.query(User).all()}
+    out = []
+    for l in q.order_by(AuditLog.created_at.desc()).limit(max(1, min(2000, limit * 3))).all():
+        if date and (not l.created_at or str(l.created_at)[:10] != date):
+            continue
+        out.append({"id": l.id, "action": l.action, "field": l.field_name,
+                    "old": l.old_value, "new": l.new_value,
+                    "task_id": l.entity_id, "task_title": titles.get(l.entity_id, "—"),
+                    "user_id": l.changed_by, "user_name": users.get(l.changed_by, "מערכת"),
+                    "can_undo": l.action == "update", "created_at": l.created_at})
+        if len(out) >= limit:
+            break
+    return out
+
+
+@app.get("/api/boards/{board_id}/activity")
+def board_activity(board_id: int, actor_id: int = Depends(current_user_id),
+                   user_id: Optional[int] = None, date: Optional[str] = None,
+                   limit: int = 400):
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        # seeing the log means seeing the board — the same gate the board itself uses
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        return {"activity": _board_activity_rows(db, board_id, user_id, date, limit)}
+
+
+@app.get("/api/boards/{board_id}/activity/export")
+def export_board_activity(board_id: int, actor_id: int = Depends(current_user_id),
+                          user_id: Optional[int] = None, date: Optional[str] = None):
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        rows = _board_activity_rows(db, board_id, user_id, date, limit=5000)
+        buf = io.StringIO()
+        buf.write("\ufeff")  # BOM so Excel reads Hebrew UTF-8
+        w = csv.writer(buf)
+        w.writerow(["תאריך", "פריט", "משתמש", "פעולה", "שדה", "מ-", "ל-"])
+        for r in rows:
+            w.writerow([r["created_at"], r["task_title"], r["user_name"],
+                        r["action"], r["field"] or "", r["old"] or "", r["new"] or ""])
+        return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="board-{board_id}-activity.csv"'})
+
 
 @app.get("/api/tasks/{task_id}/activity/export")
 def export_activity(task_id: int):

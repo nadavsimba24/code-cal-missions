@@ -126,6 +126,16 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
    gives the name the full width to stay pinned across. */
 .grp-stick{width:max-content;min-width:100%}
 .gh-in{position:sticky;inset-inline-start:0;display:inline-flex;align-items:center;gap:9px}
+/* the log filters were written for the narrow chat panel, where the user select
+   filling the row is right. In the wide board dialog it stretches across the
+   whole width and pushes the export button to the edge. */
+#modal .log-filters{align-items:center}
+#modal .log-filters select{flex:0 1 240px}
+#modal .log-filters .btn{margin-inline-start:auto}
+.bh-log{width:30px;height:30px;border-radius:7px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:inline-grid;place-items:center;font-size:14px;vertical-align:middle;margin-inline-start:6px}
+.bh-log:hover{background:var(--row-hover);border-color:var(--border);color:var(--primary)}
+.log-item{background:none;border:none;padding:0;font:inherit;color:var(--primary);cursor:pointer;font-weight:600}
+.log-item:hover{text-decoration:underline}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -2158,8 +2168,66 @@ function renderBoardHead(){
     `<span class="bt-icon${canEdit?' editable':''}" ${canEdit?'onclick="editBoardIcon(event)" title="שנה אייקון"':''}>${st.board.icon||'📋'}</span> `+
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
     ownerChipHTML()+
+    `<button class="bh-log" id="bh-log" onclick="BoardLog.open()" title="לוג פעילות הלוח" aria-label="לוג פעילות הלוח"><i class="fa-solid fa-bolt"></i></button>`+
     `<button class="bh-menu" id="bh-menu" onclick="boardMenu(event)" title="תפריט הלוח" aria-label="תפריט הלוח"><i class="fa-solid fa-ellipsis"></i></button>`;
 }
+/* ===== board activity log =====
+   The same records the item log shows, gathered across every item on the board.
+   Rendering and wording are Chat's — logText/fieldHe/transVal are reused rather
+   than reimplemented, so the two logs cannot drift into describing the same
+   change differently. The one addition is which item each line belongs to:
+   "changed status" says nothing at board level without it. */
+const BoardLog = {
+  user:'', date:'',
+  async open(){
+    if(!st.board)return;
+    this.render();
+  },
+  async render(){
+    const qs=[]; if(this.user)qs.push('user_id='+this.user); if(this.date)qs.push('date='+this.date);
+    showModal(`<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> לוג פעילות — ${esc(st.board.name)}</h2>
+      <div class="mbody"><div class="spin"></div></div>`);
+    document.getElementById('modal').classList.add('modal-80');
+    let d={activity:[]};
+    try{ d=await api('/api/boards/'+st.board.id+'/activity'+(qs.length?'?'+qs.join('&'):'')); }
+    catch(e){ toast(e.detail||'טעינת הלוג נכשלה'); }
+    const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
+    const rows=(d.activity||[]).map(a=>`<div class="log-row">
+        <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':a.action==='create'?'fa-plus':'fa-pen'}"></i></div>
+        <div style="flex:1;min-width:0">
+          <div class="log-txt"><b>${esc(a.user_name)}</b> ${Chat.logText(a)}</div>
+          <div class="log-time"><button class="log-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})"><i class="fa-regular fa-square-check"></i> ${esc(a.task_title)}</button> · ${fdatetime(a.created_at)}</div>
+        </div>
+        ${a.can_undo&&isMgr?`<button class="log-undo" onclick="BoardLog.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
+      </div>`).join('')
+      ||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות בלוח</div></div>';
+    const body=document.querySelector('#modal .mbody'); if(!body)return;
+    body.innerHTML=`<div class="log-filters">
+        <select onchange="BoardLog.user=this.value;BoardLog.render()"><option value="">כל המשתמשים</option>${(st.users||[]).map(u=>`<option value="${u.id}" ${this.user==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
+        <input type="date" value="${this.date}" onchange="BoardLog.date=this.value;BoardLog.render()">
+        ${this.user||this.date?`<button class="btn btn-ghost" onclick="BoardLog.user='';BoardLog.date='';BoardLog.render()">נקה סינון</button>`:''}
+        <button class="btn btn-ghost" onclick="BoardLog.exportCsv()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא</button>
+      </div><div class="logs-list">${rows}</div>`;
+  },
+  // a log line is only useful if you can get to what it describes
+  goto(taskId){
+    closeModals();
+    if(findAnyTask(taskId)) Chat.open(taskId,{center:true});
+    else toast('הפריט אינו בתצוגה הנוכחית');
+  },
+  exportCsv(){
+    const qs=[]; if(this.user)qs.push('user_id='+this.user); if(this.date)qs.push('date='+this.date);
+    window.open('/api/boards/'+st.board.id+'/activity/export'+(qs.length?'?'+qs.join('&'):''),'_blank');
+  },
+  async undo(logId){
+    try{
+      await api('/api/activity/'+logId+'/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})});
+      toast('השינוי בוטל');
+      const b=await api('/api/boards/'+st.board.id); st.board=b;
+      renderView(); this.render();
+    }catch(e){ toast('רק מנהל יכול לבטל'); }
+  },
+};
 /* ===== תפריט הלוח — the board's own actions, next to its name =====
    Everything that acts on the whole board lives here instead of being spread
    between the header and the toolbar. Entries the user may not perform are
