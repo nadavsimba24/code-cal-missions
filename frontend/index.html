@@ -82,6 +82,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* in the list only the exception is marked — a lock on every private board
    would be ten identical icons saying nothing */
 .sb-vis{font-size:10px;color:var(--green);opacity:.85;flex:none;margin-inline-start:4px}
+/* the icon states which mode is ACTIVE — a sun while light, a moon while dark */
+.theme-ic{transition:color .15s}
+.theme-ic.sun{color:#f5a623}
+.theme-ic.moon{color:#7b8cff}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -2571,7 +2575,7 @@ const Profile = {
           <label class="switch"><input type="checkbox" ${np.assign!==false?'checked':''} ${subDis} onchange="Profile.setPref(${userId},'assign',this.checked)"><span class="slider"></span></label>
         </div>
         ${userId===meId()?`<div class="pf-sec">תצוגה</div>
-        <div class="pf-row pf-toggle"><span><i class="fa-solid fa-circle-half-stroke"></i> מצב כהה</span>
+        <div class="pf-row pf-toggle"><span><i id="theme-ic" class="fa-solid ${Settings.isDark()?'fa-moon':'fa-sun'} theme-ic ${Settings.isDark()?'moon':'sun'}"></i> מצב כהה</span>
           <label class="switch"><input type="checkbox" ${Settings.isDark()?'checked':''} onchange="Settings.setTheme(this.checked)"><span class="slider"></span></label>
         </div>`:''}
         <div class="pf-sec">משימות בלוח "${esc((st.board&&st.board.name)||'')}" · ${tasks.length}</div>
@@ -3925,7 +3929,13 @@ const Settings={
   save(){ try{ localStorage.setItem('cc_settings',JSON.stringify(this.data)); }catch(e){} },
   apply(){ document.documentElement.setAttribute('data-theme',this.data.theme); },
   isDark(){ return this.data.theme==='dark'; },
-  setTheme(dark){ this.data.theme=dark?'dark':'light'; this.apply(); this.save(); },
+  setTheme(dark){
+    this.data.theme=dark?'dark':'light'; this.apply(); this.save();
+    // the row is rendered once with the profile, so the icon has to be swapped
+    // by hand — otherwise the sun stays lit while the app turns dark
+    const ic=document.getElementById('theme-ic');
+    if(ic) ic.className='fa-solid '+(dark?'fa-moon':'fa-sun')+' theme-ic '+(dark?'moon':'sun');
+  },
 };
 
 const ROLE_HE={admin:'מנהל מערכת',manager:'מנהל',member:'חבר צוות',viewer:'צפייה בלבד',guest:'אורח'};
