@@ -10,8 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import os
 from pydantic import BaseModel
-from sqlalchemy import create_engine, func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, event, func, or_
+from sqlalchemy.orm import Session, with_loader_criteria
 
 sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
@@ -136,6 +136,12 @@ def _migrate():
             conn.execute(text("ALTER TABLE boards ADD COLUMN deleted_at DATETIME"))
         if "deleted_by" not in bcols:
             conn.execute(text("ALTER TABLE boards ADD COLUMN deleted_by INTEGER"))
+        # tasks: recycle bin per board — NULL deleted_at means a live item
+        tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
+        if "deleted_at" not in tcols:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN deleted_at DATETIME"))
+        if "deleted_by" not in tcols:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN deleted_by INTEGER"))
         # environments: primary-workspace flag (may predate the column)
         ecols = {r[1] for r in conn.execute(text("PRAGMA table_info(environments)"))}
         if ecols and "is_primary" not in ecols:
@@ -188,6 +194,8 @@ else:
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS position INTEGER DEFAULT 0",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS deleted_by INTEGER",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_by INTEGER",
         "ALTER TABLE environments ADD COLUMN IF NOT EXISTS is_primary BOOLEAN DEFAULT FALSE",
         "ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
@@ -747,6 +755,25 @@ def _board_visibility(b):
     """
     v = ((b.settings or {}).get("visibility") if b else None)
     return v if v in BOARD_VISIBILITY else "private"
+
+# ── the recycle bin's one rule ────────────────────────────────────────
+# A deleted item is invisible to every query in the application, including the
+# ones that load it through a relationship (board.tasks, task.subtasks).
+#
+# This is a single event hook rather than a filter added to each query on
+# purpose: there are ~50 places that read Task, and the failure mode of missing
+# one is a deleted item still showing on a board — silent, and exactly the bug
+# the feature exists to prevent. One rule cannot be forgotten.
+#
+# The bin itself, restore and permanent delete opt out with
+# .execution_options(include_deleted=True); they are the only code that should.
+@event.listens_for(Session, "do_orm_execute")
+def _hide_deleted_tasks(state):
+    if state.is_select and not state.execution_options.get("include_deleted", False):
+        state.statement = state.statement.options(
+            with_loader_criteria(Task, lambda cls: cls.deleted_at.is_(None), include_aliases=True)
+        )
+
 
 def _board_role(db, board_id, user_id):
     """Board-scoped role (admin/editor/viewer) for a user, or None if no access."""
@@ -1624,6 +1651,136 @@ def delete_board(board_id: int, user_id: int = Depends(current_user_id)):
         db.commit()
         return {"status": "deleted", "id": board_id,
                 "restorable_until_days": RECYCLE_BIN_DAYS}
+
+
+# ── the board's own recycle bin: items ───────────────────────────────
+def _deleted_tasks_q(db):
+    """Tasks the bin cares about. The global hook hides deleted rows from every
+    query, so the bin has to say explicitly that it wants them."""
+    return db.query(Task).execution_options(include_deleted=True)
+
+
+def _purge_expired_tasks(db, board_id=None):
+    """Hard-delete items whose retention window has passed. Run when a bin is
+    read, so no scheduler is needed — the same approach the board bin uses."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=RECYCLE_BIN_DAYS)
+    q = _deleted_tasks_q(db).filter(Task.deleted_at != None, Task.deleted_at < cutoff)  # noqa: E711
+    if board_id is not None:
+        q = q.filter(Task.board_id == board_id)
+    gone = [t.id for t in q.all()]
+    for tid in gone:
+        _hard_delete_task(db, tid)
+    if gone:
+        db.commit()
+    return gone
+
+
+def _hard_delete_task(db, task_id):
+    """Remove an item for good, with everything hanging off it."""
+    for sub in _deleted_tasks_q(db).filter(Task.parent_id == task_id).all():
+        _hard_delete_task(db, sub.id)
+    db.query(Comment).filter(Comment.task_id == task_id).delete(synchronize_session=False)
+    db.query(AuditLog).filter(AuditLog.entity_type == "task",
+                              AuditLog.entity_id == task_id).delete(synchronize_session=False)
+    t = _deleted_tasks_q(db).filter(Task.id == task_id).first()
+    if t:
+        t.assignees = []
+        db.delete(t)
+
+
+def _trash_task_json(db, t, users):
+    days_left = RECYCLE_BIN_DAYS - (datetime.now(timezone.utc).replace(tzinfo=None) - t.deleted_at).days
+    subs = _deleted_tasks_q(db).filter(Task.parent_id == t.id).count()
+    return {"id": t.id, "title": t.title, "group_id": t.group_id,
+            "deleted_at": t.deleted_at, "deleted_by": t.deleted_by,
+            "deleted_by_name": users.get(t.deleted_by, "—"),
+            "sub_count": subs,
+            "days_left": max(0, days_left), "retention_days": RECYCLE_BIN_DAYS}
+
+
+@app.get("/api/boards/{board_id}/trash")
+def board_trash(board_id: int, actor_id: int = Depends(current_user_id)):
+    """Items deleted from this board, newest first.
+
+    Only top-level items are listed: a sub-item is deleted with its parent and
+    restored with it, so listing both would offer a restore that does nothing.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        _purge_expired_tasks(db, board_id)
+        users = {u.id: u.name for u in db.query(User).all()}
+        rows = (_deleted_tasks_q(db)
+                .filter(Task.board_id == board_id, Task.deleted_at != None,  # noqa: E711
+                        Task.parent_id == None)                              # noqa: E711
+                .order_by(Task.deleted_at.desc()).all())
+        return {"items": [_trash_task_json(db, t, users) for t in rows],
+                "retention_days": RECYCLE_BIN_DAYS}
+
+
+@app.post("/api/tasks/{task_id}/restore")
+def restore_task(task_id: int, data: dict = None, actor_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        t = _deleted_tasks_q(db).filter(Task.id == task_id).first()
+        if not t or not t.deleted_at:
+            raise HTTPException(404, "item not in the recycle bin")
+        _require_board_edit(db, t.board_id, actor_id)
+        # the group it lived in may itself be gone; put it back where it can be seen
+        g = db.query(Group).filter(Group.id == t.group_id, Group.board_id == t.board_id).first()
+        if not g:
+            g = db.query(Group).filter(Group.board_id == t.board_id).order_by(Group.position).first()
+            t.group_id = g.id if g else None
+        for sub in _deleted_tasks_q(db).filter(Task.parent_id == task_id).all():
+            sub.deleted_at = None
+            sub.deleted_by = None
+        t.deleted_at = None
+        t.deleted_by = None
+        _audit(db, task_id, "restore", field="item", old=None, new=t.title, user_id=actor_id)
+        _bid = t.board_id
+        db.commit()
+        bus.publish("task.created", board_id=_bid, task_id=task_id, actor_id=actor_id)
+        return {"status": "restored", "id": task_id}
+
+
+@app.delete("/api/boards/{board_id}/trash/{task_id}")
+def purge_task(board_id: int, task_id: int, actor_id: int = Depends(current_user_id)):
+    """Permanent. Board admins only — nothing brings this back."""
+    with Session(engine) as db:
+        t = _deleted_tasks_q(db).filter(Task.id == task_id, Task.board_id == board_id).first()
+        if not t or not t.deleted_at:
+            raise HTTPException(404, "item not in the recycle bin")
+        if not _is_board_admin(db, board_id, actor_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול למחוק לצמיתות")
+        _hard_delete_task(db, task_id)
+        db.commit()
+        return {"status": "purged", "id": task_id}
+
+
+@app.get("/api/boards/{board_id}/trash/{task_id}")
+def view_trashed_task(board_id: int, task_id: int, actor_id: int = Depends(current_user_id)):
+    """Read a deleted item without restoring it — the bin's "צפייה"."""
+    with Session(engine) as db:
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        t = _deleted_tasks_q(db).filter(Task.id == task_id, Task.board_id == board_id).first()
+        if not t or not t.deleted_at:
+            raise HTTPException(404, "item not in the recycle bin")
+        users = {u.id: u.name for u in db.query(User).all()}
+        subs = _deleted_tasks_q(db).filter(Task.parent_id == task_id).order_by(Task.position).all()
+        comments = db.query(Comment).filter(Comment.task_id == task_id).count()
+        return {"id": t.id, "title": t.title, "description": t.description,
+                "status": t.status.value if hasattr(t.status, "value") else t.status,
+                "priority": t.priority.value if hasattr(t.priority, "value") else t.priority,
+                "due_date": t.due_date, "tags": t.tags or [],
+                "custom_fields": t.custom_fields or {},
+                "assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
+                              for u in (t.assignees or [])],
+                "deleted_at": t.deleted_at, "deleted_by_name": users.get(t.deleted_by, "—"),
+                "comment_count": comments,
+                "subs": [{"id": x.id, "title": x.title} for x in subs]}
 
 
 @app.get("/api/trash/boards")
@@ -3315,11 +3472,17 @@ def delete_task(task_id: int, user_id: int = Depends(current_user_id)):
             role = _board_role(db, task.board_id, user_id)
             if _item_perm(task, user_id, role) != "delete":
                 raise HTTPException(403, "אין לך הרשאת מחיקה לפריט זה")
-        # remove sub-items along with the parent
+        # To the board's recycle bin, not gone. Sub-items follow their parent so
+        # restoring the parent brings the whole thing back — and so a sub-item is
+        # never left orphaned under an item that is no longer there.
         _bid = task.board_id
-        for s in db.query(Task).filter(Task.parent_id == task_id).all():
-            db.delete(s)
-        db.delete(task)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        for sub in db.query(Task).filter(Task.parent_id == task_id).all():
+            sub.deleted_at = now
+            sub.deleted_by = user_id
+        task.deleted_at = now
+        task.deleted_by = user_id
+        _audit(db, task_id, "delete", field="item", old=task.title, new=None, user_id=user_id)
         db.commit()
         bus.publish("task.deleted", board_id=_bid, task_id=task_id, actor_id=user_id)
         return {"status": "deleted"}

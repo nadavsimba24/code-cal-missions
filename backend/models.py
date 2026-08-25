@@ -239,6 +239,11 @@ class Group(Base):
 class Task(Base):
     __tablename__ = "tasks"
     id = Column(Integer, primary_key=True)
+    # A deleted item goes to its board's recycle bin rather than disappearing.
+    # Everything it owns — sub-items, comments, files, history — stays intact, so
+    # a restore brings the item back whole rather than as a husk.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     board_id = Column(Integer, ForeignKey("boards.id"))
     group_id = Column(Integer, ForeignKey("groups.id"))
     parent_id = Column(Integer, ForeignKey("tasks.id"))
