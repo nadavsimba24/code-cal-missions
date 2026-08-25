@@ -158,3 +158,22 @@ def test_someone_removed_from_the_board_is_still_filterable(client, admin_id):
     only = client.get(f"/api/boards/{bid}/activity?user_id={uid}",
                       headers={"X-CityOS-User": str(admin_id)}).json()["activity"]
     assert only and all(a["user_id"] == uid for a in only)
+
+
+def test_internal_status_bookkeeping_never_reaches_the_log(client, admin_id):
+    """A board-defined status stores its key, label, colour and an unset flag in
+    custom_fields. Changing one status writes four audit rows of raw JSON; a
+    person reading a log wants one line about the status, not four about its
+    colour."""
+    bid = _mk_board(client, admin_id, "לוח רעש")
+    tid = _mk_item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}?user_id={admin_id}",
+                 json={"custom_fields": {"status_key": "x_1", "status_label": "בדיקה",
+                                         "status_color": "#e2445c", "status_unset": None}})
+    fields = {a.get("field") for a in client.get(f"/api/boards/{bid}/activity").json()["activity"]}
+    for noisy in ("col:status_key", "col:status_label", "col:status_color", "col:status_unset"):
+        assert noisy not in fields, f"{noisy} leaked into the board log"
+    item_fields = {a.get("field") for a in
+                   client.get(f"/api/tasks/{tid}/activity",
+                              headers={"X-CityOS-User": str(admin_id)}).json()["activity"]}
+    assert "col:status_key" not in item_fields, "the item log still shows bookkeeping"

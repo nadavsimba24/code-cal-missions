@@ -3803,6 +3803,8 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
             q = q.filter(AuditLog.changed_by == user_id)
         out = []
         for l in q.order_by(AuditLog.created_at.desc()).all():
+            if l.field_name in _INTERNAL_LOG_FIELDS:
+                continue
             if date and (not l.created_at or str(l.created_at)[:10] != date):
                 continue
             u = db.query(User).filter(User.id == l.changed_by).first()
@@ -3811,6 +3813,17 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
                         "user_id": l.changed_by, "user_name": u.name if u else "מערכת",
                         "can_undo": l.action == "update", "created_at": l.created_at})
         return {"activity": out}
+
+# The board-defined status/priority machinery stores its bookkeeping in
+# custom_fields — the key, the label, the colour and an "unset" flag. Changing
+# one status therefore writes four audit rows whose values are raw JSON. They
+# are implementation detail, and a person reading a log wants one line saying
+# the status changed, not four saying its colour did.
+_INTERNAL_LOG_FIELDS = {
+    "col:status_key", "col:status_label", "col:status_color", "col:status_unset",
+    "col:priority_key", "col:priority_label", "col:priority_color", "col:priority_unset",
+}
+
 
 def _board_task_ids(db, board_id):
     """Ids of every item on the board, sub-items included — they are Tasks too."""
@@ -3835,6 +3848,8 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400):
     users = {u.id: u.name for u in db.query(User).all()}
     out = []
     for l in q.order_by(AuditLog.created_at.desc()).limit(max(1, min(2000, limit * 3))).all():
+        if l.field_name in _INTERNAL_LOG_FIELDS:
+            continue
         if date and (not l.created_at or str(l.created_at)[:10] != date):
             continue
         out.append({"id": l.id, "action": l.action, "field": l.field_name,

@@ -2332,8 +2332,9 @@ const BoardLog = {
   },
   pill(field,v){ return esc(Chat.transVal(field,v)); },
   pillStyle(field,v){
-    if(v==null||v==='')return '';
-    const k=String(v).replace(/^"|"$/g,'');
+    const d=Chat._decode(v);
+    if(d==null||typeof d==='object')return '';
+    const k=String(d).replace(/^"|"$/g,'');
     const m=field==='status'?(boardStatusMap()[k]||STATUS[k])
            :field==='priority'?(boardPriorityMap()[k]||PRIORITY[k]):null;
     return (m&&m.c)?`background:${m.c};color:#fff;border-color:transparent`:'';
@@ -7724,11 +7725,36 @@ const Chat = {
     return `שינה/תה ${this.fieldHe(a.field)}: <span class="log-old">${esc(this.transVal(a.field,a.old))}</span> ← <span class="log-new">${esc(this.transVal(a.field,a.new))}</span>`;
   },
   fieldHe(f){ if(!f)return ''; const m={title:'כותרת',status:'סטטוס',priority:'עדיפות',due_date:'תאריך יעד',tags:'תגיות'}; if(m[f])return m[f]; if(f.startsWith('col:')){const c=customColumns().find(x=>x.id===f.slice(4));return 'עמודה '+(c?'"'+c.title+'"':'');} return f; },
-  transVal(f,v){ if(v==null||v==='')return '—'; v=String(v).replace(/^"|"$/g,'');
-    if(f==='status')return (boardStatusMap()[v]||STATUS[v]||{}).he||this.short(v);
-    if(f==='priority')return (boardPriorityMap()[v]||PRIORITY[v]||{}).he||this.short(v);
-    if(f==='due_date'){const d=new Date(v);if(!isNaN(d))return d.toLocaleDateString('he-IL');}
-    return this.short(v); },
+  /* A custom column's history is stored as JSON, so "empty" arrives as the
+     STRING "null" and a text value arrives wrapped in quotes. Comparing against
+     null never matched the string, which is why cells that were cleared showed
+     the word "null" in the log. Decode first, then format by shape. */
+  _decode(v){
+    if(v==null)return null;
+    const s=String(v);
+    if(s===''||s==='null'||s==='undefined')return null;
+    if(/^\s*[\[{"]/.test(s)){ try{ return JSON.parse(s); }catch(e){} }
+    return s;
+  },
+  transVal(f,v){
+    const d=this._decode(v);
+    if(d==null||d==='')return '—';
+    if(typeof d==='object'){
+      if(Array.isArray(d))
+        return d.map(x=>(x&&typeof x==='object')?(x.label||x.name||x.title||''):String(x))
+                .filter(Boolean).join(', ')||'—';
+      if(d.from||d.to){                       // a timeline range
+        const fd=x=>{const dt=new Date(x); return isNaN(dt)?'':dt.toLocaleDateString('he-IL');};
+        return [fd(d.from),fd(d.to)].filter(Boolean).join(' – ')||'—';
+      }
+      return String(d.label||d.name||d.title||'—');
+    }
+    const v2=String(d).replace(/^"|"$/g,'');
+    if(f==='status')return (boardStatusMap()[v2]||STATUS[v2]||{}).he||this.short(v2);
+    if(f==='priority')return (boardPriorityMap()[v2]||PRIORITY[v2]||{}).he||this.short(v2);
+    if(f==='due_date'){const dt=new Date(v2);if(!isNaN(dt))return dt.toLocaleDateString('he-IL');}
+    return this.short(v2);
+  },
   short(v){ if(v==null||v==='')return '—'; v=String(v).replace(/^"|"$/g,''); return v.length>26?v.slice(0,25)+'…':v; },
   exportLogs(){ window.open('/api/tasks/'+this.taskId+'/activity/export','_blank'); },
   async undo(logId){ try{ await api('/api/activity/'+logId+'/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); toast('השינוי בוטל'); if(st.board){const b=await api('/api/boards/'+st.board.id);st.board=b;} this.render(); if(st.view==='table')renderView(); }catch(e){toast('רק מנהל יכול לבטל'); } },
