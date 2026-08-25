@@ -74,11 +74,6 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .vis-opt>i{font-size:15px;color:var(--text-muted);margin-top:2px}
 .vis-opt.sel>i{color:var(--primary)}
 .vis-opt small{display:block;color:var(--text-muted);font-size:12px;margin-top:2px;font-weight:400}
-.vis-chip{display:inline-flex;align-items:center;gap:5px;margin-inline-start:8px;padding:2px 8px;border-radius:999px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text-muted);font-size:11.5px;font-weight:500;vertical-align:middle;white-space:nowrap}
-.vis-chip i{font-size:10px}
-.vis-chip.pub{border-color:var(--green);color:var(--green)}
-.vis-chip.clickable{cursor:pointer}
-.vis-chip.clickable:hover{background:var(--row-hover);color:var(--text)}
 /* in the list only the exception is marked — a lock on every private board
    would be ten identical icons saying nothing */
 .sb-vis{font-size:10px;color:var(--green);opacity:.85;flex:none;margin-inline-start:4px}
@@ -2163,21 +2158,7 @@ function renderBoardHead(){
     `<span class="bt-icon${canEdit?' editable':''}" ${canEdit?'onclick="editBoardIcon(event)" title="שנה אייקון"':''}>${st.board.icon||'📋'}</span> `+
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
     ownerChipHTML()+
-    visibilityChipHTML()+
     `<button class="bh-menu" id="bh-menu" onclick="boardMenu(event)" title="תפריט הלוח" aria-label="תפריט הלוח"><i class="fa-solid fa-ellipsis"></i></button>`;
-}
-/* Who can see this board, stated on the board itself.
-   Shown for BOTH states on purpose: "no badge" would mean private, and an
-   absent thing is a poor way to communicate that a board is not exposed —
-   you cannot tell it apart from a badge that failed to render. A board admin
-   can click it to change the setting; everyone else gets the tooltip. */
-function visibilityChipHTML(){
-  const pub=st.board&&st.board.visibility==='public';
-  const admin=st.board&&st.board.my_role==='admin';
-  const tip=pub?'לוח ציבורי — כל מי שחבר בסביבה יכול לראות אותו'
-               :'לוח פרטי — רק מי שהוזמן ללוח רואה אותו';
-  return `<span class="vis-chip${pub?' pub':''}${admin?' clickable':''}" title="${esc(tip)}${admin?' (לחץ לשינוי)':''}"
-     ${admin?'onclick="boardVisibility()"':''}><i class="fa-solid ${pub?'fa-globe':'fa-lock'}"></i>${pub?'ציבורי':'פרטי'}</span>`;
 }
 /* ===== תפריט הלוח — the board's own actions, next to its name =====
    Everything that acts on the whole board lives here instead of being spread
