@@ -3366,6 +3366,10 @@ def _serialize_comment(c, db):
         "mentions": c.mentions or [], "likes": c.likes or [],
         "seen_users": seen_users,
         "user_id": c.user_id, "user_name": u.name if u else "—",
+        # the author's photo travels with the comment. avatarInner resolves by id
+        # against the loaded users first, so this is the fallback for an author
+        # who is not in that list — without it they could only ever be initials.
+        "avatar_url": u.avatar_url if u else None,
         "user_role": u.role if u else None, "created_at": c.created_at,
     }
 

@@ -1698,9 +1698,18 @@ function avatarInner(u){
   // changed after that would keep showing stale in those places. Resolving by id
   // first means one change is reflected everywhere at once — every people column
   // and every avatar, on every board.
-  if(u&&typeof u==='object'&&u.id!=null){
-    const fresh=(st.users||[]).find(x=>x.id===u.id);
-    if(fresh)u=fresh;
+  // Which id identifies the PERSON depends on the shape. A user, an assignee or
+  // a board member is {id,…} and `id` is the person. A comment or an activity
+  // row is {id, user_id, …} where `id` belongs to the message or the log entry
+  // and `user_id` is the author. Resolving by `id` regardless meant a comment
+  // was looked up as if its own id were a user id: comment #1 by anyone showed
+  // the face of user #1. `user_id` therefore wins wherever it exists.
+  if(u&&typeof u==='object'){
+    const uid=(u.user_id!=null)?u.user_id:u.id;
+    if(uid!=null){
+      const fresh=(st.users||[]).find(x=>x.id===uid);
+      if(fresh)u=fresh;
+    }
   }
   const name=(u&&(u.name||u.user_name))||(typeof u==='string'?u:'');
   const url=(u&&typeof u==='object'&&u.avatar_url)?u.avatar_url:null;
