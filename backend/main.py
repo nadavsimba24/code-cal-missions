@@ -2854,23 +2854,48 @@ def _set_links(db, task, col, wanted_ids, actor_id):
 
 # ── Cross-board item linking (connect column) ───────────────────────
 @app.get("/api/items/search")
-def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] = None, limit: int = 60):
-    """Top-level items across the given boards, for the connect-column picker."""
+def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] = None,
+                 status: str = "", assignee: Optional[int] = None,
+                 offset: int = 0, limit: int = 40,
+                 actor_id: int = Depends(current_user_id)):
+    """Items available to link, for the connect-column picker.
+
+    Returns a PAGE, not the whole board: a picker on a board with thousands of
+    items must not have to load all of them before showing the first one. The
+    caller asks for the next slice as it scrolls.
+
+    This endpoint took no actor and checked nothing, so it would search — and
+    return the titles of — items on boards the caller cannot open. It is now
+    restricted to the boards they can already see.
+    """
     ids = [int(x) for x in board_ids.split(",") if x.strip().isdigit()]
     with Session(engine) as db:
-        query = db.query(Task).filter(Task.is_archived == False, Task.parent_id == None)
-        if ids:
-            query = query.filter(Task.board_id.in_(ids))
+        visible = _visible_board_ids(db, actor_id)
+        ids = [i for i in ids if i in visible] if ids else sorted(visible)
+        if not ids:
+            return {"items": [], "total": 0, "has_more": False}
+        query = db.query(Task).filter(Task.is_archived == False, Task.parent_id == None,  # noqa: E712
+                                      Task.board_id.in_(ids))
         if q.strip():
             query = query.filter(Task.title.ilike(f"%{q.strip()}%"))
         if exclude_task:
             query = query.filter(Task.id != exclude_task)
-        rows = query.order_by(Task.board_id, Task.position).limit(max(1, min(200, limit))).all()
-        bnames = {b.id: b.name for b in db.query(Board).all()}
+        if status.strip():
+            query = query.filter(Task.status == status.strip())
+        if assignee:
+            query = query.filter(Task.assignees.any(User.id == assignee))
+        total = query.count()
+        off = max(0, offset)
+        lim = max(1, min(100, limit))
+        rows = query.order_by(Task.board_id, Task.position, Task.id).offset(off).limit(lim).all()
+        bnames = {b.id: b.name for b in db.query(Board).filter(Board.id.in_(ids)).all()}
         return {"items": [{"id": t.id, "title": t.title, "board_id": t.board_id,
                            "board_name": bnames.get(t.board_id, ""),
-                           "status": t.status.value if hasattr(t.status, "value") else t.status}
-                          for t in rows]}
+                           "status": t.status.value if hasattr(t.status, "value") else t.status,
+                           "assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
+                                         for u in (t.assignees or [])]}
+                          for t in rows],
+                "total": total, "has_more": off + len(rows) < total}
 
 @app.get("/api/tasks/lookup")
 def tasks_lookup(ids: str = ""):

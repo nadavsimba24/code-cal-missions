@@ -206,6 +206,23 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .cc-mirror-row{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;line-height:1.6;margin-bottom:3px}
 .cc-mirror-row i{font-size:10px;color:var(--primary);margin-top:5px;flex:none}
 .cc-new{font-size:10.5px;font-weight:700;color:var(--green);background:var(--surface);border-radius:20px;padding:1px 7px}
+/* connect picker */
+.cn-tabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:8px}
+.cn-tab{padding:5px 12px;border:1px solid var(--border-strong);border-radius:20px;background:var(--surface);font:inherit;font-size:12.5px;color:var(--text-muted);cursor:pointer}
+.cn-tab:hover{border-color:var(--primary);color:var(--primary)}
+.cn-tab.on{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600}
+.cn-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.cn-filters select{padding:7px 9px;border:1px solid var(--border-strong);border-radius:7px;font:inherit;font-size:12.5px;flex:0 1 150px;min-width:120px}
+.cn-chips{display:flex;flex-wrap:wrap;gap:6px;min-height:26px}
+.cn-chips-empty{font-size:12px;color:var(--text-light)}
+.cn-chip{display:inline-flex;align-items:center;gap:6px;background:var(--primary-soft);color:var(--primary);border-radius:20px;padding:3px 10px;font-size:12px;font-weight:600;max-width:220px}
+.cn-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cn-chip i{cursor:pointer;font-size:11px;opacity:.7;flex:none}
+.cn-chip i:hover{opacity:1;color:var(--red)}
+.cn-linked{flex:none;font-size:10.5px;font-weight:700;color:var(--green);background:var(--surface);border:1px solid var(--green);border-radius:20px;padding:1px 8px}
+.cn-more{width:100%;padding:9px;border:none;border-top:1px solid var(--border);background:var(--bg);font:inherit;font-size:12.5px;color:var(--primary);font-weight:600;cursor:pointer}
+.cn-more:hover{background:var(--row-hover)}
+.cn-end{padding:8px;text-align:center;font-size:11.5px;color:var(--text-light)}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -5363,52 +5380,130 @@ async function openLinkedItem(tid){
   setTimeout(()=>{ if(findAnyTask(tid))Chat.open(tid,{center:true}); },160);
 }
 let _connect=null,_cnTimer=null;
+/* ===== the connect picker =====
+   A page at a time, not the whole board: a target board with thousands of items
+   must not have to load all of them before the first one appears. Scrolling
+   asks for the next slice. */
 function openConnectPicker(e,taskId,colId){
   e&&e.stopPropagation();
   const t=findAnyTask(taskId); if(!t)return;
   const col=customColumns().find(c=>c.id===colId); if(!col)return;
   if(!canEditCol(t,colId)){toast('אין לך הרשאת עריכה לעמודה זו');return;}
-  _connect={taskId,colId,col,items:[],sel:new Set(((t.custom_fields||{})[colId])||[])};
+  const boards=((col.connect&&col.connect.board_ids)||[]).filter(id=>(st.boards||[]).some(b=>b.id===id));
+  const already=new Set(((t.custom_fields||{})[colId])||[]);
+  _connect={taskId,colId,col,items:[],sel:new Set(already),already,
+            boards, board:(boards.length===1?boards[0]:0),
+            q:'', status:'', person:'', offset:0, hasMore:false, loading:false};
   const multi=col.connect&&col.connect.multiple!==false;
+  const tabs=boards.length>1
+    ? `<div class="cn-tabs">${[{id:0,name:'הכל'}].concat(boards.map(id=>{
+        const b=(st.boards||[]).find(x=>x.id===id); return {id,name:b?b.name:'לוח '+id}; }))
+        .map(b=>`<button class="cn-tab ${_connect.board===b.id?'on':''}" onclick="connectBoard(${b.id})">${esc(b.name)}</button>`).join('')}</div>`
+    : '';
   showModal(`<h2><i class="fa-solid fa-diagram-project" style="color:var(--primary)"></i> קישור פריטים — ${esc(col.title)}</h2>
     <div class="mbody">
-      <div class="files-search" style="margin:0 0 10px"><i class="fa-solid fa-magnifying-glass"></i><input id="cn-q" placeholder="חיפוש פריט לפי שם…" oninput="connectSearch(this.value)" autocomplete="off"></div>
-      <div style="font-size:12px;color:var(--text-light);margin-bottom:8px">${multi?'ניתן לבחור מספר פריטים':'בחירת פריט אחד'} · <span id="cn-count">${_connect.sel.size} נבחרו</span></div>
-      <div id="cn-list" class="cn-list"><div class="empty" style="padding:20px">טוען…</div></div>
+      ${tabs}
+      <div class="cn-filters">
+        <div class="files-search" style="margin:0;flex:1 1 180px"><i class="fa-solid fa-magnifying-glass"></i>
+          <input id="cn-q" placeholder="חיפוש פריט לפי שם…" oninput="connectSearch(this.value)" autocomplete="off"></div>
+        <select id="cn-status" onchange="connectFilter()"><option value="">כל הסטטוסים</option>${
+          boardStatusList().map(v=>`<option value="${esc(v.base||v.key)}">${esc(v.he)}</option>`).join('')}</select>
+        <select id="cn-person" onchange="connectFilter()"><option value="">כל האחראים</option>${
+          (st.users||[]).map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select>
+      </div>
+      <div id="cn-chips" class="cn-chips">${connectChipsHTML()}</div>
+      <div style="font-size:12px;color:var(--text-light);margin:8px 0 6px">${multi?'ניתן לבחור מספר פריטים':'בחירת פריט אחד'} · <span id="cn-count">${_connect.sel.size} נבחרו</span></div>
+      <div id="cn-list" class="cn-list" onscroll="connectScroll(this)"><div class="empty" style="padding:20px">טוען…</div></div>
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="connectSave()"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
-  connectSearch('');
+  connectLoad(true);
+}
+/* What is selected, as removable chips — so taking something off does not mean
+   hunting for it again in a list of thousands. */
+function connectChipsHTML(){
+  const ids=[..._connect.sel];
+  if(!ids.length)return '<div class="cn-chips-empty">לא נבחרו פריטים</div>';
+  return ids.map(id=>{
+    const it=_connect.items.find(x=>x.id===id)||st.linkCache[id]||{};
+    return `<span class="cn-chip"><span>${esc(it.title||('#'+id))}</span>
+      <i class="fa-solid fa-xmark" title="הסר" onclick="connectToggle(${id})"></i></span>`;
+  }).join('');
+}
+function connectBoard(id){ _connect.board=id; connectLoad(true); }
+function connectFilter(){
+  _connect.status=(document.getElementById('cn-status')||{}).value||'';
+  _connect.person=(document.getElementById('cn-person')||{}).value||'';
+  connectLoad(true);
 }
 function connectSearch(q){
+  _connect.q=q||'';
   clearTimeout(_cnTimer);
-  _cnTimer=setTimeout(async()=>{
-    const bids=(_connect.col.connect&&_connect.col.connect.board_ids)||[];
-    try{ const d=await api('/api/items/search?board_ids='+bids.join(',')+'&q='+encodeURIComponent(q||'')+'&exclude_task='+_connect.taskId);
-      _connect.items=d.items||[]; renderConnectList();
-    }catch(e){ _connect.items=[]; renderConnectList(); }
-  },200);
+  _cnTimer=setTimeout(()=>connectLoad(true),200);
+}
+/* reset=true starts the list again; otherwise this appends the next page */
+async function connectLoad(reset){
+  if(_connect.loading)return;
+  _connect.loading=true;
+  if(reset){ _connect.offset=0; _connect.items=[]; }
+  const bids=_connect.board?[_connect.board]:_connect.boards;
+  const qs=['board_ids='+bids.join(','),'exclude_task='+_connect.taskId,
+            'q='+encodeURIComponent(_connect.q),'offset='+_connect.offset,'limit=40'];
+  if(_connect.status)qs.push('status='+encodeURIComponent(_connect.status));
+  if(_connect.person)qs.push('assignee='+_connect.person);
+  try{
+    const d=await api('/api/items/search?'+qs.join('&'));
+    _connect.items=_connect.items.concat(d.items||[]);
+    _connect.offset=_connect.items.length;
+    _connect.hasMore=!!d.has_more;
+    _connect.total=d.total||0;
+  }catch(e){ _connect.hasMore=false; }
+  _connect.loading=false;
+  renderConnectList();
+}
+function connectScroll(el){
+  if(!_connect.hasMore||_connect.loading)return;
+  if(el.scrollTop+el.clientHeight >= el.scrollHeight-60) connectLoad(false);
 }
 function renderConnectList(){
   const el=document.getElementById('cn-list'); if(!el)return;
   const items=_connect.items;
-  el.innerHTML=items.length?items.map(it=>{const on=_connect.sel.has(it.id);
-    return `<button class="cn-opt ${on?'sel':''}" onclick="connectToggle(${it.id})"><span class="cn-check">${on?'<i class="fa-solid fa-check"></i>':''}</span><span class="cn-txt"><b>${esc(it.title)}</b><small>${esc(it.board_name)}</small></span></button>`;
-  }).join(''):'<div class="empty" style="padding:20px"><i class="fa-regular fa-face-frown"></i> לא נמצאו פריטים</div>';
+  const rows=items.map(it=>{
+    const on=_connect.sel.has(it.id);
+    const linked=_connect.already.has(it.id);
+    const who=(it.assignees||[]).map(a=>esc(a.name)).join(', ');
+    return `<button class="cn-opt ${on?'sel':''}" onclick="connectToggle(${it.id})">
+      <span class="cn-check">${on?'<i class="fa-solid fa-check"></i>':''}</span>
+      <span class="cn-txt"><b>${esc(it.title)}</b><small>${esc(it.board_name)}${who?' · '+who:''}</small></span>
+      ${linked?'<span class="cn-linked">מקושר</span>':''}
+    </button>`;
+  }).join('');
+  const foot=_connect.hasMore
+    ? `<button class="cn-more" onclick="connectLoad(false)">טען עוד (${items.length} מתוך ${_connect.total})</button>`
+    : (items.length?`<div class="cn-end">${items.length} פריטים</div>`:'');
+  setHTML(el, rows
+    ? rows+foot
+    : '<div class="empty" style="padding:20px"><i class="fa-regular fa-face-frown"></i> לא נמצאו פריטים</div>');
   const cnt=document.getElementById('cn-count'); if(cnt)cnt.textContent=_connect.sel.size+' נבחרו';
+  const chips=document.getElementById('cn-chips'); if(chips)setHTML(chips, connectChipsHTML());
 }
 function connectToggle(id){
   const multi=_connect.col.connect&&_connect.col.connect.multiple!==false;
   if(_connect.sel.has(id))_connect.sel.delete(id);
   else{ if(!multi)_connect.sel.clear(); _connect.sel.add(id); }
-  // cache the title for immediate display
-  const it=_connect.items.find(x=>x.id===id); if(it)st.linkCache[id]={id:it.id,title:it.title,board_id:it.board_id,board_name:it.board_name};
+  const it=_connect.items.find(x=>x.id===id);
+  if(it)st.linkCache[id]={id:it.id,title:it.title,board_id:it.board_id,board_name:it.board_name};
   if(!multi)return connectSave();     // single-select → save & close
   renderConnectList();
 }
 async function connectSave(){
   const ids=[..._connect.sel];
   await setCell(_connect.taskId,_connect.colId,ids.length?ids:null);
-  closeModals(); renderView();
+  closeModals();
+  // a two-way link changes the OTHER board too, so take the board fresh
+  if(_connect.col.connect&&_connect.col.connect.two_way){
+    try{ st.board=await api('/api/boards/'+st.board.id); }catch(e){}
+  }
+  renderView();
 }
 /* files column */
 function filesDisp(files,taskId,colId){

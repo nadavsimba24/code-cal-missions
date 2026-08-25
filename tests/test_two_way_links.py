@@ -105,3 +105,68 @@ def test_reconfiguring_reuses_the_counterpart_instead_of_adding_another(client, 
     client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": cols})
     after = [c["id"] for c in _cols(client, b) if c["type"] == "connect"]
     assert after == before, "saving again added a second counterpart column"
+
+
+# ── the picker's data source ──────────────────────────────────────────
+def test_the_picker_returns_a_page_not_the_whole_board(client, admin_id):
+    """A board with thousands of items must not have to load all of them."""
+    b = _mk_board(client, admin_id, "לוח גדול")
+    # a new board is not necessarily empty, so count what is there first
+    base = client.get(f"/api/items/search?board_ids={b}&limit=1").json()["total"]
+    for i in range(25):
+        _mk_item(client, b, admin_id, f"פריט {i:02d}")
+    total = base + 25
+
+    r = client.get(f"/api/items/search?board_ids={b}&limit=10").json()
+    assert len(r["items"]) == 10, "the endpoint ignored the page size"
+    assert r["total"] == total and r["has_more"] is True
+
+    nxt = client.get(f"/api/items/search?board_ids={b}&limit=10&offset=10").json()
+    assert len(nxt["items"]) == 10
+    assert {i["id"] for i in nxt["items"]}.isdisjoint({i["id"] for i in r["items"]}), \
+        "the second page repeated the first"
+
+    # walk to the end: the last page is short and says there is no more
+    seen, off = set(), 0
+    while True:
+        page = client.get(f"/api/items/search?board_ids={b}&limit=10&offset={off}").json()
+        seen |= {i["id"] for i in page["items"]}
+        if not page["has_more"]:
+            break
+        off += 10
+    assert len(seen) == total, "paging did not reach every item exactly once"
+
+
+def test_the_picker_filters(client, admin_id, guinea_id):
+    b = _mk_board(client, admin_id, "לוח סינון")
+    a1 = _mk_item(client, b, admin_id, "אלפא")
+    _mk_item(client, b, admin_id, "ביתא")
+    client.patch(f"/api/tasks/{a1}?user_id={admin_id}", json={"status": "done"})
+    client.post(f"/api/boards/{b}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    client.post(f"/api/tasks/{a1}/assignees", json={"actor_id": admin_id, "user_id": guinea_id})
+
+    by_name = client.get(f"/api/items/search?board_ids={b}&q=אלפ").json()["items"]
+    assert [i["title"] for i in by_name] == ["אלפא"]
+    by_status = client.get(f"/api/items/search?board_ids={b}&status=done").json()["items"]
+    assert [i["id"] for i in by_status] == [a1]
+    by_person = client.get(f"/api/items/search?board_ids={b}&assignee={guinea_id}",
+                           headers={"X-CityOS-User": str(admin_id)}).json()["items"]
+    assert [i["id"] for i in by_person] == [a1]
+
+
+def test_the_picker_cannot_search_boards_you_cannot_see(client, admin_id):
+    """It took no actor and checked nothing, so it returned titles from any board."""
+    b = _mk_board(client, admin_id, "לוח סגור")
+    _mk_item(client, b, admin_id, "סודי")
+    email = "picker.outsider@cityos.test"
+    for u in client.get("/api/users").json():
+        if u.get("email") == email:
+            uid = u["id"]; break
+    else:
+        uid = client.post("/api/users", json={"actor_id": admin_id, "name": "זר",
+                                              "email": email, "role": "member"}).json()["id"]
+    client.delete(f"/api/boards/1/members/{uid}?actor_id={admin_id}")
+    r = client.get(f"/api/items/search?board_ids={b}&q=סודי",
+                   headers={"X-CityOS-User": str(uid)}).json()
+    assert r["items"] == [], "items leaked from a board the caller cannot open"
