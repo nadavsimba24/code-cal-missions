@@ -82,6 +82,15 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* in the list only the exception is marked — a lock on every private board
    would be ten identical icons saying nothing */
 .sb-vis{font-size:10px;color:var(--green);opacity:.85;flex:none;margin-inline-start:4px}
+/* display settings, now hosted inside the user's own profile rather than in a
+   dialog of their own — narrower than the old modal, so the swatches wrap */
+.pf-display{padding:2px 0 4px}
+.pf-display .set-sec{margin-bottom:12px}
+.pf-display .set-fonts{display:flex;flex-direction:column;gap:6px}
+.pf-display .set-themes{display:flex;gap:8px}
+.pf-display .set-bgs{display:flex;flex-wrap:wrap;gap:7px}
+.set-reset{display:inline-flex;align-items:center;gap:6px;background:none;border:none;padding:2px 0;color:var(--text-muted);font-family:inherit;font-size:12px;cursor:pointer}
+.set-reset:hover{color:var(--text);text-decoration:underline}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -1373,7 +1382,6 @@ body, body *{ font-weight:400!important; }
       <div class="sb-item" style="display:none" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
       <div class="sb-item" id="nav-trash" onclick="Trash.open()" title="לוחות שנמחקו — ניתנים לשחזור"><span class="ic"><i class="fa-solid fa-trash-can" style="color:var(--text-muted)"></i></span> סל מחזור <span id="trash-count" class="trash-badge" style="display:none"></span></div>
-      <div class="sb-item" onclick="Settings.open()"><span class="ic"><i class="fa-solid fa-gear"></i></span> הגדרות</div>
       <div class="sb-item" onclick="window.open('https://assistcal.mashcal.co.il/servicePortal/submitSR','_blank','noopener,noreferrer')" title="פתיחת קריאת שירות במערכת סייאיד"><span class="ic"><i class="fa-solid fa-circle-question" style="color:var(--primary)"></i></span> עזרה</div>
     </div>
   </aside>
@@ -2580,6 +2588,8 @@ const Profile = {
         <div class="pf-row pf-toggle pf-sub"><span><i class="fa-solid fa-user-plus"></i> שיוך אליי כאחראי</span>
           <label class="switch"><input type="checkbox" ${np.assign!==false?'checked':''} ${subDis} onchange="Profile.setPref(${userId},'assign',this.checked)"><span class="slider"></span></label>
         </div>
+        ${userId===meId()?`<div class="pf-sec">תצוגה</div>
+        <div id="pf-display" class="pf-display">${Settings.sectionHTML()}</div>`:''}
         <div class="pf-sec">משימות בלוח "${esc((st.board&&st.board.name)||'')}" · ${tasks.length}</div>
         <div class="pf-stats">${chips}</div>
       </div>
@@ -3937,13 +3947,19 @@ const Settings={
     if(this.data.theme==='dark'){ root.style.removeProperty('--bg'); }   // dark palette controls --bg
     else{ const b=BGS.find(x=>x.id===this.data.bg)||BGS[0]; root.style.setProperty('--bg',b.c); }
   },
-  set(k,v){ this.data[k]=v; this.apply(); this.save(); this.render(); },
-  reset(){ this.data={font:'figtree',theme:'light',bg:'default'}; this.apply(); this.save(); this.render(); },
-  open(){ this.render(); },
-  render(){
+  set(k,v){ this.data[k]=v; this.apply(); this.save(); this.refresh(); },
+  reset(){ this.data={font:'figtree',theme:'light',bg:'default'}; this.apply(); this.save(); this.refresh(); },
+  /* These controls used to be a dialog of their own, reached from the sidebar
+     footer. They now live inside the user's own profile, which is where
+     "how the app looks to me" belongs — next to the other personal
+     preferences, rather than in a menu beside board-level tools. */
+  refresh(){
+    const host=document.getElementById('pf-display');
+    if(host) host.innerHTML=this.sectionHTML();   // repaint in place, no modal churn
+  },
+  sectionHTML(){
     const d=this.data;
-    showModal(`<h2><i class="fa-solid fa-sliders" style="color:var(--primary)"></i> הגדרות תצוגה</h2>
-    <div class="mbody">
+    return `
       <div class="set-sec"><div class="set-label"><i class="fa-solid fa-font"></i> פונט</div>
         <div class="set-fonts">${FONTS.map(f=>`<button class="set-font ${d.font===f.id?'sel':''}" style="font-family:${f.css}" onclick="Settings.set('font','${f.id}')">${esc(f.he)}<span>אבגד שלום · Aa 123</span></button>`).join('')}</div></div>
       <div class="set-sec"><div class="set-label"><i class="fa-solid fa-circle-half-stroke"></i> תצוגה</div>
@@ -3953,8 +3969,7 @@ const Settings={
         </div></div>
       <div class="set-sec"><div class="set-label"><i class="fa-solid fa-fill-drip"></i> רקע ${d.theme==='dark'?'<span style="font-size:11px;color:var(--text-light);font-weight:400">— זמין במצב בהיר</span>':''}</div>
         <div class="set-bgs">${BGS.map(b=>`<button class="set-bg ${d.theme!=='dark'&&d.bg===b.id?'sel':''}" title="${esc(b.he)}" style="background:${b.c}" ${d.theme==='dark'?'disabled style="opacity:.4;background:'+b.c+'"':''} onclick="Settings.set('bg','${b.id}')">${d.theme!=='dark'&&d.bg===b.id?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')}</div></div>
-    </div>
-    <div class="mfoot"><button class="btn btn-ghost" onclick="Settings.reset()">איפוס</button></div>`);
+      <button class="set-reset" onclick="Settings.reset()"><i class="fa-solid fa-rotate-left"></i> איפוס לברירת המחדל</button>`;
   },
 };
 
