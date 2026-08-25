@@ -129,9 +129,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* the log filters were written for the narrow chat panel, where the user select
    filling the row is right. In the wide board dialog it stretches across the
    whole width and pushes the export button to the edge. */
-#modal .log-filters{align-items:center}
-#modal .log-filters select{flex:0 1 240px}
+#modal .log-filters{align-items:center;gap:10px;padding:10px 12px;background:var(--surface);
+  border:1px solid var(--border);border-radius:9px;margin-bottom:10px;position:static}
+#modal .log-filters select{flex:0 1 220px}
 #modal .log-filters .btn{margin-inline-start:auto}
+#modal .logs-list{border:1px solid var(--border);border-radius:9px;overflow:hidden}
 .bh-log{width:30px;height:30px;border-radius:7px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:inline-grid;place-items:center;font-size:14px;vertical-align:middle;margin-inline-start:6px}
 .bh-log:hover{background:var(--row-hover);border-color:var(--border);color:var(--primary)}
 .log-item{background:none;border:none;padding:0;font:inherit;color:var(--primary);cursor:pointer;font-weight:600}
@@ -176,6 +178,27 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .bt-days.soon{color:var(--red);border-color:var(--red)}
 .bt-menu{width:28px;height:28px;border-radius:7px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:grid;place-items:center;flex:none}
 .bt-menu:hover{background:var(--row-hover);border-color:var(--border);color:var(--text)}
+/* ===== board activity log — a table you scan, not sentences you read =====
+   Columns in a fixed order so the eye lands in the same place on every row:
+   when · who · which item · which column · what changed · undo. */
+.lg-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);font-size:13px}
+.lg-row:hover{background:var(--row-hover)}
+.lg-row:last-child{border-bottom:none}
+.lg-when{flex:0 0 76px;display:inline-flex;align-items:center;gap:4px;color:var(--text-light);font-size:11.5px;white-space:nowrap}
+.lg-when i{font-size:10px}
+.lg-av{width:26px;height:26px;font-size:10px;margin:0;flex:none}
+.lg-item{flex:1 1 150px;min-width:0;text-align:start;background:none;border:none;padding:0;font:inherit;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lg-item:hover{color:var(--primary);text-decoration:underline}
+.lg-field{flex:0 1 150px;min-width:0;display:inline-flex;align-items:center;gap:6px;color:var(--text-muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lg-field i{font-size:11px;flex:none}
+.lg-change{flex:0 1 250px;min-width:0;display:inline-flex;align-items:center;gap:7px;justify-content:flex-end}
+.lg-pill{max-width:118px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 10px;border-radius:6px;font-size:12px;font-weight:600;border:1px solid var(--border)}
+.lg-pill.old{background:var(--bg);color:var(--text-light)}
+.lg-pill.new{background:var(--surface);color:var(--text)}
+.lg-arrow{font-size:10px;color:var(--text-light);flex:none}
+.lg-undo{flex:none;padding:4px 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);font:inherit;font-size:12px;color:var(--text-muted);cursor:pointer}
+.lg-undo:hover{border-color:var(--primary);color:var(--primary)}
+.lg-undo-gap{flex:none;width:56px}
 /* ===== Sidebar ===== */
 #sidebar{position:relative;width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;z-index:50}
 /* drag handle on the sidebar's inner edge. Sits mostly outside the panel so it
@@ -2244,13 +2267,15 @@ const BoardLog = {
     // filled the menu with names that could only ever return an empty list.
     const people=d.people||[];
     const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
-    const rows=(d.activity||[]).map(a=>`<div class="log-row">
-        <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':a.action==='create'?'fa-plus':'fa-pen'}"></i></div>
-        <div style="flex:1;min-width:0">
-          <div class="log-txt"><b>${esc(a.user_name)}</b> ${Chat.logText(a)}</div>
-          <div class="log-time"><button class="log-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})"><i class="fa-regular fa-square-check"></i> ${esc(a.task_title)}</button> · ${fdatetime(a.created_at)}</div>
-        </div>
-        ${a.can_undo&&isMgr?`<button class="log-undo" onclick="BoardLog.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
+    const rows=(d.activity||[]).map(a=>`<div class="lg-row">
+        <span class="lg-when" title="${esc(fdatetime(a.created_at))}"><i class="fa-regular fa-clock"></i> ${esc(this.ago(a.created_at))}</span>
+        <span class="av lg-av" title="${esc(a.user_name||'')}">${avatarInner(a)}</span>
+        <button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})">${esc(a.task_title||'—')}</button>
+        <span class="lg-field"><i class="fa-solid ${this.fieldIcon(a)}"></i> ${esc(this.fieldLabel(a))}</span>
+        <span class="lg-change">${this.change(a)}</span>
+        ${a.can_undo&&isMgr
+          ? `<button class="lg-undo" onclick="BoardLog.undo(${a.id})">בטל</button>`
+          : `<span class="lg-undo-gap"></span>`}
       </div>`).join('')
       ||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות בלוח</div></div>';
     const body=document.querySelector('#modal .mbody'); if(!body)return;
@@ -2260,6 +2285,58 @@ const BoardLog = {
         ${this.user||this.date?`<button class="btn btn-ghost" onclick="BoardLog.user='';BoardLog.date='';BoardLog.render()">נקה סינון</button>`:''}
         <button class="btn btn-ghost" onclick="BoardLog.exportCsv()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא</button>
       </div><div class="logs-list">${rows}</div>`;
+  },
+  /* "54m" / "3h" / "5 ימים" — how long ago, which is what you scan a log for.
+     The exact timestamp stays in the tooltip for when it matters. */
+  ago(iso){
+    const d=new Date(_utc(iso)); if(isNaN(d))return '';
+    const m=Math.max(0,Math.round((Date.now()-d.getTime())/60000));
+    if(m<1)return 'עכשיו';
+    if(m<60)return m+' דק׳';
+    const h=Math.round(m/60); if(h<24)return h+' שע׳';
+    const days=Math.round(h/24);
+    if(days===1)return 'יום';
+    if(days<31)return days+' ימים';
+    const mo=Math.round(days/30);
+    return mo<12?(mo===1?'חודש':mo+' חוד׳'):Math.round(mo/12)+' שנ׳';
+  },
+  fieldIcon(a){
+    if(a.action==='comment')return 'fa-comment';
+    if(a.action==='create')return 'fa-plus';
+    if(a.action==='delete')return 'fa-trash';
+    if(a.action==='restore')return 'fa-rotate-left';
+    const f=a.field||'';
+    if(f==='status'||f==='priority')return 'fa-circle-half-stroke';
+    if(f==='due_date')return 'fa-calendar-day';
+    if(f==='tags')return 'fa-tag';
+    if(f==='title')return 'fa-font';
+    return 'fa-pen';
+  },
+  fieldLabel(a){
+    if(a.action==='comment')return a.field==='reply'?'תגובה בשרשור':'תגובה';
+    if(a.action==='create')return a.field==='subitem'?'תת-פריט נוצר':'פריט נוצר';
+    if(a.action==='delete')return 'נמחק';
+    if(a.action==='restore')return 'שוחזר';
+    return Chat.fieldHe(a.field)||'שינוי';
+  },
+  /* Old value → new value, as two pills. A status or priority keeps the colour
+     it has on the board, so the change reads at a glance instead of as text. */
+  change(a){
+    if(a.action!=='update'){
+      const one=a.new||a.old;
+      return one?`<span class="lg-pill new">${esc(Chat.short(one))}</span>`:'';
+    }
+    return `<span class="lg-pill old">${this.pill(a.field,a.old)}</span>
+            <i class="fa-solid fa-arrow-left lg-arrow"></i>
+            <span class="lg-pill new" style="${this.pillStyle(a.field,a.new)}">${this.pill(a.field,a.new)}</span>`;
+  },
+  pill(field,v){ return esc(Chat.transVal(field,v)); },
+  pillStyle(field,v){
+    if(v==null||v==='')return '';
+    const k=String(v).replace(/^"|"$/g,'');
+    const m=field==='status'?(boardStatusMap()[k]||STATUS[k])
+           :field==='priority'?(boardPriorityMap()[k]||PRIORITY[k]):null;
+    return (m&&m.c)?`background:${m.c};color:#fff;border-color:transparent`:'';
   },
   // a log line is only useful if you can get to what it describes
   goto(taskId){
