@@ -2872,6 +2872,40 @@ function prioOrder(t){
   const i=boardPriorityList().findIndex(x=>x.key===k);
   return i<0?998:i;
 }
+/* A status column sorts by the order its own options are listed in, exactly as
+   the built-in status column sorts by "ניהול סטטוסים". Nothing chosen sorts
+   last; a value whose option was since deleted sorts just before that, so it
+   stays visible instead of jumping to the front. */
+function colStatusOrder(t,colId){
+  const v=(t.custom_fields||{})[colId];
+  if(v==null||v==='')return 999;
+  const opts=statusColOpts(colId)||[];
+  const id=(v&&typeof v==='object')?v.id:null;
+  const label=(v&&typeof v==='object')?v.label:String(v);
+  let i=(id!=null)?opts.findIndex(o=>o.id===id):-1;
+  if(i<0&&label!=null)i=opts.findIndex(o=>o.label===label);
+  return i<0?998:i;
+}
+/* Not every custom cell holds a scalar: a status is {id,label,color}, a
+   timeline is {from,to}, files are an array of objects. String() on those is
+   "[object Object]" — identical for every row — so the column offered a sort
+   button and clicking it changed nothing at all. Each shape gets the key a
+   person would actually sort it by. */
+function customSortVal(t,col){
+  const v=(t.custom_fields||{})[col.id];
+  if(col.type==='status')  return colStatusOrder(t,col.id);
+  if(col.type==='timeline')return (v&&v.from)?String(v.from):'9999-99-99';   // by start, empty last
+  if(col.type==='files')   return Array.isArray(v)?v.length:0;               // how many attachments
+  if(col.type==='connect') return Array.isArray(v)?v.length:0;               // how many links
+  if(col.type==='people'){                                                   // by the first name, not the id
+    const names=(Array.isArray(v)?v:[]).map(id=>((st.users||[]).find(u=>u.id===id)||{}).name)
+                                       .filter(Boolean).sort((a,b)=>a.localeCompare(b,'he'));
+    return (names[0]||'').toLowerCase();
+  }
+  if(Array.isArray(v))return v.map(x=>(x&&typeof x==='object')?(x.label||x.name||x.title||''):String(x)).join(', ').toLowerCase();
+  if(v&&typeof v==='object')return String(v.label||v.name||v.title||'').toLowerCase();
+  return v==null?'':v;
+}
 function sortVal(t,key){
   if(key==='item')return (t.title||'').toLowerCase();
   if(key==='assignees')return (((t.assignees||[])[0]||{}).name||'').toLowerCase();
@@ -2879,7 +2913,9 @@ function sortVal(t,key){
   if(key==='priority')return prioOrder(t);
   if(key==='due')return t.due_date||'9999-99-99';
   if(key==='tags')return (t.tags||[]).join(', ').toLowerCase();
-  const v=(t.custom_fields||{})[key];          // custom column, by id
+  const col=customColumns().find(c=>c.id===key);   // custom column, by id
+  if(col)return customSortVal(t,col);
+  const v=(t.custom_fields||{})[key];
   if(Array.isArray(v))return v.join(', ').toLowerCase();
   return v==null?'':v;
 }
