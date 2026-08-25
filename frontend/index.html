@@ -2380,7 +2380,7 @@ function boardMenu(e){
   const html=`<div class="row-menu" onclick="event.stopPropagation()">
     ${mob?'':item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
     ${item(st.board.visibility==='public'?'fa-globe':'fa-lock',
-           'חשיפת הלוח · '+(st.board.visibility==='public'?'ציבורי':'פרטי'),
+           'סוג לוח · '+(st.board.visibility==='public'?'ציבורי':'פרטי'),
            'boardVisibility()',admin,'רק מנהל הלוח יכול לשנות את חשיפת הלוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
     ${item('fa-bolt','אוטומציות','Automations.open()',true)}
@@ -2407,7 +2407,7 @@ async function boardVisibility(){
       <i class="fa-solid ${icon}"></i>
       <span><b>${title}</b><small>${desc}</small></span>
     </label>`;
-  showModal(`<h2><i class="fa-solid fa-lock" style="color:var(--primary)"></i> חשיפת הלוח</h2>
+  showModal(`<h2><i class="fa-solid fa-lock" style="color:var(--primary)"></i> סוג לוח</h2>
     <div class="mbody">
       <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
         מי יכול לראות את <b>${esc(st.board.name)}</b>. ההגדרה משפיעה על צפייה בלבד —
@@ -4370,7 +4370,7 @@ const Settings={
   isDark(){ return this.data.theme==='dark'; },
   // The label names the mode that is ON, so it agrees with the icon beside it
   // rather than describing a mode you are not in.
-  themeLabel(){ return this.isDark()?'מצב כהה':'מסך בהיר'; },
+  themeLabel(){ return this.isDark()?'מצב כהה':'מצב בהיר'; },
   setTheme(dark){
     this.data.theme=dark?'dark':'light'; this.apply(); this.save();
     // the row is rendered once with the profile, so icon and label are swapped
