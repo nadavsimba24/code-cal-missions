@@ -3124,6 +3124,17 @@ const Workspace = {
    cache the browser has to attach and paint them again, and the avatar visibly
    blinks — the jump seen in the assignee column on every edit. Reusing the old
    node for an identical src keeps the decoded image on screen untouched. */
+/* Swap an element's contents while keeping any already-loaded <img>.
+   Assigning innerHTML builds new <img> nodes, and the faces blink even when the
+   files are cached — the same churn fixed for board rows, in the popovers and
+   panels that also show people. */
+function setHTML(el, html){
+  if(!el) return;
+  const tmp=document.createElement('div');
+  tmp.innerHTML=html;
+  reuseImages(el, tmp);
+  el.replaceChildren(...tmp.childNodes);
+}
 function reuseImages(oldEl, newRoot){
   if(!oldEl || !newRoot) return;
   const prev=new Map();                        // src → queue of loaded nodes
@@ -4179,14 +4190,14 @@ function renderMe(){
 function renderPop(name){
   if(name==='me'){
     const el=document.getElementById('pop-me'); if(!el)return;
-    el.innerHTML=(st.me?`<button class="pop-row" style="width:100%;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:5px" onclick="closePops();Profile.open(${meId()})" title="הצג פרופיל אישי">
+    setHTML(el, (st.me?`<button class="pop-row" style="width:100%;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:5px" onclick="closePops();Profile.open(${meId()})" title="הצג פרופיל אישי">
         <span class="av" style="background:var(--primary);width:34px;height:34px;font-size:12px">${avatarInner(st.me)}</span>
         <span style="flex:1;text-align:start"><div style="font-weight:700">${esc(st.me.name)}</div><div style="font-size:11px;color:var(--text-light)">${esc(st.me.title||ROLE_HE[st.me.role]||'')} · הצג פרופיל</div></span>
         <i class="fa-solid fa-chevron-left" style="color:var(--text-light);font-size:11px"></i>
       </button>`:'')
       // No "act as someone else" list: identity comes from the sign-in, not
       // from a menu. Switching users is not something the app offers.
-      +'<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px"><button class="pop-row" style="width:100%;color:var(--red);font-weight:600" onclick="Auth.logout()"><span style="width:26px;text-align:center"><i class="fa-solid fa-right-from-bracket"></i></span> התנתק</button></div>';
+      +'<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px"><button class="pop-row" style="width:100%;color:var(--red);font-weight:600" onclick="Auth.logout()"><span style="width:26px;text-align:center"><i class="fa-solid fa-right-from-bracket"></i></span> התנתק</button></div>');
     return;
   }
   if(name!=='arrange')return;
@@ -5697,10 +5708,17 @@ function closeCellPops(){document.querySelectorAll('.cell-pop').forEach(p=>p.rem
 /* Fixed-positioned cell popover appended to <body> so it never gets clipped by
    the table's overflow:hidden. Returns the pop element (pop._anchor = cell). */
 function openCellPop(anchor,html,extraClass,above){
+  // Build the new contents BEFORE the old popover is torn down, so the photos it
+  // already loaded can be carried over. The @-mention menu is rebuilt on every
+  // keystroke, and without this each letter typed makes the faces blink.
+  const dying=document.querySelector('.cell-pop');
+  const tmp=document.createElement('div');
+  tmp.innerHTML=html;
+  if(dying) reuseImages(dying, tmp);
   closeCellPops();
   const pop=document.createElement('div');
   pop.className='cell-pop cell-pop-fixed'+(extraClass?' '+extraClass:'');
-  pop.innerHTML=html; pop._anchor=anchor;
+  pop.replaceChildren(...tmp.childNodes); pop._anchor=anchor;
   // a menu whose entries fly out sideways must not clip them — its own
   // scrolling moves into the flyouts (see .has-flyout). Same one level down:
   // a flyout that holds another flyout must not clip it either.
@@ -6916,7 +6934,7 @@ const Chat = {
     // the bottom composer is hidden so there's a single active editor (#comp-text)
     const bottom = this.editing!=null ? ''
       : (canComment()?this.composerHTML('new'):`<div class="chat-noperm"><i class="fa-solid fa-lock"></i> ${st.me&&st.me.role==='viewer'?'למשתמש הרשאת צפייה בלבד':'הלוח מוגדר לצפייה בלבד'} — אין אפשרות להגיב</div>`);
-    body.innerHTML=`<div class="chat-list">${list}</div>${bottom}`;
+    setHTML(body, `<div class="chat-list">${list}</div>${bottom}`);
     this.renderAtts();
     if(this.editing!=null){ const ec=this._commentsById[this.editing]; const ta=document.getElementById('comp-text'); if(ta){ if(ec&&ta.value==='')ta.value=ec.content||''; this.syncHL(); } }
     else this.restoreDraft();
