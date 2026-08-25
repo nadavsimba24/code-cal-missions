@@ -2553,8 +2553,21 @@ function renderView(){
   const same=(key===_viewScrollKey);
   // rebuilding innerHTML drops the scroll offset — remember it first
   const top=same?el.scrollTop:0, left=same?el.scrollLeft:0;
+  // Hold on to the images already decoded on screen. A full render throws every
+  // <img> away and builds new ones, and the avatars blink even though the files
+  // are cached — most visibly when a status change moves a row between groups,
+  // which is a full render by necessity. Detaching a node does not discard its
+  // decoded image, so the old elements can simply be put back.
+  const _oldImgs=new Map();
+  if(same) el.querySelectorAll('img[src]').forEach(im=>{ if(!_oldImgs.has(im.src)) _oldImgs.set(im.src,im); });
   el.innerHTML='';
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
+  if(_oldImgs.size) el.querySelectorAll('img[src]').forEach(im=>{
+    const old=_oldImgs.get(im.src); if(!old)return;
+    _oldImgs.delete(im.src);                 // each loaded node is reused once
+    old.className=im.className; old.alt=im.alt; old.style.cssText=im.style.cssText;
+    im.replaceWith(old);
+  });
   renderSelBar();
   try{ Chat.markOpenRow(); }catch(e){}   // rows were rebuilt — re-mark the open item
   _viewScrollKey=key;
@@ -3064,6 +3077,25 @@ const Workspace = {
    never hand us a field this user may not see.
    Polling is not gone — it is demoted to the fallback for when the stream is
    down (see Notifications.start). */
+/* Carry already-loaded <img> elements across a row rebuild.
+   Replacing a row's HTML creates brand-new <img> nodes. Even with the file in
+   cache the browser has to attach and paint them again, and the avatar visibly
+   blinks — the jump seen in the assignee column on every edit. Reusing the old
+   node for an identical src keeps the decoded image on screen untouched. */
+function reuseImages(oldEl, newRoot){
+  if(!oldEl || !newRoot) return;
+  const prev=new Map();
+  oldEl.querySelectorAll('img[src]').forEach(im=>{ if(!prev.has(im.src)) prev.set(im.src, im); });
+  if(!prev.size) return;
+  newRoot.querySelectorAll('img[src]').forEach(im=>{
+    const old=prev.get(im.src); if(!old) return;
+    prev.delete(im.src);                       // each loaded node is reused once
+    old.className=im.className;                // the new markup still decides how it looks
+    old.alt=im.alt;
+    old.style.cssText=im.style.cssText;
+    im.replaceWith(old);
+  });
+}
 const Live = {
   es:null, connected:false, backoff:1000, _pending:new Map(), _flush:null, _notifT:null, _retryT:null,
 
@@ -3178,6 +3210,7 @@ const Live = {
         const tmp=document.createElement('tbody');
         tmp.innerHTML=subItemRowHTML(t,subColumns(),isBoardAdmin(),parentId);
         const fresh=tmp.firstElementChild; if(!fresh)return false;
+        reuseImages(sub, tmp);
         sub.replaceWith(fresh); return true;
       }
       const row=document.querySelector(`tr[data-tid="${t.id}"]`);
@@ -3188,6 +3221,8 @@ const Live = {
       const news=[...tmp.children]; if(!news.length)return false;
       // itemRow renders the row plus its sub-items panel — swap both together
       const wrap=document.querySelector(`tr.sub-wrap[data-parent="${t.id}"]`);
+      reuseImages(row, tmp);
+      if(wrap) reuseImages(wrap, tmp);
       if(wrap)wrap.remove();
       row.replaceWith(...news);
       return true;
@@ -5221,8 +5256,29 @@ function itemPerm(t){ return (t&&t.my_perm)||'edit'; }
 function canEditItem(t){ const p=itemPerm(t); return p==='edit'||p==='delete'; }
 function canDeleteItem(t){ return itemPerm(t)==='delete'; }
 function canEditCol(t,colId){ if(!canEditItem(t))return false; const cp=(t&&t.col_perms||{})[colId]; return cp?cp==='edit':true; }
+/* Re-render only the row that changed.
+   A local edit went through renderView(), which rebuilds every group on the
+   board — and with it every avatar <img>. Recreating an <img> element makes the
+   photo blink even when the file is cached, which is the jump seen in the
+   assignee column when a status is changed. The event stream has patched single
+   rows since the live-update work; local edits now take the same path.
+
+   Falls back to a full render exactly where a single row cannot express the
+   change: the item moved group, it no longer passes the active filter, or a
+   column sort means its position may have changed. */
+function refreshRow(id, forceWhole){
+  const t=findAnyTask(id);
+  if(!t || forceWhole || st.colSort){ renderView(); return; }
+  // `Live` is a const at script scope, so it is NOT on window — testing
+  // window.Live is always false and would silently fall back to a full render,
+  // which is the very thing this avoids.
+  const L=(typeof Live!=='undefined')?Live:null;
+  if(!L || L.dropsOutOfView(t) || !L.patchRow(t)) renderView();
+}
 async function setField(id,field,value){
   const t=findAnyTask(id);
+  const _group0 = t ? t.group_id : null;
+  let _wholeView = false;   // set when more than this one row is affected
   // A board-defined status (one of the extra ones) is stored as its base value
   // so the engine keeps working, plus the label/colour the grid renders.
   let extra=null;
@@ -5267,14 +5323,17 @@ async function setField(id,field,value){
     const parent=findAnyTask(t.parent_id), subs=(parent&&parent.subtasks)||[];
     if(parent && subs.length && subs.every(s=>s.status==='done') && parent.status!=='done'){
       parent.status='done';
+      _wholeView = true;   // the parent row changed too, not just this sub-item
       const gs=(st.board&&st.board.groups)||[];
       const g=gs.find(x=>x.task_status==='done');   // same rule: only its own group
       if(g) parent.group_id=g.id;
     }
   }
   const body={[field]:value}; if(extra)body.custom_fields=extra;
-  try{ await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)}); renderView(); }
-  catch(e){ toast('שגיאה בעדכון'); }
+  try{
+    await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)});
+    refreshRow(id, _wholeView || !!(t && t.group_id!==_group0));
+  }catch(e){ toast('שגיאה בעדכון'); }
 }
 function fieldPicker(e,id,field,map){
   e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
@@ -5384,7 +5443,8 @@ function pickStatusCell(e,taskId,colId,optIdx){
   const o=optIdx>=0?statusColOpts(colId)[optIdx]:null;
   // the id is the reference; label and colour ride along only as a fallback for
   // an option that is later removed from the column
-  setCell(taskId,colId,o?{id:o.id||null,label:o.label,color:o.color}:null);renderView();
+  setCell(taskId,colId,o?{id:o.id||null,label:o.label,color:o.color}:null);
+  refreshRow(taskId);
 }
 /* ===== board-admin editor for one status column's own vocabulary ===== */
 const STATUS_COL_MAX=30;
