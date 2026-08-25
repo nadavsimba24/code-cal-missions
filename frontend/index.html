@@ -782,7 +782,14 @@ body.coldragging .col-grip{opacity:1}
 .ep-field input::placeholder{color:var(--text-light)}
 .ep-field input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
 /* ===== personal profile card ===== */
+/* overflow:hidden keeps the coloured header clipped to the rounded corners, but
+   it also meant a profile taller than the modal was simply cut off with nothing
+   to scroll. Make the card a column and let the BODY scroll instead, so the
+   header stays put and the content below it is always reachable. */
 .modal.profile-modal{width:380px;overflow:hidden}
+.modal.profile-modal.open{display:flex;flex-direction:column}
+.modal.profile-modal .pf-head{flex:none}
+.modal.profile-modal .pf-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
 .av.av-click,.avatars .av{cursor:pointer;transition:transform .1s}
 .av.av-click:hover{transform:scale(1.12);z-index:2;box-shadow:0 0 0 2px var(--primary)}
 .pf-head{display:flex;align-items:center;gap:14px;padding:22px;background:linear-gradient(135deg,var(--pf,#0073ea),#0086c0);color:#fff}
