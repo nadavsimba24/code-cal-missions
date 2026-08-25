@@ -2843,16 +2843,41 @@ const Notif={
       ${n.is_read?'':'<span class="notif-dot"></span>'}
     </div>`;
   },
+  /* Getting from a notification to the item it names should feel like one step.
+     It used to be four, in sequence: mark-read round trip → board round trip →
+     a flat 120ms timer → comments round trip. Only the middle one is work the
+     user is waiting for; the rest is now overlapped or gone. */
   async click(id,boardId,taskId){
-    try{ await api('/api/notifications/'+id+'/read',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){}
+    // Mark it read optimistically. The badge is the only thing this affects, so
+    // making the jump wait for the server to confirm buys nothing — it just adds
+    // a round trip before anything on screen moves.
     const n=this.items.find(x=>x.id===id); if(n)n.is_read=true;
     this.unread=this.items.filter(x=>!x.is_read).length; this.badge();
-    if(boardId){
-      if(!st.boards.some(b=>b.id===boardId)){ toast('אין לך גישה ללוח זה'); this.render(); return; }
-      closePops();
-      await openBoard(boardId);
-      if(taskId!=null) setTimeout(()=>{ if(findAnyTask(taskId))Chat.open(taskId,{center:true}); },120);  // open the item's chat, centred on the board behind
-    } else this.render();
+    api('/api/notifications/'+id+'/read',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})})
+      .catch(()=>{});   // a failed read-receipt must never block the navigation
+
+    if(!boardId){ this.render(); return; }
+    if(!st.boards.some(b=>b.id===boardId)){ toast('אין לך גישה ללוח זה'); this.render(); return; }
+    closePops();
+
+    // Ask for the conversation NOW, alongside the board rather than after it.
+    // Two independent requests that used to run back to back.
+    if(taskId!=null) Chat.prefetch(taskId);
+
+    // Most notifications point at the board already on screen. Reloading it
+    // wiped the view to a spinner and re-fetched everything to arrive at the
+    // same place — the "extra load" with nothing to show for it.
+    const sameBoard = !!(st.board && st.board.id===boardId);
+    if(!sameBoard) await openBoard(boardId);
+
+    if(taskId==null) return;
+    // Skipping the reload assumes what we hold is current. If the item is not in
+    // it — created after we loaded, or on a board we last saw a while ago —
+    // fetch the board and try once more before giving up.
+    if(!findAnyTask(taskId) && sameBoard) await openBoard(boardId);
+    // No timer: openBoard is awaited, so the rows exist by now.
+    if(findAnyTask(taskId)) Chat.open(taskId,{center:true});
+    else toast('הפריט לא נמצא בלוח');
   },
   async readAll(e){ e&&e.stopPropagation(); try{ await api('/api/notifications/read-all',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); }catch(e){} this.items.forEach(n=>n.is_read=true); this.unread=0; this.badge(); this.render(); },
   start(){
@@ -6541,6 +6566,10 @@ const Chat = {
      always centres the row, even if it happens to be on screen already. Clicking
      the bubble on a row you are looking at still does not move the board. */
   open(id, opts){
+    // A prefetch is only ever meant for the item that immediately follows it.
+    // Leaving one behind would let a later open of that same item serve the
+    // conversation as it looked minutes ago.
+    if(this._pre && this._pre.id!==id) this._pre=null;
     this.taskId=id; this.task=findAnyTask(id); this.tabName='chat';
     this.replyTo=null; this.atts=[]; this.mentions=[];
     document.getElementById('chat-panel').classList.add('open');
@@ -6653,8 +6682,19 @@ const Chat = {
     if(this.tabName==='logs')return this.renderLogs(body);
   },
   // ---- conversation ----
+  /* Start loading a conversation before the panel is open — used when jumping
+     from a notification, so the fetch overlaps the board load instead of
+     following it. Held for one item only; anything else falls back to a normal
+     fetch, so a stale prefetch can never show the wrong thread. */
+  prefetch(id){
+    if(id==null)return;
+    this._pre={id, p:api('/api/tasks/'+id+'/comments').catch(()=>null)};
+  },
   async renderChat(body){
-    try{ const d=await api('/api/tasks/'+this.taskId+'/comments'); this.comments=d.comments||[]; }catch(e){ this.comments=[]; }
+    let d=null;
+    if(this._pre && this._pre.id===this.taskId){ d=await this._pre.p; this._pre=null; }
+    if(!d){ try{ d=await api('/api/tasks/'+this.taskId+'/comments'); }catch(e){ d=null; } }
+    this.comments=(d&&d.comments)||[];
     // flat id→comment lookup (incl. replies) so the "seen by" hover can find viewers
     this._commentsById={}; const _flat=arr=>arr.forEach(c=>{this._commentsById[c.id]=c; if(c.replies)_flat(c.replies);}); _flat(this.comments);
     const list=this.comments.length? this.comments.map(c=>this.commentHTML(c)).join('')
