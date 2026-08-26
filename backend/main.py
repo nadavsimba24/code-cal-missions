@@ -1610,6 +1610,13 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                 if _is_two_way(c):
                     c["connect"] = {**_connect_cfg(c),
                                     "mirror": _ensure_mirrors(db, board_id, c)}
+            # A connect column that is going away takes its relationships with
+            # it: the rows are keyed by (item, column), so leaving them would
+            # keep the link readable from the mirror on the other board after
+            # this side has no column to show it in.
+            _drop_links_for_columns(db, [cid for cid, c in old_cols.items()
+                                         if c.get("type") == "connect"
+                                         and cid not in {x["id"] for x in cols}])
             s = dict(b.settings or {})
             s["columns"] = cols
             # a deleted column can't linger in the sub-item-only set
@@ -1673,6 +1680,8 @@ def _hard_delete_board(db, board_id: int):
     task_ids = [t.id for t in tasks]
     if task_ids:
         db.query(Comment).filter(Comment.task_id.in_(task_ids)).delete(synchronize_session=False)
+        # links reach across boards, so the far end is on a board that survives
+        _drop_links_for_tasks(db, task_ids)
     for t in tasks:          # clear assignee links via the ORM relationship
         t.assignees = []
     db.flush()
@@ -1782,6 +1791,7 @@ def _hard_delete_task(db, task_id):
     db.query(Comment).filter(Comment.task_id == task_id).delete(synchronize_session=False)
     db.query(AuditLog).filter(AuditLog.entity_type == "task",
                               AuditLog.entity_id == task_id).delete(synchronize_session=False)
+    _drop_links_for_tasks(db, [task_id])
     t = _deleted_tasks_q(db).filter(Task.id == task_id).first()
     if t:
         t.assignees = []
@@ -2895,6 +2905,39 @@ def _linked_ids(db, task_id, col_id):
                 (ItemLink.b_task_id == task_id) & (ItemLink.b_col == col_id))).all():
         out.append(l.b_task_id if (l.a_task_id == task_id and l.a_col == col_id) else l.a_task_id)
     return out
+
+
+def _drop_links_for_tasks(db, task_ids):
+    """Delete every link row touching these items.
+
+    A link row is not owned by either side — that is the whole point of storing
+    one row instead of two — so nothing cascades it away when an item is
+    destroyed. Left behind, it is a row describing a relationship to something
+    that no longer exists, and if that id is ever reused the dead link comes
+    back attached to an unrelated item.
+    """
+    ids = [int(i) for i in (task_ids or [])]
+    if not ids:
+        return
+    db.query(ItemLink).filter(
+        or_(ItemLink.a_task_id.in_(ids), ItemLink.b_task_id.in_(ids))
+    ).delete(synchronize_session=False)
+
+
+def _drop_links_for_columns(db, col_ids):
+    """Delete every link row held in these columns.
+
+    Removing a connect column removes the place the relationship was expressed.
+    Leaving the rows would keep the link alive on the OTHER board — the mirror
+    cell reads by (task, column) and would still find it — so the two sides
+    would disagree about whether a relationship exists at all.
+    """
+    ids = [str(c) for c in (col_ids or []) if c]
+    if not ids:
+        return
+    db.query(ItemLink).filter(
+        or_(ItemLink.a_col.in_(ids), ItemLink.b_col.in_(ids))
+    ).delete(synchronize_session=False)
 
 
 def _mirror_col_for(db, col, target_board_id):

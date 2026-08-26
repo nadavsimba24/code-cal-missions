@@ -1,0 +1,184 @@
+"""Removing a link, and the link rows outliving what they describe.
+
+Removing a link severs the relationship and nothing else: neither item is
+deleted and neither item's data changes. On a two-way column the removal has to
+show on both sides, and the two sides must never end up disagreeing about
+whether a relationship exists — including after the item, the board or the
+column at one end is destroyed.
+"""
+from sqlalchemy.orm import Session
+import main as cityos_main
+from models import ItemLink
+
+AS = lambda uid: {"X-CityOS-User": str(uid)}
+
+
+def _board(client, admin_id, name):
+    return client.post("/api/boards", json={"name": name, "user_id": admin_id}).json()["id"]
+
+
+def _item(client, bid, admin_id, title):
+    return client.post("/api/tasks", json={"board_id": bid, "title": title,
+                                           "user_id": admin_id}).json()["id"]
+
+
+def _cols(client, bid):
+    return client.get(f"/api/boards/{bid}").json()["columns"]
+
+
+def _cell(client, tid, col_id, uid):
+    t = client.get(f"/api/tasks/{tid}", headers=AS(uid)).json()
+    return (t.get("custom_fields") or {}).get(col_id) or []
+
+
+def _set(client, tid, col_id, ids, uid):
+    return client.patch(f"/api/tasks/{tid}?user_id={uid}",
+                        json={"custom_fields": {col_id: ids}}, headers=AS(uid))
+
+
+def _setup(client, admin_id, tag):
+    a, b = _board(client, admin_id, f"מקור {tag}"), _board(client, admin_id, f"יעד {tag}")
+    cols = _cols(client, a) + [{"type": "connect", "title": "קישור",
+                                "connect": {"board_ids": [b], "multiple": True, "two_way": True}}]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": cols})
+    c = next(x for x in _cols(client, a) if x["type"] == "connect")
+    return a, b, c, c["connect"]["mirror"][str(b)]
+
+
+def _link_rows(task_id):
+    with Session(cityos_main.engine) as db:
+        return db.query(ItemLink).filter(
+            (ItemLink.a_task_id == task_id) | (ItemLink.b_task_id == task_id)).count()
+
+
+# ── the two sides agree, whichever side acts ────────────────────────────────
+
+def test_removing_from_the_source_clears_the_mirror(client, admin_id):
+    a, b, c, mirror = _setup(client, admin_id, "t1")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    _set(client, src, c["id"], [], admin_id)
+    assert _cell(client, src, c["id"], admin_id) == []
+    assert _cell(client, x, mirror, admin_id) == []
+
+
+def test_removing_from_the_mirror_clears_the_source(client, admin_id):
+    a, b, c, mirror = _setup(client, admin_id, "t2")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    _set(client, x, mirror, [], admin_id)
+    assert _cell(client, x, mirror, admin_id) == []
+    assert _cell(client, src, c["id"], admin_id) == []
+
+
+def test_the_two_sides_never_disagree(client, admin_id):
+    a, b, c, mirror = _setup(client, admin_id, "t3")
+    src = _item(client, a, admin_id, "מקור")
+    xs = [_item(client, b, admin_id, f"יעד {i}") for i in range(3)]
+    _set(client, src, c["id"], xs, admin_id)
+    for x in xs:
+        assert _cell(client, x, mirror, admin_id) == [src]
+    _set(client, xs[1], mirror, [], admin_id)                       # one, from the far side
+    assert sorted(_cell(client, src, c["id"], admin_id)) == sorted([xs[0], xs[2]])
+    assert _cell(client, xs[1], mirror, admin_id) == []
+    _set(client, src, c["id"], [], admin_id)                        # the rest, from this side
+    for x in xs:
+        assert _cell(client, x, mirror, admin_id) == [], f"{x} still points back"
+
+
+# ── nothing but the reference is touched ────────────────────────────────────
+
+def test_removing_a_link_deletes_neither_item(client, admin_id):
+    a, b, c, mirror = _setup(client, admin_id, "t4")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    _set(client, src, c["id"], [], admin_id)
+    for tid, title in ((src, "מקור"), (x, "יעד")):
+        r = client.get(f"/api/tasks/{tid}", headers=AS(admin_id))
+        assert r.status_code == 200 and r.json()["title"] == title
+
+
+def test_removing_a_link_changes_neither_item(client, admin_id):
+    a, b, c, mirror = _setup(client, admin_id, "t5")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    client.patch(f"/api/tasks/{x}?user_id={admin_id}",
+                 json={"description": "תיאור", "priority": "high", "tags": ["א", "ב"]})
+    _set(client, src, c["id"], [x], admin_id)
+    keys = ("title", "description", "status", "priority", "due_date", "tags", "group_id", "assignees")
+    snap = lambda t: {k: client.get(f"/api/tasks/{t}", headers=AS(admin_id)).json().get(k) for k in keys}
+    before = (snap(src), snap(x))
+    _set(client, src, c["id"], [], admin_id)
+    assert (snap(src), snap(x)) == before
+
+
+# ── the bin: hidden while binned, back on restore ───────────────────────────
+
+def test_binning_an_item_hides_the_link_from_the_other_side(client, admin_id):
+    a, b, c, mirror = _setup(client, admin_id, "t6")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    client.delete(f"/api/tasks/{x}?user_id={admin_id}")
+    assert _cell(client, src, c["id"], admin_id) == []
+
+
+def test_restoring_it_brings_the_link_back(client, admin_id):
+    """Which is why the bin must not destroy the row — only purging does."""
+    a, b, c, mirror = _setup(client, admin_id, "t7")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    client.delete(f"/api/tasks/{x}?user_id={admin_id}")
+    client.post(f"/api/tasks/{x}/restore", json={"actor_id": admin_id})
+    assert _cell(client, src, c["id"], admin_id) == [x]
+    assert _cell(client, x, mirror, admin_id) == [src]
+
+
+# ── rows must not outlive what they describe ────────────────────────────────
+
+def test_purging_an_item_takes_its_link_rows(client, admin_id):
+    """Nothing cascades a link row away: it belongs to neither side, which is
+    the point of storing one row instead of two."""
+    a, b, c, mirror = _setup(client, admin_id, "t8")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    assert _link_rows(x) == 1
+    client.delete(f"/api/tasks/{x}?user_id={admin_id}")
+    client.delete(f"/api/boards/{b}/trash/{x}?actor_id={admin_id}")
+    assert _link_rows(x) == 0, "a row is left describing a relationship to a destroyed item"
+    assert _cell(client, src, c["id"], admin_id) == []
+
+
+def test_purging_a_board_takes_the_links_off_the_surviving_board(client, admin_id):
+    """Links reach across boards, so the far end is on a board that lives on."""
+    a, b, c, mirror = _setup(client, admin_id, "t9")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    client.delete(f"/api/boards/{b}?user_id={admin_id}")
+    client.delete(f"/api/trash/boards/{b}?user_id={admin_id}")
+    assert _link_rows(src) == 0, "the destroyed board left its links on the surviving one"
+    assert _cell(client, src, c["id"], admin_id) == []
+
+
+def test_deleting_the_column_takes_its_links(client, admin_id):
+    """The rows are keyed by (item, column). Left behind, the mirror on the
+    other board still finds them and the two sides disagree about whether the
+    relationship exists at all."""
+    a, b, c, mirror = _setup(client, admin_id, "t10")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    remaining = [col for col in _cols(client, a) if col["id"] != c["id"]]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": remaining})
+    assert _link_rows(src) == 0
+    assert _cell(client, x, mirror, admin_id) == [], "the far side still shows a link with no column behind it"
+
+
+def test_deleting_an_unrelated_column_leaves_the_links_alone(client, admin_id):
+    a, b, c, mirror = _setup(client, admin_id, "t11")
+    cols = _cols(client, a) + [{"type": "text", "title": "הערה"}]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": cols})
+    note = next(x for x in _cols(client, a) if x["type"] == "text" and x["title"] == "הערה")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    remaining = [col for col in _cols(client, a) if col["id"] != note["id"]]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": remaining})
+    assert _cell(client, src, c["id"], admin_id) == [x], "an unrelated column removal took the links with it"
+    assert _cell(client, x, mirror, admin_id) == [src]
