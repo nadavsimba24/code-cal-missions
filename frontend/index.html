@@ -795,6 +795,23 @@ body.coldragging .col-grip{opacity:1}
 .lg-link-act{font-weight:700;font-size:12px;color:var(--text-muted);margin-inline-end:4px}
 .lf-sel{width:100%;padding:7px 9px;border:1px solid var(--border-strong);border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
 .lf-note{margin-top:5px;font-size:11.5px;color:var(--text-light)}
+.cn-state{display:flex;flex-direction:column;align-items:center;gap:9px;padding:30px 16px;color:var(--text-muted);font-size:13px;text-align:center}
+.cn-state i{font-size:20px;opacity:.55}
+.cn-err{color:var(--red,#e2445c)}
+.cn-err i{opacity:1}
+.lc-go{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden}
+.lc-x{margin-inline-start:5px;font-size:9px;opacity:.5;flex-shrink:0;cursor:pointer;border-radius:3px;padding:2px}
+.lc-x:hover{opacity:1;background:rgba(0,0,0,.08)}
+/* peek at a linked item without leaving the board you are on */
+.pk-title{font-size:17px;font-weight:700;margin-bottom:4px}
+.pk-board{font-size:12.5px;color:var(--text-light);margin-bottom:14px}
+.pk-board i{font-size:11px}
+.pk-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px}
+.pk-l{flex:0 0 90px;color:var(--text-muted)}
+.pk-v{flex:1;color:var(--text)}
+.pk-pill{display:inline-block;padding:2px 10px;border-radius:11px;color:#fff;font-weight:600;font-size:11.5px}
+.pk-desc{margin-top:12px;font-size:13px;color:var(--text);white-space:pre-wrap;max-height:180px;overflow:auto}
+.pk-note{margin-top:14px;font-size:11.5px;color:var(--text-light)}
 /* the connect-column deletion warning: one consequence per line */
 .confirm-note-rich{text-align:start;line-height:1.55}
 .ci-row{position:relative;padding-inline-start:15px;margin:5px 0}
@@ -5602,8 +5619,10 @@ function mirrorTip(c){
   return `${f} מתוך הפריט המקושר בעמודה "${src?src.title:'—'}" · לקריאה בלבד`;
 }
 const MIRROR_BUILTINS={title:'שם הפריט',status:'סטטוס',priority:'עדיפות',due:'תאריך יעד',assignees:'אחראים'};
-function linkChipHTML(tid){
+function linkChipHTML(tid,rm){
   const it=linkInfo(tid);
+  const x=rm?`<i class="fa-solid fa-xmark lc-x" title="הסר קישור"
+      onclick="unlinkFromCell(event,${rm.taskId},'${esc(rm.colId)}',${tid})"></i>`:'';
   // The server already strips links the viewer may not see, so this is the belt
   // to that braces: an id that resolves to nothing is shown as closed, never as
   // an id, a title or the name of the board it lives on.
@@ -5616,7 +5635,7 @@ function linkChipHTML(tid){
   // letting it reappear later with no explanation.
   if(it&&it.deleted)
     return `<span class="link-chip link-chip-del" title="${esc(label+where)} — ${esc(deletedWhy(it))}"><i class="fa-solid fa-trash-can"></i><span class="lc-t">${esc(label)}</span></span>`;
-  return `<span class="link-chip" title="${esc(label+where)} — פתח" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i><span class="lc-t">${esc(label)}</span></span>`;
+  return `<span class="link-chip" title="${esc(label+where)} — פתח"><span class="lc-go" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i><span class="lc-t">${esc(label)}</span></span>${x}</span>`;
 }
 /* Every linked name is rendered; how many of them survive is decided after
    layout by fitLinkChips, because "as much as fits" is a question about pixels
@@ -5632,8 +5651,27 @@ function deletedWhy(it){
 function connectDisp(ids,taskId,colId){
   ids=Array.isArray(ids)?ids:[];
   if(!ids.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-diagram-project"></i> קשר פריט</span>';
-  return `<span class="link-cell">${ids.map(linkChipHTML).join('')}<span class="link-more" style="display:none"
+  const t=findAnyTask(taskId);
+  const editable=!!(t&&canEditCol(t,colId));
+  return `<span class="link-cell">${ids.map(id=>linkChipHTML(id,editable?{taskId,colId}:null)).join('')}<span class="link-more" style="display:none"
      onclick="event.stopPropagation();openLinkList(${taskId},'${esc(colId)}')"></span></span>`;
+}
+/* Taking one link off should not mean opening the picker to untick it. */
+async function unlinkFromCell(e,taskId,colId,linkId){
+  e.stopPropagation();
+  const t=findAnyTask(taskId); if(!t)return;
+  const cur=((t.custom_fields||{})[colId]||[]).filter(x=>x!==linkId);
+  try{
+    const res=await api('/api/tasks/'+taskId,{method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:withMe({custom_fields:{[colId]:cur.length?cur:null}})});
+    t.custom_fields=Object.assign({},t.custom_fields,res.custom_fields||{});
+    if(res.link_message)toast(res.link_message);
+  }catch(err){ toast('הסרת הקישור נכשלה — נסה שוב'); return; }
+  const col=customColumns().find(c=>c.id===colId);
+  if(col&&col.connect&&col.connect.two_way){
+    try{ st.board=await api('/api/boards/'+st.board.id); }catch(err){}
+  }
+  renderView();
 }
 /* Hide the names that do not fit and count them. Measured by asking the box
    whether it still overflows, one name at a time, rather than by adding up
@@ -5707,6 +5745,10 @@ async function resolveLinks(){
     renderView();
   }catch(e){}
 }
+/* Following a link used to switch boards, which throws away everything the
+   person had on screen — their scroll, their filters, the row they were
+   working on — to answer what is usually a glance. It opens in place instead,
+   and going to the other board stays available as a deliberate second step. */
 async function openLinkedItem(tid){
   const it=st.linkCache[tid], bid=it&&it.board_id;
   // Seeing a link is not permission to open what it points at.
@@ -5719,6 +5761,66 @@ async function openLinkedItem(tid){
   }
   if(!bid){toast('הפריט המקושר לא נמצא');return;}
   if(!(st.boards||[]).some(b=>b.id===bid)){toast('אין לך גישה ללוח של הפריט המקושר');return;}
+  // already here — the board's own item panel is the better answer
+  if(st.board&&st.board.id===bid&&findAnyTask(tid)){ closeModals(); Chat.open(tid,{center:true}); return; }
+  await peekLinkedItem(tid,bid);
+}
+/* A read-only look at an item on another board, without leaving this one. */
+async function peekLinkedItem(tid,bid){
+  showModal(`<h2><i class="fa-solid fa-arrow-up-right-from-square" style="color:var(--primary)"></i> פריט מקושר</h2>
+    <div class="mbody"><div class="cn-state"><i class="fa-solid fa-circle-notch fa-spin"></i> טוען…</div></div>`);
+  let t=null;
+  try{ t=await api('/api/tasks/'+tid); }
+  catch(e){
+    const body=document.querySelector('#modal .mbody');
+    if(body)setHTML(body,`<div class="cn-state cn-err"><i class="fa-solid fa-triangle-exclamation"></i>
+      <div>${esc(e&&e.status===403?'אין לך הרשאת צפייה בפריט זה':'לא ניתן היה לטעון את הפריט')}</div></div>`);
+    return;
+  }
+  const b=(st.boards||[]).find(x=>x.id===(t.board_id||bid))||{};
+  const who=(t.assignees||[]).map(a=>esc(a.name)).join(', ')||'—';
+  const row=(label,val)=>`<div class="pk-row"><span class="pk-l">${label}</span><span class="pk-v">${val}</span></div>`;
+  const body=document.querySelector('#modal .mbody'); if(!body)return;
+  setHTML(body,`
+    <div class="pk-title">${esc(t.title||'')}</div>
+    <div class="pk-board"><i class="fa-solid fa-table-list"></i> ${esc(b.name||'')}</div>
+    ${row('סטטוס',`<span class="pk-pill" style="background:${esc(pkStatus(t).c)}">${esc(pkStatus(t).he)}</span>`)}
+    ${row('עדיפות',esc(pkPriority(t)))}
+    ${row('אחראים',who)}
+    ${row('תאריך יעד',esc(pkDate(t.due_date)))}
+    ${t.description?`<div class="pk-desc">${esc(t.description)}</div>`:''}
+    <div class="pk-note"><i class="fa-solid fa-circle-info"></i> תצוגה בלבד. לעריכה יש לפתוח את הפריט בלוח שלו.</div>`);
+  const foot=document.querySelector('#modal .mfoot');
+  const goto=`<button class="btn btn-primary" onclick="gotoLinkedItem(${tid},${t.board_id||bid})"><i class="fa-solid fa-arrow-left"></i> פתח בלוח ${esc(b.name||'')}</button>
+              <button class="btn btn-ghost" onclick="closeModals()">סגור</button>`;
+  if(foot)setHTML(foot,goto);
+  else document.getElementById('modal').insertAdjacentHTML('beforeend',`<div class="mfoot">${goto}</div>`);
+}
+/* The linked item lives on ANOTHER board, so its status must be read in THAT
+   board's vocabulary. A board-defined status carries its own label and colour
+   on the item, which is exactly what makes that possible from here; only the
+   seven built-ins fall back to the shared map. Reading it through this board's
+   boardStatusList() would put someone else's word on it. */
+function pkStatus(t){
+  const cf=t.custom_fields||{};
+  if(cf.status_unset)return {he:'טרם הוגדר',c:'#c4c4c4'};
+  if(cf.status_label)return {he:cf.status_label,c:cf.status_color||'#c4c4c4'};
+  const m=STATUS[t.status]||{};
+  return {he:m.he||t.status||'—',c:m.c||'#c4c4c4'};
+}
+function pkPriority(t){
+  const cf=t.custom_fields||{};
+  if(cf.priority_unset)return 'טרם הוגדר';
+  if(cf.priority_label)return cf.priority_label;
+  return (PRIORITY[t.priority]||{}).he||t.priority||'—';
+}
+function pkDate(v){
+  if(!v)return '—';
+  const d=new Date(v); if(isNaN(d))return '—';
+  return d.toLocaleDateString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric'});
+}
+/* The deliberate second step: leave this board for the other one. */
+async function gotoLinkedItem(tid,bid){
   closeModals(); await openBoard(bid);
   setTimeout(()=>{ if(findAnyTask(tid))Chat.open(tid,{center:true}); },160);
 }
@@ -5766,6 +5868,8 @@ function openConnectPicker(e,taskId,colId){
       <div id="cn-list" class="cn-list" onscroll="connectScroll(this)"><div class="empty" style="padding:20px">טוען…</div></div>
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="connectSave()"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+  // ready to type immediately: the first thing anyone does here is search
+  setTimeout(()=>{const i=document.getElementById('cn-q'); if(i)i.focus();},40);
   connectLoad(true);
 }
 /* What is selected, as removable chips — so taking something off does not mean
@@ -5780,6 +5884,11 @@ function connectChipsHTML(){
   }).join('');
 }
 function connectBoard(id){ _connect.board=id; connectLoad(true); }
+function connectClearFilters(){
+  _connect.q=''; _connect.status=''; _connect.person='';
+  ['cn-q','cn-status','cn-person'].forEach(id=>{const e=document.getElementById(id); if(e)e.value='';});
+  connectLoad(true);
+}
 function connectFilter(){
   _connect.status=(document.getElementById('cn-status')||{}).value||'';
   _connect.person=(document.getElementById('cn-person')||{}).value||'';
@@ -5796,9 +5905,10 @@ async function connectLoad(reset){
   const bids=_connect.board?[_connect.board]:_connect.boards;
   // An empty list must never reach the API: it used to mean "search every board
   // you can see", which is the opposite of what this column is scoped to.
-  if(!bids.length){ _connect.items=[];_connect.hasMore=false;_connect.total=0;renderConnectList();return; }
-  _connect.loading=true;
+  if(!bids.length){ _connect.items=[];_connect.hasMore=false;_connect.total=0;_connect.error='';renderConnectList();return; }
+  _connect.loading=true; _connect.error='';
   if(reset){ _connect.offset=0; _connect.items=[]; }
+  renderConnectList();          // show that something is happening, before the wait
   const qs=['board_ids='+bids.join(','),'exclude_task='+_connect.taskId,
             'q='+encodeURIComponent(_connect.q),'offset='+_connect.offset,'limit=40'];
   if(_connect.status)qs.push('status='+encodeURIComponent(_connect.status));
@@ -5809,7 +5919,14 @@ async function connectLoad(reset){
     _connect.offset=_connect.items.length;
     _connect.hasMore=!!d.has_more;
     _connect.total=d.total||0;
-  }catch(e){ _connect.hasMore=false; }
+  }catch(e){
+    // A failed request must not read as "no items" — that is the same screen
+    // for "there is nothing" and "we could not ask", and only one of them means
+    // the person should stop looking.
+    _connect.hasMore=false;
+    _connect.error=(e&&e.status===403)?'אין לך הרשאת צפייה בלוחות היעד של עמודה זו'
+                                      :'לא ניתן היה לטעון את הפריטים';
+  }
   _connect.loading=false;
   renderConnectList();
 }
@@ -5820,6 +5937,18 @@ function connectScroll(el){
 function renderConnectList(){
   const el=document.getElementById('cn-list'); if(!el)return;
   const items=_connect.items;
+  if(_connect.loading&&!items.length){
+    setHTML(el,`<div class="cn-state"><i class="fa-solid fa-circle-notch fa-spin"></i> טוען פריטים…</div>`);
+    return;
+  }
+  if(_connect.error){
+    setHTML(el,`<div class="cn-state cn-err">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <div>${esc(_connect.error)}</div>
+      <button class="btn btn-ghost" onclick="connectLoad(true)"><i class="fa-solid fa-rotate-right"></i> נסה שוב</button>
+    </div>`);
+    return;
+  }
   const rows=items.map(it=>{
     const on=_connect.sel.has(it.id);
     const linked=_connect.already.has(it.id);
@@ -5833,9 +5962,13 @@ function renderConnectList(){
   const foot=_connect.hasMore
     ? `<button class="cn-more" onclick="connectLoad(false)">טען עוד (${items.length} מתוך ${_connect.total})</button>`
     : (items.length?`<div class="cn-end">${items.length} פריטים</div>`:'');
-  setHTML(el, rows
-    ? rows+foot
-    : '<div class="empty" style="padding:20px"><i class="fa-regular fa-face-frown"></i> לא נמצאו פריטים</div>');
+  const empty=_connect.q||_connect.status||_connect.person
+    ? `<div class="cn-state"><i class="fa-solid fa-magnifying-glass"></i>
+         <div>לא נמצאו פריטים התואמים לחיפוש</div>
+         <button class="btn btn-ghost" onclick="connectClearFilters()">נקה סינון</button></div>`
+    : `<div class="cn-state"><i class="fa-regular fa-folder-open"></i>
+         <div>אין פריטים בלוחות היעד של עמודה זו</div></div>`;
+  setHTML(el, rows ? rows+foot : empty);
   const cnt=document.getElementById('cn-count'); if(cnt)cnt.textContent=_connect.sel.size+' נבחרו';
   const chips=document.getElementById('cn-chips'); if(chips)setHTML(chips, connectChipsHTML());
 }
