@@ -3096,6 +3096,52 @@ def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] =
                           for t in rows],
                 "total": total, "has_more": off + len(rows) < total}
 
+@app.get("/api/boards/{board_id}/columns/{col_id}/impact")
+def column_impact(board_id: int, col_id: str, actor_id: int = Depends(current_user_id)):
+    """What deleting this column would destroy, so the confirmation can say so.
+
+    Counted on the server rather than from the loaded board: the cell a client
+    holds has already been filtered to what its viewer may see, so counting
+    there would understate a destructive action for exactly the person about to
+    take it.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+        col = _find_col(db, board_id, col_id)
+        if not col:
+            raise HTTPException(404, "column not found")
+        out = {"col_id": col_id, "title": col.get("title") or "", "type": col.get("type"),
+               "two_way": _is_two_way(col), "links": 0, "items": 0, "mirrors": []}
+        if col.get("type") != "connect":
+            return out
+        if _is_two_way(col):
+            rows = db.query(ItemLink).filter(
+                or_(ItemLink.a_col == col_id, ItemLink.b_col == col_id)).all()
+            out["links"] = len(rows)
+            out["items"] = len({l.a_task_id if l.a_col == col_id else l.b_task_id for l in rows})
+        else:
+            # a one-way column keeps its ids in the cell
+            for t in db.query(Task).filter(Task.board_id == board_id).all():
+                v = (t.custom_fields or {}).get(col_id)
+                if isinstance(v, list) and v:
+                    out["items"] += 1
+                    out["links"] += len(v)
+        # where the reverse of each relationship is shown today
+        mirror = _connect_cfg(col).get("mirror") or {}
+        for bid, mcol in mirror.items():
+            tb = db.query(Board).filter(Board.id == int(bid)).first()
+            if not tb or tb.deleted_at:
+                continue
+            mdef = _find_col(db, tb.id, mcol)
+            out["mirrors"].append({"board_id": tb.id, "board_name": tb.name,
+                                   "col_id": mcol, "col_title": (mdef or {}).get("title") or ""})
+        return out
+
+
 @app.get("/api/tasks/lookup")
 def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
     """Resolve item ids → title/board, to display linked items in a connect cell.

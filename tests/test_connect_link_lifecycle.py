@@ -265,3 +265,54 @@ def test_purging_leaves_no_mark_because_there_is_nothing_to_restore(client, admi
     client.delete(f"/api/boards/{b}/trash/{x}?actor_id={admin_id}")
     assert _cell(client, src, c["id"], admin_id) == [], "an active link to a destroyed item"
     assert _link_rows(x) == 0
+
+
+def test_deleting_the_column_does_not_delete_the_items(client, admin_id):
+    """The links go; the things they pointed at stay, on both boards."""
+    a, b, c, mirror = _setup(client, admin_id, "t14")
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
+    _set(client, src, c["id"], [x], admin_id)
+    remaining = [col for col in _cols(client, a) if col["id"] != c["id"]]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": remaining})
+    for tid, title in ((src, "מקור"), (x, "יעד")):
+        r = client.get(f"/api/tasks/{tid}", headers=AS(admin_id))
+        assert r.status_code == 200 and r.json()["title"] == title
+
+
+def test_the_impact_endpoint_reports_what_deletion_would_cost(client, admin_id):
+    """What the confirmation dialog is built from. Counted on the server: the
+    cell a client holds has already been filtered to what its viewer may see,
+    so counting there would understate it for the person about to delete."""
+    a, b, c, mirror = _setup(client, admin_id, "t15")
+    srcs = [_item(client, a, admin_id, f"מקור {i}") for i in range(2)]
+    xs = [_item(client, b, admin_id, f"יעד {i}") for i in range(3)]
+    _set(client, srcs[0], c["id"], xs[:2], admin_id)
+    _set(client, srcs[1], c["id"], xs[2:], admin_id)
+    imp = client.get(f"/api/boards/{a}/columns/{c['id']}/impact", headers=AS(admin_id)).json()
+    assert imp["two_way"] is True
+    assert imp["links"] == 3 and imp["items"] == 2
+    assert imp["mirrors"] and imp["mirrors"][0]["board_id"] == b
+    assert imp["mirrors"][0]["col_id"] == mirror
+    assert imp["mirrors"][0]["board_name"] == f"יעד t15"
+
+
+def test_the_impact_endpoint_counts_a_one_way_column_too(client, admin_id):
+    a, b = _board(client, admin_id, "מקור t16"), _board(client, admin_id, "יעד t16")
+    cols = _cols(client, a) + [{"type": "connect", "title": "קישור",
+                                "connect": {"board_ids": [b], "multiple": True, "two_way": False}}]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": cols})
+    c = next(x for x in _cols(client, a) if x["type"] == "connect")
+    src = _item(client, a, admin_id, "מקור")
+    xs = [_item(client, b, admin_id, f"יעד {i}") for i in range(2)]
+    _set(client, src, c["id"], xs, admin_id)
+    imp = client.get(f"/api/boards/{a}/columns/{c['id']}/impact", headers=AS(admin_id)).json()
+    assert imp["two_way"] is False and imp["links"] == 2 and imp["items"] == 1
+    assert imp["mirrors"] == []
+
+
+def test_only_a_board_admin_may_ask_what_deletion_would_cost(client, admin_id, guinea_id):
+    a, b, c, mirror = _setup(client, admin_id, "t17")
+    client.post(f"/api/boards/{a}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    r = client.get(f"/api/boards/{a}/columns/{c['id']}/impact", headers=AS(guinea_id))
+    assert r.status_code == 403

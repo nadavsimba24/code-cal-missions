@@ -760,6 +760,10 @@ body.coldragging .col-grip{opacity:1}
 .ll-del:hover{background:var(--surface);border-color:var(--border)}
 .ll-del i{color:var(--text-light)}
 .ll-del .ll-t{text-decoration:line-through;text-decoration-thickness:1px}
+/* the connect-column deletion warning: one consequence per line */
+.confirm-note-rich{text-align:start;line-height:1.55}
+.ci-row{position:relative;padding-inline-start:15px;margin:5px 0}
+.ci-row::before{content:"";position:absolute;inset-inline-start:0;top:8px;width:5px;height:5px;border-radius:50%;background:var(--text-light)}
 /* a link whose target the viewer may not open — no title, no board, no click */
 .link-chip-off{background:var(--row-hover);color:var(--text-light);cursor:default;font-style:italic}
 .link-chip-off:hover{filter:none;text-decoration:none}
@@ -6606,13 +6610,53 @@ async function editFormula(e,colId){
   const cols=customColumns().map(x=>x.id===colId?{...x,formula:f.trim()}:x);
   await saveColumns(cols);toast('הנוסחה עודכנה');
 }
-function deleteColumn(e,colId){
+async function deleteColumn(e,colId){
   e.stopPropagation();closeCellPops();
   const c=customColumns().find(x=>x.id===colId);
-  askConfirm('האם אתה בטוח שברצונך למחוק?',async()=>{
+  const go=async()=>{
     const cols=customColumns().filter(x=>x.id!==colId);
     await saveColumns(cols);toast('העמודה נמחקה');
-  },{title:'מחיקת עמודה'+(c?` — ${c.title}`:''),note:'הנתונים בעמודה יוסרו מהתצוגה.',confirmText:'מחק עמודה'});
+  };
+  const opts={title:'מחיקת עמודה'+(c?` — ${c.title}`:''),
+              note:'הנתונים בעמודה יוסרו מהתצוגה.',confirmText:'מחק עמודה'};
+  // A connect column is the one whose deletion reaches off this board: it takes
+  // the relationships with it, and for a two-way column the reverse disappears
+  // from someone else's board too. Say so before, not after.
+  if(c&&c.type==='connect'){
+    let imp=null;
+    try{ imp=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/impact`); }catch(err){}
+    opts.note=null;
+    opts.noteHTML=connectImpactHTML(imp);
+    opts.confirmText='מחק את העמודה והקישורים';
+  }
+  askConfirm('האם אתה בטוח שברצונך למחוק?',go,opts);
+}
+/* What the admin is actually agreeing to. Counted by the server, because the
+   cell this client holds was already filtered to what its viewer may see and
+   would understate the damage for the very person about to do it. */
+function connectImpactHTML(imp){
+  // A failed count must not read as "nothing to lose" — that is the one wrong
+  // answer to give someone the moment before a destructive action.
+  if(!imp) return `<div class="ci-row">לא ניתן היה לבדוק כמה קישורים שמורים בעמודה זו.
+    מחיקתה תסיר את כל הקישורים שנשמרו בה, ובקשר דו־כיווני גם את הקשר ההפוך בלוח היעד.</div>
+    <div class="ci-row"><b>הפריטים המקושרים עצמם לא יימחקו</b> — רק ההפניה ביניהם.</div>`;
+  const n=imp.links||0, items=imp.items||0;
+  const on=items===1?' (על פריט אחד)':(items?` (על ${items} פריטים)`:'');
+  const rows=[];
+  rows.push(n===0 ? 'בעמודה זו לא שמורים קישורים כרגע.'
+          : n===1 ? `קישור אחד שנשמר בעמודה זו יימחק${on}.`
+                  : `<b>${n}</b> הקישורים שנשמרו בעמודה זו יימחקו${on}.`);
+  rows.push('<b>הפריטים המקושרים עצמם לא יימחקו</b> — רק ההפניה ביניהם.');
+  if(imp.two_way&&(imp.mirrors||[]).length){
+    imp.mirrors.forEach(m=>{
+      rows.push(`הקשר ההפוך מוצג היום בעמודה <b>${esc(m.col_title||m.col_id)}</b> בלוח <b>${esc(m.board_name)}</b>.`
+        +(n?' הקישורים ייעלמו גם משם.':'')
+        +' העמודה עצמה תישאר בלוח, ריקה — אם אינה נחוצה עוד, יש למחוק אותה שם.');
+    });
+  }else if(imp.two_way){
+    rows.push('זהו קשר דו־כיווני — הקישורים ייעלמו משני הלוחות.');
+  }
+  return rows.map(r=>`<div class="ci-row">${r}</div>`).join('');
 }
 async function saveColumns(cols){
   try{
@@ -8376,6 +8420,7 @@ function askConfirm(message,onYes,opts){
     <h2 style="border:none;padding:0 0 6px;text-align:center">${esc(opts.title||'אישור')}</h2>
     <div class="confirm-msg">${esc(message)}</div>
     ${opts.note?`<div class="confirm-note">${esc(opts.note)}</div>`:''}
+    ${opts.noteHTML?`<div class="confirm-note confirm-note-rich">${opts.noteHTML}</div>`:''}
     <div class="confirm-actions">
       <button class="btn ${opts.danger===false?'btn-primary':'btn-danger'}" onclick="window._confirmYes()">${esc(opts.confirmText||'מחק')}</button>
       <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
