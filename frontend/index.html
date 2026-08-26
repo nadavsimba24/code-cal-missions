@@ -792,6 +792,7 @@ body.coldragging .col-grip{opacity:1}
 .rel-h{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13px;margin-bottom:6px;color:var(--text)}
 .rel-h i{color:var(--primary);font-size:11px}
 .rel-h span{margin-inline-start:auto;color:var(--text-light);font-weight:600;font-size:12px}
+.lg-link-act{font-weight:700;font-size:12px;color:var(--text-muted);margin-inline-end:4px}
 /* the connect-column deletion warning: one consequence per line */
 .confirm-note-rich{text-align:start;line-height:1.55}
 .ci-row{position:relative;padding-inline-start:15px;margin:5px 0}
@@ -2418,6 +2419,10 @@ const BoardLog = {
     if(f==='due_date')return 'fa-calendar-day';
     if(f==='tags')return 'fa-tag';
     if(f==='title')return 'fa-font';
+    if(f.startsWith('col:')){
+      const c=customColumns().find(x=>x.id===f.slice(4));
+      if(c&&c.type==='connect')return 'fa-diagram-project';
+    }
     return 'fa-pen';
   },
   fieldLabel(a){
@@ -2434,9 +2439,34 @@ const BoardLog = {
       const one=a.new||a.old;
       return one?`<span class="lg-pill new">${esc(Chat.short(one))}</span>`:'';
     }
+    const lk=this.linkChange(a); if(lk)return lk;
     return `<span class="lg-pill old">${this.pill(a.field,a.old)}</span>
             <i class="fa-solid fa-arrow-left lg-arrow"></i>
             <span class="lg-pill new" style="${this.pillStyle(a.field,a.new)}">${this.pill(a.field,a.new)}</span>`;
+  },
+  /* A link change reads as what happened to the relationship, not as two id
+     lists: which item was added, which was removed, and a swap of one for
+     another as the single event it is. The server sends {id,title} pairs,
+     already cut down to what this reader is allowed to see. */
+  linkChange(a){
+    const col=(a.field||'').startsWith('col:')&&customColumns().find(x=>x.id===a.field.slice(4));
+    if(!col||col.type!=='connect')return '';
+    const parse=v=>{ try{ const d=JSON.parse(v||'[]');
+      return Array.isArray(d)&&d.every(x=>x&&typeof x==='object')?d:null; }catch(e){ return null; } };
+    const before=parse(a.old), after=parse(a.new);
+    if(!before||!after)return '';
+    const key=x=>x.id;
+    const gone=before.filter(x=>!after.some(y=>key(y)===key(x)));
+    const came=after.filter(x=>!before.some(y=>key(y)===key(x)));
+    const chip=(x,cls)=>`<span class="lg-pill ${cls}">${esc(x.title||('#'+x.id))}</span>`;
+    if(gone.length&&came.length)      // a swap is one event, not two
+      return `<span class="lg-link-act">החליף</span>${gone.map(x=>chip(x,'old')).join('')}
+              <i class="fa-solid fa-arrow-left lg-arrow"></i>${came.map(x=>chip(x,'new')).join('')}`;
+    if(came.length)
+      return `<span class="lg-link-act">קישר</span>${came.map(x=>chip(x,'new')).join('')}`;
+    if(gone.length)
+      return `<span class="lg-link-act">הסיר קישור</span>${gone.map(x=>chip(x,'old')).join('')}`;
+    return '';
   },
   pill(field,v){ return esc(Chat.transVal(field,v)); },
   pillStyle(field,v){

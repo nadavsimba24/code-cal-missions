@@ -4901,32 +4901,52 @@ _INTERNAL_LOG_FIELDS = {
 def _log_link_row(db, field, old, new, cols, viewer):
     """A log row's before/after for a connect column, as `viewer` may see it.
 
-    The stored values are raw id lists, so the history is a second way to read
-    the ids the cell withholds — and worse, a way to notice that hidden links
-    exist at all, which the cell is careful not to reveal. Both values are cut
-    down to the ids this viewer may see.
+    Two jobs. The stored values are raw id lists, so the history is a second way
+    to read the ids the cell withholds — and worse, a way to notice that hidden
+    links exist at all, which the cell is careful not to reveal. So both sides
+    are cut down to what this viewer may see.
+
+    And then named: an id in a log is not a record of what happened to anyone
+    reading it, so each surviving id is returned as {"id","title"}. Which item
+    was added or removed is the part of a link change worth writing down.
 
     Returns None when the row then says nothing: if what changed was invisible
     to them, a "changed from [] to []" line is noise that also confirms
-    something happened. Better to leave it out.
+    something happened.
     """
-    if viewer is None or not str(field or "").startswith("col:"):
+    if not str(field or "").startswith("col:"):
         return old, new
     col = cols.get(str(field)[4:])
     if not col or col.get("type") != "connect":
         return old, new
 
-    def seen(v):
+    def ids_of(v):
         try:
-            ids = json.loads(v) if v else []
+            got = json.loads(v) if v else []
         except (ValueError, TypeError):
-            return v
-        if not isinstance(ids, list):
-            return v
-        return json.dumps(_visible_link_ids(db, [i for i in ids if isinstance(i, int)], viewer))
+            return None
+        # a cell that held nothing is audited as JSON null, not as [] — a
+        # one-way column's very first link looks like that, and reading it as
+        # "not a list" left the row raw while every later one was named
+        if got is None:
+            return []
+        return [i for i in got if isinstance(i, int)] if isinstance(got, list) else None
 
-    o, n = seen(old), seen(new)
-    return None if o == n else (o, n)
+    before, after = ids_of(old), ids_of(new)
+    if before is None or after is None:
+        return old, new
+    before = _visible_link_ids(db, before, viewer)
+    after = _visible_link_ids(db, after, viewer)
+    if before == after:
+        return None
+    titles = {}
+    every = list({*before, *after})
+    if every:
+        titles = {t.id: t.title for t in db.query(Task).filter(Task.id.in_(every))
+                  .execution_options(include_deleted=True).all()}
+    name = lambda ids: json.dumps(
+        [{"id": i, "title": titles.get(i, "#%d" % i)} for i in ids], ensure_ascii=False)
+    return name(before), name(after)
 
 
 def _board_task_ids(db, board_id):
@@ -5090,7 +5110,26 @@ def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_
         task = db.query(Task).filter(Task.id == log.entity_id).first()
         if not task:
             raise HTTPException(404, "task not found")
-        if not _revert_field(task, log.field_name, log.old_value):
+        # A two-way connect cell is not stored on the item, so the generic
+        # revert wrote the old ids into custom_fields where the serializer
+        # ignores them: the undo reported success and changed nothing. Links go
+        # back the way they were set, through the relationship rows.
+        _col = _find_col(db, task.board_id, (log.field_name or "")[4:]) \
+            if (log.field_name or "").startswith("col:") else None
+        if _col is not None and _col.get("type") == "connect":
+            try:
+                _old = json.loads(log.old_value) if log.old_value not in (None, "", "null") else []
+            except (ValueError, TypeError):
+                _old = []
+            _old = [i for i in _old if isinstance(i, int)]
+            if _is_two_way(_col):
+                _set_links(db, task, _col, _old, None)     # system authority: an admin is undoing
+            else:
+                _cf = dict(task.custom_fields or {})
+                _cf[_col["id"]] = _merge_link_ids(db, _old, _cf.get(_col["id"]) or [],
+                                                  None, _is_multi(_col))
+                task.custom_fields = _cf
+        elif not _revert_field(task, log.field_name, log.old_value):
             raise HTTPException(400, "שדה לא נתמך לביטול")
         _audit(db, task.id, "undo", field=log.field_name, old=log.new_value, new=log.old_value, user_id=user.id)
         db.commit()
