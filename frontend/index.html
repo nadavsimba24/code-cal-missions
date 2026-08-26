@@ -731,10 +731,36 @@ body.coldragging .col-grip{opacity:1}
 .link-chip{display:inline-flex;align-items:center;gap:4px;max-width:130px;background:var(--primary-soft);color:var(--primary-hover);border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600;margin:1px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
 .link-chip:hover{filter:brightness(.96);text-decoration:underline}
 .link-chip i{font-size:9px;flex-shrink:0}
+/* One row of names, as many as the column is wide enough for. It never wraps
+   and never scrolls: fitLinkChips hides what does not fit and says how many. */
+/* Absolutely positioned, and that is the point: the table lays out with
+   table-layout:auto, so anything in the normal flow votes on how wide its
+   column should be. A row of names would drag a 150px column out to 700px and
+   the resizer would stop meaning anything. Out of flow it contributes no
+   intrinsic width, so the column stays the width it was set to and the names
+   are fitted to it instead of the other way round. */
+.link-cell{position:absolute;inset:0;padding:4px 8px;display:flex;align-items:center;justify-content:center;gap:3px;flex-wrap:nowrap;overflow:hidden;min-width:0}
+/* Deliberately flex:0 0 auto. Left shrinkable, six names squeeze into a 150px
+   column as six slivers of ellipsis — no overflow, so nothing is ever counted
+   as not fitting, and the cell says nothing at all. They keep their width, the
+   box overflows, and fitLinkChips is what decides who goes. */
+.link-cell .link-chip{margin:0;max-width:100%;min-width:0;flex:0 0 auto}
+.lc-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* the full list, when the names do not fit */
+.ll-list{display:flex;flex-direction:column;gap:5px;max-height:52vh;overflow-y:auto}
+.ll-row{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;text-align:start;width:100%;background:var(--surface);cursor:pointer;color:var(--text)}
+.ll-row:hover{background:var(--row-hover);border-color:var(--border-strong)}
+.ll-row i{font-size:11px;color:var(--primary);flex-shrink:0}
+.ll-t{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ll-row small{margin-inline-start:auto;color:var(--text-light);font-size:11.5px;white-space:nowrap}
+.ll-off{cursor:default;font-style:italic;color:var(--text-light)}
+.ll-off:hover{background:var(--surface);border-color:var(--border)}
+.ll-off i{color:var(--text-light)}
 /* a link whose target the viewer may not open — no title, no board, no click */
 .link-chip-off{background:var(--row-hover);color:var(--text-light);cursor:default;font-style:italic}
 .link-chip-off:hover{filter:none;text-decoration:none}
-.link-more{display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border-strong);color:var(--text-muted);border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:600;margin:1px;vertical-align:middle}
+.link-more{display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border-strong);color:var(--text-muted);border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:600;vertical-align:middle;flex:0 0 auto;cursor:pointer}
+.link-more:hover{border-color:var(--primary);color:var(--primary)}
 .cn-list{max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
 .cn-opt{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;text-align:start;cursor:pointer}
 .cn-opt:hover{background:var(--row-hover);border-color:var(--border-strong)}
@@ -2103,6 +2129,8 @@ function initSidebarResize(){
   // a narrower window lowers the ceiling — re-clamp so a stored width can't
   // outgrow a third of the screen
   window.addEventListener('resize',()=>{ if(!isMobile()) setSidebarWidth(sbWidth(),false); });
+  // a narrower window means narrower columns, so fewer linked names fit
+  window.addEventListener('resize',()=>{ if(typeof fitLinkChipsSoon==='function') fitLinkChipsSoon(); });
 }
 /* The pinned column's edge shadow should appear only once there is something
    hidden behind it — otherwise every board carries a shadow for no reason.
@@ -2738,6 +2766,7 @@ function renderView(){
     im.replaceWith(old);
   });
   renderSelBar();
+  try{ fitLinkChips(el); }catch(e){}     // names per connect cell depend on the column width
   try{ Chat.markOpenRow(); }catch(e){}   // rows were rebuilt — re-mark the open item
   _viewScrollKey=key;
   if(!same){ el.scrollTop=0; el.scrollLeft=0; }   // a new place starts at the top, explicitly
@@ -3429,7 +3458,9 @@ const Live = {
         tmp.innerHTML=subItemRowHTML(t,subColumns(),isBoardAdmin(),parentId);
         const fresh=tmp.firstElementChild; if(!fresh)return false;
         reuseImages(sub, tmp);
-        sub.replaceWith(fresh); return true;
+        sub.replaceWith(fresh);
+        try{ fitLinkChips(fresh); }catch(e){}
+        return true;
       }
       const row=document.querySelector(`tr[data-tid="${t.id}"]`);
       if(!row)return false;
@@ -3443,6 +3474,7 @@ const Live = {
       if(wrap) reuseImages(wrap, tmp);
       if(wrap)wrap.remove();
       row.replaceWith(...news);
+      news.forEach(n=>{ try{ fitLinkChips(n); }catch(e){} });
       return true;
     }catch(e){ return false; }
   },
@@ -5127,6 +5159,7 @@ function initColResizers(root){
         const delta=rtl?(startX-ev.clientX):(ev.clientX-startX);
         w=Math.max(60,Math.min(600,Math.round(startW+delta)));
         cols.forEach(c=>c.style.width=w+'px');
+        fitLinkChipsSoon();      // the column just changed width — so does what fits in it
       };
       const up=async()=>{
         document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up);
@@ -5167,7 +5200,7 @@ function customCellHTML(c,t){
   if(c.type==='dropdown')return `<td class="cell cell-custom" ${cc} style="cursor:pointer" onclick="dropdownCellMenu(event,${id},'${c.id}')"><span class="cell-disp">${dropdownDisp(v)}</span></td>`;
   if(c.type==='files')   return `<td class="cell cell-custom">${filesDisp(v,id,c.id)}</td>`;
   if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
-  if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')"><span class="cell-disp">${connectDisp(v)}</span></td>`;
+  if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')">${connectDisp(v,id,c.id)}</td>`;
   if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
   if(c.type==='item_id'){
     // automatic technical identifier — 11 digits, shown as-is (no prefix), never
@@ -5360,17 +5393,76 @@ async function addDropdownOption(e,colId){
 /* ===== connect column (קישור בין לוחות) ===== */
 st.linkCache=st.linkCache||{};
 function linkInfo(id){return st.linkCache[id];}
-function connectDisp(ids){
+function linkChipHTML(tid){
+  const it=linkInfo(tid);
+  // The server already strips links the viewer may not see, so this is the belt
+  // to that braces: an id that resolves to nothing is shown as closed, never as
+  // an id, a title or the name of the board it lives on.
+  if(it&&it.restricted)
+    return `<span class="link-chip link-chip-off" title="אין לך הרשאת צפייה בפריט המקושר"><i class="fa-solid fa-lock"></i><span class="lc-t">פריט מוגבל</span></span>`;
+  const label=it?(it.title||('#'+tid)):('#'+tid);
+  const where=it&&it.board_name?' · '+it.board_name:'';
+  return `<span class="link-chip" title="${esc(label+where)} — פתח" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i><span class="lc-t">${esc(label)}</span></span>`;
+}
+/* Every linked name is rendered; how many of them survive is decided after
+   layout by fitLinkChips, because "as much as fits" is a question about pixels
+   and this is a string. The counter is built here so the measuring pass has
+   something to measure, and stays hidden while everything fits. */
+function connectDisp(ids,taskId,colId){
   ids=Array.isArray(ids)?ids:[];
   if(!ids.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-diagram-project"></i> קשר פריט</span>';
-  const shown=ids.slice(0,2).map(tid=>{const it=linkInfo(tid);
-    // The server already strips links the viewer may not see, so this is the
-    // belt to that braces: an id that resolves to nothing is shown as closed,
-    // never as an id, a title or the name of the board it lives on.
-    if(it&&it.restricted)
-      return `<span class="link-chip link-chip-off" title="אין לך הרשאת צפייה בפריט המקושר"><i class="fa-solid fa-lock"></i> פריט מוגבל</span>`;
-    return `<span class="link-chip" title="${it?esc((it.title||'')+' · '+(it.board_name||'')):''} — פתח" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i> ${it?esc(it.title):'#'+tid}</span>`;}).join('');
-  return shown+(ids.length>2?`<span class="link-more" title="${ids.length} פריטים מקושרים">+${ids.length-2}</span>`:'');
+  return `<span class="link-cell">${ids.map(linkChipHTML).join('')}<span class="link-more" style="display:none"
+     onclick="event.stopPropagation();openLinkList(${taskId},'${esc(colId)}')"></span></span>`;
+}
+/* Hide the names that do not fit and count them. Measured by asking the box
+   whether it still overflows, one name at a time, rather than by adding up
+   widths — that way gaps, margins and the ellipsis are the browser's problem
+   and cannot drift away from the stylesheet. */
+function fitLinkChips(root){
+  (root||document).querySelectorAll('.link-cell').forEach(cell=>{
+    const chips=[...cell.querySelectorAll(':scope > .link-chip')];
+    const more=cell.querySelector(':scope > .link-more');
+    if(!more||!chips.length)return;
+    chips.forEach(c=>{c.style.display='';c.style.flexShrink='';});
+    more.style.display='none';
+    if(!cell.clientWidth)return;                      // not laid out yet
+    if(chips.length<2||cell.scrollWidth<=cell.clientWidth+1)return;   // they all fit
+    more.style.display='';
+    let hidden=0;
+    for(let i=chips.length-1;i>=1;i--){               // one name always beats none
+      chips[i].style.display='none'; hidden++;
+      more.textContent='+'+hidden;
+      more.title=`עוד ${hidden} מתוך ${chips.length} פריטים מקושרים — הצג את כולם`;
+      if(cell.scrollWidth<=cell.clientWidth+1)break;
+    }
+    // Down to one name and the counter still does not fit: let that last name
+    // give up the room instead of pushing the counter out of the clipped box —
+    // an ellipsis on the name is readable, a missing "+5" is a lie.
+    if(cell.scrollWidth>cell.clientWidth+1) chips[0].style.flexShrink='1';
+  });
+}
+let _fitTimer=null;
+function fitLinkChipsSoon(){ clearTimeout(_fitTimer); _fitTimer=setTimeout(()=>fitLinkChips(),60); }
+/* The whole list, for when the column is too narrow to be the whole story. */
+function openLinkList(taskId,colId){
+  const t=findAnyTask(taskId); if(!t)return;
+  const col=customColumns().find(c=>c.id===colId);
+  const ids=((t.custom_fields||{})[colId])||[];
+  const rows=ids.map(tid=>{
+    const it=linkInfo(tid)||{};
+    if(it.restricted)
+      return `<div class="ll-row ll-off"><i class="fa-solid fa-lock"></i><span class="ll-t">פריט מוגבל</span></div>`;
+    return `<button class="ll-row" onclick="closeModals();openLinkedItem(${tid})">
+      <i class="fa-solid fa-arrow-up-right-from-square"></i>
+      <span class="ll-t">${esc(it.title||('#'+tid))}</span>
+      <small>${esc(it.board_name||'')}</small></button>`;
+  }).join('');
+  showModal(`<h2><i class="fa-solid fa-diagram-project" style="color:var(--primary)"></i> ${esc((col&&col.title)||'קישור')} · ${esc(t.title||'')}</h2>
+    <div class="mbody">
+      <div style="margin:0 0 10px;color:var(--text-muted);font-size:13px">${ids.length} פריטים מקושרים</div>
+      <div class="ll-list">${rows}</div>
+    </div>
+    <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
 }
 /* gather every linked id on the board, fetch missing titles, re-render once */
 function collectLinks(t,set){
