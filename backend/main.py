@@ -1007,6 +1007,24 @@ def _hidden_link_ids(db, ids, user_id):
     return [i for i in (ids or []) if isinstance(i, int) and i not in vis]
 
 
+# ── system limits on linking ───────────────────────────────────────────────
+# Both are guardrails, not product opinions: a board with dozens of connect
+# columns is unreadable, and a cell holding thousands of links is a page that
+# never finishes rendering. Env-driven so a deployment can move them.
+def _max_connect_cols():
+    try:
+        return max(1, int(os.getenv("CITYOS_MAX_CONNECT_COLS", "10")))
+    except ValueError:
+        return 10
+
+
+def _max_links_per_cell():
+    try:
+        return max(1, int(os.getenv("CITYOS_MAX_LINKS_PER_CELL", "100")))
+    except ValueError:
+        return 100
+
+
 def _is_multi(col):
     """Does this connect column hold more than one item? Default yes, matching
     the picker, which treats anything but an explicit false as multiple."""
@@ -1029,6 +1047,7 @@ def _merge_link_ids(db, submitted, current, user_id, multiple=True):
     length from anything that was not the picker.
     """
     asked = [int(x) for x in (submitted or []) if isinstance(x, (int, str)) and str(x).lstrip("-").isdigit()]
+    asked = list(dict.fromkeys(asked))        # the same item twice in one cell is one link
     # An item in the bin can be kept where the link already existed — that is
     # what makes a restore put the relationship back — but it cannot be linked
     # to for the first time. The picker never offers one; this is the API side
@@ -1047,7 +1066,11 @@ def _merge_link_ids(db, submitted, current, user_id, multiple=True):
         if keep:
             return keep[-1:]
         return hidden[:1]
-    return keep + [i for i in hidden if i not in keep]
+    # Capped rather than refused: hidden links are carried over regardless of
+    # what was submitted, so a hard limit could leave a cell that is already
+    # over it impossible to edit at all. The picker stops a person well before
+    # this; this is the backstop for everything that is not the picker.
+    return (keep + [i for i in hidden if i not in keep])[:_max_links_per_cell()]
 
 
 def _col_perm(col, user_id, board_role):
@@ -1217,6 +1240,10 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # hide items the user has no view permission on
         if user_id is not None:
             tasks = [t for t in tasks if _item_perm(t, user_id, my_role) != "none"]
+        # one pass for the board's links, including its sub-items, before any
+        # item is serialized — see _prefetch_links
+        _subs = db.query(Task).filter(Task.parent_id.in_([t.id for t in tasks])).all() if tasks else []
+        _prefetch_links(db, list(tasks) + _subs, columns, user_id)
         tasks_out = [_serialize_task(t, db, user_id=user_id, board_role=my_role, columns=columns) for t in tasks]
 
         # board owners = members with the board-scoped admin role (creator + any
@@ -1683,6 +1710,13 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                                  if c["type"] == "item_id" else None,
                     "perms": c.get("perms") or {},
                 })
+            _conn_n = sum(1 for c in cols if c.get("type") == "connect")
+            _conn_was = sum(1 for c in old_cols.values() if c.get("type") == "connect")
+            # An over-budget board that already exists stays editable — the
+            # limit blocks growth, it does not freeze the column list.
+            if _conn_n > _max_connect_cols() and _conn_n > _conn_was:
+                raise HTTPException(
+                    400, f"מותרות עד {_max_connect_cols()} עמודות קישור בלוח אחד")
             # A two-way column needs its counterpart to exist before it is saved:
             # the map of WHERE the reverse link shows lives on the column itself,
             # and the configuration screen reads it back to tell the admin.
@@ -3013,6 +3047,9 @@ def _linked_ids(db, task_id, col_id):
     whatever order the database felt like, and the grid shows a different
     first name on different loads.
     """
+    cache = db.info.get("_links_by")
+    if cache is not None and (task_id, col_id) in cache:
+        return list(cache[(task_id, col_id)])
     out = []
     for l in db.query(ItemLink).filter(
             or_((ItemLink.a_task_id == task_id) & (ItemLink.a_col == col_id),
@@ -3278,6 +3315,48 @@ def _drop_links_for_columns(db, col_ids):
     ).delete(synchronize_session=False)
 
 
+def _prefetch_links(db, tasks, columns, viewer):
+    """Load a whole board's links in one pass instead of two queries per item.
+
+    Serializing an item asked for its links, and then asked whether the viewer
+    may see each of them — two round trips each, so a board of sixty items paid
+    a hundred and twenty queries for a table that shows a handful of names. Both
+    answers are batched here: every relationship row for these items in one
+    query, and every far item's visibility warmed in one more.
+
+    Only a read path builds this. _set_links drops it, because a cache of
+    relationships is exactly the wrong thing to keep across a write.
+    """
+    cols = [c for c in (columns or []) if c.get("type") == "connect"]
+    if not cols or not tasks:
+        return
+    ids = {t.id for t in tasks}
+    two_way = {c["id"] for c in cols if _is_two_way(c)}
+    cache = db.info.setdefault("_links_by", {})
+    far = set()
+    if two_way:
+        for tid in ids:                    # seed, so "no links" is an answer too
+            for cid in two_way:
+                cache.setdefault((tid, cid), [])
+        for l in (db.query(ItemLink)
+                  .filter(or_(ItemLink.a_task_id.in_(ids), ItemLink.b_task_id.in_(ids)))
+                  .order_by(ItemLink.id).all()):
+            if l.a_task_id in ids and l.a_col in two_way:
+                cache[(l.a_task_id, l.a_col)].append(l.b_task_id)
+                far.add(l.b_task_id)
+            if l.b_task_id in ids and l.b_col in two_way:
+                cache[(l.b_task_id, l.b_col)].append(l.a_task_id)
+                far.add(l.a_task_id)
+    for t in tasks:                        # one-way cells hold their ids inline
+        for c in cols:
+            if c["id"] in two_way:
+                continue
+            far.update(i for i in ((t.custom_fields or {}).get(c["id"]) or [])
+                       if isinstance(i, int))
+    if far:
+        _link_states(db, sorted(far), viewer)      # warms the per-request cache
+
+
 def _mirror_col_for(db, col, target_board_id):
     """Which column on the target board shows the other end of this link."""
     return (_connect_cfg(col).get("mirror") or {}).get(str(target_board_id))
@@ -3290,6 +3369,7 @@ def _set_links(db, task, col, wanted_ids, actor_id):
     deletes it, which is what makes a removal show on both boards.
     """
     col_id = col["id"]
+    db.info.pop("_links_by", None)        # a write invalidates the read cache
     current_list = _linked_ids(db, task.id, col_id)
     current = set(current_list)
     # links the actor may add are only ones they may see, and links they cannot
