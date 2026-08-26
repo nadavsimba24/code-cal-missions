@@ -897,6 +897,67 @@ def _item_perm(task, user_id, board_role):
     caps = _board_caps(board_role)
     return "delete" if "delete" in caps else ("edit" if "edit" in caps else ("view" if "view" in caps else "none"))
 
+def _visible_link_ids(db, ids, user_id):
+    """Of these item ids, the ones `user_id` is actually allowed to see.
+
+    A connect cell holds ids of items on OTHER boards, so the viewer's access to
+    the board they are reading says nothing about their access to the other end.
+    Everything the connect column shows, offers or resolves goes through here.
+
+    `user_id=None` means an internal caller with no viewer to filter for (the
+    serializer's own default), and is left alone.
+
+    Cached on the session — one board role and one Task row per id per request,
+    however many cells refer to the same linked item.
+    """
+    if user_id is None:
+        return list(ids or [])
+    ids = [i for i in (ids or []) if isinstance(i, int)]
+    if not ids:
+        return []
+    seen = db.info.setdefault(("_link_vis", user_id), {})
+    roles = db.info.setdefault(("_brole", user_id), {})
+    unknown = [i for i in set(ids) if i not in seen]
+    if unknown:
+        found = {t.id: t for t in db.query(Task).filter(Task.id.in_(unknown)).all()}
+        for i in unknown:
+            t = found.get(i)
+            # Deliberately not `is_archived`: archiving is housekeeping, not a
+            # permission, and treating it as one would relabel an archived item
+            # as "you may not see this". Deleted items never come back from the
+            # query at all (the soft-delete hook), which is the right answer.
+            if t is None or t.deleted_at is not None:
+                seen[i] = False
+                continue
+            if t.board_id not in roles:
+                roles[t.board_id] = _board_role(db, t.board_id, user_id)
+            r = roles[t.board_id]
+            seen[i] = r is not None and _item_perm(t, user_id, r) != "none"
+    return [i for i in ids if seen.get(i)]
+
+
+def _hidden_link_ids(db, ids, user_id):
+    """The complement of _visible_link_ids, in the original order."""
+    vis = set(_visible_link_ids(db, ids, user_id))
+    return [i for i in (ids or []) if isinstance(i, int) and i not in vis]
+
+
+def _merge_link_ids(db, submitted, current, user_id):
+    """What a connect cell should hold after `user_id` saved `submitted`.
+
+    Two rules, and they are the same rule from both ends. A user cannot ADD a
+    link to an item they cannot see — otherwise the picker's restrictions could
+    be walked around by posting an id, and the mirror would plant a row on a
+    board they have no access to. And a user cannot REMOVE a link they cannot
+    see: their cell was rendered without those ids, so submitting the list they
+    can see must not read as "delete the rest".
+    """
+    keep = [int(x) for x in (submitted or []) if isinstance(x, (int, str)) and str(x).lstrip("-").isdigit()]
+    keep = _visible_link_ids(db, keep, user_id)
+    hidden = _hidden_link_ids(db, current or [], user_id)
+    return keep + [i for i in hidden if i not in keep]
+
+
 def _col_perm(col, user_id, board_role):
     """Effective permission on a column for a user: none|view|edit."""
     ov = (col.get("perms") or {}).get(str(user_id))
@@ -990,6 +1051,12 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
     for c in (columns or []):
         if _is_two_way(c):
             cf[c["id"]] = _linked_ids(db, t.id, c["id"])
+        # A connect cell is the one place a board hands out ids from OTHER
+        # boards. Show the viewer only the links they could have opened anyway;
+        # the rest are not theirs to know about, and _merge_link_ids puts them
+        # back when this same viewer saves the cell.
+        if c.get("type") == "connect" and isinstance(cf.get(c["id"]), list):
+            cf[c["id"]] = _visible_link_ids(db, cf[c["id"]], user_id)
     col_perms = {}
     if user_id is not None:
         for c in (columns or []):
@@ -2822,13 +2889,11 @@ def _set_links(db, task, col, wanted_ids, actor_id):
     deletes it, which is what makes a removal show on both boards.
     """
     col_id = col["id"]
-    current = set(_linked_ids(db, task.id, col_id))
-    wanted = set()
-    for tid in (wanted_ids or []):
-        try:
-            wanted.add(int(tid))
-        except (TypeError, ValueError):
-            continue
+    current_list = _linked_ids(db, task.id, col_id)
+    current = set(current_list)
+    # links the actor may add are only ones they may see, and links they cannot
+    # see survive a save that never showed them — see _merge_link_ids
+    wanted = set(_merge_link_ids(db, wanted_ids, current_list, actor_id))
 
     for tid in wanted - current:
         other = db.query(Task).filter(Task.id == tid).first()
@@ -2869,13 +2934,27 @@ def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] =
     restricted to the boards they can already see.
     """
     ids = [int(x) for x in board_ids.split(",") if x.strip().isdigit()]
+    if not ids:
+        # The picker always names the column's target boards. A blank list used
+        # to mean "search everything you can see", which turned a column
+        # configured for one board into a workspace-wide search as soon as the
+        # caller dropped the parameter.
+        return {"items": [], "total": 0, "has_more": False}
     with Session(engine) as db:
         visible = _visible_board_ids(db, actor_id)
-        ids = [i for i in ids if i in visible] if ids else sorted(visible)
+        ids = [i for i in ids if i in visible]
         if not ids:
             return {"items": [], "total": 0, "has_more": False}
         query = db.query(Task).filter(Task.is_archived == False, Task.parent_id == None,  # noqa: E712
                                       Task.board_id.in_(ids))
+        # Board access is not item access: an item on a board you belong to can
+        # still be closed to you individually. Excluded in the query rather than
+        # from the page, so `total` and the paging stay honest.
+        denied = [r[0] for r in db.query(Task.id).filter(
+            Task.board_id.in_(ids),
+            Task.permissions[str(actor_id)].as_string() == "none").all()]
+        if denied:
+            query = query.filter(~Task.id.in_(denied))
         if q.strip():
             query = query.filter(Task.title.ilike(f"%{q.strip()}%"))
         if exclude_task:
@@ -2898,16 +2977,30 @@ def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] =
                 "total": total, "has_more": off + len(rows) < total}
 
 @app.get("/api/tasks/lookup")
-def tasks_lookup(ids: str = ""):
-    """Resolve item ids → title/board, to display linked items in a connect cell."""
+def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
+    """Resolve item ids → title/board, to display linked items in a connect cell.
+
+    This took no actor and filtered nothing: any id turned into a title and the
+    name of the board it lives on, which is the whole point of the restriction
+    the picker enforces. A cell now only ever carries ids its viewer may see, so
+    in normal use nothing here is refused — but the endpoint is what makes that
+    true rather than merely tidy.
+    """
     id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
     if not id_list:
         return {"items": []}
     with Session(engine) as db:
-        rows = db.query(Task).filter(Task.id.in_(id_list)).all()
-        bnames = {b.id: b.name for b in db.query(Board).all()}
-        return {"items": [{"id": t.id, "title": t.title, "board_id": t.board_id,
-                           "board_name": bnames.get(t.board_id, "")} for t in rows]}
+        allowed = set(_visible_link_ids(db, id_list, actor_id))
+        rows = db.query(Task).filter(Task.id.in_(sorted(allowed))).all() if allowed else []
+        bnames = {b.id: b.name for b in db.query(Board).filter(
+            Board.id.in_({t.board_id for t in rows})).all()}
+        out = [{"id": t.id, "title": t.title, "board_id": t.board_id,
+                "board_name": bnames.get(t.board_id, "")} for t in rows]
+        # Named, not silently dropped: the client needs to tell "no such item"
+        # apart from "not yours", and it may render neither a title nor a board.
+        out += [{"id": i, "title": None, "board_id": None, "board_name": "",
+                 "restricted": True} for i in id_list if i not in allowed]
+        return {"items": out}
 
 def _group_for_status(db, board_id, status_val):
     """The group a top-level item moves to for a status — the one whose own status
@@ -3521,6 +3614,11 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                                json.dumps(before), json.dumps(after), actor)
                     continue
                 old = cf.get(k)
+                if _c and _c.get("type") == "connect" and isinstance(v, list):
+                    # one-way links live in the cell itself rather than in
+                    # item_links, so the two-way guard in _set_links does not
+                    # cover them. Same rule, applied here.
+                    v = _merge_link_ids(db, v, cf.get(k) or [], actor)
                 if v is None:
                     cf.pop(k, None)
                 else:

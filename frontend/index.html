@@ -731,6 +731,9 @@ body.coldragging .col-grip{opacity:1}
 .link-chip{display:inline-flex;align-items:center;gap:4px;max-width:130px;background:var(--primary-soft);color:var(--primary-hover);border-radius:6px;padding:2px 7px;font-size:12px;font-weight:600;margin:1px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
 .link-chip:hover{filter:brightness(.96);text-decoration:underline}
 .link-chip i{font-size:9px;flex-shrink:0}
+/* a link whose target the viewer may not open — no title, no board, no click */
+.link-chip-off{background:var(--row-hover);color:var(--text-light);cursor:default;font-style:italic}
+.link-chip-off:hover{filter:none;text-decoration:none}
 .link-more{display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border-strong);color:var(--text-muted);border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:600;margin:1px;vertical-align:middle}
 .cn-list{max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
 .cn-opt{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;text-align:start;cursor:pointer}
@@ -5361,6 +5364,11 @@ function connectDisp(ids){
   ids=Array.isArray(ids)?ids:[];
   if(!ids.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-diagram-project"></i> קשר פריט</span>';
   const shown=ids.slice(0,2).map(tid=>{const it=linkInfo(tid);
+    // The server already strips links the viewer may not see, so this is the
+    // belt to that braces: an id that resolves to nothing is shown as closed,
+    // never as an id, a title or the name of the board it lives on.
+    if(it&&it.restricted)
+      return `<span class="link-chip link-chip-off" title="אין לך הרשאת צפייה בפריט המקושר"><i class="fa-solid fa-lock"></i> פריט מוגבל</span>`;
     return `<span class="link-chip" title="${it?esc((it.title||'')+' · '+(it.board_name||'')):''} — פתח" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i> ${it?esc(it.title):'#'+tid}</span>`;}).join('');
   return shown+(ids.length>2?`<span class="link-more" title="${ids.length} פריטים מקושרים">+${ids.length-2}</span>`:'');
 }
@@ -5377,12 +5385,16 @@ async function resolveLinks(){
   try{
     const d=await api('/api/tasks/lookup?ids='+missing.join(','));
     (d.items||[]).forEach(it=>{st.linkCache[it.id]=it;});
-    missing.forEach(id=>{if(!st.linkCache[id])st.linkCache[id]={id,title:'#'+id,board_id:null,board_name:''};}); // avoid refetch loop
+    // an id the server would not resolve is cached as restricted, both to stop
+    // a refetch loop and so the cell knows to show a lock rather than a number
+    missing.forEach(id=>{if(!st.linkCache[id])st.linkCache[id]={id,title:null,board_id:null,board_name:'',restricted:true};});
     renderView();
   }catch(e){}
 }
 async function openLinkedItem(tid){
   const it=st.linkCache[tid], bid=it&&it.board_id;
+  // Seeing a link is not permission to open what it points at.
+  if(it&&it.restricted){toast('אין לך הרשאת צפייה בפריט המקושר');return;}
   if(!bid){toast('הפריט המקושר לא נמצא');return;}
   if(!(st.boards||[]).some(b=>b.id===bid)){toast('אין לך גישה ללוח של הפריט המקושר');return;}
   closeModals(); await openBoard(bid);
@@ -5398,7 +5410,14 @@ function openConnectPicker(e,taskId,colId){
   const t=findAnyTask(taskId); if(!t)return;
   const col=customColumns().find(c=>c.id===colId); if(!col)return;
   if(!canEditCol(t,colId)){toast('אין לך הרשאת עריכה לעמודה זו');return;}
-  const boards=((col.connect&&col.connect.board_ids)||[]).filter(id=>(st.boards||[]).some(b=>b.id===id));
+  // Only target boards this user may open are offered. A board they were never
+  // invited to is not a tab, not a filter and not a source of results — and if
+  // that leaves nothing, the picker says so instead of searching.
+  const configured=((col.connect&&col.connect.board_ids)||[]);
+  const boards=configured.filter(id=>(st.boards||[]).some(b=>b.id===id));
+  if(configured.length&&!boards.length){
+    toast('אין לך הרשאת צפייה בלוחות היעד של עמודה זו');return;
+  }
   const already=new Set(((t.custom_fields||{})[colId])||[]);
   _connect={taskId,colId,col,items:[],sel:new Set(already),already,
             boards, board:(boards.length===1?boards[0]:0),
@@ -5452,9 +5471,12 @@ function connectSearch(q){
 /* reset=true starts the list again; otherwise this appends the next page */
 async function connectLoad(reset){
   if(_connect.loading)return;
+  const bids=_connect.board?[_connect.board]:_connect.boards;
+  // An empty list must never reach the API: it used to mean "search every board
+  // you can see", which is the opposite of what this column is scoped to.
+  if(!bids.length){ _connect.items=[];_connect.hasMore=false;_connect.total=0;renderConnectList();return; }
   _connect.loading=true;
   if(reset){ _connect.offset=0; _connect.items=[]; }
-  const bids=_connect.board?[_connect.board]:_connect.boards;
   const qs=['board_ids='+bids.join(','),'exclude_task='+_connect.taskId,
             'q='+encodeURIComponent(_connect.q),'offset='+_connect.offset,'limit=40'];
   if(_connect.status)qs.push('status='+encodeURIComponent(_connect.status));
