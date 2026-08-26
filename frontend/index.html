@@ -6896,7 +6896,7 @@ function filterColTypes(q){
 }
 async function addColumn(type,forSub){
   closeCellPops();
-  if(type==='connect'){ if(!isSysAdmin()){toast('רק מנהל מערכת');return;} openConnectConfig(); return; }
+  if(type==='connect'){ if(!isBoardAdmin()){toast('רק מנהל הלוח יכול להוסיף עמודות');return;} openConnectConfig(); return; }
   if(type==='mirror'){ openMirrorConfig(); return; }
   const col={type,title:COL_DEFAULTS[type]||type};
   if(type==='formula'){
@@ -7029,7 +7029,7 @@ async function _mirSave(){
 }
 /* connect column config: choose the target board(s) + single/multi (sys admin) */
 function openConnectConfig(existingColId){
-  if(!isSysAdmin()){toast('רק מנהל מערכת');return;}
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך עמודות');return;}
   const others=(st.boards||[]).filter(b=>!st.board||b.id!==st.board.id);
   const existing=existingColId?customColumns().find(c=>c.id===existingColId):null;
   const sel=new Set((existing&&existing.connect&&existing.connect.board_ids)||[]);
@@ -7078,7 +7078,7 @@ function colMenu(e,colId){
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     +(c&&c.type==='mirror'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openMirrorConfig('${colId}')"><i class="fa-solid fa-clone"></i> הגדרות שדה מראה</button>`:'')
-    +(c&&c.type==='connect'&&isSysAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
+    +(c&&c.type==='connect'&&isBoardAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
     +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   openCellPop(e.currentTarget,html);

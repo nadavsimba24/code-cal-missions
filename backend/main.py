@@ -1732,11 +1732,39 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     continue
                 cid = c.get("id") or ("col_" + uuid.uuid4().hex[:8])
                 if c["type"] == "connect":
-                    # only a workspace (system) admin may create/change a connect column
+                    # A board admin owns their own board's columns, this one
+                    # included. What used to be a blanket workspace-admin gate
+                    # is now two narrower rules, because the thing that actually
+                    # needs guarding is not the column — it is where the column
+                    # REACHES.
                     prev = old_cols.get(cid)
                     changed = (not prev) or prev.get("type") != "connect" or prev.get("connect") != c.get("connect")
                     if changed and not is_ws_admin:
-                        raise HTTPException(403, "רק מנהל מערכת יכול להוסיף או לשנות עמודת קישור בין לוחות")
+                        _cfg = c.get("connect") or {}
+                        _targets = [int(x) for x in (_cfg.get("board_ids") or [])
+                                    if str(x).lstrip("-").isdigit()]
+                        # Naming a target is not a way to reach a board you were
+                        # never given: the picker, the report and the mirror all
+                        # read through this list.
+                        _seen = _visible_board_ids(db, actor_id)
+                        _unseen = [t for t in _targets if t not in _seen]
+                        if _unseen:
+                            raise HTTPException(
+                                403, "אפשר לבחור רק לוחות יעד שיש לך גישה אליהם")
+                        # A two-way column CREATES a column on the target board.
+                        # Writing into someone else's board takes rights on that
+                        # board — said plainly rather than downgrading the column
+                        # to one-way behind the admin's back.
+                        if _cfg.get("two_way"):
+                            _no_admin = [t for t in _targets
+                                         if _board_role(db, t, actor_id) != "admin"]
+                            if _no_admin:
+                                _names = ", ".join(
+                                    (db.query(Board.name).filter(Board.id == t).scalar() or str(t))
+                                    for t in _no_admin)
+                                raise HTTPException(
+                                    403, f"קשר דו־כיווני יוצר עמודה בלוח היעד — נדרשת הרשאת "
+                                         f"מנהל לוח גם ב: {_names}")
                 # a status column carries its own {label,color} vocabulary;
                 # every other type keeps its options untouched
                 opts = (_status_col_options(c.get("options"))

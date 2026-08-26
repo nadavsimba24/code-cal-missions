@@ -214,10 +214,12 @@ def test_non_admin_cannot_toggle_board_notifications(client, member_id):
     assert r.status_code == 403
 
 
-def test_connect_column_requires_system_admin(client, admin_id, guinea_id):
-    """Adding/changing a cross-board 'connect' column requires a workspace admin;
-    a board admin who isn't a workspace admin is refused, but may still edit other
-    columns and pass the existing connect column through unchanged."""
+def test_connect_column_is_a_board_admins_to_create(client, admin_id, guinea_id):
+    """Adding a cross-board 'connect' column is a board admin's right, not a
+    workspace admin's. What is guarded is where the column REACHES: a target
+    board the admin cannot see is refused, and a two-way column — which creates
+    a column on the target board — needs admin rights there too.
+    """
     r = client.post("/api/boards", json={"name": "connect board", "department_id": 1, "user_id": admin_id})
     bid = r.json()["id"]
     try:
@@ -229,11 +231,21 @@ def test_connect_column_requires_system_admin(client, admin_id, guinea_id):
         assert con and con[0]["connect"]["board_ids"] == [1]
         # promote guinea to board admin — still NOT a workspace admin
         client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "admin"})
-        # guinea adds a new connect column → 403
+        # board 1 is one guinea belongs to, so a one-way column to it is theirs to add
         r = client.patch(f"/api/boards/{bid}", json={"user_id": guinea_id, "columns": cols + [
             {"type": "connect", "title": "עוד", "connect": {"board_ids": [1], "multiple": False}}]})
+        assert r.status_code == 200, r.text
+        cols = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"]
+        # a board they cannot see is not a target they can name
+        hidden = client.post("/api/boards", json={"name": "hidden from guinea", "user_id": admin_id}).json()["id"]
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": guinea_id, "columns": cols + [
+            {"type": "connect", "title": "סמוי", "connect": {"board_ids": [hidden], "multiple": True}}]})
         assert r.status_code == 403, r.text
-        # guinea keeps the existing connect column unchanged → allowed
+        # neither is a two-way column into a board they do not administer
+        r = client.patch(f"/api/boards/{bid}", json={"user_id": guinea_id, "columns": cols + [
+            {"type": "connect", "title": "דו", "connect": {"board_ids": [1], "multiple": True, "two_way": True}}]})
+        assert r.status_code == 403, r.text
+        # and passing the existing columns through unchanged is always allowed
         r = client.patch(f"/api/boards/{bid}", json={"user_id": guinea_id, "columns": cols})
         assert r.status_code == 200, r.text
     finally:
