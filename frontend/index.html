@@ -756,9 +756,16 @@ body.coldragging .col-grip{opacity:1}
 .ll-off{cursor:default;font-style:italic;color:var(--text-light)}
 .ll-off:hover{background:var(--surface);border-color:var(--border)}
 .ll-off i{color:var(--text-light)}
+.ll-del{cursor:default;color:var(--text-muted)}
+.ll-del:hover{background:var(--surface);border-color:var(--border)}
+.ll-del i{color:var(--text-light)}
+.ll-del .ll-t{text-decoration:line-through;text-decoration-thickness:1px}
 /* a link whose target the viewer may not open — no title, no board, no click */
 .link-chip-off{background:var(--row-hover);color:var(--text-light);cursor:default;font-style:italic}
 .link-chip-off:hover{filter:none;text-decoration:none}
+/* the target is in the recycle bin — the link is kept and marked, not dropped */
+.link-chip-del{background:var(--row-hover);color:var(--text-muted);cursor:default;text-decoration:line-through;text-decoration-thickness:1px}
+.link-chip-del:hover{filter:none}
 .link-more{display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border-strong);color:var(--text-muted);border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:600;vertical-align:middle;flex:0 0 auto;cursor:pointer}
 .link-more:hover{border-color:var(--primary);color:var(--primary)}
 .cn-list{max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px}
@@ -5402,6 +5409,11 @@ function linkChipHTML(tid){
     return `<span class="link-chip link-chip-off" title="אין לך הרשאת צפייה בפריט המקושר"><i class="fa-solid fa-lock"></i><span class="lc-t">פריט מוגבל</span></span>`;
   const label=it?(it.title||('#'+tid)):('#'+tid);
   const where=it&&it.board_name?' · '+it.board_name:'';
+  // Deleted, not gone: the item is in the recycle bin and the relationship is
+  // kept so a restore brings it back. Saying so beats dropping the link and
+  // letting it reappear later with no explanation.
+  if(it&&it.deleted)
+    return `<span class="link-chip link-chip-del" title="${esc(label+where)} — הפריט נמחק ונמצא בסל המחזור; שחזור הפריט יחזיר גם את הקישור"><i class="fa-solid fa-trash-can"></i><span class="lc-t">${esc(label)}</span></span>`;
   return `<span class="link-chip" title="${esc(label+where)} — פתח" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i><span class="lc-t">${esc(label)}</span></span>`;
 }
 /* Every linked name is rendered; how many of them survive is decided after
@@ -5452,6 +5464,9 @@ function openLinkList(taskId,colId){
     const it=linkInfo(tid)||{};
     if(it.restricted)
       return `<div class="ll-row ll-off"><i class="fa-solid fa-lock"></i><span class="ll-t">פריט מוגבל</span></div>`;
+    if(it.deleted)
+      return `<div class="ll-row ll-del" title="שחזור הפריט מסל המחזור יחזיר גם את הקישור"><i class="fa-solid fa-trash-can"></i>
+        <span class="ll-t">${esc(it.title||('#'+tid))}</span><small>נמחק · ${esc(it.board_name||'')}</small></div>`;
     return `<button class="ll-row" onclick="closeModals();openLinkedItem(${tid})">
       <i class="fa-solid fa-arrow-up-right-from-square"></i>
       <span class="ll-t">${esc(it.title||('#'+tid))}</span>
@@ -5487,6 +5502,7 @@ async function openLinkedItem(tid){
   const it=st.linkCache[tid], bid=it&&it.board_id;
   // Seeing a link is not permission to open what it points at.
   if(it&&it.restricted){toast('אין לך הרשאת צפייה בפריט המקושר');return;}
+  if(it&&it.deleted){toast('הפריט המקושר נמחק — שחזר אותו מסל המחזור של הלוח');return;}
   if(!bid){toast('הפריט המקושר לא נמצא');return;}
   if(!(st.boards||[]).some(b=>b.id===bid)){toast('אין לך גישה ללוח של הפריט המקושר');return;}
   closeModals(); await openBoard(bid);

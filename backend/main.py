@@ -897,8 +897,57 @@ def _item_perm(task, user_id, board_role):
     caps = _board_caps(board_role)
     return "delete" if "delete" in caps else ("edit" if "edit" in caps else ("view" if "view" in caps else "none"))
 
+def _link_states(db, ids, user_id):
+    """What each linked id is, from `user_id`'s point of view:
+
+      "live"     — a normal item they may see
+      "deleted"  — the item is in the recycle bin, and they may see it
+      None       — not theirs to know about, or gone for good
+
+    "deleted" is deliberately its own answer rather than folded into None. This
+    system's deletion policy is a recycle bin: the item can come back, and the
+    relationship row is kept so that it comes back with it. A cell that quietly
+    dropped the link would give no hint that anything was pending, and the link
+    would then reappear out of nowhere on a restore. It is marked instead.
+
+    Purged items are None: there is nothing to restore and nothing to mark, and
+    _drop_links_for_tasks has already removed the rows anyway.
+
+    Cached on the session — one board role and one Task row per id per request,
+    however many cells point at the same linked item.
+    """
+    ids = [i for i in (ids or []) if isinstance(i, int)]
+    if not ids:
+        return {}
+    seen = db.info.setdefault(("_link_state", user_id), {})
+    roles = db.info.setdefault(("_brole", user_id), {})
+    unknown = [i for i in set(ids) if i not in seen]
+    if unknown:
+        # explicitly including binned items: the global soft-delete hook would
+        # otherwise make them indistinguishable from ids that never existed
+        found = {t.id: t for t in db.query(Task).filter(Task.id.in_(unknown))
+                 .execution_options(include_deleted=True).all()}
+        for i in unknown:
+            t = found.get(i)
+            if t is None:
+                seen[i] = None
+                continue
+            # Deliberately not `is_archived`: archiving is housekeeping, not a
+            # permission, and treating it as one would relabel an archived item
+            # as something the viewer may not see.
+            state = "deleted" if t.deleted_at is not None else "live"
+            if user_id is None:            # internal caller, nobody to filter for
+                seen[i] = state
+                continue
+            if t.board_id not in roles:
+                roles[t.board_id] = _board_role(db, t.board_id, user_id)
+            r = roles[t.board_id]
+            seen[i] = state if (r is not None and _item_perm(t, user_id, r) != "none") else None
+    return {i: seen.get(i) for i in ids}
+
+
 def _visible_link_ids(db, ids, user_id):
-    """Of these item ids, the ones `user_id` is actually allowed to see.
+    """Of these item ids, the ones `user_id` may see — live or waiting in the bin.
 
     A connect cell holds ids of items on OTHER boards, so the viewer's access to
     the board they are reading says nothing about their access to the other end.
@@ -906,34 +955,11 @@ def _visible_link_ids(db, ids, user_id):
 
     `user_id=None` means an internal caller with no viewer to filter for (the
     serializer's own default), and is left alone.
-
-    Cached on the session — one board role and one Task row per id per request,
-    however many cells refer to the same linked item.
     """
     if user_id is None:
         return list(ids or [])
-    ids = [i for i in (ids or []) if isinstance(i, int)]
-    if not ids:
-        return []
-    seen = db.info.setdefault(("_link_vis", user_id), {})
-    roles = db.info.setdefault(("_brole", user_id), {})
-    unknown = [i for i in set(ids) if i not in seen]
-    if unknown:
-        found = {t.id: t for t in db.query(Task).filter(Task.id.in_(unknown)).all()}
-        for i in unknown:
-            t = found.get(i)
-            # Deliberately not `is_archived`: archiving is housekeeping, not a
-            # permission, and treating it as one would relabel an archived item
-            # as "you may not see this". Deleted items never come back from the
-            # query at all (the soft-delete hook), which is the right answer.
-            if t is None or t.deleted_at is not None:
-                seen[i] = False
-                continue
-            if t.board_id not in roles:
-                roles[t.board_id] = _board_role(db, t.board_id, user_id)
-            r = roles[t.board_id]
-            seen[i] = r is not None and _item_perm(t, user_id, r) != "none"
-    return [i for i in ids if seen.get(i)]
+    state = _link_states(db, ids, user_id)
+    return [i for i in (ids or []) if isinstance(i, int) and state.get(i)]
 
 
 def _hidden_link_ids(db, ids, user_id):
@@ -963,8 +989,15 @@ def _merge_link_ids(db, submitted, current, user_id, multiple=True):
     API never had to, and a single-link column would accept a list of any
     length from anything that was not the picker.
     """
-    keep = [int(x) for x in (submitted or []) if isinstance(x, (int, str)) and str(x).lstrip("-").isdigit()]
-    keep = _visible_link_ids(db, keep, user_id)
+    asked = [int(x) for x in (submitted or []) if isinstance(x, (int, str)) and str(x).lstrip("-").isdigit()]
+    # An item in the bin can be kept where the link already existed — that is
+    # what makes a restore put the relationship back — but it cannot be linked
+    # to for the first time. The picker never offers one; this is the API side
+    # of the same rule.
+    state = _link_states(db, asked, user_id) if user_id is not None else {}
+    was = set(current or [])
+    keep = [i for i in _visible_link_ids(db, asked, user_id)
+            if user_id is None or state.get(i) == "live" or i in was]
     hidden = _hidden_link_ids(db, current or [], user_id)
     if not multiple:
         # A single-link column is the one place the "never delete what you
@@ -3053,16 +3086,22 @@ def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
     if not id_list:
         return {"items": []}
     with Session(engine) as db:
-        allowed = set(_visible_link_ids(db, id_list, actor_id))
-        rows = db.query(Task).filter(Task.id.in_(sorted(allowed))).all() if allowed else []
+        state = _link_states(db, id_list, actor_id)
+        allowed = [i for i in id_list if state.get(i)]
+        rows = (db.query(Task).filter(Task.id.in_(allowed))
+                .execution_options(include_deleted=True).all()) if allowed else []
         bnames = {b.id: b.name for b in db.query(Board).filter(
             Board.id.in_({t.board_id for t in rows})).all()}
+        # A binned item keeps its title and board — the caller was already
+        # allowed to see both — and is flagged so the cell can say that the
+        # item was deleted rather than pretend the link was never there.
         out = [{"id": t.id, "title": t.title, "board_id": t.board_id,
-                "board_name": bnames.get(t.board_id, "")} for t in rows]
+                "board_name": bnames.get(t.board_id, ""),
+                "deleted": state.get(t.id) == "deleted"} for t in rows]
         # Named, not silently dropped: the client needs to tell "no such item"
         # apart from "not yours", and it may render neither a title nor a board.
         out += [{"id": i, "title": None, "board_id": None, "board_name": "",
-                 "restricted": True} for i in id_list if i not in allowed]
+                 "restricted": True} for i in id_list if not state.get(i)]
         return {"items": out}
 
 def _group_for_status(db, board_id, status_val):
