@@ -662,7 +662,16 @@ body.coldragging .col-grip{opacity:1}
 .st-ord{display:flex;flex-direction:column;gap:2px}
 .st-ord button{width:24px;height:17px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text-muted);font-size:9px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .st-ord button:disabled{opacity:.35;cursor:default}
-.st-row input[type=color]{width:34px;height:30px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;padding:2px}
+.st-row .sw-btn{flex:0 0 auto}
+/* Status colours come from a fixed palette. The control is a swatch showing the
+   current colour; clicking it opens the grid (openCellPop → .sw-pop), so there
+   is no way to type or mix a colour that is not on the list. */
+.sw-btn{width:34px;height:30px;border:1px solid var(--border-strong);border-radius:6px;cursor:pointer;padding:0}
+.sw-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.cell-pop.sw-pop{display:grid;grid-template-columns:repeat(8,24px);gap:7px;padding:11px;min-width:0;width:max-content}
+.sw-cell{width:24px;height:24px;border-radius:6px;border:1px solid rgba(0,0,0,.14);cursor:pointer;padding:0;transition:transform .1s}
+.sw-cell:hover{transform:scale(1.15)}
+.sw-cell.on{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--primary)}
 .st-lbl{flex:1;border:1px solid var(--border-strong);border-radius:6px;padding:7px 9px;font-family:inherit;font-size:13.5px}
 .st-del{width:32px;height:30px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--red,#e2445c);cursor:pointer}
 .st-del:disabled{opacity:.35;cursor:default;color:var(--text-muted)}
@@ -5831,7 +5840,46 @@ function pickStatusCell(e,taskId,colId,optIdx){
 }
 /* ===== board-admin editor for one status column's own vocabulary ===== */
 const STATUS_COL_MAX=30;
-const STATUS_PALETTE=['#0073ea','#fdab3d','#e2445c','#00c875','#a25ddc','#579bfc','#037f4c','#ff642e','#00c2b8','#bb3354','#9699a6','#808080'];
+/* The colour vocabulary for every status-like column. It is a closed list on
+   purpose: a free colour input let each board invent its own near-identical
+   shades, so two boards' "בתהליך" could differ by three RGB points and read as
+   the same colour anyway. Picking from a grid keeps colours comparable across
+   boards, and keeps contrast with the white pill text predictable. */
+const STATUS_PALETTE=[
+  '#0F7F4D','#9DD335','#C9B549','#FECA29','#FD6C42','#FEADAE','#FD7477','#B93255',
+  '#E30073','#FD5AC3','#F9A1F0','#9C51DB','#784DCF','#7D3B89','#401992','#565BDC',
+  '#25518F','#5A9CF9','#117FB3','#53CCC5','#6ACDFD','#76AFCB','#9BADBC','#757575',
+  '#333333','#7E5348','#E384BC','#BBA58B','#A3E3F5','#CC9283','#276FDC','#1A5A62',
+  '#BDA9F7','#AABEE7','#9D99B8','#563E3E','#FBAA47','#1AC877','#C4C4C4','#DB2D4C',
+];
+/* Colours reach here from saved board data, so they are never interpolated into
+   a style attribute unchecked — anything that is not a plain #rrggbb becomes
+   the neutral grey rather than arbitrary CSS. */
+const HEX6=/^#[0-9a-fA-F]{6}$/;
+function safeColor(c){ return HEX6.test(String(c||''))?String(c):'#C4C4C4'; }
+/* One colour control, shared by the three vocabulary editors (column statuses,
+   board statuses, priorities). `pfx` selects which draft the pick writes to. */
+const SWATCH_SET={cs:'_csSet',st:'_stSet',pr:'_prSet'};
+function swatchBtn(pfx,i,color){
+  const c=safeColor(color);
+  return `<button type="button" class="sw-btn" id="sw-${pfx}-${i}" data-color="${c}" title="בחר צבע"
+    aria-label="בחר צבע" style="background:${c}" onclick="swatchPop(event,'${pfx}',${i})"></button>`;
+}
+function swatchPop(e,pfx,i){
+  e.preventDefault(); e.stopPropagation();
+  const btn=e.currentTarget, cur=(btn.dataset.color||'').toUpperCase();
+  // A colour saved before this list existed still shows on the button, but it
+  // matches nothing in the grid — the next pick brings it onto the palette.
+  openCellPop(btn,STATUS_PALETTE.map(c=>
+    `<button type="button" class="sw-cell${c===cur?' on':''}" style="background:${c}"
+       title="${c}" onclick="swatchPick('${pfx}',${i},'${c}')"></button>`).join(''),'sw-pop');
+}
+function swatchPick(pfx,i,color){
+  const set=window[SWATCH_SET[pfx]]; if(set)set(i,'color',color);
+  const b=document.getElementById(`sw-${pfx}-${i}`);
+  if(b){ b.style.background=color; b.dataset.color=color; }   // no re-render → the label inputs keep what was typed
+  closeCellPops();
+}
 let _csDraft=[], _csCol=null;
 function manageColStatuses(colId){
   if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך סטטוסים');return;}
@@ -5850,7 +5898,7 @@ function _renderColStatusModal(){
         <button title="למעלה" ${i===0?'disabled':''} onclick="_csMove(${i},-1)"><i class="fa-solid fa-chevron-up"></i></button>
         <button title="למטה" ${i===_csDraft.length-1?'disabled':''} onclick="_csMove(${i},1)"><i class="fa-solid fa-chevron-down"></i></button>
       </div>
-      <input type="color" value="${s.color}" title="צבע" oninput="_csSet(${i},'color',this.value)">
+      ${swatchBtn('cs',i,s.color)}
       <input class="st-lbl" value="${esc(s.label)}" maxlength="40" placeholder="שם הסטטוס" oninput="_csSet(${i},'label',this.value)">
       <button class="st-del" title="הסר" ${_csDraft.length<=1?'disabled':''} onclick="_csRemove(${i})"><i class="fa-solid fa-trash-can"></i></button>
     </div>`).join('');
@@ -5874,7 +5922,7 @@ function _csMove(i,d){const j=i+d;if(j<0||j>=_csDraft.length)return;const t=_csD
 function _csRemove(i){if(_csDraft.length<=1)return;_csDraft.splice(i,1);_renderColStatusModal();}
 function _csAdd(){
   if(_csDraft.length>=STATUS_COL_MAX)return;
-  const used=new Set(_csDraft.map(s=>s.color));
+  const used=new Set(_csDraft.map(s=>String(s.color||'').toUpperCase()));
   _csDraft.push({label:'סטטוס חדש',color:STATUS_PALETTE.find(c=>!used.has(c))||STATUS_PALETTE[0],orig:null});
   _renderColStatusModal();
 }
@@ -5920,7 +5968,7 @@ function _renderStatusModal(){
         <button title="למעלה" ${i===0?'disabled':''} onclick="_stMove(${i},-1)"><i class="fa-solid fa-chevron-up"></i></button>
         <button title="למטה" ${i===_stDraft.length-1?'disabled':''} onclick="_stMove(${i},1)"><i class="fa-solid fa-chevron-down"></i></button>
       </div>
-      <input type="color" value="${s.color}" title="צבע" oninput="_stSet(${i},'color',this.value)">
+      ${swatchBtn('st',i,s.color)}
       <input class="st-lbl" value="${esc(s.label)}" maxlength="40" placeholder="שם הסטטוס" oninput="_stSet(${i},'label',this.value)">
       <button class="st-del" title="הסר" ${_stDraft.length<=1?'disabled':''} onclick="_stRemove(${i})"><i class="fa-solid fa-trash-can"></i></button>
     </div>`).join('');
@@ -5951,7 +5999,7 @@ function _stAdd(){
     // Beyond those seven the status is the board's own: it is stored against an
     // engine value so group auto-move and the kanban keep working, but that is
     // an implementation detail — nothing in the editor exposes it.
-    const pal=STATUS_PALETTE.filter(c=>!_stDraft.some(s=>s.color===c));
+    const pal=STATUS_PALETTE.filter(c=>!_stDraft.some(s=>String(s.color||'').toUpperCase()===c));
     _stDraft.push({key:'',label:'סטטוס חדש',color:pal[0]||STATUS_PALETTE[0],base:'in_progress'});
   }
   _renderStatusModal();
@@ -5980,7 +6028,7 @@ function _renderPriorityModal(){
         <button title="למעלה" ${i===0?'disabled':''} onclick="_prMove(${i},-1)"><i class="fa-solid fa-chevron-up"></i></button>
         <button title="למטה" ${i===_prDraft.length-1?'disabled':''} onclick="_prMove(${i},1)"><i class="fa-solid fa-chevron-down"></i></button>
       </div>
-      <input type="color" value="${s.color}" title="צבע" oninput="_prSet(${i},'color',this.value)">
+      ${swatchBtn('pr',i,s.color)}
       <input class="st-lbl" value="${esc(s.label)}" maxlength="40" placeholder="שם העדיפות" oninput="_prSet(${i},'label',this.value)">
       <button class="st-del" title="הסר" ${_prDraft.length<=1?'disabled':''} onclick="_prRemove(${i})"><i class="fa-solid fa-trash-can"></i></button>
     </div>`).join('');
@@ -6008,7 +6056,7 @@ function _prAdd(){
   const nx=PRIORITY_ALL.find(s=>!used.has(s.key));    // use up the five engine values first
   if(nx){ _prDraft.push({key:nx.key,label:nx.he,color:nx.c,base:nx.key}); }
   else{
-    const pal=STATUS_PALETTE.filter(c=>!_prDraft.some(s=>s.color===c));
+    const pal=STATUS_PALETTE.filter(c=>!_prDraft.some(s=>String(s.color||'').toUpperCase()===c));
     _prDraft.push({key:'',label:'עדיפות חדשה',color:pal[0]||STATUS_PALETTE[0],base:'medium'});
   }
   _renderPriorityModal();
