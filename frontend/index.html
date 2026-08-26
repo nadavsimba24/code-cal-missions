@@ -5849,14 +5849,45 @@ function connectToggle(id){
   renderConnectList();
 }
 async function connectSave(){
-  const ids=[..._connect.sel];
-  await setCell(_connect.taskId,_connect.colId,ids.length?ids:null);
+  const ids=[..._connect.sel], taskId=_connect.taskId, colId=_connect.colId, col=_connect.col;
+  // What this picker was opened against. If the cell has moved since — someone
+  // else linked or unlinked while it was open — saving the whole list would
+  // erase their change without either person noticing.
+  const expect={[colId]:[..._connect.already]};
+  let res=null;
+  try{
+    res=await api('/api/tasks/'+taskId,{method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:withMe({custom_fields:{[colId]:ids.length?ids:null},expect})});
+  }catch(e){
+    // e.status, not a substring of the message — "409" matches task id 4091 too
+    if(e&&e.status===409){ await connectConflict(taskId,colId); return; }
+    toast('שמירת הקישור נכשלה — נסה שוב');
+    return;
+  }
   closeModals();
+  // the rules refused something: say which, rather than let it look like the
+  // pick simply vanished
+  if(res&&res.link_message) toast(res.link_message);
+  const t=findAnyTask(taskId);
+  if(t){ t.custom_fields=Object.assign({},t.custom_fields,res&&res.custom_fields||{}); }
   // a two-way link changes the OTHER board too, so take the board fresh
-  if(_connect.col.connect&&_connect.col.connect.two_way){
+  if(col.connect&&col.connect.two_way){
     try{ st.board=await api('/api/boards/'+st.board.id); }catch(e){}
   }
+  await resolveLinks();
   renderView();
+}
+/* Somebody else got there first. Nothing was written, so the honest move is to
+   show what is actually in the cell now and let the person decide again. */
+async function connectConflict(taskId,colId){
+  closeModals();
+  try{ st.board=await api('/api/boards/'+st.board.id); }catch(e){}
+  await resolveLinks(); renderView();
+  askConfirm('הקישורים בתא זה עודכנו בינתיים על ידי משתמש אחר, והשינוי שלך לא נשמר.',
+    ()=>{ const t=findAnyTask(taskId); if(t)openConnectPicker(null,taskId,colId); },
+    {title:'התא עודכן בינתיים',icon:'fa-arrows-rotate',danger:false,
+     note:'התא נטען מחדש עם הערך העדכני. אפשר לפתוח שוב ולבחור על בסיסו.',
+     confirmText:'פתח שוב'});
 }
 /* files column */
 function filesDisp(files,taskId,colId){

@@ -1031,7 +1031,41 @@ def _is_multi(col):
     return _connect_cfg(col).get("multiple") is not False
 
 
-def _merge_link_ids(db, submitted, current, user_id, multiple=True):
+# What to tell someone whose link did not take. The rules do the refusing; this
+# only explains it, so it runs on the write path where an extra query is free.
+LINK_REJECT_HE = {
+    "missing":           "הפריט שנבחר אינו קיים עוד",
+    "deleted":           "הפריט שנבחר נמחק במהלך הפעולה",
+    "board_unavailable": "לוח היעד אינו זמין — הוא נמצא בסל המחזור",
+    "forbidden":         "אין לך עוד הרשאת צפייה בפריט שנבחר",
+    "no_mirror":         "אין בלוח היעד עמודה שבה יוצג הקשר ההפוך",
+    "limit":             "הגעת למספר הקישורים המרבי בתא זה",
+    "rejected":          "לא ניתן היה לשמור את הקישור",
+}
+
+
+def _link_reject_reason(db, tid, user_id):
+    """Why this id cannot be linked right now — for the message, not the rule."""
+    t = (db.query(Task).filter(Task.id == tid)
+         .execution_options(include_deleted=True).first())
+    if t is None:
+        return "missing"
+    b = (db.query(Board).filter(Board.id == t.board_id)
+         .execution_options(include_deleted=True).first())
+    if b is None:
+        return "missing"
+    if b.deleted_at is not None:
+        return "board_unavailable"
+    if t.deleted_at is not None:
+        return "deleted"
+    if user_id is not None:
+        role = _board_role(db, t.board_id, user_id)
+        if role is None or _item_perm(t, user_id, role) == "none":
+            return "forbidden"
+    return "rejected"
+
+
+def _merge_link_ids(db, submitted, current, user_id, multiple=True, report=None):
     """What a connect cell should hold after `user_id` saved `submitted`.
 
     Two rules, and they are the same rule from both ends. A user cannot ADD a
@@ -1063,14 +1097,27 @@ def _merge_link_ids(db, submitted, current, user_id, multiple=True):
         # keeping an unseen one alongside a chosen one would hold two. Choosing
         # a value in a single-value cell IS a replacement, so the pick wins;
         # choosing nothing still leaves whatever was there untouched.
-        if keep:
-            return keep[-1:]
-        return hidden[:1]
+        out = keep[-1:] if keep else hidden[:1]
+        if report is not None:
+            got = set(out)
+            for i in asked:
+                if i not in got:
+                    report.append({"item_id": i, "reason": _link_reject_reason(db, i, user_id)})
+        return out
     # Capped rather than refused: hidden links are carried over regardless of
     # what was submitted, so a hard limit could leave a cell that is already
     # over it impossible to edit at all. The picker stops a person well before
     # this; this is the backstop for everything that is not the picker.
-    return (keep + [i for i in hidden if i not in keep])[:_max_links_per_cell()]
+    out = (keep + [i for i in hidden if i not in keep])
+    capped = out[:_max_links_per_cell()]
+    if report is not None:
+        got = set(capped)
+        for i in asked:
+            if i in got:
+                continue
+            report.append({"item_id": i,
+                           "reason": "limit" if i in out else _link_reject_reason(db, i, user_id)})
+    return capped
 
 
 def _col_perm(col, user_id, board_role):
@@ -3362,7 +3409,7 @@ def _mirror_col_for(db, col, target_board_id):
     return (_connect_cfg(col).get("mirror") or {}).get(str(target_board_id))
 
 
-def _set_links(db, task, col, wanted_ids, actor_id):
+def _set_links(db, task, col, wanted_ids, actor_id, report=None):
     """Make this cell hold exactly `wanted_ids`, updating one shared row per pair.
 
     Adding from either side creates the single row; removing from either side
@@ -3376,7 +3423,8 @@ def _set_links(db, task, col, wanted_ids, actor_id):
     # see survive a save that never showed them — see _merge_link_ids
     # a list, not a set: rows are created in the order they were chosen, and
     # _linked_ids reads them back that way
-    wanted_list = _merge_link_ids(db, wanted_ids, current_list, actor_id, _is_multi(col))
+    wanted_list = _merge_link_ids(db, wanted_ids, current_list, actor_id,
+                                  _is_multi(col), report)
     wanted = set(wanted_list)
 
     for tid in [i for i in wanted_list if i not in current]:
@@ -3385,7 +3433,11 @@ def _set_links(db, task, col, wanted_ids, actor_id):
             continue
         mirror = _mirror_col_for(db, col, other.board_id)
         if not mirror:
-            continue                      # no column on that board to show it in
+            # nowhere on that board for the reverse to appear, so there is no
+            # relationship to store — said out loud rather than dropped
+            if report is not None:
+                report.append({"item_id": tid, "reason": "no_mirror"})
+            continue
         a_t, a_c, b_t, b_c = _link_pair(task.id, col_id, other.id, mirror)
         exists = db.query(ItemLink).filter(
             ItemLink.a_task_id == a_t, ItemLink.a_col == a_c,
@@ -4355,6 +4407,26 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
             raise HTTPException(403, "אין לך הרשאת עריכה לפריט זה")
         if "custom_fields" in data and isinstance(data["custom_fields"], dict):
             cols = {c["id"]: c for c in (db.query(Board).filter(Board.id == task.board_id).first().settings or {}).get("columns", [])}
+            # Optimistic concurrency, for connect cells only. The client sends
+            # the whole desired list, so two people editing the same cell means
+            # the second save silently erases the first — the picker was opened
+            # against a value that no longer exists. `expect` is what the client
+            # believes is there now; if the cell has moved under it, nothing is
+            # written and the current value comes back with the refusal.
+            _expect = data.get("expect")
+            if isinstance(_expect, dict):
+                for _k, _want in _expect.items():
+                    _c2 = cols.get(_k)
+                    if not _c2 or _c2.get("type") != "connect":
+                        continue
+                    _now = (_linked_ids(db, task.id, _k) if _is_two_way(_c2)
+                            else [i for i in ((task.custom_fields or {}).get(_k) or [])
+                                  if isinstance(i, int)])
+                    _now = _visible_link_ids(db, _now, actor)
+                    if sorted(_now) != sorted(i for i in (_want or []) if isinstance(i, int)):
+                        raise HTTPException(409, {
+                            "message": "הקישורים בתא זה עודכנו בינתיים על ידי משתמש אחר",
+                            "column": _k, "current": _now})
             for k in list(data["custom_fields"].keys()):
                 col = cols.get(k)
                 # A mirror field is a view of the linked item, not a field of
@@ -4376,6 +4448,7 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         _before_priority = _task_priority_key(task)
         _before_assignees = {u.id for u in task.assignees}
         _link_delta = {}          # col id → (added, removed), for the link triggers
+        _link_report = []         # ids that did not take, and why
         st_val = lambda v: (v.value if hasattr(v, "value") else v)
         if data.get("title") is not None and data["title"] != task.title:
             _audit(db, task_id, "update", "title", task.title, data["title"], actor)
@@ -4466,7 +4539,7 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                     # both ends of the pair change together, because there is only
                     # one row behind them
                     before = sorted(_linked_ids(db, task.id, k))
-                    _set_links(db, task, _c, v, actor)
+                    _set_links(db, task, _c, v, actor, _link_report)
                     after = sorted(_linked_ids(db, task.id, k))
                     if before != after:
                         _link_delta[k] = ([i for i in after if i not in before],
@@ -4480,7 +4553,8 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                     # item_links, so the two-way guard in _set_links does not
                     # cover them. Same rule, applied here.
                     _was = [i for i in (cf.get(k) or []) if isinstance(i, int)]
-                    v = _merge_link_ids(db, v, cf.get(k) or [], actor, _is_multi(_c))
+                    v = _merge_link_ids(db, v, cf.get(k) or [], actor, _is_multi(_c),
+                                        _link_report)
                     if sorted(_was) != sorted(v):
                         _link_delta[k] = ([i for i in v if i not in _was],
                                           [i for i in _was if i not in v])
@@ -4528,7 +4602,19 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         # the write landed — only now is it safe to tell anyone, or a listener
         # could refetch and read the pre-commit row
         bus.publish("task.changed", board_id=_bid, task_id=_tid, actor_id=actor)
-        return {"id": task.id, "custom_fields": task.custom_fields or {}}
+        out = {"id": task.id, "custom_fields": task.custom_fields or {}}
+        if _link_report:
+            # The rules already refused these. Saying so is the difference
+            # between a link that did not take and a link that vanished.
+            seen, msgs = set(), []
+            for r in _link_report:
+                if r["reason"] in seen:
+                    continue
+                seen.add(r["reason"])
+                msgs.append(LINK_REJECT_HE.get(r["reason"], LINK_REJECT_HE["rejected"]))
+            out["link_warnings"] = _link_report
+            out["link_message"] = " · ".join(msgs)
+        return out
 
 # ── File uploads (for the Files column) ─────────────────────────────
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB per file.
