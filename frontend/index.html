@@ -760,6 +760,10 @@ body.coldragging .col-grip{opacity:1}
 .ll-del:hover{background:var(--surface);border-color:var(--border)}
 .ll-del i{color:var(--text-light)}
 .ll-del .ll-t{text-decoration:line-through;text-decoration-thickness:1px}
+/* mirror field — read straight off the linked item, so nothing here is clickable */
+.mir-cell{display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap;font-size:12px}
+.mir-pill{display:inline-block;padding:2px 9px;border-radius:11px;color:#fff;font-weight:600;font-size:11.5px;white-space:nowrap}
+.mir-txt{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 /* the connect-column deletion warning: one consequence per line */
 .confirm-note-rich{text-align:start;line-height:1.55}
 .ci-row{position:relative;padding-inline-start:15px;margin:5px 0}
@@ -4886,6 +4890,7 @@ const COLUMN_TYPES=[
   {type:'number',he:'מספר',ic:'fa-hashtag',desc:'ערך מספרי'},
   {type:'rating',he:'דירוג',ic:'fa-star',desc:'דירוג בכוכבים'},
   {type:'connect',he:'קישור בין לוחות',ic:'fa-diagram-project',desc:'קישור לפריטים בלוחות אחרים (מנהל מערכת)'},
+  {type:'mirror',he:'שדה מראה',ic:'fa-clone',desc:'הצגת שדה מתוך הפריט המקושר — לקריאה בלבד'},
   {type:'created_at',he:'מועד יצירה',ic:'fa-calendar-plus',desc:'תאריך יצירת הרשומה (אוטומטי)'},
   {type:'created_by',he:'יוצר הרשומה',ic:'fa-user-pen',desc:'מי יצר את הפריט (אוטומטי)'},
   {type:'item_id',he:'מזהה פריט',ic:'fa-hashtag',desc:'מזהה טכני אוטומטי בן 11 ספרות לכל פריט'},
@@ -4896,10 +4901,10 @@ const STATUS_OPTS=[
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
-  created_at:'מועד יצירה',created_by:'יוצר הרשומה',item_id:'מזהה פריט'};
+  created_at:'מועד יצירה',created_by:'יוצר הרשומה',item_id:'מזהה פריט',mirror:'שדה מראה'};
 /* columns the system derives from the item itself — they have no value to fill
    in, so they are read-only in the grid and never offered as form fields */
-const DERIVED_COLS=['created_at','created_by','item_id','formula'];
+const DERIVED_COLS=['created_at','created_by','item_id','formula','mirror'];
 function customColumns(){return (st.board&&st.board.columns)||[];}
 function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
 /* Unified, ordered column model: the 6 built-in columns (minus any the admin
@@ -5212,6 +5217,7 @@ function customCellHTML(c,t){
   if(c.type==='files')   return `<td class="cell cell-custom">${filesDisp(v,id,c.id)}</td>`;
   if(c.type==='accounts')return `<td class="cell cell-custom" style="cursor:pointer" onclick="accountCell(${id},'${c.id}')">${v&&v.label?`<span class="acct-chip"><i class="fa-solid fa-building"></i> ${esc(v.label)}</span>`:'<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>'}</td>`;
   if(c.type==='connect')return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')">${connectDisp(v,id,c.id)}</td>`;
+  if(c.type==='mirror')return `<td class="cell cell-custom" title="${esc(mirrorTip(c))}">${mirrorDisp(v)}</td>`;
   if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
   if(c.type==='item_id'){
     // automatic technical identifier — 11 digits, shown as-is (no prefix), never
@@ -5289,6 +5295,7 @@ function exportCell(c,t){
     case 'files':    return (Array.isArray(v)?v:[]).map(f=>f&&f.name).filter(Boolean).join(', ');
     case 'accounts': return (v&&v.label)?v.label:'';
     case 'connect':  return (Array.isArray(v)?v:[]).map(id=>{const it=linkInfo(id);return it&&it.title?it.title:'#'+id;}).join(', ');
+    case 'mirror':{const a=Array.isArray(v)?v:[];return a.map(x=>(x&&x.text)||'').join(', ');}
     case 'formula':{const r=evalFormula(col,t);return r==null?'':r;}
     case 'created_at': return t.created_at?fdatetimeY(t.created_at):'';
     case 'created_by':{const u=(st.users||[]).find(x=>x.id===t.created_by);return u?u.name:'';}
@@ -5404,6 +5411,23 @@ async function addDropdownOption(e,colId){
 /* ===== connect column (קישור בין לוחות) ===== */
 st.linkCache=st.linkCache||{};
 function linkInfo(id){return st.linkCache[id];}
+/* A mirror cell is read straight off the linked item every time, so there is
+   nothing to click and nothing to edit here — the place to change the value is
+   the item it comes from. */
+function mirrorDisp(v){
+  const cells=Array.isArray(v)?v:[];
+  if(!cells.length)return '<span style="color:var(--text-light)">—</span>';
+  return `<span class="mir-cell">${cells.map(x=>x&&x.color
+    ? `<span class="mir-pill" style="background:${esc(x.color)}">${esc(x.text)}</span>`
+    : `<span class="mir-txt">${esc((x&&x.text)||'')}</span>`).join('')}</span>`;
+}
+function mirrorTip(c){
+  const cfg=c.mirror_of||{};
+  const src=customColumns().find(x=>x.id===cfg.connect);
+  const f=MIRROR_BUILTINS[cfg.field]||cfg.field||'—';
+  return `${f} מתוך הפריט המקושר בעמודה "${src?src.title:'—'}" · לקריאה בלבד`;
+}
+const MIRROR_BUILTINS={title:'שם הפריט',status:'סטטוס',priority:'עדיפות',due:'תאריך יעד',assignees:'אחראים'};
 function linkChipHTML(tid){
   const it=linkInfo(tid);
   // The server already strips links the viewer may not see, so this is the belt
@@ -6454,6 +6478,7 @@ function filterColTypes(q){
 async function addColumn(type,forSub){
   closeCellPops();
   if(type==='connect'){ if(!isSysAdmin()){toast('רק מנהל מערכת');return;} openConnectConfig(); return; }
+  if(type==='mirror'){ openMirrorConfig(); return; }
   const col={type,title:COL_DEFAULTS[type]||type};
   if(type==='formula'){
     const f=prompt('נוסחה — השתמש בשם עמודה בסוגריים מסולסלים.\nלדוגמה:  {מספר} * 2 + {דירוג}','');
@@ -6520,6 +6545,69 @@ async function renderMirrorNote(){
   const host2=document.getElementById('cc-mirror');
   if(host2) setHTML(host2, mirrorNoteHTML(_ccExisting,true));
 }
+/* Mirror field config: which connect column to read through, and which field of
+   the linked item to show. Both come from the server, so the admin picks from
+   what actually exists on the target boards instead of naming a field and
+   finding out later that nothing resolves. */
+let _mirSources=null, _mirExisting=null;
+async function openMirrorConfig(existingColId){
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך עמודות');return;}
+  const conns=customColumns().filter(c=>c.type==='connect');
+  if(!conns.length){
+    alertModal('שדה מראה','שדה מראה מציג ערך מתוך פריט מקושר, ולכן הוא נשען על עמודת קישור בין לוחות. הוסף עמודת קישור ללוח זה תחילה.','fa-clone');
+    return;
+  }
+  _mirExisting=existingColId?customColumns().find(c=>c.id===existingColId):null;
+  try{ _mirSources=(await api(`/api/boards/${st.board.id}/mirror-sources`)).sources||[]; }
+  catch(e){ toast('שגיאה בטעינת השדות הזמינים'); return; }
+  _renderMirrorConfig();
+}
+function _renderMirrorConfig(){
+  const cfg=(_mirExisting&&_mirExisting.mirror_of)||{};
+  const src=_mirSources.find(s=>s.connect_id===cfg.connect)||_mirSources[0]||{fields:[]};
+  const inp='padding:8px 10px;border:1px solid var(--border-strong);border-radius:7px;font-size:13px;font-family:inherit;width:100%';
+  const conns=_mirSources.map(s=>`<option value="${esc(s.connect_id)}" ${s.connect_id===src.connect_id?'selected':''}>${esc(s.connect_title||s.connect_id)}</option>`).join('');
+  const fields=(src.fields||[]).map(f=>{
+    const where=(!f.builtin&&(f.boards||[]).length&&(src.target_boards||[]).length>1)
+      ? ` — ${f.boards.map(b=>b.name).join(', ')}` : '';
+    return `<option value="${esc(f.key)}" ${f.key===cfg.field?'selected':''}>${esc(f.label)}${esc(where)}</option>`;
+  }).join('');
+  showModal(`<h2><i class="fa-solid fa-clone" style="color:var(--primary)"></i> שדה מראה</h2>
+    <div class="mbody">
+      <p style="margin:0 0 12px;color:var(--text-light);font-size:13px">
+        שדה מראה מציג ערך מתוך הפריט המקושר, בלי לשכפל אותו. הערך נקרא מהמקור בכל טעינה ומתעדכן איתו, ואינו ניתן לעריכה כאן.</p>
+      <div class="field"><label>שם העמודה</label>
+        <input id="mir-title" style="${inp}" value="${esc((_mirExisting&&_mirExisting.title)||'')}" placeholder="לדוגמה: סטטוס הפרויקט"></div>
+      <div class="field"><label>דרך עמודת הקישור</label>
+        <select id="mir-conn" style="${inp}" onchange="_mirPick()">${conns}</select></div>
+      <div class="field"><label>הצג את השדה</label>
+        <select id="mir-field" style="${inp}">${fields||'<option value="">אין שדות זמינים</option>'}</select></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="_mirSave()"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+function _mirPick(){
+  const id=(document.getElementById('mir-conn')||{}).value;
+  _mirExisting={...(_mirExisting||{}),mirror_of:{connect:id,field:''},
+                title:(document.getElementById('mir-title')||{}).value||''};
+  _renderMirrorConfig();
+}
+async function _mirSave(){
+  const connect=(document.getElementById('mir-conn')||{}).value;
+  const field=(document.getElementById('mir-field')||{}).value;
+  if(!connect||!field){toast('בחר עמודת קישור ושדה');return;}
+  const src=_mirSources.find(s=>s.connect_id===connect)||{fields:[]};
+  const f=(src.fields||[]).find(x=>x.key===field);
+  const title=((document.getElementById('mir-title')||{}).value||'').trim()
+              || `${(f&&f.label)||'שדה'} (${src.connect_title||'מקושר'})`;
+  const col={..._mirExisting,type:'mirror',title,mirror_of:{connect,field}};
+  const cols=_mirExisting&&_mirExisting.id
+    ? customColumns().map(c=>c.id===_mirExisting.id?col:c)
+    : customColumns().concat([col]);
+  closeModals(); await saveColumns(cols); toast('שדה המראה נשמר');
+}
 /* connect column config: choose the target board(s) + single/multi (sys admin) */
 function openConnectConfig(existingColId){
   if(!isSysAdmin()){toast('רק מנהל מערכת');return;}
@@ -6570,6 +6658,7 @@ function colMenu(e,colId){
     +idSettings
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
+    +(c&&c.type==='mirror'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openMirrorConfig('${colId}')"><i class="fa-solid fa-clone"></i> הגדרות שדה מראה</button>`:'')
     +(c&&c.type==='connect'&&isSysAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
     +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;

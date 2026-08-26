@@ -193,3 +193,26 @@ def test_deleting_the_link_does_not_delete_the_item(client, admin_id):
     _set(client, src, c["id"], [], admin_id)
     assert client.get(f"/api/tasks/{x}", headers=AS(admin_id)).status_code == 200
     assert client.get(f"/api/tasks/{x}", headers=AS(admin_id)).json()["title"] == "יעד"
+
+
+def test_the_links_come_back_in_the_order_they_were_made(client, admin_id):
+    """A two-way cell has nowhere to keep an order of its own — one shared row
+    serves both sides — so without an explicit one the same cell comes back
+    differently on different loads, and the grid shows a different first name."""
+    a, b, c = _setup(client, admin_id, "o1", multiple=True)
+    src = _item(client, a, admin_id, "מקור")
+    ids = [_item(client, b, admin_id, f"יעד {i}") for i in range(5)]
+    _set(client, src, c["id"], ids, admin_id)
+    assert _cell(client, src, c["id"], admin_id) == ids
+    for _ in range(3):
+        assert _cell(client, src, c["id"], admin_id) == ids, "the order is not stable across reads"
+
+
+def test_a_link_added_later_goes_last(client, admin_id):
+    a, b, c = _setup(client, admin_id, "o2", multiple=True)
+    src = _item(client, a, admin_id, "מקור")
+    first = [_item(client, b, admin_id, f"ראשון {i}") for i in range(2)]
+    _set(client, src, c["id"], first, admin_id)
+    late = _item(client, b, admin_id, "מאוחר")
+    _set(client, src, c["id"], first + [late], admin_id)
+    assert _cell(client, src, c["id"], admin_id) == first + [late]

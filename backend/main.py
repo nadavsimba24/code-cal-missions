@@ -1149,6 +1149,11 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         # back when this same viewer saves the cell.
         if c.get("type") == "connect" and isinstance(cf.get(c["id"]), list):
             cf[c["id"]] = _visible_link_ids(db, cf[c["id"]], user_id)
+        # A mirror field holds no data of its own — it is read through the
+        # connect column each time, so it follows the source item with nothing
+        # to keep in step. Anything stored under its id is stale and ignored.
+        if c.get("type") == "mirror":
+            cf[c["id"]] = _mirror_cells(db, t, c, user_id, columns or [])
     col_perms = {}
     if user_id is not None:
         for c in (columns or []):
@@ -1644,7 +1649,7 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # full replacement of the custom-column definitions
             allowed = {"timeline", "text", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
-                       "connect", "created_at", "created_by", "item_id"}
+                       "connect", "created_at", "created_by", "item_id", "mirror"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
             is_ws_admin = _ws_role(db, actor_id) == "admin"
             cols = []
@@ -1669,6 +1674,9 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     "options": opts,
                     "formula": c.get("formula"),
                     "connect": c.get("connect") if c["type"] == "connect" else None,
+                    # which connect column to read through, and which field of
+                    # the linked item to show
+                    "mirror_of": c.get("mirror_of") if c["type"] == "mirror" else None,
                     # "מזהה פריט": what a click on the cell copies — the number
                     # itself ("id", the default) or a link to the item ("url")
                     "copy_mode": (c.get("copy_mode") if c.get("copy_mode") in ("id", "url") else "id")
@@ -2841,6 +2849,9 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         _bcols = (board.settings or {}).get("columns", []) if board else []
         _pending_links = []
         for _c in _bcols:
+            if _c.get("type") == "mirror":
+                cf.pop(_c["id"], None)     # computed on read; never stored
+                continue
             if _c.get("type") != "connect":
                 continue
             _v = cf.pop(_c["id"], None)
@@ -2994,11 +3005,19 @@ def _link_pair(a_task, a_col, b_task, b_col):
 
 
 def _linked_ids(db, task_id, col_id):
-    """The items this cell links to, from whichever side the row was written."""
+    """The items this cell links to, from whichever side the row was written.
+
+    Ordered by the row id, which is the order the links were made. A two-way
+    cell has nowhere to keep an order of its own — that is the cost of one
+    shared row for both sides — so without this the same cell comes back in
+    whatever order the database felt like, and the grid shows a different
+    first name on different loads.
+    """
     out = []
     for l in db.query(ItemLink).filter(
             or_((ItemLink.a_task_id == task_id) & (ItemLink.a_col == col_id),
-                (ItemLink.b_task_id == task_id) & (ItemLink.b_col == col_id))).all():
+                (ItemLink.b_task_id == task_id) & (ItemLink.b_col == col_id))
+            ).order_by(ItemLink.id).all():
         out.append(l.b_task_id if (l.a_task_id == task_id and l.a_col == col_id) else l.a_task_id)
     return out
 
@@ -3113,6 +3132,119 @@ def _drop_links_for_tasks_in_column(db, task_id, col_id):
     ).delete(synchronize_session=False)
 
 
+# ── Mirror fields (שדה מראה) ────────────────────────────────────────────────
+# A mirror column shows a field of the LINKED item in the current board. The
+# value is never stored: it is read through the connect column every time the
+# item is serialized, so it follows the source with nothing to keep in step and
+# nothing to migrate.
+#
+# Not to be confused with connect.mirror, which is the counterpart column that
+# shows the reverse of a two-way LINK. Same word, two features: this one
+# mirrors a value, that one mirrors a relationship.
+#
+# Config lives on the column as
+#     {"type": "mirror", "mirror_of": {"connect": <connect col id>, "field": <key>}}
+# where `field` is a built-in below or a custom column id on the linked board.
+_MIRROR_BUILTINS = {
+    "title": "שם הפריט", "status": "סטטוס", "priority": "עדיפות",
+    "due": "תאריך יעד", "assignees": "אחראים",
+}
+
+
+def _mirror_cfg(col):
+    return (col or {}).get("mirror_of") or {}
+
+
+def _mirror_one(db, t, field):
+    """One linked item's contribution to a mirror cell, as display entries.
+
+    Entries carry text and, where the source has one, a colour — enough for the
+    grid to render a status as a status without the reader having to know what
+    kind of column it came from.
+    """
+    def e(text, color=None):
+        return [] if text in (None, "") else [{"item_id": t.id, "text": str(text), "color": color}]
+
+    if field == "title":
+        return e(t.title)
+    if field == "due":
+        return e(t.due_date.isoformat() if t.due_date else None)
+    if field == "assignees":
+        return [{"item_id": t.id, "text": u.name, "color": None} for u in (t.assignees or [])]
+    board = db.query(Board).filter(Board.id == t.board_id).execution_options(
+        include_deleted=True).first()
+    if field == "status":
+        if (t.custom_fields or {}).get("status_unset"):
+            return e("טרם הוגדר", "#c4c4c4")
+        key = _task_status_key(t)
+        entry = next((x for x in _board_statuses(board) if x["key"] == str(key)), None) if board else None
+        return e(entry["label"] if entry else key, (entry or {}).get("color"))
+    if field == "priority":
+        if (t.custom_fields or {}).get("priority_unset"):
+            return e("טרם הוגדר", "#c4c4c4")
+        key = _task_priority_key(t)
+        entry = next((x for x in _board_priorities(board) if x["key"] == str(key)), None) if board else None
+        return e(entry["label"] if entry else key, (entry or {}).get("color"))
+
+    # a custom column on the linked item's own board
+    col = _find_col(db, t.board_id, field) if board else None
+    v = (t.custom_fields or {}).get(field)
+    if col is None or v in (None, "", [], {}):
+        return []
+    ctype = col.get("type")
+    if ctype == "status":
+        return e(v.get("label") if isinstance(v, dict) else v,
+                 v.get("color") if isinstance(v, dict) else None)
+    if ctype == "people":
+        names = {u.id: u.name for u in db.query(User).filter(
+            User.id.in_([i for i in v if isinstance(i, int)])).all()} if isinstance(v, list) else {}
+        return [{"item_id": t.id, "text": names[i], "color": None} for i in (v or []) if i in names]
+    if ctype == "timeline" and isinstance(v, dict):
+        a, b = v.get("from") or v.get("start"), v.get("to") or v.get("end")
+        return e(f"{a} – {b}" if a and b else (a or b))
+    if ctype == "checkbox":
+        return e("כן" if v else "לא")
+    if ctype == "files":
+        return e(f"{len(v)} קבצים" if isinstance(v, list) else None)
+    if ctype == "connect":
+        return []          # a mirror of a link is its own feature, not this one
+    if isinstance(v, list):
+        return [{"item_id": t.id, "text": str(x), "color": None} for x in v if x not in (None, "")]
+    if isinstance(v, dict):
+        return e(v.get("label") or v.get("text"))
+    return e(v)
+
+
+def _mirror_cells(db, task, col, viewer, board_cols):
+    """A mirror column's value for this item — computed, never stored.
+
+    Only linked items the viewer may see contribute. A mirror must not become a
+    way to read a field of an item they were refused: the connect column
+    already withholds those ids, and this reads through the same filter.
+    """
+    cfg = _mirror_cfg(col)
+    src_id, field = cfg.get("connect"), cfg.get("field")
+    if not src_id or not field:
+        return []
+    src = next((c for c in board_cols
+                if c.get("id") == src_id and c.get("type") == "connect"), None)
+    if src is None:
+        return []          # the connect column it was built on is gone
+    ids = (_linked_ids(db, task.id, src_id) if _is_two_way(src)
+           else [i for i in ((task.custom_fields or {}).get(src_id) or []) if isinstance(i, int)])
+    ids = _visible_link_ids(db, ids, viewer)
+    if not ids:
+        return []
+    rows = {t.id: t for t in db.query(Task).filter(Task.id.in_(ids))
+            .execution_options(include_deleted=True).all()}
+    out = []
+    for i in ids:
+        t = rows.get(i)
+        if t is not None:
+            out.extend(_mirror_one(db, t, field))
+    return out
+
+
 def _drop_links_for_tasks(db, task_ids):
     """Delete every link row touching these items.
 
@@ -3162,9 +3294,12 @@ def _set_links(db, task, col, wanted_ids, actor_id):
     current = set(current_list)
     # links the actor may add are only ones they may see, and links they cannot
     # see survive a save that never showed them — see _merge_link_ids
-    wanted = set(_merge_link_ids(db, wanted_ids, current_list, actor_id, _is_multi(col)))
+    # a list, not a set: rows are created in the order they were chosen, and
+    # _linked_ids reads them back that way
+    wanted_list = _merge_link_ids(db, wanted_ids, current_list, actor_id, _is_multi(col))
+    wanted = set(wanted_list)
 
-    for tid in wanted - current:
+    for tid in [i for i in wanted_list if i not in current]:
         other = db.query(Task).filter(Task.id == tid).first()
         if not other:
             continue
@@ -3244,6 +3379,50 @@ def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] =
                                          for u in (t.assignees or [])]}
                           for t in rows],
                 "total": total, "has_more": off + len(rows) < total}
+
+@app.get("/api/boards/{board_id}/mirror-sources")
+def mirror_sources(board_id: int, connect: str = "", actor_id: int = Depends(current_user_id)):
+    """Which fields a mirror column on this board could show, per connect column.
+
+    Built from the boards the connect column actually points at, so the admin
+    picks from what exists rather than typing a field name and finding out later
+    that nothing resolves. Fields common to several target boards are offered
+    once; a custom column that exists on only one of them is labelled with the
+    board it comes from, because picking it means the mirror is empty for links
+    into the others.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        cols = _board_columns(db, board_id)
+        conns = [c for c in cols if c.get("type") == "connect"
+                 and (not connect or c.get("id") == connect)]
+        out = []
+        for c in conns:
+            targets = [int(x) for x in (_connect_cfg(c).get("board_ids") or [])
+                       if str(x).lstrip("-").isdigit()]
+            visible = _visible_board_ids(db, actor_id)
+            targets = [t for t in targets if t in visible]
+            fields = [{"key": k, "label": v, "builtin": True} for k, v in _MIRROR_BUILTINS.items()]
+            seen = {}
+            for tb in targets:
+                tboard = db.query(Board).filter(Board.id == tb).first()
+                for tc in _board_columns(db, tb):
+                    # a mirror of a link, or of another mirror, is its own
+                    # feature — not offered here
+                    if tc.get("type") in ("connect", "mirror") or not tc.get("id"):
+                        continue
+                    seen.setdefault(tc["id"], {"key": tc["id"], "label": tc.get("title") or tc["id"],
+                                               "builtin": False, "type": tc.get("type"), "boards": []})
+                    seen[tc["id"]]["boards"].append({"id": tb, "name": tboard.name if tboard else ""})
+            fields += list(seen.values())
+            out.append({"connect_id": c.get("id"), "connect_title": c.get("title") or "",
+                        "target_boards": targets, "fields": fields})
+        return {"sources": out}
+
 
 @app.get("/api/boards/{board_id}/columns/{col_id}/impact")
 def column_impact(board_id: int, col_id: str, actor_id: int = Depends(current_user_id)):
@@ -3844,6 +4023,13 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
             cols = {c["id"]: c for c in (db.query(Board).filter(Board.id == task.board_id).first().settings or {}).get("columns", [])}
             for k in list(data["custom_fields"].keys()):
                 col = cols.get(k)
+                # A mirror field is a view of the linked item, not a field of
+                # this one. Accepting a write would store a value that the next
+                # read discards — the cell would appear to change and then snap
+                # back, which is worse than refusing.
+                if col is not None and col.get("type") == "mirror":
+                    del data["custom_fields"][k]
+                    continue
                 if col is not None and _col_perm(col, actor, actor_role) != "edit":
                     del data["custom_fields"][k]      # silently drop cols the user can't edit
             if iperm not in ("edit", "delete"):
