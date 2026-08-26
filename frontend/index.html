@@ -5086,9 +5086,17 @@ const COLUMN_TYPES=[
   {type:'created_by',he:'יוצר הרשומה',ic:'fa-user-pen',desc:'מי יצר את הפריט (אוטומטי)'},
   {type:'item_id',he:'מזהה פריט',ic:'fa-hashtag',desc:'מזהה טכני אוטומטי בן 11 ספרות לכל פריט'},
 ];
+/* The vocabulary a new status column starts with. Colours come from
+   STATUS_PALETTE, like every other status colour in the system.
+   "טרם הוגדר" is deliberately NOT here: it is the state of a cell nobody has
+   touched, appended by the picker itself (STATUS_UNSET), so storing it as an
+   option would make "not chosen yet" something you have to choose. */
 const STATUS_OPTS=[
-  {label:'חדש',color:'#579bfc'},{label:'בעבודה',color:'#fdab3d'},
-  {label:'תקוע',color:'#e2445c'},{label:'הושלם',color:'#00c875'},
+  {label:'בוצע',  color:'#1AC877'},
+  {label:'בטיפול',color:'#FBAA47'},
+  {label:'תקוע',  color:'#DB2D4C'},
+  {label:'הקפאה', color:'#FD5AC3'},
+  {label:'בוטל',  color:'#9BADBC'},
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
@@ -6904,6 +6912,11 @@ async function addColumn(type,forSub){
     if(f===null)return; col.formula=f.trim();
   }
   if(type==='dropdown')col.options=[];
+  // A new status column is given the default vocabulary outright rather than
+  // borrowing it. The column then owns its own list from birth: editing the
+  // defaults later is a change to what NEW columns start with, not a silent
+  // rewrite of every board that never customised one.
+  if(type==='status')col.options=STATUS_OPTS.map(o=>({label:o.label,color:o.color}));
   if(type==='item_id')col.copy_mode='id';   // numeric id is the only mode; a click copies the number
   const before=new Set(customColumns().map(c=>c.id));
   const cols=customColumns().slice();cols.push(col);
