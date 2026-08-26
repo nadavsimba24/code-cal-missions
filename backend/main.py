@@ -569,16 +569,28 @@ def _board_views(b):
 # group auto-move, parent roll-up, kanban and charts keep working (they all key
 # off task.status) while a board admin may rename/recolor/reorder the statuses
 # and expose only the ones the board actually uses.
+# The vocabulary a board starts with. Colours come from the status palette, and
+# "טרם הוגדר" is not here: it is the state of an item nobody has set, carried as
+# custom_fields.status_unset, so listing it would make "not chosen" a choice.
+#
+# `base` is the engine value the status behaves as — what group auto-move, the
+# kanban and the charts read. Two entries may share one: תקוע and הקפאה are
+# different words for an item that is not moving, and both park it in on_hold.
+# An entry whose key is not itself an engine value must use the x_ prefix, or
+# _norm_board_status drops it the first time an admin saves the list.
 STATUS_DEFAULTS = [
-    {"key": "backlog", "label": "בתכנון", "color": "#9699a6"},
-    {"key": "todo", "label": "לביצוע", "color": "#c4c4c4"},
-    {"key": "in_progress", "label": "בתהליך", "color": "#fdab3d"},
-    {"key": "review", "label": "בבדיקה", "color": "#579bfc"},
-    {"key": "on_hold", "label": "בהמתנה", "color": "#808080"},
-    {"key": "done", "label": "הושלם", "color": "#00c875"},
-    {"key": "cancelled", "label": "בוטל", "color": "#e2445c"},
+    {"key": "done",        "label": "בוצע",   "color": "#1AC877"},
+    {"key": "in_progress", "label": "בטיפול", "color": "#FBAA47"},
+    {"key": "on_hold",     "label": "תקוע",   "color": "#DB2D4C"},
+    {"key": "x_frozen",    "label": "הקפאה",  "color": "#FD5AC3", "base": "on_hold"},
+    {"key": "cancelled",   "label": "בוטל",   "color": "#9BADBC"},
 ]
-_STATUS_KEYS = {s["key"] for s in STATUS_DEFAULTS}
+# What the ENGINE understands, which is the TaskStatus enum — not whatever the
+# default vocabulary happens to offer. These were the same set until the
+# defaults stopped covering every enum value; deriving this from the defaults
+# would have made backlog, todo and review invalid keys overnight and dropped
+# them from every board that had saved one.
+_STATUS_KEYS = {s.value for s in TaskStatus}
 
 def _valid_hex(c):
     c = str(c or "")
@@ -660,7 +672,7 @@ def _board_statuses(b):
     """The board's ordered status list (defaults when the admin hasn't customised)."""
     raw = (b.settings or {}).get("statuses")
     if not raw:
-        return [dict(x, base=x["key"]) for x in STATUS_DEFAULTS]
+        return [dict(x, base=x.get("base", x["key"])) for x in STATUS_DEFAULTS]
     out, seen = [], set()
     for it in raw:
         e = _norm_board_status(it, seen)
@@ -668,7 +680,7 @@ def _board_statuses(b):
             out.append(e)
         if len(out) >= BOARD_STATUS_MAX:
             break
-    return out or [dict(x, base=x["key"]) for x in STATUS_DEFAULTS]
+    return out or [dict(x, base=x.get("base", x["key"])) for x in STATUS_DEFAULTS]
 
 # ── Priority is a status column too ──────────────────────────────────────
 # "עדיפות" is the same kind of thing as "סטטוס": one value out of a named,

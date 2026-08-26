@@ -184,4 +184,4 @@ def test_the_list_shows_a_filled_in_sentence(client, admin_id, guinea_id):
          {"t_status": "done", "a_person": guinea_id})
     row = client.get(f"/api/boards/{bid}/automations?user_id={admin_id}").json()["automations"][0]
     assert "{" not in row["sentence"]           # every placeholder resolved
-    assert "הושלם" in row["sentence"]           # the status label, not its key
+    assert "בוצע" in row["sentence"]            # the status label, not its key

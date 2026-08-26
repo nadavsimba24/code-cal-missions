@@ -211,9 +211,9 @@ def test_11_the_column_can_carry_a_mirror_field(client, admin_id):
     client.patch(f"/api/tasks/{x}?user_id={admin_id}", json={"status": "done"})
     _set(client, src, c["id"], [x], admin_id)
     cell = _cell(client, src, mir["id"], admin_id)
-    assert [e["text"] for e in cell] == ["הושלם"]
+    assert [e["text"] for e in cell] == ["בוצע"]
     client.patch(f"/api/tasks/{x}?user_id={admin_id}", json={"status": "in_progress"})
-    assert [e["text"] for e in _cell(client, src, mir["id"], admin_id)] == ["בתהליך"]
+    assert [e["text"] for e in _cell(client, src, mir["id"], admin_id)] == ["בטיפול"]
 
 
 # 12 ────────────────────────────────────────────────────────────────────────

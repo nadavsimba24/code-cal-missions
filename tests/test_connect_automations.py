@@ -174,9 +174,9 @@ def test_a_replacement_reports_both_sides_of_it(client, admin_id):
 def test_a_one_way_column_fires_the_link_triggers_too(client, admin_id):
     a, b, c = _setup(client, admin_id, "n4", two_way=False)
     src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
-    _rule(client, admin_id, a, "link_added_set_status", {"a_status": "review"})
+    _rule(client, admin_id, a, "link_added_set_status", {"a_status": "on_hold"})
     _set(client, src, c["id"], [x], admin_id)
-    assert client.get(f"/api/tasks/{src}", headers=AS(admin_id)).json()["status"] == "review"
+    assert client.get(f"/api/tasks/{src}", headers=AS(admin_id)).json()["status"] == "on_hold"
 
 
 # ── 2. the linked item's status changes ─────────────────────────────────────
@@ -186,9 +186,9 @@ def test_a_linked_items_status_change_updates_this_one(client, admin_id):
     src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
     _set(client, src, c["id"], [x], admin_id)
     _rule(client, admin_id, a, "linked_status_set_status",
-          {"t_status": "done", "a_status": "review"})
+          {"t_status": "done", "a_status": "on_hold"})
     client.patch(f"/api/tasks/{x}?user_id={admin_id}", json={"status": "done"})
-    assert client.get(f"/api/tasks/{src}", headers=AS(admin_id)).json()["status"] == "review"
+    assert client.get(f"/api/tasks/{src}", headers=AS(admin_id)).json()["status"] == "on_hold"
 
 
 def test_it_only_fires_for_the_status_the_rule_names(client, admin_id):
@@ -196,9 +196,9 @@ def test_it_only_fires_for_the_status_the_rule_names(client, admin_id):
     src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
     _set(client, src, c["id"], [x], admin_id)
     _rule(client, admin_id, a, "linked_status_set_status",
-          {"t_status": "done", "a_status": "review"})
+          {"t_status": "done", "a_status": "on_hold"})
     client.patch(f"/api/tasks/{x}?user_id={admin_id}", json={"status": "in_progress"})
-    assert client.get(f"/api/tasks/{src}", headers=AS(admin_id)).json()["status"] != "review"
+    assert client.get(f"/api/tasks/{src}", headers=AS(admin_id)).json()["status"] != "on_hold"
 
 
 def test_an_unlinked_item_is_not_affected(client, admin_id):
@@ -207,9 +207,9 @@ def test_an_unlinked_item_is_not_affected(client, admin_id):
     x = _item(client, b, admin_id, "יעד")
     _set(client, src, c["id"], [x], admin_id)
     _rule(client, admin_id, a, "linked_status_set_status",
-          {"t_status": "done", "a_status": "review"})
+          {"t_status": "done", "a_status": "on_hold"})
     client.patch(f"/api/tasks/{x}?user_id={admin_id}", json={"status": "done"})
-    assert client.get(f"/api/tasks/{other}", headers=AS(admin_id)).json()["status"] != "review"
+    assert client.get(f"/api/tasks/{other}", headers=AS(admin_id)).json()["status"] != "on_hold"
 
 
 def test_two_rules_pointing_at_each_other_terminate(client, admin_id):

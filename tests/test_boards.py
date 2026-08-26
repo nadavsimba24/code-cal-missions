@@ -1,4 +1,5 @@
 """Group 4 — boards & permissions (create/owner visibility/delete)."""
+import main as cityos_main
 
 
 def test_create_board_requires_admin(client, member_id):
@@ -99,14 +100,23 @@ def test_non_admin_cannot_set_column_widths(client, member_id):
 
 
 def test_board_has_default_statuses(client, admin_id):
-    """Every board exposes a status list; a fresh board gets the 7 defaults."""
+    """A fresh board gets the five defaults: בוצע, בטיפול, תקוע, הקפאה, בוטל.
+
+    Every one carries a `base` the engine understands, and two of them share
+    it — תקוע and הקפאה are different words for an item that is not moving, and
+    both park it in on_hold. "טרם הוגדר" is not in the list: it is the state of
+    an item nobody has set, not a value anyone picks.
+    """
     r = client.post("/api/boards", json={"name": "st board", "department_id": 1, "user_id": admin_id})
     bid = r.json()["id"]
     try:
         sts = client.get(f"/api/boards/{bid}?user_id={admin_id}").json().get("statuses")
-        assert isinstance(sts, list) and len(sts) == 7
-        assert {s["key"] for s in sts} >= {"backlog", "in_progress", "done"}
-        assert all({"key", "label", "color"} <= set(s) for s in sts)
+        assert [s["label"] for s in sts] == ["בוצע", "בטיפול", "תקוע", "הקפאה", "בוטל"]
+        assert all({"key", "label", "color", "base"} <= set(s) for s in sts)
+        assert all(s["base"] in {t.value for t in cityos_main.TaskStatus} for s in sts), \
+            "a default status behaves as something the engine does not understand"
+        assert [s["base"] for s in sts] == ["done", "in_progress", "on_hold", "on_hold", "cancelled"]
+        assert "טרם הוגדר" not in [s["label"] for s in sts]
     finally:
         client.delete(f"/api/boards/{bid}?user_id={admin_id}")
 
@@ -344,5 +354,65 @@ def test_inviting_new_member_flags_invited(client, admin_id, guinea_id):
         assert r.status_code == 200 and r.json().get("invited") is True, r.text
         r = client.post(f"/api/boards/{bid}/members", json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
         assert r.status_code == 200 and r.json().get("invited") is False, r.text
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_an_item_on_a_status_no_longer_offered_still_reads_as_a_word(client, admin_id):
+    """backlog, todo and review stopped being offered when the defaults changed.
+    Items saved on them predate that, and must not start rendering as raw keys —
+    _STATUS_KEYS is the engine's set, not the default vocabulary's, so those keys
+    stay valid everywhere that matters."""
+    bid = client.post("/api/boards", json={"name": "legacy st", "user_id": admin_id}).json()["id"]
+    try:
+        tid = client.post("/api/tasks", json={"board_id": bid, "title": "ישן",
+                                             "user_id": admin_id}).json()["id"]
+        r = client.patch(f"/api/tasks/{tid}?user_id={admin_id}", json={"status": "review"})
+        assert r.status_code == 200
+        got = client.get(f"/api/tasks/{tid}", headers={"X-CityOS-User": str(admin_id)}).json()
+        assert got["status"] == "review", "a legacy status could not even be stored"
+        # and a board admin can still put it back in the list by hand
+        r = client.patch(f"/api/boards/{bid}", json={"actor_id": admin_id, "statuses": [
+            {"key": "review", "label": "בבדיקה", "color": "#5A9CF9"},
+            {"key": "done", "label": "בוצע", "color": "#1AC877"}]})
+        assert r.status_code == 200
+        keys = [s["key"] for s in r.json()["statuses"]]
+        assert "review" in keys, "an engine value was rejected as an unknown key"
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_an_automation_naming_a_status_the_board_dropped_does_nothing(client, admin_id):
+    """It refuses rather than writing a value the board cannot show. Found by two
+    automation tests that named "review" and stopped firing when the defaults
+    shrank."""
+    bid = client.post("/api/boards", json={"name": "auto st", "user_id": admin_id}).json()["id"]
+    try:
+        client.post(f"/api/boards/{bid}/automations", json={
+            "actor_id": admin_id, "recipe_id": "created_set_status", "config": {"a_status": "review"}})
+        tid = client.post("/api/tasks", json={"board_id": bid, "title": "חדש",
+                                             "user_id": admin_id}).json()["id"]
+        got = client.get(f"/api/tasks/{tid}", headers={"X-CityOS-User": str(admin_id)}).json()
+        assert got["status"] != "review"
+        assert (got.get("custom_fields") or {}).get("status_unset") is True
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_the_two_statuses_that_share_a_base_stay_distinct(client, admin_id):
+    """תקוע and הקפאה both behave as on_hold. The item has to remember WHICH was
+    chosen, or picking one would show the other."""
+    bid = client.post("/api/boards", json={"name": "share st", "user_id": admin_id}).json()["id"]
+    try:
+        tid = client.post("/api/tasks", json={"board_id": bid, "title": "פריט",
+                                             "user_id": admin_id}).json()["id"]
+        client.patch(f"/api/tasks/{tid}?user_id={admin_id}", json={
+            "status": "on_hold",
+            "custom_fields": {"status_key": "x_frozen", "status_label": "הקפאה",
+                              "status_color": "#FD5AC3", "status_unset": None}})
+        got = client.get(f"/api/tasks/{tid}", headers={"X-CityOS-User": str(admin_id)}).json()
+        cf = got.get("custom_fields") or {}
+        assert got["status"] == "on_hold", "the engine value is not the shared base"
+        assert cf.get("status_key") == "x_frozen" and cf.get("status_label") == "הקפאה"
     finally:
         client.delete(f"/api/boards/{bid}?user_id={admin_id}")

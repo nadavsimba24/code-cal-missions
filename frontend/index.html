@@ -1753,11 +1753,16 @@ body, body *{ font-weight:400!important; }
 
 <script>
 /* ============ monday-style constants ============ */
+/* Every engine value, with a name — the LAST resort for displaying a status,
+   not the vocabulary anyone picks from (that is the board's own list, which
+   defaults to STATUS_ALL). It keeps all seven deliberately: an item saved as
+   backlog, todo or review before those stopped being offered still has to
+   render as a word rather than as a raw key. */
 const STATUS = {
   backlog:{he:'בתכנון',c:'#9699a6'}, todo:{he:'לביצוע',c:'#c4c4c4'},
-  in_progress:{he:'בתהליך',c:'#fdab3d'}, review:{he:'בבדיקה',c:'#579bfc'},
-  done:{he:'הושלם',c:'#00c875'}, cancelled:{he:'בוטל',c:'#e2445c'},
-  on_hold:{he:'בהמתנה',c:'#808080'},
+  in_progress:{he:'בטיפול',c:'#FBAA47'}, review:{he:'בבדיקה',c:'#579bfc'},
+  done:{he:'בוצע',c:'#1AC877'}, cancelled:{he:'בוטל',c:'#9BADBC'},
+  on_hold:{he:'תקוע',c:'#DB2D4C'},
 };
 /* Per-board statuses: the open board defines its own label/color/order for the
    built-in status column (falls back to the global STATUS when uncustomised).
@@ -1783,10 +1788,11 @@ function bStat(key){const m=boardStatusMap();return m[key]||STATUS[key]||{he:key
 /* the full status vocabulary a board admin may draw from (mirrors STATUS_DEFAULTS
    on the server) — the pool for "add another status" (max 7). */
 const STATUS_ALL=[
-  {key:'backlog',he:'בתכנון',c:'#9699a6'},{key:'todo',he:'לביצוע',c:'#c4c4c4'},
-  {key:'in_progress',he:'בתהליך',c:'#fdab3d'},{key:'review',he:'בבדיקה',c:'#579bfc'},
-  {key:'on_hold',he:'בהמתנה',c:'#808080'},{key:'done',he:'הושלם',c:'#00c875'},
-  {key:'cancelled',he:'בוטל',c:'#e2445c'},
+  {key:'done',       he:'בוצע',  c:'#1AC877'},
+  {key:'in_progress',he:'בטיפול',c:'#FBAA47'},
+  {key:'on_hold',    he:'תקוע',  c:'#DB2D4C'},
+  {key:'x_frozen',   he:'הקפאה', c:'#FD5AC3', base:'on_hold'},
+  {key:'cancelled',  he:'בוטל',  c:'#9BADBC'},
 ];
 const PRIORITY = {
   low:{he:'נמוכה',c:'#579bfc'}, medium:{he:'בינונית',c:'#5559df'},

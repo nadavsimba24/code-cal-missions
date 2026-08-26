@@ -83,8 +83,8 @@ def test_it_breaks_the_far_side_down_by_status(client, admin_id):
         client.patch(f"/api/tasks/{tid}?user_id={admin_id}", json={"status": stv})
     _set(client, src, c["id"], [done1, done2, other], admin_id)
     by = {x["label"]: x for x in _report(client, a, admin_id)["by_status"]}
-    assert by["הושלם"]["items"] == 2 and by["בתהליך"]["items"] == 1
-    assert by["הושלם"]["color"], "a status arrived without its colour"
+    assert by["בוצע"]["items"] == 2 and by["בטיפול"]["items"] == 1
+    assert by["בוצע"]["color"], "a status arrived without its colour"
 
 
 def test_it_counts_per_connect_column(client, admin_id):
