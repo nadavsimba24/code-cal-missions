@@ -764,6 +764,34 @@ body.coldragging .col-grip{opacity:1}
 .mir-cell{display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap;font-size:12px}
 .mir-pill{display:inline-block;padding:2px 9px;border-radius:11px;color:#fff;font-weight:600;font-size:11.5px;white-space:nowrap}
 .mir-txt{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+/* cross-board link report */
+.lk-wrap{padding:16px;display:flex;flex-direction:column;gap:14px}
+.lk-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.lk-stat{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.lk-n{font-size:26px;font-weight:800;color:var(--primary);line-height:1.1}
+.lk-l{font-size:13px;color:var(--text);margin-top:3px}
+.lk-h{font-size:11.5px;color:var(--text-light);margin-top:2px}
+.lk-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.lk-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:15px 17px}
+.lk-card h3{font-size:14px;margin:0 0 12px;font-weight:700}
+.lk-bar-row{display:flex;align-items:center;gap:10px;margin:8px 0;font-size:12.5px}
+.lk-bar-name{flex:0 0 33%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.lk-bar{flex:1;height:9px;background:var(--row-hover);border-radius:5px;overflow:hidden}
+.lk-bar-fill{height:100%;background:var(--primary);border-radius:5px}
+.lk-bar-n{flex:0 0 auto;color:var(--text-muted);white-space:nowrap;font-weight:600}
+.lk-bar-n span{font-weight:400;color:var(--text-light);font-size:11.5px}
+.lk-sts{display:flex;flex-direction:column;gap:7px}
+.lk-st{display:flex;align-items:center;gap:8px;font-size:13px}
+.lk-st-l{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lk-dot{width:11px;height:11px;border-radius:50%;flex-shrink:0}
+.lk-note{margin-top:11px;font-size:11.5px;color:var(--text-light)}
+.lk-tag{display:inline-block;background:var(--primary-soft);color:var(--primary-hover);border-radius:6px;padding:2px 8px;font-size:11.5px;font-weight:600;margin:1px}
+.lk-tbl td{padding:9px 12px;border-bottom:1px solid var(--border);font-size:13px}
+.lk-open{padding:5px 10px;font-size:12px}
+.rel-g{margin-bottom:12px}
+.rel-h{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13px;margin-bottom:6px;color:var(--text)}
+.rel-h i{color:var(--primary);font-size:11px}
+.rel-h span{margin-inline-start:auto;color:var(--text-light);font-weight:600;font-size:12px}
 /* the connect-column deletion warning: one consequence per line */
 .confirm-note-rich{text-align:start;line-height:1.55}
 .ci-row{position:relative;padding-inline-start:15px;margin:5px 0}
@@ -1778,6 +1806,7 @@ const VIEWS = [
   {id:'calendar',he:'לוח שנה',ic:'fa-calendar-days'},
   {id:'map',he:'מפה',ic:'fa-map-location-dot'},
   {id:'gis',he:'ניתוח שטח',ic:'fa-globe'},
+  {id:'links',he:'קשרים בין לוחות',ic:'fa-diagram-project'},
 ];
 /* Identity is carried by the transport, never in the URL or body. With `entra`
    the browser holds a session cookie the backend signed after the SSO round
@@ -2773,7 +2802,7 @@ function renderView(){
     const q=_oldImgs.get(im.src); if(q) q.push(im); else _oldImgs.set(im.src,[im]);
   });
   el.innerHTML='';
-  ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
+  ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,links:vLinks,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
   if(_oldImgs.size) el.querySelectorAll('img[src]').forEach(im=>{
     const q=_oldImgs.get(im.src); if(!q||!q.length)return;
     const old=q.shift();                     // hand out one loaded node per slot
@@ -6345,6 +6374,87 @@ function openCellPop(anchor,html,extraClass,above){
   pop.style.left=left+'px'; pop.style.top=top+'px';
   setTimeout(()=>document.addEventListener('click',closeCellPops,{once:true}),0);
   return pop;
+}
+/* ===== קשרים בין לוחות — a report built from the links themselves =====
+   Counted on the server and filtered per reader there, so the totals can never
+   include items this reader may not see. A count is information too. */
+async function vLinks(el){
+  el.innerHTML='<div class="empty" style="padding:40px">טוען…</div>';
+  let d=null;
+  try{ d=await api(`/api/boards/${st.board.id}/links/report`); }
+  catch(e){ el.innerHTML='<div class="empty" style="padding:40px">שגיאה בטעינת הדוח</div>'; return; }
+  if(!(d.connect_columns||[]).length){
+    el.innerHTML=`<div class="empty" style="padding:44px">
+      <i class="fa-solid fa-diagram-project" style="font-size:26px;opacity:.4"></i>
+      <div style="margin-top:10px">אין בלוח זה עמודת קישור בין לוחות.</div>
+      <div style="font-size:12.5px;color:var(--text-light);margin-top:5px">הוסף עמודת קישור כדי לראות כאן דוח חוצה לוחות.</div></div>`;
+    return;
+  }
+  const t=d.totals||{};
+  const stat=(n,label,hint)=>`<div class="lk-stat"><div class="lk-n">${n}</div><div class="lk-l">${esc(label)}</div>${
+    hint?`<div class="lk-h">${esc(hint)}</div>`:''}</div>`;
+  const boards=(d.by_board||[]).map(b=>{
+    const pct=t.links?Math.round(b.links*100/t.links):0;
+    return `<div class="lk-bar-row">
+      <div class="lk-bar-name">${esc(b.board_name||('לוח '+b.board_id))}</div>
+      <div class="lk-bar"><div class="lk-bar-fill" style="width:${pct}%"></div></div>
+      <div class="lk-bar-n">${b.links} <span>קישורים · ${b.items} פריטים</span></div>
+    </div>`;}).join('') || '<div class="rm-note">אין קישורים עדיין</div>';
+  const statuses=(d.by_status||[]).map(x=>`<div class="lk-st">
+      <span class="lk-dot" style="background:${esc(x.color)}"></span>
+      <span class="lk-st-l">${esc(x.label)}</span><b>${x.items}</b></div>`).join('')
+      || '<div class="rm-note">—</div>';
+  const colTitle={}; (d.connect_columns||[]).forEach(c=>colTitle[c.id]=c.title);
+  const rows=(d.items||[]).filter(r=>r.link_count).map(r=>`<tr>
+      <td style="font-weight:600">${esc(r.title)}</td>
+      <td>${Object.entries(r.by_column).map(([cid,ids])=>
+        `<span class="lk-tag">${esc(colTitle[cid]||cid)} · ${ids.length}</span>`).join(' ')}</td>
+      <td style="text-align:center">${r.link_count}</td>
+      <td style="text-align:left"><button class="btn btn-ghost lk-open" onclick="openRelated(${r.task_id})">
+        <i class="fa-solid fa-diagram-project"></i> פריטים קשורים</button></td>
+    </tr>`).join('');
+  el.innerHTML=`<div class="lk-wrap">
+    <div class="lk-stats">
+      ${stat(t.links||0,'קישורים בסך הכל')}
+      ${stat(t.linked_items||0,'פריטים מקושרים','מתוך '+(t.items||0))}
+      ${stat(t.unlinked_items||0,'ללא קישור')}
+      ${stat((d.by_board||[]).length,'לוחות מקושרים')}
+    </div>
+    <div class="lk-cols">
+      <div class="lk-card"><h3>לאן מגיעים הקשרים</h3>${boards}</div>
+      <div class="lk-card"><h3>מצב הפריטים המקושרים</h3><div class="lk-sts">${statuses}</div>
+        <div class="lk-note">הסטטוס נקרא מהפריט המקושר, במילון של הלוח שלו.</div></div>
+    </div>
+    <div class="lk-card">
+      <h3>פריטים ומה הם מקשרים</h3>
+      ${rows?`<div style="overflow-x:auto"><table class="tbl lk-tbl"><thead><tr>
+        <th style="text-align:start">פריט</th><th style="text-align:start">עמודות</th>
+        <th>קישורים</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        :'<div class="rm-note">אף פריט בלוח אינו מקושר עדיין</div>'}
+    </div>
+  </div>`;
+}
+/* everything one item is connected to, across every column and board */
+async function openRelated(taskId){
+  let d=null;
+  try{ d=await api(`/api/tasks/${taskId}/related`); }
+  catch(e){ toast('שגיאה בטעינת הפריטים הקשורים'); return; }
+  const groups=(d.groups||[]).map(g=>`<div class="rel-g">
+      <div class="rel-h"><i class="fa-solid fa-diagram-project"></i> ${esc(g.column_title)}
+        <span>${g.items.length}</span></div>
+      ${g.items.map(it=>it.deleted
+        ? `<div class="ll-row ll-del"><i class="fa-solid fa-trash-can"></i>
+             <span class="ll-t">${esc(it.title)}</span><small>נמחק · ${esc(it.board_name)}</small></div>`
+        : `<button class="ll-row" onclick="closeModals();openLinkedItem(${it.id})">
+             <i class="fa-solid fa-arrow-up-right-from-square"></i>
+             <span class="ll-t">${esc(it.title)}</span><small>${esc(it.board_name)}</small></button>`).join('')}
+    </div>`).join('');
+  showModal(`<h2><i class="fa-solid fa-diagram-project" style="color:var(--primary)"></i> פריטים קשורים · ${esc(d.title||'')}</h2>
+    <div class="mbody">
+      <div style="margin:0 0 10px;color:var(--text-muted);font-size:13px">${d.total||0} פריטים קשורים</div>
+      <div class="ll-list">${groups||'<div class="rm-note">אין פריטים קשורים</div>'}</div>
+    </div>
+    <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">סגור</button></div>`);
 }
 /* timeline */
 function timelineBar(v){

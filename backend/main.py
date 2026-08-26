@@ -3380,6 +3380,139 @@ def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] =
                           for t in rows],
                 "total": total, "has_more": off + len(rows) < total}
 
+def _item_link_map(db, task, cols, viewer):
+    """Every connect column on this item → the linked ids the viewer may see."""
+    out = {}
+    for c in cols:
+        if c.get("type") != "connect":
+            continue
+        ids = (_linked_ids(db, task.id, c["id"]) if _is_two_way(c)
+               else [i for i in ((task.custom_fields or {}).get(c["id"]) or [])
+                     if isinstance(i, int)])
+        ids = _visible_link_ids(db, ids, viewer)
+        if ids:
+            out[c["id"]] = ids
+    return out
+
+
+@app.get("/api/boards/{board_id}/links/report")
+def board_links_report(board_id: int, actor_id: int = Depends(current_user_id)):
+    """A cross-board report built from the links, not from copied data.
+
+    Three questions a board's links can answer that no single board can:
+    where the work reaches (which other boards, and how heavily), what state the
+    far side is in (the breakdown by status of everything this board points at),
+    and which items on this board are not connected to anything at all.
+
+    Everything is filtered per reader by the same rule the cells use, so the
+    report can never total up items the reader is not allowed to see — a count
+    is information too.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        cols = [c for c in _board_columns(db, board_id) if c.get("type") == "connect"]
+        tasks = db.query(Task).filter(Task.board_id == board_id,
+                                      Task.parent_id == None,      # noqa: E711
+                                      Task.is_archived == False).order_by(  # noqa: E712
+                                          Task.position, Task.id).all()
+        rows, every = [], set()
+        for t in tasks:
+            m = _item_link_map(db, t, cols, actor_id)
+            ids = [i for v in m.values() for i in v]
+            every.update(ids)
+            rows.append({"task_id": t.id, "title": t.title, "by_column": m,
+                         "link_count": len(ids)})
+        far = {t.id: t for t in db.query(Task).filter(Task.id.in_(every))
+               .execution_options(include_deleted=True).all()} if every else {}
+        boards = {x.id: x for x in db.query(Board).filter(
+            Board.id.in_({t.board_id for t in far.values()}))
+            .execution_options(include_deleted=True).all()} if far else {}
+
+        per_board, per_status, per_column = {}, {}, {}
+        for r in rows:
+            for cid, ids in r["by_column"].items():
+                per_column[cid] = per_column.get(cid, 0) + len(ids)
+                for i in ids:
+                    t2 = far.get(i)
+                    if t2 is None:
+                        continue
+                    tb = boards.get(t2.board_id)
+                    e = per_board.setdefault(t2.board_id, {
+                        "board_id": t2.board_id, "board_name": tb.name if tb else "",
+                        "links": 0, "items": set()})
+                    e["links"] += 1
+                    e["items"].add(t2.id)
+                    # the far side's state, in ITS board's vocabulary
+                    if (t2.custom_fields or {}).get("status_unset"):
+                        label, color = "טרם הוגדר", "#c4c4c4"
+                    else:
+                        key = _task_status_key(t2)
+                        ent = next((x for x in _board_statuses(tb) if x["key"] == str(key)),
+                                   None) if tb else None
+                        label = ent["label"] if ent else str(key)
+                        color = (ent or {}).get("color") or "#c4c4c4"
+                    sb = per_status.setdefault(label, {"label": label, "color": color,
+                                                       "items": set()})
+                    sb["items"].add(t2.id)
+
+        col_titles = {c["id"]: c.get("title") or c["id"] for c in cols}
+        return {
+            "board_id": board_id, "board_name": b.name,
+            "connect_columns": [{"id": c["id"], "title": col_titles[c["id"]],
+                                 "two_way": _is_two_way(c),
+                                 "links": per_column.get(c["id"], 0)} for c in cols],
+            # where the work reaches
+            "by_board": sorted(({**v, "items": len(v["items"])} for v in per_board.values()),
+                               key=lambda x: -x["links"]),
+            # what state the far side is in
+            "by_status": sorted(({"label": v["label"], "color": v["color"],
+                                  "items": len(v["items"])} for v in per_status.values()),
+                                key=lambda x: -x["items"]),
+            "items": rows,
+            "totals": {"items": len(rows),
+                       "linked_items": sum(1 for r in rows if r["link_count"]),
+                       "unlinked_items": sum(1 for r in rows if not r["link_count"]),
+                       "links": sum(r["link_count"] for r in rows),
+                       "far_items": len(every)},
+        }
+
+
+@app.get("/api/tasks/{task_id}/related")
+def task_related(task_id: int, actor_id: int = Depends(current_user_id)):
+    """Everything linked to one item, across every column and board.
+
+    Both directions: what this item points at, and — for a two-way column —
+    what points back at it. Which is the difference between "related" and
+    "dependent" as far as the data can tell them apart.
+    """
+    with Session(engine) as db:
+        task = _require_task_view(db, task_id, actor_id)
+        cols = _board_columns(db, task.board_id)
+        titles = {c.get("id"): c.get("title") or c.get("id") for c in cols}
+        groups = []
+        for cid, ids in _item_link_map(db, task, cols, actor_id).items():
+            far = {t.id: t for t in db.query(Task).filter(Task.id.in_(ids))
+                   .execution_options(include_deleted=True).all()}
+            bnames = {x.id: x.name for x in db.query(Board).filter(
+                Board.id.in_({t.board_id for t in far.values()}))
+                .execution_options(include_deleted=True).all()}
+            state = _link_states(db, ids, actor_id)
+            groups.append({
+                "column_id": cid, "column_title": titles.get(cid, cid),
+                "items": [{"id": i, "title": far[i].title, "board_id": far[i].board_id,
+                           "board_name": bnames.get(far[i].board_id, ""),
+                           "status": _task_status_key(far[i]),
+                           "deleted": state.get(i) in ("deleted", "deleted_board")}
+                          for i in ids if i in far],
+            })
+        return {"task_id": task_id, "title": task.title, "groups": groups,
+                "total": sum(len(g["items"]) for g in groups)}
+
+
 @app.get("/api/boards/{board_id}/mirror-sources")
 def mirror_sources(board_id: int, connect: str = "", actor_id: int = Depends(current_user_id)):
     """Which fields a mirror column on this board could show, per connect column.
@@ -4176,6 +4309,9 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
             pval, pcf = _resolve_priority(pboard, data["priority"])
             try:
                 nv = Priority(pval)
+                _cfu = dict(task.custom_fields or {})    # same reasoning as status, below
+                if _cfu.pop("priority_unset", None) is not None:
+                    task.custom_fields = _cfu
                 if st_val(task.priority) != st_val(nv):
                     _audit(db, task_id, "update", "priority", st_val(task.priority), st_val(nv), actor)
                 task.priority = nv
@@ -4191,6 +4327,15 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         if data.get("status"):
             try:
                 nv = TaskStatus(data["status"])
+                # Naming a status IS choosing one, so the "nothing picked yet"
+                # flag goes — but only once the value is accepted, or a rejected
+                # status would still make the cell claim one was chosen. Only the
+                # board UI used to clear it, by sending it in custom_fields, so a
+                # status set through the API, an import or a script left the cell
+                # reading "טרם הוגדר" while task.status said otherwise.
+                _cfu = dict(task.custom_fields or {})
+                if _cfu.pop("status_unset", None) is not None:
+                    task.custom_fields = _cfu
                 if st_val(task.status) != st_val(nv):
                     _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
                 task.status = nv
