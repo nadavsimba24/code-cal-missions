@@ -946,6 +946,30 @@ def _link_states(db, ids, user_id):
     return {i: seen.get(i) for i in ids}
 
 
+def _require_task_view(db, task_id, actor):
+    """The task, if `actor` may see it. 403/404 otherwise.
+
+    A connect column hands out item ids by design, and an id was enough to read
+    an item's conversation, its files and its whole history — including its
+    title — on a board the caller was never invited to. Seeing a link is not
+    permission to open what it points at, and that has to be enforced on every
+    door into the item, not only on GET /api/tasks/{id}.
+    """
+    t = db.query(Task).filter(Task.id == task_id).first()
+    if not t:
+        raise HTTPException(404, "task not found")
+    board = db.query(Board).filter(Board.id == t.board_id).first()
+    if not board or board.deleted_at:
+        raise HTTPException(404, "task not found")
+    if actor is not None:
+        role = _board_role(db, t.board_id, actor)
+        if role is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        if _item_perm(t, actor, role) == "none":
+            raise HTTPException(403, "אין לך גישה לפריט זה")
+    return t
+
+
 def _visible_link_ids(db, ids, user_id):
     """Of these item ids, the ones `user_id` may see — live or waiting in the bin.
 
@@ -3911,8 +3935,9 @@ def _serialize_comment(c, db):
     }
 
 @app.get("/api/tasks/{task_id}/comments")
-def list_comments(task_id: int):
+def list_comments(task_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
+        _require_task_view(db, task_id, actor_id)
         cs = db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at).all()
         items = [_serialize_comment(c, db) for c in cs]
         by_id = {i["id"]: {**i, "replies": []} for i in items}
@@ -4095,11 +4120,9 @@ def delete_comment(cid: int, user_id: int = Depends(current_user_id)):
         return {"status": "deleted"}
 
 @app.get("/api/tasks/{task_id}/files")
-def task_files(task_id: int):
+def task_files(task_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        task = db.query(Task).filter(Task.id == task_id).first()
-        if not task:
-            raise HTTPException(404, "task not found")
+        task = _require_task_view(db, task_id, actor_id)
         out = []
         for c in db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at.desc()).all():
             u = db.query(User).filter(User.id == c.user_id).first()
@@ -4172,6 +4195,8 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
     in the filter did nothing. The actor is now a separate parameter.
     """
     with Session(engine) as db:
+        task = _require_task_view(db, task_id, actor_id)
+        cols = {c.get("id"): c for c in _board_columns(db, task.board_id)}
         q = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id == task_id)
         if user_id:
             q = q.filter(AuditLog.changed_by == user_id)
@@ -4181,9 +4206,12 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
                 continue
             if date and (not l.created_at or str(l.created_at)[:10] != date):
                 continue
+            vals = _log_link_row(db, l.field_name, l.old_value, l.new_value, cols, actor_id)
+            if vals is None:
+                continue                      # the change was invisible to this viewer
             u = db.query(User).filter(User.id == l.changed_by).first()
             out.append({"id": l.id, "action": l.action, "field": l.field_name,
-                        "old": l.old_value, "new": l.new_value,
+                        "old": vals[0], "new": vals[1],
                         "user_id": l.changed_by, "user_name": u.name if u else "מערכת",
                         "can_undo": l.action == "update", "created_at": l.created_at})
         return {"activity": out}
@@ -4199,12 +4227,43 @@ _INTERNAL_LOG_FIELDS = {
 }
 
 
+def _log_link_row(db, field, old, new, cols, viewer):
+    """A log row's before/after for a connect column, as `viewer` may see it.
+
+    The stored values are raw id lists, so the history is a second way to read
+    the ids the cell withholds — and worse, a way to notice that hidden links
+    exist at all, which the cell is careful not to reveal. Both values are cut
+    down to the ids this viewer may see.
+
+    Returns None when the row then says nothing: if what changed was invisible
+    to them, a "changed from [] to []" line is noise that also confirms
+    something happened. Better to leave it out.
+    """
+    if viewer is None or not str(field or "").startswith("col:"):
+        return old, new
+    col = cols.get(str(field)[4:])
+    if not col or col.get("type") != "connect":
+        return old, new
+
+    def seen(v):
+        try:
+            ids = json.loads(v) if v else []
+        except (ValueError, TypeError):
+            return v
+        if not isinstance(ids, list):
+            return v
+        return json.dumps(_visible_link_ids(db, [i for i in ids if isinstance(i, int)], viewer))
+
+    o, n = seen(old), seen(new)
+    return None if o == n else (o, n)
+
+
 def _board_task_ids(db, board_id):
     """Ids of every item on the board, sub-items included — they are Tasks too."""
     return [i for (i,) in db.query(Task.id).filter(Task.board_id == board_id).all()]
 
 
-def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400):
+def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewer=None):
     """Every audited change on the board, newest first.
 
     Same records the item log reads — AuditLog rows for tasks — only gathered
@@ -4220,14 +4279,18 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400):
         q = q.filter(AuditLog.changed_by == user_id)
     titles = {i: t for (i, t) in db.query(Task.id, Task.title).filter(Task.id.in_(ids)).all()}
     users = {u.id: u.name for u in db.query(User).all()}
+    cols = {c.get("id"): c for c in _board_columns(db, board_id)}
     out = []
     for l in q.order_by(AuditLog.created_at.desc()).limit(max(1, min(2000, limit * 3))).all():
         if l.field_name in _INTERNAL_LOG_FIELDS:
             continue
         if date and (not l.created_at or str(l.created_at)[:10] != date):
             continue
+        vals = _log_link_row(db, l.field_name, l.old_value, l.new_value, cols, viewer)
+        if vals is None:
+            continue                          # the change was invisible to this viewer
         out.append({"id": l.id, "action": l.action, "field": l.field_name,
-                    "old": l.old_value, "new": l.new_value,
+                    "old": vals[0], "new": vals[1],
                     "task_id": l.entity_id, "task_title": titles.get(l.entity_id, "—"),
                     "user_id": l.changed_by, "user_name": users.get(l.changed_by, "מערכת"),
                     "can_undo": l.action == "update", "created_at": l.created_at})
@@ -4274,7 +4337,8 @@ def board_activity(board_id: int, actor_id: int = Depends(current_user_id),
         # seeing the log means seeing the board — the same gate the board itself uses
         if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
-        return {"activity": _board_activity_rows(db, board_id, user_id, date, limit),
+        return {"activity": _board_activity_rows(db, board_id, user_id, date, limit,
+                                                 viewer=actor_id),
                 # sent alongside so the filter's options never depend on what the
                 # current filter happens to have returned
                 "people": _board_log_people(db, board_id)}
@@ -4289,7 +4353,7 @@ def export_board_activity(board_id: int, actor_id: int = Depends(current_user_id
             raise HTTPException(404, "board not found")
         if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
-        rows = _board_activity_rows(db, board_id, user_id, date, limit=5000)
+        rows = _board_activity_rows(db, board_id, user_id, date, limit=5000, viewer=actor_id)
         buf = io.StringIO()
         buf.write("\ufeff")  # BOM so Excel reads Hebrew UTF-8
         w = csv.writer(buf)
@@ -4303,10 +4367,14 @@ def export_board_activity(board_id: int, actor_id: int = Depends(current_user_id
 
 
 @app.get("/api/tasks/{task_id}/activity/export")
-def export_activity(task_id: int):
+def export_activity(task_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
+        task = _require_task_view(db, task_id, actor_id)
+        cols = {c.get("id"): c for c in _board_columns(db, task.board_id)}
         logs = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id == task_id)\
                  .order_by(AuditLog.created_at.desc()).all()
+        logs = [l for l in logs
+                if _log_link_row(db, l.field_name, l.old_value, l.new_value, cols, actor_id) is not None]
         buf = io.StringIO()
         buf.write("﻿")  # BOM so Excel reads Hebrew UTF-8
         w = csv.writer(buf)
