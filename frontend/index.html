@@ -793,6 +793,8 @@ body.coldragging .col-grip{opacity:1}
 .rel-h i{color:var(--primary);font-size:11px}
 .rel-h span{margin-inline-start:auto;color:var(--text-light);font-weight:600;font-size:12px}
 .lg-link-act{font-weight:700;font-size:12px;color:var(--text-muted);margin-inline-end:4px}
+.lf-sel{width:100%;padding:7px 9px;border:1px solid var(--border-strong);border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
+.lf-note{margin-top:5px;font-size:11.5px;color:var(--text-light)}
 /* the connect-column deletion warning: one consequence per line */
 .confirm-note-rich{text-align:start;line-height:1.55}
 .ci-row{position:relative;padding-inline-start:15px;margin:5px 0}
@@ -2320,7 +2322,7 @@ function deleteBoardById(id){
 }
 async function openBoard(id){
   if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.collapsedGroups.clear(); st.colSort=null; st.subSort=null; }
-  st.filters={q:'',people:[],status:'',priority:'',sort:''};
+  st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
   document.getElementById('view').innerHTML='<div class="spin"></div>';
@@ -3100,13 +3102,32 @@ function copyItemId(e,taskId,mode){
 }
 
 /* ===== board filtering / search / sort ===== */
+/* The ids a row holds in its connect columns — one column, or all of them.
+   Only what the server sent, which is already only what this reader may see,
+   so a filter can never select rows by a link they cannot see. */
+function linkIdsOf(t,colId){
+  const cols=colId?customColumns().filter(c=>c.id===colId&&c.type==='connect')
+                  :customColumns().filter(c=>c.type==='connect');
+  const out=[];
+  cols.forEach(c=>{const v=(t.custom_fields||{})[c.id]; if(Array.isArray(v))out.push(...v);});
+  return out;
+}
+function linkNamesOf(t,colId){
+  return linkIdsOf(t,colId).map(id=>((st.linkCache||{})[id]||{}).title).filter(Boolean);
+}
 function applyFilters(tasks){
   const f=st.filters; let out=(tasks||[]).slice();
   if(f.q){const q=f.q.trim().toLowerCase();
     out=out.filter(t=>(t.title||'').toLowerCase().includes(q)
       || (t.description||'').toLowerCase().includes(q)
       || (t.tags||[]).some(x=>String(x).toLowerCase().includes(q))
-      || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q)));}
+      || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q))
+      // an item is findable by what it is linked to, not only by its own words
+      || linkNamesOf(t).some(n=>n.toLowerCase().includes(q)));}
+  const lf=f.links||{};
+  if(lf.mode==='has')  out=out.filter(t=>linkIdsOf(t,lf.col).length);
+  if(lf.mode==='none') out=out.filter(t=>!linkIdsOf(t,lf.col).length);
+  if(lf.mode==='item'&&lf.item) out=out.filter(t=>linkIdsOf(t,lf.col).includes(+lf.item));
   if(f.people.length)out=out.filter(t=>(t.assignees||[]).some(a=>f.people.includes(a.id)));
   if(f.status)out=out.filter(t=>statusKeyOf(t)===f.status);
   if(f.priority)out=out.filter(t=>priorityKeyOf(t)===f.priority);
@@ -3168,7 +3189,19 @@ function customSortVal(t,col){
   if(col.type==='status')  return colStatusOrder(t,col.id);
   if(col.type==='timeline')return (v&&v.from)?String(v.from):'9999-99-99';   // by start, empty last
   if(col.type==='files')   return Array.isArray(v)?v.length:0;               // how many attachments
-  if(col.type==='connect') return Array.isArray(v)?v.length:0;               // how many links
+  // Sorting a connect column has to mean one thing. A single-link column has
+  // exactly one name to sort by, so it sorts by that name. A column that holds
+  // several has no single name — sorting by "the first" is a sort by whichever
+  // one happened to be added first — so it sorts by HOW MANY, which is the only
+  // unambiguous reading, and the header says so.
+  if(col.type==='connect'){
+    const ids=Array.isArray(v)?v:[];
+    if(connectIsMulti(col)) return ids.length;
+    const it=(st.linkCache||{})[ids[0]];
+    // an empty cell sorts last on ascending, the same convention as the status,
+    // priority and timeline columns — not first, where '' would put it
+    return it&&it.title?it.title.toLowerCase():'\uffff';
+  }
   if(col.type==='people'){                                                   // by the first name, not the id
     const names=(Array.isArray(v)?v:[]).map(id=>((st.users||[]).find(u=>u.id===id)||{}).name)
                                        .filter(Boolean).sort((a,b)=>a.localeCompare(b,'he'));
@@ -3178,6 +3211,7 @@ function customSortVal(t,col){
   if(v&&typeof v==='object')return String(v.label||v.name||v.title||'').toLowerCase();
   return v==null?'':v;
 }
+function connectIsMulti(col){ return !!(col&&col.connect&&col.connect.multiple!==false); }
 function sortVal(t,key){
   if(key==='item')return (t.title||'').toLowerCase();
   if(key==='assignees')return (((t.assignees||[])[0]||{}).name||'').toLowerCase();
@@ -3208,10 +3242,16 @@ function sortBtn(key){
   const cs=st.colSort||{};
   const on=cs.key===key;
   const ic=!on?'fa-sort':(cs.dir==='desc'?'fa-arrow-down-wide-short':'fa-arrow-up-short-wide');
-  const tip=!on?'מיון':(cs.dir==='desc'?'מיון יורד — לחץ לסדר עולה':'מיון עולה — לחץ לביטול');
+  let tip=!on?'מיון':(cs.dir==='desc'?'מיון יורד — לחץ לסדר עולה':'מיון עולה — לחץ לביטול');
+  // a connect column says what it is sorting by, because the two readings are
+  // genuinely different and the arrow alone does not tell them apart
+  const c=customColumns().find(x=>x.id===key);
+  if(c&&c.type==='connect')
+    tip+=connectIsMulti(c)?' · לפי מספר הפריטים המקושרים':' · לפי שם הפריט המקושר';
   return `<button class="col-sort${on?' on':''}" title="${tip}" onclick="columnSort(event,'${key}')"><i class="fa-solid ${ic}"></i></button>`;
 }
-function filtersActive(){const f=st.filters;return !!(f.q||f.people.length||f.status||f.priority||f.sort);}
+function filtersActive(){const f=st.filters;
+  return !!(f.q||f.people.length||f.status||f.priority||f.sort||(f.links&&f.links.mode));}
 function noMatchHTML(){
   return `<div class="errpage">
     <div class="err-badge"><i class="fa-solid fa-magnifying-glass"></i></div>
@@ -3241,7 +3281,7 @@ function goHome(){
 }
 
 function setSearch(v){st.filters.q=v;const i=document.getElementById('tb-q');if(i&&i.value!==v)i.value=v;refreshToolbar();renderView();}
-function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:''};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();refreshToolbar();renderView();}
+function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();refreshToolbar();renderView();}
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
 document.addEventListener('click',e=>{if(!e.target.closest('.tb-ctl'))closePops();});
@@ -4621,9 +4661,42 @@ function renderPop(name){
     <div class="arr-sec"><div class="pop-title"><i class="fa-regular fa-user"></i> אדם</div><div class="pop-people">${people}</div></div>
     <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-filter"></i> סינון לפי סטטוס</div><div class="pop-chips">${sChips}</div></div>
     <div class="arr-sec"><div class="pop-title">סינון לפי עדיפות</div><div class="pop-chips">${pChips}</div></div>
+    ${linkFilterHTML()}
     <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</div>${sort}</div>
     <div class="arr-foot"><button class="btn btn-ghost" style="color:var(--red);width:100%;justify-content:center" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button></div>`;
 }
+/* Filtering by the links themselves: is there one, is there none, or is it
+   this particular item. The item list is built from what is actually linked on
+   this board, so it can only ever offer something that would return a row. */
+function linkFilterHTML(){
+  const cols=customColumns().filter(c=>c.type==='connect');
+  if(!cols.length)return '';
+  const lf=st.filters.links||{};
+  const colOpts=`<option value="">כל עמודות הקישור</option>`+cols.map(c=>
+    `<option value="${esc(c.id)}" ${lf.col===c.id?'selected':''}>${esc(c.title||c.id)}</option>`).join('');
+  const seen=new Map();
+  ((st.board&&st.board.tasks)||[]).forEach(t=>linkIdsOf(t,lf.col).forEach(id=>{
+    const it=(st.linkCache||{})[id]; if(it&&it.title&&!seen.has(id))seen.set(id,it.title);
+  }));
+  const items=[...seen.entries()].sort((a,b)=>String(a[1]).localeCompare(String(b[1]),'he'));
+  const itemOpts=`<option value="">בחר פריט מקושר…</option>`+items.map(([id,title])=>
+    `<option value="${id}" ${+lf.item===id?'selected':''}>${esc(title)}</option>`).join('');
+  const btn=(mode,label,ic)=>`<button class="pop-chip ${lf.mode===mode?'sel':''}" onclick="setLinkMode('${mode}')">
+      <i class="fa-solid ${ic}" style="font-size:10px"></i> ${label}</button>`;
+  return `<div class="arr-sec">
+    <div class="pop-title"><i class="fa-solid fa-diagram-project"></i> קישורים</div>
+    <select class="lf-sel" onchange="setLinkCol(this.value)">${colOpts}</select>
+    <div class="pop-chips" style="margin-top:7px">
+      ${btn('has','יש קישור','fa-link')}${btn('none','אין קישור','fa-link-slash')}${btn('item','פריט מסוים','fa-crosshairs')}
+    </div>
+    ${lf.mode==='item'?`<select class="lf-sel" style="margin-top:7px" onchange="setLinkItem(this.value)">${itemOpts}</select>
+      ${items.length?'':'<div class="lf-note">אין פריטים מקושרים בלוח זה</div>'}`:''}
+  </div>`;
+}
+function setLinkCol(v){ st.filters.links.col=v||''; st.filters.links.item=0; refreshToolbar(); reArrange(); renderView(); }
+function setLinkMode(m){ const l=st.filters.links; l.mode=(l.mode===m)?'':m; if(l.mode!=='item')l.item=0;
+  refreshToolbar(); reArrange(); renderView(); }
+function setLinkItem(v){ st.filters.links.item=+v||0; refreshToolbar(); reArrange(); renderView(); }
 function reArrange(){const c=document.getElementById('ctl-arrange');if(c&&c.classList.contains('open'))renderPop('arrange');}
 function toggleFilterPerson(id,on){const p=st.filters.people,i=p.indexOf(id);if(on&&i<0)p.push(id);if(!on&&i>=0)p.splice(i,1);refreshToolbar();reArrange();renderView();}
 function setStatusFilter(s){st.filters.status=st.filters.status===s?'':s;refreshToolbar();reArrange();renderView();}
@@ -4631,7 +4704,8 @@ function setPriorityFilter(s){st.filters.priority=st.filters.priority===s?'':s;r
 function setSort(s){st.filters.sort=s||'';refreshToolbar();reArrange();renderView();}
 function refreshToolbar(){
   const f=st.filters;
-  const total=(f.people.length||0)+(f.status?1:0)+(f.priority?1:0)+(f.sort?1:0);
+  const total=(f.people.length||0)+(f.status?1:0)+(f.priority?1:0)+(f.sort?1:0)
+             +((f.links&&f.links.mode)?1:0);
   const c=document.getElementById('ctl-arrange');
   if(c){c.classList.toggle('on',!!total);const b=document.getElementById('badge-arrange');if(b)b.textContent=total||'';}
   const qc=document.getElementById('tb-q-clear'); if(qc)qc.classList.toggle('show',!!f.q);
