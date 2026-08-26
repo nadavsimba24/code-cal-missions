@@ -2832,6 +2832,26 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         creator = actor_id
         cf = dict(data.get("custom_fields") or {})
         _filter_people_values(db, board_id, cf, None)   # invited members only
+        # Connect columns on creation. This path never had the rules the edit
+        # path has, so an item could be CREATED holding links to items the
+        # creator cannot see — the same hole update_task closed, one endpoint
+        # over. It is also what makes duplicating an item carry its links: the
+        # copy posts the original's cells, and a two-way value is not a cell at
+        # all but a relationship, so it has to be replayed as one.
+        _bcols = (board.settings or {}).get("columns", []) if board else []
+        _pending_links = []
+        for _c in _bcols:
+            if _c.get("type") != "connect":
+                continue
+            _v = cf.pop(_c["id"], None)
+            if not isinstance(_v, list) or not _v:
+                continue
+            if not _duplicate_links_enabled():
+                continue                       # system policy: a copy starts unlinked
+            if _is_two_way(_c):
+                _pending_links.append((_c, _v))
+            else:
+                cf[_c["id"]] = _merge_link_ids(db, _v, [], actor_id, _is_multi(_c))
         # A new item has no status yet — it shows "טרם הוגדר" until someone picks
         # one. task.status still holds the group's value so grouping, kanban and
         # the charts behave normally; this only says a human has not chosen. It
@@ -2875,6 +2895,10 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         # "created" entry (not undoable — it is history, not a field change)
         _audit(db, task.id, "create", field=("subitem" if parent_id else "item"),
                old=None, new=task.title, user_id=actor_id)
+        # two-way links need the row to exist first, since the relationship is
+        # stored against the item id rather than in the item
+        for _c, _v in _pending_links:
+            _set_links(db, task, _c, _v, actor_id)
         # notify anyone assigned at creation time (skip the creator), honoring the switch
         if ids:
             board = db.query(Board).filter(Board.id == board_id).first()
@@ -2977,6 +3001,116 @@ def _linked_ids(db, task_id, col_id):
                 (ItemLink.b_task_id == task_id) & (ItemLink.b_col == col_id))).all():
         out.append(l.b_task_id if (l.a_task_id == task_id and l.a_col == col_id) else l.a_task_id)
     return out
+
+
+# Whether copying an item copies the links in its connect columns. A
+# system-level switch, defaulting to on because a duplicate that silently loses
+# its relationships is the more surprising of the two. Set
+# CITYOS_DUPLICATE_ITEM_LINKS=0 where the business rule says a copy starts
+# unlinked.
+def _duplicate_links_enabled():
+    return os.getenv("CITYOS_DUPLICATE_ITEM_LINKS", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _matching_connect_col(target_cols, col):
+    """The column on the target board that can hold this column's links, if any.
+
+    By id first — boards cloned from one another share column ids, and that is
+    the only match that is certain. Otherwise by title, type and direction,
+    which is what an admin who built "the same column" on both boards means.
+    Anything looser would put links in a column that was never meant for them.
+    """
+    cid = col.get("id")
+    hit = next((c for c in target_cols
+                if c.get("type") == "connect" and c.get("id") == cid), None)
+    if hit:
+        return hit
+    title = (col.get("title") or "").strip()
+    if not title:
+        return None
+    return next((c for c in target_cols
+                 if c.get("type") == "connect"
+                 and (c.get("title") or "").strip() == title
+                 and bool(_is_two_way(c)) == bool(_is_two_way(col))), None)
+
+
+def _links_the_column_allows(db, col, ids):
+    """Of these linked ids, the ones `col` is actually configured to hold.
+
+    A connect column names the boards it links to, so a link whose far end is
+    on some other board has nowhere to live in it. For a two-way column the
+    reverse also needs a column on that board to appear in.
+    """
+    allowed = {int(b) for b in (_connect_cfg(col).get("board_ids") or [])
+               if str(b).lstrip("-").isdigit()}
+    if not allowed or not ids:
+        return []
+    rows = {t.id: t for t in db.query(Task).filter(Task.id.in_(list(ids)))
+            .execution_options(include_deleted=True).all()}
+    out = []
+    for i in ids:
+        t = rows.get(i)
+        if t is None or t.board_id not in allowed:
+            continue
+        if _is_two_way(col) and not _mirror_col_for(db, col, t.board_id):
+            continue
+        out.append(i)
+    return out
+
+
+def _carry_links_across_boards(db, task, src_board_id, target_board_id, actor):
+    """Move an item's connect values to the target board's own columns.
+
+    A link is stored against a COLUMN, and column ids do not survive a move:
+    the item lands on a board whose columns are different ones. Left alone the
+    rows kept pointing at a column that does not exist where the item now
+    lives — invisible from the target board, still showing on the far side of a
+    two-way link, which is the same disagreement a deleted column used to
+    cause.
+
+    So each connect value is re-homed into the matching column on the target
+    board, and only the links that column is configured to hold survive. What
+    cannot be carried is dropped and written to the item's history, because a
+    relationship disappearing during a move is not something to discover later.
+    """
+    src_cols = _board_columns(db, src_board_id)
+    tgt_cols = _board_columns(db, target_board_id)
+    cf = dict(task.custom_fields or {})
+    touched = False
+    for col in src_cols:
+        if col.get("type") != "connect":
+            continue
+        cid = col["id"]
+        two_way = _is_two_way(col)
+        had = _linked_ids(db, task.id, cid) if two_way else \
+              [i for i in (cf.get(cid) or []) if isinstance(i, int)]
+        # the source column's cell has no meaning on the target board either way
+        cf.pop(cid, None)
+        if two_way:
+            _drop_links_for_tasks_in_column(db, task.id, cid)
+        if not had:
+            continue
+        tgt = _matching_connect_col(tgt_cols, col)
+        keep = _links_the_column_allows(db, tgt, had) if tgt else []
+        if keep:
+            if _is_two_way(tgt):
+                _set_links(db, task, tgt, keep, actor)
+            else:
+                cf[tgt["id"]] = keep if _is_multi(tgt) else keep[:1]
+        if sorted(keep) != sorted(had):
+            _audit(db, task.id, "update", "col:" + cid,
+                   json.dumps(sorted(had)), json.dumps(sorted(keep)), actor)
+        touched = True
+    if touched or cf != (task.custom_fields or {}):
+        task.custom_fields = cf
+
+
+def _drop_links_for_tasks_in_column(db, task_id, col_id):
+    """Just this item's links in just this column — used when it moves away."""
+    db.query(ItemLink).filter(
+        or_((ItemLink.a_task_id == task_id) & (ItemLink.a_col == col_id),
+            (ItemLink.b_task_id == task_id) & (ItemLink.b_col == col_id))
+    ).delete(synchronize_session=False)
 
 
 def _drop_links_for_tasks(db, task_ids):
@@ -4553,6 +4687,10 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             wanted = data.get("group_id")
             grp = next((g for g in groups if g.id == wanted), None) or (groups[0] if groups else None)
             subs = db.query(Task).filter(Task.parent_id == task.id).all()
+            # while the item still belongs to the source board, whose columns
+            # are the ones its links are keyed on
+            for t in [task] + subs:
+                _carry_links_across_boards(db, t, _src_board, target, actor)
             for t in [task] + subs:
                 t.board_id = target
                 t.group_id = grp.id if grp else None
