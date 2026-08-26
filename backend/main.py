@@ -942,7 +942,13 @@ def _hidden_link_ids(db, ids, user_id):
     return [i for i in (ids or []) if isinstance(i, int) and i not in vis]
 
 
-def _merge_link_ids(db, submitted, current, user_id):
+def _is_multi(col):
+    """Does this connect column hold more than one item? Default yes, matching
+    the picker, which treats anything but an explicit false as multiple."""
+    return _connect_cfg(col).get("multiple") is not False
+
+
+def _merge_link_ids(db, submitted, current, user_id, multiple=True):
     """What a connect cell should hold after `user_id` saved `submitted`.
 
     Two rules, and they are the same rule from both ends. A user cannot ADD a
@@ -951,10 +957,24 @@ def _merge_link_ids(db, submitted, current, user_id):
     board they have no access to. And a user cannot REMOVE a link they cannot
     see: their cell was rendered without those ids, so submitting the list they
     can see must not read as "delete the rest".
+
+    `multiple` is the column's own cardinality, and it is enforced here rather
+    than only in the picker: the UI cleared the selection before saving, so the
+    API never had to, and a single-link column would accept a list of any
+    length from anything that was not the picker.
     """
     keep = [int(x) for x in (submitted or []) if isinstance(x, (int, str)) and str(x).lstrip("-").isdigit()]
     keep = _visible_link_ids(db, keep, user_id)
     hidden = _hidden_link_ids(db, current or [], user_id)
+    if not multiple:
+        # A single-link column is the one place the "never delete what you
+        # cannot see" rule has to give way: the cell holds one item, and
+        # keeping an unseen one alongside a chosen one would hold two. Choosing
+        # a value in a single-value cell IS a replacement, so the pick wins;
+        # choosing nothing still leaves whatever was there untouched.
+        if keep:
+            return keep[-1:]
+        return hidden[:1]
     return keep + [i for i in hidden if i not in keep]
 
 
@@ -2893,7 +2913,7 @@ def _set_links(db, task, col, wanted_ids, actor_id):
     current = set(current_list)
     # links the actor may add are only ones they may see, and links they cannot
     # see survive a save that never showed them — see _merge_link_ids
-    wanted = set(_merge_link_ids(db, wanted_ids, current_list, actor_id))
+    wanted = set(_merge_link_ids(db, wanted_ids, current_list, actor_id, _is_multi(col)))
 
     for tid in wanted - current:
         other = db.query(Task).filter(Task.id == tid).first()
@@ -3618,7 +3638,7 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                     # one-way links live in the cell itself rather than in
                     # item_links, so the two-way guard in _set_links does not
                     # cover them. Same rule, applied here.
-                    v = _merge_link_ids(db, v, cf.get(k) or [], actor)
+                    v = _merge_link_ids(db, v, cf.get(k) or [], actor, _is_multi(_c))
                 if v is None:
                     cf.pop(k, None)
                 else:
