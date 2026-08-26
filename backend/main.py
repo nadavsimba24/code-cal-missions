@@ -3585,6 +3585,8 @@ def _automation_matches(a, event):
         return str(cfg.get("t_status")) == str(event.get("status"))
     if event["type"] == "priority_changes_to":
         return str(cfg.get("t_priority")) == str(event.get("priority"))
+    if event["type"] == "linked_status_changes_to":
+        return str(cfg.get("t_status")) == str(event.get("status"))
     return True
 
 
@@ -3653,6 +3655,13 @@ def _automation_label(db, board, a):
             shown = db.query(User.name).filter(User.id == v).scalar() or "—"
         elif f["type"] == "group":
             shown = db.query(Group.name).filter(Group.id == v).scalar() or "—"
+        elif f["type"] == "connect":
+            col = _find_col(db, board.id, str(v)) if board else None
+            shown = (col or {}).get("title") or "—"
+        elif f["type"] == "item":
+            shown = db.query(Task.title).filter(Task.id == v).scalar() or "—"
+        elif f["type"] == "board":
+            shown = db.query(Board.name).filter(Board.id == v).scalar() or "—"
         else:
             shown = str(v)
         text = text.replace("{" + f["key"] + "}", f"«{shown}»")
@@ -3705,7 +3714,87 @@ def _run_action(db, a, task, actor_id, board):
         db.add(Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
                     title=cfg.get("a_text") or "תת־פריט", status=TaskStatus.TODO,
                     priority=Priority.MEDIUM, created_by=actor_id))
+    elif act == "link_to_item":
+        col = _find_col(db, task.board_id, cfg.get("a_connect"))
+        other = db.query(Task).filter(Task.id == cfg.get("a_item")).first()
+        if col and col.get("type") == "connect" and other is not None:
+            if _apply_automation_link(db, task, col, [other.id], actor_id):
+                out.append({"type": "link_added", "col": col["id"], "item_ids": [other.id]})
+    elif act == "create_and_link":
+        col = _find_col(db, task.board_id, cfg.get("a_connect"))
+        made = _create_linked_item(db, task, col, cfg.get("a_board"),
+                                   cfg.get("a_text"), actor_id) if col else None
+        if made is not None:
+            out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
     return out
+
+
+def _apply_automation_link(db, task, col, ids, actor_id):
+    """Add links to a cell on behalf of a RULE. True if anything was added.
+
+    Deliberately unscoped by viewer. A rule is board configuration written by an
+    admin, not an action by whoever happened to trip it: filtering by what the
+    triggering user may see would make the same rule work or not depending on
+    who saved an item. What the column is structurally configured to hold still
+    applies, and the person who tripped it still cannot SEE the link — the
+    serializer filters per reader, as it does everywhere else.
+    """
+    if col.get("type") != "connect":
+        return False
+    ids = _links_the_column_allows(db, col, [i for i in ids if isinstance(i, int)])
+    if not ids:
+        return False
+    if _is_two_way(col):
+        current = _linked_ids(db, task.id, col["id"])
+    else:
+        current = [i for i in ((task.custom_fields or {}).get(col["id"]) or [])
+                   if isinstance(i, int)]
+    fresh = [i for i in ids if i not in current]
+    if not fresh:
+        return False
+    wanted = current + fresh
+    if not _is_multi(col):
+        wanted = wanted[-1:]
+    if _is_two_way(col):
+        _set_links(db, task, col, wanted, None)     # None = system authority, see above
+    else:
+        cf = dict(task.custom_fields or {})
+        cf[col["id"]] = _merge_link_ids(db, wanted, current, None, _is_multi(col))
+        task.custom_fields = cf
+    return True
+
+
+def _create_linked_item(db, task, col, board_id, title, actor_id):
+    """Make an item on the connect column's target board and link it back.
+
+    The board has to be one the column actually points at — otherwise the new
+    item would be created somewhere the link cannot reach, leaving an orphan on
+    a board nobody asked to write to.
+    """
+    allowed = {int(b) for b in (_connect_cfg(col).get("board_ids") or [])
+               if str(b).lstrip("-").isdigit()}
+    try:
+        board_id = int(board_id)
+    except (TypeError, ValueError):
+        return None
+    if board_id not in allowed:
+        return None
+    tb = db.query(Board).filter(Board.id == board_id).first()
+    if not tb or tb.deleted_at:
+        return None
+    grp = (db.query(Group).filter(Group.board_id == board_id)
+           .order_by(Group.position, Group.id).first())
+    made = Task(board_id=board_id, group_id=grp.id if grp else None,
+                title=(title or "").strip() or "פריט חדש",
+                status=grp.task_status if grp else TaskStatus.TODO,
+                priority=Priority.MEDIUM, created_by=actor_id)
+    db.add(made)
+    db.flush()
+    _ensure_item_uid(db, made)
+    _audit(db, made.id, "create", field="item", old=None, new=made.title, user_id=actor_id)
+    if not _apply_automation_link(db, task, col, [made.id], actor_id):
+        return None
+    return made
 
 
 def _run_one_automation(db, a, task, actor_id):
@@ -3768,6 +3857,33 @@ def _sweep_due_date_automations(db, board_id, actor_id):
         db.commit()
 
 
+def _fan_out_linked_status(db, task, status_key, actor_id, depth=0):
+    """Tell every item linked TO this one that its status changed.
+
+    Only through two-way columns. A one-way link is stored in the cell of the
+    side that made it, so there is no index from the far item back to the items
+    pointing at it — finding them would mean scanning every board that could
+    link here on every status change. The trigger therefore needs a two-way
+    column, which is where the relationship is a row and the lookup is cheap.
+    """
+    if depth >= AUTOMATION_MAX_DEPTH:
+        return
+    rows = db.query(ItemLink).filter(
+        or_(ItemLink.a_task_id == task.id, ItemLink.b_task_id == task.id)).all()
+    seen = set()
+    for l in rows:
+        other_id = l.b_task_id if l.a_task_id == task.id else l.a_task_id
+        if other_id in seen:
+            continue
+        seen.add(other_id)
+        other = db.query(Task).filter(Task.id == other_id).first()
+        if other is None:
+            continue
+        _run_automations(db, other, {"type": "linked_status_changes_to",
+                                     "status": str(status_key),
+                                     "source_task_id": task.id}, actor_id, depth + 1)
+
+
 def _run_automations(db, task, event, actor_id, depth=0):
     """Fire every active rule on the item's board that matches this event.
 
@@ -3793,6 +3909,11 @@ def _run_automations(db, task, event, actor_id, depth=0):
         a.run_count = (a.run_count or 0) + 1
         for ev in follow or []:
             _run_automations(db, task, ev, actor_id, depth + 1)
+            # a rule that changed this item's status is a status change like any
+            # other, so items linked to it hear about it too — bounded by the
+            # same depth, or two rules pointing at each other would ping-pong
+            if ev.get("type") == "status_changes_to":
+                _fan_out_linked_status(db, task, ev.get("status"), actor_id, depth + 1)
 
 
 # ── Automations API ─────────────────────────────────────────────────
@@ -4041,6 +4162,7 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         _before_status = _task_status_key(task)
         _before_priority = _task_priority_key(task)
         _before_assignees = {u.id for u in task.assignees}
+        _link_delta = {}          # col id → (added, removed), for the link triggers
         st_val = lambda v: (v.value if hasattr(v, "value") else v)
         if data.get("title") is not None and data["title"] != task.title:
             _audit(db, task_id, "update", "title", task.title, data["title"], actor)
@@ -4122,6 +4244,8 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                     _set_links(db, task, _c, v, actor)
                     after = sorted(_linked_ids(db, task.id, k))
                     if before != after:
+                        _link_delta[k] = ([i for i in after if i not in before],
+                                          [i for i in before if i not in after])
                         _audit(db, task_id, "update", "col:" + k,
                                json.dumps(before), json.dumps(after), actor)
                     continue
@@ -4130,7 +4254,11 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                     # one-way links live in the cell itself rather than in
                     # item_links, so the two-way guard in _set_links does not
                     # cover them. Same rule, applied here.
+                    _was = [i for i in (cf.get(k) or []) if isinstance(i, int)]
                     v = _merge_link_ids(db, v, cf.get(k) or [], actor, _is_multi(_c))
+                    if sorted(_was) != sorted(v):
+                        _link_delta[k] = ([i for i in v if i not in _was],
+                                          [i for i in _was if i not in v])
                 if v is None:
                     cf.pop(k, None)
                 else:
@@ -4158,6 +4286,18 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                                         "priority": _task_priority_key(task)}, actor)
         if {u.id for u in task.assignees} - _before_assignees:
             _run_automations(db, task, {"type": "person_assigned"}, actor)
+        # a link being made or unmade is an event in its own right, and one edit
+        # can do both in the same cell (a replacement), so both are reported
+        for _k, (_added, _removed) in _link_delta.items():
+            if _added:
+                _run_automations(db, task, {"type": "link_added", "col": _k,
+                                            "item_ids": _added}, actor)
+            if _removed:
+                _run_automations(db, task, {"type": "link_removed", "col": _k,
+                                            "item_ids": _removed}, actor)
+        # and the items pointing at this one hear that its status moved
+        if _task_status_key(task) != _before_status:
+            _fan_out_linked_status(db, task, _task_status_key(task), actor)
         _bid, _tid = task.board_id, task.id
         db.commit()
         # the write landed — only now is it safe to tell anyone, or a listener

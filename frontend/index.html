@@ -3654,8 +3654,11 @@ const Automations = {
     return `<button class="au-blank${cur?' filled':''}"${style} onclick="Automations.pickField(event,'${f.key}')" title="${esc(f.label)}">${esc(cur?cur.label:f.label)}</button>`;
   },
 
-  pickField(e,key){
+  async pickField(e,key){
     e.preventDefault(); e.stopPropagation();
+    // grabbed now: currentTarget is null once the handler returns, and the item
+    // picker awaits a fetch before it has anything to anchor to
+    const anchor=e.currentTarget;
     const r=this.building.recipe, f=r&&r.fields.find(x=>x.key===key); if(!f)return;
     if(f.type==='text'){
       const cur=this.building.values[key];
@@ -3667,11 +3670,19 @@ const Automations = {
       setTimeout(()=>{const i=document.getElementById('au-txt'); if(i){i.focus();i.select();}},30);
       return;
     }
+    // A rule that links needs an item from ANOTHER board, so the options are
+    // fetched rather than read off the loaded board — and through the same
+    // search the picker uses, so a rule can only ever name something the person
+    // writing it is allowed to see.
+    if(f.type==='item'){ await this.pickLinkedItem(anchor,key,f); return; }
     let items=[];
     if(f.type==='status')        items=boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
     else if(f.type==='priority') items=boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
     else if(f.type==='group')    items=(st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
     else if(f.type==='person')   items=this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
+    else if(f.type==='connect')  items=customColumns().filter(c=>c.type==='connect')
+                                        .map(c=>({v:c.id,label:c.title||c.id,color:''}));
+    else if(f.type==='board')    items=this._linkBoards().map(b=>({v:b.id,label:b.name,color:''}));
     // referenced by index so a name with quotes can never break out of the handler
     this._popItems=items;
     const body=items.length
@@ -3681,6 +3692,36 @@ const Automations = {
         } ${esc(it.label)}</button>`).join('')
       : '<div class="rm-note">אין אפשרויות זמינות</div>';
     openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+
+  /* The boards the chosen connect column points at — a rule cannot create an
+     item somewhere the column could not link to it anyway. */
+  _linkBoards(){
+    const chosen=(this.building&&this.building.values['a_connect'])||null;
+    const cols=customColumns().filter(c=>c.type==='connect');
+    const col=chosen?cols.find(c=>c.id===chosen.v):(cols.length===1?cols[0]:null);
+    const ids=(col&&col.connect&&col.connect.board_ids)||[];
+    return (st.boards||[]).filter(b=>ids.includes(b.id));
+  },
+  async pickLinkedItem(anchor,key,f){
+    const chosen=(this.building&&this.building.values['a_connect'])||null;
+    const cols=customColumns().filter(c=>c.type==='connect');
+    const col=chosen?cols.find(c=>c.id===chosen.v):(cols.length===1?cols[0]:null);
+    if(!col){ toast('בחר תחילה את עמודת הקישור'); return; }
+    const bids=(col.connect&&col.connect.board_ids)||[];
+    if(!bids.length){ toast('לעמודת הקישור אין לוחות יעד'); return; }
+    let items=[];
+    try{
+      const d=await api('/api/items/search?limit=40&board_ids='+bids.join(','));
+      items=(d.items||[]).map(x=>({v:x.id,label:x.title,color:'',sub:x.board_name}));
+    }catch(err){}
+    this._popItems=items;
+    const body=items.length
+      ? items.map((it,i)=>`<button class="rm-item" onclick="Automations.setField('${key}',${i})">
+          <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:10px;color:var(--primary)"></i>
+          ${esc(it.label)}<small style="margin-inline-start:auto;color:var(--text-light)">${esc(it.sub||'')}</small></button>`).join('')
+      : '<div class="rm-note">אין פריטים זמינים בלוחות היעד</div>';
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
 
   setField(key,idx){
@@ -3702,7 +3743,7 @@ const Automations = {
     for(const f of r.fields){
       const cur=this.building.values[f.key];
       if(cur===undefined){ toast('יש להשלים את כל השדות'); return; }
-      config[f.key]=(f.type==='person'||f.type==='group')?+cur.v:cur.v;
+      config[f.key]=['person','group','item','board'].includes(f.type)?+cur.v:cur.v;
     }
     try{
       await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),

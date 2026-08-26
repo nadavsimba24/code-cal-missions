@@ -12,7 +12,10 @@ so a recipe's wording can be improved later without rewriting saved rules.
 # ── field types the UI knows how to render ──────────────────────────
 # status/priority → the board's own vocabulary; person → a board member;
 # group → a group on the board; text → free text.
-FIELD_TYPES = ("status", "priority", "person", "group", "text")
+# connect → a connect column on this board; item → a specific item to link to;
+# board → one of the boards that connect column points at.
+FIELD_TYPES = ("status", "priority", "person", "group", "text",
+               "connect", "item", "board")
 
 TRIGGERS = {
     "item_created":        "כאשר נוצר פריט חדש",
@@ -20,6 +23,10 @@ TRIGGERS = {
     "priority_changes_to": "כאשר העדיפות משתנה ל{priority}",
     "person_assigned":     "כאשר משויך אדם לפריט",
     "due_date_arrives":    "כאשר מגיע תאריך היעד",
+    # ── links between boards ──
+    "link_added":           "כאשר נוצר קשר לפריט בלוח אחר",
+    "link_removed":         "כאשר מוסר קשר לפריט בלוח אחר",
+    "linked_status_changes_to": "כאשר הסטטוס של פריט מקושר משתנה ל{status}",
 }
 
 ACTIONS = {
@@ -30,6 +37,8 @@ ACTIONS = {
     "set_priority":     "שנה את העדיפות ל{priority}",
     "move_to_group":    "העבר את הפריט לקבוצה {group}",
     "create_subitem":   "צור תת־פריט בשם {text}",
+    "link_to_item":     "קשר את הפריט אל {item} בעמודה {connect}",
+    "create_and_link":  "צור פריט בשם {text} בלוח {board} וקשר אותו בעמודה {connect}",
 }
 
 
@@ -83,6 +92,47 @@ RECIPES = [
      "fields": [_f("a_person", "person", "נמען")]},
     {"id": "due_set_status", "trigger": "due_date_arrives", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
+
+    # ── links between boards ──
+    # linking on creation, and creating-then-linking, which is the same recipe
+    # with the far item made rather than chosen
+    {"id": "created_link_item", "trigger": "item_created", "action": "link_to_item",
+     "fields": [_f("a_connect", "connect", "עמודת הקישור"), _f("a_item", "item", "הפריט לקישור")]},
+    {"id": "created_create_and_link", "trigger": "item_created", "action": "create_and_link",
+     "fields": [_f("a_connect", "connect", "עמודת הקישור"), _f("a_board", "board", "לוח היעד"),
+                _f("a_text", "text", "שם הפריט החדש")]},
+    {"id": "status_create_and_link", "trigger": "status_changes_to", "action": "create_and_link",
+     "fields": [_f("t_status", "status", "סטטוס"), _f("a_connect", "connect", "עמודת הקישור"),
+                _f("a_board", "board", "לוח היעד"), _f("a_text", "text", "שם הפריט החדש")]},
+    {"id": "status_link_item", "trigger": "status_changes_to", "action": "link_to_item",
+     "fields": [_f("t_status", "status", "סטטוס"), _f("a_connect", "connect", "עמודת הקישור"),
+                _f("a_item", "item", "הפריט לקישור")]},
+
+    # a link being made, or unmade, as the thing that starts a rule
+    {"id": "link_added_notify_person", "trigger": "link_added", "action": "notify_person",
+     "fields": [_f("a_person", "person", "נמען")]},
+    {"id": "link_added_notify_assignees", "trigger": "link_added", "action": "notify_assignees",
+     "fields": []},
+    {"id": "link_added_set_status", "trigger": "link_added", "action": "set_status",
+     "fields": [_f("a_status", "status", "סטטוס")]},
+    {"id": "link_removed_notify_person", "trigger": "link_removed", "action": "notify_person",
+     "fields": [_f("a_person", "person", "נמען")]},
+    {"id": "link_removed_notify_assignees", "trigger": "link_removed", "action": "notify_assignees",
+     "fields": []},
+    {"id": "link_removed_set_status", "trigger": "link_removed", "action": "set_status",
+     "fields": [_f("a_status", "status", "סטטוס")]},
+
+    # the linked item changing, and this item reacting
+    {"id": "linked_status_set_status", "trigger": "linked_status_changes_to", "action": "set_status",
+     "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר"), _f("a_status", "status", "סטטוס")]},
+    {"id": "linked_status_notify_assignees", "trigger": "linked_status_changes_to",
+     "action": "notify_assignees", "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר")]},
+    {"id": "linked_status_notify_person", "trigger": "linked_status_changes_to",
+     "action": "notify_person", "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר"),
+                                           _f("a_person", "person", "נמען")]},
+    {"id": "linked_status_set_priority", "trigger": "linked_status_changes_to",
+     "action": "set_priority", "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר"),
+                                          _f("a_priority", "priority", "עדיפות")]},
 ]
 
 RECIPES_BY_ID = {r["id"]: r for r in RECIPES}
@@ -99,7 +149,7 @@ def sentence(recipe_id):
         return ""
     trig = TRIGGERS[r["trigger"]].replace("{status}", "{t_status}").replace("{priority}", "{t_priority}")
     act = ACTIONS[r["action"]]
-    for k in ("person", "status", "priority", "group", "text"):
+    for k in ("person", "status", "priority", "group", "text", "connect", "item", "board"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
     return f"{trig}, {act}"
 
@@ -125,7 +175,11 @@ def validate(recipe_id, config):
             v = (str(v or "")).strip()[:200]
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"
-        elif f["type"] in ("person", "group"):
+        elif f["type"] == "connect":
+            v = (str(v or "")).strip()          # a column id, not a number
+            if not v:
+                return None, f"חסר ערך בשדה '{f['label']}'"
+        elif f["type"] in ("person", "group", "item", "board"):
             try:
                 v = int(v)
             except (TypeError, ValueError):
