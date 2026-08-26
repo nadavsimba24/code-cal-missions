@@ -900,9 +900,10 @@ def _item_perm(task, user_id, board_role):
 def _link_states(db, ids, user_id):
     """What each linked id is, from `user_id`'s point of view:
 
-      "live"     — a normal item they may see
-      "deleted"  — the item is in the recycle bin, and they may see it
-      None       — not theirs to know about, or gone for good
+      "live"       — a normal item they may see
+      "deleted"    — the item is in the recycle bin, and they may see it
+      "deleted_board" — the item is fine, but its whole board is in the bin
+      None         — not theirs to know about, or gone for good
 
     "deleted" is deliberately its own answer rather than folded into None. This
     system's deletion policy is a recycle bin: the item can come back, and the
@@ -913,6 +914,11 @@ def _link_states(db, ids, user_id):
     Purged items are None: there is nothing to restore and nothing to mark, and
     _drop_links_for_tasks has already removed the rows anyway.
 
+    A board in the bin makes its items unavailable even though the items
+    themselves were never deleted — the board comes back with them, so this is
+    the same "marked, not dropped" answer, told apart only so the cell can say
+    where the thing actually went.
+
     Cached on the session — one board role and one Task row per id per request,
     however many cells point at the same linked item.
     """
@@ -921,6 +927,7 @@ def _link_states(db, ids, user_id):
         return {}
     seen = db.info.setdefault(("_link_state", user_id), {})
     roles = db.info.setdefault(("_brole", user_id), {})
+    boards = db.info.setdefault("_board_state", {})     # not user-specific
     unknown = [i for i in set(ids) if i not in seen]
     if unknown:
         # explicitly including binned items: the global soft-delete hook would
@@ -932,10 +939,18 @@ def _link_states(db, ids, user_id):
             if t is None:
                 seen[i] = None
                 continue
+            if t.board_id not in boards:
+                bd = db.query(Board).filter(Board.id == t.board_id).first()
+                boards[t.board_id] = ("missing" if bd is None else
+                                      "bin" if bd.deleted_at is not None else "live")
+            if boards[t.board_id] == "missing":
+                seen[i] = None            # nothing to restore, nothing to mark
+                continue
             # Deliberately not `is_archived`: archiving is housekeeping, not a
             # permission, and treating it as one would relabel an archived item
             # as something the viewer may not see.
-            state = "deleted" if t.deleted_at is not None else "live"
+            state = ("deleted" if t.deleted_at is not None else
+                     "deleted_board" if boards[t.board_id] == "bin" else "live")
             if user_id is None:            # internal caller, nobody to filter for
                 seen[i] = state
                 continue
@@ -3160,14 +3175,19 @@ def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
         allowed = [i for i in id_list if state.get(i)]
         rows = (db.query(Task).filter(Task.id.in_(allowed))
                 .execution_options(include_deleted=True).all()) if allowed else []
-        bnames = {b.id: b.name for b in db.query(Board).filter(
-            Board.id.in_({t.board_id for t in rows})).all()}
+        bnames = {b.id: b.name for b in db.query(Board)
+                  .filter(Board.id.in_({t.board_id for t in rows}))
+                  .execution_options(include_deleted=True).all()}
         # A binned item keeps its title and board — the caller was already
         # allowed to see both — and is flagged so the cell can say that the
         # item was deleted rather than pretend the link was never there.
         out = [{"id": t.id, "title": t.title, "board_id": t.board_id,
                 "board_name": bnames.get(t.board_id, ""),
-                "deleted": state.get(t.id) == "deleted"} for t in rows]
+                "deleted": state.get(t.id) in ("deleted", "deleted_board"),
+                # which bin it is in decides what the reader has to do about it
+                "deleted_scope": ("board" if state.get(t.id) == "deleted_board"
+                                  else "item" if state.get(t.id) == "deleted" else None)}
+               for t in rows]
         # Named, not silently dropped: the client needs to tell "no such item"
         # apart from "not yours", and it may render neither a title nor a board.
         out += [{"id": i, "title": None, "board_id": None, "board_name": "",

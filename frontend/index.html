@@ -5417,13 +5417,20 @@ function linkChipHTML(tid){
   // kept so a restore brings it back. Saying so beats dropping the link and
   // letting it reappear later with no explanation.
   if(it&&it.deleted)
-    return `<span class="link-chip link-chip-del" title="${esc(label+where)} — הפריט נמחק ונמצא בסל המחזור; שחזור הפריט יחזיר גם את הקישור"><i class="fa-solid fa-trash-can"></i><span class="lc-t">${esc(label)}</span></span>`;
+    return `<span class="link-chip link-chip-del" title="${esc(label+where)} — ${esc(deletedWhy(it))}"><i class="fa-solid fa-trash-can"></i><span class="lc-t">${esc(label)}</span></span>`;
   return `<span class="link-chip" title="${esc(label+where)} — פתח" onclick="event.stopPropagation();openLinkedItem(${tid})"><i class="fa-solid fa-arrow-up-right-from-square"></i><span class="lc-t">${esc(label)}</span></span>`;
 }
 /* Every linked name is rendered; how many of them survive is decided after
    layout by fitLinkChips, because "as much as fits" is a question about pixels
    and this is a string. The counter is built here so the measuring pass has
    something to measure, and stays hidden while everything fits. */
+/* An item in the bin and an item whose whole board is in the bin are both
+   unavailable, but they are not the same thing to fix — say which. */
+function deletedWhy(it){
+  return (it&&it.deleted_scope==='board')
+    ? 'הלוח של הפריט המקושר נמצא בסל המחזור; שחזור הלוח יחזיר גם את הקישור'
+    : 'הפריט נמחק ונמצא בסל המחזור; שחזור הפריט יחזיר גם את הקישור';
+}
 function connectDisp(ids,taskId,colId){
   ids=Array.isArray(ids)?ids:[];
   if(!ids.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-diagram-project"></i> קשר פריט</span>';
@@ -5469,8 +5476,8 @@ function openLinkList(taskId,colId){
     if(it.restricted)
       return `<div class="ll-row ll-off"><i class="fa-solid fa-lock"></i><span class="ll-t">פריט מוגבל</span></div>`;
     if(it.deleted)
-      return `<div class="ll-row ll-del" title="שחזור הפריט מסל המחזור יחזיר גם את הקישור"><i class="fa-solid fa-trash-can"></i>
-        <span class="ll-t">${esc(it.title||('#'+tid))}</span><small>נמחק · ${esc(it.board_name||'')}</small></div>`;
+      return `<div class="ll-row ll-del" title="${esc(deletedWhy(it))}"><i class="fa-solid fa-trash-can"></i>
+        <span class="ll-t">${esc(it.title||('#'+tid))}</span><small>${it.deleted_scope==='board'?'הלוח בסל המחזור':'נמחק'} · ${esc(it.board_name||'')}</small></div>`;
     return `<button class="ll-row" onclick="closeModals();openLinkedItem(${tid})">
       <i class="fa-solid fa-arrow-up-right-from-square"></i>
       <span class="ll-t">${esc(it.title||('#'+tid))}</span>
@@ -5506,7 +5513,12 @@ async function openLinkedItem(tid){
   const it=st.linkCache[tid], bid=it&&it.board_id;
   // Seeing a link is not permission to open what it points at.
   if(it&&it.restricted){toast('אין לך הרשאת צפייה בפריט המקושר');return;}
-  if(it&&it.deleted){toast('הפריט המקושר נמחק — שחזר אותו מסל המחזור של הלוח');return;}
+  if(it&&it.deleted){
+    toast(it.deleted_scope==='board'
+      ? 'הלוח של הפריט המקושר נמצא בסל המחזור — שחזר את הלוח כדי לפתוח אותו'
+      : 'הפריט המקושר נמחק — שחזר אותו מסל המחזור של הלוח');
+    return;
+  }
   if(!bid){toast('הפריט המקושר לא נמצא');return;}
   if(!(st.boards||[]).some(b=>b.id===bid)){toast('אין לך גישה ללוח של הפריט המקושר');return;}
   closeModals(); await openBoard(bid);
