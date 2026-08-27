@@ -141,14 +141,10 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* ===== ציר זמן — a compact cell popover, the weight of the תאריך יעד editor
    beside it rather than a dialog over the board ===== */
 .tl-pop{width:246px;padding:10px}
-/* From on the left, to on the right — the same direction the cell reads.
-   The cell is dir=ltr because a range of digits is bidi-neutral and would
-   otherwise be reordered by the surrounding Hebrew; leaving the picker RTL made
-   the two disagree about which side the start of the range is on. The labels
-   stay RTL so each one reads naturally; only the order of the two boxes is
-   fixed here. */
-.tl-inputs{display:flex;gap:6px;margin-bottom:8px;direction:ltr}
-.tl-in{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;direction:rtl}
+/* מתאריך on the right, עד תאריך after it — the range runs right to left, the
+   way the rest of the page reads. The cell below matches: see timelineBar. */
+.tl-inputs{display:flex;gap:6px;margin-bottom:8px}
+.tl-in{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
 .tl-in span{font-size:10.5px;font-weight:600;color:var(--text-muted)}
 .tl-in input{padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px;font:inherit;font-size:11.5px;width:100%}
 .tl-in input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
@@ -6807,15 +6803,19 @@ function timelineBar(v){
   // the word where the eye expects the month number and read backwards.
   const p2=n=>String(n).padStart(2,'0');
   const fmt=d=>p2(d.getDate())+'.'+p2(d.getMonth()+1);
-  // dir=ltr so the range cannot be reordered by the surrounding RTL text: a
-  // string of digits and separators is all bidi-neutral, and without this the
-  // end date can end up rendering before the start one.
+  // Each date is isolated on its own, NOT the range as a whole. A run of digits
+  // and separators is bidi-neutral, so an unisolated range can be reordered by
+  // the surrounding Hebrew — but isolating the whole thing as LTR put the start
+  // on the left, against the way the picker above it and the rest of the page
+  // read. Per-date isolation keeps 27.08 from turning into 08.27 while the two
+  // dates still flow right to left: start on the right, end after it.
   const full=d=>d.toLocaleDateString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric'});
   const one=days===1;
   const span=one?'יום אחד':`${days} ימים`;
   const tip=one?`${full(f)} · ${span}`:`${full(f)} – ${full(to)} · ${span}`;
-  const txt=one?fmt(f):`${fmt(f)} – ${fmt(to)}`;      // a one-day range is one date, not the same date twice
-  return `<div class="tl-bar" title="${tip}"><span class="tl-txt" dir="ltr">${txt}</span></div>`;
+  const iso=d=>`<bdi dir="ltr">${fmt(d)}</bdi>`;
+  const txt=one?iso(f):`${iso(f)} – ${iso(to)}`;      // a one-day range is one date, not the same date twice
+  return `<div class="tl-bar" title="${tip}"><span class="tl-txt">${txt}</span></div>`;
 }
 /* ===== ציר זמן — a range picker, not two blind date boxes =====
    The column stores {from,to}. Both ways in stay in sync with each other: type
