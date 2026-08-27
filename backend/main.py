@@ -586,12 +586,24 @@ class DashboardOut(BaseModel):
 
 # ── API Routes ───────────────────────────────────────────────────────
 
+# The tag of the container image this process was built from, stamped by the
+# release pipeline. A deploy that only checks for HTTP 200 proves that
+# *something* is answering, which is exactly what a container that never
+# restarted also does — so the release goes green while the old code keeps
+# serving. Echoing the tag turns "is it up" into "is it the build I just
+# pushed". Unauthenticated on purpose: this is also the App Service health
+# check path, and the platform's probe carries no identity. A build number is
+# not a secret.
+IMAGE_TAG = os.environ.get("MISSIONS_IMAGE_TAG") or "dev"
+
+
 @app.get("/api/status")
 def status(request: Request):
     # The SPA shows the local user picker only in dev mode, so this has to be
     # the mode THIS request is actually authenticated under — dev is honoured
     # only when the app is served locally. It exposes no user data.
     return {"status": "ok", "app": "CODE-CAL MISSIONS", "version": "0.1.0",
+            "image_tag": IMAGE_TAG,
             "auth_mode": effective_auth_mode(request)}
 
 @app.get("/api/dashboard")

@@ -329,6 +329,53 @@ def test_logout_clears_the_session_and_ends_the_entra_one(client, monkeypatch):
     assert not client.cookies.get(entra.SESSION_COOKIE)
 
 
+def test_logout_returns_the_browser_to_https_behind_a_proxy(client, monkeypatch):
+    """post_logout_redirect_uri must be the URL the *browser* knows.
+
+    App Service hands the container a plain-http request even though the site is
+    only reachable over https, so building this from `request.base_url` produced
+    `http://…` — a string Entra has never seen on the app registration, so the
+    sign-out ended on an AADSTS error page instead of back on the site.
+    """
+    _complete_login(client, monkeypatch)
+    r = client.get("/auth/logout", headers={"X-Forwarded-Proto": "https"})
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(r.headers["location"]).query)
+    assert q["post_logout_redirect_uri"] == ["https://missions.test/"]
+
+
+def test_logout_stays_http_in_plain_local_development(monkeypatch):
+    """No proxy, no https anywhere — inventing one would break localhost."""
+    monkeypatch.setenv("ENTRA_REDIRECT_URI", "http://localhost:8000/auth/callback")
+    app = FastAPI()
+    app.include_router(entra.router)
+    with TestClient(app, base_url="http://localhost:8000", follow_redirects=False) as c:
+        r = c.get("/auth/logout")
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(r.headers["location"]).query)
+        assert q["post_logout_redirect_uri"] == ["http://localhost:8000/"]
+
+
+def test_derived_redirect_uri_is_https_behind_a_proxy(monkeypatch):
+    """With ENTRA_REDIRECT_URI unset, the fallback must still say https.
+
+    Setting it explicitly is still the advice — this is what happens when nobody
+    did, and the answer should be a URI that can actually match the registration
+    rather than one that is wrong in a way nobody notices until sign-in fails.
+    """
+    monkeypatch.delenv("ENTRA_REDIRECT_URI", raising=False)
+    app = FastAPI()
+    app.include_router(entra.router)
+    with TestClient(app, base_url="http://internal.local", follow_redirects=False) as c:
+        location, _ = _start_login(c)
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        assert q["redirect_uri"] == ["http://internal.local/auth/callback"]
+
+        location = c.get("/auth/login",
+                         headers={"X-Forwarded-Proto": "https",
+                                  "X-Forwarded-Host": "missions.example"}).headers["location"]
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        assert q["redirect_uri"] == ["https://missions.example/auth/callback"]
+
+
 # ── the mode, wired into the real app ────────────────────────────────
 
 def test_auth_mode_accepts_entra(monkeypatch):

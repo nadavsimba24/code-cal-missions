@@ -56,7 +56,7 @@ CITYOS_SESSION_HOURS=8                                 # optional, default 8
 | `ENTRA_TENANT_ID` | yes | GUID, or `organizations`. A GUID is pinned against the token's `tid`. |
 | `ENTRA_CLIENT_ID` | yes | Also the expected `aud` of the id_token. |
 | `ENTRA_CLIENT_SECRET` | yes | Rotate before it expires — sign-in stops dead when it does. |
-| `ENTRA_REDIRECT_URI` | recommended | Derived from the request if unset, which is wrong behind a TLS-terminating proxy (the app sees `http`). Set it. |
+| `ENTRA_REDIRECT_URI` | recommended | Derived from the forwarded host/scheme if unset. Set it anyway — the derived one follows whatever host the request arrived on, so a custom domain or a stray hostname silently produces a URI the registration has never seen. The production pipeline writes it from the Web App's own hostname. |
 | `ENTRA_ALLOWED_DOMAINS` | no | Extra fence for guests / multi-tenant registrations. |
 | `CITYOS_SESSION_SECRET` | production | Signs the session cookie. **Use the same value on every replica**, or instances cannot read each other's cookies and users bounce between signed-in and signed-out. Unset ⇒ a random per-process key ⇒ everyone is signed out on restart. |
 | `CITYOS_SESSION_HOURS` | no | Session lifetime. When it expires the SPA silently bounces through `/auth/login`, which is invisible if the Entra session is still live. |

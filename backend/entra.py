@@ -197,7 +197,8 @@ def _redirect_uri(request: Request) -> str:
     explicit = _env("ENTRA_REDIRECT_URI")
     if explicit:
         return explicit
-    return str(request.url_for("entra_callback"))
+    path = urllib.parse.urlparse(str(request.url_for("entra_callback"))).path
+    return _external_base_url(request) + path
 
 
 def _is_https(request: Request) -> bool:
@@ -217,6 +218,24 @@ def _is_https(request: Request) -> bool:
         return forwarded == "https"
     # Last resort: an https redirect URI means the deployment is https.
     return _env("ENTRA_REDIRECT_URI").startswith("https://")
+
+
+def _external_base_url(request: Request) -> str:
+    """The origin the *browser* used — `https://host`, not the one we were handed.
+
+    App Service and Container Apps both terminate TLS at their front end and
+    speak plain http to the container, and uvicorn only believes forwarding
+    headers from 127.0.0.1, which is never the address those front ends connect
+    from. So `request.base_url` reads http on a site that cannot be reached over
+    http at all. Entra compares redirect URIs as strings, so that single wrong
+    scheme is the whole difference between a working sign-out and AADSTS50011.
+    """
+    host = (request.headers.get("x-forwarded-host")
+            or request.headers.get("host")
+            or request.url.netloc)
+    host = host.split(",")[0].strip()
+    scheme = "https" if _is_https(request) else request.url.scheme
+    return f"{scheme}://{host}"
 
 
 def _cookie_kwargs(request: Request, max_age: int):
@@ -384,7 +403,7 @@ def entra_logout(request: Request):
     Skipping the second half is why "logout" used to be cosmetic: the next
     request would be silently signed back in from the still-live Entra session.
     """
-    post_logout = str(request.base_url).rstrip("/") + "/"
+    post_logout = _external_base_url(request) + "/"
     try:
         end_session = discovery().get("end_session_endpoint")
     except HTTPException:

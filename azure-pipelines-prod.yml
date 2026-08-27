@@ -1,5 +1,6 @@
 # Docker
-# Build and push an image to Azure Container Registry
+# Build an image, push it to the production ACR, and roll the production
+# Web App onto it.
 # https://docs.microsoft.com/azure/devops/pipelines/languages/docker
 
 # Manual only. Every commit to main goes to QA automatically (see
@@ -16,17 +17,31 @@ variables:
   dockerRegistryServiceConnection: 'c421a383-83d6-4d5e-8434-0e9be1e276d5'
   imageRepository: 'missions'
   containerRegistry: 'missionsprdacr.azurecr.io'
+  registryName: 'missionsprdacr'
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
 
   # ── deploy target ────────────────────────────────────────────────────
-  containerAppName: 'missionsprdcontainerapp'
-  containerAppResourceGroup: 'RG-Missions-PRD'
+  # Production is the App Service Web App, not the Container App. The Container
+  # App is left standing but is no longer released to — deploying to both meant
+  # two things called "production" drifting apart, and no way to say from the
+  # outside which one a given build was serving.
+  #
+  # The Web App runs the image as a *site container*: one main container, pulled
+  # from the registry above, listening on targetPort. A release therefore has
+  # exactly two moving parts — point the site container at the new image, and
+  # make the site pick it up.
+  webAppName: 'Missions-Prd-Webapp'
+  webAppResourceGroup: 'RG-Missions-PRD'
+  siteContainerName: 'Missions'
+  siteContainerPort: '8000'
+  healthCheckPath: '/api/status'
   azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'   # "Misssions"
 
   # ARM service connection for the deploy stage. Reuses the SAME service
   # principal that already backs the prod registry connection above, via
   # workload identity federation — no new app registration, no client secret.
+  # It holds Contributor on the registry and on the Web App, and nothing else.
   azureServiceConnection: 'Missions-PROD-ARM'
 
   # Agent VM image name
@@ -52,7 +67,7 @@ stages:
           $(tag)
 
 - stage: Deploy
-  displayName: Deploy to the production Container App
+  displayName: Deploy to the production Web App
   dependsOn: Build
   condition: succeeded()
   jobs:
@@ -62,7 +77,7 @@ stages:
       vmImage: $(vmImageName)
     steps:
     - task: AzureCLI@2
-      displayName: az containerapp update + wait for the revision to serve
+      displayName: Point the site container at the new image, restart, verify
       inputs:
         azureSubscription: $(azureServiceConnection)
         scriptType: bash
@@ -70,79 +85,139 @@ stages:
         inlineScript: |
           set -euo pipefail
 
-          RG="$(containerAppResourceGroup)"
-          if [ -z "$RG" ]; then
-            echo "##vso[task.logissue type=error]containerAppResourceGroup is not set — refusing to guess at a production resource group"
+          RG="$(webAppResourceGroup)"
+          APP="$(webAppName)"
+          CONTAINER="$(siteContainerName)"
+          if [ -z "$RG" ] || [ -z "$APP" ]; then
+            echo "##vso[task.logissue type=error]webAppResourceGroup / webAppName are not set — refusing to guess at a production target"
             exit 1
           fi
 
-          # `containerapp` is a CLI extension and a hosted agent starts clean.
-          # Without this the install prompt blocks and the job hangs to timeout.
-          az config set extension.use_dynamic_install=yes_without_prompt
-
-          IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
           COMMON=(--subscription "$(azureSubscriptionId)"
                   --resource-group "$RG"
-                  --name "$(containerAppName)")
+                  --name "$APP")
+
+          IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
 
           # Say what is being replaced before replacing it. On production the
           # previous image is the thing you need in your hand to roll back, and
           # the run log is where someone will look for it at a bad moment.
-          PREV=$(az containerapp show "${COMMON[@]}" \
-                   --query "properties.template.containers[0].image" -o tsv)
-          echo "── current : $PREV"
-          echo "── deploying: $IMAGE"
-
-          # Deliberately the build-id tag, never :latest. A Container App creates
-          # a new revision only when the image STRING changes, so deploying
-          # :latest twice is a silent no-op: the run goes green while the old
-          # container keeps serving. A unique tag per run makes that impossible.
-          az containerapp update "${COMMON[@]}" --image "$IMAGE" --output none
-
-          REV=$(az containerapp show "${COMMON[@]}" \
-                  --query "properties.latestRevisionName" -o tsv)
-          echo "── new revision: $REV"
-
-          # Wait on the revision's own state, not a stopwatch. Provisioning plus
-          # the traffic shift takes minutes, and this reports WHY a revision
-          # failed instead of only that a URL stayed quiet.
-          for i in $(seq 1 60); do
-            RUNNING=$(az containerapp revision show "${COMMON[@]}" --revision "$REV" \
-                        --query "properties.runningState" -o tsv)
-            echo "  [$i] running=$RUNNING"
-            case "$RUNNING" in
-              Running) break ;;
-              Failed|Degraded)
-                echo "##vso[task.logissue type=error]revision $REV came up $RUNNING — production still serves $PREV"
-                az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
-                echo "roll back with: az containerapp update ${COMMON[*]} --image $PREV"
-                exit 1 ;;
-            esac
-            sleep 10
-          done
+          PREV=$(az webapp sitecontainers list "${COMMON[@]}" \
+                   --query "[?name=='$CONTAINER'].image | [0]" -o tsv)
+          if [ -z "$PREV" ]; then
+            echo "##vso[task.logissue type=error]no site container named '$CONTAINER' on $APP — check siteContainerName"
+            az webapp sitecontainers list "${COMMON[@]}" --query "[].name" -o tsv || true
+            exit 1
+          fi
 
           # Ask the app for its own hostname rather than hardcoding one. A wrong
-          # constant here would health-check some other environment and pass.
-          FQDN=$(az containerapp show "${COMMON[@]}" \
-                   --query "properties.configuration.ingress.fqdn" -o tsv)
-          echo "── health check https://$FQDN/api/status"
+          # constant here would verify some other environment and pass.
+          HOST=$(az webapp show "${COMMON[@]}" --query defaultHostName -o tsv)
 
-          # 403 counts as reachable: if this ingress carries an IP allow-list the
-          # way QA does, a hosted agent is never on it — its address comes from
-          # Azure's dynamic ranges. A 403 still proves the ingress is up and
-          # routing for the new revision. It cannot prove the app behind it is
-          # healthy, because the allow-list rejects before routing; the
-          # revision-state wait above is what covers that.
-          for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$FQDN/api/status" || echo 000)
-            echo "  health attempt $i → HTTP $code"
-            case "$code" in
-              200) echo "✅ $REV is serving $IMAGE"; exit 0 ;;
-              403) echo "✅ $REV is up and routing $IMAGE (403 = ingress allow-list refusing this agent)"; exit 0 ;;
-            esac
+          echo "── current  : $PREV"
+          echo "── deploying: $IMAGE"
+          echo "── host     : https://$HOST"
+
+          # The site container authenticates to the registry with the ACR admin
+          # user, and `sitecontainers update` writes the whole container back —
+          # so the credentials have to be resent or the next pull is anonymous
+          # and fails. Read them here instead of storing a copy in a pipeline
+          # variable, so rotating the registry password needs no pipeline edit.
+          ACR_USER=$(az acr credential show -n "$(registryName)" \
+                       --subscription "$(azureSubscriptionId)" --query username -o tsv)
+          ACR_PASS=$(az acr credential show -n "$(registryName)" \
+                       --subscription "$(azureSubscriptionId)" --query "passwords[0].value" -o tsv)
+          echo "##vso[task.setvariable variable=ACR_PASS;issecret=true]$ACR_PASS"
+
+          # Deliberately the build-id tag, never :latest. With :latest the image
+          # string never changes, so nothing downstream can tell a fresh deploy
+          # from a stale one — the run goes green while the old container keeps
+          # serving. A unique tag per run makes the running revision say exactly
+          # what code it is.
+          az webapp sitecontainers update "${COMMON[@]}" \
+            --container-name "$CONTAINER" \
+            --image "$IMAGE" \
+            --target-port "$(siteContainerPort)" \
+            --is-main true \
+            --registry-username "$ACR_USER" \
+            --registry-password "$ACR_PASS" \
+            --output none
+
+          # Only the three settings that must track the deployment. Secrets —
+          # ENTRA_CLIENT_SECRET, CITYOS_SESSION_SECRET, DATABASE_URL — are never
+          # written from here; `appsettings set` merges, so they survive.
+          #
+          #   MISSIONS_IMAGE_TAG  what /api/status reports, which is what the
+          #                       verification below actually checks.
+          #   CITYOS_AUTH_MODE    without it auth.py defaults to `easyauth`,
+          #                       which expects the platform to have terminated
+          #                       the login and injected a principal header. The
+          #                       Web App has no Easy Auth configured, so every
+          #                       /api/ request is refused and /auth/login does
+          #                       not even exist — the router is only mounted in
+          #                       `entra` mode. Failing closed is correct; being
+          #                       closed in production is not.
+          #   ENTRA_REDIRECT_URI  derived from the Web App's own hostname, so it
+          #                       cannot be left pointing at the host of some
+          #                       previous home. Entra matches it as a string;
+          #                       a stale one is AADSTS50011 and nobody gets in.
+          #                       It must also be registered on the app
+          #                       registration (Mashcal-Missions) as a Web
+          #                       redirect URI.
+          az webapp config appsettings set "${COMMON[@]}" --settings \
+            MISSIONS_IMAGE_TAG="$(tag)" \
+            CITYOS_AUTH_MODE="entra" \
+            ENTRA_REDIRECT_URI="https://$HOST/auth/callback" \
+            --output none
+
+          # Idempotent, and here rather than only in the portal so that a Web App
+          # rebuilt from scratch comes back with it. App Service polls this path
+          # and takes an instance out of rotation when it stops answering 2xx;
+          # /api/status is public (PUBLIC_API_PATHS in backend/main.py), which it
+          # has to be, because the platform's probe carries no identity.
+          az webapp config set "${COMMON[@]}" \
+            --generic-configurations "{\"healthCheckPath\": \"$(healthCheckPath)\"}" \
+            --output none
+
+          # Changing the image does not by itself stop the container that is
+          # already running — without this the site can keep serving the old
+          # build until something else happens to recycle it, which is the exact
+          # failure the unique tag was meant to rule out. Restarting makes the
+          # deployed version the running version now, and the check below proves
+          # it rather than assuming it.
+          az webapp restart "${COMMON[@]}" --output none
+          echo "── restarted, waiting for $(tag) to answer"
+
+          # The real test: not "is something up" — a container that never
+          # restarted answers 200 all day — but "is the build this run produced
+          # the one serving". /api/status echoes MISSIONS_IMAGE_TAG.
+          #
+          # This Web App has no IP allow-list, so a hosted agent gets a genuine
+          # answer and the check can be strict. If one is ever added, this will
+          # start failing on 403 — and that is the moment to add an exception
+          # for the agent, not to loosen the check.
+          for i in $(seq 1 60); do
+            body=$(curl -fsS --max-time 10 "https://$HOST/api/status" 2>/dev/null || true)
+            running=$(printf '%s' "$body" | python3 -c \
+              'import json,sys; print(json.load(sys.stdin).get("image_tag",""))' 2>/dev/null || true)
+            echo "  [$i] serving=${running:-<no answer>}"
+            if [ "$running" = "$(tag)" ]; then
+              mode=$(printf '%s' "$body" | python3 -c \
+                'import json,sys; print(json.load(sys.stdin).get("auth_mode",""))' 2>/dev/null || true)
+              echo "✅ https://$HOST is serving $IMAGE (auth_mode=$mode)"
+              if [ "$mode" != "entra" ]; then
+                echo "##vso[task.logissue type=warning]auth_mode is '$mode', expected 'entra' — sign-in will refuse every request"
+              fi
+              exit 0
+            fi
             sleep 10
           done
-          echo "##vso[task.logissue type=error]$REV answered neither 200 nor 403"
-          az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
-          echo "roll back with: az containerapp update ${COMMON[*]} --image $PREV"
+
+          echo "##vso[task.logissue type=error]$HOST never reported image_tag=$(tag)"
+          echo "Either the container did not come up, or this build predates the"
+          echo "MISSIONS_IMAGE_TAG stamp in /api/status (backend/main.py)."
+          timeout 45 az webapp log tail "${COMMON[@]}" || true
+          echo "roll back with:"
+          echo "  az webapp sitecontainers update ${COMMON[*]} --container-name $CONTAINER --image $PREV --target-port $(siteContainerPort) --is-main true --registry-username <acr-user> --registry-password <acr-pass>"
+          echo "  az webapp restart ${COMMON[*]}"
           exit 1
