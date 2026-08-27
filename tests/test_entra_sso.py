@@ -438,6 +438,47 @@ def test_logout_stays_http_in_plain_local_development(monkeypatch):
         assert q["post_logout_redirect_uri"] == ["http://localhost:8000/"]
 
 
+def test_the_redirect_uri_follows_the_host_the_browser_used(monkeypatch):
+    """A site on two hostnames must send the callback back to the one in use.
+
+    Production runs behind a custom domain *and* the platform's own name. The
+    state cookie belongs to the host the browser typed, so a callback sent to
+    the other host arrives with no cookie at all — which is precisely the
+    "פג תוקף בקשת ההתחברות" that made sign-in impossible from
+    missions.mashcal.co.il while the azurewebsites.net name worked fine.
+    """
+    custom = "https://missions.mashcal.co.il/auth/callback"
+    default = "https://missions-prd.azurewebsites.net/auth/callback"
+    monkeypatch.setenv("ENTRA_REDIRECT_URI", f"{custom},{default}")
+
+    app = FastAPI()
+    app.include_router(entra.router)
+
+    def _uri_for(host):
+        with _RawClient(app, base_url=f"https://{host}", follow_redirects=False) as c:
+            location = c.get("/auth/login").headers["location"]
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+            return q["redirect_uri"][0]
+
+    assert _uri_for("missions.mashcal.co.il") == custom
+    assert _uri_for("missions-prd.azurewebsites.net") == default
+    # a host we were never told about falls back to the first — the old
+    # behaviour, and still a string Entra can either match or plainly refuse
+    assert _uri_for("something.else") == custom
+
+
+def test_a_single_redirect_uri_is_used_as_before(monkeypatch):
+    """The list is additive: one value must keep behaving exactly as it did."""
+    only = "https://missions.test/auth/callback"
+    monkeypatch.setenv("ENTRA_REDIRECT_URI", only)
+    app = FastAPI()
+    app.include_router(entra.router)
+    with _RawClient(app, base_url="https://whatever.host", follow_redirects=False) as c:
+        location = c.get("/auth/login").headers["location"]
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        assert q["redirect_uri"] == [only]
+
+
 def test_derived_redirect_uri_is_https_behind_a_proxy(monkeypatch):
     """With ENTRA_REDIRECT_URI unset, the fallback must still say https.
 

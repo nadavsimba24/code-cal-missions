@@ -238,18 +238,39 @@ def _safe_next(raw: str) -> str:
     return raw
 
 
+def redirect_uris() -> list:
+    """Every callback URI this deployment may legitimately use, in order."""
+    return [u.strip() for u in _env("ENTRA_REDIRECT_URI").split(",") if u.strip()]
+
+
 def _redirect_uri(request: Request) -> str:
     """Must match a Web redirect URI on the app registration, character for character.
 
     Prefer the explicit setting: behind a proxy the request's own scheme is
     often http even though the browser used https, and a mismatched redirect
     URI is the single most common cause of AADSTS50011.
+
+    One site can answer on more than one hostname — a custom domain and the
+    platform's own — and a cookie belongs to the host the browser typed, not to
+    the site. Naming a redirect URI on the *other* host therefore sends the
+    callback to a host that has never seen our state cookie, and the sign-in
+    fails in a way that reads exactly like a browser blocking cookies. Prod hit
+    this: people arrive on missions.mashcal.co.il and were sent back to the
+    azurewebsites.net name. So the setting takes a comma-separated list and the
+    URI on *this* request's host wins; a single value behaves as it always did.
+    Every host in the list has to be registered on the app registration too, or
+    that host's sign-in is AADSTS50011.
     """
-    explicit = _env("ENTRA_REDIRECT_URI")
-    if explicit:
-        return explicit
+    configured = redirect_uris()
+    here = _external_base_url(request)
+    if configured:
+        host = urllib.parse.urlparse(here).netloc.lower()
+        for uri in configured:
+            if urllib.parse.urlparse(uri).netloc.lower() == host:
+                return uri
+        return configured[0]
     path = urllib.parse.urlparse(str(request.url_for("entra_callback"))).path
-    return _external_base_url(request) + path
+    return here + path
 
 
 def _is_https(request: Request) -> bool:
@@ -268,7 +289,7 @@ def _is_https(request: Request) -> bool:
     if forwarded:
         return forwarded == "https"
     # Last resort: an https redirect URI means the deployment is https.
-    return _env("ENTRA_REDIRECT_URI").startswith("https://")
+    return any(u.startswith("https://") for u in redirect_uris())
 
 
 def _external_base_url(request: Request) -> str:

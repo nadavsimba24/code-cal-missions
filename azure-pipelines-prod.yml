@@ -114,9 +114,22 @@ stages:
           # constant here would verify some other environment and pass.
           HOST=$(az webapp show "${COMMON[@]}" --query defaultHostName -o tsv)
 
+          # ...and for *every* name it answers on, not just that one. The site
+          # also serves a custom domain, and a browser's cookie belongs to the
+          # host it typed: a login started on the custom domain that is sent
+          # back to the azurewebsites.net name lands where its state cookie is
+          # not, and dies as "פג תוקף בקשת ההתחברות" — which reads like a
+          # browser blocking cookies and is nothing of the sort. The app picks
+          # the entry matching the host in hand (backend/entra.py).
+          # Each of these must also be a registered Web redirect URI on the
+          # app registration (Mashcal-Missions), or that host gets AADSTS50011.
+          HOSTS=$(az webapp show "${COMMON[@]}" --query "hostNames" -o tsv)
+          REDIRECT_URIS=$(for h in $HOSTS; do printf 'https://%s/auth/callback,' "$h"; done | sed 's/,$//')
+
           echo "── current  : $PREV"
           echo "── deploying: $IMAGE"
           echo "── host     : https://$HOST"
+          echo "── redirects: $REDIRECT_URIS"
 
           # The site container authenticates to the registry with the ACR admin
           # user, and `sitecontainers update` writes the whole container back —
@@ -157,17 +170,20 @@ stages:
           #                       not even exist — the router is only mounted in
           #                       `entra` mode. Failing closed is correct; being
           #                       closed in production is not.
-          #   ENTRA_REDIRECT_URI  derived from the Web App's own hostname, so it
-          #                       cannot be left pointing at the host of some
-          #                       previous home. Entra matches it as a string;
-          #                       a stale one is AADSTS50011 and nobody gets in.
-          #                       It must also be registered on the app
+          #   ENTRA_REDIRECT_URI  derived from the Web App's own hostnames, so
+          #                       it cannot be left pointing at the host of some
+          #                       previous home, and so a domain added later is
+          #                       picked up by the next release rather than
+          #                       silently breaking sign-in from it. Entra
+          #                       matches it as a string; a stale one is
+          #                       AADSTS50011 and nobody gets in. Every host
+          #                       here must also be registered on the app
           #                       registration (Mashcal-Missions) as a Web
           #                       redirect URI.
           az webapp config appsettings set "${COMMON[@]}" --settings \
             MISSIONS_IMAGE_TAG="$(tag)" \
             CITYOS_AUTH_MODE="entra" \
-            ENTRA_REDIRECT_URI="https://$HOST/auth/callback" \
+            ENTRA_REDIRECT_URI="$REDIRECT_URIS" \
             --output none
 
           # Idempotent, and here rather than only in the portal so that a Web App
