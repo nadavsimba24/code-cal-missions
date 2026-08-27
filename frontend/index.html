@@ -793,6 +793,21 @@ body.coldragging .col-grip{opacity:1}
 .rel-h i{color:var(--primary);font-size:11px}
 .rel-h span{margin-inline-start:auto;color:var(--text-light);font-weight:600;font-size:12px}
 .lg-link-act{font-weight:700;font-size:12px;color:var(--text-muted);margin-inline-end:4px}
+/* board log tabs + the "seen" list */
+.lg-tabs{display:flex;gap:6px;padding:0 0 11px;border-bottom:1px solid var(--border);margin-bottom:11px}
+.lg-tab{display:flex;align-items:center;gap:7px;padding:7px 14px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text-muted);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.lg-tab:hover{background:var(--row-hover)}
+.lg-tab.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.lg-tab i{font-size:11px}
+.sn-list{display:flex;flex-direction:column}
+.sn-h{font-size:12px;font-weight:700;color:var(--text-muted);padding:9px 4px 6px}
+.sn-h-never{margin-top:8px;border-top:1px solid var(--border)}
+.sn-row{display:flex;align-items:center;gap:11px;padding:9px 6px;border-bottom:1px solid var(--border)}
+.sn-row:last-child{border-bottom:none}
+.sn-av{width:30px;height:30px;font-size:12px;flex-shrink:0}
+.sn-name{flex:1;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sn-ex{font-weight:400;font-size:11.5px;color:var(--text-light)}
+.sn-when{font-size:12.5px;color:var(--text-muted);white-space:nowrap}
 .lf-sel{width:100%;padding:7px 9px;border:1px solid var(--border-strong);border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
 .lf-note{margin-top:5px;font-size:11.5px;color:var(--text-light)}
 .cn-state{display:flex;flex-direction:column;align-items:center;gap:9px;padding:30px 16px;color:var(--text-muted);font-size:13px;text-align:center}
@@ -2355,6 +2370,10 @@ async function openBoard(id){
   const usersReady=refreshUsers();
   try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); }
   catch(e){ document.getElementById('view').innerHTML=accessDeniedHTML('אין לך גישה ללוח הזה. ייתכן שלא הוזמנת אליו, או שההרשאה שונתה. אם לדעתך זו טעות — פנה למנהל המערכת.'); return; }
+  // "נצפה לאחרונה" counts a person opening the board, not the app refetching
+  // it — so it is recorded here and nowhere else. Fire-and-forget: a failed
+  // receipt must never be the reason a board does not open.
+  api('/api/boards/'+id+'/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}).catch(()=>{});
   await usersReady;
   try{ localStorage.setItem('cc_board', id); }catch(e){}   // remember the open board across refreshes
   renderSidebar();
@@ -2383,12 +2402,46 @@ function renderBoardHead(){
    change differently. The one addition is which item each line belongs to:
    "changed status" says nothing at board level without it. */
 const BoardLog = {
-  user:'', date:'',
+  user:'', date:'', tab:'activity',
   async open(){
     if(!st.board)return;
+    this.tab='activity';
     this.render();
   },
+  setTab(t){ this.tab=t; this.render(); },
+  tabsHTML(){
+    const b=(id,he,ic)=>`<button class="lg-tab ${this.tab===id?'on':''}" onclick="BoardLog.setTab('${id}')">
+        <i class="fa-solid ${ic}"></i> ${he}</button>`;
+    return `<div class="lg-tabs">${b('activity','פעילות','fa-bolt')}${b('seen','נצפה לאחרונה','fa-eye')}</div>`;
+  },
   async render(){
+    if(this.tab==='seen') return this.renderSeen();
+    return this.renderActivity();
+  },
+  /* Who opened the board and when. A separate question from what changed on
+     it — someone can read a board every morning and never touch a thing. */
+  async renderSeen(){
+    showModal(`<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> לוג פעילות — ${esc(st.board.name)}</h2>
+      <div class="mbody"><div class="spin"></div></div>`);
+    document.getElementById('modal').classList.add('modal-80');
+    let d={seen:[],never:[],total_members:0};
+    try{ d=await api('/api/boards/'+st.board.id+'/seen'); }
+    catch(e){ toast(e.detail||'טעינת הרשימה נכשלה'); }
+    const row=(u,when)=>`<div class="sn-row">
+        <span class="av sn-av" title="${esc(u.name)}">${avatarInner(u)}</span>
+        <span class="sn-name">${esc(u.name)}${u.is_member===false?' <span class="sn-ex">אינו חבר בלוח</span>':''}</span>
+        <span class="sn-when" ${when?`title="${esc(fdatetime(when))}"`:''}>${when?esc(this.ago(when)):'—'}</span>
+      </div>`;
+    const seen=(d.seen||[]).map(u=>row(u,u.seen_at)).join('');
+    const never=(d.never||[]).map(u=>row(u,null)).join('');
+    const body=document.querySelector('#modal .mbody'); if(!body)return;
+    body.innerHTML=this.tabsHTML()+`<div class="sn-list">
+      ${seen?`<div class="sn-h">נצפה על ידי ${(d.seen||[]).length}</div>${seen}`
+             :'<div class="empty" style="padding:34px"><i class="fa-regular fa-eye-slash"></i><div>אף אחד לא פתח את הלוח עדיין</div></div>'}
+      ${never?`<div class="sn-h sn-h-never">לא פתחו את הלוח · ${(d.never||[]).length}</div>${never}`:''}
+    </div>`;
+  },
+  async renderActivity(){
     const qs=[]; if(this.user)qs.push('user_id='+this.user); if(this.date)qs.push('date='+this.date);
     showModal(`<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> לוג פעילות — ${esc(st.board.name)}</h2>
       <div class="mbody"><div class="spin"></div></div>`);
@@ -2413,7 +2466,7 @@ const BoardLog = {
       </div>`).join('')
       ||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות בלוח</div></div>';
     const body=document.querySelector('#modal .mbody'); if(!body)return;
-    body.innerHTML=`<div class="log-filters">
+    body.innerHTML=this.tabsHTML()+`<div class="log-filters">
         <select onchange="BoardLog.user=this.value;BoardLog.render()"><option value="">כל חברי הלוח</option>${people.map(u=>`<option value="${u.id}" ${this.user==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
         <input type="date" value="${this.date}" onchange="BoardLog.date=this.value;BoardLog.render()">
         ${this.user||this.date?`<button class="btn btn-ghost" onclick="BoardLog.user='';BoardLog.date='';BoardLog.render()">נקה סינון</button>`:''}

@@ -11,13 +11,14 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 import os
 from pydantic import BaseModel
 from sqlalchemy import create_engine, event, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, with_loader_criteria
 
 sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
                   init_auth, resolve_user)
 from models import (
-    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, ItemLink,
+    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, ItemLink, BoardView,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -5239,6 +5240,79 @@ def board_activity(board_id: int, actor_id: int = Depends(current_user_id),
                 # sent alongside so the filter's options never depend on what the
                 # current filter happens to have returned
                 "people": _board_log_people(db, board_id)}
+
+
+@app.post("/api/boards/{board_id}/seen")
+def mark_board_seen(board_id: int, actor_id: int = Depends(current_user_id)):
+    """Record that this person just opened the board.
+
+    Deliberately its own endpoint rather than a side effect of GET
+    /api/boards/{id}: that runs on every background refetch — after a two-way
+    link is saved, after a live event — and counting those would make "נצפה
+    לאחרונה" a log of the app talking to itself. Only the act of opening a
+    board calls this.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        row = db.query(BoardView).filter(BoardView.board_id == board_id,
+                                         BoardView.user_id == actor_id).first()
+        if row:
+            row.seen_at = now
+        else:
+            db.add(BoardView(board_id=board_id, user_id=actor_id, seen_at=now))
+        try:
+            db.commit()
+        except IntegrityError:
+            # two tabs opening the board at once both missed the row and both
+            # inserted; the unique constraint is what makes that a no-op
+            db.rollback()
+            row = db.query(BoardView).filter(BoardView.board_id == board_id,
+                                             BoardView.user_id == actor_id).first()
+            if row:
+                row.seen_at = now
+                db.commit()
+        return {"status": "ok", "seen_at": now.isoformat()}
+
+
+@app.get("/api/boards/{board_id}/seen")
+def board_seen_by(board_id: int, actor_id: int = Depends(current_user_id)):
+    """Who has opened this board, most recent first.
+
+    Anyone on the board may read it — the same gate as the activity log, since
+    it answers a question of the same kind. People who have since left the board
+    stay listed: they did look, and a history that quietly drops them is not a
+    history.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        rows = (db.query(BoardView).filter(BoardView.board_id == board_id)
+                .order_by(BoardView.seen_at.desc()).all())
+        users = {u.id: u for u in db.query(User).filter(
+            User.id.in_([r.user_id for r in rows]))} if rows else {}
+        members = {m.user_id for m in db.query(BoardMember).filter(
+            BoardMember.board_id == board_id).all()}
+        out = []
+        for r in rows:
+            u = users.get(r.user_id)
+            if not u:
+                continue                     # the account is gone; so is the row's meaning
+            out.append({"user_id": u.id, "name": u.name, "avatar_url": u.avatar_url,
+                        "seen_at": r.seen_at.isoformat() if r.seen_at else None,
+                        "is_member": u.id in members})
+        # who has never opened it, so "nobody has looked" is answerable too
+        never = [{"user_id": u.id, "name": u.name, "avatar_url": u.avatar_url}
+                 for u in db.query(User).filter(User.id.in_(members)).all()
+                 if u.id not in {r.user_id for r in rows}]
+        return {"seen": out, "never": never, "total_members": len(members)}
 
 
 @app.get("/api/boards/{board_id}/activity/export")

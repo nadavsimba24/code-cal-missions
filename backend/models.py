@@ -5,7 +5,8 @@ Database Models
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float, Boolean,
-    DateTime, ForeignKey, JSON, Enum as SAEnum, Table, LargeBinary
+    DateTime, ForeignKey, JSON, Enum as SAEnum, Table, LargeBinary,
+    UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
@@ -661,6 +662,22 @@ class LoginEvent(Base):
     logged_in_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     ip = Column(String(64))
     user_agent = Column(String(400))
+
+
+class BoardView(Base):
+    """When each person last opened each board — one row per pair, overwritten.
+
+    A history of every visit would be the larger and less useful thing: the
+    question the board asks is "who has seen this lately", not "how many times
+    did they look". One row per person keeps the table proportional to the
+    people, not to the traffic.
+    """
+    __tablename__ = "board_views"
+    __table_args__ = (UniqueConstraint("board_id", "user_id", name="uq_board_view"),)
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    seen_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class UploadedFile(Base):
