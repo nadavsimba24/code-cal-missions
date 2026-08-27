@@ -141,8 +141,14 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* ===== ציר זמן — a compact cell popover, the weight of the תאריך יעד editor
    beside it rather than a dialog over the board ===== */
 .tl-pop{width:246px;padding:10px}
-.tl-inputs{display:flex;gap:6px;margin-bottom:8px}
-.tl-in{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
+/* From on the left, to on the right — the same direction the cell reads.
+   The cell is dir=ltr because a range of digits is bidi-neutral and would
+   otherwise be reordered by the surrounding Hebrew; leaving the picker RTL made
+   the two disagree about which side the start of the range is on. The labels
+   stay RTL so each one reads naturally; only the order of the two boxes is
+   fixed here. */
+.tl-inputs{display:flex;gap:6px;margin-bottom:8px;direction:ltr}
+.tl-in{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;direction:rtl}
 .tl-in span{font-size:10.5px;font-weight:600;color:var(--text-muted)}
 .tl-in input{padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px;font:inherit;font-size:11.5px;width:100%}
 .tl-in input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
