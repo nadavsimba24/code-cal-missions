@@ -177,20 +177,24 @@ class IFCBuilder:
                 continue
             dx = (lng - lon_center) * 111320 * math.cos(lat_center * math.pi / 180)
             dy = (lat - lat_center) * 111320
-            tags = " ".join(t.get("tags", []))
+            # What kind of object this is used to be read off the item's tags.
+            # Tags are gone, so the same keywords are matched against the title
+            # instead — which is where they sat in practice anyway
+            # ("שיקום כביש רמתיים" carries "כביש" without a tag to say so).
+            words = t.get("title", "") or ""
             priority = t.get("priority", "medium")
             scale = {"low": 2, "medium": 3, "high": 5, "critical": 7, "emergency": 8}.get(priority, 3)
             tid = str(t.get("id", ""))
             
-            if any(w in tags for w in ["כביש", "דרך", "road", "street"]):
+            if any(w in words for w in ["כביש", "דרך", "road", "street"]):
                 self.add_road(t["title"], (dx-15, dy), (dx+15, dy), width=3+scale, height=0.2, task_id=tid)
-            elif any(w in tags for w in ["בניין", "בנייה", "building"]):
+            elif any(w in words for w in ["בניין", "בנייה", "building"]):
                 self.add_building(t["title"], dx, dy, w=8+scale, d=6+scale, h=3+scale, task_id=tid)
-            elif any(w in tags for w in ["פארק", "גינה", "park"]):
+            elif any(w in words for w in ["פארק", "גינה", "park"]):
                 self.add_infra(t["title"], dx, dy, "Park", w=5+scale, d=5+scale, h=0.5, task_id=tid)
-            elif any(w in tags for w in ["תאורה", "light"]):
+            elif any(w in words for w in ["תאורה", "light"]):
                 self.add_infra(t["title"], dx, dy, "StreetLight", w=0.3, d=0.3, h=6, task_id=tid)
-            elif any(w in tags for w in ["אוטובוס", "bus", "תחבורה"]):
+            elif any(w in words for w in ["אוטובוס", "bus", "תחבורה"]):
                 self.add_infra(t["title"], dx, dy, "BusStop", w=2, d=1, h=2.5, task_id=tid)
             else:
                 self.add_infra(t["title"], dx, dy, "Infrastructure", w=scale, d=scale, h=scale, task_id=tid)

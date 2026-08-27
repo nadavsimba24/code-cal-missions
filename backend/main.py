@@ -6,6 +6,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.datastructures import Headers
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import os
@@ -46,6 +48,33 @@ if _cors_origins:
                        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
                        allow_headers=["Content-Type", "X-CityOS-User"])
 
+# The SPA shell is 650KB of HTML and is re-fetched on every entry, which on a
+# phone is the single biggest cost of opening the app. Gzip takes it to ~177KB
+# for ~13ms of CPU. Level 6 rather than the default 9: 9 saves under 1KB more
+# and costs a third again as much time.
+#
+# Server-sent events are excluded. Starlette's GZipMiddleware honours neither
+# `no-transform` nor a flush after each chunk, so wrapping the /api/events
+# stream in it buffers messages until the stream closes — which, for a live
+# feed, is never. EventSource always sends `Accept: text/event-stream`, so the
+# request itself says whether it is a stream, before any response exists to
+# inspect.
+class ConditionalGZip:
+    def __init__(self, app, minimum_size=500, compresslevel=6):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size,
+                                   compresslevel=compresslevel)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            accept = Headers(scope=scope).get("accept", "")
+            if "text/event-stream" not in accept:
+                return await self.gzip(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+app.add_middleware(ConditionalGZip)
+
 # Endpoints that may be reached without an identity. Everything else under /api/
 # requires one — so a route added tomorrow is protected by default instead of
 # being protected only if its author remembered the dependency.
@@ -70,7 +99,17 @@ async def require_authentication(request, call_next):
 async def security_headers(request, call_next):
     resp = await call_next(request)
     if "text/html" in resp.headers.get("content-type", ""):
-        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        # `no-cache`, not `no-store`. Both force the browser to check with the
+        # server before using the page, so a deploy is still picked up on the
+        # very next entry — the difference is that `no-store` also forbids
+        # keeping the bytes, so all ~180KB of the shell came down again every
+        # single time. With `no-cache` the browser sends If-None-Match and an
+        # unchanged shell answers 304 with no body at all. On a phone, where
+        # this is paid on every entry, that is the difference between a
+        # download and a round trip.
+        # Safe because the only text/html this app serves is the SPA shell and
+        # 404.html — the same bytes for every user, carrying nobody's data.
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -117,6 +156,12 @@ def _migrate():
             if name not in cols:
                 conn.execute(text(f"ALTER TABLE comments ADD COLUMN {name} {ddl}"))
         tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
+        # The tags column type was removed from the product. Dropping the column
+        # deletes the values with it, which is the point — leaving them behind
+        # would keep data nobody can see, read or delete through the app.
+        if "tags" in tcols:
+            conn.execute(text("ALTER TABLE tasks DROP COLUMN tags"))
+            tcols.discard("tags")
         if "permissions" not in tcols:
             conn.execute(text("ALTER TABLE tasks ADD COLUMN permissions JSON"))
         # "מזהה פריט" — automatic 11-digit item identifier (+ the board it belongs to)
@@ -201,6 +246,8 @@ else:
         "ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid_board INTEGER",
+        # tags was removed from the product; the column goes and takes its values
+        "ALTER TABLE tasks DROP COLUMN IF EXISTS tags",
     ]
     for _sql in _PG_MIGRATIONS:
         try:
@@ -208,6 +255,40 @@ else:
                 _conn.execute(_text(_sql))
         except Exception as _e:
             print(f"⚠️  pg migration skipped: {_sql!r} → {_e}", flush=True)
+
+
+def _forget_tags_in_board_settings():
+    """Dropping the column leaves boards still naming it.
+
+    A board's settings remember column order, widths, labels and which columns
+    are hidden. Boards configured before the removal carry "tags" in those
+    lists. Nothing reads it — the order is applied to the columns that exist —
+    but it is leftover data describing a feature that is gone, and the request
+    was to remove the feature and its data. Idempotent: after the first pass
+    there is nothing left to match, so later starts do no writes.
+    """
+    keys = ("col_order", "col_hidden", "col_labels", "col_widths")
+    with Session(engine) as db:
+        touched = 0
+        for b in db.query(Board).execution_options(include_deleted=True).all():
+            st = b.settings or {}
+            if not any("tags" in (st.get(k) or []) for k in keys):
+                continue
+            new = dict(st)
+            for k in keys:
+                v = new.get(k)
+                if isinstance(v, list):
+                    new[k] = [x for x in v if x != "tags"]
+                elif isinstance(v, dict):
+                    new[k] = {kk: vv for kk, vv in v.items() if kk != "tags"}
+            b.settings = new
+            touched += 1
+        if touched:
+            db.commit()
+            print(f"[migrate] removed the tags column from {touched} board(s) settings", flush=True)
+
+
+_forget_tags_in_board_settings()
 
 # Seed on first run only — on a persistent DB (Postgres) skip if data exists,
 # so real data isn't duplicated or overwritten on every cold start.
@@ -478,7 +559,7 @@ class TaskOut(BaseModel):
     estimated_hours: Optional[float]; actual_hours: Optional[float]
     location_lat: Optional[float]; location_lng: Optional[float]
     address: Optional[str]; gis_layer_id: Optional[str]
-    tags: list; custom_fields: dict; is_archived: bool
+    custom_fields: dict; is_archived: bool
     created_by: Optional[int]
     created_at: datetime; updated_at: datetime
     assignees: list = []
@@ -1255,7 +1336,7 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         "start_date": t.start_date,
         "estimated_hours": t.estimated_hours, "actual_hours": t.actual_hours,
         "location_lat": t.location_lat, "location_lng": t.location_lng,
-        "address": t.address, "tags": t.tags or [],
+        "address": t.address,
         "custom_fields": cf,
         "permissions": t.permissions or {},
         "my_perm": my_perm,
@@ -1662,7 +1743,7 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # rename a built-in column header (e.g. "פריט") — board admin
             if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לשנות שם עמודה")
-            builtin = {"item", "assignees", "status", "priority", "due", "tags"}
+            builtin = {"item", "assignees", "status", "priority", "due"}
             labels = {}
             for k, v in (data["col_labels"] or {}).items():
                 if k in builtin:
@@ -1676,7 +1757,7 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # hide built-in columns (the "פריט" name column can never be hidden) — board admin
             if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול להסתיר עמודות")
-            hideable = {"assignees", "status", "priority", "due", "tags"}
+            hideable = {"assignees", "status", "priority", "due"}
             hidden = [str(k) for k in (data["col_hidden"] or []) if str(k) in hideable]
             s = dict(b.settings or {})
             s["col_hidden"] = list(dict.fromkeys(hidden))  # de-dup, preserve order
@@ -1839,7 +1920,7 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול להגדיר את עמודות תת-הפריט")
             s = dict(b.settings or {})
-            pool = {"assignees", "status", "priority", "due", "tags"}
+            pool = {"assignees", "status", "priority", "due"}
             pool |= {str(c.get("id")) for c in s.get("columns", []) if c.get("id")}
             picked = [str(k) for k in (data["sub_cols"] or []) if str(k) in pool]
             s["sub_cols"] = ["item"] + list(dict.fromkeys(picked))
@@ -2086,7 +2167,7 @@ def view_trashed_task(board_id: int, task_id: int, actor_id: int = Depends(curre
         return {"id": t.id, "title": t.title, "description": t.description,
                 "status": t.status.value if hasattr(t.status, "value") else t.status,
                 "priority": t.priority.value if hasattr(t.priority, "value") else t.priority,
-                "due_date": t.due_date, "tags": t.tags or [],
+                "due_date": t.due_date,
                 "custom_fields": t.custom_fields or {},
                 "assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
                               for u in (t.assignees or [])],
@@ -2859,7 +2940,6 @@ def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
                 "priority": t.priority.value if hasattr(t.priority, 'value') else t.priority,
                 "due_date": t.due_date,
                 "location_lat": t.location_lat, "location_lng": t.location_lng,
-                "tags": t.tags or [],
                 "assignees": assignees,
             })
         return result
@@ -2934,7 +3014,6 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
             title=data.get("title", "Untitled"),
             description=data.get("description", ""),
             priority=prio or "medium",
-            tags=data.get("tags", []),
             location_lat=data.get("location_lat"),
             location_lng=data.get("location_lng"),
             address=data.get("address"),
@@ -4442,7 +4521,7 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         # Previously the whole block was skipped when the caller omitted user_id,
         # so an anonymous PATCH could edit any item on any board.
         actor_role = _board_role(db, task.board_id, actor)
-        editing_builtin = any(k in data for k in ("title", "description", "priority", "status", "due_date", "tags"))
+        editing_builtin = any(k in data for k in ("title", "description", "priority", "status", "due_date"))
         iperm = _item_perm(task, actor, actor_role)
         if editing_builtin and iperm not in ("edit", "delete"):
             raise HTTPException(403, "אין לך הרשאת עריכה לפריט זה")
@@ -4556,11 +4635,6 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 task.due_date = None
             _audit(db, task_id, "update", "due_date", old_due,
                    task.due_date.isoformat() if task.due_date else None, actor)
-        if "tags" in data and isinstance(data["tags"], list):
-            old_tags = task.tags or []
-            if old_tags != data["tags"]:
-                _audit(db, task_id, "update", "tags", ", ".join(old_tags), ", ".join(data["tags"]), actor)
-            task.tags = data["tags"]
         if "custom_fields" in data and isinstance(data["custom_fields"], dict):
             board = db.query(Board).filter(Board.id == task.board_id).first()
             coldefs = {c["id"]: c for c in ((board.settings or {}).get("columns", []) if board else [])}
@@ -5368,8 +5442,6 @@ def _revert_field(task, field, old):
         except ValueError: return False
     if field == "due_date":
         task.due_date = datetime.fromisoformat(old) if old else None; return True
-    if field == "tags":
-        task.tags = [x for x in (old or "").split(", ") if x]; return True
     if field and field.startswith("col:"):
         cid = field[4:]; cf = dict(task.custom_fields or {})
         val = json.loads(old) if old not in (None, "", "null") else None
@@ -6077,7 +6149,6 @@ def submit_form(data: dict):
             board_id=data.get("board_id", 3),  # Default to citizen requests
             title=form_data.get("title") or form_data.get("applicant_name") or f"טופס: {template_id}",
             description=json.dumps(form_data, ensure_ascii=False),
-            tags=["form", template_id],
             custom_fields=form_data,
         )
         db.add(task)
@@ -6292,7 +6363,6 @@ AI_TOOLS = [
                     "priority": {"type": "string", "enum": ["low", "medium", "high", "critical", "emergency"], "description": "עדיפות (אופציונלי; ברירת מחדל: medium)"},
                     "status": {"type": "string", "enum": ["backlog", "todo", "in_progress", "review", "done", "cancelled", "on_hold"], "description": "סטטוס (אופציונלי; ברירת מחדל: backlog)"},
                     "due_date": {"type": "string", "description": "תאריך יעד בפורמט ISO (אופציונלי)"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "תגיות (אופציונלי)"},
                 },
                 "required": ["board_id", "title"]
             }
@@ -6312,7 +6382,6 @@ AI_TOOLS = [
                     "priority": {"type": "string", "enum": ["low", "medium", "high", "critical", "emergency"]},
                     "due_date": {"type": "string"},
                     "description": {"type": "string"},
-                    "tags": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["task_id"]
             }
@@ -6534,7 +6603,6 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
         priority_str = args.get("priority", "medium")
         status_str = args.get("status", "backlog")
         due_date_str = args.get("due_date")
-        tags = args.get("tags", [])
         try:
             priority = Priority(priority_str)
         except ValueError:
@@ -6572,7 +6640,6 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
                 priority=priority,
                 status=status,
                 due_date=due_date,
-                tags=tags,
             )
             db.add(t)
             db.commit()
@@ -6616,9 +6683,6 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
                     changed.append("priority")
                 except ValueError:
                     pass
-            if "tags" in args:
-                t.tags = args["tags"]
-                changed.append("tags")
             for c in changed:
                 db.add(AuditLog(
                     entity_type="task", entity_id=task_id,
@@ -7048,7 +7112,7 @@ def ai_train(data: dict, actor_id: int = Depends(current_user_id)):
                 "instruction": "סווג משימה עירונית: קבע סטטוס, עדיפות ותגיות.",
                 "input": f"{t.title}. {t.description or ''}",
                 "output": _json.dumps({"status": cf.get("status_label", s),
-                                       "priority": p, "tags": t.tags or []}, ensure_ascii=False),
+                                       "priority": p}, ensure_ascii=False),
             })
         fname = f"cityos_train_board_{board_id or 'all'}.jsonl"
         fpath = os.path.join(out_dir, fname)
@@ -7083,7 +7147,6 @@ def bim_generate(board_id: Optional[int] = None):
                 "status": t.status.value if hasattr(t.status, 'value') else t.status,
                 "priority": t.priority.value if hasattr(t.priority, 'value') else t.priority,
                 "location_lat": t.location_lat, "location_lng": t.location_lng,
-                "tags": t.tags or [],
             })
         
         count = builder.generate_from_tasks(task_list)
@@ -7122,7 +7185,6 @@ def bim_viewer_data():
             task_list = [{
                 "id": t.id, "title": t.title,
                 "location_lat": t.location_lat, "location_lng": t.location_lng,
-                "tags": t.tags or [],
                 "priority": t.priority.value if hasattr(t.priority, 'value') else t.priority,
                 "status": t.status.value if hasattr(t.status, 'value') else t.status,
             } for t in tasks if t.location_lat]
@@ -7721,7 +7783,6 @@ def list_step_tasks(step_id: int):
             "priority": t.priority.value if hasattr(t.priority, 'value') else t.priority,
             "due_date": t.due_date.isoformat() if t.due_date else None,
             "assignees": [{"id": u.id, "name": u.name} for u in (t.assignees or [])],
-            "tags": t.tags or [],
         } for t in tasks]
 
 # ── 4. Budget Line Items ─────────────────────────────────────────────

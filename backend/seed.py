@@ -136,47 +136,42 @@ def seed_database(engine):
                 "title": "שיקום כביש רמתיים — קטע מרכזי",
                 "desc": "שיקום יסודי של קטע הכביש מרחוב הרצל עד צומת סוקולוב. כולל החלפת תשתיות תת-קרקעיות.",
                 "priority": Priority.CRITICAL, "location": (34.8930, 32.1587),
-                "assignees": [], "due": now + timedelta(days=45),
-                "tags": ["כבישים", "תשתית", "דחוף"]
+                "assignees": [], "due": now + timedelta(days=45)
             },
             {
                 "board": "פרויקטי תשתית", "group": "לתכנון",
                 "title": "הקמת שביל אופניים — ציר ז'בוטינסקי",
                 "desc": "תכנון שביל אופניים דו-כיווני לאורך רחוב ז'בוטינסקי, באורך 2.3 ק\"מ.",
                 "priority": Priority.HIGH, "location": (34.8900, 32.1550),
-                "assignees": ["משה כהן"], "due": now + timedelta(days=90),
-                "tags": ["תחבורה", "אופניים", "תכנון"]
+                "assignees": ["משה כהן"], "due": now + timedelta(days=90)
             },
             {
                 "board": "פרויקטי תשתית", "group": "הושלם",
                 "title": "חידוש תאורה — פארק גורדון",
                 "desc": "החלפת 24 עמודי תאורה לפאנלים סולאריים בפארק ע\"ש גורדון.",
                 "priority": Priority.MEDIUM, "location": (34.8860, 32.1600),
-                "assignees": [], "due": now - timedelta(days=5),
-                "tags": ["תאורה", "פארק", "סולארי"]
+                "assignees": [], "due": now - timedelta(days=5)
             },
             # Citizen requests
             {
                 "board": "בקשות תושבים", "group": "חדש",
                 "title": "בור בכביש — רחוב העצמאות 12",
                 "desc": "בור בעומק 15 ס\"מ ליד מעבר חציה. סיכון להולכי רגל.",
-                "priority": Priority.EMERGENCY, "location": (34.8950, 32.1530),
-                "tags": ["כבישים", "בטיחות", "דחוף"]
+                "priority": Priority.EMERGENCY, "location": (34.8950, 32.1530)
             },
             {
                 "board": "בקשות תושבים", "group": "בטיפול",
                 "title": "פנס רחוב לא עובד — רחוב הנרקיסים",
                 "desc": "פנס רחוב מספר 14-22 לא דולק כבר שבוע. רחוב חשוך.",
                 "priority": Priority.HIGH, "location": (34.8880, 32.1620),
-                "assignees": [], "tags": ["תאורה", "רחוב"]
+                "assignees": []
             },
             {
                 "board": "בקשות תושבים", "group": "טופל",
                 "title": "גינה ציבורית — ניקוי פסולת",
                 "desc": "דווח על הצטברות פסולת בגינה הציבורית ברחוב השושנים.",
                 "priority": Priority.LOW, "location": (34.8850, 32.1570),
-                "assignees": [],
-                "tags": ["גינה", "ניקיון"]
+                "assignees": []
             },
             # Building permits
             {
@@ -184,16 +179,14 @@ def seed_database(engine):
                 "title": "היתר הרחבה — רחוב הארזים 8",
                 "desc": "בקשה להרחבת דירת גג בשטח 65 מ\"ר. כולל תוכניות הנדסיות.",
                 "priority": Priority.MEDIUM, "location": (34.8910, 32.1605),
-                "assignees": ["משה כהן"], "due": now + timedelta(days=21),
-                "tags": ["הרחבה", "גג"]
+                "assignees": ["משה כהן"], "due": now + timedelta(days=21)
             },
             {
                 "board": "אישורי בנייה", "group": "מאושר",
                 "title": "היתר שינוי ייעוד — מסעדה ברחוב המרכזי",
                 "desc": "שינוי ייעוד מקומפרסיה למסעדה. אושר על ידי הוועדה.",
                 "priority": Priority.MEDIUM,
-                "assignees": ["משה כהן"],
-                "tags": ["מסעדה", "שינוי ייעוד"]
+                "assignees": ["משה כהן"]
             },
             # Business development
             {
@@ -201,8 +194,7 @@ def seed_database(engine):
                 "title": "יריד עסקים שנתי 2026",
                 "desc": "ארגון יריד העסקים העירוני בגני התערוכה. צפויים 50+ מציגים.",
                 "priority": Priority.HIGH,
-                "assignees": ["דן מזרחי"], "due": now + timedelta(days=60),
-                "tags": ["יריד", "עסקים", "אירוע"]
+                "assignees": ["דן מזרחי"], "due": now + timedelta(days=60)
             },
         ]
 
@@ -232,7 +224,6 @@ def seed_database(engine):
                 due_date=t.get("due"),
                 location_lat=t.get("location", [None, None])[1] if t.get("location") else None,
                 location_lng=t.get("location", [None, None])[0] if t.get("location") else None,
-                tags=t.get("tags", []),
                 created_by=users.get(t.get("assignees", [None])[0], users["משה כהן"]).id if t.get("assignees") else users["משה כהן"].id,
             )
             session.add(task)

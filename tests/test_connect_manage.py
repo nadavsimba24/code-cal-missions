@@ -6,7 +6,7 @@ has its content touched.
 """
 
 AS = lambda uid: {"X-CityOS-User": str(uid)}
-_CONTENT = ("title", "description", "status", "priority", "due_date", "tags",
+_CONTENT = ("title", "description", "status", "priority", "due_date",
             "group_id", "position", "assignees")
 
 

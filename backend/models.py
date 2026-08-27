@@ -268,7 +268,6 @@ class Task(Base):
     item_uid = Column(String(11))
     item_uid_board = Column(Integer)
     custom_fields = Column(JSON, default=dict)
-    tags = Column(JSON, default=list)
     permissions = Column(JSON, default=dict)  # item-level per-user perms {"<uid>":"view|edit|none"}
     is_archived = Column(Boolean, default=False)
     created_by = Column(Integer, ForeignKey("users.id"))

@@ -102,9 +102,9 @@ def test_removing_a_link_changes_neither_item(client, admin_id):
     a, b, c, mirror = _setup(client, admin_id, "t5")
     src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
     client.patch(f"/api/tasks/{x}?user_id={admin_id}",
-                 json={"description": "תיאור", "priority": "high", "tags": ["א", "ב"]})
+                 json={"description": "תיאור", "priority": "high"})
     _set(client, src, c["id"], [x], admin_id)
-    keys = ("title", "description", "status", "priority", "due_date", "tags", "group_id", "assignees")
+    keys = ("title", "description", "status", "priority", "due_date", "group_id", "assignees")
     snap = lambda t: {k: client.get(f"/api/tasks/{t}", headers=AS(admin_id)).json().get(k) for k in keys}
     before = (snap(src), snap(x))
     _set(client, src, c["id"], [], admin_id)

@@ -6,14 +6,12 @@
 <title>Missions</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/><path d='M32 38 L39 49 L30 45 Z' fill='%23d6ecff'/></svg>">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/></svg>">
-<link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
-<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="sortable.min.js"></script>
+<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&family=Heebo:wght@400;500;600;700;800&family=Assistant:wght@400;500;600;700;800&family=Noto+Sans+Hebrew:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <!-- Font gate: keep the page invisible until the real fonts are loaded, so the
      first painted text is already in the correct font (no fallback→web swap).
      A safety timer guarantees the page is never hidden for more than 1.2s. -->
@@ -61,7 +59,18 @@
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%}
 body{font-family:var(--font);background:var(--bg);color:var(--text);direction:rtl;overflow:hidden;font-size:14px}
-#app{display:flex;height:100vh}
+/* 100dvh, not 100vh. On a phone browser `vh` is measured against the viewport
+   with the URL bar RETRACTED, so #app is taller than what is actually on
+   screen. The first scroll gesture inside #view is then spent collapsing the
+   browser's own chrome, which slides the whole app — including #view, and so
+   including everything stuck to its top — up and out of view before the board
+   scrolls at all. The header does stay stuck; it is the container it is stuck
+   to that moves. `dvh` tracks the visible viewport as the chrome comes and
+   goes, so #view is exactly the screen and the only thing that scrolls is the
+   board, which is the desktop behaviour.
+   The plain `vh` line stays as the fallback for browsers without dvh — they
+   keep today's behaviour rather than losing the height entirely. */
+#app{display:flex;height:100vh;height:100dvh}
 button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 ::-webkit-scrollbar{width:9px;height:9px}
 ::-webkit-scrollbar-thumb{background:#d0d4e4;border-radius:6px}
@@ -338,6 +347,10 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .cell-pop.board-icon-pop{padding:10px}
 .board-icon-pop .icon-grid{gap:6px}
 .tabs{display:flex;gap:4px;align-items:center}
+.tab-dd{display:none}   /* narrow screens only — see the mobile block */
+.rm-item .rm-grow{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rm-item .rm-check{color:var(--primary);font-size:12px}
+.rm-item.on{background:var(--primary-soft);color:var(--primary-hover);font-weight:700}
 .tab{display:flex;align-items:center;gap:7px;padding:9px 14px;font-size:14px;color:var(--text-muted);border-bottom:3px solid transparent;font-weight:600;border-radius:6px 6px 0 0;cursor:pointer}
 .tab:hover{background:var(--row-hover)}
 .tab.active{color:var(--primary);border-bottom-color:var(--primary)}
@@ -454,7 +467,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tb-clear.show{display:inline-flex}
 .tb-clear:hover{background:#fdebed;color:var(--red-d)}
 
-#view{flex:1;overflow:auto;padding:0 22px 18px;position:relative}
+#view{flex:1;overflow:auto;overscroll-behavior-y:contain;padding:0 22px 18px;position:relative}
 /* top breathing space as a margin on the first block — it scrolls away, so no strip is left above the sticky header for rows to peek through */
 #view>*:first-child{margin-top:18px}
 
@@ -922,7 +935,7 @@ body.coldragging .col-grip{opacity:1}
 .cal-ev{font-size:10.5px;color:#fff;border-radius:4px;padding:2px 5px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ===== AI slideover ===== */
-#ai-panel{position:fixed;top:0;left:0;height:100vh;width:420px;max-width:92vw;background:var(--surface);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(-110%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
+#ai-panel{position:fixed;top:0;left:0;height:100vh;height:100dvh;width:420px;max-width:92vw;background:var(--surface);box-shadow:-8px 0 30px rgba(0,0,0,.18);transform:translateX(-110%);transition:.28s cubic-bezier(.4,0,.2,1);z-index:200;display:flex;flex-direction:column}
 #ai-panel.open{transform:translateX(0)}
 .ai-head{padding:16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
 .ai-head .gicon{width:32px;height:32px;border-radius:9px;background:linear-gradient(120deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff}
@@ -1133,7 +1146,6 @@ img.pf-av{object-fit:cover;background:#fff}
 .sel-act.danger:hover i,.sel-act.danger:hover span{color:var(--red)}
 .sel-x{width:30px;height:30px;border-radius:8px;border:none;background:none;cursor:pointer;color:var(--text-light);font-size:15px;margin-inline-start:2px;flex-shrink:0}
 .sel-x:hover{background:var(--row-hover);color:var(--text)}
-@media(max-width:640px){#sel-bar{left:8px;right:8px;transform:translateY(150%);width:auto;justify-content:center;flex-wrap:wrap}#sel-bar.show{transform:translateY(0)}.sel-act span{display:none}.sel-act{min-width:44px;padding:6px 10px}}
 #toast.show{transform:translateX(-50%) translateY(0);opacity:1;visibility:visible}
 .empty{text-align:center;color:var(--text-light);padding:60px 20px}
 .empty i{font-size:40px;margin-bottom:14px;opacity:.5;display:block}
@@ -1473,7 +1485,6 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .ff-multi{display:flex;flex-wrap:wrap;gap:6px}
 .ff-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border-strong);border-radius:18px;padding:4px 11px;font-size:12.5px;cursor:pointer}
 .ff-chip:has(input:checked){border-color:var(--primary);background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
-.ff-chip.tag-on{border-color:var(--primary);background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .ff-chip input{accent-color:var(--primary)}
 /* settings modal */
 .set-label{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
@@ -1527,6 +1538,19 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
 /* ===================== MOBILE / narrow screens ===================== */
 @media (max-width:820px){
   body{font-size:14px}
+  /* Item selection is a desktop affordance — Monday does not offer it on a
+     phone either. On a narrow screen the checkbox sits in front of every item
+     name spending width the name needs.
+     The action bar goes with it: hidden here rather than relying only on the
+     selection being cleared at the breakpoint, so no arrangement of rotate and
+     resize can strand it on screen with no checkbox left to untick.
+     What this costs on a phone: move and delete stay reachable from the item's
+     own ⋯ menu (itemRowMenu), but BULK duplicate had no other route, so there
+     is now no duplicate on a narrow screen. Note also that .item-menu is
+     opacity:0 until :hover, which a touch screen never delivers — the button
+     is still tappable where it sits, but it is not visible. */
+  .item-check{display:none}
+  #sel-bar{display:none}
   /* sidebar becomes an off-canvas drawer sliding in from the right (RTL) */
   #sidebar{position:fixed;top:0;bottom:0;right:0;left:auto;width:82vw;max-width:320px;min-width:0;
            transform:translateX(105%);transition:transform .25s ease;box-shadow:-8px 0 30px rgba(0,0,0,.22)}
@@ -1542,7 +1566,29 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   /* board header + toolbar: tighter, allow horizontal scroll for tabs/actions */
   #boardhead{padding:10px 12px 0}
   #boardhead .bh-top h1{font-size:18px}
-  .tabs{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  /* The header line has room for the board's name and not much else. The log
+     is not lost — it moves into the ⋯ menu (see boardMenu). The owner is
+     dropped outright, and on a phone that is its only appearance: the members
+     screen names the board admins too, but boardMenu disables that entry for
+     anyone who is not one. Removing it was the explicit request. */
+  #boardhead .bh-log,#boardhead .bh-owner{display:none}
+  /* the view picker becomes a list field; the strip and the add-view button
+     (board configuration, desktop-only here as elsewhere) step aside */
+  .tabs{overflow:visible}
+  .tabs .tab,.tab-add-wrap{display:none}
+  /* a 44px target: the platform minimum for something tapped by thumb */
+  .tab-dd{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;
+          margin-bottom:10px;padding:0 12px;text-align:right;cursor:pointer;
+          font-family:inherit;font-size:14px;font-weight:600;color:var(--text);
+          background:var(--surface);border:1px solid var(--border-strong);
+          border-radius:10px;box-shadow:0 1px 2px rgba(29,42,68,.04)}
+  .tab-dd:active{background:var(--row-hover)}
+  .tab-dd:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+  .tab-dd .tab-dd-ic{color:var(--primary);font-size:15px;width:18px;text-align:center;flex-shrink:0}
+  .tab-dd .tab-dd-lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tab-dd .tab-dd-caret{color:var(--text-light);font-size:12px;flex-shrink:0}
+  /* the list matches the control it drops from, instead of the 170px a row menu wants */
+  .view-pick-pop .row-menu{min-width:min(320px,86vw)}
   #toolbar{padding:8px 12px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap}
   #toolbar>*{flex-shrink:0}
   .tb-search{width:150px}
@@ -1553,7 +1599,7 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   .modal.modal-80{width:96vw!important;max-width:96vw!important;height:92vh!important;max-height:92vh!important}
   .modal .mbody{max-height:none}
   /* chat panel fills the screen */
-  #chat-panel{top:0;right:0;left:0;bottom:0;width:100vw;max-width:100vw;height:100vh;border-radius:0;transform:translateY(0) translateX(-105%)}
+  #chat-panel{top:0;right:0;left:0;bottom:0;width:100vw;max-width:100vw;height:100vh;height:100dvh;border-radius:0;transform:translateY(0) translateX(-105%)}
   #chat-panel.open{transform:translateY(0) translateX(0)}
   /* kanban columns a touch narrower */
   .kcol{width:76vw;min-width:76vw}
@@ -1989,6 +2035,20 @@ function revealWhenFontsReady(){
     if(document.fonts.ready) document.fonts.ready.then(reveal);
   }catch(e){ reveal(); }
 }
+/* The four directory calls do not depend on each other, only on knowing who we
+   are. Awaited one after another they cost four round trips before the first
+   board can even be asked for — on a phone that is most of the wait, with the
+   server busy for under 30ms of it. Issued together they cost one. Each still
+   fails independently to its own empty default, exactly as before. */
+async function loadDirectory(){
+  const [users,depts,perms]=await Promise.all([
+    api('/api/users').catch(()=>[]),
+    api('/api/departments').catch(()=>[]),
+    api('/api/role-permissions').catch(()=>null),
+    loadWsMembers(),
+  ]);
+  st.users=users||[]; st.depts=depts||[]; st.rolePerms=perms;
+}
 async function boot(){
   Settings.load();
   revealWhenFontsReady();
@@ -2013,10 +2073,7 @@ async function boot(){
       return;
     }
     st.me=me;
-    try{st.users = await api('/api/users');}catch(e){st.users=[];}
-    try{st.depts = await api('/api/departments');}catch(e){st.depts=[];}
-    try{st.rolePerms = await api('/api/role-permissions');}catch(e){st.rolePerms=null;}
-    await loadWsMembers();
+    await loadDirectory();
     // keep "last login" reflecting real usage, throttled to 30m
     try{
       const last=parseInt(localStorage.getItem('cc_last_login')||'0',10);
@@ -2102,10 +2159,7 @@ const Auth = {
     st.me=u;
     try{ await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }catch(e){}
     document.getElementById('login').classList.remove('open');
-    try{st.users = await api('/api/users');}catch(e){st.users=[];}
-    try{st.depts = await api('/api/departments');}catch(e){st.depts=[];}
-    try{st.rolePerms = await api('/api/role-permissions');}catch(e){st.rolePerms=null;}
-    await loadWsMembers();
+    await loadDirectory();
     renderMe(); await enterApp();
     toast('שלום, '+u.name);
   },
@@ -2131,8 +2185,13 @@ const Auth = {
   },
 };
 async function loadBoards(){
-  try{ st.boards = await api('/api/boards'+(meId()?'?user_id='+meId():'')); }catch(e){ st.boards=[]; }
-  try{ const d=await api('/api/folders'+(meId()?'?user_id='+meId():'')); st.folders=d.folders||[]; }catch(e){ st.folders=[]; }
+  // independent of each other — one round trip, not two
+  const q=meId()?'?user_id='+meId():'';
+  const [boards,folders]=await Promise.all([
+    api('/api/boards'+q).catch(()=>[]),
+    api('/api/folders'+q).catch(()=>({})),
+  ]);
+  st.boards=boards||[]; st.folders=(folders||{}).folders||[];
   renderSidebar();
 }
 /* One definition of "narrow screen", matching the CSS breakpoint below.
@@ -2165,7 +2224,13 @@ function syncItemDrag(){
 }
 // crossing the breakpoint (rotate, resize, devtools) flips live lists, so the
 // state never goes stale between renders
-if(window.matchMedia) matchMedia(MOBILE_Q).addEventListener('change',syncItemDrag);
+if(window.matchMedia) matchMedia(MOBILE_Q).addEventListener('change',()=>{
+  syncItemDrag();
+  syncItemColWidth();   // leaving mobile restores the full width, entering it re-applies the give
+  // the checkbox is gone on a narrow screen, so a selection made while the
+  // window was wide would leave rows marked with no way left to unmark them
+  if(isMobile() && st.selected.size) clearSelection();
+});
 function toggleSidebar(force){
   if(isMobile()){
     // mobile: slide-in drawer
@@ -2225,9 +2290,52 @@ function initSidebarResize(){
 function initPinShadow(){
   const v=document.getElementById('view'); if(!v||v._pinBound)return;
   v._pinBound=true;
-  const upd=()=>v.classList.toggle('scrolled-x', Math.abs(v.scrollLeft)>1);
+  let raf=0;
+  const upd=()=>{
+    v.classList.toggle('scrolled-x', Math.abs(v.scrollLeft)>1);
+    // the width follows the finger, so it is recomputed per frame at most
+    if(!raf) raf=requestAnimationFrame(()=>{ raf=0; syncItemColWidth(); });
+  };
   v.addEventListener('scroll',upd,{passive:true});
   upd();
+}
+/* ===== mobile: the item column yields room as you scroll across =====
+   The item column is pinned to the start of the screen, so on a phone it is
+   exactly what stands between the user and the columns they scrolled sideways
+   to reach. It opens at its full width — the board has to be readable before it
+   is navigable — and then gives back up to 40% of that width as the scroll
+   moves across, holding there. It never goes below 60%: once the values have
+   scrolled past, the item name is the only thing saying which row this is, and
+   truncating it away defeats the pinning.
+
+   Visual only. This writes to the <col> element and nothing else — never to
+   st.board.col_widths — so no width is saved, nobody else's board changes, and
+   the desktop layout is untouched. Sub-item tables are not pinned and carry no
+   data-colkey, so the selector leaves them alone by construction. */
+const ITEM_COL_SHRINK=0.40;   // the most of its width the column will give back
+const ITEM_COL_RAMP=140;      // px of sideways scroll that takes it all the way
+
+function syncItemColWidth(){
+  const v=document.getElementById('view'); if(!v)return;
+  const cols=v.querySelectorAll('.tbl>colgroup>col[data-colkey="item"]');
+  if(!cols.length)return;
+  const base=(colWidthMap()||{}).item||280;
+  let w=base;
+  if(isMobile()){
+    const give=Math.round(base*ITEM_COL_SHRINK);
+    // Measured against the UNSHRUNK table. Asking the live scrollWidth whether
+    // there is room to shrink would be asking a question whose answer the
+    // shrinking itself changes: the column would give width back, lose the
+    // overflow that justified it, grow again, and flutter under the finger.
+    const cur=parseFloat(cols[0].style.width)||base;
+    const overflowAtFullWidth=(v.scrollWidth+(base-cur))-v.clientWidth;
+    if(overflowAtFullWidth>give+ITEM_COL_RAMP){
+      const t=Math.min(1,Math.abs(v.scrollLeft)/ITEM_COL_RAMP);
+      w=base-Math.round(give*t);
+    }
+  }
+  const px=w+'px';
+  cols.forEach(c=>{ if(c.style.width!==px)c.style.width=px; });
 }
 function renderSidebar(){
   const active = (typeof Env!=='undefined') ? Env.active() : null;
@@ -2497,7 +2605,6 @@ const BoardLog = {
     const f=a.field||'';
     if(f==='status'||f==='priority')return 'fa-circle-half-stroke';
     if(f==='due_date')return 'fa-calendar-day';
-    if(f==='tags')return 'fa-tag';
     if(f==='title')return 'fa-font';
     if(f.startsWith('col:')){
       const c=customColumns().find(x=>x.id===f.slice(4));
@@ -2594,7 +2701,9 @@ function boardMenu(e){
   const item=(icon,label,action,enabled,why,cls)=>enabled
     ? `<button class="rm-item${cls?' '+cls:''}" onclick="closeCellPops();${action}"><i class="fa-solid ${icon}"></i> ${label}</button>`
     : `<button class="rm-item${cls?' '+cls:''}" disabled title="${esc(why||'')}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
-  const mob=isMobile();   // moving a board and importing one are desktop-only
+  // moving a board and importing one are desktop-only; the board log goes the
+  // other way — its header button is hidden on a phone, so it lives here instead
+  const mob=isMobile();
   const html=`<div class="row-menu" onclick="event.stopPropagation()">
     ${mob?'':item('fa-right-left','העברה לסביבה אחרת','moveBoardEnv()',canMoveEnv,'רק מנהל מערכת או מנהל הסביבה יכול להעביר לוח')}
     ${item(st.board.visibility==='public'?'fa-globe':'fa-lock',
@@ -2602,6 +2711,7 @@ function boardMenu(e){
            'boardVisibility()',admin,'רק מנהל הלוח יכול לשנות את חשיפת הלוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
     ${item('fa-bolt','אוטומציות','Automations.open()',true)}
+    ${mob?item('fa-clock-rotate-left','לוג הלוח','BoardLog.open()',true):''}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
     ${item('fa-trash-can','סל מחזור','BoardTrash.open()',true)}
     ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
@@ -2764,12 +2874,50 @@ function renderTabs(){
   const formTab=st.board&&st.board.form
     ? `<div class="tab" onclick="openForms()"><i class="fa-solid fa-file-lines"></i> טפסים</div>`
     : '';
-  document.getElementById('tabs').innerHTML = tabs + formTab +
+  /* On a phone the strip became a sideways-scrolling row where the view you
+     want is usually off-screen and the one you are on is easy to lose. The same
+     choice as a native select: one tap, the whole list, and the current view
+     readable without scrolling anything.
+     Both are always rendered and the breakpoint decides which is shown, rather
+     than branching on isMobile() here — that way rotating the phone or resizing
+     the window switches between them with no re-render, and the two can never
+     disagree about which view is current. */
+  const cv=VIEW_META[st.view]||VIEW_META.table;
+  const dd=`<button class="tab-dd" onclick="openViewPicker(event)" aria-haspopup="menu" aria-label="בחירת תצוגה">
+      <i class="fa-solid ${cv.ic} tab-dd-ic"></i>
+      <span class="tab-dd-lbl">${esc(cv.he)}</span>
+      <i class="fa-solid fa-chevron-down tab-dd-caret"></i>
+    </button>`;
+  document.getElementById('tabs').innerHTML = dd + tabs + formTab +
     `
      <div class="tab-add-wrap" id="tab-add-wrap">
        <button class="tab-add" title="הוסף/הסר תצוגה" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>
        <div class="tab-pop" id="tab-pop"></div>
      </div>`;
+}
+/* A native <select> looked out of place next to the app's own menus, and its
+   option list was being drawn by the platform — which on at least one phone
+   rendered the rows with no readable text at all. Nothing in this stylesheet
+   could fix that, because the popup is not ours to style. So the picker is an
+   ordinary button opening the same popover every other menu here uses: styled
+   by this file, showing each view's icon, and marking the current one.
+
+   Forms is listed but is not a view — it opens a panel over the board that the
+   user then closes, landing back where they were — so it is separated by a rule
+   and never becomes the button's label. */
+function openViewPicker(e){
+  e.stopPropagation();
+  const rows=boardViews().map(id=>{
+    const v=VIEW_META[id], on=id===st.view;
+    return `<button class="rm-item${on?' on':''}" onclick="closeCellPops();setView('${id}')">
+      <i class="fa-solid ${v.ic}"></i><span class="rm-grow">${esc(v.he)}</span>
+      ${on?'<i class="fa-solid fa-check rm-check"></i>':''}</button>`;
+  }).join('');
+  const forms=(st.board&&st.board.form)
+    ? `<div class="rm-sep"></div><button class="rm-item" onclick="closeCellPops();openForms()">
+         <i class="fa-solid fa-file-lines"></i><span class="rm-grow">טפסים</span></button>`
+    : '';
+  openCellPop(e.currentTarget,`<div class="row-menu">${rows}${forms}</div>`,'row-menu-pop view-pick-pop');
 }
 function setView(v){st.view=v;renderTabs();renderView();}
 function toggleAddView(e){
@@ -2920,6 +3068,7 @@ function renderView(){
     im.replaceWith(old);
   });
   renderSelBar();
+  try{ syncItemColWidth(); }catch(e){}   // fresh colgroups start at the width the scroll position implies
   try{ fitLinkChips(el); }catch(e){}     // names per connect cell depend on the column width
   try{ Chat.markOpenRow(); }catch(e){}   // rows were rebuilt — re-mark the open item
   _viewScrollKey=key;
@@ -3198,7 +3347,6 @@ function applyFilters(tasks){
   if(f.q){const q=f.q.trim().toLowerCase();
     out=out.filter(t=>(t.title||'').toLowerCase().includes(q)
       || (t.description||'').toLowerCase().includes(q)
-      || (t.tags||[]).some(x=>String(x).toLowerCase().includes(q))
       || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q))
       // an item is findable by what it is linked to, not only by its own words
       || linkNamesOf(t).some(n=>n.toLowerCase().includes(q)));}
@@ -3296,7 +3444,6 @@ function sortVal(t,key){
   if(key==='status')return statusOrder(t);
   if(key==='priority')return prioOrder(t);
   if(key==='due')return t.due_date||'9999-99-99';
-  if(key==='tags')return (t.tags||[]).join(', ').toLowerCase();
   const col=customColumns().find(c=>c.id===key);   // custom column, by id
   if(col)return customSortVal(t,col);
   const v=(t.custom_fields||{})[key];
@@ -3993,7 +4140,6 @@ const BoardTrash = {
         ${row('תיאור', esc(d.description||''))}
         ${row('אחראים', (d.assignees||[]).map(a=>esc(a.name)).join(', '))}
         ${row('תאריך יעד', d.due_date?fdate(d.due_date):'')}
-        ${row('תגיות', (d.tags||[]).map(esc).join(', '))}
         ${row('תגובות', d.comment_count?String(d.comment_count):'')}
         ${row('תת-פריטים', (d.subs||[]).map(x=>esc(x.title)).join(', '))}
       </div>
@@ -5220,19 +5366,12 @@ function subColumns(){
   return base.concat(subOnly.filter(c=>!have.has(String(c.id))));
 }
 function subColLabel(c){return c.kind==='builtin'?c.label:(c.col&&c.col.title)||'';}
-/* Board vocabulary of tags = every tag already used across the board's items.
-   Non-admins pick from this list; only the board admin may create new tags. */
-function boardTags(){
-  const s=new Set();
-  ((st.board&&st.board.tasks)||[]).forEach(t=>{(t.tags||[]).forEach(x=>s.add(x)); (t.subtasks||[]).forEach(su=>(su.tags||[]).forEach(x=>s.add(x)));});
-  return [...s].sort((a,b)=>a.localeCompare(b,'he'));
-}
 function totalCols(){return orderedColumns().length+(isBoardAdmin()?1:0);}
 /* built-in (fixed) columns, in display order — keys drive drag-to-resize widths */
 const BUILTIN_COLS=[
   {key:'item',label:'פריט',w:280},{key:'assignees',label:'אחראים',w:120},
   {key:'status',label:'סטטוס',w:130},{key:'priority',label:'עדיפות',w:120},
-  {key:'due',label:'תאריך יעד',w:130},{key:'tags',label:'תגיות',w:170},
+  {key:'due',label:'תאריך יעד',w:130},
 ];
 /* only a board admin gets the drag handle; others just see the header */
 function resizerHTML(key){return isBoardAdmin()?`<span class="col-resizer" data-colkey="${key}" title="גרור לשינוי רוחב העמודה"></span>`:'';}
@@ -5452,14 +5591,12 @@ function initColResizers(root){
 function cellValue(t,colId){return (t.custom_fields||{})[colId];}
 /* one built-in (non-item) cell for a given row */
 function builtinCellHTML(key,t){
-  const tagcell=(arr)=>(arr||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')||'<span style="color:var(--text-light)">—</span>';
   if(key==='assignees')return `<td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(event,${t.id})">${avatars(t.assignees)}</td>`;
   if(key==='status')   return `<td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',boardStatusMap())">${statusPill(t)}</td>`;
   if(key==='priority') return `<td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',boardPriorityMap())">${priorityPill(t)}</td>`;
   if(key==='due')      return canEditItem(t)
     ? `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${t.due_date?String(t.due_date).slice(0,10):''}" onchange="setDue(${t.id},this.value||null)"></td>`
     : `<td class="cell">${fdate(t.due_date)}</td>`;
-  if(key==='tags')     return `<td class="cell edit-cell" title="לחץ לעריכת תגיות" onclick="tagsEditor(event,${t.id})">${tagcell(t.tags)}</td>`;
   return '';
 }
 /* one custom-column cell for a given row */
@@ -5535,7 +5672,6 @@ function exportCell(c,t){
     }
     if(c.key==='priority'){const p=taskPriorityView(t);return p?{v:p.he,c:p.c}:'';}
     if(c.key==='due')return t.due_date?{v:t.due_date,t:'date'}:'';
-    if(c.key==='tags')return (t.tags||[]).join(', ');
     return '';
   }
   const col=c.col, v=(t.custom_fields||{})[col.id];
@@ -6319,29 +6455,6 @@ function fieldPicker(e,id,field,map){
 }
 function pickField(e,id,field,key){ e.stopPropagation(); closeCellPops(); setField(id,field,key); }
 function setDue(id,val){ setField(id,'due_date',val?new Date(val+'T12:00:00').toISOString():null); }
-function tagsEditor(e,id){
-  e.stopPropagation(); if(!canEditItem(findAnyTask(id)))return;
-  const t=findAnyTask(id), tags=(t&&t.tags)||[];
-  const admin=isBoardAdmin();
-  // vocabulary = tags used across the board (+ current item tags). Non-admins pick only.
-  const all=[...new Set([...boardTags(),...tags])].sort((a,b)=>a.localeCompare(b,'he'));
-  const chips=all.length?all.map(x=>{const on=tags.includes(x);
-      return `<button class="ff-chip${on?' tag-on':''}" onclick="toggleTag(event,${id},'${encodeURIComponent(x)}')">${on?'<i class="fa-solid fa-check" style="font-size:10px"></i> ':''}${esc(x)}</button>`;
-    }).join('')
-    : `<span style="color:var(--text-light);font-size:12px">${admin?'אין תגיות עדיין — הוסף למטה':'אין תגיות זמינות — פנה למנהל הלוח'}</span>`;
-  const addInput=admin?`<input placeholder="תגית חדשה + Enter" style="width:100%;margin-top:8px;border:1px solid var(--border-strong);border-radius:6px;padding:6px;font-family:inherit;font-size:12.5px" onkeydown="if(event.key==='Enter'){addTag(event,${id},this.value);this.value='';}">`:'';
-  const html=`<div class="pop-title" style="margin:2px 2px 6px">תגיות${admin?'':' · בחר מהרשימה'}</div><div class="ff-multi" style="max-width:240px">${chips}</div>${addInput}`;
-  const pop=openCellPop(e.currentTarget,html,'tags-pop'); pop.style.minWidth='210px'; const i=pop.querySelector('input'); if(i)i.focus();
-}
-function toggleTag(e,id,enc){
-  e.stopPropagation();
-  const tag=decodeURIComponent(enc);
-  const t=findAnyTask(id); const cur=((t&&t.tags)||[]).slice();
-  const i=cur.indexOf(tag); if(i>=0)cur.splice(i,1); else cur.push(tag);
-  closeCellPops(); setField(id,'tags',cur);
-}
-/* create a brand-new tag — board admin only (expands the vocabulary) */
-function addTag(e,id,val){ e.stopPropagation(); if(!isBoardAdmin())return; val=(val||'').trim(); if(!val)return; const t=findAnyTask(id); const tags=[...((t&&t.tags)||[]),val]; closeCellPops(); setField(id,'tags',tags); }
 function titleEdit(e,id){
   if(!canEditItem(findAnyTask(id)))return; e.stopPropagation();
   const span=e.currentTarget, old=findAnyTask(id).title;
@@ -7389,6 +7502,17 @@ function renderSelBar(){
   const bar=document.getElementById('sel-bar'); if(!bar)return;
   const n=st.selected.size;
   const nEl=document.getElementById('sel-n'); if(nEl)nEl.textContent=n;
+  // The bar's menus are appended to <body>, so that the table's overflow cannot
+  // clip them — which also means hiding the bar does not take them along.
+  // Unticking the last item left the "העברה" destination menu floating over the
+  // board, still offering to move a selection that no longer existed. Closed
+  // here rather than in toggleItemSelect so that every route back to an empty
+  // selection is covered, including switching boards with the menu open.
+  // Only menus anchored inside the bar are closed: an unrelated cell popover
+  // the user opened elsewhere is left alone.
+  if(n===0) document.querySelectorAll('.cell-pop').forEach(p=>{
+    if(p._anchor && bar.contains(p._anchor)) p.remove();
+  });
   bar.classList.toggle('show',n>0);
   bar.setAttribute('aria-hidden',n>0?'false':'true');
 }
@@ -7412,7 +7536,7 @@ async function bulkDuplicate(){
   let ok=0;
   for(const t of items){
     const body={board_id:st.board.id,group_id:t.group_id,title:(t.title||'')+' (עותק)',
-                status:t.status,priority:t.priority,tags:(t.tags||[]).slice(),
+                status:t.status,priority:t.priority,
                 custom_fields:{...(t.custom_fields||{})}};
     try{ const nt=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)}); (st.board.tasks=st.board.tasks||[]).push(nt); ok++; }catch(e){}
   }
@@ -7550,6 +7674,7 @@ async function vDashboard(el){
       <div class="card"><h3><i class="fa-solid fa-gauge-high" style="color:var(--primary)"></i> אחוז השלמה לפי לוח</h3><canvas id="ch-boards"></canvas></div>
     </div>`;
   const sd=d.tasks_by_status||{}, pd=d.tasks_by_priority||{};
+  await needCharts();
   new Chart(ch('ch-status'),{type:'doughnut',data:{labels:Object.keys(sd).map(k=>STATUS[k]?STATUS[k].he:k),datasets:[{data:Object.values(sd),backgroundColor:Object.keys(sd).map(k=>STATUS[k]?STATUS[k].c:'#c4c4c4')}]},options:{plugins:{legend:{position:'bottom'}}}});
   new Chart(ch('ch-prio'),{type:'bar',data:{labels:Object.keys(pd).map(k=>PRIORITY[k]?PRIORITY[k].he:k),datasets:[{data:Object.values(pd),backgroundColor:Object.keys(pd).map(k=>PRIORITY[k]?PRIORITY[k].c:'#c4c4c4'),borderRadius:6}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
   new Chart(ch('ch-boards'),{type:'bar',data:{labels:ins.boards.map(b=>b.board_name),datasets:[{label:'% השלמה',data:ins.boards.map(b=>b.completion_rate),backgroundColor:'#0073ea',borderRadius:6}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,max:100}}}});
@@ -7651,6 +7776,7 @@ async function vCeo(el){
   // Citizen chart
   const citizenTypeLabels = Object.keys(ceoData.citizen.by_type || {});
   const citizenTypeValues = Object.values(ceoData.citizen.by_type || {});
+  await needCharts();
   new Chart(ch('ceo-ch-citizen'),{
     type:'doughnut',
     data:{
@@ -7734,6 +7860,39 @@ function vCalendar(el){
 function calMove(delta){const today=new Date();if(!st.cal)st.cal={y:today.getFullYear(),m:today.getMonth()};let m=st.cal.m+delta,y=st.cal.y;while(m<0){m+=12;y--;}while(m>11){m-=12;y++;}st.cal={y,m};renderView();}
 function calToday(){const t=new Date();st.cal={y:t.getFullYear(),m:t.getMonth()};renderView();}
 
+/* ── On-demand libraries ───────────────────────────────────────────────
+   MapLibre (211KB gzipped) and Chart.js (70KB) used to be blocking <script>
+   tags in <head>, so every entry paid for them before anything painted —
+   including the board view, which is where nearly all the time is spent and
+   which needs neither. They are fetched the first time a view actually needs
+   one, and each is fetched at most once however many views ask.
+   A rejected promise is not cached, so a load that failed on a dropped
+   connection is retried the next time rather than poisoning the view. */
+const _libs={};
+function loadLib(key,make){
+  if(_libs[key]) return _libs[key];
+  return _libs[key]=new Promise((resolve,reject)=>{
+    const el=make();
+    el.onload=()=>resolve();
+    el.onerror=()=>{ delete _libs[key]; el.remove(); reject(new Error(key+' failed to load')); };
+    document.head.appendChild(el);
+  }).catch(e=>{ delete _libs[key]; throw e; });
+}
+function loadScript(key,src){ return loadLib(key,()=>Object.assign(document.createElement('script'),{src,async:true})); }
+function loadCss(key,href){ return loadLib(key,()=>Object.assign(document.createElement('link'),{rel:'stylesheet',href})); }
+
+function needMap(){
+  if(window.maplibregl) return Promise.resolve();
+  return Promise.all([
+    loadScript('maplibre','https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js'),
+    loadCss('maplibre-css','https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css'),
+  ]);
+}
+function needCharts(){
+  if(window.Chart) return Promise.resolve();
+  return loadScript('chartjs','https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js');
+}
+
 /* ── Map tile styles ── */
 const MAP_STYLES = {
   liberty:  {name:'Liberty',       url:'https://tiles.openfreemap.org/styles/liberty',       attr:'© OpenStreetMap contributors · OpenFreeMap'},
@@ -7748,6 +7907,7 @@ async function vMap(el){
   el.innerHTML=`<div id="map"></div><div style="position:absolute;top:22px;right:22px;z-index:10;display:flex;gap:6px;flex-wrap:wrap" id="map-style-bar">
     ${Object.entries(MAP_STYLES).map(([k,v]) => `<button class="tb-btn map-style-btn${k===curStyle?' active':''}" data-style="${k}" style="background:${k===curStyle?'var(--primary-soft)':'var(--surface)'};border:1px solid var(--border-strong);border-radius:6px;padding:5px 10px;font-size:12px;font-weight:600;color:${k===curStyle?'var(--primary-hover)':'var(--text)'}" onclick="switchMapStyle('${k}')">${v.name}</button>`).join('')}
   </div>`;
+  await needMap();
   const map=new maplibregl.Map({container:'map',style:MAP_STYLES[curStyle].url,center:[34.89,32.15],zoom:12,attributionControl:true});
   map.addControl(new maplibregl.NavigationControl());
   const add=(t,lng,lat,c)=>{const e=document.createElement('div');e.style.cssText=`width:16px;height:16px;border-radius:50%;background:${c};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)`;new maplibregl.Marker({element:e}).setLngLat([lng,lat]).setPopup(new maplibregl.Popup().setText(t)).addTo(map);};
@@ -7765,6 +7925,7 @@ function switchMapStyle(k){
 }
 async function vGis(el){
   el.innerHTML='<div id="gis-container"><div id="gis-map-wrap"><div id="gis-map"></div></div><div id="gis-panel"><div class="gis-header"><i class="fa-solid fa-globe"></i> ניתוח שטח</div><div class="gis-section"><label>📁 קובץ DEM (GeoTIFF)</label><div class="gis-drop" id="gis-drop"><input type="file" id="gis-file" accept=".tif,.tiff" hidden><p>גרור קובץ לכאן או לחץ לבחירה</p></div><div id="gis-file-info" style="display:none"></div></div><div class="gis-section"><label>🔧 כלי ניתוח</label><select id="gis-tool" class="gis-select" onchange="GIS.ready()"><option value="">בחר כלי...</option><option value="hillshade">Hillshade — הצללת שטח</option><option value="slope">Slope — שיפוע במעלות</option><option value="aspect">Aspect — כיוון שיפוע</option></select></div><div id="gis-spinner"><i class="fa-solid fa-spinner fa-spin"></i> מנתח...</div><button class="btn btn-primary" id="gis-run" disabled onclick="GIS.run()"><i class="fa-solid fa-play"></i> הפעל ניתוח</button><div id="gis-result" style="display:none"><h4><i class="fa-solid fa-check-circle" style="color:var(--green)"></i> תוצאה</h4><div id="gis-overlay-controls"><button class="btn btn-ghost" onclick="GIS.toggleOverlay()"><i class="fa-solid fa-eye"></i> הצג/הסתר</button><button class="btn btn-ghost" onclick="GIS.download()"><i class="fa-solid fa-download"></i> הורד COG</button></div></div><div class="gis-section" style="border-bottom:none"><label>🗺️ מפת רקע</label><div class="gis-basemaps" id="gis-basemaps"></div><div style="margin-top:6px;font-size:11px;color:var(--text-light)" id="gis-bm-attr"></div></div></div></div>';
+  await needMap();
   const map=new maplibregl.Map({container:'gis-map',style:'https://tiles.openfreemap.org/styles/liberty',center:[34.89,32.15],zoom:12});
   map.addControl(new maplibregl.NavigationControl());
   window._map=map;
@@ -7975,7 +8136,7 @@ async function deleteGroup(gid){
 }
 
 /* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */
-const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',tags:'תגיות',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
+const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
 function formSchema(){
   const f=[
     {key:'title',label:'שם הפריט',type:'text',locked:true},
@@ -7983,7 +8144,6 @@ function formSchema(){
     {key:'status',label:'סטטוס',type:'status'},
     {key:'priority',label:'עדיפות',type:'priority'},
     {key:'due_date',label:'תאריך יעד',type:'date'},
-    {key:'tags',label:'תגיות',type:'tags'},
   ];
   // derived columns (creator, creation time, item id, formula) are filled by the
   // system, so a form has nothing to ask for — offering them stored a value the
@@ -8021,7 +8181,7 @@ const Forms={
   builderRows(){
     return this.fields.map((f,i)=>`<div class="fb-row" data-key="${f.key}">
       <i class="fa-solid fa-grip-vertical fb-drag ${f.locked?'locked':''}"></i>
-      <div class="fb-info"><div class="fb-label">${esc(f.label)}</div><div class="fb-type">${FIELD_TYPE_HE[f.type]||f.type}${['people','tags','dropdown'].includes(f.type)?' · בחירה מרובה':(f.type==='status'||f.type==='priority')?' · ערך אחד':''}</div></div>
+      <div class="fb-info"><div class="fb-label">${esc(f.label)}</div><div class="fb-type">${FIELD_TYPE_HE[f.type]||f.type}${['people','dropdown'].includes(f.type)?' · בחירה מרובה':(f.type==='status'||f.type==='priority')?' · ערך אחד':''}</div></div>
       ${f.type==='date'?`<div class="fb-constraint"><input type="date" title="מתאריך" value="${f.min||''}" onchange="Forms.setCon(${i},'min',this.value)"><span>–</span><input type="date" title="עד תאריך" value="${f.max||''}" onchange="Forms.setCon(${i},'max',this.value)"></div>`:''}
       <label class="fb-tog" title="שדה חובה"><input type="checkbox" ${f.required?'checked':''} ${f.locked?'disabled':''} onchange="Forms.set(${i},'required',this.checked)"> חובה</label>
       <label class="fb-tog" title="הצג בטופס"><input type="checkbox" ${f.visible?'checked':''} ${f.locked?'disabled':''} onchange="Forms.set(${i},'visible',this.checked)"> מוצג</label>
@@ -8067,7 +8227,6 @@ const Forms={
     // built-in priority field → the board's vocabulary, exactly like status
     else if(f.type==='priority') inp=`<select id="${id}">${boardPriorityList().map(p=>`<option value="${p.key}">${esc(p.he)}</option>`).join('')}</select>`;
     else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${boardPeople().map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${avatarInner(u)}</span> ${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין חברי לוח לשיוך</span>'}</div>`;
-    else if(f.type==='tags') inp=`<input id="${id}" placeholder="מופרד בפסיקים">`;
     else if(f.type==='dropdown') inp=`<div class="ff-multi" id="${id}">${((f.col&&f.col.options)||[]).map(o=>`<label class="ff-chip"><input type="checkbox" value="${esc(o)}"> ${esc(o)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין אפשרויות בעמודה</span>'}</div>`;
     else inp=`<input id="${id}" placeholder="(${FIELD_TYPE_HE[f.type]||f.type})">`;
     return `<div class="field"><label>${esc(f.label)}${req}</label>${inp}</div>`;
@@ -8080,7 +8239,6 @@ const Forms={
       let val=null;
       if(f.type==='people'||f.type==='dropdown'){ val=[...el.querySelectorAll('input:checked')].map(x=>f.type==='people'?+x.value:x.value); if(!val.length)val=null; }
       else if(f.type==='checkbox'){ val=el.checked?true:null; }
-      else if(f.type==='tags'){ val=(el.value||'').split(',').map(s=>s.trim()).filter(Boolean); if(!val.length)val=null; }
       else if(f.type==='rating'||f.type==='number'){ val=el.value===''?null:Number(el.value); }
       else if(f.type==='status'&&f.col){ const o=el.value===''?null:statusColOpts(f.col)[+el.value]; val=o?{label:o.label,color:o.color}:null; }
       else { val=el.value||null; }
@@ -8090,7 +8248,6 @@ const Forms={
       else if(f.key==='status') payload.status=val;
       else if(f.key==='priority') payload.priority=val;
       else if(f.key==='due_date') payload.due_date=val?new Date(val+'T12:00:00').toISOString():null;
-      else if(f.key==='tags') payload.tags=val||[];
       else if(val!=null) payload.custom_fields[f.key]=val;
     }
     if(missing.length){ toast('חסרים שדות חובה: '+missing.join(', ')); return; }
@@ -8717,7 +8874,7 @@ const Chat = {
     if(a.action==='undo')return 'ביטל/ה שינוי ב'+this.fieldHe(a.field);
     return `שינה/תה ${this.fieldHe(a.field)}: <span class="log-old">${esc(this.transVal(a.field,a.old))}</span> ← <span class="log-new">${esc(this.transVal(a.field,a.new))}</span>`;
   },
-  fieldHe(f){ if(!f)return ''; const m={title:'כותרת',status:'סטטוס',priority:'עדיפות',due_date:'תאריך יעד',tags:'תגיות'}; if(m[f])return m[f]; if(f.startsWith('col:')){const c=customColumns().find(x=>x.id===f.slice(4));return 'עמודה '+(c?'"'+c.title+'"':'');} return f; },
+  fieldHe(f){ if(!f)return ''; const m={title:'כותרת',status:'סטטוס',priority:'עדיפות',due_date:'תאריך יעד'}; if(m[f])return m[f]; if(f.startsWith('col:')){const c=customColumns().find(x=>x.id===f.slice(4));return 'עמודה '+(c?'"'+c.title+'"':'');} return f; },
   /* A custom column's history is stored as JSON, so "empty" arrives as the
      STRING "null" and a text value arrives wrapped in quotes. Comparing against
      null never matched the string, which is why cells that were cleared showed
@@ -9329,6 +9486,7 @@ async function vBudget(el){
 
   const ctx=document.getElementById('budget-chart');
   if(ctx&&deptNames.length){
+    await needCharts();
     new Chart(ctx.getContext('2d'),{
       type:'bar',
       data:{

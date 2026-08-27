@@ -24,9 +24,6 @@ def map_status(s):
     s = (s or "").strip()
     return MON_STATUS.get(s, (TaskStatus.TODO, s or "לביצוע", "#c4c4c4"))
 
-def split_tags(s):
-    return [t.strip() for t in re.split(r"[,،/]", s or "") if t.strip()]
-
 def read_rows(path):
     if not os.path.exists(path):
         raise RuntimeError(f"file not found: {path}")
@@ -90,12 +87,11 @@ def run_import():
         for pos, it in enumerate(items):
             status, label, color = map_status(it["status_raw"])
             desc = " | ".join(x for x in [it["file_desc"], it["needs"]] if x)
-            tags = split_tags(it["partners"]) or ([it["interfaces"]] if it["interfaces"] else [])
             task = Task(
                 board_id=board.id, group_id=themes[theme(it["name"])],
                 title=it["name"], description=desc, status=status,
                 priority=Priority.HIGH if "חירום" in it["name"] else Priority.MEDIUM,
-                position=pos, tags=tags,
+                position=pos,
                 custom_fields={
                     "status_label": label, "status_color": color,
                     "interfaces": it["interfaces"], "source_systems": it["source"],

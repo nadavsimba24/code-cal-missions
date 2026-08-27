@@ -20,9 +20,9 @@ def _board(client, bid, uid):
 
 def test_hide_builtin_column_persists(client, admin_id):
     bid = _make_board(client, admin_id)
-    r = client.patch(f"/api/boards/{bid}", json={"col_hidden": ["tags", "priority"], "user_id": admin_id})
+    r = client.patch(f"/api/boards/{bid}", json={"col_hidden": ["due", "priority"], "user_id": admin_id})
     assert r.status_code == 200, r.text
-    assert _board(client, bid, admin_id)["col_hidden"] == ["tags", "priority"]
+    assert _board(client, bid, admin_id)["col_hidden"] == ["due", "priority"]
 
 
 def test_item_column_can_never_be_hidden(client, admin_id):

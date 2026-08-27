@@ -81,13 +81,13 @@ def test_board_admin_can_set_column_widths(client, admin_id):
         # out-of-range values are clamped; non-numeric silently dropped
         r = client.patch(f"/api/boards/{bid}", json={
             "user_id": admin_id,
-            "col_widths": {"item": 320, "status": 5000, "tags": 10, "bad": "x"},
+            "col_widths": {"item": 320, "status": 5000, "due": 10, "bad": "x"},
         })
         assert r.status_code == 200, r.text
         cw = client.get(f"/api/boards/{bid}?user_id={admin_id}").json().get("col_widths", {})
         assert cw.get("item") == 320
         assert cw.get("status") == 600   # clamped down
-        assert cw.get("tags") == 60      # clamped up
+        assert cw.get("due") == 60       # clamped up
         assert "bad" not in cw
     finally:
         client.delete(f"/api/boards/{bid}?user_id={admin_id}")
