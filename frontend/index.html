@@ -6743,8 +6743,20 @@ function timelineBar(v){
   if(!v||!v.from)return '<span style="color:var(--text-light)">—</span>';
   const f=new Date(v.from),to=new Date(v.to||v.from);
   const days=Math.max(1,Math.round((to-f)/86400000)+1);
-  const fmt=d=>d.toLocaleDateString('he-IL',{day:'2-digit',month:'short'});
-  return `<div class="tl-bar" title="${days} ימים"><span class="tl-txt">${fmt(f)} – ${fmt(to)}</span></div>`;
+  // Day then month, numerically — the format every other date on the board
+  // uses. This cell was the only one rendering a Hebrew month name, which put
+  // the word where the eye expects the month number and read backwards.
+  const p2=n=>String(n).padStart(2,'0');
+  const fmt=d=>p2(d.getDate())+'.'+p2(d.getMonth()+1);
+  // dir=ltr so the range cannot be reordered by the surrounding RTL text: a
+  // string of digits and separators is all bidi-neutral, and without this the
+  // end date can end up rendering before the start one.
+  const full=d=>d.toLocaleDateString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric'});
+  const one=days===1;
+  const span=one?'יום אחד':`${days} ימים`;
+  const tip=one?`${full(f)} · ${span}`:`${full(f)} – ${full(to)} · ${span}`;
+  const txt=one?fmt(f):`${fmt(f)} – ${fmt(to)}`;      // a one-day range is one date, not the same date twice
+  return `<div class="tl-bar" title="${tip}"><span class="tl-txt" dir="ltr">${txt}</span></div>`;
 }
 /* ===== ציר זמן — a range picker, not two blind date boxes =====
    The column stores {from,to}. Both ways in stay in sync with each other: type
