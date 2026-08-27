@@ -16,9 +16,11 @@ ourselves, which is what most of this file is about.
 
 What is verified on every sign-in, in order:
 
-  1. `state` matches the value we planted in a short-lived cookie — without
-     this, an attacker can complete a login *they* started in the victim's
-     browser (login CSRF), silently making them act as someone else.
+  1. `state` matches one of the values we planted in a short-lived cookie —
+     without this, an attacker can complete a login *they* started in the
+     victim's browser (login CSRF), silently making them act as someone else.
+     A callback that matches none of them is never exchanged; it simply starts
+     a clean login, because two tabs are far likelier than an attacker.
   2. The code exchange happens server-to-server with the client secret, so the
      browser never holds a token. PKCE rides along too: it costs one hash and
      removes the value of a stolen authorization code.
@@ -37,6 +39,7 @@ permission model still answers "what may you do".
 """
 import base64
 import hashlib
+import html
 import os
 import secrets
 import time
@@ -45,7 +48,7 @@ import urllib.parse
 import httpx
 import jwt
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter()
 
@@ -55,6 +58,20 @@ STATE_COOKIE = "cityos_oidc_state"
 # generous and keeps a stale tab from completing a login much later.
 STATE_TTL_SECONDS = 600
 DEFAULT_SESSION_HOURS = 8
+# A browser can easily have more than one sign-in in flight: a second tab, an
+# old tab whose polling hit 401 while she was signing in in this one, a
+# double-clicked login. The state cookie used to hold only the newest attempt,
+# so whichever tab came back second was compared against a state it had never
+# seen and died on "אימות בקשת ההתחברות נכשל". It now carries the last few
+# attempts and the callback matches against any of them — each one still has
+# its own nonce and PKCE verifier, so nothing is loosened by remembering four
+# instead of one.
+MAX_PENDING_LOGINS = 4
+# Marks a login that is already a second attempt. It rides inside the `state`
+# we hand Entra, which comes back to us verbatim, rather than in a cookie —
+# deliberately, because "this browser stores no cookie" is exactly the case
+# where a cookie-based retry marker would loop for ever.
+RETRY_MARK = "~retry"
 
 _discovery_cache = {}
 _jwks_clients = {}
@@ -175,6 +192,40 @@ def _unsign(token: str) -> dict:
     return jwt.decode(token, _session_secret(), algorithms=["HS256"])
 
 
+def _pending_logins(request: Request) -> list:
+    """The sign-ins this browser currently has in flight, newest first.
+
+    Never raises: a missing, expired or unreadable cookie simply means "none",
+    which the callback handles by starting a fresh login rather than by
+    showing an error.
+    """
+    raw = request.cookies.get(STATE_COOKIE)
+    if not raw:
+        return []
+    try:
+        claims = _unsign(raw)
+    except jwt.PyJWTError:
+        return []
+    attempts = claims.get("attempts")
+    if not isinstance(attempts, list):
+        # A cookie planted by the earlier single-attempt format, still in a
+        # browser mid-login while this version deploys.
+        attempts = [claims] if claims.get("state") else []
+    cutoff = int(time.time()) - STATE_TTL_SECONDS
+    return [a for a in attempts
+            if isinstance(a, dict) and a.get("state") and a.get("ts", cutoff + 1) > cutoff]
+
+
+def _match_attempt(pending: list, returned_state: str):
+    """The attempt this callback belongs to, or None if it belongs to none of them."""
+    if not returned_state:
+        return None
+    for attempt in pending:
+        if secrets.compare_digest(str(attempt.get("state", "")), returned_state):
+            return attempt
+    return None
+
+
 def _safe_next(raw: str) -> str:
     """Only ever redirect to a path on this site.
 
@@ -253,14 +304,21 @@ def _cookie_kwargs(request: Request, max_age: int):
 # ── routes ───────────────────────────────────────────────────────────
 
 @router.get("/auth/login")
-def entra_login(request: Request, next: str = "/"):
+def entra_login(request: Request, next: str = "/", retry: int = 0):
     """Start the sign-in: park a state cookie, then hand the browser to Entra."""
+    try:
+        return _start_login(request, next, retry)
+    except HTTPException as exc:
+        return _auth_error(exc.status_code, exc.detail)
+
+
+def _start_login(request: Request, next: str, retry: int):
     if not is_configured():
         raise HTTPException(500, "התחברות Entra אינה מוגדרת — חסרים ENTRA_TENANT_ID / "
                                  "ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET")
     meta = discovery()
 
-    state = secrets.token_urlsafe(24)
+    state = secrets.token_urlsafe(24) + (RETRY_MARK if retry else "")
     nonce = secrets.token_urlsafe(24)
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(
@@ -282,9 +340,14 @@ def entra_login(request: Request, next: str = "/"):
     }
     resp = RedirectResponse(meta["authorization_endpoint"] + "?" + urllib.parse.urlencode(params),
                             status_code=302)
+    attempt = {"state": state, "nonce": nonce, "verifier": verifier,
+               "next": _safe_next(next), "ts": int(time.time())}
+    # Newest first, and the older ones kept: see MAX_PENDING_LOGINS. Trimming
+    # to the cap here is what stops a browser that keeps starting logins from
+    # growing the cookie without bound.
+    pending = [attempt] + _pending_logins(request)
     resp.set_cookie(STATE_COOKIE,
-                    _sign({"state": state, "nonce": nonce, "verifier": verifier,
-                           "next": _safe_next(next)}, STATE_TTL_SECONDS),
+                    _sign({"attempts": pending[:MAX_PENDING_LOGINS]}, STATE_TTL_SECONDS),
                     **_cookie_kwargs(request, STATE_TTL_SECONDS))
     return resp
 
@@ -292,6 +355,15 @@ def entra_login(request: Request, next: str = "/"):
 @router.get("/auth/callback", name="entra_callback")
 async def entra_callback(request: Request):
     """Entra sends the browser back here with a one-time code."""
+    try:
+        return await _complete_login(request)
+    except HTTPException as exc:
+        # A person who has just been bounced through Entra should not land on a
+        # raw JSON body. Same status, readable page.
+        return _auth_error(exc.status_code, exc.detail)
+
+
+async def _complete_login(request: Request):
     params = request.query_params
     if params.get("error"):
         detail = params.get("error_description") or params.get("error")
@@ -301,18 +373,18 @@ async def entra_callback(request: Request):
     if not code:
         raise HTTPException(400, "חסר קוד הרשאה מהשרת של Entra")
 
-    raw_state = request.cookies.get(STATE_COOKIE)
-    if not raw_state:
-        # Usually a bookmarked callback URL or a login that sat open past the TTL.
-        raise HTTPException(400, "פג תוקף בקשת ההתחברות — נסה להתחבר שוב")
-    try:
-        planted = _unsign(raw_state)
-    except jwt.PyJWTError:
-        raise HTTPException(400, "בקשת ההתחברות אינה תקינה — נסה להתחבר שוב")
-
-    # Login CSRF check: this must be the login *this* browser started.
-    if not params.get("state") or not secrets.compare_digest(params["state"], planted.get("state", "")):
-        raise HTTPException(400, "אימות בקשת ההתחברות נכשל")
+    # Login CSRF check: this must be one of the logins *this* browser started.
+    pending = _pending_logins(request)
+    planted = _match_attempt(pending, params.get("state", ""))
+    if not planted:
+        # The cookie is gone (a bookmarked callback URL, a login left open past
+        # the TTL, cookies cleared) or it holds only other attempts. Both are
+        # ordinary, and both look identical to the one case that is not — a
+        # login someone else started in this browser. So the code is thrown
+        # away unused and a clean login begins; what must never happen, and
+        # still does not, is exchanging a code for an attempt we cannot vouch
+        # for. That check is the whole point of `state`.
+        return _restart_login(request, pending, params.get("state", ""))
 
     tokens = await _exchange_code(request, code, planted["verifier"])
     claims = _verify_id_token(tokens.get("id_token"), planted["nonce"])
@@ -331,6 +403,62 @@ async def entra_callback(request: Request):
                     **_cookie_kwargs(request, hours * 3600))
     resp.delete_cookie(STATE_COOKIE, path="/")
     return resp
+
+
+def _restart_login(request: Request, pending: list, returned_state: str):
+    """No attempt matched — heal it instead of dead-ending on an error page.
+
+    Once, though. If the login we send them on comes back unmatched again the
+    browser is not keeping our cookie at all (third-party cookie blocking, a
+    private window with everything off), and bouncing a second time would spin
+    for ever instead of saying so.
+    """
+    reason = ("no sign-in is pending in this browser" if not pending
+              else f"state matches none of the {len(pending)} pending sign-ins")
+    if returned_state.endswith(RETRY_MARK):
+        print(f"[auth] sign-in failed after a retry: {reason}")
+        return _auth_error(400, "לא הצלחנו להשלים את ההתחברות. ייתכן שהדפדפן חוסם עוגיות "
+                                "עבור האתר — אפשר לנסות שוב, או לפתוח חלון רגיל (לא פרטי).")
+
+    # A tab that was left open and only now finished a login it started before
+    # she signed in in another tab: she is already in, so just let her through.
+    nxt = _safe_next(pending[0].get("next", "/")) if pending else "/"
+    if session_principal(request):
+        print(f"[auth] callback ignored, session already valid: {reason}")
+        return RedirectResponse(nxt, status_code=302)
+
+    print(f"[auth] restarting sign-in: {reason}")
+    return RedirectResponse("/auth/login?retry=1&next=" + urllib.parse.quote(nxt, safe=""),
+                            status_code=302)
+
+
+_ERROR_PAGE = """<!doctype html>
+<html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ההתחברות נכשלה</title>
+<style>
+  body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:#f6f7fb;color:#323338;
+       font-family:"Segoe UI",Rubik,Arial,Helvetica,sans-serif}}
+  .card{{background:#fff;border-radius:12px;padding:36px 40px;max-width:440px;
+        box-shadow:0 8px 28px rgba(0,0,0,.10);text-align:center}}
+  h1{{margin:0 0 12px;font-size:20px}}
+  p{{margin:0 0 24px;font-size:15px;line-height:1.6;color:#676879}}
+  a{{display:inline-block;background:#0073ea;color:#fff;text-decoration:none;
+     padding:10px 26px;border-radius:6px;font-size:15px}}
+</style></head>
+<body><div class="card">
+  <h1>ההתחברות נכשלה</h1>
+  <p>{message}</p>
+  <a href="/auth/login">התחברות מחדש</a>
+</div></body></html>
+"""
+
+
+def _auth_error(status: int, message) -> HTMLResponse:
+    """The same status, in something a person can read and act on."""
+    return HTMLResponse(_ERROR_PAGE.format(message=html.escape(str(message))),
+                        status_code=status)
 
 
 async def _exchange_code(request: Request, code: str, verifier: str) -> dict:

@@ -109,8 +109,14 @@ page names the cause; the server log also carries the token-exchange body.
 | `AADSTS7000215` invalid client secret | the secret's *ID* was copied instead of its *Value*, or it expired |
 | 403 "המשתמש אינו רשום במערכת" | sign-in worked; no `users` row with that email |
 | 403 "החשבון אינו שייך לדומיין" | `ENTRA_ALLOWED_DOMAINS` excludes it |
-| 400 "פג תוקף בקשת ההתחברות" | the login sat open past 10 minutes, or cookies are blocked |
+| 400 "לא הצלחנו להשלים את ההתחברות" | the browser kept none of our state cookie — third-party cookie blocking, or a private window with site data off. A first unmatched callback is retried silently; this page only appears when the retry comes back unmatched too |
 | signed out on every deploy | `CITYOS_SESSION_SECRET` unset, or differs per replica |
+
+A callback whose `state` matches nothing this browser has pending is not an
+error page: the code is discarded unused and a fresh login starts. That is the
+ordinary case of two tabs, a bookmarked callback URL, or a login left open —
+and the browser is already carrying the last few attempts, so a second tab no
+longer invalidates the first.
 
 ## What is checked, and why it matters
 

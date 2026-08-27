@@ -91,12 +91,16 @@ def _id_token(*, nonce, key=_PRIVATE_PEM, aud=CLIENT, iss=ISSUER, tid=TENANT,
     return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "test-key"})
 
 
+def _pending(client):
+    """The sign-in attempts the state cookie is currently holding, newest first."""
+    return entra._unsign(client.cookies[entra.STATE_COOKIE])["attempts"]
+
+
 def _start_login(client, next_path="/"):
-    """Drive /auth/login and return (redirect_url, planted_state_claims)."""
+    """Drive /auth/login and return (redirect_url, the attempt it just planted)."""
     r = client.get("/auth/login", params={"next": next_path})
     assert r.status_code == 302, r.text
-    planted = entra._unsign(client.cookies[entra.STATE_COOKIE])
-    return r.headers["location"], planted
+    return r.headers["location"], _pending(client)[0]
 
 
 def _complete_login(client, monkeypatch, token_factory=None, **token_kw):
@@ -155,22 +159,102 @@ def test_happy_path_sets_a_session(client, monkeypatch):
     assert entra.session_principal(request)["email"] == "shellyf@mashcal.co.il"
 
 
-def test_mismatched_state_is_refused(client, monkeypatch):
-    """Login CSRF: an attacker completing a login in someone else's browser."""
+def test_a_code_for_an_unknown_state_is_never_exchanged(client, monkeypatch):
+    """Login CSRF: an attacker completing a login in someone else's browser.
+
+    The browser is sent back to start a clean login of its own, but the
+    attacker's code must not be spent on the way — that is the whole property.
+    """
     _, planted = _start_login(client)
+    exchanged = []
 
     async def _fake_exchange(request, code, verifier):
+        exchanged.append(code)
         return {"id_token": _id_token(nonce=planted["nonce"])}
 
     monkeypatch.setattr(entra, "_exchange_code", _fake_exchange)
     r = client.get("/auth/callback", params={"code": "the-code", "state": "attacker-state"})
-    assert r.status_code == 400
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/auth/login?retry=1")
+    assert exchanged == []
     assert entra.SESSION_COOKIE not in client.cookies
 
 
-def test_callback_without_a_state_cookie_is_refused(client):
+def test_callback_without_a_state_cookie_restarts_the_login(client):
+    """A bookmarked callback URL, or a login left open past the TTL.
+
+    Indistinguishable from the CSRF case above, and equally not worth an error
+    page: throw the code away and start a login this browser actually owns.
+    """
     r = client.get("/auth/callback", params={"code": "x", "state": "y"})
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/auth/login?retry=1")
+    assert entra.SESSION_COOKIE not in client.cookies
+
+
+def test_a_second_tab_does_not_break_the_login_in_the_first(client, monkeypatch):
+    """The bug this file grew for: two tabs, both bounced to Entra.
+
+    Tab B's /auth/login used to overwrite the single state cookie, so tab A came
+    back to a state nobody recognised and the sign-in died on
+    "אימות בקשת ההתחברות נכשל".
+    """
+    _, first = _start_login(client, next_path="/board/7")
+    _, second = _start_login(client, next_path="/")
+    assert first["state"] != second["state"]
+
+    async def _fake_exchange(request, code, verifier):
+        assert verifier == first["verifier"]      # tab A's PKCE verifier, not tab B's
+        return {"id_token": _id_token(nonce=first["nonce"])}
+
+    monkeypatch.setattr(entra, "_exchange_code", _fake_exchange)
+    r = client.get("/auth/callback", params={"code": "the-code", "state": first["state"]})
+    assert r.status_code == 302, r.text
+    assert r.headers["location"] == "/board/7"    # and back to where tab A was
+    assert entra.SESSION_COOKIE in client.cookies
+
+
+def test_only_the_last_few_logins_are_remembered(client):
+    """Otherwise a browser that keeps starting logins grows the cookie for ever."""
+    for _ in range(entra.MAX_PENDING_LOGINS + 3):
+        _start_login(client)
+    assert len(_pending(client)) == entra.MAX_PENDING_LOGINS
+
+
+def test_an_attempt_past_its_ttl_is_not_matched(client, monkeypatch):
+    """The cookie may be refreshed by a newer login; an old attempt still expires."""
+    _, planted = _start_login(client)
+    real_time = time.time
+    monkeypatch.setattr(entra.time, "time", lambda: real_time() + entra.STATE_TTL_SECONDS + 60)
+    r = client.get("/auth/callback", params={"code": "x", "state": planted["state"]})
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("/auth/login?retry=1")
+
+
+def test_a_retry_that_fails_again_stops_instead_of_looping(client):
+    """A browser keeping none of our cookies must be told so, not bounced for ever."""
+    r = client.get("/auth/callback", params={"code": "x", "state": "abc" + entra.RETRY_MARK})
     assert r.status_code == 400
+    assert "text/html" in r.headers["content-type"]
+    assert "/auth/login" in r.text          # a way back, not a dead end
+    assert entra.SESSION_COOKIE not in client.cookies
+
+
+def test_a_stale_tab_lands_on_the_app_when_the_session_is_already_valid(client, monkeypatch):
+    """Tab A signed in; tab B's older login finally comes back. She is already in."""
+    assert _complete_login(client, monkeypatch).status_code == 302
+    r = client.get("/auth/callback", params={"code": "x", "state": "a-finished-attempt"})
+    assert r.status_code == 302
+    assert r.headers["location"] == "/"     # straight to the app, no second round trip
+
+
+def test_failures_are_shown_as_a_page_not_as_json(client, monkeypatch):
+    """She is in a browser, mid sign-in — {"detail": …} is not an answer."""
+    monkeypatch.setenv("ENTRA_ALLOWED_DOMAINS", "mashcal.co.il")
+    r = _complete_login(client, monkeypatch, email="guest@gmail.com")
+    assert r.status_code == 403
+    assert "text/html" in r.headers["content-type"]
+    assert "לדומיין של הארגון" in r.text
 
 
 def test_token_signed_by_another_key_is_refused(client, monkeypatch):
