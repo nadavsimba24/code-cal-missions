@@ -1051,6 +1051,7 @@ body.coldragging .col-grip{opacity:1}
 .env-ic{width:22px;height:22px;border-radius:6px;display:inline-grid;place-items:center;
   flex:0 0 auto;overflow:hidden;color:#fff;font-size:11px;line-height:1;vertical-align:middle}
 .env-ic-emoji{background:none;font-size:15px}
+.env-ic-ini{font-weight:700;font-size:10px;letter-spacing:.3px;text-transform:uppercase}
 .env-ic img{width:100%;height:100%;object-fit:cover}
 /* the avatar keeps its circle inside the square tile — it is a person, not a logo */
 .env-ic .av-ini{font-size:9px;font-weight:700}
@@ -1090,7 +1091,7 @@ body.coldragging .col-grip{opacity:1}
   border-radius:8px;background:var(--bg);font-size:12.5px;margin-bottom:14px}
 .ep-preview .env-ic{width:26px;height:26px;font-size:13px}
 .ep-preview .env-ic-emoji{font-size:17px}
-.ep-preview .env-ic .av-ini{font-size:10px}
+.ep-preview .env-ic-ini{font-size:12px}
 .sa-table tr:hover td{background:var(--row-hover)}
 .sa-name{display:flex;align-items:center;gap:9px}
 .sa-name .av{width:28px;height:28px;font-size:11px;flex-shrink:0}
@@ -4368,18 +4369,27 @@ const Trash = {
    or for an environment whose creator is gone from it — a plain building
    stands in, rather than an empty box. */
 function envIconHTML(e){
-  const ic=((e&&e.icon)||'').trim();
-  // The colour backs a chosen glyph and nothing else. An emoji keeps the look
-  // it has always had, and the avatar keeps the person's own colour — it is
-  // their avatar, and an avatar in somebody else's colour is not one.
+  const ic=((e&&e.icon)||'').trim(), bg=esc((e&&e.color)||'#6366f1');
+  // The colour backs the two things the editor can put on it: a chosen glyph,
+  // and the creator's initials. An emoji keeps the look it has always had —
+  // those rows were set long before any of this and nobody asked for them to
+  // change — and an uploaded picture is the whole tile, so there is nothing
+  // left for a colour to back.
   if(ic.startsWith('fa:'))
-    return `<span class="env-ic" style="background:${esc(e.color||'#6366f1')}"><i class="fa-solid fa-${esc(ic.slice(3))}"></i></span>`;
+    return `<span class="env-ic" style="background:${bg}"><i class="fa-solid fa-${esc(ic.slice(3))}"></i></span>`;
   if(ic.startsWith('/api/files/'))
     return `<span class="env-ic"><img src="${esc(ic)}" alt="" loading="lazy"></span>`;
   if(ic) return `<span class="env-ic env-ic-emoji">${esc(ic)}</span>`;
   const u=(st.users||[]).find(x=>x.id===(e&&e.created_by));
-  return u ? `<span class="env-ic">${avatarInner(u)}</span>`
-           : `<span class="env-ic env-ic-emoji">🏢</span>`;
+  if(!u) return `<span class="env-ic env-ic-emoji">🏢</span>`;
+  // a real photo wins, exactly as it does everywhere else a person appears
+  if(u.avatar_url)
+    return `<span class="env-ic"><img src="${esc(u.avatar_url)}" alt="" loading="lazy"></span>`;
+  // The initials are the person's; the colour is the environment's. A new one
+  // is created carrying its creator's own avatar colour, so out of the box the
+  // two are the same thing and the badge simply is their avatar — and picking
+  // a colour afterwards is a change you can see.
+  return `<span class="env-ic env-ic-ini" style="background:${bg}">${esc(initials(u.name)||'?')}</span>`;
 }
 /* The glyphs the picker offers — Font Awesome names, stored as "fa:<name>". */
 const ENV_GLYPHS=['bolt','crown','gem','fire','globe','heart','house','building','city','tree',
@@ -4603,15 +4613,10 @@ const SysAdmin = {
   editLook(id){
     const e=(this.envs||[]).find(x=>x.id===id); if(!e){ toast('סביבה לא נמצאה'); return; }
     if(!(isSysAdmin()||e.can_manage)){ toast('רק מנהל מערכת או מנהל הסביבה'); return; }
-    // The ✓ marks the colour the badge is actually wearing. With no icon of
-    // its own the badge is the creator's avatar, so the colour in effect is
-    // that person's avatar colour — not whatever the server happened to assign
-    // the row, which described nothing anyone could see.
-    const creator=(st.users||[]).find(x=>x.id===e.created_by);
-    const shown=(!(e.icon||'').trim() && creator) ? avatarColor(creator.name)
-                                                  : (e.color||ENV_COLORS[0]);
+    // The ✓ marks the colour the badge is wearing, and the badge wears this
+    // one — for a glyph and for the creator's initials alike.
     window._envLook={id, name:e.name, created_by:e.created_by,
-                     icon:(e.icon||''), color:shown};
+                     icon:(e.icon||''), color:(e.color||ENV_COLORS[0])};
     showModal(`<h2>מראה הסביבה</h2><div class="mbody">
       <div class="ep-preview" id="el-preview"></div>
       <div class="ep-sec"><label>צבע רקע</label>
