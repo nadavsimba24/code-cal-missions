@@ -5567,7 +5567,7 @@ const COLUMN_TYPES=[
   {type:'dropdown',he:'רשימה נפתחת',ic:'fa-list-check',desc:'בחירה מרשימת אפשרויות'},
   {type:'date',he:'תאריך',ic:'fa-calendar-day',desc:'תאריך בודד'},
   {type:'files',he:'קבצים',ic:'fa-paperclip',desc:'העלאת קבצים'},
-  {type:'accounts',he:'חשבונות',ic:'fa-building',desc:'חשבון/לקוח מקושר'},
+  {type:'accounts',he:'קישור',ic:'fa-building',desc:'חשבון/לקוח מקושר'},
   {type:'timeline',he:'ציר זמן',ic:'fa-timeline',desc:'טווח תאריכים (התחלה–סיום)'},
   {type:'checkbox',he:'תיבת סימון',ic:'fa-square-check',desc:'סימון כן/לא'},
   {type:'formula',he:'נוסחה',ic:'fa-calculator',desc:'חישוב מעמודות אחרות'},
@@ -5592,7 +5592,7 @@ const STATUS_OPTS=[
   {label:'בוטל',  color:'#9BADBC'},
 ];
 const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
-  people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'חשבון',checkbox:'סימון',formula:'נוסחה',connect:'קישור',
+  people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'קישור',checkbox:'סימון',formula:'נוסחה',connect:'קישור בין לוחות',
   created_at:'מועד יצירה',created_by:'יוצר הרשומה',item_id:'מזהה פריט',mirror:'שדה מראה'};
 /* columns the system derives from the item itself — they have no value to fill
    in, so they are read-only in the grid and never offered as form fields */
@@ -6563,9 +6563,9 @@ async function removeFile(e,taskId,colId,idx){
 function accountCell(taskId,colId){
   const v=(findAnyTask(taskId).custom_fields||{})[colId]||{};
   const ds='padding:7px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:inherit;width:100%';
-  showModal(`<h2>חשבון מקושר</h2><div class="mbody">
-    <div class="field"><label>שם החשבון / לקוח</label><input id="ac-label" value="${esc(v.label||'')}" style="${ds}"></div>
-    <div class="field"><label>קישור (אופציונלי)</label><input id="ac-url" value="${esc(v.url||'')}" placeholder="https://" style="${ds}"></div>
+  showModal(`<h2>קישור</h2><div class="mbody">
+    <div class="field"><label>שם</label><input id="ac-label" value="${esc(v.label||'')}" style="${ds}"></div>
+    <div class="field"><label>כתובת (אופציונלי)</label><input id="ac-url" value="${esc(v.url||'')}" placeholder="https://" style="${ds}"></div>
   </div><div class="mfoot"><button class="btn btn-primary" onclick="saveAccount(${taskId},'${colId}')">שמור</button><button class="btn btn-ghost" onclick="closeModals()">ביטול</button><div style="flex:1"></div><button class="btn btn-ghost" style="color:var(--red)" onclick="saveAccount(${taskId},'${colId}',true)">נקה</button></div>`);
   setTimeout(()=>{const n=document.getElementById('ac-label');if(n)n.focus();},30);
 }
@@ -8445,7 +8445,7 @@ async function deleteGroup(gid){
 }
 
 /* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */
-const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'חשבון'};
+const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'קישור'};
 function formSchema(){
   const f=[
     {key:'title',label:'שם הפריט',type:'text',locked:true},
