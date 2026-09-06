@@ -157,6 +157,16 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tl-in span{font-size:10.5px;font-weight:600;color:var(--text-muted)}
 .tl-in input{padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px;font:inherit;font-size:11.5px;width:100%}
 .tl-in input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
+/* מתאריך / עד תאריך draw their own text too. They are the one place on the
+   board where two dates are read against each other, and they were still two
+   bare `<input type="date">` — so the pair read 09/27 to one person and 27/09
+   to the next, right after the columns beneath them had been fixed.
+   `.tl-in span` styles the little label above the box, so the display span
+   needs its own type here or it would inherit the label's. */
+.tl-in .tl-datewrap{display:block}
+.tl-in .tl-datewrap .cc-date-disp{font-size:11.5px;font-weight:400;color:var(--text);
+  text-align:start;padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px}
+.tl-in .tl-datewrap:hover .cc-date-disp{box-shadow:none;border-color:var(--primary)}
 .tl-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
 .tl-month{font-weight:700;font-size:12.5px}
 .tl-nav{width:22px;height:22px;border-radius:6px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:grid;place-items:center;font-size:10px}
@@ -5666,11 +5676,12 @@ function cellValue(t,colId){return (t.custom_fields||{})[colId];}
    The reason the input does not draw itself is in .cc-datewrap in the
    stylesheet — in short, its format is the viewer's browser's, not ours, and a
    board must read the same to everyone looking at it. */
-function dateCellHTML(value,onchange){
+function dateCellHTML(value,onchange,opts){
+  const o=opts||{};
   const iso=value?String(value).slice(0,10):'';
-  return `<span class="cc-datewrap" onclick="dateCellPick(event)">`
+  return `<span class="cc-datewrap${o.cls?' '+o.cls:''}" onclick="dateCellPick(event)">`
     +`<span class="cc-date-disp">${fdate(iso)}</span>`
-    +`<input type="date" class="cc-inp cc-date" value="${iso}" onchange="${onchange}">`
+    +`<input type="date"${o.id?` id="${o.id}"`:''} class="cc-inp cc-date" value="${iso}" onchange="${onchange}">`
     +`</span>`;
 }
 /* The input is transparent until it has focus, so its own calendar icon is not
@@ -7060,9 +7071,9 @@ const Timeline = {
     setHTML(host, `
       <div class="tl-inputs">
         <label class="tl-in"><span>מתאריך</span>
-          <input type="date" id="tl-from" value="${this.from}" onchange="Timeline.typed('from',this.value)"></label>
+          ${dateCellHTML(this.from,"Timeline.typed('from',this.value)",{id:'tl-from',cls:'tl-datewrap'})}</label>
         <label class="tl-in"><span>עד תאריך</span>
-          <input type="date" id="tl-to" value="${this.to}" onchange="Timeline.typed('to',this.value)"></label>
+          ${dateCellHTML(this.to,"Timeline.typed('to',this.value)",{id:'tl-to',cls:'tl-datewrap'})}</label>
       </div>
       ${this._monthHTML()}
       <div class="tl-foot"><span class="tl-len">${this._lenText()}</span>

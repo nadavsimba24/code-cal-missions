@@ -83,5 +83,24 @@ const ro = new Function('esc','canEditItem','cellValue','fdate','dateCellHTML',
 ck('a viewer who may not edit sees the same order',
    ro.includes('31/12/2026'), ro);
 
+// ── the timeline picker's two boxes, the last pair of bare date inputs ──
+const box = api.dateCellHTML('2026-09-27', "Timeline.typed('from',this.value)",
+                             {id:'tl-from', cls:'tl-datewrap'});
+ck('מתאריך draws its own text as well',
+   box.includes('27/09/2026'), box);
+ck('and keeps the id the picker addresses it by',
+   box.includes('id="tl-from"'), box);
+ck('and still reports typing back to the picker',
+   box.includes("Timeline.typed('from',this.value)"), box);
+ck('the picker box carries its own modifier class',
+   box.includes('class="cc-datewrap tl-datewrap"'), box);
+
+// the two boxes themselves, not whatever render() the file happens to hold first
+const picker = /<div class="tl-inputs">[\s\S]*?<\/div>/.exec(src);
+ck('neither picker box is a bare date input any more',
+   picker && !/<input type="date"/.test(picker[0]), picker&&picker[0]);
+ck('both boxes go through the same helper',
+   picker && (picker[0].match(/dateCellHTML\(/g)||[]).length===2, picker&&picker[0]);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
