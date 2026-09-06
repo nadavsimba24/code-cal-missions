@@ -650,6 +650,25 @@ body.coldragging .col-grip{opacity:1}
 .cc-inp:hover{border-color:var(--border)}
 .cc-inp:focus{outline:none;border-color:var(--primary);background:var(--surface)}
 .cc-date{cursor:pointer;color:var(--text-muted)}
+/* A date cell draws its OWN text, and the input draws none.
+   `<input type="date">` takes the day/month order from the *browser's* locale —
+   `<html lang="he">` has no say in it, and neither does anything else on the
+   page. So the same board read 31/12/2026 for someone whose Chrome is Hebrew
+   and 12/31/2026 for someone whose Chrome is English, in these two columns and
+   nowhere else, because every other date here is drawn by us. A fix to that
+   order could only ever appear for half the users.
+   The input stays — it is the native calendar, the keyboard entry and the thing
+   that works on a phone — but it is transparent until it has focus, and our own
+   DD/MM/YYYY sits beneath it. While someone is actually typing, their browser's
+   own control is what they should see, so it shows itself. */
+.cc-datewrap{position:relative;display:block}
+.cc-datewrap .cc-date-disp{display:block;text-align:center;font-size:13px;
+  color:var(--text-muted);padding:5px 6px;border-radius:5px;pointer-events:none}
+/* inset shadow, not a border: a border here would reflow the row on hover */
+.cc-datewrap:hover .cc-date-disp{box-shadow:inset 0 0 0 1px var(--border)}
+.cc-datewrap .cc-date{position:absolute;inset:0;width:100%;height:100%;opacity:0}
+.cc-datewrap:focus-within .cc-date{opacity:1}
+.cc-datewrap:focus-within .cc-date-disp{visibility:hidden}
 .rating{display:inline-flex;gap:3px;color:var(--yellow);font-size:14px;cursor:pointer}
 .rating .fa-regular{color:var(--border-strong)}
 .rating i:hover{transform:scale(1.18)}
@@ -5623,13 +5642,32 @@ function initColResizers(root){
   });
 }
 function cellValue(t,colId){return (t.custom_fields||{})[colId];}
+/* One date cell: our text for reading, the native input for picking and typing.
+   The reason the input does not draw itself is in .cc-datewrap in the
+   stylesheet — in short, its format is the viewer's browser's, not ours, and a
+   board must read the same to everyone looking at it. */
+function dateCellHTML(value,onchange){
+  const iso=value?String(value).slice(0,10):'';
+  return `<span class="cc-datewrap" onclick="dateCellPick(event)">`
+    +`<span class="cc-date-disp">${fdate(iso)}</span>`
+    +`<input type="date" class="cc-inp cc-date" value="${iso}" onchange="${onchange}">`
+    +`</span>`;
+}
+/* The input is transparent until it has focus, so its own calendar icon is not
+   something anyone can aim at — ask for the picker ourselves. Where showPicker
+   is missing, or refuses because the browser does not count this as a gesture,
+   a focused date input can still be typed into. */
+function dateCellPick(e){
+  const inp=e.currentTarget.querySelector('input[type=date]'); if(!inp)return;
+  try{ inp.showPicker(); }catch(_){ inp.focus(); }
+}
 /* one built-in (non-item) cell for a given row */
 function builtinCellHTML(key,t){
   if(key==='assignees')return `<td class="cell" style="cursor:pointer" title="שייך אחראי" onclick="openPeople(event,${t.id})">${avatars(t.assignees)}</td>`;
   if(key==='status')   return `<td class="cell edit-cell" title="לחץ לשינוי סטטוס" onclick="fieldPicker(event,${t.id},'status',boardStatusMap())">${statusPill(t)}</td>`;
   if(key==='priority') return `<td class="cell edit-cell" title="לחץ לשינוי עדיפות" onclick="fieldPicker(event,${t.id},'priority',boardPriorityMap())">${priorityPill(t)}</td>`;
   if(key==='due')      return canEditItem(t)
-    ? `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${t.due_date?String(t.due_date).slice(0,10):''}" onchange="setDue(${t.id},this.value||null)"></td>`
+    ? `<td class="cell cell-custom">${dateCellHTML(t.due_date,`setDue(${t.id},this.value||null)`)}</td>`
     : `<td class="cell">${fdate(t.due_date)}</td>`;
   return '';
 }
@@ -5638,7 +5676,7 @@ function customCellHTML(c,t){
   const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
   if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
   if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
-  if(c.type==='date')   return `<td class="cell cell-custom"><input type="date" class="cc-inp cc-date" value="${v?String(v).slice(0,10):''}" onchange="setCell(${id},'${c.id}',this.value||null)"></td>`;
+  if(c.type==='date')   return `<td class="cell cell-custom">${dateCellHTML(v,`setCell(${id},'${c.id}',this.value||null)`)}</td>`;
   if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
   if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
   if(c.type==='timeline')return `<td class="cell cell-custom" ${cc}><div class="tl-cell" onclick="openTimeline(event,${id},'${c.id}')" style="cursor:pointer">${timelineBar(v)}</div></td>`;
