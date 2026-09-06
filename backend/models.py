@@ -157,10 +157,19 @@ class Environment(Base):
     id = Column(Integer, primary_key=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
     name = Column(String(200), nullable=False)
-    icon = Column(String(50), default="🏢")
-    color = Column(String(7), default="#6366f1")
+    # What the switcher draws for this environment. Four shapes, and the
+    # renderer tells them apart by prefix (see envIconHTML in the frontend):
+    #   "fa:bolt"          a Font Awesome glyph on the colour below
+    #   "/api/files/<tok>" an uploaded picture
+    #   "🏛️"               an emoji, which is what every row held before
+    #   empty              the creator's own avatar — the default for a new one
+    icon = Column(String(50), default=None)
+    color = Column(String(7), default="#6366f1")   # the tile behind an fa: glyph
     position = Column(Integer, default=0)
     is_primary = Column(Boolean, default=False)  # the default workspace that holds legacy/unassigned boards
+    # Who made it. Kept so an environment with no icon of its own can wear its
+    # creator's avatar, and so the thing is never again owned by nobody.
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Folder(Base):

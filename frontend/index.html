@@ -1045,6 +1045,39 @@ body.coldragging .col-grip{opacity:1}
 .sa-table th{text-align:right;font-size:11px;font-weight:600;color:var(--text-light);text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
 .sa-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
 .sa-table tr.inactive{opacity:.55}
+/* An environment's badge. One box whatever is inside it — a glyph on the
+   environment's colour, an uploaded picture, an emoji, or the creator's own
+   avatar — so a list of environments lines up however each one was set. */
+.env-ic{width:22px;height:22px;border-radius:6px;display:inline-grid;place-items:center;
+  flex:0 0 auto;overflow:hidden;color:#fff;font-size:11px;line-height:1;vertical-align:middle}
+.env-ic-emoji{background:none;font-size:15px}
+.env-ic img{width:100%;height:100%;object-fit:cover}
+/* the avatar keeps its circle inside the square tile — it is a person, not a logo */
+.env-ic .av-ini{font-size:9px;font-weight:700}
+.env-ic-btn{border:1px solid transparent;background:none;padding:2px;border-radius:8px;cursor:pointer}
+.env-ic-btn:hover{border-color:var(--border-strong);background:var(--row-hover)}
+/* ── the appearance picker ── */
+.ep-sec{margin-bottom:16px}
+.ep-sec>label{display:block;font-size:12.5px;font-weight:600;color:var(--text-muted);margin-bottom:8px}
+.ep-colors{display:grid;grid-template-columns:repeat(8,1fr);gap:9px}
+.ep-color{width:100%;aspect-ratio:1;border-radius:50%;border:2px solid transparent;cursor:pointer;
+  padding:0;display:grid;place-items:center;color:#fff;font-size:12px;transition:transform .1s}
+.ep-color:hover{transform:scale(1.1)}
+.ep-color.sel{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--primary)}
+.ep-icons{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.ep-icon{width:100%;aspect-ratio:1;border-radius:10px;border:2px solid transparent;cursor:pointer;
+  display:grid;place-items:center;color:#fff;font-size:17px;padding:0;transition:transform .1s}
+.ep-icon:hover{transform:scale(1.06)}
+.ep-icon.sel{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--primary)}
+.ep-upload{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:14px;
+  padding:9px;border:1px dashed var(--border-strong);border-radius:8px;background:none;
+  cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-muted)}
+.ep-upload:hover{border-color:var(--primary);color:var(--primary)}
+.ep-preview{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--border);
+  border-radius:8px;background:var(--bg);font-size:13px;margin-bottom:16px}
+.ep-preview .env-ic{width:30px;height:30px;font-size:15px}
+.ep-preview .env-ic-emoji{font-size:20px}
+.ep-preview .env-ic .av-ini{font-size:12px}
 .sa-table tr:hover td{background:var(--row-hover)}
 .sa-name{display:flex;align-items:center;gap:9px}
 .sa-name .av{width:28px;height:28px;font-size:11px;flex-shrink:0}
@@ -4312,6 +4345,36 @@ const Trash = {
 };
 
 /* ===== environments (Monday-style workspaces) — sysadmin=all, others=granted only ===== */
+/* What an environment wears, and how the stored string says which.
+   See the icon column in backend/models.py:
+     "fa:bolt"           a glyph, white on the environment's colour
+     "/api/files/<tok>"  a picture someone uploaded
+     "🏛️"                an emoji — what every row held before this existed
+     nothing             the creator's own avatar, colour and initials and all
+   The avatar needs the creator in the loaded directory. Before that arrives —
+   or for an environment whose creator is gone from it — a plain building
+   stands in, rather than an empty box. */
+function envIconHTML(e){
+  const ic=((e&&e.icon)||'').trim();
+  if(ic.startsWith('fa:'))
+    return `<span class="env-ic" style="background:${esc(e.color||'#6366f1')}"><i class="fa-solid fa-${esc(ic.slice(3))}"></i></span>`;
+  if(ic.startsWith('/api/files/'))
+    return `<span class="env-ic"><img src="${esc(ic)}" alt="" loading="lazy"></span>`;
+  if(ic) return `<span class="env-ic env-ic-emoji">${esc(ic)}</span>`;
+  const u=(st.users||[]).find(x=>x.id===(e&&e.created_by));
+  return u ? `<span class="env-ic">${avatarInner(u)}</span>`
+           : `<span class="env-ic env-ic-emoji">🏢</span>`;
+}
+/* The glyphs the picker offers — Font Awesome names, stored as "fa:<name>". */
+const ENV_GLYPHS=['bolt','crown','gem','fire','globe','heart','house','building','city','tree',
+                  'road','bus','water-ladder','lightbulb','traffic-light','shield-halved','folder',
+                  'chart-simple','wrench','users'];
+/* Mirrors _ENV_COLORS in backend/main.py, then keeps going: the picker offers a
+   full row-of-eight grid like the one it was drawn from. */
+const ENV_COLORS=['#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6',
+                  '#e2445c','#00c875','#a25ddc','#0073ea','#323338','#579bfc','#fdab3d','#ffcb00',
+                  '#037f4c','#bb3354','#ff642e','#9d50dd','#7e5348','#00c2b8','#9699a6','#1f76c2'];
+
 const Env = {
   items:[], open:false, membersFor:null, membersData:{members:[],available:[]},
   async load(){
@@ -4339,12 +4402,12 @@ const Env = {
     const manageAny=admin||this.items.some(e=>e.can_manage);
     // a single environment with no management options needs no dropdown — show it statically
     if(this.items.length===1 && !manageAny && !hasCap('create_environment')){
-      wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(a?a.name:'')}">${esc(a?a.name:'')}</span></div>`;
+      wrap.innerHTML=`<div class="sb-item active" style="cursor:default" title="${esc(a.name)}"><span class="ic">${envIconHTML(a)}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(a?a.name:'')}">${esc(a?a.name:'')}</span></div>`;
       return;
     }
     const rows=this.items.map(e=>`
       <button class="ws-opt ${a&&a.id===e.id?'active':''}" onclick="Env.select(${e.id})">
-        <span class="ic">${e.icon||'🏢'}</span>
+        <span class="ic">${envIconHTML(e)}</span>
         <span class="ws-opt-name" title="${esc(e.name)}">${esc(e.name)}${e.my_role==='manager'?' <span class="ws-opt-badge">מנהל</span>':''}</span>
         ${e.can_manage?`<span class="ws-opt-act">
           <i class="fa-solid fa-user-gear" title="ניהול משתמשים" onclick="event.stopPropagation();Env.members(${e.id})"></i>
@@ -4355,7 +4418,7 @@ const Env = {
       </button>`).join('');
     wrap.innerHTML=`
       <div class="sb-item ws-btn active" onclick="Env.toggle(event)" title="החלפת סביבה">
-        <span class="ic">${a?(a.icon||'🏢'):'🏛️'}</span>
+        <span class="ic">${a?envIconHTML(a):'🏛️'}</span>
         <span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${esc(a?a.name:'')}">${esc(a?a.name:'')}</span>
         <i class="fa-solid fa-chevron-down ws-caret ${this.open?'up':''}"></i>
       </div>
@@ -4489,7 +4552,7 @@ const SysAdmin = {
     const body=document.getElementById('sa-body'); if(!body)return;
     const admin=isSysAdmin();   // only a workspace admin may delete — same rule the API enforces
     const rows=envs.length ? envs.map(e=>`<tr>
-        <td style="font-weight:600">${esc(e.icon||'🏢')} <span class="env-name" data-env="${e.id}" title="לחיצה כפולה לשינוי שם" ondblclick="SysAdmin.renameEnv(${e.id})">${esc(e.name)}</span>${e.is_primary?' <span class="perm-badge">ברירת מחדל</span>':''}</td>
+        <td style="font-weight:600"><button class="env-ic-btn" title="שינוי מראה" onclick="SysAdmin.editLook(${e.id})">${envIconHTML(e)}</button> <span class="env-name" data-env="${e.id}" title="לחיצה כפולה לשינוי שם" ondblclick="SysAdmin.renameEnv(${e.id})">${esc(e.name)}</span>${e.is_primary?' <span class="perm-badge">ברירת מחדל</span>':''}</td>
         <td style="color:var(--text-muted)">${e.board_count||0} <span style="color:var(--text-light)">לוחות</span></td>
         <td style="white-space:nowrap;text-align:left">
           <button class="sa-more" title="שנה שם" onclick="SysAdmin.renameEnv(${e.id})"><i class="fa-solid fa-pen"></i></button>
@@ -4511,6 +4574,77 @@ const SysAdmin = {
      two that ask for different things. Here it hands the table back rather than
      moving the admin into the environment they just created. */
   addEnv(){ Env.add({done:()=>this.reloadEnvs()}); },
+  /* ── מראה: the colour behind the glyph, and the glyph ──
+     Creating asks for a name and nothing else; this is where an environment
+     gets a face, afterwards, from the screen that lists them all. Picking is
+     immediate in the preview and only written on שמור, so trying colours costs
+     nothing. Leaving the icon empty is a real choice — it hands the badge back
+     to the creator's avatar. */
+  editLook(id){
+    const e=(this.envs||[]).find(x=>x.id===id); if(!e){ toast('סביבה לא נמצאה'); return; }
+    if(!(isSysAdmin()||e.can_manage)){ toast('רק מנהל מערכת או מנהל הסביבה'); return; }
+    window._envLook={id, name:e.name, created_by:e.created_by,
+                     icon:(e.icon||''), color:(e.color||ENV_COLORS[0])};
+    showModal(`<h2>מראה הסביבה</h2><div class="mbody">
+      <div class="ep-preview" id="el-preview"></div>
+      <div class="ep-sec"><label>צבע רקע</label>
+        <div class="ep-colors" id="el-colors"></div></div>
+      <div class="ep-sec" style="margin-bottom:0"><label>אייקון</label>
+        <div class="ep-icons" id="el-icons"></div>
+        <button class="ep-upload" onclick="SysAdmin.uploadLook()"><i class="fa-solid fa-arrow-up-from-bracket"></i> העלאת אייקון משלך</button>
+      </div>
+    </div><div class="mfoot">
+      <button class="btn btn-primary" onclick="SysAdmin.saveLook()"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+      <button class="btn btn-ghost" style="margin-inline-start:auto" onclick="SysAdmin.pickGlyph('')">אפס לאווטאר של היוצר</button>
+    </div>`);
+    this.renderLook();
+  },
+  renderLook(){
+    const L=window._envLook; if(!L)return;
+    const pv=document.getElementById('el-preview');
+    if(pv)pv.innerHTML=envIconHTML(L)+`<span>${esc(L.name||'')}</span>`;
+    const cs=document.getElementById('el-colors');
+    if(cs)cs.innerHTML=ENV_COLORS.map(c=>
+      `<button type="button" class="ep-color${c===L.color?' sel':''}" style="background:${c}" title="${c}"
+         aria-label="צבע ${c}" onclick="SysAdmin.pickColor('${c}')">${c===L.color?'<i class="fa-solid fa-check"></i>':''}</button>`).join('');
+    const gs=document.getElementById('el-icons');
+    if(gs)gs.innerHTML=ENV_GLYPHS.map(g=>
+      `<button type="button" class="ep-icon${L.icon==='fa:'+g?' sel':''}" style="background:${esc(L.color)}"
+         title="${g}" aria-label="אייקון ${g}" onclick="SysAdmin.pickGlyph('fa:${g}')"><i class="fa-solid fa-${g}"></i></button>`).join('');
+  },
+  pickColor(c){ const L=window._envLook; if(!L)return; L.color=c; this.renderLook(); },
+  pickGlyph(g){ const L=window._envLook; if(!L)return; L.icon=g; this.renderLook(); },
+  /* An uploaded picture goes through the same endpoint everything else here
+     uses, and the URL it returns is what the icon column stores. */
+  uploadLook(){
+    const L=window._envLook; if(!L)return;
+    const inp=document.createElement('input');
+    inp.type='file'; inp.accept='image/*';
+    inp.onchange=async()=>{
+      const f=inp.files&&inp.files[0]; if(!f)return;
+      const fd=new FormData(); fd.append('file',f);
+      try{
+        const r=await fetch('/api/upload',{method:'POST',body:fd,headers:authHeaders()});
+        if(!r.ok)throw 0;
+        const d=await r.json();
+        if(!(d.type||'').startsWith('image/')){ toast('צריך קובץ תמונה'); return; }
+        L.icon=d.url; this.renderLook();
+      }catch(err){ toast('העלאת הקובץ נכשלה'); }
+    };
+    inp.click();
+  },
+  async saveLook(){
+    const L=window._envLook; if(!L)return;
+    try{
+      await api('/api/environments/'+L.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({actor_id:meId(), icon:L.icon, color:L.color})});
+      closeModals();
+      await this.reloadEnvs();
+      await Env.load();          // the switcher wears it too
+      toast('מראה הסביבה עודכן');
+    }catch(err){ toast((err&&err.detail)||'שגיאה בעדכון'); }
+  },
   /* rename in place: the name turns into an input right in the row (Enter or
      blur saves, Esc cancels) — same feel as renaming a board column. Reached
      from the pencil or by double-clicking the name. */

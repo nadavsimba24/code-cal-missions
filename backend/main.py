@@ -192,6 +192,8 @@ def _migrate():
         ecols = {r[1] for r in conn.execute(text("PRAGMA table_info(environments)"))}
         if ecols and "is_primary" not in ecols:
             conn.execute(text("ALTER TABLE environments ADD COLUMN is_primary BOOLEAN DEFAULT 0"))
+        if ecols and "created_by" not in ecols:
+            conn.execute(text("ALTER TABLE environments ADD COLUMN created_by INTEGER"))
         # environment members: per-environment role (manager | member)
         emcols = {r[1] for r in conn.execute(text("PRAGMA table_info(environment_members)"))}
         if emcols and "role" not in emcols:
@@ -243,6 +245,7 @@ else:
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS deleted_by INTEGER",
         "ALTER TABLE environments ADD COLUMN IF NOT EXISTS is_primary BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE environments ADD COLUMN IF NOT EXISTS created_by INTEGER",
         "ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid_board INTEGER",
@@ -2679,6 +2682,9 @@ def _can_manage_env(db, env_id, user_id):
 def _env_out(e, board_count=0, my_role=None):
     return {"id": e.id, "name": e.name, "icon": e.icon, "color": e.color,
             "position": e.position, "is_primary": bool(e.is_primary), "board_count": board_count,
+            # an environment with no icon of its own is drawn as its creator's
+            # avatar, so the client needs to know whose
+            "created_by": e.created_by,
             "my_role": my_role, "can_manage": my_role in ("admin", "manager")}
 
 @app.get("/api/environments")
@@ -2719,9 +2725,14 @@ def create_environment(data: dict, actor_id: int = Depends(current_user_id)):
             raise HTTPException(400, "נדרש שם לסביבה")
         org = db.query(Organization).first()
         pos = db.query(Environment).count()
-        e = Environment(name=name, icon=data.get("icon") or "🏢",
+        # No icon by default: an environment with none wears its creator's
+        # avatar, which is a truer first impression than the same 🏢 on every
+        # one of them. The colour is still assigned, because it is the tile a
+        # chosen glyph sits on later.
+        e = Environment(name=name, icon=(data.get("icon") or None),
                         color=data.get("color") or _ENV_COLORS[pos % len(_ENV_COLORS)],
-                        position=pos, organization_id=org.id if org else None)
+                        position=pos, organization_id=org.id if org else None,
+                        created_by=actor_id)
         db.add(e); db.commit(); db.refresh(e)
         # Whoever makes an environment manages it — the same rule a board
         # follows ("creator becomes the board admin"). Without this row the
@@ -2747,8 +2758,10 @@ def update_environment(env_id: int, data: dict, actor_id: int = Depends(current_
             raise HTTPException(404, "סביבה לא נמצאה")
         if "name" in data and (data.get("name") or "").strip():
             e.name = data["name"].strip()
-        if data.get("icon"):
-            e.icon = data["icon"]
+        # `in data`, not truthiness: an explicit empty icon is how the editor
+        # says "go back to the creator's avatar", and that has to be storable.
+        if "icon" in data:
+            e.icon = (data["icon"] or "").strip() or None
         if data.get("color"):
             e.color = data["color"]
         db.commit()
