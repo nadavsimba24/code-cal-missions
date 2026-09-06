@@ -5048,13 +5048,24 @@ function vTable(el){
         onEnd:async(evt)=>{
           const it=evt.item, tid=+it.dataset.tid; if(!tid)return;
           const toBody=evt.to, gid=toBody.dataset.gid?+toBody.dataset.gid:null;
-          const pos=[...toBody.querySelectorAll('tr[data-tid]')].indexOf(it);
+          // Which item it now sits below — not which row number it landed on.
+          // With a search or a filter on, the rows on screen are a subset of
+          // the group, so "the third row" is not "the third item", and an index
+          // would file it somewhere nobody pointed at. First row → after
+          // nothing → the top.
+          const rows=[...toBody.querySelectorAll('tr[data-tid]')], at=rows.indexOf(it);
           const grp=(st.board.groups||[]).find(g=>g.id===gid);
-          const body={group_id:gid,position:pos<0?0:pos}; if(grp)body.status=grp.task_status;
+          const body={group_id:gid,after_id:at>0?+rows[at-1].dataset.tid:null};
+          if(grp)body.status=grp.task_status;
+          const wasSorted=!!(st.colSort&&st.colSort.key);
           try{
             await api('/api/tasks/'+tid+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})});
+            // A column sort would re-sort the drop away the instant the board
+            // came back, and the item would appear to snap home — so a manual
+            // order wins over one, exactly as it already does for sub-items.
+            st.colSort=null;
             const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
-            toast('הפריט הועבר'); renderView();
+            toast(wasSorted?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר'); renderView();
           }catch(e){ toast('שגיאה בהעברת הפריט'); renderView(); }
         }});
     });

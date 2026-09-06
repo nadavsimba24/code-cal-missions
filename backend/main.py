@@ -5538,6 +5538,59 @@ def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_use
         return {"assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
                               for u in task.assignees]}
 
+# Sentinel: "the caller named no anchor at all", which is not the same as
+# `after_id: null` — that one means "put it at the very top".
+_NO_ANCHOR = object()
+
+
+def _group_items(db, board_id, group_id, exclude_id=None):
+    """One group's top-level items, in the order the board shows them."""
+    q = (db.query(Task)
+         .filter(Task.board_id == board_id, Task.parent_id == None,   # noqa: E711
+                 Task.is_archived == False, Task.group_id == group_id))  # noqa: E712
+    if exclude_id is not None:
+        q = q.filter(Task.id != exclude_id)
+    return q.order_by(Task.position, Task.id).all()
+
+
+def _renumber_group(db, board_id, group_id):
+    for i, t in enumerate(_group_items(db, board_id, group_id)):
+        t.position = i
+
+
+def _place_item(db, task, position=None, after_id=_NO_ANCHOR):
+    """Put an item where the drag left it — and renumber the whole group.
+
+    Writing only the moved item's new position was the bug: the group ended up
+    with two items claiming the same number, and the board reads back ordered
+    by position alone, so the tie went to whichever row the database happened to
+    return first. That was usually the one already sitting there, so the dragged
+    item sprang back and the drag looked like it had done nothing at all.
+    Renumbering every sibling is what makes the new order the order that returns.
+
+    `after_id` is what a drag sends: the item this one now sits below. An index
+    cannot say that faithfully, because the rows on screen can be a filtered
+    subset of the group — "dropped third" is then not "third item". `position`
+    stays supported for callers holding the whole list, and both end in the same
+    dense 0..n-1 sequence.
+    """
+    siblings = _group_items(db, task.board_id, task.group_id, exclude_id=task.id)
+    if after_id is not _NO_ANCHOR:
+        if after_id is None:
+            idx = 0                                   # dropped above everything
+        else:
+            ids = [t.id for t in siblings]
+            # an id from another group, or one that has since moved, says
+            # nothing about where this item belongs — last beats guessing
+            idx = ids.index(after_id) + 1 if after_id in ids else len(siblings)
+    elif position is not None:
+        idx = max(0, min(int(position), len(siblings)))
+    else:
+        idx = len(siblings)
+    for i, t in enumerate(siblings[:idx] + [task] + siblings[idx:]):
+        t.position = i
+
+
 @app.post("/api/tasks/{task_id}/move")
 def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -5547,6 +5600,7 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
         actor = actor_id
         _require_board_edit(db, task.board_id, actor)
         _src_board = task.board_id          # remembered before any reassignment
+        _src_group = task.group_id
         target = data.get("board_id")
         if target and int(target) != task.board_id:
             # ── move the item to another board ──
@@ -5578,15 +5632,23 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             # its sub-items) get new ones here, and new ones again if they return
             for t in [task] + subs:
                 _ensure_item_uid(db, t)
+            _renumber_group(db, _src_board, _src_group)   # close the gap behind it
             db.commit()
             # the item left one board and arrived on another — both need telling
             bus.publish("task.deleted", board_id=_src_board, task_id=task_id, actor_id=actor)
             bus.publish("task.created", board_id=target, task_id=task_id, actor_id=actor)
             return {"status": "moved", "board_id": target, "item_uid": task.item_uid}
+        src_group = task.group_id
         if "group_id" in data:
             task.group_id = data["group_id"]
-        if "position" in data:
-            task.position = data["position"]
+        if "after_id" in data:
+            _place_item(db, task, after_id=data.get("after_id"))
+        elif "position" in data:
+            _place_item(db, task, position=data["position"])
+        elif "group_id" in data and task.group_id != src_group:
+            _place_item(db, task)                     # no anchor named: last
+        if task.group_id != src_group:
+            _renumber_group(db, task.board_id, src_group)   # close the gap behind it
         if "status" in data:
             task.status = data["status"]
         db.commit()
