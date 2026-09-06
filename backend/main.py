@@ -310,10 +310,18 @@ REMOVED_DEMO_USERS = {
     "יוסי אברהם": "yossi@hodhasharon.gov.il",
     "נעה שטרן": "noa@hodhasharon.gov.il",
     "עומר גולן": "omer@hodhasharon.gov.il",
+    "משה כהן": "admin@hodhasharon.gov.il",
+    "דן מזרחי": "dan@hodhasharon.gov.il",
 }
 
 def _purge_removed_demo_users():
     """Keep removed demo users out of existing local/serverless databases."""
+    # Imported here, not read off the module: `task_assignees` is also the name
+    # of a route handler defined further down, which rebinds the global once the
+    # module finishes loading. This function ran at import time, before that
+    # happened, so it never noticed — and would have failed on the association
+    # table the moment anything called it again.
+    from models import task_assignees as assignee_rows, task_watchers as watcher_rows
     names = set(REMOVED_DEMO_USERS)
     emails = set(REMOVED_DEMO_USERS.values())
     with Session(engine) as db:
@@ -322,10 +330,32 @@ def _purge_removed_demo_users():
         if not ids:
             return
 
-        db.execute(task_assignees.delete().where(task_assignees.c.user_id.in_(ids)))
-        db.execute(task_watchers.delete().where(task_watchers.c.user_id.in_(ids)))
+        # Never the last way in. Deleting every administrator leaves a database
+        # nobody can administer and no screen that can grant it back — so a demo
+        # account that is still the only one is kept, and said so.
+        #
+        # Both rows count, the same two _cap reads. On a database that has just
+        # been seeded this step runs before memberships exist at all, so asking
+        # only about WorkspaceMember would find no administrators anywhere and
+        # cheerfully delete the only one there was.
+        admin_ids = ({m.user_id for m in db.query(WorkspaceMember)
+                      .filter(WorkspaceMember.role == "admin").all()}
+                     | {u.id for u in db.query(User).filter(User.role == "admin").all()})
+        if admin_ids and admin_ids.issubset(set(ids)):
+            keep = sorted(admin_ids)[0]
+            ids = [i for i in ids if i != keep]
+            kept = next((u.email for u in users if u.id == keep), keep)
+            print(f"⚠️  keeping {kept}: the only administrator left", flush=True)
+            if not ids:
+                return
+
+        # Rows that only exist to join a user to something: they go with them.
+        db.execute(assignee_rows.delete().where(assignee_rows.c.user_id.in_(ids)))
+        db.execute(watcher_rows.delete().where(watcher_rows.c.user_id.in_(ids)))
         db.query(BoardMember).filter(BoardMember.user_id.in_(ids)).delete(synchronize_session=False)
         db.query(WorkspaceMember).filter(WorkspaceMember.user_id.in_(ids)).delete(synchronize_session=False)
+        db.query(EnvironmentMember).filter(EnvironmentMember.user_id.in_(ids)).delete(synchronize_session=False)
+        db.query(BoardView).filter(BoardView.user_id.in_(ids)).delete(synchronize_session=False)
         db.query(LoginEvent).filter(LoginEvent.user_id.in_(ids)).delete(synchronize_session=False)
         db.query(Notification).filter(Notification.user_id.in_(ids)).delete(synchronize_session=False)
 
@@ -340,9 +370,23 @@ def _purge_removed_demo_users():
         db.query(ChangeRequest).filter(ChangeRequest.approved_by.in_(ids)).update({ChangeRequest.approved_by: None}, synchronize_session=False)
         db.query(Document).filter(Document.uploaded_by.in_(ids)).update({Document.uploaded_by: None}, synchronize_session=False)
         db.query(AuditLog).filter(AuditLog.changed_by.in_(ids)).update({AuditLog.changed_by: None}, synchronize_session=False)
+        # These four were never detached. It went unnoticed because SQLite does
+        # not enforce foreign keys unless asked and the demo users listed above
+        # happened to hold none of them — but on Postgres one dangling
+        # reference makes the DELETE fail, _safe_startup logs it and carries on,
+        # and the users quietly stay. Environment.created_by is the newest of
+        # them and the likeliest to be held.
+        db.query(Environment).filter(Environment.created_by.in_(ids)).update({Environment.created_by: None}, synchronize_session=False)
+        db.query(Automation).filter(Automation.created_by.in_(ids)).update({Automation.created_by: None}, synchronize_session=False)
+        db.query(Automation).filter(Automation.updated_by.in_(ids)).update({Automation.updated_by: None}, synchronize_session=False)
+        db.query(ItemLink).filter(ItemLink.created_by.in_(ids)).update({ItemLink.created_by: None}, synchronize_session=False)
+        db.query(Board).filter(Board.deleted_by.in_(ids)).update({Board.deleted_by: None}, synchronize_session=False)
+        db.query(Task).filter(Task.deleted_by.in_(ids)).update({Task.deleted_by: None}, synchronize_session=False)
 
+        gone = [u.email for u in users if u.id in ids]
         db.query(User).filter(User.id.in_(ids)).delete(synchronize_session=False)
         db.commit()
+        print(f"[seed] demo users removed: {', '.join(gone)}", flush=True)
 
 def _safe_startup(fn):
     """Run a one-time startup/seed step; never let it crash the whole process.
