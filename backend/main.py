@@ -526,6 +526,39 @@ def _seed_role_permissions():
             db.commit()
 _safe_startup(_seed_role_permissions)
 
+
+def _repair_promoted_admins():
+    """Give the workspace row to anyone the users screen already made an admin.
+
+    Promotions written before _sync_ws_role existed set User.role and left the
+    workspace row alone, so the account was let into ניהול מערכת and refused
+    every action offered there. This puts the row where it was always meant to
+    be. It only ever grants, and only where User.role already says "admin" —
+    an administrator's own decision, recorded but not carried through. It never
+    demotes: a workspace admin who is something else in the users screen may
+    have been granted that row deliberately, and taking it away on a deploy is
+    not a repair.
+    """
+    with Session(engine) as db:
+        admins = db.query(User).filter(User.role == "admin").all()
+        if not admins:
+            return
+        rows = {m.user_id: m for m in db.query(WorkspaceMember)
+                .filter(WorkspaceMember.user_id.in_([u.id for u in admins])).all()}
+        fixed = []
+        for u in admins:
+            m = rows.get(u.id)
+            if m is None:
+                db.add(WorkspaceMember(user_id=u.id, role="admin"))
+                fixed.append(u.email)
+            elif m.role != "admin":
+                m.role = "admin"
+                fixed.append(u.email)
+        if fixed:
+            db.commit()
+            print(f"[auth] workspace admin row restored for: {', '.join(fixed)}", flush=True)
+_safe_startup(_repair_promoted_admins)
+
 def _role_perms(db):
     """Return {role: {capability: bool}} for the editable roles."""
     m = {role: {cap: False for cap in CAPABILITIES} for role in EDITABLE_ROLES}
@@ -547,6 +580,37 @@ def _cap(db, uid, cap):
     row = (db.query(RolePermission)
            .filter(RolePermission.role == role, RolePermission.capability == cap).first())
     return bool(row and row.allowed)
+
+
+def _ws_role_for(user_role):
+    """The workspace-membership role a User.role implies.
+
+    Two rows carry "is this person an admin": User.role, which the users screen
+    edits, and WorkspaceMember.role, which most of the system actually reads.
+    They are set together when an account is created — and were not when a role
+    was changed afterwards, which is the whole of this.
+    """
+    return "admin" if user_role == "admin" else ("viewer" if user_role == "viewer" else "member")
+
+
+def _sync_ws_role(db, user):
+    """Make the workspace row say what the user's role says.
+
+    Promoting someone to מנהל מערכת in the users screen wrote User.role and
+    stopped there. `_cap` accepts User.role == "admin", so they were let into
+    ניהול מערכת; everything reading the workspace row went on treating them as
+    whatever they were before. In production that produced an account that
+    could open the environments screen and act on nothing in it, while the same
+    person in QA — created as an admin, both rows written together — had the
+    lot. Both directions: a demotion has to take the workspace row with it, or
+    it is not a demotion.
+    """
+    want = _ws_role_for(user.role)
+    m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user.id).first()
+    if m:
+        m.role = want
+    else:
+        db.add(WorkspaceMember(user_id=user.id, role=want))
 
 
 def _can_admin_envs(db, uid):
@@ -5996,8 +6060,7 @@ def create_user(data: dict, actor_id: int = Depends(current_user_id)):
         db.flush()
         # also register workspace membership so the role actually takes effect
         # (system-admin capabilities key off workspace_members, not User.role)
-        ws_role = "admin" if role == "admin" else ("viewer" if role == "viewer" else "member")
-        db.add(WorkspaceMember(user_id=u.id, role=ws_role))
+        db.add(WorkspaceMember(user_id=u.id, role=_ws_role_for(role)))
         db.commit()
         db.refresh(u)
         dept_name = db.query(Department.name).filter(Department.id == u.department_id).scalar() if u.department_id else None
@@ -6035,6 +6098,7 @@ def update_user(uid: int, data: dict, actor_id: int = Depends(current_user_id)):
                 raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד, מחלקה או סטטוס")
             if "role" in data and data["role"] in ("admin", "manager", "member", "viewer", "guest"):
                 u.role = data["role"]
+                _sync_ws_role(db, u)   # the row the rest of the system reads
             if "department_id" in data:
                 u.department_id = data["department_id"]
             if "is_active" in data:
