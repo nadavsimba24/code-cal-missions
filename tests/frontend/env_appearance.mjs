@@ -36,8 +36,8 @@ const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&l
 
 // ── the badge ──
 function iconFor(env, users=[]){
-  return new Function('st','esc','initials', grab('envIconHTML')+'; return envIconHTML;')
-    ({users}, esc, n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join(''))(env);
+  return new Function('st','esc','avatarInner', grab('envIconHTML')+'; return envIconHTML;')
+    ({users}, esc, u=>`<span class="av-ini" style="background:#e2445c">${(u.name||'?')[0]}</span>`)(env);
 }
 
 {
@@ -55,22 +55,19 @@ function iconFor(env, users=[]){
   ck('an emoji still shows, for every row set before this existed',
      emoji.includes('🏛️'), emoji);
 
-  ck('an emoji sits on the environment colour too, so a colour pick shows there',
-     iconFor({icon:'🏛️', color:'#f59e0b'}).includes('#f59e0b'));
+  ck('an emoji keeps the look it has always had, with no tile behind it',
+     !iconFor({icon:'🏛️', color:'#f59e0b'}).includes('#f59e0b'));
 
-  const av=iconFor({icon:'', created_by:7, color:'#e2445c'}, [{id:7,name:'שלי פיינברג'}]);
-  ck('with no icon it wears the creator’s initials',
-     av.includes('שפ'), av);
-  ck('on the environment colour, which is what the editor sets',
+  const av=iconFor({icon:'', created_by:7}, [{id:7,name:'שלי'}]);
+  ck('with no icon it wears the creator’s avatar', av.includes('av-ini'), av);
+  ck('in that person’s own colour — an avatar in someone else’s is not one',
      av.includes('#e2445c'), av);
   ck('and a missing icon field counts as none',
-     iconFor({created_by:7}, [{id:7,name:'שלי פיינברג'}]).includes('שפ'));
-  ck('a real photo still wins, as it does everywhere a person appears',
-     iconFor({icon:'', created_by:7}, [{id:7,name:'שלי',avatar_url:'/api/files/pic'}]).includes('<img'));
-  ck('a creator not in the directory yet leaves a mark, not a hole',
-     iconFor({icon:'', created_by:99, color:'#10b981'}, [{id:7,name:'שלי'}]).includes('?'));
+     iconFor({created_by:7}, [{id:7,name:'שלי'}]).includes('av-ini'));
+  ck('a creator not in the directory yet falls back rather than showing a hole',
+     iconFor({icon:'', created_by:99}, [{id:7,name:'שלי'}]).includes('🏢'));
   ck('whitespace is not an icon',
-     iconFor({icon:'   ', created_by:7}, [{id:7,name:'שלי פיינברג'}]).includes('שפ'));
+     iconFor({icon:'   ', created_by:7}, [{id:7,name:'שלי'}]).includes('av-ini'));
 }
 
 // ── the picker ──
@@ -85,7 +82,7 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
   const window={};
   const api=new Function(
     'window','document','showModal','closeModals','api','toast','meId','isSysAdmin',
-    'envIconHTML','esc','Env','authHeaders','FormData','fetch',
+    'envIconHTML','esc','Env','authHeaders','FormData','fetch','avatarColor','st',
     [GLYPHS, COLORS, grabObject('SysAdmin'), 'return SysAdmin;'].join('\n'))(
     window,
     {getElementById:id=>els[id]||null, createElement:()=>({click(){}, style:{}}),
@@ -99,7 +96,9 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
     e=>`[icon ${e.icon||'avatar'} on ${e.color}]`,
     esc,
     {load:async()=>{ log.envLoaded++; }},
-    ()=>({}), function(){}, async()=>({ok:false}));   // the palettes come from the grabbed consts
+    ()=>({}), function(){}, async()=>({ok:false}),
+    n=>n==='שלי פיינברג'?'#e2698e':'#000000',          // the avatar palette, stubbed
+    {users:[{id:7,name:'שלי פיינברג'}]});
   api.envs=[env];
   api.reloadEnvs=async()=>{ log.reloaded++; };
   return {sa:api, log, els, window};
@@ -125,30 +124,45 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
   ck('and the narrow class is cleared for whatever opens next',
      /showModal\(html\)\{[^}]*modal-narrow/.test(src) && /function closeModals\(\)\{[^}]*modal-narrow/.test(src));
 
-  ck('every colour is offered',
-     (p.els['el-colors'].innerHTML.match(/class="ep-color/g)||[]).length===24,
+  // this environment has no icon, so the badge is שלי's avatar and the colour
+  // in effect is hers — #e2698e, which the grid does not itself hold
+  ck('the whole palette is offered, plus the colour in effect',
+     (p.els['el-colors'].innerHTML.match(/class="ep-color/g)||[]).length===25,
      String((p.els['el-colors'].innerHTML.match(/class="ep-color/g)||[]).length));
   ck('every glyph is offered',
      (p.els['el-icons'].innerHTML.match(/class="ep-icon/g)||[]).length===20);
-  ck('the current colour is the one marked, with a check like the design',
-     /class="ep-color sel"[^>]*background:#6366f1[^>]*>\s*<i class="fa-solid fa-check">/.test(p.els['el-colors'].innerHTML),
+  ck('the colour in effect is the one marked, with a check like the design',
+     /class="ep-color sel"[^>]*background:#e2698e[^>]*>\s*<i class="fa-solid fa-check">/.test(p.els['el-colors'].innerHTML),
      p.els['el-colors'].innerHTML.slice(0,160));
   ck('exactly one swatch is marked', (p.els['el-colors'].innerHTML.match(/ep-color sel/g)||[]).length===1);
-  ck('the glyph tiles wear the chosen colour',
-     p.els['el-icons'].innerHTML.includes('background:#6366f1'));
+  ck('the glyph tiles wear it, so choosing one starts from what you see',
+     p.els['el-icons'].innerHTML.includes('background:#e2698e'));
 }
 
-// ── a colour off the grid is still shown as the one in effect ──
+// ── the ✓ sits on the creator's avatar colour ──
 {
-  // #e2698e is in the avatar palette and not in the picker's own
-  const p=makePicker({env:{id:3,name:'x',icon:'',color:'#e2698e',can_manage:true,created_by:7}});
+  // the row was assigned #6366f1 by the server; the badge shows שלי's avatar,
+  // which is #e2698e — a colour the picker's own grid does not even contain
+  const p=makePicker({env:{id:3,name:'x',icon:'',color:'#6366f1',can_manage:true,created_by:7}});
   p.sa.editLook(3);
   const html=p.els['el-colors'].innerHTML;
-  ck('an off-grid colour is added rather than left unmarked', html.includes('#e2698e'), html.slice(0,120));
-  ck('and it is the marked one', /class="ep-color sel"[^>]*background:#e2698e/.test(html));
+  ck('the mark follows the avatar, not the colour the row was assigned',
+     /class="ep-color sel"[^>]*background:#e2698e/.test(html), html.slice(0,140));
+  ck('and the row’s own colour is not the one marked',
+     !/class="ep-color sel"[^>]*background:#6366f1/.test(html));
+  ck('a colour the grid does not hold is added rather than left unmarked',
+     html.includes('#e2698e'), html.slice(0,120));
   ck('exactly one swatch is marked', (html.match(/ep-color sel/g)||[]).length===1);
   ck('and it is offered first, where the eye starts',
      html.indexOf('#e2698e') < html.indexOf('#6366f1'));
+}
+
+// ── an environment with an icon of its own keeps its own colour marked ──
+{
+  const p=makePicker({env:{id:3,name:'x',icon:'fa:bolt',color:'#10b981',can_manage:true,created_by:7}});
+  p.sa.editLook(3);
+  ck('a glyph environment marks the colour behind that glyph',
+     /class="ep-color sel"[^>]*background:#10b981/.test(p.els['el-colors'].innerHTML));
 }
 
 // ── picking, and what gets written ──
@@ -159,8 +173,6 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
   ck('picking a colour repaints the glyph tiles under it',
      p.els['el-icons'].innerHTML.includes('background:#ef4444'));
   ck('and marks the new colour', p.els['el-colors'].innerHTML.includes('class="ep-color sel" style="background:#ef4444"'));
-  ck('and the preview badge changes with it — the point of picking a colour',
-     p.els['el-preview'].innerHTML.includes('#ef4444'), p.els['el-preview'].innerHTML);
   p.sa.pickGlyph('fa:crown');
   ck('picking a glyph marks it', p.els['el-icons'].innerHTML.includes('class="ep-icon sel"'));
   ck('nothing is written until שמור', p.log.patched===null);
