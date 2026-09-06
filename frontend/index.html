@@ -666,7 +666,14 @@ body.coldragging .col-grip{opacity:1}
   color:var(--text-muted);padding:5px 6px;border-radius:5px;pointer-events:none}
 /* inset shadow, not a border: a border here would reflow the row on hover */
 .cc-datewrap:hover .cc-date-disp{box-shadow:inset 0 0 0 1px var(--border)}
-.cc-datewrap .cc-date{position:absolute;inset:0;width:100%;height:100%;opacity:0}
+/* pointer-events:none matters more than it looks. The input covers the whole
+   cell, and the row's drag filter skips anything matching .cc-inp — so an input
+   that could be the click target made the entire date cell undraggable, and a
+   row grabbed there simply never lifted. The wrapper takes the click instead
+   and opens the picker itself, which leaves the cell draggable like every
+   other one. */
+.cc-datewrap .cc-date{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none}
+.cc-datewrap:focus-within .cc-date{pointer-events:auto}
 .cc-datewrap:focus-within .cc-date{opacity:1}
 .cc-datewrap:focus-within .cc-date-disp{visibility:hidden}
 .rating{display:inline-flex;gap:3px;color:var(--yellow);font-size:14px;cursor:pointer}
@@ -2226,23 +2233,36 @@ function mobileBlocked(what){
   toast((what||'הפעולה')+' זמינה במחשב בלבד');
   return true;
 }
-/* Item drag is desktop-only. An item is grabbed by the row/card itself with no
-   handle, so on a touch screen the press-and-move that starts a drag is the same
-   gesture as a scroll swipe — the board stops scrolling under the finger. Groups
-   and form rows drag by an explicit grip (.g-handle / .fb-drag) and never eat the
-   swipe, so they stay enabled everywhere.
+/* Item drag is switched off where the pointer is a finger. An item is grabbed
+   by the row/card itself with no handle, so on a touch screen the press-and-move
+   that starts a drag is the same gesture as a scroll swipe — the board stops
+   scrolling under the finger. Groups and form rows drag by an explicit grip
+   (.g-handle / .fb-drag) and never eat the swipe, so they stay enabled
+   everywhere.
+   The test is the pointer, not the width. It used to be `isMobile()`, and a
+   window under 820px is not the same question at all: a browser zoomed to 175%
+   on a 1440px screen reports 823 CSS pixels, a split-screen window reports
+   fewer — and item drag turned itself off on a desktop, with a mouse, and said
+   nothing about why. A phone is coarse whatever its width; a narrow window with
+   a mouse has no swipe to protect.
    Sortable reads options.disabled live on each tap and returns without calling
    preventDefault, so a disabled list leaves native touch scrolling untouched. */
+const TOUCH_Q='(pointer:coarse)';
+function isTouch(){ return !!(window.matchMedia && window.matchMedia(TOUCH_Q).matches); }
 const ITEM_DRAG_SEL='.tbl tbody[data-gid],.sub-body[data-parent],.kcol-body';
 function syncItemDrag(){
   if(!window.Sortable)return;
-  const off=isMobile();
+  const off=isTouch();
   document.querySelectorAll(ITEM_DRAG_SEL).forEach(el=>{
     const s=Sortable.get(el); if(s)s.option('disabled',off);
   });
 }
 // crossing the breakpoint (rotate, resize, devtools) flips live lists, so the
 // state never goes stale between renders
+// a pointer can change under a live page — a tablet docked to a keyboard, a
+// desktop paired with a touch monitor — so the lists follow it rather than
+// keeping whatever was true when they were built
+if(window.matchMedia) matchMedia(TOUCH_Q).addEventListener('change',syncItemDrag);
 if(window.matchMedia) matchMedia(MOBILE_Q).addEventListener('change',()=>{
   syncItemDrag();
   syncItemColWidth();   // leaving mobile restores the full width, entering it re-applies the give
@@ -5060,7 +5080,7 @@ function vTable(el){
       }});
     // drag items between groups — grab an item by its name, drop into any group
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',disabled:isMobile(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
+      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         // a top-level item never lands inside a sub-item panel row
         onMove:evt=>!(evt.related&&evt.related.classList.contains('sub-wrap')),
@@ -5091,7 +5111,7 @@ function vTable(el){
     // reorder sub-items — each parent's panel is its own table, so the drag is
     // naturally bounded to that parent (no cross-parent moves possible)
     el.querySelectorAll('.sub-body[data-parent]').forEach(sb=>{
-      new Sortable(sb,{draggable:'tr[data-sid]',disabled:isMobile(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
+      new Sortable(sb,{draggable:'tr[data-sid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         onEnd:async(evt)=>{
           const pid=+evt.to.dataset.parent; if(!pid)return;
@@ -5659,7 +5679,10 @@ function dateCellHTML(value,onchange){
    a focused date input can still be typed into. */
 function dateCellPick(e){
   const inp=e.currentTarget.querySelector('input[type=date]'); if(!inp)return;
-  try{ inp.showPicker(); }catch(_){ inp.focus(); }
+  // focus first: it is what makes the input visible and typable, and it is the
+  // fallback for browsers with no showPicker (or that refuse it here)
+  inp.focus();
+  try{ inp.showPicker(); }catch(_){}
 }
 /* one built-in (non-item) cell for a given row */
 function builtinCellHTML(key,t){
@@ -7714,7 +7737,7 @@ function vKanban(el){
   }).join('')+'</div>';
   if(!window.Sortable){toast('גרירה לא זמינה (Sortable לא נטען) — לחץ על אווטאר לשיוך');return;}
   el.querySelectorAll('.kcol-body').forEach(body=>{
-    new Sortable(body,{group:'kanban',disabled:isMobile(),animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
+    new Sortable(body,{group:'kanban',disabled:isTouch(),animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
       const id=ev.item.dataset.id, status=ev.to.dataset.status;
       try{await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status,actor_id:meId()})});
         const t=tasks.find(x=>x.id==id);if(t)t.status=status;toast('עודכן ל'+bStat(status).he);
