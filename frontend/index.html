@@ -4424,7 +4424,7 @@ const Env = {
     const a=this.active(); if(!a){ toast('בחר סביבה'); return; } this.members(a.id); },
   render(){
     const wrap=document.getElementById('ws-switch'); if(!wrap)return;
-    const admin=isSysAdmin();
+    const admin=canAdminEnvs();
     if(!this.items.length){
       wrap.innerHTML=`<div class="sb-item" style="color:var(--text-light);cursor:default"><span class="ic">🏛️</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis">אין סביבות מורשות</span></div>`;
       return;
@@ -4586,7 +4586,7 @@ const SysAdmin = {
     let envs=[]; try{ const d=await api('/api/environments'+(meId()?'?user_id='+meId():'')); envs=d.environments||[]; }catch(e){}
     this.envs=envs;
     const body=document.getElementById('sa-body'); if(!body)return;
-    const admin=isSysAdmin();   // only a workspace admin may delete — same rule the API enforces
+    const admin=canAdminEnvs();   // whoever may administer environments — same rule the API enforces
     const rows=envs.length ? envs.map(e=>`<tr>
         <td style="font-weight:600"><button class="env-ic-btn" title="שינוי מראה" onclick="SysAdmin.editLook(${e.id})">${envIconHTML(e)}</button> <span class="env-name" data-env="${e.id}" title="לחיצה כפולה לשינוי שם" ondblclick="SysAdmin.renameEnv(${e.id})">${esc(e.name)}</span>${e.is_primary?' <span class="perm-badge">ברירת מחדל</span>':''}</td>
         <td style="color:var(--text-muted)">${e.board_count||0} <span style="color:var(--text-light)">לוחות</span></td>
@@ -5108,6 +5108,14 @@ function hasCap(cap){
 }
 async function loadWsMembers(){ try{ const d=await api('/api/workspace/members'); st.wsMembers=d.members||[]; }catch(e){ st.wsMembers=[]; } }
 function isSysAdmin(){ const m=(st.wsMembers||[]).find(x=>x.user_id===meId()); return !!m && m.role==='admin'; }
+/* Who may administer environments — the same question backend/main.py asks in
+   _can_admin_envs, and deliberately not the same one as isSysAdmin().
+   The ניהול מערכת screen opens on manage_system; its own actions asked for a
+   workspace-admin row instead, so someone holding one and not the other was
+   shown the list of every environment with every action on it hidden. That is
+   what production looked like next to QA. Whoever may open the screen may act
+   in it. */
+function canAdminEnvs(){ return isSysAdmin() || hasCap('manage_system'); }
 function updateNewBoardBtn(){
   const btn=document.getElementById('new-board-btn');
   if(btn)btn.style.display=hasCap('create_board')?'':'none';

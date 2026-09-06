@@ -548,6 +548,25 @@ def _cap(db, uid, cap):
            .filter(RolePermission.role == role, RolePermission.capability == cap).first())
     return bool(row and row.allowed)
 
+
+def _can_admin_envs(db, uid):
+    """Who may administer environments: see them all, delete one, hand out the
+    manager role in one.
+
+    Two different tests used to answer "is this person a system admin". The
+    ניהול מערכת screen opens on the `manage_system` capability; the actions
+    offered inside it asked instead for a WorkspaceMember row with role=admin.
+    Someone holding one and not the other was let into the screen that lists
+    every environment and refused every action on it — which is exactly what
+    production looked like next to QA, where the same person also holds the row.
+
+    It is now one question, and it is the capability, because that is what the
+    screen itself is gated on: whoever may open it may act in it. `_cap`
+    already treats a workspace admin as holding everything, so nobody who could
+    do this before loses it.
+    """
+    return _cap(db, uid, "manage_system")
+
 def get_db():
     with Session(engine) as session:
         yield session
@@ -2665,11 +2684,17 @@ def workspace_remove(uid: int, actor_id: int = Depends(current_user_id)):
 # ── Environments (Monday-style workspaces) ───────────────────────────
 # Reads are open to all; create/edit/delete are restricted to system (workspace) admins.
 def _env_role(db, env_id, user_id):
-    """A user's role within one environment: 'admin' for a system (workspace) admin
-    (manages every environment), else the per-environment role (manager|member), or None."""
+    """A user's role within one environment: 'admin' for a system admin
+    (manages every environment), else the per-environment role (manager|member), or None.
+
+    "System admin" here is the same one question as everywhere else about
+    environments — see _can_admin_envs. It used to be the WorkspaceMember row
+    alone, so someone who could delete an environment from the admin screen
+    could still not open its member list.
+    """
     if user_id is None:
         return None
-    if _ws_role(db, user_id) == "admin":
+    if _can_admin_envs(db, user_id):
         return "admin"
     m = (db.query(EnvironmentMember)
          .filter(EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == user_id).first())
@@ -2700,7 +2725,7 @@ def list_environments(user_id: int = Depends(current_user_id)):
         # order Hebrew identically, regardless of the DB's collation.
         allenvs = db.query(Environment).all()
         allenvs.sort(key=lambda e: (e.name or "").strip().casefold())
-        is_sysadmin = _ws_role(db, user_id) == "admin"
+        is_sysadmin = _can_admin_envs(db, user_id)
         roles = {}
         if user_id is not None:
             roles = {m.environment_id: (m.role or "member") for m in
@@ -2744,7 +2769,7 @@ def create_environment(data: dict, actor_id: int = Depends(current_user_id)):
         if actor_id is not None:
             db.add(EnvironmentMember(environment_id=e.id, user_id=actor_id, role="manager"))
             db.commit()
-        my_role = "admin" if _ws_role(db, actor_id) == "admin" else "manager"
+        my_role = "admin" if _can_admin_envs(db, actor_id) else "manager"
         return _env_out(e, 0, my_role)
 
 @app.patch("/api/environments/{env_id}")
@@ -2770,7 +2795,7 @@ def update_environment(env_id: int, data: dict, actor_id: int = Depends(current_
 @app.delete("/api/environments/{env_id}")
 def delete_environment(env_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        if _ws_role(db, actor_id) != "admin":
+        if not _can_admin_envs(db, actor_id):
             raise HTTPException(403, "רק מנהל מערכת יכול למחוק סביבה")
         e = db.query(Environment).filter(Environment.id == env_id).first()
         if not e:
@@ -2807,7 +2832,7 @@ def environment_members(env_id: int, actor_id: int = Depends(current_user_id)):
         members.sort(key=lambda x: (x["role"] != "manager", x["name"]))
         available = [{"id": u.id, "name": u.name} for u in users.values() if u.id not in member_ids]
         # only a system admin may hand out the manager role; a plain env manager can add members
-        can_set_manager = _ws_role(db, actor_id) == "admin"
+        can_set_manager = _can_admin_envs(db, actor_id)
         return {"members": members, "available": available, "can_set_manager": can_set_manager}
 
 @app.post("/api/environments/{env_id}/members")
@@ -2821,7 +2846,7 @@ def environment_add_member(env_id: int, data: dict, actor_id: int = Depends(curr
         uid = data.get("user_id")
         role = data.get("role") if data.get("role") in ENV_ROLES else "member"
         # only a system admin may grant the manager role
-        if role == "manager" and _ws_role(db, actor) != "admin":
+        if role == "manager" and not _can_admin_envs(db, actor):
             role = "member"
         if not uid:
             return {"status": "ok"}
@@ -2839,7 +2864,7 @@ def environment_set_member_role(env_id: int, uid: int, data: dict, actor_id: int
     """Promote/demote an environment member (manager|member). System admin only —
     handing out the manager role is a system-level grant."""
     with Session(engine) as db:
-        if _ws_role(db, actor_id) != "admin":
+        if not _can_admin_envs(db, actor_id):
             raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד בסביבה")
         role = data.get("role") if data.get("role") in ENV_ROLES else "member"
         m = db.query(EnvironmentMember).filter(
