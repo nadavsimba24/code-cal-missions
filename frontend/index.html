@@ -1057,27 +1057,40 @@ body.coldragging .col-grip{opacity:1}
 .env-ic-btn{border:1px solid transparent;background:none;padding:2px;border-radius:8px;cursor:pointer}
 .env-ic-btn:hover{border-color:var(--border-strong);background:var(--row-hover)}
 /* ── the appearance picker ── */
-.ep-sec{margin-bottom:16px}
-.ep-sec>label{display:block;font-size:12.5px;font-weight:600;color:var(--text-muted);margin-bottom:8px}
-.ep-colors{display:grid;grid-template-columns:repeat(8,1fr);gap:9px}
-.ep-color{width:100%;aspect-ratio:1;border-radius:50%;border:2px solid transparent;cursor:pointer;
-  padding:0;display:grid;place-items:center;color:#fff;font-size:12px;transition:transform .1s}
+/* A picker, not a page: 340px, and every element sized in pixels rather than
+   stretched to the grid. At the modal's own 560px the eight colours came out
+   57px across and the five tiles 96px — a wall of buttons for a choice that
+   should read at a glance. */
+.modal.modal-narrow{width:340px}
+.modal.modal-narrow h2{padding:14px 16px;font-size:15px}
+.modal.modal-narrow .mbody{padding:16px}
+.modal.modal-narrow .mfoot{padding:12px 16px}
+.ep-sec{margin-bottom:14px}
+.ep-sec>label{display:block;font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:7px}
+/* fixed columns + space-between: the rows stay the width they need and the
+   spare pixels go into the gaps, so nothing inflates on a wider screen */
+.ep-colors{display:grid;grid-template-columns:repeat(8,26px);justify-content:space-between;gap:8px}
+.ep-color{width:26px;height:26px;border-radius:50%;border:2px solid transparent;cursor:pointer;
+  padding:0;display:grid;place-items:center;color:#fff;font-size:10px;transition:transform .1s}
 .ep-color:hover{transform:scale(1.1)}
-.ep-color.sel{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--primary)}
-.ep-icons{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
-.ep-icon{width:100%;aspect-ratio:1;border-radius:10px;border:2px solid transparent;cursor:pointer;
-  display:grid;place-items:center;color:#fff;font-size:17px;padding:0;transition:transform .1s}
+.ep-color.sel{box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--primary)}
+.ep-icons{display:grid;grid-template-columns:repeat(5,44px);justify-content:space-between;gap:9px}
+.ep-icon{width:44px;height:44px;border-radius:9px;border:2px solid transparent;cursor:pointer;
+  display:grid;place-items:center;color:#fff;font-size:15px;padding:0;transition:transform .1s}
 .ep-icon:hover{transform:scale(1.06)}
-.ep-icon.sel{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--primary)}
-.ep-upload{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:14px;
-  padding:9px;border:1px dashed var(--border-strong);border-radius:8px;background:none;
-  cursor:pointer;font-family:inherit;font-size:13px;color:var(--text-muted)}
+.ep-icon.sel{box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--primary)}
+.ep-upload{display:flex;align-items:center;justify-content:center;gap:7px;width:100%;margin-top:12px;
+  padding:8px;border:1px dashed var(--border-strong);border-radius:8px;background:none;
+  cursor:pointer;font-family:inherit;font-size:12.5px;color:var(--text-muted)}
 .ep-upload:hover{border-color:var(--primary);color:var(--primary)}
-.ep-preview{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--border);
-  border-radius:8px;background:var(--bg);font-size:13px;margin-bottom:16px}
-.ep-preview .env-ic{width:30px;height:30px;font-size:15px}
-.ep-preview .env-ic-emoji{font-size:20px}
-.ep-preview .env-ic .av-ini{font-size:12px}
+.ep-reset{display:block;width:100%;margin-top:8px;padding:4px;border:none;background:none;
+  cursor:pointer;font-family:inherit;font-size:12px;color:var(--text-light);text-decoration:underline}
+.ep-reset:hover{color:var(--primary)}
+.ep-preview{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);
+  border-radius:8px;background:var(--bg);font-size:12.5px;margin-bottom:14px}
+.ep-preview .env-ic{width:26px;height:26px;font-size:13px}
+.ep-preview .env-ic-emoji{font-size:17px}
+.ep-preview .env-ic .av-ini{font-size:10px}
 .sa-table tr:hover td{background:var(--row-hover)}
 .sa-name{display:flex;align-items:center;gap:9px}
 .sa-name .av{width:28px;height:28px;font-size:11px;flex-shrink:0}
@@ -4592,12 +4605,13 @@ const SysAdmin = {
       <div class="ep-sec" style="margin-bottom:0"><label>אייקון</label>
         <div class="ep-icons" id="el-icons"></div>
         <button class="ep-upload" onclick="SysAdmin.uploadLook()"><i class="fa-solid fa-arrow-up-from-bracket"></i> העלאת אייקון משלך</button>
+        <button class="ep-reset" onclick="SysAdmin.pickGlyph('')">אפס לאווטאר של היוצר</button>
       </div>
     </div><div class="mfoot">
       <button class="btn btn-primary" onclick="SysAdmin.saveLook()"><i class="fa-solid fa-check"></i> שמור</button>
       <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
-      <button class="btn btn-ghost" style="margin-inline-start:auto" onclick="SysAdmin.pickGlyph('')">אפס לאווטאר של היוצר</button>
     </div>`);
+    document.getElementById('modal').classList.add('modal-narrow');
     this.renderLook();
   },
   renderLook(){
@@ -9433,8 +9447,8 @@ const Train = {
 };
 
 /* ============ modal helpers ============ */
-function showModal(html){const m=document.getElementById('modal');m.classList.remove('modal-wide','modal-80');m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+html;m.classList.add('open');document.getElementById('overlay').classList.add('open');if(typeof closeSidebarMobile==='function')closeSidebarMobile();}
-function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide','modal-80');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
+function showModal(html){const m=document.getElementById('modal');m.classList.remove('modal-wide','modal-80','modal-narrow');m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+html;m.classList.add('open');document.getElementById('overlay').classList.add('open');if(typeof closeSidebarMobile==='function')closeSidebarMobile();}
+function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide','modal-80','modal-narrow');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
 /* styled confirmation dialog (replaces native confirm) */
 function askConfirm(message,onYes,opts){
   opts=opts||{};

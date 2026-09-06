@@ -73,6 +73,8 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
   const els={};
   const el=id=>els[id]||(els[id]={innerHTML:''});
   ['el-preview','el-colors','el-icons'].forEach(el);
+  // the modal element itself: the picker narrows it by class
+  els['modal']={classList:{_s:new Set(), add(c){this._s.add(c);}, remove(){}, contains(c){return this._s.has(c);}}};
   const window={};
   const api=new Function(
     'window','document','showModal','closeModals','api','toast','meId','isSysAdmin',
@@ -106,6 +108,15 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
      m.includes('צבע רקע') && m.includes('אייקון'), m.slice(0,80));
   ck('and a way to upload your own', m.includes('העלאת אייקון משלך'));
   ck('and a way back to the creator’s avatar', m.includes('אפס לאווטאר של היוצר'));
+  ck('the modal is put into its narrow form', p.els['modal'].classList.contains('modal-narrow'));
+  ck('the reset sits with the icons, not in a footer too narrow for three buttons',
+     m.indexOf('ep-reset') < m.indexOf('mfoot') && (m.match(/class="btn /g)||[]).length===2);
+  ck('the modal is narrowed for a picker',
+     /\.modal\.modal-narrow\{width:340px\}/.test(src));
+  ck('the swatches and tiles are sized in pixels, not stretched to the grid',
+     /\.ep-colors\{[^}]*repeat\(8,26px\)/.test(src) && /\.ep-icons\{[^}]*repeat\(5,44px\)/.test(src));
+  ck('and the narrow class is cleared for whatever opens next',
+     /showModal\(html\)\{[^}]*modal-narrow/.test(src) && /function closeModals\(\)\{[^}]*modal-narrow/.test(src));
 
   ck('every colour is offered',
      (p.els['el-colors'].innerHTML.match(/class="ep-color/g)||[]).length===24,
