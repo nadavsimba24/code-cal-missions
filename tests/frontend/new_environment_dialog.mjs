@@ -28,7 +28,7 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
   const log={asked:null, toasts:[], posted:null, selected:null, loaded:0};
   const env=new Function(
     'document','editPrompt','api','toast','meId','mobileBlocked','hasCap',
-    'renderSidebar','closeSidebarMobile','st','showModal','closeModals','esc',
+    'renderSidebar','closeSidebarMobile','st','showModal','closeModals','esc','avatarColor',
     [grabObject('Env'), 'return Env;'].join('\n'))(
     {addEventListener(){}, removeEventListener(){}, getElementById:()=>null, querySelectorAll:()=>[]},
     async o=>{ log.asked=o; return typed; },
@@ -36,8 +36,9 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
                    if(createThrows) throw createThrows;
                    return createResult; },
     t=>log.toasts.push(t),
-    ()=>1, ()=>mobile, ()=>cap, ()=>{}, ()=>{}, {env:null},
-    ()=>{}, ()=>{}, s=>String(s==null?'':s));
+    ()=>1, ()=>mobile, ()=>cap, ()=>{}, ()=>{}, {env:null, me:{id:1,name:'שלי פיינברג'}},
+    ()=>{}, ()=>{}, s=>String(s==null?'':s),
+    n=>n==='שלי פיינברג'?'#e2445c':'#000000');   // the avatar palette, stubbed
   env.items=[{id:1,name:'ראשית'}];
   env.load=async()=>{ log.loaded++; };
   env.select=id=>{ log.selected=id; };
@@ -67,9 +68,13 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
   await h.env.add();
   ck('it posts to the environments endpoint', h.log.posted.path==='/api/environments');
   ck('the name is what was typed', h.log.posted.body.name==='אגף החינוך', h.log.posted.body.name);
-  ck('and nothing else about how it should look',
-     !('icon' in h.log.posted.body) && !('color' in h.log.posted.body),
-     JSON.stringify(h.log.posted.body));
+  ck('no icon is chosen here — that is the creator\u2019s avatar\u2019s job',
+     !('icon' in h.log.posted.body), JSON.stringify(h.log.posted.body));
+  /* The colour is not something the dialog asks for; it is the colour the
+     creator already wears, sent so the badge opens looking like their avatar
+     and so the editor has a colour of the palette to mark. */
+  ck('but the creator\u2019s own avatar colour travels with it',
+     h.log.posted.body.color==='#e2445c', h.log.posted.body.color);
   ck('the list is reloaded', h.log.loaded===1);
   ck('and it lands in the environment just created', h.log.selected===9, String(h.log.selected));
   ck('and says so', h.log.toasts.includes('הסביבה נוצרה'), h.log.toasts.join('|'));

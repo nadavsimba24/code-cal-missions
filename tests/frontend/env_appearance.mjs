@@ -36,8 +36,8 @@ const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&l
 
 // ── the badge ──
 function iconFor(env, users=[]){
-  return new Function('st','esc','avatarInner', grab('envIconHTML')+'; return envIconHTML;')
-    ({users}, esc, u=>`<span class="av-ini" style="background:#e2445c">${(u.name||'?')[0]}</span>`)(env);
+  return new Function('st','esc','initials', grab('envIconHTML')+'; return envIconHTML;')
+    ({users}, esc, n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join(''))(env);
 }
 
 {
@@ -55,15 +55,22 @@ function iconFor(env, users=[]){
   ck('an emoji still shows, for every row set before this existed',
      emoji.includes('🏛️'), emoji);
 
-  const av=iconFor({icon:'', created_by:7}, [{id:7,name:'שלי'}]);
-  ck('with no icon it wears the creator’s avatar',
-     av.includes('av-ini'), av);
+  ck('an emoji sits on the environment colour too, so a colour pick shows there',
+     iconFor({icon:'🏛️', color:'#f59e0b'}).includes('#f59e0b'));
+
+  const av=iconFor({icon:'', created_by:7, color:'#e2445c'}, [{id:7,name:'שלי פיינברג'}]);
+  ck('with no icon it wears the creator’s initials',
+     av.includes('שפ'), av);
+  ck('on the environment colour, which is what the editor sets',
+     av.includes('#e2445c'), av);
   ck('and a missing icon field counts as none',
-     iconFor({created_by:7}, [{id:7,name:'שלי'}]).includes('av-ini'));
-  ck('a creator not in the directory yet falls back rather than showing a hole',
-     iconFor({icon:'', created_by:99}, [{id:7,name:'שלי'}]).includes('🏢'));
+     iconFor({created_by:7}, [{id:7,name:'שלי פיינברג'}]).includes('שפ'));
+  ck('a real photo still wins, as it does everywhere a person appears',
+     iconFor({icon:'', created_by:7}, [{id:7,name:'שלי',avatar_url:'/api/files/pic'}]).includes('<img'));
+  ck('a creator not in the directory yet leaves a mark, not a hole',
+     iconFor({icon:'', created_by:99, color:'#10b981'}, [{id:7,name:'שלי'}]).includes('?'));
   ck('whitespace is not an icon',
-     iconFor({icon:'   ', created_by:7}, [{id:7,name:'שלי'}]).includes('av-ini'));
+     iconFor({icon:'   ', created_by:7}, [{id:7,name:'שלי פיינברג'}]).includes('שפ'));
 }
 
 // ── the picker ──
@@ -126,8 +133,22 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
   ck('the current colour is the one marked, with a check like the design',
      /class="ep-color sel"[^>]*background:#6366f1[^>]*>\s*<i class="fa-solid fa-check">/.test(p.els['el-colors'].innerHTML),
      p.els['el-colors'].innerHTML.slice(0,160));
+  ck('exactly one swatch is marked', (p.els['el-colors'].innerHTML.match(/ep-color sel/g)||[]).length===1);
   ck('the glyph tiles wear the chosen colour',
      p.els['el-icons'].innerHTML.includes('background:#6366f1'));
+}
+
+// ── a colour off the grid is still shown as the one in effect ──
+{
+  // #e2698e is in the avatar palette and not in the picker's own
+  const p=makePicker({env:{id:3,name:'x',icon:'',color:'#e2698e',can_manage:true,created_by:7}});
+  p.sa.editLook(3);
+  const html=p.els['el-colors'].innerHTML;
+  ck('an off-grid colour is added rather than left unmarked', html.includes('#e2698e'), html.slice(0,120));
+  ck('and it is the marked one', /class="ep-color sel"[^>]*background:#e2698e/.test(html));
+  ck('exactly one swatch is marked', (html.match(/ep-color sel/g)||[]).length===1);
+  ck('and it is offered first, where the eye starts',
+     html.indexOf('#e2698e') < html.indexOf('#6366f1'));
 }
 
 // ── picking, and what gets written ──
@@ -138,6 +159,8 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
   ck('picking a colour repaints the glyph tiles under it',
      p.els['el-icons'].innerHTML.includes('background:#ef4444'));
   ck('and marks the new colour', p.els['el-colors'].innerHTML.includes('class="ep-color sel" style="background:#ef4444"'));
+  ck('and the preview badge changes with it — the point of picking a colour',
+     p.els['el-preview'].innerHTML.includes('#ef4444'), p.els['el-preview'].innerHTML);
   p.sa.pickGlyph('fa:crown');
   ck('picking a glyph marks it', p.els['el-icons'].innerHTML.includes('class="ep-icon sel"'));
   ck('nothing is written until שמור', p.log.patched===null);

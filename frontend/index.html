@@ -1050,7 +1050,8 @@ body.coldragging .col-grip{opacity:1}
    avatar — so a list of environments lines up however each one was set. */
 .env-ic{width:22px;height:22px;border-radius:6px;display:inline-grid;place-items:center;
   flex:0 0 auto;overflow:hidden;color:#fff;font-size:11px;line-height:1;vertical-align:middle}
-.env-ic-emoji{background:none;font-size:15px}
+.env-ic-emoji{font-size:14px}
+.env-ic-ini{font-weight:700;font-size:10px;letter-spacing:.3px;text-transform:uppercase}
 .env-ic img{width:100%;height:100%;object-fit:cover}
 /* the avatar keeps its circle inside the square tile — it is a person, not a logo */
 .env-ic .av-ini{font-size:9px;font-weight:700}
@@ -1089,8 +1090,8 @@ body.coldragging .col-grip{opacity:1}
 .ep-preview{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);
   border-radius:8px;background:var(--bg);font-size:12.5px;margin-bottom:14px}
 .ep-preview .env-ic{width:26px;height:26px;font-size:13px}
-.ep-preview .env-ic-emoji{font-size:17px}
-.ep-preview .env-ic .av-ini{font-size:10px}
+.ep-preview .env-ic-emoji{font-size:16px}
+.ep-preview .env-ic-ini{font-size:12px}
 .sa-table tr:hover td{background:var(--row-hover)}
 .sa-name{display:flex;align-items:center;gap:9px}
 .sa-name .av{width:28px;height:28px;font-size:11px;flex-shrink:0}
@@ -4368,15 +4369,22 @@ const Trash = {
    or for an environment whose creator is gone from it — a plain building
    stands in, rather than an empty box. */
 function envIconHTML(e){
-  const ic=((e&&e.icon)||'').trim();
+  const ic=((e&&e.icon)||'').trim(), bg=esc((e&&e.color)||'#6366f1');
+  // The colour is the tile behind whatever is on it. It backs a glyph, an
+  // emoji and the creator's initials alike — otherwise picking a colour in the
+  // editor changed nothing you could see unless a glyph happened to be chosen,
+  // and the colour marked there described none of what was on screen.
   if(ic.startsWith('fa:'))
-    return `<span class="env-ic" style="background:${esc(e.color||'#6366f1')}"><i class="fa-solid fa-${esc(ic.slice(3))}"></i></span>`;
+    return `<span class="env-ic" style="background:${bg}"><i class="fa-solid fa-${esc(ic.slice(3))}"></i></span>`;
+  // a picture is the whole tile; there is nothing left for a colour to back
   if(ic.startsWith('/api/files/'))
     return `<span class="env-ic"><img src="${esc(ic)}" alt="" loading="lazy"></span>`;
-  if(ic) return `<span class="env-ic env-ic-emoji">${esc(ic)}</span>`;
+  if(ic) return `<span class="env-ic env-ic-emoji" style="background:${bg}">${esc(ic)}</span>`;
   const u=(st.users||[]).find(x=>x.id===(e&&e.created_by));
-  return u ? `<span class="env-ic">${avatarInner(u)}</span>`
-           : `<span class="env-ic env-ic-emoji">🏢</span>`;
+  // a real photo wins, exactly as it does everywhere else a person appears
+  if(u&&u.avatar_url)
+    return `<span class="env-ic"><img src="${esc(u.avatar_url)}" alt="" loading="lazy"></span>`;
+  return `<span class="env-ic env-ic-ini" style="background:${bg}">${esc(initials(u?u.name:'')||'?')}</span>`;
 }
 /* The glyphs the picker offers — Font Awesome names, stored as "fa:<name>". */
 const ENV_GLYPHS=['bolt','crown','gem','fire','globe','heart','house','building','city','tree',
@@ -4463,8 +4471,12 @@ const Env = {
       maxlength:60, confirmText:'צור סביבה'});
     if(!name)return;                        // cancelled, or nothing typed
     try{
+      // The colour the badge will wear, decided here because the avatar palette
+      // lives here: an environment with no icon shows its creator's initials,
+      // so it should open in the colour that person already wears everywhere
+      // else. The server's own palette still covers anything arriving without one.
       const r=await api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({actor_id:meId(),name})});
+        body:JSON.stringify({actor_id:meId(),name,color:avatarColor((st.me&&st.me.name)||'')})});
       await this.load();                    // the switcher is refreshed either way
       if(opts&&opts.done) await opts.done(r);
       else if(r&&r.id) this.select(r.id);   // land in the thing you just made
@@ -4619,9 +4631,14 @@ const SysAdmin = {
     const pv=document.getElementById('el-preview');
     if(pv)pv.innerHTML=envIconHTML(L)+`<span>${esc(L.name||'')}</span>`;
     const cs=document.getElementById('el-colors');
-    if(cs)cs.innerHTML=ENV_COLORS.map(c=>
-      `<button type="button" class="ep-color${c===L.color?' sel':''}" style="background:${c}" title="${c}"
-         aria-label="צבע ${c}" onclick="SysAdmin.pickColor('${c}')">${c===L.color?'<i class="fa-solid fa-check"></i>':''}</button>`).join('');
+    // The colour in effect is always one of the swatches, even when it came
+    // from the avatar palette or from a row older than this grid — otherwise
+    // nothing is marked and the grid claims none of these is what you see.
+    const cur=(L.color||'').toLowerCase();
+    const palette=ENV_COLORS.some(c=>c.toLowerCase()===cur)?ENV_COLORS:[L.color].concat(ENV_COLORS);
+    if(cs)cs.innerHTML=palette.map(c=>
+      `<button type="button" class="ep-color${c.toLowerCase()===cur?' sel':''}" style="background:${c}" title="${c}"
+         aria-label="צבע ${c}" onclick="SysAdmin.pickColor('${c}')">${c.toLowerCase()===cur?'<i class="fa-solid fa-check"></i>':''}</button>`).join('');
     const gs=document.getElementById('el-icons');
     if(gs)gs.innerHTML=ENV_GLYPHS.map(g=>
       `<button type="button" class="ep-icon${L.icon==='fa:'+g?' sel':''}" style="background:${esc(L.color)}"
