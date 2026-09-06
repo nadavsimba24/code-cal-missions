@@ -9347,7 +9347,13 @@ function editPrompt(opts){
       ${opts.message?`<div class="confirm-msg" style="font-weight:500">${esc(opts.message)}</div>`:''}
       <div class="ep-field">
         ${opts.label?`<label for="edit-prompt-inp">${esc(opts.label)}</label>`:''}
-        <input id="edit-prompt-inp" type="text" value="${esc(opts.value||'')}" placeholder="${esc(opts.placeholder||'')}" maxlength="${opts.maxlength||120}" autocomplete="off" dir="auto">
+        <!-- No dir attribute: the field inherits the page's rtl, like every other
+             text field here. It used to say dir="auto", which for an input means
+             "take the direction from the first strong character of the value" —
+             and with no value the spec's fallback is ltr, not the page. So the
+             box opened left-aligned with the caret on the left and jumped to the
+             right on the first Hebrew letter typed into it. -->
+        <input id="edit-prompt-inp" type="text" value="${esc(opts.value||'')}" placeholder="${esc(opts.placeholder||'')}" maxlength="${opts.maxlength||120}" autocomplete="off">
       </div>
       ${opts.note?`<div class="confirm-note">${esc(opts.note)}</div>`:''}
       <div class="confirm-actions">

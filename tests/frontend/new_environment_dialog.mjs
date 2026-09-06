@@ -126,6 +126,15 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
      /finish\(\(i\?i\.value:''\)\.trim\(\)\|\|null\)/.test(src));
   ck('no environment is made through a browser prompt any more',
      !/prompt\('שם הסביבה החדשה/.test(src));
+  /* dir="auto" on an input takes its direction from the first strong character
+     of the value, and with no value the fallback is ltr — so the field opened
+     left-aligned in a right-to-left app and jumped on the first letter. */
+  ck('the field inherits the page direction instead of guessing at it',
+     /<input id="edit-prompt-inp"[^>]*>/.test(src) &&
+     !/<input id="edit-prompt-inp"[^>]*dir=/.test(src),
+     (/<input id="edit-prompt-inp"[^>]*>/.exec(src)||[''])[0]);
+  ck('and the field block still aligns to the start edge',
+     /\.ep-field\{[^}]*text-align:start/.test(src));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
