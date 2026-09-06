@@ -4407,8 +4407,14 @@ const Env = {
     // the API returns every environment for a system admin, or only the granted ones for others
     if(meId()){ try{ const d=await api('/api/environments?user_id='+meId()); this.items=d.environments||[]; }catch(e){ this.items=[]; } }
     else this.items=[];
-    if(!st.env || !this.items.some(e=>e.id===st.env.id))
-      st.env = this.items.find(e=>e.is_primary) || this.items[0] || null;   // default to the primary workspace
+    const mine=st.env && this.items.find(e=>e.id===st.env.id);
+    // Re-point at the row just loaded, not merely "one with the same id is
+    // still there". st.env held the object from the previous load, and the
+    // sidebar's own button draws from it — so a renamed or recoloured
+    // environment changed in the dropdown, which is built from this.items, and
+    // stayed exactly as it was in the line above it.
+    if(mine) st.env=mine;
+    else st.env = this.items.find(e=>e.is_primary) || this.items[0] || null;   // default to the primary workspace
     this.render();
   },
   active(){ return st.env||this.items[0]||null; },

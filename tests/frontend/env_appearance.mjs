@@ -220,5 +220,32 @@ function makePicker({env={id:3,name:'אגף החינוך',icon:'',color:'#6366f1
   ck('and nothing is refreshed behind it', p.log.reloaded===0 && p.log.envLoaded===0);
 }
 
+// ── the active environment is re-read, not just recognised ──
+{
+  /* Env.load kept whatever object st.env already held as long as an id matched,
+     so the sidebar's own button — which draws from st.env — went on showing the
+     badge from the previous load while the dropdown beneath it, built from
+     this.items, showed the new one. */
+  const st={env:{id:3,name:'ישן',icon:'',color:'#6366f1'}};
+  const fresh={id:3,name:'חדש',icon:'fa:crown',color:'#ef4444'};
+  const env=new Function('st','api','meId','render',
+    grabObject('Env').replace('this.render();','render();')+'; return Env;')(
+    st, async()=>({environments:[fresh]}), ()=>1, ()=>{});
+  await env.load();
+  ck('the active environment is the row just loaded',
+     st.env===fresh, JSON.stringify(st.env));
+  ck('so the sidebar button shows the new badge, not the one from last time',
+     st.env.icon==='fa:crown' && st.env.color==='#ef4444');
+
+  // and an environment that has gone away still falls back
+  const st2={env:{id:9,name:'נמחקה'}};
+  const primary={id:1,name:'ראשית',is_primary:true};
+  const env2=new Function('st','api','meId','render',
+    grabObject('Env').replace('this.render();','render();')+'; return Env;')(
+    st2, async()=>({environments:[primary]}), ()=>1, ()=>{});
+  await env2.load();
+  ck('an environment that is gone falls back to the primary one', st2.env===primary);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
