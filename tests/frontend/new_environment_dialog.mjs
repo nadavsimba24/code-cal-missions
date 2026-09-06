@@ -143,5 +143,19 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
      /\.ep-field\{[^}]*text-align:start/.test(src));
 }
 
+// ── the environments table shows no colour any more ──
+{
+  const table=/async renderEnvs\(\)\{[\s\S]*?<\/table><\/div>`;/.exec(src);
+  ck('the environments admin table is found', !!table);
+  ck('its rows carry no colour dot', table && !/dp-swatch/.test(table[0]));
+  ck('and no empty column is left holding its place',
+     table && !/<th style="width:34px"><\/th>/.test(table[0]));
+  ck('the empty-state spans the columns that are actually there',
+     table && /colspan="3"/.test(table[0]),
+     table && (table[0].match(/colspan="\d"/)||[''])[0]);
+  ck('the departments table keeps its own dot — a different screen, not asked about',
+     /dp-swatch/.test(src));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
