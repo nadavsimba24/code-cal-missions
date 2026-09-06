@@ -4380,7 +4380,9 @@ const Env = {
   async add(opts){ if(mobileBlocked('יצירת סביבה'))return;
     if(!hasCap('create_environment')){ toast('אין לך הרשאה ליצור סביבה'); return; }
     this._set(false);                       // the dropdown would sit under the modal
-    const name=await editPrompt({title:'סביבה חדשה', icon:'fa-layer-group',
+    // no icon: the coloured disc belongs to a warning, not to a box that asks
+    // for a name. askConfirm and alertModal still carry theirs.
+    const name=await editPrompt({title:'סביבה חדשה',
       label:'שם הסביבה', placeholder:'לדוגמה: אגף החינוך',
       maxlength:60, confirmText:'צור סביבה'});
     if(!name)return;                        // cancelled, or nothing typed
@@ -9342,7 +9344,7 @@ function editPrompt(opts){
     window._editPromptSave=()=>{ const i=document.getElementById('edit-prompt-inp'); finish((i?i.value:'').trim()||null); };
     window._editPromptCancel=()=>finish(null);
     showModal(`<div class="confirm-box edit-prompt">
-      <div class="confirm-ic"><i class="fa-solid ${opts.icon||'fa-pen'}"></i></div>
+      ${opts.icon?`<div class="confirm-ic"><i class="fa-solid ${opts.icon}"></i></div>`:''}
       <h2 style="border:none;padding:0 0 6px;text-align:center">${esc(opts.title||'עריכה')}</h2>
       ${opts.message?`<div class="confirm-msg" style="font-weight:500">${esc(opts.message)}</div>`:''}
       <div class="ep-field">

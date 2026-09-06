@@ -57,6 +57,8 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
   ck('it suggests what a name looks like', !!h.log.asked.placeholder, h.log.asked.placeholder);
   ck('it asks for nothing else — no icon, no colour',
      !('icons' in h.log.asked) && !('colors' in h.log.asked));
+  ck('and wears no coloured disc: that belongs to a warning, not to a name',
+     !h.log.asked.icon, h.log.asked.icon);
 }
 
 // ── what it sends ──
@@ -120,6 +122,10 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
 // ── the dialog it leans on is really there, and behaves ──
 {
   ck('editPrompt exists in the page', /^function editPrompt\(opts\)\{/m.test(src));
+  ck('its disc is drawn only when a caller asks for one',
+     /\$\{opts\.icon\?`<div class="confirm-ic">/.test(src));
+  ck('while confirm and alert keep theirs',
+     (src.match(/<div class="confirm-ic/g)||[]).length>=3);
   ck('Enter finishes it', /ev\.key==='Enter'\)\{ ev\.preventDefault\(\); window\._editPromptSave/.test(src));
   ck('Esc cancels it', /ev\.key==='Escape'\)\{ ev\.preventDefault\(\); window\._editPromptCancel/.test(src));
   ck('it hands back a trimmed value, or nothing at all',
