@@ -3433,6 +3433,29 @@ function customSortVal(t,col){
                                        .filter(Boolean).sort((a,b)=>a.localeCompare(b,'he'));
     return (names[0]||'').toLowerCase();
   }
+  /* The derived columns (DERIVED_COLS) keep nothing in custom_fields — they
+     read the item itself, or compute. Falling through to the generic lookup
+     below therefore handed the comparator '' for every row, so the rows all
+     tied and the list never moved: a sort button that looked broken because
+     nothing it could sort by ever reached it. Each one sorts by exactly what
+     its cell displays, and an empty cell sorts last ascending, as everywhere
+     else here. */
+  if(col.type==='item_id')                                                   // numeric, so 2 < 10
+    return t.item_uid?Number(t.item_uid):Number.MAX_SAFE_INTEGER;
+  if(col.type==='created_at') return t.created_at||'9999-99-99';             // ISO sorts as text
+  if(col.type==='created_by'){
+    const u=(st.users||[]).find(x=>x.id===t.created_by);
+    return (u&&u.name)?u.name.toLowerCase():'\uffff';
+  }
+  if(col.type==='formula'){
+    const r=evalFormula(col,t);
+    if(r==null||r==='')return '\uffff';
+    return typeof r==='number'?r:String(r).toLowerCase();
+  }
+  if(col.type==='mirror'){
+    const txt=(Array.isArray(v)?v:[]).map(x=>(x&&x.text)||'').filter(Boolean).join(', ');
+    return txt?txt.toLowerCase():'\uffff';
+  }
   if(Array.isArray(v))return v.map(x=>(x&&typeof x==='object')?(x.label||x.name||x.title||''):String(x)).join(', ').toLowerCase();
   if(v&&typeof v==='object')return String(v.label||v.name||v.title||'').toLowerCase();
   return v==null?'':v;
