@@ -2723,7 +2723,18 @@ def create_environment(data: dict, actor_id: int = Depends(current_user_id)):
                         color=data.get("color") or _ENV_COLORS[pos % len(_ENV_COLORS)],
                         position=pos, organization_id=org.id if org else None)
         db.add(e); db.commit(); db.refresh(e)
-        return _env_out(e, 0)
+        # Whoever makes an environment manages it — the same rule a board
+        # follows ("creator becomes the board admin"). Without this row the
+        # environment was created belonging to nobody: the listing shows a
+        # non-workspace-admin only the environments they are a member of, so
+        # the creator got a "הסביבה נוצרה" toast for something that then did
+        # not appear anywhere, and nobody but a workspace admin could ever see
+        # it or hand out access to it. It existed and was unreachable.
+        if actor_id is not None:
+            db.add(EnvironmentMember(environment_id=e.id, user_id=actor_id, role="manager"))
+            db.commit()
+        my_role = "admin" if _ws_role(db, actor_id) == "admin" else "manager"
+        return _env_out(e, 0, my_role)
 
 @app.patch("/api/environments/{env_id}")
 def update_environment(env_id: int, data: dict, actor_id: int = Depends(current_user_id)):
