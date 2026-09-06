@@ -375,6 +375,23 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .icon-sw{width:38px;height:38px;border-radius:9px;border:1.5px solid var(--border-strong);background:var(--surface);font-size:19px;cursor:pointer;display:grid;place-items:center;transition:.1s}
 .icon-sw:hover{border-color:var(--text-light)}
 .icon-sw.sel{border-color:var(--primary);background:var(--primary-soft);transform:scale(1.05)}
+/* Colour grid — the same rhythm as .icon-grid above, round instead of square so
+   the two rows in the environment dialog do not read as one long strip of
+   buttons. The inset ring keeps a pale swatch from vanishing into the card. */
+.color-grid{display:flex;flex-wrap:wrap;gap:8px}
+.color-sw{width:30px;height:30px;border-radius:50%;border:2px solid transparent;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.10);cursor:pointer;padding:0;transition:.1s}
+.color-sw:hover{transform:scale(1.08)}
+.color-sw.sel{border-color:var(--text);transform:scale(1.12)}
+.color-sw:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+/* The preview is the switcher's own row, not an invention: same icon size, same
+   ellipsis, same check on the right — so what it promises is what appears. */
+.ne-preview{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);
+  border-radius:8px;background:var(--bg);font-size:13px}
+.ne-preview .ic{font-size:17px;line-height:1}
+.ne-pv-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.ne-pv-name.ghost{color:var(--text-light)}
+.ne-hint{font-size:12px;color:var(--text-light);margin-top:6px}
 
 /* toolbar */
 #toolbar{background:var(--surface);display:flex;align-items:center;gap:7px;padding:9px 22px;border-bottom:1px solid var(--border)}
@@ -4312,6 +4329,19 @@ const Trash = {
 };
 
 /* ===== environments (Monday-style workspaces) — sysadmin=all, others=granted only ===== */
+/* ============ סביבה חדשה ============
+   The switcher's create dialog. It was a native prompt() for the name alone,
+   so the icon and the colour — both of which the API takes, and one of which
+   the switcher shows on every row — could only ever be whatever the server
+   picked. Same shape as the new-board modal: an h2, .mbody of .field rows, and
+   a .mfoot with the primary action first. */
+const ENV_ICONS=['🏛️','🏢','🌇','🏗️','🚌','🌳','💧','⚡','🚒','🏥','🎓','📚','🗺️','🧾','📊','⚙️'];
+/* Mirrors _ENV_COLORS in backend/main.py. The dialog offers the palette the
+   server would have assigned from, and opens on the very colour it would have
+   picked for this environment — so the default in front of you is the default
+   you would have got by not choosing. */
+const ENV_COLORS=['#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6'];
+
 const Env = {
   items:[], open:false, membersFor:null, membersData:{members:[],available:[]},
   async load(){
@@ -4370,11 +4400,58 @@ const Env = {
   _onDoc(ev){ const sw=document.getElementById('ws-switch'); if(!sw||!sw.contains(ev.target)) Env._set(false); },
   toggle(e){ e&&e.stopPropagation(); this._set(!this.open); },
   select(id){ st.env=this.items.find(x=>x.id===id)||st.env; this._set(false); renderSidebar(); closeSidebarMobile(); },
-  add(){ if(mobileBlocked('יצירת סביבה'))return;
+  /* opts.done — what to refresh instead of switching, for callers that are not
+     the switcher. The system-admin table opens the same dialog and wants its
+     own list back, not to be moved into the environment it just made. */
+  add(opts){ if(mobileBlocked('יצירת סביבה'))return;
     if(!hasCap('create_environment')){ toast('אין לך הרשאה ליצור סביבה'); return; }
-    const name=prompt('שם הסביבה החדשה:'); if(!name||!name.trim())return;
-    api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})})
-      .then(()=>{ toast('הסביבה נוצרה'); this.load(); }).catch(()=>toast('שגיאה ביצירת סביבה')); },
+    this._set(false);                       // the dropdown would sit under the modal
+    window._newEnv={icon:ENV_ICONS[0], color:ENV_COLORS[this.items.length%ENV_COLORS.length],
+                    done:(opts&&opts.done)||null};
+    showModal(`<h2>סביבה חדשה</h2><div class="mbody">
+      <div class="field"><label for="ne-name">שם הסביבה</label>
+        <input id="ne-name" maxlength="60" dir="auto" autocomplete="off" placeholder="לדוגמה: אגף החינוך"
+          oninput="Env._preview()" onkeydown="if(event.key==='Enter')Env.create()"></div>
+      <div class="field"><label>אייקון</label>
+        <div class="icon-grid" id="ne-icons">${ENV_ICONS.map((ic,i)=>
+          `<button type="button" class="icon-sw${i?'':' sel'}" data-ic="${ic}" title="${ic}" onclick="Env._pickIcon('${ic}')">${ic}</button>`).join('')}</div></div>
+      <div class="field"><label>צבע</label>
+        <div class="color-grid" id="ne-colors">${ENV_COLORS.map(c=>
+          `<button type="button" class="color-sw${c===window._newEnv.color?' sel':''}" data-c="${c}" style="background:${c}" title="${c}" aria-label="בחירת צבע ${c}" onclick="Env._pickColor('${c}')"></button>`).join('')}</div>
+        <div class="ne-hint">הצבע מזהה את הסביבה במסך ניהול המערכת.</div></div>
+      <div class="field" style="margin-bottom:0"><label>כך זה ייראה במחליף הסביבות</label>
+        <div class="ne-preview">
+          <span class="ic" id="ne-pv-ic">${ENV_ICONS[0]}</span>
+          <span class="ne-pv-name ghost" id="ne-pv-name">סביבה חדשה</span>
+          <i class="fa-solid fa-check ws-opt-chk"></i></div></div>
+    </div><div class="mfoot">
+      <button class="btn btn-primary" onclick="Env.create()"><i class="fa-solid fa-plus"></i> צור סביבה</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+    setTimeout(()=>{const n=document.getElementById('ne-name'); if(n)n.focus();},30); },
+  _pickIcon(ic){ (window._newEnv||{}).icon=ic;
+    document.querySelectorAll('#ne-icons .icon-sw').forEach(b=>b.classList.toggle('sel',b.dataset.ic===ic));
+    const p=document.getElementById('ne-pv-ic'); if(p)p.textContent=ic; },
+  _pickColor(c){ (window._newEnv||{}).color=c;
+    document.querySelectorAll('#ne-colors .color-sw').forEach(b=>b.classList.toggle('sel',b.dataset.c===c)); },
+  /* textContent, never innerHTML: this echoes back whatever was typed. */
+  _preview(){ const n=document.getElementById('ne-name'), p=document.getElementById('ne-pv-name');
+    if(!p)return; const v=(n&&n.value||'').trim();
+    p.textContent=v||'סביבה חדשה'; p.classList.toggle('ghost',!v); },
+  async create(){
+    const el=document.getElementById('ne-name'), name=((el&&el.value)||'').trim();
+    if(!name){ toast('צריך שם לסביבה'); if(el)el.focus(); return; }
+    const cfg=window._newEnv||{};
+    try{
+      const r=await api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({actor_id:meId(),name,icon:cfg.icon,color:cfg.color})});
+      closeModals();
+      await this.load();                    // the switcher is refreshed either way
+      if(cfg.done) await cfg.done(r);
+      else if(r&&r.id) this.select(r.id);   // land in the thing you just made
+      toast('הסביבה נוצרה');
+    }catch(e){ toast((e&&e.detail)||'שגיאה ביצירת סביבה'); }
+  },
   rename(id){ const it=this.items.find(x=>x.id===id); if(!it)return;
     const name=prompt('שם הסביבה:',it.name); if(!name||!name.trim())return;
     api('/api/environments/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})})
@@ -4488,12 +4565,10 @@ const SysAdmin = {
         <th style="width:34px"></th><th>שם הסביבה</th><th>לוחות</th><th></th>
       </tr></thead><tbody>${rows}</tbody></table></div>`;
   },
-  async addEnv(){
-    const name=prompt('שם הסביבה החדשה:'); if(!name||!name.trim())return;
-    try{ await api('/api/environments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),name:name.trim()})});
-      toast('הסביבה נוצרה'); await this.reloadEnvs(); }
-    catch(err){ toast(err&&err.detail?err.detail:'שגיאה ביצירת סביבה'); }
-  },
+  /* The same dialog the switcher opens — one way to make an environment, not
+     two that ask for different things. Here it hands the table back rather than
+     moving the admin into the environment they just created. */
+  addEnv(){ Env.add({done:()=>this.reloadEnvs()}); },
   /* rename in place: the name turns into an input right in the row (Enter or
      blur saves, Esc cancels) — same feel as renaming a board column. Reached
      from the pencil or by double-clicking the name. */
