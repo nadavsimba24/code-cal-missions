@@ -205,6 +205,11 @@ class User(Base):
     title = Column(String(120))  # job title within the organization
     email_notifications = Column(Boolean, default=True)
     notif_prefs = Column(JSON, default=dict)  # {mention, status, assign}
+    # Entra ID object id, set only for external guests invited through the
+    # guests screen (backend/entra_guests.py). Its presence is what marks an
+    # account as "brought in from outside on purpose" — auth.is_invited_guest
+    # reads it to let that person past the domain allowlist at sign-in.
+    entra_object_id = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     organization = relationship("Organization", back_populates="users")
     department = relationship("Department", back_populates="users")

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, with_loader_criteria
 sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
                   init_auth, resolve_user)
+import entra_guests
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, ItemLink, BoardView,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
@@ -212,6 +213,9 @@ def _migrate():
             conn.execute(text("ALTER TABLE users ADD COLUMN notif_prefs JSON"))
         if "is_active" not in ucols:
             conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+        # users: Entra object id for guests invited from the guests screen
+        if "entra_object_id" not in ucols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN entra_object_id VARCHAR(64)"))
         _demo = {
             1: ("מנהל אגף הנדסה ותשתיות", "050-2345678"),
             2: ("מנהלת מחלקת תחבורה",     "052-3456789"),
@@ -249,6 +253,7 @@ else:
         "ALTER TABLE environment_members ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'member'",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid_board INTEGER",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS entra_object_id VARCHAR(64)",
         # tags was removed from the product; the column goes and takes its values
         "ALTER TABLE tasks DROP COLUMN IF EXISTS tags",
     ]
@@ -6177,6 +6182,185 @@ def update_user(uid: int, data: dict, actor_id: int = Depends(current_user_id)):
                 "is_active": bool(u.is_active),
                 "email_notifications": bool(u.email_notifications),
                 "notif_prefs": u.notif_prefs or {}}
+
+
+# ── Guests (external people, invited into Entra ID) ──────────────────
+# The screen behind these lives in the system-administration modal. Inviting is
+# two directory operations and one row of ours, deliberately in that order: the
+# tenant is the thing that decides whether a person can sign in at all, so if it
+# refuses we have not left a local account that can never be used.
+#
+# See backend/entra_guests.py for the Graph calls and scripts/ENTRA_GUESTS.md
+# for the app-registration permissions and the QA configuration.
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]+$")
+
+
+def _guest_row(u: User, dept_names: dict, directory: dict, directory_read: bool):
+    """One guest, as the screen shows them: our row plus what Entra says.
+
+    `directory_read` is separate from `directory` being non-empty on purpose. A
+    group somebody has just emptied and a Graph call that failed both arrive
+    here as {}, and they mean opposite things — "this person lost their access"
+    versus "we do not currently know". Only the first should light up the screen.
+    """
+    d = directory.get((u.entra_object_id or "").lower(), {})
+    return {
+        "id": u.id, "name": u.name, "email": u.email,
+        "role": u.role, "avatar_url": u.avatar_url,
+        "department_id": u.department_id,
+        "department_name": dept_names.get(u.department_id),
+        "is_active": bool(u.is_active) if u.is_active is not None else True,
+        "entra_object_id": u.entra_object_id,
+        # Only the directory knows these, and only when Graph answered.
+        "in_group": bool(d) if directory_read else None,
+        "invite_state": d.get("invite_state"),
+    }
+
+
+@app.get("/api/guests")
+def list_guests(actor_id: int = Depends(current_user_id)):
+    """The invited guests, and whether this deployment can invite any.
+
+    The directory read is best-effort on purpose: when Graph is unreachable or
+    unconsented the screen still lists who we invited and says why the live
+    state is missing, instead of showing nothing at all.
+    """
+    with Session(engine) as db:
+        if not _cap(db, actor_id, "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול לנהל אורחים")
+        dept_names = {d.id: d.name for d in db.query(Department).all()}
+        users = (db.query(User).filter(User.entra_object_id != None)  # noqa: E711
+                 .order_by(User.name).all())
+
+    directory, directory_error, directory_read = {}, None, False
+    if entra_guests.is_enabled() and entra_guests.is_configured():
+        try:
+            directory = {m["object_id"].lower(): m for m in entra_guests.group_members()
+                         if m.get("object_id")}
+            directory_read = True
+        except HTTPException as exc:
+            directory_error = str(exc.detail)
+        except Exception as exc:                      # never break the screen
+            directory_error = str(exc)
+
+    return {
+        "enabled": entra_guests.is_enabled(),
+        "configured": entra_guests.is_configured(),
+        "group": entra_guests.group_name(),
+        "directory_error": directory_error,
+        "guests": [_guest_row(u, dept_names, directory, directory_read) for u in users],
+    }
+
+
+@app.post("/api/guests")
+def invite_guest(data: dict, actor_id: int = Depends(current_user_id)):
+    """Invite an external address as an Entra ID guest, into the guests group,
+    and give it an account here. System (workspace) admin only."""
+    with Session(engine) as db:
+        if not _cap(db, actor_id, "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול להזמין אורחים")
+
+    entra_guests.require_available()
+
+    email = (data.get("email") or "").strip().lower()
+    name = (data.get("name") or "").strip()
+    if not email:
+        raise HTTPException(400, "חסרה כתובת מייל")
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(400, "כתובת המייל אינה תקינה")
+    if not name:
+        name = email.split("@")[0]
+
+    # An address that already belongs to a regular member of the organization is
+    # not a guest, and quietly converting one into the other would take away
+    # whatever they had. Re-inviting somebody who IS a guest is fine — that is
+    # how an invitation gets resent.
+    with Session(engine) as db:
+        existing = db.query(User).filter(func.lower(User.email) == email).first()
+        if existing and not existing.entra_object_id:
+            raise HTTPException(409, "כתובת המייל כבר קיימת כמשתמש רגיל במערכת")
+        existing_id = existing.id if existing else None
+
+    invited = entra_guests.invite(
+        email, name,
+        send_email=data.get("send_invitation_email", True) is not False,
+        message=(data.get("message") or "").strip(),
+    )
+    try:
+        added = entra_guests.add_to_group(invited["object_id"])
+    except HTTPException as exc:
+        # The person now exists in the tenant but is not in the group, so they
+        # are not a guest of *this* system yet. Say exactly that: pressing
+        # invite again is safe, because both directory calls are idempotent.
+        raise HTTPException(exc.status_code,
+                            f"ההזמנה נוצרה ב-Entra אך הוספה לקבוצה "
+                            f"'{entra_guests.group_name()}' נכשלה — אפשר לנסות שוב. "
+                            f"{exc.detail}")
+
+    dept_id = data.get("department_id") or None
+    with Session(engine) as db:
+        u = db.query(User).filter(User.id == existing_id).first() if existing_id else None
+        if u:
+            u.entra_object_id = invited["object_id"]
+            if dept_id is not None:
+                u.department_id = dept_id
+            u.is_active = True          # re-inviting a revoked guest restores them
+        else:
+            org_id = db.query(User.organization_id).filter(User.organization_id != None).limit(1).scalar()  # noqa: E711
+            u = User(name=name, email=email, role="guest", department_id=dept_id,
+                     organization_id=org_id, is_active=True,
+                     entra_object_id=invited["object_id"])
+            db.add(u)
+            db.flush()
+        # Same as create_user: the row most of the system actually reads for a
+        # role is the workspace membership, not User.role.
+        if not db.query(WorkspaceMember).filter(WorkspaceMember.user_id == u.id).first():
+            db.add(WorkspaceMember(user_id=u.id, role=_ws_role_for("guest")))
+        db.commit()
+        db.refresh(u)
+        dept_names = {d.id: d.name for d in db.query(Department).all()}
+        row = _guest_row(u, dept_names, {}, False)
+
+    row["added_to_group"] = added
+    row["in_group"] = True
+    row["invite_state"] = invited.get("invite_state")
+    # Present only when the admin chose not to have Entra send the mail; then
+    # this link IS the invitation and somebody has to pass it on.
+    row["redeem_url"] = invited.get("redeem_url")
+    return row
+
+
+@app.delete("/api/guests/{uid}")
+def revoke_guest(uid: int, actor_id: int = Depends(current_user_id)):
+    """Take a guest out of the guests group and deactivate their account here.
+
+    The directory account itself is left alone. Deleting a person from the
+    tenant is a directory-wide act with consequences outside this system — other
+    apps, other groups, their files — and it is not this screen's to make. What
+    this screen granted, it revokes: membership of the group, and the ability to
+    sign in here.
+    """
+    with Session(engine) as db:
+        if not _cap(db, actor_id, "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול להסיר אורחים")
+        u = db.query(User).filter(User.id == uid).first()
+        if not u:
+            raise HTTPException(404, "המשתמש לא נמצא")
+        if not u.entra_object_id:
+            raise HTTPException(400, "המשתמש אינו אורח שהוזמן דרך המסך הזה")
+        object_id = u.entra_object_id
+
+    entra_guests.require_available()
+    removed = entra_guests.remove_from_group(object_id)
+
+    with Session(engine) as db:
+        u = db.query(User).filter(User.id == uid).first()
+        if u:
+            u.is_active = False
+            db.commit()
+    return {"status": "ok", "id": uid, "removed_from_group": removed}
+
 
 @app.get("/api/departments")
 def list_departments():

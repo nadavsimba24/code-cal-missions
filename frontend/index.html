@@ -1142,6 +1142,19 @@ body.coldragging .col-grip{opacity:1}
 .sa-toggle.on .sa-tl{color:#1a7f43}
 .sa-toggle:not(.on) .sa-tl{color:var(--text-light)}
 .sa-toggle.disabled{cursor:not-allowed;opacity:.6}
+/* a configuration problem the admin has to go and fix elsewhere — it stays on
+   the screen instead of passing by as a toast */
+.sa-note{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;line-height:1.6;border-radius:8px;padding:10px 13px;margin-bottom:14px}
+.sa-note.warn{background:#fff4e5;border:1px solid #ffd8a8;color:#7a4a00}
+.sa-note code{font-size:11.5px;background:rgba(0,0,0,.06);border-radius:4px;padding:1px 5px;direction:ltr;display:inline-block}
+.sa-badge{display:inline-block;font-size:11.5px;font-weight:600;border-radius:11px;padding:3px 10px;white-space:nowrap}
+.sa-badge.ok{background:#e5f9ee;color:#1a7f43}
+.sa-badge.warn{background:#fff4e5;color:#a35b00}
+.sa-badge.off{background:var(--bg);color:var(--text-light);border:1px solid var(--border)}
+:root[data-theme="dark"] .sa-note.warn{background:#2a1c10;border-color:#7c3a12;color:#fdba74}
+:root[data-theme="dark"] .sa-note code{background:rgba(255,255,255,.10)}
+:root[data-theme="dark"] .sa-badge.ok{background:#12291d;color:#5cd693}
+:root[data-theme="dark"] .sa-badge.warn{background:#2a1c10;color:#fdba74}
 .sa-more{width:28px;height:28px;border:none;background:none;color:var(--text-light);border-radius:6px;cursor:pointer}
 .sa-more:hover{background:rgba(0,0,0,.08);color:var(--text)}
 .sa-menu-lbl{font-size:10.5px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.04em;padding:2px 4px 0}
@@ -4619,6 +4632,7 @@ const SysAdmin = {
       <div class="mbody">
         <div class="sa-tabs">
           <button class="sa-tab" data-tab="users" onclick="SysAdmin.go('users')"><i class="fa-solid fa-users"></i> משתמשים</button>
+          <button class="sa-tab" data-tab="guests" onclick="SysAdmin.go('guests')"><i class="fa-solid fa-user-plus"></i> אורחים</button>
           <button class="sa-tab" data-tab="depts" onclick="SysAdmin.go('depts')"><i class="fa-solid fa-sitemap"></i> יחידות ארגוניות</button>
           <button class="sa-tab" data-tab="envs" onclick="SysAdmin.go('envs')"><i class="fa-solid fa-layer-group"></i> סביבות</button>
           <button class="sa-tab" data-tab="history" onclick="SysAdmin.go('history')"><i class="fa-solid fa-clock-rotate-left"></i> היסטוריית התחברות</button>
@@ -4633,6 +4647,7 @@ const SysAdmin = {
     document.querySelectorAll('.sa-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
     const body=document.getElementById('sa-body'); if(!body)return;
     if(tab==='history'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderHistory(); }
+    else if(tab==='guests'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderGuests(); }
     else if(tab==='depts'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderDepts(); }
     else if(tab==='envs'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderEnvs(); }
     else body.innerHTML=this.usersHTML();
@@ -4899,6 +4914,147 @@ const SysAdmin = {
     const b=document.getElementById('sa-body'); if(!b)return;
     b.innerHTML=`<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px"><i class="fa-solid fa-circle-info"></i> ${evs.length} ההתחברויות האחרונות בכל המערכת.</div>
       <div style="overflow-x:auto"><table class="sa-table"><thead><tr><th>משתמש</th><th>מועד</th><th>כתובת IP</th><th>דפדפן/מכשיר</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  },
+  /* ── אורחים — people from outside the organization ──
+     Inviting one is three things at once: an Entra ID guest account, membership
+     of the guests group, and an account here. The screen says so plainly,
+     because an administrator adding an outsider to the directory deserves to
+     know that is what the button does. What the tenant reports about each guest
+     (invited / joined, still in the group) is read live and shown next to our
+     own row — the directory is the truth about who can actually sign in, and
+     someone may have changed it there. */
+  async renderGuests(){
+    let d=null,err='';
+    try{ d=await api('/api/guests'); }catch(e){ err=(e&&e.detail)||'שגיאה בטעינת האורחים'; }
+    this.guests=d;
+    const body=document.getElementById('sa-body'); if(!body)return;
+    if(!d){ body.innerHTML=`<div class="empty" style="padding:24px">${esc(err)}</div>`; return; }
+    const group=esc(d.group||'missions-guests');
+    const can=d.enabled&&d.configured;
+    const notice=!d.enabled
+      ? `<div class="sa-note warn"><i class="fa-solid fa-triangle-exclamation"></i> הזמנת אורחים אינה מופעלת בסביבה זו. כדי להפעיל, הגדירו <code>CITYOS_GUEST_INVITES=1</code> על הסביבה.</div>`
+      : !d.configured
+        ? `<div class="sa-note warn"><i class="fa-solid fa-triangle-exclamation"></i> חסרים פרטי ההתחברות ל-Entra (<code>ENTRA_TENANT_ID</code>, <code>ENTRA_CLIENT_ID</code>, <code>ENTRA_CLIENT_SECRET</code>).</div>`
+        : '';
+    const dirErr=d.directory_error
+      ? `<div class="sa-note warn"><i class="fa-solid fa-cloud-exclamation"></i> לא ניתן לקרוא את מצב האורחים מ-Entra כרגע, המוצג להלן הוא מה שנרשם אצלנו. ${esc(d.directory_error)}</div>`
+      : '';
+    const rows=(d.guests&&d.guests.length)
+      ? d.guests.map(g=>`<tr class="${g.is_active===false?'inactive':''}">
+          <td><div class="sa-name"><span class="av" style="background:var(--primary)">${avatarInner(g)}</span><span style="font-weight:600">${esc(g.name||'—')}</span></div></td>
+          <td style="color:var(--text-muted)">${esc(g.email||'—')}</td>
+          <td>${this.guestState(g)}</td>
+          <td style="color:var(--text-muted)">${esc(g.department_name||'—')}</td>
+          <td style="white-space:nowrap;text-align:left">
+            <button class="sa-more" title="שליחת ההזמנה מחדש" ${can?`onclick="SysAdmin.inviteGuest(${g.id})"`:'disabled style="opacity:.35;cursor:not-allowed"'}><i class="fa-solid fa-paper-plane"></i></button>
+            <button class="sa-more" title="ביטול גישה" ${can?`onclick="SysAdmin.revokeGuest(${g.id})"`:'disabled style="opacity:.35;cursor:not-allowed"'}><i class="fa-solid fa-user-slash" style="color:var(--danger,#e2445c)"></i></button>
+          </td>
+        </tr>`).join('')
+      : `<tr><td colspan="5"><div class="empty" style="padding:20px">אין אורחים עדיין</div></td></tr>`;
+    body.innerHTML=`${notice}${dirErr}
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:14px">
+        <div style="flex:1;font-size:12.5px;color:var(--text-muted);line-height:1.6"><i class="fa-solid fa-circle-info"></i>
+          אורח הוא אדם מחוץ לארגון. הזמנה יוצרת עבורו חשבון אורח ב-Entra ID, מוסיפה אותו לקבוצה <b>${group}</b>, ופותחת לו משתמש כאן בהרשאת <b>${ROLE_HE.guest}</b>. הוא מתחבר עם החשבון שלו — לא נוצרת עבורו סיסמה כאן.</div>
+        <button class="btn btn-primary" style="white-space:nowrap" ${can?'onclick="SysAdmin.inviteGuest()"':'disabled style="white-space:nowrap;opacity:.5;cursor:not-allowed"'}><i class="fa-solid fa-user-plus"></i> הזמנת אורח</button>
+      </div>
+      <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
+        <th>שם</th><th>מייל</th><th>מצב</th><th>יחידה ארגונית</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table></div>`;
+  },
+  /* Our row and the directory can disagree, and each disagreement means
+     something different to whoever has to fix it, so each gets its own badge
+     rather than a single "active" flag that hides which half is wrong. */
+  guestState(g){
+    if(g.is_active===false) return `<span class="sa-badge off">גישה בוטלה</span>`;
+    if(g.in_group===false)  return `<span class="sa-badge warn" title="המשתמש קיים ב-Entra אך אינו בקבוצה — שליחת ההזמנה מחדש תוסיף אותו">אינו בקבוצה</span>`;
+    const st=(g.invite_state||'').toLowerCase();
+    if(st==='pendingacceptance') return `<span class="sa-badge warn">ממתין לאישור ההזמנה</span>`;
+    if(st==='accepted')          return `<span class="sa-badge ok">הצטרף</span>`;
+    return `<span class="sa-badge ok">הוזמן</span>`;
+  },
+  /* With an id it is a resend for that guest; with none, a fresh invitation.
+     The id rather than the address, because a name carrying an apostrophe would
+     break out of the onclick attribute that carried it. */
+  inviteGuest(uid){
+    closeCellPops();
+    const g=uid?((this.guests&&this.guests.guests)||[]).find(x=>x.id===uid):null;
+    const email=g?g.email:'', name=g?g.name:'';
+    const resend=!!g;
+    showModal(`<h2><i class="fa-solid fa-user-plus" style="color:var(--primary)"></i> ${resend?'שליחת ההזמנה מחדש':'הזמנת אורח'}</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:14px"><i class="fa-solid fa-circle-info"></i>
+          ${resend?'ההזמנה תישלח שוב לאותה כתובת. אין נוצר חשבון נוסף — Entra מזהה את האורח הקיים.':'הכתובת חייבת להיות תיבה שהאדם באמת מקבל אליה דואר — ההזמנה נשלחת לשם, והוא מאשר אותה בעצמו.'}</div>
+        <div class="field"><label>כתובת מייל</label><input id="ng-email" placeholder="someone@partner.co.il" value="${esc(email||'')}" ${resend?'readonly style="background:var(--bg);color:var(--text-muted)"':''}></div>
+        <div class="field"><label>שם מלא</label><input id="ng-name" placeholder="לדוגמה: יעל כהן" value="${esc(name||'')}"></div>
+        <div class="field"><label>יחידה ארגונית (רשות)</label><select id="ng-dept"><option value="">— ללא —</option>${(st.depts||[]).map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div>
+        <div class="field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500"><input type="checkbox" id="ng-send" checked onchange="SysAdmin.toggleInviteMsg()"> שליחת הזמנה במייל מ-Entra</label>
+          <div style="font-size:11px;color:var(--text-light);margin-top:4px">בלי סימון — יוצג כאן קישור הזמנה שאפשר להעביר בעצמכם.</div></div>
+        <div class="field" id="ng-msg-f"><label>הודעה אישית בהזמנה (רשות)</label><textarea id="ng-msg" rows="3" placeholder="לדוגמה: הוזמנת לצפות בלוח הפרויקט המשותף."></textarea></div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="SysAdmin.open('guests')">ביטול</button><button class="btn btn-primary" id="ng-go" onclick="SysAdmin.sendInvite()"><i class="fa-solid fa-paper-plane"></i> ${resend?'שלח שוב':'שלח הזמנה'}</button></div>`);
+    setTimeout(()=>{const i=document.getElementById(resend?'ng-name':'ng-email');if(i)i.focus();},60);
+  },
+  toggleInviteMsg(){
+    const on=document.getElementById('ng-send'),f=document.getElementById('ng-msg-f');
+    if(on&&f)f.style.display=on.checked?'':'none';
+  },
+  async sendInvite(){
+    const g=id=>document.getElementById(id);
+    const email=(g('ng-email').value||'').trim();
+    const name=(g('ng-name').value||'').trim();
+    if(!email){toast('חסרה כתובת מייל');return;}
+    const dept=g('ng-dept').value;
+    const send=g('ng-send').checked;
+    const btn=g('ng-go');
+    // Graph is a network round-trip away and this is not a fast button. Locking
+    // it is what stops a second click from starting a second invitation.
+    if(btn){btn.disabled=true;btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> שולח…';}
+    try{
+      const r=await api('/api/guests',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email,name,department_id:dept?+dept:null,
+                             send_invitation_email:send,message:(g('ng-msg').value||'').trim()})});
+      try{ st.users=await api('/api/users'); }catch(e){}
+      await this.open('guests');
+      if(!send&&r.redeem_url) this.showRedeemLink(r);
+      else toast('ההזמנה נשלחה');
+    }catch(err){
+      if(btn){btn.disabled=false;btn.innerHTML='<i class="fa-solid fa-paper-plane"></i> שלח הזמנה';}
+      // These failures are configuration, not typos — a toast that vanishes in
+      // two seconds is the wrong place to put the sentence that names the fix.
+      const msg=(err&&err.detail)||'שליחת ההזמנה נכשלה';
+      if(err&&(err.status===502||err.status===503||err.status===409)) alertModal('ההזמנה לא נשלחה',msg,'fa-triangle-exclamation');
+      else toast(msg);
+    }
+  },
+  showRedeemLink(r){
+    showModal(`<h2><i class="fa-solid fa-link" style="color:var(--primary)"></i> קישור ההזמנה</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:12px">
+          ${esc(r.name||r.email)} נוסף כאורח, אך לא נשלח אליו מייל. העבירו לו את הקישור הזה — הוא נדרש לאשר אותו פעם אחת.</div>
+        <textarea id="ng-redeem" rows="4" readonly style="width:100%;font-size:11.5px;direction:ltr;text-align:left">${esc(r.redeem_url)}</textarea>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="SysAdmin.open('guests')">סגור</button>
+        <button class="btn btn-primary" onclick="SysAdmin.copyRedeem()"><i class="fa-solid fa-copy"></i> העתקת הקישור</button></div>`);
+  },
+  copyRedeem(){
+    const t=document.getElementById('ng-redeem'); if(!t)return;
+    t.select();
+    const done=()=>toast('הקישור הועתק');
+    if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(t.value).then(done,()=>{try{document.execCommand('copy');done();}catch(e){toast('העתיקו ידנית');}});
+    else { try{document.execCommand('copy');done();}catch(e){toast('העתיקו ידנית');} }
+  },
+  revokeGuest(uid){
+    const g=((this.guests&&this.guests.guests)||[]).find(x=>x.id===uid); if(!g)return;
+    const group=(this.guests&&this.guests.group)||'missions-guests';
+    askConfirm(`לבטל את הגישה של ${g.name||g.email}?`,async()=>{
+      try{
+        await api('/api/guests/'+uid,{method:'DELETE'});
+        try{ st.users=await api('/api/users'); }catch(e){}
+        toast('הגישה בוטלה');
+        await this.open('guests');
+      }catch(err){ alertModal('הביטול נכשל',(err&&err.detail)||'שגיאה','fa-triangle-exclamation'); }
+    },{title:'ביטול גישת אורח',confirmText:'בטל גישה',
+       note:`האורח יוסר מהקבוצה ${group} והחשבון שלו כאן יושבת, כך שלא יוכל להתחבר. חשבון האורח עצמו ב-Entra ID נשאר — מחיקה משם נעשית בפורטל.`});
   },
   fdt(iso){ if(!iso)return '<span style="color:var(--text-light)">— מעולם לא —</span>'; try{ return esc(new Date(iso).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})); }catch(e){ return esc(iso); } },
   rowsHTML(){

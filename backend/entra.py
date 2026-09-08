@@ -413,7 +413,7 @@ async def _complete_login(request: Request):
 
     email = principal["email"]
     domains = allowed_domains()
-    if domains and email.split("@")[-1] not in domains:
+    if domains and email.split("@")[-1] not in domains and not _is_invited_guest(email):
         raise HTTPException(403, "החשבון אינו שייך לדומיין של הארגון")
 
     hours = _session_hours()
@@ -539,10 +539,41 @@ _EMAIL_CLAIMS = ("preferred_username", "email", "upn", "unique_name")
 
 
 def _principal_from_claims(claims: dict) -> dict:
-    email = next((claims[c] for c in _EMAIL_CLAIMS if claims.get(c) and "@" in str(claims[c])), None)
+    candidates = [str(claims[c]).strip() for c in _EMAIL_CLAIMS
+                  if claims.get(c) and "@" in str(claims[c])]
+    # A B2B guest carries two addresses: the one they typed, and the mangled
+    # `person_partner.com#EXT#@host.onmicrosoft.com` the directory built from
+    # it. Which claim holds which varies by guest type, so prefer any claim that
+    # is a real address and decode the #EXT# form only if that is all there is.
+    # Without this a guest signs in perfectly and is then told they have no
+    # account, because no users row is keyed by the mangled form.
+    email = next((c for c in candidates if "#EXT#" not in c.upper()), None)
+    if not email and candidates:
+        from entra_guests import decode_ext_upn
+        email = decode_ext_upn(candidates[0])
     if not email:
         raise HTTPException(403, "לא נמצאה כתובת דוא\"ל בפרופיל המשתמש ב-Entra")
     return {"email": str(email).strip().lower(), "name": claims.get("name")}
+
+
+def _is_invited_guest(email: str) -> bool:
+    """Was this address deliberately invited through the guests screen?
+
+    The domain allowlist exists to keep strangers out, and a guest is by
+    definition on somebody else's domain — so without this exception the
+    feature would invite people into the tenant who then cannot sign in. The
+    fence is not lowered: only an address a system admin invited, which is the
+    only way a users row ever gets an `entra_object_id`, passes.
+
+    Imported lazily, and never allowed to raise: an unavailable database must
+    not turn into a confusing "wrong domain" message.
+    """
+    try:
+        from auth import is_invited_guest
+        return is_invited_guest(email)
+    except Exception as exc:
+        print(f"[auth] guest check failed for {email}: {exc}")
+        return False
 
 
 @router.get("/auth/logout")

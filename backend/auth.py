@@ -113,9 +113,33 @@ def _claims_to_principal(claims):
         typ, val = (c or {}).get("typ"), (c or {}).get("val")
         if typ and val and typ not in by_type:
             by_type[typ] = val
-    email = next((by_type[t] for t in _EMAIL_CLAIMS if by_type.get(t)), None)
+    emails = [by_type[t] for t in _EMAIL_CLAIMS if by_type.get(t)]
+    # Prefer a claim that is a real address over a guest's mangled
+    # `person_partner.com#EXT#@host.onmicrosoft.com` UPN — see
+    # entra_guests.decode_ext_upn for why the mangled one matches no user row.
+    email = next((e for e in emails if "#EXT#" not in str(e).upper()), None)
+    if not email and emails:
+        from entra_guests import decode_ext_upn
+        email = decode_ext_upn(str(emails[0]))
     name = next((by_type[t] for t in _NAME_CLAIMS if by_type.get(t)), None)
     return {"email": email, "name": name}
+
+
+def is_invited_guest(email: str) -> bool:
+    """True when this address belongs to an account the guests screen invited.
+
+    `entra_object_id` is written in exactly one place — the guest invitation
+    endpoint — so its presence is proof a system admin deliberately brought this
+    person in from outside the organization. entra.py uses that to let them past
+    the domain allowlist, which they would otherwise always fail.
+    """
+    if _engine is None or not email:
+        return False
+    ident = email.strip().lower()
+    with Session(_engine) as db:
+        row = (db.query(User.entra_object_id, User.is_active)
+               .filter(func.lower(User.email) == ident).first())
+    return bool(row and row[0] and row[1] is not False)
 
 
 def _principal_easyauth(request: Request):
