@@ -5331,12 +5331,12 @@ function itemDragOpened(tb){
     });
   });
 }
-/* The item is where it was put, and the board is its full height again — say
-   so by going to it rather than by leaving it to be looked for. */
-function showMovedRow(tid){
+/* Where the item landed, marked for a moment. The board is not scrolled to it:
+   the view goes nowhere on its own, and the row was left in place by the unfold
+   anyway — it is already where it was let go of. */
+function markMovedRow(tid){
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     const row=document.querySelector('tr[data-tid="'+tid+'"]'); if(!row)return;
-    try{ row.scrollIntoView({block:'nearest',inline:'nearest',behavior:'smooth'}); }catch(e){}
     row.classList.add('just-moved');
     setTimeout(()=>row.classList.remove('just-moved'),900);
   }));
@@ -5463,7 +5463,7 @@ function vTable(el){
             st.colSort=null;
             const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
             toast(wasSorted?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר');
-            renderView(); showMovedRow(tid);
+            renderView(); markMovedRow(tid);
           }catch(e){ toast('שגיאה בהעברת הפריט'); renderView(); }
         }});
     });

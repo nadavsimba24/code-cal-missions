@@ -258,9 +258,11 @@ ck('nothing moved → no request and no message',
    onEnd.indexOf('sameSpot(from,spot)') > 0
    && onEnd.indexOf('sameSpot(from,spot)') < onEnd.indexOf("api('/api/tasks/'"),
    'guard at '+onEnd.indexOf('sameSpot(from,spot)'));
-ck('a real move still says so, and shows where it went',
+ck('a real move still says so, and marks where it went',
    /toast\(wasSorted\?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר'\)/.test(onEnd)
-   && /renderView\(\); showMovedRow\(tid\);/.test(onEnd));
+   && /renderView\(\); markMovedRow\(tid\);/.test(onEnd));
+ck('and the view is never scrolled anywhere on its own',
+   !/scrollIntoView/.test(grab('markMovedRow')));
 ck('the move is still sent as a neighbour, not as a row number',
    /const body=\{group_id:gid,after_id:spot\.after\}/.test(onEnd));
 
