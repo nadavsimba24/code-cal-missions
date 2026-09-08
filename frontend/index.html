@@ -3475,8 +3475,14 @@ function linkNamesOf(t,colId){
 function applyFilters(tasks){
   const f=st.filters; let out=(tasks||[]).slice();
   if(f.q){const q=f.q.trim().toLowerCase();
+    // The item's own number, so an id copied off a row (or out of a mail, a
+    // ticket, a phone call) finds it. Digits only, and at least three of them:
+    // the number is eleven digits long, so searching "5" would match nearly
+    // every item on the board and bury whatever the 5 was really about.
+    const byId=/^\d{3,}$/.test(q);
     out=out.filter(t=>(t.title||'').toLowerCase().includes(q)
       || (t.description||'').toLowerCase().includes(q)
+      || (byId && String(t.item_uid||'').includes(q))
       || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q))
       // an item is findable by what it is linked to, not only by its own words
       || linkNamesOf(t).some(n=>n.toLowerCase().includes(q)));}
