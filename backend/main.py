@@ -1437,6 +1437,44 @@ def _backfill_item_uids(db, board_id):
     if changed:
         db.commit()
 
+def _backfill_item_id_column():
+    """Give every board the "מספר מזהה" column, not only the ones created since
+    it became one of the defaults.
+
+    A board created before it shipped simply does not have it, which is why the
+    column shows up on QA — where boards are made all the time — and not on a
+    production board that has been there for months. The identifier itself is
+    not new to those items: it is minted the first time a board carrying the
+    column is read (see the fetch below), so the column arrives already filled.
+
+    Its own flag rather than a third entry in AUTO_COLS: every existing board
+    already carries `auto_cols_v1`, so adding it there would reach new databases
+    and skip every board this is for. Once per board, so an admin who removes
+    the column does not find it back after the next restart.
+    """
+    with Session(engine) as db:
+        added = 0
+        for b in db.query(Board).all():
+            s = dict(b.settings or {})
+            if s.get("item_id_col_v1"):
+                continue
+            cols = [dict(c) for c in (s.get("columns") or [])]
+            if not any(c.get("type") == "item_id" for c in cols):
+                used = {c.get("id") for c in cols}
+                cid = "sys_item_id" if "sys_item_id" not in used else ("col_" + uuid.uuid4().hex[:8])
+                cols.append({"id": cid, "type": "item_id", "title": "מספר מזהה",
+                             "options": None, "formula": None, "connect": None,
+                             "copy_mode": None, "perms": {}})
+                s["columns"] = cols
+                added += 1
+            s["item_id_col_v1"] = True
+            b.settings = s
+        db.commit()
+        if added:
+            print(f"↻ added the מספר מזהה column to {added} board(s)", flush=True)
+_safe_startup(_backfill_item_id_column)
+
+
 def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, columns=None):
     assignees = [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in t.assignees] if t.assignees else []
     subtask_count = db.query(Task).filter(Task.parent_id == t.id).count()
