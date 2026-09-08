@@ -38,6 +38,11 @@ the registration is multi-tenant for some other reason, set
 `ENTRA_ALLOWED_DOMAINS` and the app enforces it a second time — the code checks
 the `tid` claim against your tenant either way.
 
+**Not on an environment that invites guests.** A guest is on somebody else's
+domain by definition, so the allowlist would reject every one of them. Leave it
+unset there and let the tenant pin plus the `users` row do the work — see
+[ENTRA_GUESTS.md](ENTRA_GUESTS.md).
+
 ## 2. Configuration
 
 ```bash
@@ -57,7 +62,7 @@ CITYOS_SESSION_HOURS=8                                 # optional, default 8
 | `ENTRA_CLIENT_ID` | yes | Also the expected `aud` of the id_token. |
 | `ENTRA_CLIENT_SECRET` | yes | Rotate before it expires — sign-in stops dead when it does. |
 | `ENTRA_REDIRECT_URI` | recommended | Derived from the forwarded host/scheme if unset. Set it anyway — the derived one follows whatever host the request arrived on, so a stray hostname silently produces a URI the registration has never seen. **Comma-separated when the site answers on more than one hostname** (a custom domain *and* the platform's own): the app picks the entry matching the host in hand, because the state cookie belongs to the host the browser typed and a callback sent to the other one arrives without it. Register every one of them on the app registration. The production pipeline writes this from the Web App's full `hostNames` list. |
-| `ENTRA_ALLOWED_DOMAINS` | no | Extra fence for guests / multi-tenant registrations. |
+| `ENTRA_ALLOWED_DOMAINS` | no | Extra fence for multi-tenant registrations. **Leave unset where guests sign in** — it rejects every domain but yours, which is all of them. Invited guests are let past it if it is on. |
 | `CITYOS_SESSION_SECRET` | production | Signs the session cookie. **Use the same value on every replica**, or instances cannot read each other's cookies and users bounce between signed-in and signed-out. Unset ⇒ a random per-process key ⇒ everyone is signed out on restart. |
 | `CITYOS_SESSION_HOURS` | no | Session lifetime. When it expires the SPA silently bounces through `/auth/login`, which is invisible if the Entra session is still live. |
 
@@ -108,7 +113,7 @@ page names the cause; the server log also carries the token-exchange body.
 | `AADSTS50011` redirect URI mismatch | `ENTRA_REDIRECT_URI` ≠ what is registered |
 | `AADSTS7000215` invalid client secret | the secret's *ID* was copied instead of its *Value*, or it expired |
 | 403 "המשתמש אינו רשום במערכת" | sign-in worked; no `users` row with that email |
-| 403 "החשבון אינו שייך לדומיין" | `ENTRA_ALLOWED_DOMAINS` excludes it |
+| 403 "החשבון אינו שייך לדומיין" | `ENTRA_ALLOWED_DOMAINS` excludes it. On a guest, it also means they were not invited through the guests screen — that is what exempts them |
 | 400 / "פג תוקף", sign-in loops, only on one hostname | the site answers on two hostnames and `ENTRA_REDIRECT_URI` names only the other one — the callback lands where the state cookie is not. List both |
 | 400 "לא הצלחנו להשלים את ההתחברות" | the browser kept none of our state cookie — third-party cookie blocking, or a private window with site data off. A first unmatched callback is retried silently; this page only appears when the retry comes back unmatched too |
 | signed out on every deploy | `CITYOS_SESSION_SECRET` unset, or differs per replica |

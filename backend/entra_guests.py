@@ -17,7 +17,7 @@ Two application permissions, admin-consented, are the whole requirement:
     User.Invite.All          POST /invitations
     GroupMember.ReadWrite.All  read the group, add and remove its members
 
-The feature is off unless `CITYOS_GUEST_INVITES` is set, which is how it reaches
+The feature is off unless `ENTRA_GUEST_INVITES` is set, which is how it reaches
 QA without also reaching production: both run the same image, and only the QA
 Container App carries the variable. See scripts/ENTRA_GUESTS.md.
 
@@ -77,7 +77,7 @@ def group_id_override():
 
 def is_enabled():
     """The feature switch. Off means the screen exists but the API declines."""
-    return _env("CITYOS_GUEST_INVITES").lower() in ("1", "true", "yes", "on")
+    return _env("ENTRA_GUEST_INVITES").lower() in ("1", "true", "yes", "on")
 
 
 def is_configured():
@@ -91,7 +91,7 @@ def redirect_url():
     the generic My Apps page. Falls back to the SSO redirect URI's origin, which
     is already configured everywhere this runs.
     """
-    explicit = _env("CITYOS_GUEST_REDIRECT_URL")
+    explicit = _env("ENTRA_GUEST_REDIRECT_URL")
     if explicit:
         return explicit
     first = _env("ENTRA_REDIRECT_URI").split(",")[0].strip()
@@ -106,7 +106,7 @@ def require_available():
     """Raise the reason this cannot run, or return quietly."""
     if not is_enabled():
         raise HTTPException(503, "הזמנת אורחים אינה מופעלת בסביבה זו "
-                                 "(CITYOS_GUEST_INVITES)")
+                                 "(ENTRA_GUEST_INVITES)")
     if not is_configured():
         raise HTTPException(503, "הזמנת אורחים אינה מוגדרת — חסרים ENTRA_TENANT_ID / "
                                  "ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET")

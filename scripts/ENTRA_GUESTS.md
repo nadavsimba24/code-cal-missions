@@ -62,17 +62,32 @@ guest users" is enough, because the invitation is sent by the *application*.
 
 | Variable | Required | Notes |
 |---|---|---|
-| `CITYOS_GUEST_INVITES` | yes | `1` to switch the feature on. Unset ⇒ the screen loads, says it is off, and the API returns 503. This is what keeps it in QA. |
+| `ENTRA_GUEST_INVITES` | yes | `1` to switch the feature on. Unset ⇒ the screen loads, says it is off, and the API returns 503. This is what keeps it in QA. |
 | `ENTRA_GUEST_GROUP` | no | Group display name. Default `missions-guests`. |
 | `ENTRA_GUEST_GROUP_ID` | recommended | The group's object id. Pins it, and skips the display-name lookup. |
-| `CITYOS_GUEST_REDIRECT_URL` | no | Where redeeming lands the guest. Defaults to the site root derived from `ENTRA_REDIRECT_URI`. |
+| `ENTRA_GUEST_REDIRECT_URL` | no | Where redeeming lands the guest. Defaults to the site root derived from `ENTRA_REDIRECT_URI`. |
 | `ENTRA_GRAPH_*` | no | Separate credentials for Graph; each falls back to the `ENTRA_*` one. |
 
-`ENTRA_ALLOWED_DOMAINS` needs **no** change. A guest is on somebody else's
-domain and would always fail that fence, so `auth.is_invited_guest` lets exactly
-the invited ones past it — an account is "invited" only while it has an
-`entra_object_id`, which nothing but this screen ever writes, and is still
-active. Revoking a guest closes that door again in the same moment.
+### `ENTRA_ALLOWED_DOMAINS` — leave it unset
+
+Guests come from every domain there is, so an allowlist of organizational
+domains is the wrong shape for them and is **not** set on an environment that
+invites guests. Two fences still stand, and they are the ones doing the work:
+
+1. **The tenant.** `ENTRA_TENANT_ID` is a GUID, so `entra._verify_id_token`
+   pins the token's `tid` to that tenant. Only accounts *in* the Mashcal
+   directory can sign in — employees and the guests invited into it. A stranger
+   with a Google account is not one of them.
+2. **The account.** `auth.resolve_user` refuses anybody with no `users` row —
+   `המשתמש אינו רשום במערכת`. Only this screen and the users screen create one.
+
+That second fence holds **only while `CITYOS_AUTH_AUTOPROVISION` is unset**. Set
+it, and any account that passes fence 1 gets a `users` row on first sign-in with
+role `member`. Do not turn it on alongside guests without narrowing it first.
+
+The code still honours the variable, so re-adding it re-enables the fence.
+`auth.is_invited_guest` then lets the invited guests past it, which is what
+keeps them working when it is on — see `entra._complete_login`.
 
 ## 4. Turning it on in QA
 
@@ -91,11 +106,14 @@ az containerapp update \
   --subscription "$SUB" \
   --resource-group rg-missions-qa \
   --name missionspoccontainer \
-  --set-env-vars CITYOS_GUEST_INVITES=1 ENTRA_GUEST_GROUP_ID="$GROUP_ID"
+  --set-env-vars ENTRA_GUEST_INVITES=1 ENTRA_GUEST_GROUP_ID="$GROUP_ID" \
+  --remove-env-vars ENTRA_ALLOWED_DOMAINS
 ```
 
 `--set-env-vars` merges, so `ENTRA_CLIENT_SECRET` and the rest survive. The
-update rolls a new revision; the image it runs does not change.
+`--remove-env-vars` is what opens the app to guests from any domain; see the
+section above for the two fences that stay standing. The update rolls a new
+revision; the image it runs does not change.
 
 Production (`Missions-Prd-Webapp`) stays as it is. When it is time, the same two
 settings go on with `az webapp config appsettings set`, which also merges.

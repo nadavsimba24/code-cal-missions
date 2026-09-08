@@ -110,7 +110,7 @@ class FakeGraph:
 @pytest.fixture
 def graph(monkeypatch):
     """Configure the feature, point it at a fake tenant, forget both caches."""
-    monkeypatch.setenv("CITYOS_GUEST_INVITES", "1")
+    monkeypatch.setenv("ENTRA_GUEST_INVITES", "1")
     monkeypatch.setenv("ENTRA_TENANT_ID", "a8bf01d5-f36b-4b08-ad19-18fe50aa833c")
     monkeypatch.setenv("ENTRA_CLIENT_ID", "11111111-2222-3333-4444-555555555555")
     monkeypatch.setenv("ENTRA_CLIENT_SECRET", "secret")
@@ -273,7 +273,7 @@ def test_revoke_refuses_on_someone_who_is_not_an_invited_guest(client, graph, ad
 
 
 def test_the_feature_is_off_until_the_environment_switches_it_on(client, graph, admin_id, monkeypatch):
-    monkeypatch.delenv("CITYOS_GUEST_INVITES", raising=False)
+    monkeypatch.delenv("ENTRA_GUEST_INVITES", raising=False)
     r = client.post("/api/guests", json={"actor_id": admin_id, "email": "x@partner.co.il"})
     assert r.status_code == 503
     assert not graph.calls

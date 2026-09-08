@@ -4932,7 +4932,7 @@ const SysAdmin = {
     const group=esc(d.group||'missions-guests');
     const can=d.enabled&&d.configured;
     const notice=!d.enabled
-      ? `<div class="sa-note warn"><i class="fa-solid fa-triangle-exclamation"></i> הזמנת אורחים אינה מופעלת בסביבה זו. כדי להפעיל, הגדירו <code>CITYOS_GUEST_INVITES=1</code> על הסביבה.</div>`
+      ? `<div class="sa-note warn"><i class="fa-solid fa-triangle-exclamation"></i> הזמנת אורחים אינה מופעלת בסביבה זו. כדי להפעיל, הגדירו <code>ENTRA_GUEST_INVITES=1</code> על הסביבה.</div>`
       : !d.configured
         ? `<div class="sa-note warn"><i class="fa-solid fa-triangle-exclamation"></i> חסרים פרטי ההתחברות ל-Entra (<code>ENTRA_TENANT_ID</code>, <code>ENTRA_CLIENT_ID</code>, <code>ENTRA_CLIENT_SECRET</code>).</div>`
         : '';
