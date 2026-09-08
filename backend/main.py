@@ -790,14 +790,14 @@ def _board_views(b):
 
 # Per-board status vocabulary. Each entry is {key,label,color} where `key` is one
 # of the underlying TaskStatus values. Keeping the enum key under the hood means
-# group auto-move, parent roll-up, kanban and charts keep working (they all key
-# off task.status) while a board admin may rename/recolor/reorder the statuses
+# the automations, the parent roll-up, the kanban and the charts keep working
+# (they all key off task.status) while a board admin may rename/recolor/reorder the statuses
 # and expose only the ones the board actually uses.
 # The vocabulary a board starts with. Colours come from the status palette, and
 # "טרם הוגדר" is not here: it is the state of an item nobody has set, carried as
 # custom_fields.status_unset, so listing it would make "not chosen" a choice.
 #
-# `base` is the engine value the status behaves as — what group auto-move, the
+# `base` is the engine value the status behaves as — what the automations, the
 # kanban and the charts read. Two entries may share one: תקוע and הקפאה are
 # different words for an item that is not moving, and both park it in on_hold.
 # An entry whose key is not itself an engine value must use the x_ prefix, or
@@ -862,8 +862,8 @@ def _status_col_options(raw):
     return out or None
 
 # A board may define up to this many statuses. Only seven of them can be a
-# TaskStatus value — the ones the engine keys off for group auto-move, kanban
-# columns and charts. Any status beyond those seven is a board-defined label
+# TaskStatus value — the ones the engine keys off for automation conditions,
+# kanban columns and charts. Any status beyond those seven is a board-defined label
 # that *behaves as* one of the seven (its `base`): the item stores the base in
 # task.status so all of that keeps working, and carries the chosen label and
 # colour in custom_fields, which is what the grid renders.
@@ -4061,30 +4061,12 @@ def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
                  "restricted": True} for i in id_list if not state.get(i)]
         return {"items": out}
 
-def _group_for_status(db, board_id, status_val):
-    """The group a top-level item moves to for a status — the one whose own status
-    matches exactly, or None to leave the item exactly where it is.
-
-    No fallback by stage or by status family. A "back to development" route (todo →
-    the in_progress group) was tried and removed: a board can have more than one
-    in_progress group — e.g. "בביצוע" and "roadmap" — and picking one by status
-    alone is a guess that lands items in the wrong place.
-
-    A group left at the default `todo` status is treated as a plain section, never
-    an auto-move destination. Every new group is created as `todo` (see
-    create_group_api), so without this a freshly added group silently becomes a
-    magnet: setting a todo-family status like "חזרה לפיתוח" would yank the item out
-    of "בביצוע" into that new last group. Skipping todo groups keeps the item put.
-    """
-    sv = status_val.value if hasattr(status_val, "value") else status_val
-    groups = db.query(Group).filter(Group.board_id == board_id).order_by(Group.position).all()
-    gs_of = lambda g: (g.task_status.value if hasattr(g.task_status, "value") else g.task_status)
-    for g in groups:
-        if gs_of(g) == "todo":
-            continue
-        if gs_of(g) == sv:
-            return g
-    return None
+# Groups and statuses are not wired to each other. A board that wants an item
+# filed by its status says so with an automation — status_changes_to →
+# move_to_group — which is listed with every other rule on the board and can be
+# switched off. What used to be here was the same rule with no name, no listing
+# and no way to turn it off; it also had to guess which group a status meant on
+# a board with two of them.
 
 
 def _st_of(t):
@@ -4092,8 +4074,10 @@ def _st_of(t):
 
 
 def _rollup_parent(db, parent_id):
-    """When every sub-item of a parent is done, mark the parent done too and move
-    it to the matching group."""
+    """When every sub-item of a parent is done, mark the parent done too.
+
+    Only the status: where the item then belongs is a question for an automation
+    (status_move_group), not for this."""
     parent = db.query(Task).filter(Task.id == parent_id).first()
     if not parent:
         return
@@ -4102,9 +4086,6 @@ def _rollup_parent(db, parent_id):
         return
     if all(_st_of(s) == "done" for s in subs) and _st_of(parent) != "done":
         parent.status = TaskStatus.DONE
-        g = _group_for_status(db, parent.board_id, TaskStatus.DONE)
-        if g:
-            parent.group_id = g.id
 
 
 # ── Automations engine (אוטומציות) ──────────────────────────────────
@@ -4165,10 +4146,6 @@ def _apply_status_key(db, task, key):
                    "status_color": entry["color"]})
         cf.pop("status_unset", None)
     task.custom_fields = cf
-    if task.parent_id is None:
-        g = _group_for_status(db, task.board_id, nv)
-        if g:
-            task.group_id = g.id
     return True
 
 
@@ -4781,13 +4758,10 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 if st_val(task.status) != st_val(nv):
                     _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
                 task.status = nv
-                # auto-move a top-level item only to the group that stands for its
-                # exact status; with no such group it stays where it is
-                if task.parent_id is None:
-                    g = _group_for_status(db, task.board_id, nv)
-                    if g:
-                        task.group_id = g.id
-                else:
+                # A status change does not move the item. Moving between groups by
+                # status is an automation (recipe status_move_group) — built in, it
+                # was a rule nobody wrote and nobody could see or switch off.
+                if task.parent_id is not None:
                     # roll up: parent auto-completes once all its sub-items are done
                     _rollup_parent(db, task.parent_id)
             except ValueError:
@@ -4886,7 +4860,12 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         # the write landed — only now is it safe to tell anyone, or a listener
         # could refetch and read the pre-commit row
         bus.publish("task.changed", board_id=_bid, task_id=_tid, actor_id=actor)
-        out = {"id": task.id, "custom_fields": task.custom_fields or {}}
+        # group_id, because an automation may have filed the item somewhere: the
+        # person who made the change is the one client the live stream does not
+        # tell (it would echo their own edit back at them), so the answer to
+        # "where is it now" has to come back with the write itself.
+        out = {"id": task.id, "group_id": task.group_id,
+               "custom_fields": task.custom_fields or {}}
         if _link_report:
             # The rules already refused these. Saying so is the difference
             # between a link that did not take and a link that vanished.

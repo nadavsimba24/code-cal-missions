@@ -153,35 +153,30 @@ def test_assign_at_creation_notifies(client, admin_id, member_id):
         client.post("/api/notifications/read-all", json={"user_id": member_id})
 
 
-def test_status_change_auto_moves_to_matching_group(client):
-    """Changing a top-level item's status moves it to the group that stands for
-    that status — and leaves it alone when no group does."""
+def test_a_status_change_never_moves_the_item_between_groups(client):
+    """Setting a status leaves the item in the group it is in — every status,
+    including the ones a group on this board stands for.
+
+    Filing an item by its status is an automation a board can be given
+    (status_changes_to → move_to_group). It used to be built in as well: a rule
+    with no name, absent from the board's own list of automations and impossible
+    to switch off. See tests/test_status_group_automation.py."""
     b = client.get("/api/boards/1?user_id=1").json()
-    by_status = {g["task_status"]: g["id"] for g in b["groups"]}
+    every_status = ("todo", "in_progress", "review", "on_hold", "cancelled",
+                    "backlog", "done")
     gid = b["groups"][0]["id"]
-    r = client.post("/api/tasks", json={"title": "move-me", "board_id": 1, "group_id": gid})
-    tid = r.json()["id"]
+    tid = client.post("/api/tasks", json={"title": "move-me", "board_id": 1,
+                                          "group_id": gid}).json()["id"]
 
     def where():
         board = client.get("/api/boards/1?user_id=1").json()
         return next(t for t in board["tasks"] if t["id"] == tid)["group_id"]
 
     try:
-        for status, gid_for in by_status.items():
+        for status in every_status:
             r = client.patch(f"/api/tasks/{tid}", json={"status": status, "user_id": 1})
             assert r.status_code == 200, r.text
-            assert where() == gid_for, f"status {status} did not land in its own group"
-        # a status with no group of its own does not relocate the item — no
-        # status-family fallback (a board may have two in_progress groups, so a
-        # guess would land the item in the wrong one, e.g. "roadmap")
-        homeless = [s for s in ("todo", "review", "on_hold", "cancelled", "backlog")
-                    if s not in by_status]
-        assert homeless, "board 1 has a group for every status — nothing to check"
-        stayed = where()
-        for status in homeless:
-            assert client.patch(f"/api/tasks/{tid}",
-                                json={"status": status, "user_id": 1}).status_code == 200
-            assert where() == stayed, f"status {status} moved the item out of its group"
+            assert where() == gid, f"status {status} moved the item out of its group"
     finally:
         client.delete(f"/api/tasks/{tid}")
 
@@ -256,11 +251,12 @@ def test_creating_an_item_logs_a_creation_entry(client, admin_id):
 
 
 def test_parent_rolls_up_to_done_when_all_subitems_done(client):
-    """A parent item auto-completes (status done, moved to the done group) only
-    once every one of its sub-items is done."""
+    """A parent item auto-completes once every one of its sub-items is done.
+
+    The status only: where a done item then belongs is a question for an
+    automation, so the parent stays in its own group."""
     b = client.get("/api/boards/1?user_id=1").json()
     gid = b["groups"][0]["id"]
-    done_gids = [g["id"] for g in b["groups"] if g["task_status"] == "done"]
     p = client.post("/api/tasks", json={"title": "parent", "board_id": 1, "group_id": gid}).json()["id"]
     s1 = client.post("/api/tasks", json={"title": "s1", "board_id": 1, "parent_id": p}).json()["id"]
     s2 = client.post("/api/tasks", json={"title": "s2", "board_id": 1, "parent_id": p}).json()["id"]
@@ -273,8 +269,7 @@ def test_parent_rolls_up_to_done_when_all_subitems_done(client):
         client.patch(f"/api/tasks/{s2}", json={"status": "done", "user_id": 1})
         pt = parent()
         assert pt["status"] == "done"                # all subs done → parent done
-        if done_gids:
-            assert pt["group_id"] in done_gids
+        assert pt["group_id"] == gid                 # and stays where it was put
     finally:
         client.delete(f"/api/tasks/{p}")
 

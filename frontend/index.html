@@ -1944,15 +1944,17 @@ const STATUS = {
 };
 /* Per-board statuses: the open board defines its own label/color/order for the
    built-in status column (falls back to the global STATUS when uncustomised).
-   Keys stay the underlying enum values so auto-move/kanban/charts keep working. */
+   Keys stay the underlying enum values so the kanban, the charts and the
+   automations keep working. */
 function boardStatusList(){
   const s=st.board&&st.board.statuses;
   if(s&&s.length)return s.map(x=>({key:x.key,he:x.label,c:x.color,base:x.base||x.key}));
   return Object.entries(STATUS).map(([k,v])=>({key:k,he:v.he,c:v.c,base:k}));
 }
 function boardStatusMap(){const m={};boardStatusList().forEach(x=>m[x.key]={he:x.he,c:x.c,base:x.base});return m;}
-/* Only seven statuses can be a value the engine understands (group auto-move,
-   kanban, charts). A board-defined status beyond those behaves as one of them —
+/* Only seven statuses can be a value the engine understands (the kanban, the
+   charts, an automation's condition). A board-defined status beyond those
+   behaves as one of them —
    its `base` — while the item carries the chosen label and colour for display. */
 function statusEntry(key){ return boardStatusList().find(x=>x.key===key)||null; }
 function statusKeyOf(t){
@@ -6874,30 +6876,25 @@ async function setField(id,field,value){
         if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
   }
   if(t)t[field]=value;
-  // mirror the backend auto-move (see _group_for_status in backend/main.py): a
-  // top-level item moves only to the group that stands for its exact status, and
-  // stays put when none does. A group left at the default `todo` status is a
-  // plain section, never a destination — so a todo-family status like
-  // "חזרה לפיתוח" never yanks the item out of "בביצוע" into a freshly added group.
-  if(field==='status' && t && !t.parent_id){
-    const gs=(st.board&&st.board.groups)||[];
-    const g=gs.find(x=>x.task_status===value && x.task_status!=='todo');
-    if(g) t.group_id=g.id;
-  }
-  // roll up: when all sub-items are done, the parent item moves to "done" too
+  // A status change leaves the item in its group. Filing an item by its status
+  // is an automation the board can be given (status_changes_to → move_to_group),
+  // listed with the rest and switchable; it is not something the cell does on
+  // its own. The server does the same, so nothing here has to guess.
+  // roll up: when all sub-items are done, the parent item is done too
   if(field==='status' && t && t.parent_id){
     const parent=findAnyTask(t.parent_id), subs=(parent&&parent.subtasks)||[];
     if(parent && subs.length && subs.every(s=>s.status==='done') && parent.status!=='done'){
       parent.status='done';
       _wholeView = true;   // the parent row changed too, not just this sub-item
-      const gs=(st.board&&st.board.groups)||[];
-      const g=gs.find(x=>x.task_status==='done');   // same rule: only its own group
-      if(g) parent.group_id=g.id;
     }
   }
   const body={[field]:value}; if(extra)body.custom_fields=extra;
   try{
-    await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)});
+    const res=await api('/api/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)});
+    // An automation may have filed the item into another group. The answer comes
+    // back with the write — the grid follows where the server put it without
+    // knowing a thing about which rules the board has.
+    if(t && res && res.group_id!=null && res.group_id!==t.group_id){ t.group_id=res.group_id; _wholeView=true; }
     refreshRow(id, _wholeView || !!(t && t.group_id!==_group0));
   }catch(e){ toast('שגיאה בעדכון'); }
 }
@@ -7148,7 +7145,7 @@ function _stAdd(){
   if(nx){ _stDraft.push({key:nx.key,label:nx.he,color:nx.c,base:nx.key}); }
   else{
     // Beyond those seven the status is the board's own: it is stored against an
-    // engine value so group auto-move and the kanban keep working, but that is
+    // engine value so the kanban and the automations keep working, but that is
     // an implementation detail — nothing in the editor exposes it.
     const pal=STATUS_PALETTE.filter(c=>!_stDraft.some(s=>String(s.color||'').toUpperCase()===c));
     _stDraft.push({key:'',label:'סטטוס חדש',color:pal[0]||STATUS_PALETTE[0],base:'in_progress'});

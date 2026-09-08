@@ -60,13 +60,14 @@ def test_the_seven_built_ins_keep_their_own_key_as_base(client, admin_id):
 
 
 def test_an_item_stores_the_base_and_carries_the_label(client, admin_id):
-    """This is what keeps auto-move, kanban and the charts working."""
+    """This is what keeps the kanban, the charts and the automations working."""
     bid = _board(client, admin_id)
     out = _set(client, bid, admin_id, BASE + [{"label": "בבדיקת קבלן", "color": "#a25ddc",
                                                "base": "in_progress"}])
     custom = out[-1]
-    tid = client.post("/api/tasks", json={"board_id": bid, "title": "פריט",
-                                          "user_id": admin_id}).json()["id"]
+    made = client.post("/api/tasks", json={"board_id": bid, "title": "פריט",
+                                           "user_id": admin_id}).json()
+    tid, before_gid = made["id"], made["group_id"]
     client.patch(f"/api/tasks/{tid}", json={
         "user_id": admin_id, "status": custom["base"],
         "custom_fields": {"status_key": custom["key"], "status_label": custom["label"],
@@ -75,9 +76,8 @@ def test_an_item_stores_the_base_and_carries_the_label(client, admin_id):
             if t["id"] == tid][0]
     assert task["status"] == "in_progress"                     # the engine's value
     assert task["custom_fields"]["status_label"] == "בבדיקת קבלן"
-    # and it landed in the group that matches the base status
-    groups = {g["id"]: g for g in client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["groups"]}
-    assert groups[task["group_id"]]["task_status"] in ("in_progress", "review", "on_hold")
+    # and the status alone did not file it anywhere: it is where it was created
+    assert task["group_id"] == before_gid
 
 
 def test_statuses_come_back_from_the_patch(client, admin_id):
