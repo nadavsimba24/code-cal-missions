@@ -135,7 +135,9 @@ ck('every group\'s add-item line becomes the strip to drop on',
    s.tds.every(td=>td.textContent==='שחרר כאן'));
 ck('the row being held does not move while the board folds around it',
    s.view.scrollTop===180, 'scrollTop '+s.view.scrollTop);
-s.itemDragChrome(false);
+s.keepInPlace(s.held,()=>s.itemDragChrome(false));
+ck('and does not move when it unfolds either — the row is where it was let go',
+   s.view.scrollTop===500, 'scrollTop '+s.view.scrollTop);
 ck('the strip says what it said before once the drag is over',
    s.tds.every(td=>td.textContent==='+ הוסף פריט'), s.tds.map(t=>t.textContent).join('|'));
 ck('and no mark of the drag is left on the board',
@@ -238,19 +240,18 @@ ck('where the item landed is marked long enough to be seen',
 const body=(anchor,head)=>{ const i=src.indexOf(anchor); const j=src.indexOf(head,i); let d=0;
   for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } };
 const onEnd = body("group:'board-items'",'onEnd:async(evt)=>{');
-ck('the drag records where the row started, and what the board was showing',
-   /_itemDragFrom=itemSpot\(evt\.from,evt\.item\);/.test(src)
-   && /_dragScrollTop=view\?view\.scrollTop:null;/.test(src));
+ck('the drag records where the row started',
+   /_itemDragFrom=itemSpot\(evt\.from,evt\.item\);/.test(src));
 ck('the group the row came from is open before the fold, not sprung back after it',
    /itemDragOpen\(evt\.from,true\); \}/.test(src)
    && src.indexOf('itemDragChrome(true,()=>document') < src.indexOf('itemDragOpen(evt.from,true)'));
 ck('the placeholder is what the fold is held still against',
    /itemDragChrome\(true,\(\)=>document\.querySelector\('tr\.sortable-ghost'\)\|\|evt\.item\)/.test(src));
 ck('the board comes back before anything else happens at the end',
-   /^onEnd:async\(evt\)=>\{\s*itemDragChrome\(false\);/.test(onEnd));
-ck('and comes back to the offset the drag started from',
-   /if\(view&&_dragScrollTop!==null\)view\.scrollTop=_dragScrollTop;/.test(onEnd)
-   && onEnd.indexOf('_dragScrollTop') < onEnd.indexOf('sameSpot(from,spot)'));
+   /keepInPlace\(it,\(\)=>itemDragChrome\(false\)\);/.test(onEnd)
+   && onEnd.indexOf('itemDragChrome(false)') < onEnd.indexOf('sameSpot(from,spot)'));
+ck('and it unfolds around the dropped row, not back to where the drag began',
+   !/_dragScrollTop/.test(src));
 ck('the group under the pointer is opened from onMove',
    /onMove:evt=>\{ itemDragOpen\(evt\.to\);/.test(src));
 ck('nothing moved → no request and no message',

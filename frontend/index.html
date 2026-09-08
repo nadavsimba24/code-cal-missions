@@ -5277,7 +5277,7 @@ function groupsOf(){
    is this row" in exactly the terms the move is sent in — which group, and
    which item it follows — so "did anything change" is one comparison. */
 const DRAG_FADE_MS=120, DRAG_OPEN_MS=180;
-let _dragShrinkT=null, _dragOpenT=null, _dragOpenWant=null, _dragScrollTop=null;
+let _dragShrinkT=null, _dragOpenT=null, _dragOpenWant=null;
 /* Hold one thing still while the board changes shape around it. Every layout
    change here is somebody's frame of reference — the row under the cursor, the
    name of the group being aimed at — and a board that folds up under a held
@@ -5429,7 +5429,6 @@ function vTable(el){
       new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item);
-          const view=document.getElementById('view'); _dragScrollTop=view?view.scrollTop:null;
           // the placeholder is the row's stand-in wherever it has got to by the
           // time the board folds — it is what stays put while it does
           itemDragChrome(true,()=>document.querySelector('tr.sortable-ghost')||evt.item);
@@ -5441,13 +5440,11 @@ function vTable(el){
         // being dragged over opens, the rest stay shrunk to their names
         onMove:evt=>{ itemDragOpen(evt.to); return !(evt.related&&evt.related.classList.contains('sub-wrap')); },
         onEnd:async(evt)=>{
-          itemDragChrome(false);
           const it=evt.item, tid=+it.dataset.tid; const from=_itemDragFrom; _itemDragFrom=null;
-          // the board has its full height back — put it at the offset the drag
-          // started from, or it comes back somewhere nobody scrolled to
-          const view=document.getElementById('view');
-          if(view&&_dragScrollTop!==null)view.scrollTop=_dragScrollTop;
-          _dragScrollTop=null;
+          // the board unfolds the way it folded: around the row. Everything
+          // above it comes back and would push it down the screen, so the view
+          // follows by the same amount and the row stays where it was let go.
+          keepInPlace(it,()=>itemDragChrome(false));
           if(!tid)return;
           const toBody=evt.to, spot=itemSpot(toBody,it), gid=spot.gid;
           // Dropped back where it was picked up from. Re-render so the row sits
