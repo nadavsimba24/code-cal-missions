@@ -8,7 +8,11 @@
    drag to end nowhere was running out of screen. So for the length of the
    gesture the board shrinks to its group names, each group's "+ הוסף פריט"
    line left showing as the strip to drop on, and the group under the pointer
-   opens again. Driven by tests/test_item_drag_feedback.py. */
+   opens again.
+
+   The "nothing moved, nothing announced" rule holds for all three things that
+   can be dragged on a board — an item, a sub-item, a whole group — since it is
+   the same false success in each. Driven by tests/test_item_drag_feedback.py. */
 import fs from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
@@ -181,6 +185,27 @@ ck('and the flying copy is not counted among the sub-items either',
    subOrder(sub([5,6,{clone:6}])).join(',')==='5,6', subOrder(sub([5,6,{clone:6}])).join(','));
 ck('both ends of the sub-item comparison read the order the same way',
    (subEnd.match(/subOrder\(/g)||[]).length===1 && /_subDragFrom=subOrder\(evt\.from\)/.test(src));
+
+// ── and a group put back where it came from ────────────────────────────────
+const grpEnd = (()=>{ const i=src.indexOf("draggable:'.group'");
+  const j=src.indexOf('onEnd:async()=>{',i); let d=0;
+  for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } })();
+ck('a group dropped back into its own place is not a reorder either',
+   /if\(was!==null&&ids\.join\(','\)===was\)\{ renderView\(\); return; \}/.test(grpEnd)
+   && grpEnd.indexOf('===was)') < grpEnd.indexOf("api('/api/groups/reorder'"));
+ck('and it records the order it started from',
+   /onStart:\(\)=>\{ _groupDragFrom=groupOrder\(el\)\.join\(','\); \}/.test(src));
+ck('both ends read the group order the same way',
+   (grpEnd.match(/groupOrder\(el\)/g)||[]).length===1);
+
+const groupOrder=new Function(grab('groupOrder')+'\nreturn groupOrder;')();
+const view=(gids)=>({querySelectorAll:sel=>{
+  const heads=gids.map(x=>typeof x==='object'
+    ? {dataset:{gid:String(x.clone)},cls:'sortable-drag'} : {dataset:{gid:String(x)}});
+  return sel.includes(':not(.sortable-drag)')?heads.filter(h=>!h.cls):heads;}});
+ck('the flying copy of the group is not one of the groups',
+   groupOrder(view([7,8,{clone:8}])).join(',')==='7,8',
+   groupOrder(view([7,8,{clone:8}])).join(','));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

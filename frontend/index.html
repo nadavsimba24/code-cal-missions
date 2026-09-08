@@ -5286,7 +5286,10 @@ function itemSpot(tbody,row){
 }
 function sameSpot(a,b){ return !!a && !!b && a.gid===b.gid && a.after===b.after; }
 function subOrder(tbody){ return [...tbody.querySelectorAll('tr[data-sid]:not(.sortable-drag)')].map(r=>+r.dataset.sid); }
-let _itemDragFrom=null, _subDragFrom=null;
+/* the same for whole groups. Sortable parks its flying copy of the group in
+   the view too, head and id and all, so it has to be left out here as well. */
+function groupOrder(el){ return [...el.querySelectorAll('.group:not(.sortable-drag) .group-head[data-gid]')].map(h=>+h.dataset.gid); }
+let _itemDragFrom=null, _subDragFrom=null, _groupDragFrom=null;
 
 function vTable(el){
   const groups=groupsOf();
@@ -5342,9 +5345,13 @@ function vTable(el){
       forceFallback:true,fallbackTolerance:3,animation:150,
       chosenClass:'drag-chosen',ghostClass:'sortable-ghost',dragClass:'sortable-drag',
       onMove:evt=>!evt.related.hasAttribute('data-orphan'),
+      onStart:()=>{ _groupDragFrom=groupOrder(el).join(','); },
       onEnd:async()=>{
-        const ids=[...el.querySelectorAll('.group-head[data-gid]')].map(h=>+h.dataset.gid);
+        const ids=groupOrder(el), was=_groupDragFrom; _groupDragFrom=null;
         if(!ids.length)return;
+        // put back where it came from: re-render so the group sits where it
+        // belongs again, and say nothing — nothing was moved
+        if(was!==null&&ids.join(',')===was){ renderView(); return; }
         try{await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
           toast('מיקום הקבוצה עודכן');
           (st.board.groups||[]).forEach(gr=>{const i=ids.indexOf(gr.id);if(i>=0)gr.position=i;});

@@ -9,6 +9,9 @@ group names, every group's "+ הוסף פריט" line staying as the strip to dr
 and whichever group the pointer is over opens so a position inside it is still
 a thing that can be chosen. None of it is remembered once the drag ends.
 
+The message rule covers all three things a board lets you drag — an item, a
+sub-item and a whole group — because it is the same false success in each.
+
 The harness runs the real itemSpot/sameSpot/itemDragChrome/itemDragOpen under
 node over a stub DOM, and reads the CSS and the wiring out of index.html; it
 names the failing case.
