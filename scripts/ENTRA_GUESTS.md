@@ -58,6 +58,35 @@ Also confirm **External Identities → External collaboration settings** permits
 invitations: "Member users and users assigned to specific admin roles can invite
 guest users" is enough, because the invitation is sent by the *application*.
 
+### Email one-time passcode — turn it on, or half your guests cannot accept
+
+**External Identities → All identity providers → Email one-time passcode.**
+
+Creating the invitation is not the hard part; proving the invitee owns the
+address is. Entra can do that three ways, and only one of them works for an
+arbitrary domain:
+
+| The invitee has | How they redeem |
+|---|---|
+| An Azure AD account (any tenant) | immediately, with their work sign-in |
+| A Microsoft account | with that account |
+| Neither — most gmail/yahoo/small-supplier addresses | **email one-time passcode only** |
+
+With the passcode provider off, that third row gets *"there isn't a Microsoft
+account for that address"* and simply cannot accept — the guest object exists,
+it sits at `PendingAcceptance` for ever, and nothing in this application can
+help, because the failure is upstream of us.
+
+Tenants created after late 2021 have it on by default. Older ones do not, and
+this tenant is one of them. Changing it needs Global Administrator or
+Authentication Policy Administrator.
+
+Diagnosing this from the outside: the guest's `externalUserState` staying at
+`PendingAcceptance` after they say they accepted is the tell. Note that a guest
+can *sign in* while still pending, using the `…#EXT#@…onmicrosoft.com` form of
+their name — so "they got in once" does not mean redemption happened, and until
+it does, their plain address is not a sign-in identifier.
+
 ## 3. Configuration
 
 | Variable | Required | Notes |
