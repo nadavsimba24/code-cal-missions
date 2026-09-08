@@ -3472,17 +3472,23 @@ function linkIdsOf(t,colId){
 function linkNamesOf(t,colId){
   return linkIdsOf(t,colId).map(id=>((st.linkCache||{})[id]||{}).title).filter(Boolean);
 }
+/* What counts as somebody searching for an item's number rather than for words
+   that happen to be digits. The number in the "מספר מזהה" column is eleven
+   digits, so a bare "5" would match nearly every item on the board — an id with
+   a 5 somewhere in it — and bury the item whose title actually says 5. Three
+   digits is the point where a query stops being a number in a sentence and
+   starts being an id somebody copied. */
+const IS_ITEM_ID=/^\d{3,}$/;
 function applyFilters(tasks){
   const f=st.filters; let out=(tasks||[]).slice();
   if(f.q){const q=f.q.trim().toLowerCase();
-    // The item's own number, so an id copied off a row (or out of a mail, a
-    // ticket, a phone call) finds it. Digits only, and at least three of them:
-    // the number is eleven digits long, so searching "5" would match nearly
-    // every item on the board and bury whatever the 5 was really about.
-    const byId=/^\d{3,}$/.test(q);
+    const byId=IS_ITEM_ID.test(q), hasId=x=>byId&&String(x.item_uid||'').includes(q);
     out=out.filter(t=>(t.title||'').toLowerCase().includes(q)
       || (t.description||'').toLowerCase().includes(q)
-      || (byId && String(t.item_uid||'').includes(q))
+      || hasId(t)
+      // a sub-item prints its own number on its own row and is copied from
+      // there, so the item holding it is the answer to a search for it
+      || (t.subtasks||[]).some(hasId)
       || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q))
       // an item is findable by what it is linked to, not only by its own words
       || linkNamesOf(t).some(n=>n.toLowerCase().includes(q)));}
@@ -3664,7 +3670,18 @@ function goHome(){
   else { document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>'; }
 }
 
-function setSearch(v){st.filters.q=v;const i=document.getElementById('tb-q');if(i&&i.value!==v)i.value=v;refreshToolbar();renderView();}
+function setSearch(v){
+  st.filters.q=v;
+  const i=document.getElementById('tb-q'); if(i&&i.value!==v)i.value=v;
+  // An item found by a sub-item's number opens on it: without this the search
+  // answers with a row that does not carry the number that was searched for,
+  // and the one that does is behind a closed panel.
+  const q=(v||'').trim();
+  if(IS_ITEM_ID.test(q)) ((st.board&&st.board.tasks)||[]).forEach(t=>{
+    if((t.subtasks||[]).some(s=>String(s.item_uid||'').includes(q))) st.openSubs.add(t.id);
+  });
+  refreshToolbar(); renderView();
+}
 function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();refreshToolbar();renderView();}
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
