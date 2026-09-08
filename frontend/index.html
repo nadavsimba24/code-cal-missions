@@ -499,6 +499,24 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group:hover .g-menu-btn{opacity:1}
 .group-head .g-menu-btn:hover{background:var(--row-hover);color:var(--text)}
 .sortable-ghost .group-head{opacity:.4}
+/* An item in the air: the board shrinks to its group names, so a group further
+   down the page is one short drag away instead of a long scroll with a row held
+   down. Every group keeps its "+ הוסף פריט" line as the strip to drop on, and
+   the group under the pointer opens so a place inside it can still be chosen.
+   Put on and taken off by itemDragChrome; the remembered collapsed state is
+   never touched, and a group the user collapsed themselves takes part too — its
+   table is forced back for the length of the gesture. */
+/* the group name un-sticks with its column header by way of a -32px pull; with
+   the header gone for the drag, that pull would slide the next group under it */
+body.dragging-item .grp-stick>.tbl{display:table!important;margin-bottom:0}
+body.dragging-item .grp-batt,body.dragging-item .tbl thead{display:none}
+body.dragging-item .tbl tr.sub-wrap{display:none!important}
+/* the placeholder stays (it answers "where will this land"), and so does the
+   copy of the row that follows the cursor — Sortable parks that copy inside
+   this very tbody, so a blanket rule here would drag an invisible row */
+body.dragging-item .tbl tbody[data-gid]>tr[data-tid]:not(.sortable-ghost):not(.sortable-drag){display:none}
+body.dragging-item .tbl tbody[data-gid].drag-open>tr[data-tid]{display:table-row}
+body.dragging-item .add-row td{color:var(--primary);font-weight:600;text-align:center;border:1.5px dashed var(--primary);border-radius:8px;background:var(--primary-soft)}
 .add-group-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border:1.5px dashed var(--border-strong);border-radius:9px;color:var(--text-muted);font-weight:600;font-size:13.5px;background:var(--surface);transition:.12s}
 .add-group-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
 .color-grid{display:flex;flex-wrap:wrap;gap:9px}
@@ -5229,6 +5247,47 @@ function groupsOf(){
   return out;
 }
 
+/* ===== dragging an item: the board while the item is in the air =====
+   Two rules, both of them about not lying to the person dragging.
+
+   The board shrinks to its group names for the length of the gesture, because
+   a move between groups used to mean holding a row down and scrolling. Each
+   group's "+ הוסף פריט" line is left showing as the strip to drop on (dropping
+   there files the item at the end of that group), and whichever group the
+   pointer is over opens, so a position inside a group is still a thing that
+   can be chosen. Nothing here is remembered: it is a class on <body> and a
+   class on one tbody, both gone by the time the drag ends.
+
+   And a drag that puts the row back where it started is not a move, so it
+   neither goes to the server nor claims one happened. itemSpot answers "where
+   is this row" in exactly the terms the move is sent in — which group, and
+   which item it follows — so "did anything change" is one comparison. */
+function itemDragChrome(on){
+  document.body.classList.toggle('dragging-item',on);
+  document.querySelectorAll('.tbl tbody[data-gid] .add-row td').forEach(td=>{
+    if(on){ if(td.dataset.addLabel===undefined)td.dataset.addLabel=td.textContent; td.textContent='שחרר כאן'; }
+    else if(td.dataset.addLabel!==undefined){ td.textContent=td.dataset.addLabel; delete td.dataset.addLabel; }
+  });
+  if(!on)document.querySelectorAll('tbody.drag-open').forEach(tb=>tb.classList.remove('drag-open'));
+}
+function itemDragOpen(tb){
+  const open=(tb&&tb.dataset&&tb.dataset.gid!==undefined)?tb:null;
+  document.querySelectorAll('.tbl tbody[data-gid]').forEach(x=>x.classList.toggle('drag-open',x===open));
+}
+function itemSpot(tbody,row){
+  // Which item it sits below — not which row number it is. With a search or a
+  // filter on, the rows on screen are a subset of the group, so "the third row"
+  // is not "the third item", and an index would file it somewhere nobody
+  // pointed at. First row → after nothing → the top.
+  // ...and never the copy of the row that follows the cursor: Sortable parks it
+  // in this tbody too, so counting it can file an item after itself.
+  const rows=[...tbody.querySelectorAll('tr[data-tid]:not(.sortable-drag)')], i=rows.indexOf(row);
+  return {gid:tbody.dataset.gid?+tbody.dataset.gid:null, after:i>0?+rows[i-1].dataset.tid:null};
+}
+function sameSpot(a,b){ return !!a && !!b && a.gid===b.gid && a.after===b.after; }
+function subOrder(tbody){ return [...tbody.querySelectorAll('tr[data-sid]:not(.sortable-drag)')].map(r=>+r.dataset.sid); }
+let _itemDragFrom=null, _subDragFrom=null;
+
 function vTable(el){
   const groups=groupsOf();
   // filters are active but nothing matches → show the "no match" hint. An empty
@@ -5295,19 +5354,21 @@ function vTable(el){
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
       new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
-        // a top-level item never lands inside a sub-item panel row
-        onMove:evt=>!(evt.related&&evt.related.classList.contains('sub-wrap')),
+        onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item); itemDragOpen(null); itemDragChrome(true); },
+        // a top-level item never lands inside a sub-item panel row; the group
+        // being dragged over opens, the rest stay shrunk to their names
+        onMove:evt=>{ itemDragOpen(evt.to); return !(evt.related&&evt.related.classList.contains('sub-wrap')); },
         onEnd:async(evt)=>{
-          const it=evt.item, tid=+it.dataset.tid; if(!tid)return;
-          const toBody=evt.to, gid=toBody.dataset.gid?+toBody.dataset.gid:null;
-          // Which item it now sits below — not which row number it landed on.
-          // With a search or a filter on, the rows on screen are a subset of
-          // the group, so "the third row" is not "the third item", and an index
-          // would file it somewhere nobody pointed at. First row → after
-          // nothing → the top.
-          const rows=[...toBody.querySelectorAll('tr[data-tid]')], at=rows.indexOf(it);
+          itemDragChrome(false);
+          const it=evt.item, tid=+it.dataset.tid; const from=_itemDragFrom; _itemDragFrom=null;
+          if(!tid)return;
+          const toBody=evt.to, spot=itemSpot(toBody,it), gid=spot.gid;
+          // Dropped back where it was picked up from. Re-render so the row sits
+          // where it belongs again, then stop: nothing was moved, so nothing is
+          // sent and nothing is announced.
+          if(sameSpot(from,spot)){ renderView(); return; }
           const grp=(st.board.groups||[]).find(g=>g.id===gid);
-          const body={group_id:gid,after_id:at>0?+rows[at-1].dataset.tid:null};
+          const body={group_id:gid,after_id:spot.after};
           if(grp)body.status=grp.task_status;
           const wasSorted=!!(st.colSort&&st.colSort.key);
           try{
@@ -5326,9 +5387,15 @@ function vTable(el){
     el.querySelectorAll('.sub-body[data-parent]').forEach(sb=>{
       new Sortable(sb,{draggable:'tr[data-sid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
+        // the copy of the row that follows the cursor lives in this table too,
+        // and carries the same id — counting it would post a duplicate and make
+        // every drag look like a reorder
+        onStart:evt=>{ _subDragFrom=subOrder(evt.from).join(','); },
         onEnd:async(evt)=>{
-          const pid=+evt.to.dataset.parent; if(!pid)return;
-          const ids=[...evt.to.querySelectorAll('tr[data-sid]')].map(r=>+r.dataset.sid);
+          const pid=+evt.to.dataset.parent; const was=_subDragFrom; _subDragFrom=null;
+          if(!pid)return;
+          const ids=subOrder(evt.to);
+          if(was!==null&&ids.join(',')===was)return;   // same order → nothing moved
           try{
             await api('/api/tasks/'+pid+'/subitems/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
             const parent=findAnyTask(pid);            // mirror the new order locally so a re-render keeps it
