@@ -511,11 +511,25 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 body.dragging-item .grp-stick>.tbl{display:table!important;margin-bottom:0}
 body.dragging-item .grp-batt,body.dragging-item .tbl thead{display:none}
 body.dragging-item .tbl tr.sub-wrap{display:none!important}
+/* the shrink happens in two steps: what is leaving dims where it stands, and
+   only then is it taken out of the layout. Folding a board away in a single
+   frame is the whole of what reads as the screen jumping. */
+body.dragging-fade .tbl thead,body.dragging-fade .grp-batt,body.dragging-fade .tbl tr.sub-wrap,
+body.dragging-fade .tbl tbody[data-gid]:not(.drag-open)>tr[data-tid]:not(.sortable-ghost):not(.sortable-drag){opacity:0;transition:opacity .12s ease}
 /* the placeholder stays (it answers "where will this land"), and so does the
    copy of the row that follows the cursor — Sortable parks that copy inside
    this very tbody, so a blanket rule here would drag an invisible row */
 body.dragging-item .tbl tbody[data-gid]>tr[data-tid]:not(.sortable-ghost):not(.sortable-drag){display:none}
+/* a group that opens under the pointer fades its rows in rather than appearing.
+   Only one that opens into an already-folded board: the group the drag started
+   in was open before the fold and never left the screen, and animating it in
+   would be a blink of exactly the rows being kept still. */
 body.dragging-item .tbl tbody[data-gid].drag-open>tr[data-tid]{display:table-row}
+body.dragging-item .tbl tbody[data-gid].drag-opened>tr[data-tid]{animation:dragRowIn .14s ease}
+@keyframes dragRowIn{from{opacity:0}to{opacity:1}}
+/* where the item landed, for as long as it takes to see it */
+@keyframes justMoved{from{background:var(--primary-soft)}to{background:transparent}}
+tr.just-moved>td{animation:justMoved .9s ease-out}
 body.dragging-item .add-row td{color:var(--primary);font-weight:600;text-align:center;border:1.5px dashed var(--primary);border-radius:8px;background:var(--primary-soft)}
 .add-group-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border:1.5px dashed var(--border-strong);border-radius:9px;color:var(--text-muted);font-weight:600;font-size:13.5px;background:var(--surface);transition:.12s}
 .add-group-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
@@ -5262,17 +5276,70 @@ function groupsOf(){
    neither goes to the server nor claims one happened. itemSpot answers "where
    is this row" in exactly the terms the move is sent in — which group, and
    which item it follows — so "did anything change" is one comparison. */
-function itemDragChrome(on){
-  document.body.classList.toggle('dragging-item',on);
-  document.querySelectorAll('.tbl tbody[data-gid] .add-row td').forEach(td=>{
-    if(on){ if(td.dataset.addLabel===undefined)td.dataset.addLabel=td.textContent; td.textContent='שחרר כאן'; }
+const DRAG_FADE_MS=120, DRAG_OPEN_MS=180;
+let _dragShrinkT=null, _dragOpenT=null, _dragOpenWant=null, _dragScrollTop=null;
+/* Hold one thing still while the board changes shape around it. Every layout
+   change here is somebody's frame of reference — the row under the cursor, the
+   name of the group being aimed at — and a board that folds up under a held
+   row slides that reference hundreds of pixels up the screen. Scrolling by the
+   same amount in the same frame means nothing appears to move at all. */
+function keepInPlace(ref,change){
+  const view=document.getElementById('view');
+  const el=typeof ref==='function'?ref():ref;
+  const before=(el&&view)?el.getBoundingClientRect().top:null;
+  change();
+  if(before===null||!el.isConnected)return;
+  view.scrollTop+=el.getBoundingClientRect().top-before;
+}
+function itemDragChrome(on,anchor){
+  clearTimeout(_dragShrinkT); clearTimeout(_dragOpenT); _dragOpenWant=null;
+  const label=shut=>document.querySelectorAll('.tbl tbody[data-gid] .add-row td').forEach(td=>{
+    if(shut){ if(td.dataset.addLabel===undefined)td.dataset.addLabel=td.textContent; td.textContent='שחרר כאן'; }
     else if(td.dataset.addLabel!==undefined){ td.textContent=td.dataset.addLabel; delete td.dataset.addLabel; }
   });
-  if(!on)document.querySelectorAll('tbody.drag-open').forEach(tb=>tb.classList.remove('drag-open'));
+  if(!on){
+    document.body.classList.remove('dragging-fade','dragging-item');
+    label(false);
+    document.querySelectorAll('tbody.drag-open,tbody.drag-opened').forEach(tb=>tb.classList.remove('drag-open','drag-opened'));
+    return;
+  }
+  document.body.classList.add('dragging-fade');     // dim first, in place
+  _dragShrinkT=setTimeout(()=>{                     // then take it out of the layout
+    keepInPlace(anchor,()=>{
+      document.body.classList.remove('dragging-fade');
+      document.body.classList.add('dragging-item');
+      label(true);
+    });
+  },DRAG_FADE_MS);
 }
-function itemDragOpen(tb){
-  const open=(tb&&tb.dataset&&tb.dataset.gid!==undefined)?tb:null;
-  document.querySelectorAll('.tbl tbody[data-gid]').forEach(x=>x.classList.toggle('drag-open',x===open));
+/* A group opens only once the pointer has settled on it. Opening on the first
+   frame over each group turns a sweep down the board into a row of groups
+   flapping open and shut, which is most of the movement there was to see. */
+function itemDragOpen(tb,now){
+  const want=(tb&&tb.dataset&&tb.dataset.gid!==undefined)?tb:null;
+  if(want===_dragOpenWant)return;                   // nearly every move lands here
+  _dragOpenWant=want; clearTimeout(_dragOpenT);
+  if(!want||now){ itemDragOpened(want); return; }
+  _dragOpenT=setTimeout(()=>itemDragOpened(want),DRAG_OPEN_MS);
+}
+function itemDragOpened(tb){
+  const anim=document.body.classList.contains('dragging-item');   // into a board already folded
+  keepInPlace(tb&&tb.closest('.group'),()=>{
+    document.querySelectorAll('.tbl tbody[data-gid]').forEach(x=>{
+      const on=x===tb;
+      x.classList.toggle('drag-open',on); x.classList.toggle('drag-opened',on&&anim);
+    });
+  });
+}
+/* The item is where it was put, and the board is its full height again — say
+   so by going to it rather than by leaving it to be looked for. */
+function showMovedRow(tid){
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    const row=document.querySelector('tr[data-tid="'+tid+'"]'); if(!row)return;
+    try{ row.scrollIntoView({block:'nearest',inline:'nearest',behavior:'smooth'}); }catch(e){}
+    row.classList.add('just-moved');
+    setTimeout(()=>row.classList.remove('just-moved'),900);
+  }));
 }
 function itemSpot(tbody,row){
   // Which item it sits below — not which row number it is. With a search or a
@@ -5361,13 +5428,26 @@ function vTable(el){
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
       new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
-        onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item); itemDragOpen(null); itemDragChrome(true); },
+        onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item);
+          const view=document.getElementById('view'); _dragScrollTop=view?view.scrollTop:null;
+          // the placeholder is the row's stand-in wherever it has got to by the
+          // time the board folds — it is what stays put while it does
+          itemDragChrome(true,()=>document.querySelector('tr.sortable-ghost')||evt.item);
+          // the group the row came from is open from the first frame, not opened
+          // again a moment later: it is where the pointer already is, and folding
+          // it away only to spring it back is the flicker the fold is avoiding
+          itemDragOpen(evt.from,true); },
         // a top-level item never lands inside a sub-item panel row; the group
         // being dragged over opens, the rest stay shrunk to their names
         onMove:evt=>{ itemDragOpen(evt.to); return !(evt.related&&evt.related.classList.contains('sub-wrap')); },
         onEnd:async(evt)=>{
           itemDragChrome(false);
           const it=evt.item, tid=+it.dataset.tid; const from=_itemDragFrom; _itemDragFrom=null;
+          // the board has its full height back — put it at the offset the drag
+          // started from, or it comes back somewhere nobody scrolled to
+          const view=document.getElementById('view');
+          if(view&&_dragScrollTop!==null)view.scrollTop=_dragScrollTop;
+          _dragScrollTop=null;
           if(!tid)return;
           const toBody=evt.to, spot=itemSpot(toBody,it), gid=spot.gid;
           // Dropped back where it was picked up from. Re-render so the row sits
@@ -5385,7 +5465,8 @@ function vTable(el){
             // order wins over one, exactly as it already does for sub-items.
             st.colSort=null;
             const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
-            toast(wasSorted?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר'); renderView();
+            toast(wasSorted?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר');
+            renderView(); showMovedRow(tid);
           }catch(e){ toast('שגיאה בהעברת הפריט'); renderView(); }
         }});
     });

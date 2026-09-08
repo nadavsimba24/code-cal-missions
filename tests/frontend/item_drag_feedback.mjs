@@ -1,18 +1,22 @@
-/* Two things a drag must not do: claim a move that never happened, and make
-   you scroll the whole board with a row held down.
+/* Three things a drag must not do: claim a move that never happened, make you
+   scroll the whole board with a row held down, and move the board out from
+   under the row while you hold it.
 
    A drop back onto the row's own place used to POST a move, refetch the board
    and say "הפריט הועבר" — a success message for nothing, which is worse than
-   silence because it teaches you the drag worked when it did not. And because
-   a move between groups meant reaching the other group, the common way for a
-   drag to end nowhere was running out of screen. So for the length of the
-   gesture the board shrinks to its group names, each group's "+ הוסף פריט"
-   line left showing as the strip to drop on, and the group under the pointer
-   opens again.
+   silence because it teaches you the drag worked when it did not. The rule
+   holds for all three things a board can drag — an item, a sub-item, a whole
+   group — since it is the same false success in each.
 
-   The "nothing moved, nothing announced" rule holds for all three things that
-   can be dragged on a board — an item, a sub-item, a whole group — since it is
-   the same false success in each. Driven by tests/test_item_drag_feedback.py. */
+   And because a move between groups meant reaching the other group, the common
+   way for a drag to end nowhere was running out of screen. So for the length of
+   the gesture the board shrinks to its group names, each group's "+ הוסף פריט"
+   line left showing as the strip to drop on, and the group under the pointer
+   opens again. Everything in that shrinking is a frame of reference somebody is
+   aiming with, so it is done in two steps, held still by the scroll offset, and
+   waited on: the fold is not a frame, the row you hold does not move, and a
+   group opens only once you have settled on it.
+   Driven by tests/test_item_drag_feedback.py. */
 import fs from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
@@ -25,6 +29,8 @@ function grab(name){
   let i=src.indexOf('{',m.index), d=0;
   for(let j=i;j<src.length;j++){ if(src[j]==='{')d++; else if(src[j]==='}'){d--; if(!d) return src.slice(m.index,j+1);} }
 }
+const line = re => { const m=re.exec(src); if(!m) throw new Error('not found: '+re); return m[0]; };
+
 let pass=0, fail=0;
 const ck=(n,c,extra='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console.log('  FAIL '+n+(extra?'  → '+extra:''))); };
 
@@ -80,64 +86,141 @@ ck('picked up and dropped into another group → a move',
    sameSpot(before,itemSpot(other,other.rows[0]))===false);
 
 // ── the board while the item is in the air ─────────────────────────────────
-const cls=()=>{const s=new Set();return{add:c=>s.add(c),remove:c=>s.delete(c),
+const cls=()=>{const s=new Set();return{add:c=>s.add(c),remove:(...c)=>c.forEach(x=>s.delete(x)),
   contains:c=>s.has(c),toggle:(c,on)=>{on?s.add(c):s.delete(c);}};};
+
+/* A stage with time under our control: the fold and the opening of a group are
+   both deliberately late, and "late" is the part worth testing. */
 function stage(){
+  const timers=[];
+  const setT=(fn,ms)=>timers.push({fn,ms})&&timers.length;
+  const clearT=id=>{ if(id)timers[id-1]=null; };
+  const tick=()=>{ const due=timers.slice(); timers.length=0;
+    due.forEach(t=>{ if(t) t.fn(); }); };
+  const pending=()=>timers.filter(Boolean).length;
+
+  const view={scrollTop:500};
   const tds=[{dataset:{},textContent:'+ הוסף פריט'},{dataset:{},textContent:'+ הוסף פריט'}];
-  const tbs=[{dataset:{gid:'3'},classList:cls()},{dataset:{gid:'4'},classList:cls()}];
-  const doc={body:{classList:cls()},querySelectorAll:sel=>
-    sel.includes('.add-row td')?tds : sel==='tbody.drag-open'?tbs.filter(t=>t.classList.contains('drag-open'))
-    : sel==='.tbl tbody[data-gid]'?tbs : []};
-  const fns=new Function('document',grab('itemDragChrome')+'\n'+grab('itemDragOpen')
-    +'\nreturn {itemDragChrome,itemDragOpen};')(doc);
-  return {doc,tds,tbs,...fns};
+  /* two groups on screen; the lower one sits 340px further down for as long as
+     the upper one is open, which is exactly the slide to be cancelled out */
+  const top=i=>[400,560][i] + (i===1 && tbs[0].classList.contains('drag-open') ? 340 : 0);
+  const tbs=[0,1].map(i=>({dataset:{gid:String(3+i)},classList:cls(),
+    closest:()=>({isConnected:true,getBoundingClientRect:()=>({top:top(i)})})}));
+  const doc={body:{classList:cls()},
+    getElementById:id=>id==='view'?view:null,
+    querySelectorAll:sel=>
+      sel.includes('.add-row td')?tds : sel.startsWith('tbody.drag-open')?tbs.filter(t=>t.classList.contains('drag-open')||t.classList.contains('drag-opened'))
+      : sel==='.tbl tbody[data-gid]'?tbs : []};
+  const fns=new Function('document','setTimeout','clearTimeout',
+    line(/^const DRAG_FADE_MS=.*$/m)+'\n'+line(/^let _dragShrinkT=.*$/m)+'\n'
+    +grab('keepInPlace')+'\n'+grab('itemDragChrome')+'\n'+grab('itemDragOpen')+'\n'+grab('itemDragOpened')
+    +'\nreturn {itemDragChrome,itemDragOpen,keepInPlace};')(doc,setT,clearT);
+  /* the row being held: 400px down the board while the board is whole, 80px
+     down once every group above it has folded away */
+  const held={isConnected:true,
+    getBoundingClientRect:()=>({top:doc.body.classList.contains('dragging-item')?80:400})};
+  return {doc,view,tds,tbs,held,tick,pending,...fns};
 }
 
-let s1=stage();
-s1.itemDragChrome(true);
-ck('the board is marked as having an item in the air',
-   s1.doc.body.classList.contains('dragging-item'));
+let s=stage();
+s.itemDragChrome(true,s.held);
+ck('what is leaving dims where it stands before anything is taken out',
+   s.doc.body.classList.contains('dragging-fade') && !s.doc.body.classList.contains('dragging-item'));
+ck('and the board is still whole for that moment — no strip yet',
+   s.tds.every(td=>td.textContent==='+ הוסף פריט'));
+s.tick();
+ck('then the fold: the rows leave the layout and the dimming with them',
+   s.doc.body.classList.contains('dragging-item') && !s.doc.body.classList.contains('dragging-fade'));
 ck('every group\'s add-item line becomes the strip to drop on',
-   s1.tds.every(td=>td.textContent==='שחרר כאן'));
-s1.itemDragChrome(false);
-ck('and says what it said before once the drag is over',
-   s1.tds.every(td=>td.textContent==='+ הוסף פריט'),
-   s1.tds.map(t=>t.textContent).join('|'));
-ck('the mark comes off with it — a finished drag leaves no shrunk board',
-   !s1.doc.body.classList.contains('dragging-item'));
+   s.tds.every(td=>td.textContent==='שחרר כאן'));
+ck('the row being held does not move while the board folds around it',
+   s.view.scrollTop===180, 'scrollTop '+s.view.scrollTop);
+s.itemDragChrome(false);
+ck('the strip says what it said before once the drag is over',
+   s.tds.every(td=>td.textContent==='+ הוסף פריט'), s.tds.map(t=>t.textContent).join('|'));
+ck('and no mark of the drag is left on the board',
+   !s.doc.body.classList.contains('dragging-item') && !s.doc.body.classList.contains('dragging-fade'));
 
-s1=stage();
-s1.itemDragChrome(true); s1.itemDragChrome(true);   // onStart can fire twice in a session
-s1.itemDragChrome(false);
+s=stage();
+s.itemDragChrome(true,s.held); s.itemDragChrome(false); s.tick();
+ck('a drag let go of before the board has folded does not fold it afterwards',
+   !s.doc.body.classList.contains('dragging-item') && s.tds.every(td=>td.textContent==='+ הוסף פריט'));
+
+s=stage();
+s.itemDragChrome(true,s.held); s.tick();
+s.itemDragChrome(true,s.held); s.tick();      // a second drag in the same session
+s.itemDragChrome(false);
 ck('two drags in a row still restore the real label, not "שחרר כאן"',
-   s1.tds.every(td=>td.textContent==='+ הוסף פריט'),
-   s1.tds.map(t=>t.textContent).join('|'));
+   s.tds.every(td=>td.textContent==='+ הוסף פריט'), s.tds.map(t=>t.textContent).join('|'));
 
-const s2=stage();
-s2.itemDragOpen(s2.tbs[1]);
-ck('the group under the pointer opens, so a place inside it can still be chosen',
-   !s2.tbs[0].classList.contains('drag-open') && s2.tbs[1].classList.contains('drag-open'));
-s2.itemDragOpen(s2.tbs[0]);
-ck('and only one is ever open — moving on shuts the last one',
-   s2.tbs[0].classList.contains('drag-open') && !s2.tbs[1].classList.contains('drag-open'));
-s2.itemDragOpen(null);
-ck('the drag starts with every group shut',
-   s2.tbs.every(t=>!t.classList.contains('drag-open')));
-const s3=stage();
-s3.itemDragOpen(s3.tbs[0]); s3.itemDragChrome(false);
-ck('an open group does not stay open after the drag',
-   s3.tbs.every(t=>!t.classList.contains('drag-open')));
+// ── a group opens only once the pointer has settled on it ──────────────────
+s=stage();
+s.itemDragChrome(true,s.held); s.itemDragOpen(s.tbs[0],true);
+ck('the group the drag started in is open before the board folds, not after',
+   s.tbs[0].classList.contains('drag-open'));
+s.tick();
+ck('so the fold leaves it open, with no moment of it shut in between',
+   s.tbs[0].classList.contains('drag-open') && s.doc.body.classList.contains('dragging-item'));
+ck('and it is not animated in — it never left the screen to be animated back',
+   !s.tbs[0].classList.contains('drag-opened'));
+s.itemDragOpen(s.tbs[1]);
+ck('and it stays open until the pointer has settled somewhere else',
+   s.tbs[0].classList.contains('drag-open') && !s.tbs[1].classList.contains('drag-open'));
+s.tick();
+ck('then it folds away as the one being aimed at opens',
+   !s.tbs[0].classList.contains('drag-open') && s.tbs[1].classList.contains('drag-open'));
+ck('and that one does get animated in, since it is arriving into a folded board',
+   s.tbs[1].classList.contains('drag-opened') && !s.tbs[0].classList.contains('drag-opened'));
+
+s=stage();
+s.itemDragOpen(s.tbs[1]);
+ck('a group the pointer has only just reached stays shut',
+   !s.tbs[1].classList.contains('drag-open'));
+s.tick();
+ck('and opens once it is clear that is where you are aiming',
+   s.tbs[1].classList.contains('drag-open') && !s.tbs[0].classList.contains('drag-open'));
+
+s=stage();
+s.itemDragOpen(s.tbs[0]); s.itemDragOpen(s.tbs[1]); s.tick();
+ck('sweeping past a group on the way down does not open it',
+   !s.tbs[0].classList.contains('drag-open') && s.tbs[1].classList.contains('drag-open'));
+
+s=stage();
+s.itemDragOpen(s.tbs[1]); s.itemDragOpen(s.tbs[1]); s.itemDragOpen(s.tbs[1]);
+ck('holding still over one group schedules the opening once, not once a frame',
+   s.pending()===1, 'pending '+s.pending());
+
+s=stage();
+s.itemDragOpen(s.tbs[0]); s.tick();            // the group above is the open one
+ck('opening a group below the fold moves nothing that was already placed',
+   s.view.scrollTop===500, 'scrollTop '+s.view.scrollTop);
+s.itemDragOpen(s.tbs[1]); s.tick();            // now aiming at the one under it
+ck('the group being aimed at stays under the pointer while the one above shuts',
+   s.view.scrollTop===160, 'scrollTop '+s.view.scrollTop);
+
+s=stage();
+s.itemDragOpen(s.tbs[1]); s.itemDragChrome(false); s.tick();
+ck('letting go cancels an opening that had not happened yet',
+   s.tbs.every(t=>!t.classList.contains('drag-open')));
+s=stage();
+s.itemDragOpen(s.tbs[1]); s.tick(); s.itemDragChrome(false);
+ck('and an open group does not stay open after the drag',
+   s.tbs.every(t=>!t.classList.contains('drag-open')));
 
 // ── the rules that do the shrinking ────────────────────────────────────────
-const at=re=>{const m=re.exec(src);return m?m.index:-1;};
 const hide=/body\.dragging-item \.tbl tbody\[data-gid\]>tr\[data-tid\]([^{]*)\{display:none\}/.exec(src);
 ck('the item rows are hidden while an item is in the air', !!hide);
 ck('except the placeholder, which is where the row will land',
    hide && hide[1].includes(':not(.sortable-ghost)'), hide&&hide[0]);
 ck('and except the copy that follows the cursor — Sortable parks it in the same tbody',
    hide && hide[1].includes(':not(.sortable-drag)'), hide&&hide[0]);
-ck('the opened group shows its rows again',
-   /body\.dragging-item \.tbl tbody\[data-gid\]\.drag-open>tr\[data-tid\]\{display:table-row\}/.test(src));
+ck('the same rows dim first, and the dimming is a transition and not a state',
+   /body\.dragging-fade[^{]*\{opacity:0;transition:opacity [.\d]+s/.test(src));
+ck('the group that is staying open is not dimmed on the way in and lit again after',
+   /body\.dragging-fade \.tbl tbody\[data-gid\]:not\(\.drag-open\)>tr\[data-tid\]/.test(src));
+ck('the opened group fades its rows in rather than making them appear',
+   /body\.dragging-item \.tbl tbody\[data-gid\]\.drag-opened>tr\[data-tid\]\{animation:dragRowIn/.test(src)
+   && /@keyframes dragRowIn\{from\{opacity:0\}/.test(src));
 ck('a group the user had collapsed takes part too, instead of being undroppable',
    /body\.dragging-item \.grp-stick>\.tbl\{display:table!important;/.test(src));
 ck('and the pull that hides under the column header goes with the header',
@@ -148,29 +231,39 @@ ck('the column headers and the battery go, so a group is its name and the strip'
    /body\.dragging-item \.grp-batt,body\.dragging-item \.tbl thead\{display:none\}/.test(src));
 ck('the strip reads as a drop target rather than as a row',
    /body\.dragging-item \.add-row td\{[^}]*dashed var\(--primary\)/.test(src));
+ck('where the item landed is marked long enough to be seen',
+   /tr\.just-moved>td\{animation:justMoved/.test(src) && /@keyframes justMoved\{/.test(src));
 
 // ── how the list is wired to all of it ─────────────────────────────────────
-const onEnd = (()=>{ const i=src.indexOf("group:'board-items'");
-  const j=src.indexOf('onEnd:async(evt)=>{',i); let d=0;
-  for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } })();
-const start = /onStart:evt=>\{ _itemDragFrom=itemSpot\(evt\.from,evt\.item\); itemDragOpen\(null\); itemDragChrome\(true\); \}/.test(src);
-ck('the drag records where the row started, and shrinks the board', start);
+const body=(anchor,head)=>{ const i=src.indexOf(anchor); const j=src.indexOf(head,i); let d=0;
+  for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } };
+const onEnd = body("group:'board-items'",'onEnd:async(evt)=>{');
+ck('the drag records where the row started, and what the board was showing',
+   /_itemDragFrom=itemSpot\(evt\.from,evt\.item\);/.test(src)
+   && /_dragScrollTop=view\?view\.scrollTop:null;/.test(src));
+ck('the group the row came from is open before the fold, not sprung back after it',
+   /itemDragOpen\(evt\.from,true\); \}/.test(src)
+   && src.indexOf('itemDragChrome(true,()=>document') < src.indexOf('itemDragOpen(evt.from,true)'));
+ck('the placeholder is what the fold is held still against',
+   /itemDragChrome\(true,\(\)=>document\.querySelector\('tr\.sortable-ghost'\)\|\|evt\.item\)/.test(src));
 ck('the board comes back before anything else happens at the end',
    /^onEnd:async\(evt\)=>\{\s*itemDragChrome\(false\);/.test(onEnd));
+ck('and comes back to the offset the drag started from',
+   /if\(view&&_dragScrollTop!==null\)view\.scrollTop=_dragScrollTop;/.test(onEnd)
+   && onEnd.indexOf('_dragScrollTop') < onEnd.indexOf('sameSpot(from,spot)'));
 ck('the group under the pointer is opened from onMove',
    /onMove:evt=>\{ itemDragOpen\(evt\.to\);/.test(src));
 ck('nothing moved → no request and no message',
    onEnd.indexOf('sameSpot(from,spot)') > 0
    && onEnd.indexOf('sameSpot(from,spot)') < onEnd.indexOf("api('/api/tasks/'"),
    'guard at '+onEnd.indexOf('sameSpot(from,spot)'));
-ck('a real move still says so',
-   /toast\(wasSorted\?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר'\)/.test(onEnd));
+ck('a real move still says so, and shows where it went',
+   /toast\(wasSorted\?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר'\)/.test(onEnd)
+   && /renderView\(\); showMovedRow\(tid\);/.test(onEnd));
 ck('the move is still sent as a neighbour, not as a row number',
    /const body=\{group_id:gid,after_id:spot\.after\}/.test(onEnd));
 
-const subEnd = (()=>{ const i=src.indexOf("'.sub-body[data-parent]'");
-  const j=src.indexOf('onEnd:async(evt)=>{',i); let d=0;
-  for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } })();
+const subEnd = body("'.sub-body[data-parent]'",'onEnd:async(evt)=>{');
 ck('a sub-item put back in its own place is not a reorder either',
    /if\(was!==null&&ids\.join\(','\)===was\)return;/.test(subEnd)
    && subEnd.indexOf('===was)return') < subEnd.indexOf("api('/api/tasks/'"));
@@ -187,9 +280,7 @@ ck('both ends of the sub-item comparison read the order the same way',
    (subEnd.match(/subOrder\(/g)||[]).length===1 && /_subDragFrom=subOrder\(evt\.from\)/.test(src));
 
 // ── and a group put back where it came from ────────────────────────────────
-const grpEnd = (()=>{ const i=src.indexOf("draggable:'.group'");
-  const j=src.indexOf('onEnd:async()=>{',i); let d=0;
-  for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } })();
+const grpEnd = body("draggable:'.group'",'onEnd:async()=>{');
 ck('a group dropped back into its own place is not a reorder either',
    /if\(was!==null&&ids\.join\(','\)===was\)\{ renderView\(\); return; \}/.test(grpEnd)
    && grpEnd.indexOf('===was)') < grpEnd.indexOf("api('/api/groups/reorder'"));
