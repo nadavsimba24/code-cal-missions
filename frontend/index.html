@@ -220,6 +220,12 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .lg-undo{flex:none;padding:4px 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);font:inherit;font-size:12px;color:var(--text-muted);cursor:pointer}
 .lg-undo:hover{border-color:var(--primary);color:var(--primary)}
 .lg-undo-gap{flex:none;width:56px}
+/* What changed, and the undo for it, wrapped in one element — so that a phone
+   has something to wrap onto. On a wide screen the wrapper is not a box at all:
+   display:contents takes it out of the layout and leaves its three children as
+   direct flex items of the row, which is the layout above, unchanged to the
+   pixel. The mobile block turns it back into a box, and it becomes line two. */
+.lg-l2{display:contents}
 .cc-mirror{margin-top:10px}
 .cc-mirror-off{font-size:12px;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px}
 .cc-mirror-on{border:1px solid var(--primary);border-radius:8px;padding:9px 11px;background:var(--primary-soft)}
@@ -1744,6 +1750,41 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
                padding-bottom:env(safe-area-inset-bottom)}
   .tb-pop-wide .pop-people{max-height:32vh}   /* keep sort reachable without a long scroll */
   .arr-head .arr-x{display:grid}
+  /* ===== board log: six columns across become two lines down =====
+     The row was laid out for a wide dialog — when · who · item · column · what
+     changed · undo, side by side, wanting some 750px of it. On a phone that is
+     twice the screen, so every part shrank to its minimum at once and the two
+     value pills, which are the reason to open a log, were crushed to an
+     ellipsis first. The row wraps now: who and what and when on the first line,
+     what changed on the second. */
+  .lg-row{flex-wrap:wrap;gap:7px 9px;padding:11px 10px;align-items:flex-start}
+  .lg-when{order:1;flex:0 0 auto;padding-top:3px}
+  .lg-av{order:2}
+  /* the title is the only thing on a phone saying which item this row is about,
+     so it gets the room to say it — two lines before it gives up */
+  .lg-item{order:3;flex:1 1 120px;white-space:normal;line-height:1.35;
+           display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  /* the wrapper stops being invisible and becomes the second line */
+  .lg-l2{order:4;display:flex;flex:1 1 100%;align-items:center;gap:9px;min-width:0}
+  .lg-field{flex:0 0 auto}
+  /* the pills read from the start of the line, and lose the 118px cap that a
+     six-column row needed: the line is theirs now */
+  .lg-change{flex:1 1 auto;justify-content:flex-start;min-width:0}
+  .lg-pill{max-width:none;min-width:0}
+  .lg-undo{margin-inline-start:auto}
+  .lg-undo-gap{display:none}          /* nothing to keep a column in line with */
+  /* the filters stack instead of splitting one line four ways */
+  #modal .log-filters{flex-wrap:wrap;gap:8px;padding:9px 10px}
+  #modal .log-filters select{flex:1 1 100%}
+  .log-filters input[type="date"]{flex:1 1 130px;min-width:0}
+  #modal .log-filters .btn{margin-inline-start:0;flex:0 1 auto}
+  /* 20px of dialog padding plus 12px of list padding is a sixth of a 390px
+     screen spent on nothing, on the one screen that has none to spare */
+  #modal.modal-80 .mbody{padding:12px}
+  #modal .logs-list{padding:0}
+  .lg-tabs{flex-wrap:wrap}
+  /* "נצפה לאחרונה" is already one line per person — it only wants the width */
+  .sn-row{gap:9px;padding:10px 4px}
 }
 @media (max-width:820px) and (display-mode:standalone){ body{padding-top:env(safe-area-inset-top)} }
 
@@ -2465,7 +2506,18 @@ function syncItemColWidth(){
     const overflowAtFullWidth=(v.scrollWidth+(base-cur))-v.clientWidth;
     if(overflowAtFullWidth>give+ITEM_COL_RAMP){
       const t=Math.min(1,Math.abs(v.scrollLeft)/ITEM_COL_RAMP);
-      w=base-Math.round(give*t);
+      // Eased, not linear. The width is driven by scroll position rather than
+      // by time, so a linear ramp begins the instant the finger does and stops
+      // dead the moment the ramp is used up: the column lurches away from full
+      // width and slams into its floor. Smoothstep leaves and arrives at rest —
+      // zero slope at both ends — which is the whole of what reads as "smooth"
+      // in a scroll-linked move, and it costs one multiply.
+      const eased=t*t*(3-2*t);
+      // ...and to a hundredth of a pixel. Rounding to whole pixels turned a
+      // continuous movement into a flight of ~112 steps, each one a visible jog
+      // of the pinned edge and of every column behind it. Precision costs
+      // nothing here: this runs once per frame at most either way.
+      w=base-Math.round(give*eased*100)/100;
     }
   }
   const px=w+'px';
@@ -2702,11 +2754,13 @@ const BoardLog = {
         <span class="lg-when" title="${esc(fdatetime(a.created_at))}"><i class="fa-regular fa-clock"></i> ${esc(this.ago(a.created_at))}</span>
         <span class="av lg-av" title="${esc(a.user_name||'')}">${avatarInner(a)}</span>
         <button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})">${esc(a.task_title||'—')}</button>
-        <span class="lg-field"><i class="fa-solid ${this.fieldIcon(a)}"></i> ${esc(this.fieldLabel(a))}</span>
-        <span class="lg-change">${this.change(a)}</span>
-        ${a.can_undo&&isMgr
-          ? `<button class="lg-undo" onclick="BoardLog.undo(${a.id})">בטל</button>`
-          : `<span class="lg-undo-gap"></span>`}
+        <span class="lg-l2">
+          <span class="lg-field"><i class="fa-solid ${this.fieldIcon(a)}"></i> ${esc(this.fieldLabel(a))}</span>
+          <span class="lg-change">${this.change(a)}</span>
+          ${a.can_undo&&isMgr
+            ? `<button class="lg-undo" onclick="BoardLog.undo(${a.id})">בטל</button>`
+            : `<span class="lg-undo-gap"></span>`}
+        </span>
       </div>`).join('')
       ||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות בלוח</div></div>';
     const body=document.querySelector('#modal .mbody'); if(!body)return;
@@ -6253,23 +6307,40 @@ function exportCell(c,t){
   return '';
 }
 /* the whole grid: group header → its items → each item's sub-items, indented.
-   Sub-items keep their own (possibly narrower) column structure, so their values
-   are placed under the matching item columns and the rest stay blank. */
+
+   Sub-items have a column structure of their own, and it is not a subset of the
+   item's: a board can give them columns that exist nowhere else (board.sub_only).
+   Laying a sub-item out under the item's headers therefore dropped exactly those
+   values — the ones only sub-items carry — with no heading for them to sit
+   under. Each run of sub-items now opens with a header naming its own columns,
+   and the rows below it are read against that header, so nothing on screen is
+   missing from the file. Both the band and its rows stay at outline level 2, so
+   Excel still folds them into their item. */
 function exportGrid(){
   const cols=orderedColumns();
-  const subIds=new Set(subColumns().map(c=>String(c.id)));
+  const subs=subColumns();
+  const blank=n=>Array(n).fill('');
+  // the sheet is as wide as the wider of the two structures; the item header
+  // simply runs out of names where the sub-item band is the longer one
+  const width=Math.max(cols.length,subs.length+1);
+  const pad=cells=>cells.concat(blank(width-cells.length));
   const rows=[];
   groupsOf().forEach(g=>{
     if(g.id!==null||g.tasks.length)
-      rows.push({group:true,level:0,cells:[g.name].concat(cols.slice(1).map(()=>''))});
+      rows.push({group:true,level:0,cells:pad([g.name])});
     g.tasks.forEach(t=>{
-      rows.push({level:1,cells:cols.map(c=>exportCell(c,t))});
-      sortedSubs(t.subtasks||[]).forEach(s=>{
-        rows.push({level:2,cells:cols.map(c=>subIds.has(String(c.id))?exportCell(c,s):'')});
+      rows.push({level:1,cells:pad(cols.map(c=>exportCell(c,t)))});
+      const kids=sortedSubs(t.subtasks||[]);
+      if(!kids.length)return;
+      // indented one column, so the band reads as belonging to the item above it
+      rows.push({subhead:true,level:2,cells:pad([''].concat(subs.map(subColLabel)))});
+      kids.forEach(s=>{
+        rows.push({level:2,cells:pad([''].concat(subs.map(c=>exportCell(c,s))))});
       });
     });
   });
-  return {columns:cols.map(c=>c.kind==='builtin'?c.label:(c.col.title||'')),rows};
+  const head=cols.map(c=>c.kind==='builtin'?c.label:(c.col.title||''));
+  return {columns:pad(head),rows};
 }
 async function exportBoardExcel(){
   if(!st.board)return;

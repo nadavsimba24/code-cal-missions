@@ -2624,8 +2624,15 @@ def read_all_notifications(data: dict, actor_id: int = Depends(current_user_id))
 # already showing (current filters, sort, column structure and the values it
 # computes — formulas, per-column status labels, linked-item titles) and this
 # endpoint only turns that grid into a real .xlsx. The caller can never see
-# more than the board API already handed it, so no data is widened here; the
+# more than the board API already handed it, so no data is widened there; the
 # limits below just keep a malformed payload from eating memory.
+#
+# The conversation is the exception, and it has to be. A board's comments are
+# not on screen — the client holds only the threads whose panel someone opened —
+# so there is no grid to ship and the sheet is read here. It is not a widening:
+# this endpoint already refuses anyone who is not a member of the board, and a
+# member may read every one of these comments through the comments API. What is
+# gathered is what that API would answer, in the same order the board is read.
 XLSX_MAX_ROWS, XLSX_MAX_COLS, XLSX_MAX_TEXT = 20000, 80, 4000
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -2654,10 +2661,10 @@ def _xlsx_cell(ws, row, col, spec):
     cell = ws.cell(row=row, column=col)
     if val is None or val == "":
         cell.value = None
-    elif kind == "date":
+    elif kind in ("date", "datetime"):
         try:
             cell.value = datetime.fromisoformat(str(val).replace("Z", "+00:00")).replace(tzinfo=None)
-            cell.number_format = "DD/MM/YYYY"
+            cell.number_format = "DD/MM/YYYY" if kind == "date" else "DD/MM/YYYY HH:MM"
         except ValueError:
             cell.value = str(val)[:XLSX_MAX_TEXT]
             cell.data_type = "s"
@@ -2676,10 +2683,55 @@ def _xlsx_cell(ws, row, col, spec):
     cell.alignment = Alignment(vertical="center", wrap_text=False)
     return cell
 
+# The conversation sheet's columns, in the order they are written.
+TALK_HEADERS = ["מספר מזהה", "פריט", "סוג", "מאת", "נכתב", "תוכן",
+                "לייקים", "קבצים", "מזהה הודעה", "בתגובה להודעה"]
+
+
+def _export_conversation(db, board_id):
+    """Every comment on the board's items, threaded, oldest first.
+
+    One row per message. A reply is a row of its own, marked as one and carrying
+    the id of the message it answers, so the thread can be rebuilt from the file
+    without the reader having to guess from indentation or order. Sub-items are
+    items here too: their conversations are on the board and would otherwise be
+    the one part of it the export loses.
+    """
+    tasks = {t.id: t for t in db.query(Task).filter(Task.board_id == board_id).all()}
+    if not tasks:
+        return []
+    names = {u.id: u.name for u in db.query(User).all()}
+    rows = []
+    comments = (db.query(Comment)
+                .filter(Comment.task_id.in_(list(tasks)))
+                .order_by(Comment.task_id, Comment.created_at, Comment.id)
+                .limit(XLSX_MAX_ROWS).all())
+    for c in comments:
+        t = tasks.get(c.task_id)
+        if t is None:                      # a comment whose item has since gone
+            continue
+        files = [f.get("name") for f in (c.attachments or []) if isinstance(f, dict) and f.get("name")]
+        rows.append([
+            t.item_uid or "",
+            t.title or "",
+            "תגובה" if c.parent_id else "עדכון",
+            names.get(c.user_id, ""),
+            {"v": c.created_at.isoformat() if c.created_at else "", "t": "datetime"},
+            c.content or "",
+            len(c.likes or []),
+            ", ".join(files),
+            c.id,
+            c.parent_id or "",
+        ])
+    return rows
+
+
 @app.post("/api/boards/{board_id}/export/xlsx")
 def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
-    """Board → .xlsx: one sheet, sub-items nested (and collapsible) under their
-    item, groups as headers. See the note above on where the grid comes from."""
+    """Board → .xlsx. Two sheets: the board, with sub-items nested and
+    collapsible under their item and their own columns named in a header of
+    their own; and the conversation, one row per comment and per reply. See the
+    note above on where each of the two comes from."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -2693,6 +2745,7 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
         if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
         board_color = b.color if _valid_hex(b.color) else "#0073ea"
+        talk = _export_conversation(db, board_id)
 
     headers = [str(h)[:XLSX_MAX_TEXT] for h in (data.get("columns") or [])][:XLSX_MAX_COLS]
     rows = (data.get("rows") or [])[:XLSX_MAX_ROWS]
@@ -2730,6 +2783,14 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
             cell = _xlsx_cell(ws, r, i, spec)
             if row.get("group"):
                 cell.font = Font(color=_xlsx_argb(board_color))   # colour, not weight
+            # A sub-item block names its own columns, because they are not the
+            # item's: a board can give its sub-items columns that exist nowhere
+            # else, and under the item's header those values had no heading to
+            # sit under and were left out of the file altogether. Grey, so it
+            # reads as a header without competing with the sheet's own.
+            if row.get("subhead"):
+                cell.fill = PatternFill("solid", fgColor="FFEDEFF5")
+                cell.font = Font(color="FF505A72")
             if i == 1 and level:
                 cell.alignment = Alignment(vertical="center", indent=level * 2)
             text = "" if cell.value is None else str(cell.value)
@@ -2738,6 +2799,34 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
             ws.row_dimensions[r].outlineLevel = level
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+
+    # ── sheet 2: the conversation ──────────────────────────────────────────
+    # Always written, even empty: a file with a predictable shape is one that
+    # can be read by something other than a person, and "no messages yet" is an
+    # answer worth being able to read.
+    ts = wb.create_sheet("שיחות")
+    ts.sheet_view.rightToLeft = True
+    for i, h in enumerate(TALK_HEADERS, start=1):
+        c = ts.cell(row=1, column=i, value=h)
+        c.data_type = "s"
+        c.font = Font(color="FFFFFFFF")
+        c.fill = head_fill
+        c.alignment = Alignment(vertical="center")
+    ts.freeze_panes = "A2"
+    ts.auto_filter.ref = f"A1:{get_column_letter(len(TALK_HEADERS))}1"
+    twidths = [len(h) + 2 for h in TALK_HEADERS]
+    for n, trow in enumerate(talk, start=2):
+        for i, spec in enumerate(trow, start=1):
+            cell = _xlsx_cell(ts, n, i, spec)
+            text = "" if cell.value is None else str(cell.value)
+            # the message body is the one column allowed to be wide, and the only
+            # one that wraps — a comment is a paragraph, not a field
+            cap = 70 if TALK_HEADERS[i - 1] == "תוכן" else 26
+            twidths[i - 1] = max(twidths[i - 1], min(len(text) + 2, cap))
+        ts.cell(row=n, column=TALK_HEADERS.index("תוכן") + 1).alignment = Alignment(
+            vertical="top", wrap_text=True)
+    for i, w in enumerate(twidths, start=1):
+        ts.column_dimensions[get_column_letter(i)].width = w
 
     buf = io.BytesIO()
     wb.save(buf)

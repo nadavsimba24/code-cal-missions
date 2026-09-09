@@ -83,6 +83,48 @@ fullTableWidth = 1200; scrollLeft = 140;
 const seen=[]; for(let i=0;i<6;i++){ sync(); seen.push(width()); }
 ck('repeated recomputation settles instead of flip-flopping', new Set(seen).size===1, seen.join(','));
 
+/* ── the shape of the move, not just its endpoints ──────────────────────────
+   The ramp is driven by scroll position, so a linear mapping starts at full
+   speed the instant the finger moves and stops dead when the ramp runs out.
+   Smoothstep leaves and arrives at rest. Both are checked at the ends, where
+   the difference is the whole point: the first pixels of scroll and the last
+   should barely move the column. */
+fullTableWidth = 1200;
+const at = x => { scrollLeft = x; sync(); return width(); };
+const RAMP = 140, GIVE = BASE*0.40;
+
+const firstTenth = BASE - at(RAMP*0.1);      // linear would give back 10% of GIVE
+ck('it eases out of full width instead of jumping at the first touch',
+   firstTenth < GIVE*0.10, `gave back ${firstTenth.toFixed(2)}px, linear would give ${(GIVE*0.10).toFixed(2)}`);
+
+const lastTenth = BASE - at(RAMP*0.9);       // linear would be at 90% of GIVE
+ck('and settles into the floor instead of slamming into it',
+   lastTenth > GIVE*0.90, `at ${lastTenth.toFixed(2)}px, linear would be ${(GIVE*0.90).toFixed(2)}`);
+
+ck('the halfway point is still halfway — the easing is symmetric',
+   Math.abs((BASE - at(RAMP/2)) - GIVE/2) < 0.01, `${(BASE-at(RAMP/2)).toFixed(2)} vs ${(GIVE/2).toFixed(2)}`);
+
+/* whole-pixel rounding turned a continuous move into ~112 visible steps. The
+   width is sub-pixel now, so a small movement of the finger produces a small
+   movement of the edge rather than nothing and then a jump. */
+const fine = [];
+for(let x=1; x<=5; x++) fine.push(at(x));
+ck('every pixel of scroll moves the edge — no dead steps to jump out of',
+   new Set(fine).size===fine.length, fine.join(','));
+/* at the start of the ramp the easing is nearly flat, so five pixels of finger
+   move the edge by well under one. Rounded to whole pixels that was four
+   frames of nothing followed by a jump. */
+ck('and near the ends it moves by fractions, where rounding used to stall it',
+   Math.max(...fine)-Math.min(...fine) < 1, fine.join(','));
+ck('the width is written at sub-pixel precision',
+   fine.some(w=>Math.abs(w-Math.round(w))>1e-9), fine.join(','));
+
+// the endpoints are still exactly where they were
+scrollLeft=0; sync();
+ck('none of which moves where it starts', width()===BASE, `got ${width()}`);
+scrollLeft=RAMP; sync();
+ck('or where it ends', width()===BASE-GIVE, `got ${width()}`);
+
 // ── every group's table is kept in step ──
 ck('all the group tables get the same width', cols.every(c=>c.style.width===cols[0].style.width));
 
