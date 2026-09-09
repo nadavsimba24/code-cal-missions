@@ -425,8 +425,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-recipe .ph{font-weight:700;color:var(--primary);background:var(--primary-soft);border:1px dashed var(--primary);border-radius:12px;padding:1px 8px;margin:0 2px;white-space:nowrap}
 .au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
 .au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
-.trash-badge{min-width:17px;height:17px;padding:0 5px;border-radius:9px;background:var(--border);color:var(--text-muted);font-size:10.5px;font-weight:700;display:inline-grid;place-items:center;margin-inline-start:auto;box-sizing:border-box;line-height:1}
-.sb-item:hover .trash-badge{background:var(--text-muted);color:#fff}
 .notif-badge{position:absolute;top:-3px;inset-inline-end:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--red,#e2445c);color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;box-sizing:border-box;line-height:1}
 .notif-pop{min-width:330px;max-width:360px;padding:0;overflow:hidden}
 .notif-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px}
@@ -483,6 +481,15 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 
 /* ===== Table / board view ===== */
 .group{margin-bottom:22px}
+/* A collapsed group is a name and nothing else — some 28px tall, with the 22px
+   gap under it belonging to no element at all. That gap is nearly half of the
+   group's slot, and a pointer in it hit-tests to the board rather than to a
+   group, so a drag over a folded board answers only in stripes and reordering
+   one reads as broken. As padding the gap is part of the group's own box: the
+   same spacing on screen, and a slot that answers along its whole height.
+   Expanded groups are left alone — theirs is a gap under a tall table, not a
+   hole in the middle of the list. */
+.group:has(>.grp-stick>.group-head.collapsed){margin-bottom:0;padding-bottom:22px}
 .group-head{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;padding-bottom:6px;cursor:pointer;position:sticky;top:0;z-index:5;background:var(--bg)}
 .group-head .caret{transition:.15s;font-size:12px;cursor:pointer;padding:4px;margin:-4px;border-radius:5px}
 .group-head .caret:hover{background:var(--row-hover)}
@@ -498,7 +505,23 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group-head .g-menu-btn{margin-inline-start:4px;width:26px;height:26px;border-radius:6px;color:var(--text-light);opacity:0;transition:.12s;display:grid;place-items:center;font-size:14px}
 .group:hover .g-menu-btn{opacity:1}
 .group-head .g-menu-btn:hover{background:var(--row-hover);color:var(--text)}
-.sortable-ghost .group-head{opacity:.4}
+/* ===== where the group will land, while it is still in the air =====
+   Sortable leaves the group itself in the list as the placeholder, so the slot
+   is already the right shape, in the right place, and moves as the pointer
+   changes its mind. It only has to be made to read as a slot rather than as a
+   group that has gone pale — which is all it was, and was easy to lose against
+   a board of groups, most of all a folded one where the whole of it is a name.
+   The frame is the one "+ הוסף קבוצה" wears: a dashed primary outline on a soft
+   tint, which on this board already means "something goes here". The group's
+   own name and table stay inside it, faded, so it stays legible which group is
+   being placed and what it is being placed between. */
+.group.sortable-ghost{opacity:1;background:var(--primary-soft);border-radius:9px;
+  outline:2px dashed var(--primary);outline-offset:2px;box-shadow:none}
+/* the header paints --bg so a sticky group name never shows rows through it. On
+   the placeholder that background would cover the tint — and on a collapsed
+   group the header is the entire slot, so it would cover all of it. */
+.group.sortable-ghost .group-head{background:transparent}
+.group.sortable-ghost>*{opacity:.35}
 .add-group-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border:1.5px dashed var(--border-strong);border-radius:9px;color:var(--text-muted);font-weight:600;font-size:13.5px;background:var(--surface);transition:.12s}
 .add-group-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
 .color-grid{display:flex;flex-wrap:wrap;gap:9px}
@@ -1756,7 +1779,7 @@ body, body *{ font-weight:400!important; }
     <div id="sb-resizer" title="גרור לשינוי רוחב התפריט" aria-hidden="true"></div>
     <div class="sb-logo" style="font-size:15px"><span class="dot"><i class="fa-solid fa-rocket"></i></span> Missions</div>
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
-    <div class="sb-section">סביבת עבודה <span class="sb-sec-acts"><i id="env-trash-btn" class="fa-solid fa-trash-can" title="לוחות שנמחקו — ניתנים לשחזור" style="display:none" onclick="Trash.open()"></i> <i id="env-manage-btn" class="fa-solid fa-user-gear" title="ניהול משתמשים והרשאות בסביבה" style="display:none" onclick="Env.manageActive()"></i><span id="trash-count" class="trash-badge" style="display:none"></span></span></div>
+    <div class="sb-section">סביבת עבודה <span class="sb-sec-acts"><i id="env-trash-btn" class="fa-solid fa-trash-can" title="לוחות שנמחקו — ניתנים לשחזור" style="display:none" onclick="Trash.open()"></i> <i id="env-manage-btn" class="fa-solid fa-user-gear" title="ניהול משתמשים והרשאות בסביבה" style="display:none" onclick="Env.manageActive()"></i></span></div>
     <div id="ws-switch"></div>
     <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="newBoardQuick()"></i></span></div>
     <div class="sb-list" id="board-list"></div>
@@ -4330,14 +4353,7 @@ const Trash = {
   async load(){
     try{ this.data = await api('/api/trash/boards'+(meId()?'?user_id='+meId():'')); }
     catch(e){ this.data={boards:[],retention_days:60}; }
-    this.badge();
     return this.data;
-  },
-  // small counter next to the sidebar entry, so a full bin is visible without opening it
-  badge(){
-    const el=document.getElementById('trash-count'); if(!el)return;
-    const n=(this.data.boards||[]).length;
-    el.textContent=n; el.style.display=n?'':'none';
   },
   async open(){
     showModal('<h2><i class="fa-solid fa-trash-can" style="color:var(--text-muted)"></i> סל מחזור</h2><div class="mbody"><div class="spin"></div></div>');
@@ -5480,7 +5496,9 @@ function vTable(el){
       </div>
       <div class="grp-batt" style="margin-top:6px"${shut?' hidden':''}>${battery(g.tasks)}</div>
     </div>`;
-  }).join('') + `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`;
+  }).join('') + (isBoardAdmin()
+    ? `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`
+    : '');
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
     if(!e.target.closest('.caret'))return;   // collapse/expand only from the arrow
     const shut=!h.classList.contains('collapsed');
@@ -8096,10 +8114,11 @@ function bulkMoveMenu(e){
 }
 async function bulkMoveToGroup(e,gid){
   e.stopPropagation(); closeCellPops();
-  const items=_selectedTopItems(); const grp=(st.board.groups||[]).find(g=>g.id===gid);
+  const items=_selectedTopItems();
   let ok=0, pos=(st.board.tasks||[]).filter(x=>x.group_id===gid&&!x.parent_id).length;
   for(const t of items){
-    const body={group_id:gid,position:pos++}; if(grp)body.status=grp.task_status;
+    // the group they land in does not restamp their status — see moveItemToGroup
+    const body={group_id:gid,position:pos++};
     try{ await api('/api/tasks/'+t.id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})}); ok++; }catch(e){}
   }
   try{ const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh; }catch(e){}
@@ -8136,11 +8155,18 @@ function moveItemToBoard(e,id,boardId){
   },{title:'העברת פריט ללוח אחר',confirmText:'העבר',danger:false,icon:'fa-right-left',
      note:(n?`${n} תת-הפריטים יעברו יחד עם הפריט. `:'')+'מזהה הפריט יונפק מחדש בלוח היעד — המזהה הנוכחי לא יישמר, גם אם הפריט יוחזר לכאן.'});
 }
+/* Moving an item to a group moves the item, and does nothing else. The group's
+   own status used to be stamped onto whatever the item said, so filing something
+   under "הושלם" declared it finished on the board, in the charts and in the log,
+   without anyone saying it was. That was a rule nobody wrote and nobody could
+   see or switch off — the same one that used to move items between groups by
+   their status, removed for the same reason. A board that does want the two tied
+   together builds the rule in its automations, where it is visible and can be
+   turned off. */
 async function moveItemToGroup(e,id,gid){
   e.stopPropagation(); closeCellPops();
-  const grp=(st.board.groups||[]).find(g=>g.id===gid);
   const pos=(st.board.tasks||[]).filter(x=>x.group_id===gid && !x.parent_id).length; // append at end
-  const body={group_id:gid,position:pos}; if(grp)body.status=grp.task_status;
+  const body={group_id:gid,position:pos};
   try{
     await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})});
     const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
@@ -8617,12 +8643,18 @@ function defaultGroupId(){
 
 /* ============ groups (קבוצות) ============ */
 const GROUP_COLORS=['#0073ea','#00c875','#fdab3d','#e2445c','#579bfc','#5559df','#ff158a','#9d50dd','#037f4c','#00a3d7','#ffcb00','#808080'];
+/* Adding a group is the board admin's. The button is not rendered for anyone
+   else, but the check is here too: a screen can be stale — a role taken away
+   while the board is open — and the button is not the rule, the server is. What
+   the server says is what is shown, so a refusal names the reason instead of
+   reporting a failure that looks like a fault. */
 async function addGroup(){
+  if(!isBoardAdmin()){ toast('רק מנהל הלוח יכול להוסיף קבוצות'); return; }
   try{
     await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({board_id:st.board.id,name:'קבוצה חדשה',color:GROUP_COLORS[(st.board.groups||[]).length%GROUP_COLORS.length],actor_id:meId()})});
     toast('קבוצה נוספה');await openBoard(st.board.id);
-  }catch(e){toast('שגיאה ביצירת קבוצה');}
+  }catch(e){ toast((e&&e.detail)||'שגיאה ביצירת קבוצה'); }
 }
 function editGroup(gid){
   const g=(st.board.groups||[]).find(x=>x.id===gid); if(!g)return;
@@ -8657,12 +8689,29 @@ async function saveGroup(gid){
     closeModals();toast('הקבוצה עודכנה');await openBoard(st.board.id);
   }catch(e){toast('שגיאה בשמירה');}
 }
+/* Any group can go — there is no group the board keeps back, and none of the
+   three the board ships with is special once it exists. Two things used to make
+   it look otherwise, and neither was a rule:
+
+   the question was a native confirm(), the only dialog in the app that is not
+   ours. A browser is free to suppress it — a second dialog in quick succession,
+   or "prevent this page from creating more dialogs" once ticked — and a
+   suppressed confirm() returns false, so pressing מחק did nothing at all and
+   said nothing about why. It asks the way every other deletion here asks now.
+
+   And a refusal came back as "שגיאה במחיקה" whatever it was, so a board you may
+   not edit and a group that is already gone read the same as a group that
+   cannot be deleted. The server's own reason is shown instead. */
 async function deleteGroup(gid){
-  if(!confirm('למחוק את הקבוצה? המשימות שבה יעברו ל״ללא קבוצה״.'))return;
-  try{
-    await api('/api/groups/'+gid+'?actor_id='+meId(),{method:'DELETE'});
-    closeModals();toast('הקבוצה נמחקה');await openBoard(st.board.id);
-  }catch(e){toast('שגיאה במחיקה');}
+  const g=(st.board.groups||[]).find(x=>x.id===gid);
+  const n=(st.board.tasks||[]).filter(t=>t.group_id===gid).length;
+  askConfirm('למחוק את הקבוצה'+(g?` "${g.name}"`:'')+'?',async()=>{
+    try{
+      await api('/api/groups/'+gid+'?actor_id='+meId(),{method:'DELETE'});
+      toast('הקבוצה נמחקה');await openBoard(st.board.id);
+    }catch(e){ toast((e&&e.detail)||'שגיאה במחיקה'); }
+  },{title:'מחיקת קבוצה',confirmText:'מחק',
+     note:n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`:'הקבוצה ריקה.'});
 }
 
 /* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */

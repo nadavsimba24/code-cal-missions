@@ -1,5 +1,5 @@
-"""Moving an item between groups by its status is an automation, not a rule of
-the software.
+"""A board does only what its automations say. Groups and statuses are not tied
+together behind anyone's back, in either direction.
 
 Setting a status used to file the item into the group that stood for that
 status. Nobody wrote that rule, it was on every board that had ever existed and
@@ -10,10 +10,18 @@ growing list of exceptions — skip groups left at the default status, no fallba
 by status family — every one of them a report about an item that moved somewhere
 nobody asked for.
 
-The catalog already had the rule as a recipe: status_changes_to → move_to_group,
-with the group named by whoever set it up. That is now the only way an item
-moves by itself, which makes it visible in the automations list, switchable, and
-answerable to the person who wrote it.
+The same rule ran the other way round, and outlived the first removal in the
+three places that move an item into a group: the item's own "העבר לקבוצה", the
+bulk bar, and a move to another board. Each stamped the group's status onto the
+item, so filing something under "הושלם" declared it finished — on the board, in
+the charts, in the activity log — without anybody saying so. And a parent item
+completed itself once its last sub-item was done, which is the same kind of rule
+wearing different clothes.
+
+None of them are left. The catalog already carries the first as a recipe
+(status_changes_to → move_to_group, with the group named by whoever set it up),
+and a board that wants any of the others says so there, where a rule is visible,
+switchable, and answerable to the person who wrote it.
 """
 import pytest
 
@@ -72,16 +80,16 @@ def test_an_item_created_with_a_status_is_not_filed_by_it(client, board):
     assert t["group_id"] == board["first"]
 
 
-def test_a_parent_completing_by_itself_still_does_not_move(client, board):
-    """The roll-up marks the parent done; where a done item belongs is a rule."""
+def test_a_parent_does_not_complete_itself_either(client, board):
+    """The other rule nobody wrote: the last sub-item finishing the parent."""
     p = _item(client, board)
     subs = [_item(client, board, parent_id=p["id"], title=f"s{i}") for i in (1, 2)]
     for s in subs:
         client.patch(f"/api/tasks/{s['id']}", json={"user_id": ADMIN_ID, "status": "done"})
     b = client.get(f"/api/boards/{board['id']}?user_id={ADMIN_ID}").json()
     parent = next(t for t in b["tasks"] if t["id"] == p["id"])
-    assert parent["status"] == "done"                 # the roll-up still happens
-    assert parent["group_id"] == board["first"]       # and it happens in place
+    assert parent["status"] != "done"                 # nobody said it was
+    assert parent["group_id"] == board["first"]       # and it did not move
 
 
 # ── and with a rule, it does ───────────────────────────────────────────────
@@ -155,6 +163,58 @@ def test_the_write_says_where_the_item_ended_up(client, board):
     assert r2.json().get("group_id") == board["first"]
 
 
+# ── and a move does not restamp the status ────────────────────────────────
+def _status(client, board, tid):
+    b = client.get(f"/api/boards/{board['id']}?user_id={ADMIN_ID}").json()
+    return next(t for t in b["tasks"] if t["id"] == tid)["status"]
+
+
+def test_moving_an_item_into_a_group_leaves_its_status_alone(client, board):
+    """Every group on the board, and the item still says what it said."""
+    t = _item(client, board, status="in_progress")
+    for key, gid in board["groups"].items():
+        r = client.post(f"/api/tasks/{t['id']}/move",
+                        json={"user_id": ADMIN_ID, "group_id": gid})
+        assert r.status_code == 200, r.text
+        assert _where(client, board, t["id"]) == gid          # it did move
+        assert _status(client, board, t["id"]) == "in_progress", \
+            f"the {key} group restamped the item's status"
+
+
+def test_filing_something_under_done_does_not_declare_it_done(client, board):
+    """The case that made this a bug report rather than a curiosity."""
+    t = _item(client, board, status="in_progress")
+    client.post(f"/api/tasks/{t['id']}/move",
+                json={"user_id": ADMIN_ID, "group_id": board["groups"]["done"]})
+    assert _status(client, board, t["id"]) != "done"
+
+
+def test_a_status_named_in_the_move_is_still_obeyed(client, board):
+    """The removal is of the guess, not of the ability. Whoever asks, gets."""
+    t = _item(client, board, status="in_progress")
+    client.post(f"/api/tasks/{t['id']}/move",
+                json={"user_id": ADMIN_ID, "group_id": board["groups"]["done"],
+                      "status": "done"})
+    assert _status(client, board, t["id"]) == "done"
+
+
+def test_a_move_to_another_board_carries_the_status_across(client, board):
+    """A move between boards restamped it too — the last place the rule lived."""
+    other = client.post("/api/boards", json={"name": "לוח יעד", "user_id": ADMIN_ID}).json()["id"]
+    ob = client.get(f"/api/boards/{other}?user_id={ADMIN_ID}").json()
+    done_there = next(g["id"] for g in ob["groups"] if g["task_status"] == "done")
+
+    t = _item(client, board, status="in_progress")
+    r = client.post(f"/api/tasks/{t['id']}/move",
+                    json={"user_id": ADMIN_ID, "board_id": other, "group_id": done_there})
+    assert r.status_code == 200, r.text
+
+    moved = next(x for x in client.get(f"/api/boards/{other}?user_id={ADMIN_ID}").json()["tasks"]
+                 if x["id"] == t["id"])
+    assert moved["group_id"] == done_there          # it arrived where it was sent
+    assert moved["status"] == "in_progress"         # saying what it said before
+
+
 # ── the grid does not have its own copy of the rule ────────────────────────
 def test_the_board_screen_does_not_move_the_row_by_itself(client):
     """The grid mirrored the server's move so the row did not wait for a refresh.
@@ -169,3 +229,22 @@ def test_the_board_screen_does_not_move_the_row_by_itself(client):
     # ...and it does not have to: it follows what came back from the write
     assert "res.group_id!==t.group_id" in src, \
         "the grid ignores the group the server put the item in"
+
+
+def test_no_screen_sends_a_group_status_along_with_a_move(client):
+    """The rule's last hiding place: the client asking for it explicitly.
+
+    The three screens that move an item into a group — its own "העבר לקבוצה",
+    the bulk bar, and the drag — each used to read the group's task_status and
+    post it with the move. The server obeys a status it is given, exactly as it
+    should, so the rule went on running from the other side of the wire with
+    nothing in the backend to blame for it."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "body.status=grp.task_status" not in src, \
+        "a screen still stamps the group's status onto the item it moves"
+    # the group's status is still read where a *new* item needs a starting
+    # value — that is a default on something that has none, not a rule that
+    # overwrites what somebody said
+    assert "new item's status matches its group" in src

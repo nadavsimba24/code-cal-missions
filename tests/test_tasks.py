@@ -250,11 +250,13 @@ def test_creating_an_item_logs_a_creation_entry(client, admin_id):
     assert screated and screated[0]["field"] == "subitem"
 
 
-def test_parent_rolls_up_to_done_when_all_subitems_done(client):
-    """A parent item auto-completes once every one of its sub-items is done.
+def test_finishing_every_subitem_does_not_finish_the_parent(client):
+    """The parent used to complete itself once every sub-item was done.
 
-    The status only: where a done item then belongs is a question for an
-    automation, so the parent stays in its own group."""
+    Nobody wrote that rule, it was absent from the board's automations list, and
+    there was no switch for it — a parent that had been left open on purpose
+    reported itself finished, in the charts and the log alike. Whether a parent
+    is done is now something a person says."""
     b = client.get("/api/boards/1?user_id=1").json()
     gid = b["groups"][0]["id"]
     p = client.post("/api/tasks", json={"title": "parent", "board_id": 1, "group_id": gid}).json()["id"]
@@ -264,12 +266,12 @@ def test_parent_rolls_up_to_done_when_all_subitems_done(client):
         def parent():
             d = client.get("/api/boards/1?user_id=1").json()
             return next(t for t in d["tasks"] if t["id"] == p)
+        was = parent()["status"]
         client.patch(f"/api/tasks/{s1}", json={"status": "done", "user_id": 1})
-        assert parent()["status"] != "done"          # not all subs done yet
         client.patch(f"/api/tasks/{s2}", json={"status": "done", "user_id": 1})
         pt = parent()
-        assert pt["status"] == "done"                # all subs done → parent done
-        assert pt["group_id"] == gid                 # and stays where it was put
+        assert pt["status"] == was and pt["status"] != "done"   # untouched
+        assert pt["group_id"] == gid                            # and still where it was put
     finally:
         client.delete(f"/api/tasks/{p}")
 

@@ -1081,18 +1081,23 @@ def _filter_people_values(db, board_id, cf, before):
                    if uid in kept or _can_be_assigned(db, board_id, uid)]
 
 _BROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
-def _require_board_edit(db, board_id, actor, need="editor"):
+def _require_board_edit(db, board_id, actor, need="editor", msg=None):
     """Enforce board-level write permission (closes IDOR on board mutations).
     The actor must be a board member whose role meets `need` (editor|admin).
 
     This used to return silently when `actor` was None, which meant dropping the
     parameter skipped the check entirely. Identity now comes from the transport,
-    so None means unauthenticated and must be refused."""
+    so None means unauthenticated and must be refused.
+
+    `msg` names what was refused. The default reads "you may not change this
+    board", which is true of a viewer but a lie to an editor asking for
+    something only an admin may do — they change the board all day. A caller
+    asking for more than editor should say what it is asking for."""
     if actor is None:
         raise HTTPException(401, "נדרשת התחברות")
     role = _board_role(db, board_id, actor)
     if role is None or _BROLE_ORDER.get(role, -1) < _BROLE_ORDER.get(need, 1):
-        raise HTTPException(403, "אין לך הרשאה לשנות לוח זה")
+        raise HTTPException(403, msg or "אין לך הרשאה לשנות לוח זה")
 
 def _visible_board_ids(db, user_id):
     """Set of board IDs a user is allowed to see (membership-based).
@@ -4116,21 +4121,6 @@ def _st_of(t):
     return t.status.value if hasattr(t.status, "value") else t.status
 
 
-def _rollup_parent(db, parent_id):
-    """When every sub-item of a parent is done, mark the parent done too.
-
-    Only the status: where the item then belongs is a question for an automation
-    (status_move_group), not for this."""
-    parent = db.query(Task).filter(Task.id == parent_id).first()
-    if not parent:
-        return
-    subs = db.query(Task).filter(Task.parent_id == parent_id).all()
-    if not subs:
-        return
-    if all(_st_of(s) == "done" for s in subs) and _st_of(parent) != "done":
-        parent.status = TaskStatus.DONE
-
-
 # ── Automations engine (אוטומציות) ──────────────────────────────────
 # A board admin builds if-then rules from the recipe catalog in automations.py.
 # Rules fire inline, inside the same transaction as the change that triggered
@@ -4801,12 +4791,11 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 if st_val(task.status) != st_val(nv):
                     _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
                 task.status = nv
-                # A status change does not move the item. Moving between groups by
-                # status is an automation (recipe status_move_group) — built in, it
-                # was a rule nobody wrote and nobody could see or switch off.
-                if task.parent_id is not None:
-                    # roll up: parent auto-completes once all its sub-items are done
-                    _rollup_parent(db, task.parent_id)
+                # Nothing else follows from a status. It does not move the item
+                # between groups, and finishing the last sub-item does not finish
+                # the parent — both were rules nobody wrote, on every board, absent
+                # from the board's own automations list and with no switch. Each
+                # has a recipe waiting in the catalog for a board that wants it.
             except ValueError:
                 pass
         if "due_date" in data:
@@ -5801,8 +5790,10 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             for t in [task] + subs:
                 t.board_id = target
                 t.group_id = grp.id if grp else None
-            if grp:
-                task.status = grp.task_status
+            # The group it lands in does not restamp its status. A group is where
+            # an item sits; the status is what someone said about it, and it
+            # survives the move like every other field on the item. A board that
+            # wants the two tied together says so in its automations.
             maxpos = (db.query(func.max(Task.position))
                       .filter(Task.board_id == target, Task.parent_id == None,
                               Task.group_id == (grp.id if grp else None)).scalar())
@@ -5869,7 +5860,12 @@ def create_group_api(data: dict, actor_id: int = Depends(current_user_id)):
         board = db.query(Board).filter(Board.id == board_id).first()
         if not board:
             raise HTTPException(404, "board not found")
-        _require_board_edit(db, board_id, actor_id)
+        # A group is structure, not content — the same kind of decision as a
+        # column, and the board's admin makes it. An editor fills the board in:
+        # items, values, who is on what. They no longer decide what shelves the
+        # board has.
+        _require_board_edit(db, board_id, actor_id, need="admin",
+                            msg="רק מנהל הלוח יכול להוסיף קבוצות")
         pos = data.get("position")
         if pos is None:
             pos = db.query(Group).filter(Group.board_id == board_id).count()
