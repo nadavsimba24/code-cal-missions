@@ -330,10 +330,15 @@ def test_the_board_keeps_its_own_groups_and_each_item_lands_in_its_own(client):
     assert pos["ראשון"] == 0 and pos["שלישי"] == 1 and pos["שני"] == 0
 
 
-def test_a_file_with_no_groups_gets_one_group_not_three_invented_stages(client):
+def test_a_file_with_no_groups_gets_one_unnamed_group(client):
     """Without `group { id title }` the export says nothing about how the board
-    was divided. Three named stages would be a claim the file does not make."""
-    bid = _upload(client, _resp([_item("פריט", [_cv("t", "טקסט", "text", text="א")])]),
-                  name="ללא קבוצות").json()["id"]
-    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
-    assert [g["name"] for g in board["groups"]] == ["כל הפריטים"]
+    was divided. Three invented stages would be a claim the file does not make,
+    and so would a heading over the one group that holds everything — so it is
+    left unnamed, to be renamed once there is something true to call it."""
+    r = _upload(client, _resp([_item("פריט", [_cv("t", "טקסט", "text", text="א")])]),
+                name="ללא קבוצות").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    assert [g["name"] for g in board["groups"]] == [""]
+    assert len(board["tasks"]) == 1, "the item did not land in the group"
+    assert board["tasks"][0]["group_id"] == board["groups"][0]["id"]
+    assert r["report"]["groups"] == 0, "an invented group was counted as one the file had"

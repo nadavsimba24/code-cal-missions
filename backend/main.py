@@ -1888,8 +1888,10 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         # ── groups: the board's own, when the export carries them ────────────
         # Without `group { id title }` in the query monday says nothing about how
         # the board was divided, and inventing three named stages would be a
-        # claim about the file that the file does not make. One group holding
-        # everything is the truthful reading, and is trivially split later.
+        # claim about the file that the file does not make. Everything goes into
+        # one group, and that group is left unnamed — a name would be a heading
+        # over a division that does not exist. It is renamed or split the moment
+        # there is something true to call it.
         gmap, groups = {}, []
         for i, g in enumerate(parsed["groups"]):
             grp = Group(board_id=b.id, name=g["title"][:200], position=i,
@@ -1899,7 +1901,7 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             groups.append(grp)
             gmap[g["id"]] = grp
         if not groups:
-            grp = Group(board_id=b.id, name="כל הפריטים", position=0, color="#579bfc",
+            grp = Group(board_id=b.id, name="", position=0, color="#579bfc",
                         task_status=TaskStatus.BACKLOG)
             db.add(grp)
             groups.append(grp)
