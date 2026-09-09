@@ -1,20 +1,19 @@
-"""A drag says a move happened only when one did — and can reach the group.
+"""A drag reorders a group, and says a move happened only when one did.
 
-Two reports, one gesture. Dropping a row back where it was picked up from sent
-a move to the server, refetched the board and announced "הפריט הועבר": a
-success message for nothing. And the reason a drag so often ended nowhere is
-that moving an item to another group meant holding the row down while scrolling
-the board to reach it. So for the length of the gesture the board shrinks to its
-group names, every group's "+ הוסף פריט" line staying as the strip to drop on,
-and whichever group the pointer is over opens so a position inside it is still
-a thing that can be chosen. None of it is remembered once the drag ends.
+Two rules, one gesture. Dropping a row back where it was picked up from sent a
+move to the server, refetched the board and announced "הפריט הועבר": a success
+message for nothing. And a drag used to be able to carry an item into another
+group — with the whole board folding up to its group names to make the other
+group reachable. Which group an item belongs to is a decision about the work,
+taken deliberately in the item's menu or the bulk bar, so a drag now stays
+inside the group it started in: each group's tbody is a Sortable of its own,
+the board is never folded, and the item's status is left alone.
 
 The message rule covers all three things a board lets you drag — an item, a
 sub-item and a whole group — because it is the same false success in each.
 
-The harness runs the real itemSpot/sameSpot/itemDragChrome/itemDragOpen under
-node over a stub DOM, and reads the CSS and the wiring out of index.html; it
-names the failing case.
+The harness runs the real itemSpot/sameSpot under node over a stub DOM, and
+reads the CSS and the wiring out of index.html; it names the failing case.
 """
 import pathlib
 import shutil

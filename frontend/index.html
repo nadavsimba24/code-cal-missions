@@ -499,38 +499,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group:hover .g-menu-btn{opacity:1}
 .group-head .g-menu-btn:hover{background:var(--row-hover);color:var(--text)}
 .sortable-ghost .group-head{opacity:.4}
-/* An item in the air: the board shrinks to its group names, so a group further
-   down the page is one short drag away instead of a long scroll with a row held
-   down. Every group keeps its "+ הוסף פריט" line as the strip to drop on, and
-   the group under the pointer opens so a place inside it can still be chosen.
-   Put on and taken off by itemDragChrome; the remembered collapsed state is
-   never touched, and a group the user collapsed themselves takes part too — its
-   table is forced back for the length of the gesture. */
-/* the group name un-sticks with its column header by way of a -32px pull; with
-   the header gone for the drag, that pull would slide the next group under it */
-body.dragging-item .grp-stick>.tbl{display:table!important;margin-bottom:0}
-body.dragging-item .grp-batt,body.dragging-item .tbl thead{display:none}
-body.dragging-item .tbl tr.sub-wrap{display:none!important}
-/* the shrink happens in two steps: what is leaving dims where it stands, and
-   only then is it taken out of the layout. Folding a board away in a single
-   frame is the whole of what reads as the screen jumping. */
-body.dragging-fade .tbl thead,body.dragging-fade .grp-batt,body.dragging-fade .tbl tr.sub-wrap,
-body.dragging-fade .tbl tbody[data-gid]:not(.drag-open)>tr[data-tid]:not(.sortable-ghost):not(.sortable-drag){opacity:0;transition:opacity .12s ease}
-/* the placeholder stays (it answers "where will this land"), and so does the
-   copy of the row that follows the cursor — Sortable parks that copy inside
-   this very tbody, so a blanket rule here would drag an invisible row */
-body.dragging-item .tbl tbody[data-gid]>tr[data-tid]:not(.sortable-ghost):not(.sortable-drag){display:none}
-/* a group that opens under the pointer fades its rows in rather than appearing.
-   Only one that opens into an already-folded board: the group the drag started
-   in was open before the fold and never left the screen, and animating it in
-   would be a blink of exactly the rows being kept still. */
-body.dragging-item .tbl tbody[data-gid].drag-open>tr[data-tid]{display:table-row}
-body.dragging-item .tbl tbody[data-gid].drag-opened>tr[data-tid]{animation:dragRowIn .14s ease}
-@keyframes dragRowIn{from{opacity:0}to{opacity:1}}
-/* where the item landed, for as long as it takes to see it */
-@keyframes justMoved{from{background:var(--primary-soft)}to{background:transparent}}
-tr.just-moved>td{animation:justMoved .9s ease-out}
-body.dragging-item .add-row td{color:var(--primary);font-weight:600;text-align:center;border:1.5px dashed var(--primary);border-radius:8px;background:var(--primary-soft)}
 .add-group-btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border:1.5px dashed var(--border-strong);border-radius:9px;color:var(--text-muted);font-weight:600;font-size:13.5px;background:var(--surface);transition:.12s}
 .add-group-btn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
 .color-grid{display:flex;flex-wrap:wrap;gap:9px}
@@ -576,7 +544,7 @@ body.dragging-item .add-row td{color:var(--primary);font-weight:600;text-align:c
 .item-menu{width:20px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;opacity:0;transition:.12s;flex-shrink:0;cursor:pointer;margin-inline-start:-2px}
 .tbl tr:hover .item-menu{opacity:.7}
 .item-menu:hover{background:var(--row-hover);opacity:1;color:var(--text)}
-/* the whole item row is draggable between groups (Sortable, interactive cells filtered) */
+/* the whole item row is draggable within its group (Sortable, interactive cells filtered) */
 .tbl tr[data-tid] .c-item{cursor:grab}
 .tbl tr[data-tid].sortable-drag .c-item,.tbl tr[data-tid]:active .c-item{cursor:grabbing}
 /* sub-items reorder within their parent's frame — grab from the sub-item cell */
@@ -5442,86 +5410,20 @@ function groupsOf(){
   return out;
 }
 
-/* ===== dragging an item: the board while the item is in the air =====
-   Two rules, both of them about not lying to the person dragging.
+/* ===== dragging an item =====
+   A row is dragged inside its own group, to sit above or below its neighbours.
+   It cannot leave that group: a group is a decision about the work, not a
+   position on the page, so it is made deliberately — "העבר לקבוצה" in the
+   item's menu, or the bulk bar — and never as a side effect of aiming a row
+   that is following the cursor.
 
-   The board shrinks to its group names for the length of the gesture, because
-   a move between groups used to mean holding a row down and scrolling. Each
-   group's "+ הוסף פריט" line is left showing as the strip to drop on (dropping
-   there files the item at the end of that group), and whichever group the
-   pointer is over opens, so a position inside a group is still a thing that
-   can be chosen. Nothing here is remembered: it is a class on <body> and a
-   class on one tbody, both gone by the time the drag ends.
+   A drag that puts the row back where it started is not a move, so it neither
+   goes to the server nor claims one happened. itemSpot answers "where is this
+   row" in exactly the terms the move is sent in — which group, and which item
+   it follows — so "did anything change" is one comparison.
 
-   And a drag that puts the row back where it started is not a move, so it
-   neither goes to the server nor claims one happened. itemSpot answers "where
-   is this row" in exactly the terms the move is sent in — which group, and
-   which item it follows — so "did anything change" is one comparison. */
-const DRAG_FADE_MS=120, DRAG_OPEN_MS=180;
-let _dragShrinkT=null, _dragOpenT=null, _dragOpenWant=null;
-/* Hold one thing still while the board changes shape around it. Every layout
-   change here is somebody's frame of reference — the row under the cursor, the
-   name of the group being aimed at — and a board that folds up under a held
-   row slides that reference hundreds of pixels up the screen. Scrolling by the
-   same amount in the same frame means nothing appears to move at all. */
-function keepInPlace(ref,change){
-  const view=document.getElementById('view');
-  const el=typeof ref==='function'?ref():ref;
-  const before=(el&&view)?el.getBoundingClientRect().top:null;
-  change();
-  if(before===null||!el.isConnected)return;
-  view.scrollTop+=el.getBoundingClientRect().top-before;
-}
-function itemDragChrome(on,anchor){
-  clearTimeout(_dragShrinkT); clearTimeout(_dragOpenT); _dragOpenWant=null;
-  const label=shut=>document.querySelectorAll('.tbl tbody[data-gid] .add-row td').forEach(td=>{
-    if(shut){ if(td.dataset.addLabel===undefined)td.dataset.addLabel=td.textContent; td.textContent='שחרר כאן'; }
-    else if(td.dataset.addLabel!==undefined){ td.textContent=td.dataset.addLabel; delete td.dataset.addLabel; }
-  });
-  if(!on){
-    document.body.classList.remove('dragging-fade','dragging-item');
-    label(false);
-    document.querySelectorAll('tbody.drag-open,tbody.drag-opened').forEach(tb=>tb.classList.remove('drag-open','drag-opened'));
-    return;
-  }
-  document.body.classList.add('dragging-fade');     // dim first, in place
-  _dragShrinkT=setTimeout(()=>{                     // then take it out of the layout
-    keepInPlace(anchor,()=>{
-      document.body.classList.remove('dragging-fade');
-      document.body.classList.add('dragging-item');
-      label(true);
-    });
-  },DRAG_FADE_MS);
-}
-/* A group opens only once the pointer has settled on it. Opening on the first
-   frame over each group turns a sweep down the board into a row of groups
-   flapping open and shut, which is most of the movement there was to see. */
-function itemDragOpen(tb,now){
-  const want=(tb&&tb.dataset&&tb.dataset.gid!==undefined)?tb:null;
-  if(want===_dragOpenWant)return;                   // nearly every move lands here
-  _dragOpenWant=want; clearTimeout(_dragOpenT);
-  if(!want||now){ itemDragOpened(want); return; }
-  _dragOpenT=setTimeout(()=>itemDragOpened(want),DRAG_OPEN_MS);
-}
-function itemDragOpened(tb){
-  const anim=document.body.classList.contains('dragging-item');   // into a board already folded
-  keepInPlace(tb&&tb.closest('.group'),()=>{
-    document.querySelectorAll('.tbl tbody[data-gid]').forEach(x=>{
-      const on=x===tb;
-      x.classList.toggle('drag-open',on); x.classList.toggle('drag-opened',on&&anim);
-    });
-  });
-}
-/* Where the item landed, marked for a moment. The board is not scrolled to it:
-   the view goes nowhere on its own, and the row was left in place by the unfold
-   anyway — it is already where it was let go of. */
-function markMovedRow(tid){
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    const row=document.querySelector('tr[data-tid="'+tid+'"]'); if(!row)return;
-    row.classList.add('just-moved');
-    setTimeout(()=>row.classList.remove('just-moved'),900);
-  }));
-}
+   Nothing is painted on the row afterwards: it is under the cursor that just
+   let go of it, which is the only "here is where it landed" anyone needs. */
 function itemSpot(tbody,row){
   // Which item it sits below — not which row number it is. With a search or a
   // filter on, the rows on screen are a subset of the group, so "the third row"
@@ -5605,47 +5507,38 @@ function vTable(el){
           (st.board.groups||[]).forEach(gr=>{const i=ids.indexOf(gr.id);if(i>=0)gr.position=i;});
         }catch(e){toast('שגיאה בשמירת המיקום');renderView();}
       }});
-    // drag items between groups — grab an item by its name, drop into any group
+    // reorder items inside a group — grab an item by its name and take it up or
+    // down its own group. Each group's tbody is its own list with no shared
+    // group name, so Sortable will not accept a row from another one: a row
+    // dragged out is refused and springs back where it came from.
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      new Sortable(tb,{group:'board-items',draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
+      new Sortable(tb,{draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
-        onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item);
-          // the placeholder is the row's stand-in wherever it has got to by the
-          // time the board folds — it is what stays put while it does
-          itemDragChrome(true,()=>document.querySelector('tr.sortable-ghost')||evt.item);
-          // the group the row came from is open from the first frame, not opened
-          // again a moment later: it is where the pointer already is, and folding
-          // it away only to spring it back is the flicker the fold is avoiding
-          itemDragOpen(evt.from,true); },
-        // a top-level item never lands inside a sub-item panel row; the group
-        // being dragged over opens, the rest stay shrunk to their names
-        onMove:evt=>{ itemDragOpen(evt.to); return !(evt.related&&evt.related.classList.contains('sub-wrap')); },
+        onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item); },
+        // a top-level item never lands inside a sub-item panel row
+        onMove:evt=>!(evt.related&&evt.related.classList.contains('sub-wrap')),
         onEnd:async(evt)=>{
           const it=evt.item, tid=+it.dataset.tid; const from=_itemDragFrom; _itemDragFrom=null;
-          // the board unfolds the way it folded: around the row. Everything
-          // above it comes back and would push it down the screen, so the view
-          // follows by the same amount and the row stays where it was let go.
-          keepInPlace(it,()=>itemDragChrome(false));
           if(!tid)return;
-          const toBody=evt.to, spot=itemSpot(toBody,it), gid=spot.gid;
+          const spot=itemSpot(evt.to,it);
           // Dropped back where it was picked up from. Re-render so the row sits
           // where it belongs again, then stop: nothing was moved, so nothing is
           // sent and nothing is announced.
           if(sameSpot(from,spot)){ renderView(); return; }
-          const grp=(st.board.groups||[]).find(g=>g.id===gid);
-          const body={group_id:gid,after_id:spot.after};
-          if(grp)body.status=grp.task_status;
+          // the group is the one it was already in, and its status is its own:
+          // an item that stays put in a group is not restated by being moved
+          // past its neighbours
           const wasSorted=!!(st.colSort&&st.colSort.key);
           try{
-            await api('/api/tasks/'+tid+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})});
+            await api('/api/tasks/'+tid+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:spot.gid,after_id:spot.after,actor_id:meId()})});
             // A column sort would re-sort the drop away the instant the board
             // came back, and the item would appear to snap home — so a manual
             // order wins over one, exactly as it already does for sub-items.
             st.colSort=null;
             const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
-            toast(wasSorted?'הפריט הועבר — המיון לפי עמודה בוטל':'הפריט הועבר');
-            renderView(); markMovedRow(tid);
-          }catch(e){ toast('שגיאה בהעברת הפריט'); renderView(); }
+            toast(wasSorted?'סדר הפריטים עודכן — המיון לפי עמודה בוטל':'סדר הפריטים עודכן');
+            renderView();
+          }catch(e){ toast('שגיאה בעדכון סדר הפריטים'); renderView(); }
         }});
     });
     // reorder sub-items — each parent's panel is its own table, so the drag is
