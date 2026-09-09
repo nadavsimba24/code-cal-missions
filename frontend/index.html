@@ -688,6 +688,13 @@ body.coldragging .col-grip{opacity:1}
 .cc-inp{width:100%;border:1px solid transparent;background:transparent;font-family:inherit;font-size:13px;color:var(--text);text-align:center;border-radius:5px;padding:5px 6px}
 .cc-inp:hover{border-color:var(--border)}
 .cc-inp:focus{outline:none;border-color:var(--primary);background:var(--surface)}
+/* An e-mail address is always latin script, so it reads left-to-right even on
+   this right-to-left board. The envelope is a link, not a button: it appears
+   only when there is an address to write to. */
+.cc-mailwrap{display:flex;align-items:center;gap:4px}
+.cc-mailwrap .cc-inp{direction:ltr;text-align:center}
+.cc-mail{color:var(--text-light);font-size:12px;flex:0 0 auto;padding:2px}
+.cc-mail:hover{color:var(--primary)}
 .cc-date{cursor:pointer;color:var(--text-muted)}
 /* A date cell draws its OWN text, and the input draws none.
    `<input type="date">` takes the day/month order from the *browser's* locale —
@@ -1611,6 +1618,17 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .ff-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border-strong);border-radius:18px;padding:4px 11px;font-size:12.5px;cursor:pointer}
 .ff-chip:has(input:checked){border-color:var(--primary);background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .ff-chip input{accent-color:var(--primary)}
+/* monday import report */
+.imp-stats{display:flex;gap:10px;margin-bottom:14px}
+.imp-stat{flex:1;text-align:center;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:10px 6px}
+.imp-stat b{display:block;font-size:19px;font-weight:700;color:var(--primary)}
+.imp-stat span{font-size:12px;color:var(--text-muted)}
+.imp-sec{border-top:1px solid var(--border);padding-top:12px;margin-top:12px}
+.imp-sec-t{font-size:13px;font-weight:700;display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.imp-sec-t i{color:var(--text-light)}
+.imp-grp{margin-bottom:10px}
+.imp-why{font-size:12px;color:var(--text-muted);margin-bottom:5px}
+.imp-cols{display:flex;flex-wrap:wrap;gap:4px}
 /* settings modal */
 .set-label{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
 .set-label i{color:var(--primary)}
@@ -3223,7 +3241,7 @@ async function importBoardFile(){
   if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
   const inp=document.createElement('input');
   inp.type='file';
-  inp.accept='.csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  inp.accept='.csv,.xlsx,.xlsm,.json,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   inp.onchange=async()=>{
     const f=inp.files&&inp.files[0]; if(!f)return;
     const fd=new FormData(); fd.append('file',f);
@@ -3238,10 +3256,58 @@ async function importBoardFile(){
       st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
       renderSidebar();
       await openBoard(b.id);
-      toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות');
+      if(b.report) importReport(b);
+      else toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות');
     }catch(e){ toast((e&&e.message)||'שגיאה בייבוא הקובץ'); }
   };
   inp.click();
+}
+
+/* What a monday import actually did.
+   A file can hold more columns than a board may have, and can name people who
+   have no account here. Both are decisions the import makes on the user's
+   behalf, so both are shown rather than left to be discovered later: every
+   column that did not come in is listed by name, with the reason. */
+function importReport(b){
+  const r=b.report||{}, skipped=r.skipped||[], missing=r.people_unmatched||[];
+  /* A column that came in as a different type than its name suggests is still
+     imported, and is the one thing a migration has to be able to check at a
+     glance — so it is stated, not left to be noticed cell by cell. */
+  const retyped=(r.mapping||[]).filter(m=>m.note);
+  const byReason=(list,key)=>Object.entries(list.reduce((a,x)=>{
+    (a[x[key]]=a[x[key]]||[]).push(x.title); return a;},{}));
+  const stat=(n,label)=>`<div class="imp-stat"><b>${n}</b><span>${esc(label)}</span></div>`;
+  const skipHTML=skipped.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-circle-minus"></i> ${skipped.length} עמודות לא יובאו</div>
+      ${byReason(skipped,'reason').map(([reason,titles])=>`
+        <div class="imp-grp"><div class="imp-why">${esc(reason)}</div>
+        <div class="imp-cols">${titles.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>`).join('')}
+    </div>`:'';
+  const mapHTML=retyped.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-right-left"></i> ${retyped.length} עמודות יובאו בסוג אחר</div>
+      ${byReason(retyped,'note').map(([note,titles])=>`
+        <div class="imp-grp"><div class="imp-why">${esc(note)}</div>
+        <div class="imp-cols">${titles.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>`).join('')}
+    </div>`:'';
+  const peopleHTML=missing.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-user-slash"></i> ${missing.length} אנשים ללא חשבון במערכת</div>
+      <div class="imp-why">השמות האלה מופיעים בקובץ אך אין להם משתמש כאן, ולכן עמודות האחראים שלהם נשארו ריקות.</div>
+      <div class="imp-cols">${missing.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
+    </div>`:'';
+  showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(b.name||'הלוח יובא')}</h2>
+    <div class="mbody">
+      <div class="imp-stats">
+        ${stat(b.items||0,'פריטים')}
+        ${b.subitems?stat(b.subitems,'פריטי־תת'):''}
+        ${stat(`${r.columns_imported||0}/${r.columns_found||0}`,'עמודות')}
+        ${r.groups?stat(r.groups,'קבוצות'):''}
+      </div>
+      ${mapHTML}${skipHTML}${peopleHTML}
+    </div>
+    <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>`);
 }
 
 /* ============ views ============ */
@@ -5883,6 +5949,7 @@ async function saveSubOnly(ids,msg){
 const COLUMN_TYPES=[
   {type:'status',he:'סטטוס',ic:'fa-circle-half-stroke',desc:'תווית צבעונית'},
   {type:'text',he:'טקסט',ic:'fa-font',desc:'טקסט חופשי'},
+  {type:'email',he:'דוא"ל',ic:'fa-envelope',desc:'כתובת דוא"ל'},
   {type:'people',he:'אנשים',ic:'fa-user-group',desc:'שיוך משתמשים'},
   {type:'dropdown',he:'רשימה נפתחת',ic:'fa-list-check',desc:'בחירה מרשימת אפשרויות'},
   {type:'date',he:'תאריך',ic:'fa-calendar-day',desc:'תאריך בודד'},
@@ -5911,7 +5978,7 @@ const STATUS_OPTS=[
   {label:'הקפאה', color:'#FD5AC3'},
   {label:'בוטל',  color:'#9BADBC'},
 ];
-const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',number:'מספר',rating:'דירוג',
+const COL_DEFAULTS={timeline:'ציר זמן',status:'סטטוס מותאם',date:'תאריך',text:'טקסט',email:'דוא"ל',number:'מספר',rating:'דירוג',
   people:'אנשים',dropdown:'רשימה נפתחת',files:'קבצים',accounts:'קישור',checkbox:'סימון',formula:'נוסחה',connect:'קישור בין לוחות',
   created_at:'מועד יצירה',created_by:'יוצר הרשומה',item_id:'מזהה פריט',mirror:'שדה מראה'};
 /* columns the system derives from the item itself — they have no value to fill
@@ -6232,6 +6299,7 @@ function builtinCellHTML(key,t){
 function customCellHTML(c,t){
   const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
   if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
+  if(c.type==='email')  return `<td class="cell cell-custom"><div class="cc-mailwrap">${v?`<a class="cc-mail" href="mailto:${esc(v)}" title="שלח דוא&quot;ל" onclick="event.stopPropagation()"><i class="fa-solid fa-envelope"></i></a>`:''}<input class="cc-inp" type="email" value="${esc(v==null?'':v)}" placeholder="—" onchange="setEmailCell(${id},'${c.id}',this)"></div></td>`;
   if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
   if(c.type==='date')   return `<td class="cell cell-custom">${dateCellHTML(v,`setCell(${id},'${c.id}',this.value||null)`)}</td>`;
   if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
@@ -6305,7 +6373,8 @@ function exportCell(c,t){
   }
   const col=c.col, v=(t.custom_fields||{})[col.id];
   switch(col.type){
-    case 'text':     return v==null?'':String(v);
+    case 'text':
+    case 'email':    return v==null?'':String(v);
     case 'number':   return (v==null||v==='')?'':(isNaN(Number(v))?String(v):Number(v));
     case 'date':     return v?{v,t:'date'}:'';
     case 'rating':   return v?Number(v):'';
@@ -6999,6 +7068,19 @@ async function setCell(taskId,colId,value){
   if(t){t.custom_fields=t.custom_fields||{}; if(value==null||value==='')delete t.custom_fields[colId]; else t.custom_fields[colId]=value;}
   try{await api('/api/tasks/'+taskId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({custom_fields:{[colId]:(value===''?null:value)}})});}
   catch(e){toast('שגיאה בשמירת הערך');}
+}
+
+/* An address that is not an address is refused rather than stored.
+   The whole point of the column over a text column is that you can write to
+   what is in it, and a mailto: built on a typo is a dead link that looks live.
+   The cell keeps what was typed so it can be corrected, instead of silently
+   throwing the keystrokes away. */
+const EMAIL_RE=/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+async function setEmailCell(taskId,colId,el){
+  const v=(el.value||'').trim();
+  if(v && !EMAIL_RE.test(v)){ toast('כתובת דוא"ל לא תקינה'); el.focus(); return; }
+  await setCell(taskId,colId,v||null);
+  refreshRow(taskId);   // the envelope appears or goes with the address
 }
 
 /* ===== inline editing of built-in columns (סטטוס/עדיפות/תאריך/תגיות/כותרת) ===== */
@@ -8026,6 +8108,15 @@ async function saveColumns(cols){
   try{
     const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({columns:cols})});
     st.board.columns=r.columns;
+    /* The server keeps an allow-list of column types and drops anything it does
+       not know — quietly, with a 200. A browser holding a newer index.html than
+       the running server then offers a type the server will discard, and the
+       column simply never appears: no error, no column, nothing to go on. What
+       we sent and what came back are both here, so say which type was lost. */
+    const got=(r.columns||[]).map(c=>c.type);
+    const lost=[...new Set(cols.map(c=>c.type).filter(t=>{
+      const i=got.indexOf(t); if(i<0)return true; got.splice(i,1); return false;}))];
+    if(lost.length) toast('השרת לא מכיר את סוג העמודה: '+lost.join(', ')+' — ייתכן שהוא לא עודכן');
     // adding a "מזהה פריט" column issues an identifier to every item already on
     // the board, so the loaded items have to be refreshed to show them
     if((r.columns||[]).some(c=>c.type==='item_id')) await refreshBoardItems();
@@ -8808,7 +8899,7 @@ async function deleteGroup(gid){
 }
 
 /* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */
-const FIELD_TYPE_HE={text:'טקסט חופשי',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'קישור'};
+const FIELD_TYPE_HE={text:'טקסט חופשי',email:'דוא"ל',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'קישור'};
 function formSchema(){
   const f=[
     {key:'title',label:'שם הפריט',type:'text',locked:true},
@@ -8887,6 +8978,7 @@ const Forms={
     const req=f.required?' <span style="color:var(--red)">*</span>':'', id='ff-'+f.key;
     let inp='';
     if(f.type==='text') inp=`<input id="${id}" ${f.key==='title'?'placeholder="שם הפריט…"':''}>`;
+    else if(f.type==='email') inp=`<input id="${id}" type="email" dir="ltr" placeholder="name@example.com">`;
     else if(f.type==='number') inp=`<input id="${id}" type="number">`;
     else if(f.type==='date') inp=`<input id="${id}" type="date" ${f.min?`min="${f.min}"`:''} ${f.max?`max="${f.max}"`:''}>${(f.min||f.max)?`<div style="font-size:11px;color:var(--text-light);margin-top:3px">מוגבל ${f.min?'מ־'+f.min:''} ${f.max?'עד '+f.max:''}</div>`:''}`;
     else if(f.type==='checkbox') inp=`<input id="${id}" type="checkbox" style="width:auto">`;

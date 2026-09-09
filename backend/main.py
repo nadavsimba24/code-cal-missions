@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
                   init_auth, resolve_user)
 import entra_guests
+import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, ItemLink, BoardView,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
@@ -1791,6 +1792,179 @@ IMPORT_MAX_ROWS = 2000
 IMPORT_MAX_COLS = 40
 
 
+# Colours handed to imported status/dropdown options. Same list the status
+# picker offers, so an imported column looks like one made here by hand.
+IMPORT_PALETTE = [
+    "#1AC877", "#FBAA47", "#DB2D4C", "#565BDC", "#5A9CF9", "#9C51DB", "#E30073",
+    "#53CCC5", "#FD6C42", "#9DD335", "#276FDC", "#FD5AC3", "#117FB3", "#7E5348",
+    "#B93255", "#FECA29", "#6ACDFD", "#784DCF", "#0F7F4D", "#9BADBC",
+]
+
+
+def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_id):
+    """Build a board out of a monday.com API response.
+
+    The column budget is the one the tabular importer already works to: the item
+    name plus IMPORT_MAX_COLS - 1 custom columns. Nothing raises it. When the
+    file holds more than fits, the fullest columns win and the rest come back in
+    the report, named — so the drop is a decision the user can see rather than a
+    silence they discover weeks later.
+    """
+    try:
+        parsed = import_monday.parse(raw, IMPORT_MAX_COLS - 1)
+    except import_monday.NotMondayJson as e:
+        raise HTTPException(400, f"הקובץ אינו תשובת API של מאנדיי ({e})")
+    except (ValueError, TypeError):
+        raise HTTPException(400, "לא ניתן לקרוא את הקובץ — ודא שהוא JSON תקין")
+    if not parsed["items"]:
+        raise HTTPException(400, "לא נמצאו פריטים בקובץ")
+    parsed["items"] = parsed["items"][:IMPORT_MAX_ROWS]
+
+    with Session(engine) as db:
+        env_id = environment_id
+        if not env_id:
+            primary = db.query(Environment).filter(Environment.is_primary == True).first()
+            env_id = primary.id if primary else None
+        if not (_cap(db, actor_id, "create_board") or _can_manage_env(db, env_id, actor_id)):
+            raise HTTPException(403, "אין לך הרשאה ליצור לוח חדש")
+
+        # ── people: monday gives a display name, and an e-mail when the export
+        # carries one; we need an account. E-mail is tried first — it is the half
+        # that survives someone changing their display name, and two people can
+        # share a name. Anyone with no account here is named in the report rather
+        # than being dropped on the floor in silence.
+        people_wanted = set()
+        for r in parsed["items"]:
+            for src in [r] + r["subitems"]:
+                for c in parsed["columns"]:
+                    if c["type"] == "people":
+                        people_wanted.update(src["values"].get(c["key"]) or [])
+        by_token = {}
+        if people_wanted:
+            low = [t.lower() for t in people_wanted]
+            for u in db.query(User).filter(or_(func.lower(User.email).in_(low),
+                                               func.lower(User.name).in_(low))).all():
+                if u.email:
+                    by_token.setdefault(u.email.lower(), u.id)
+                if u.name:
+                    by_token.setdefault(u.name.lower(), u.id)
+        unmatched = sorted(t for t in people_wanted if t.lower() not in by_token)
+
+        # ── the columns ──────────────────────────────────────────────────────
+        col_ids, custom_cols, sub_used = {}, [], set()
+        for c in parsed["columns"]:
+            cid = "col_" + uuid.uuid4().hex[:8]
+            col_ids[c["key"]] = cid
+            col = {"id": cid, "type": c["type"], "title": c["title"][:60], "options": None,
+                   "formula": None, "connect": None, "copy_mode": None, "perms": {}}
+            if c["type"] == "status":
+                col["options"] = [{"label": str(o)[:40],
+                                   "color": IMPORT_PALETTE[j % len(IMPORT_PALETTE)]}
+                                  for j, o in enumerate(c.get("options") or [])]
+            elif c["type"] == "dropdown":
+                col["options"] = [str(o)[:40] for o in (c.get("options") or [])]
+            custom_cols.append(col)
+
+        settings = {
+            "views": ["table"],
+            "columns": [
+                {"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
+                {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
+                {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"},
+            ] + custom_cols,
+        }
+        base = os.path.splitext(os.path.basename(filename or ""))[0]
+        board_name = (name or "").strip() or parsed["board_name"] or base or "לוח מיובא"
+        maxpos = (db.query(func.max(Board.position))
+                  .filter(Board.environment_id == env_id, Board.folder_id == folder_id).scalar())
+        dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
+        b = Board(name=board_name[:200], description="", department_id=dept_id,
+                  environment_id=env_id, folder_id=folder_id,
+                  position=(maxpos + 1) if maxpos is not None else 0,
+                  board_type=BoardType.KANBAN, icon="\U0001F4CB", color="#0073ea",
+                  settings=settings)
+        db.add(b)
+        db.flush()
+        # ── groups: the board's own, when the export carries them ────────────
+        # Without `group { id title }` in the query monday says nothing about how
+        # the board was divided, and inventing three named stages would be a
+        # claim about the file that the file does not make. One group holding
+        # everything is the truthful reading, and is trivially split later.
+        gmap, groups = {}, []
+        for i, g in enumerate(parsed["groups"]):
+            grp = Group(board_id=b.id, name=g["title"][:200], position=i,
+                        color=IMPORT_PALETTE[i % len(IMPORT_PALETTE)],
+                        task_status=TaskStatus.BACKLOG)
+            db.add(grp)
+            groups.append(grp)
+            gmap[g["id"]] = grp
+        if not groups:
+            grp = Group(board_id=b.id, name="כל הפריטים", position=0, color="#579bfc",
+                        task_status=TaskStatus.BACKLOG)
+            db.add(grp)
+            groups.append(grp)
+        db.flush()
+        g1 = groups[0]
+
+        def cells(values, track_sub=False):
+            cf = {"status_unset": True, "priority_unset": True}
+            for c in parsed["columns"]:
+                v = values.get(c["key"])
+                if v is None or v == "" or v == []:
+                    continue
+                if c["type"] == "people":
+                    ids = []
+                    for tok in v:
+                        uid = by_token.get(str(tok).lower())
+                        if uid and uid not in ids:   # the name and the e-mail of one person
+                            ids.append(uid)
+                    if not ids:
+                        continue
+                    v = ids
+                cf[col_ids[c["key"]]] = v
+                if track_sub:
+                    sub_used.add(col_ids[c["key"]])
+            return cf
+
+        made = subs_made = 0
+        gpos = {}
+        for row in parsed["items"]:
+            grp = gmap.get(row.get("group")) or g1
+            pos = gpos[grp.id] = gpos.get(grp.id, -1) + 1
+            t = Task(board_id=b.id, group_id=grp.id, title=row["name"][:500],
+                     status=TaskStatus.BACKLOG, priority=Priority.MEDIUM, position=pos,
+                     created_by=actor_id, custom_fields=cells(row["values"]))
+            db.add(t)
+            db.flush()
+            _ensure_item_uid(db, t)
+            made += 1
+            for spos, sub in enumerate(row["subitems"]):
+                stask = Task(board_id=b.id, group_id=grp.id, parent_id=t.id,
+                             title=sub["name"][:500], status=TaskStatus.BACKLOG,
+                             priority=Priority.MEDIUM, position=spos,
+                             created_by=actor_id,
+                             custom_fields=cells(sub["values"], track_sub=True))
+                db.add(stask)
+                db.flush()
+                _ensure_item_uid(db, stask)
+                subs_made += 1
+
+        if sub_used:
+            # sub-items show only the columns they actually carry, in board order
+            s2 = dict(b.settings)
+            s2["sub_cols"] = ["item"] + [c["id"] for c in custom_cols if c["id"] in sub_used]
+            b.settings = s2
+        db.add(BoardMember(board_id=b.id, user_id=actor_id, role="admin"))
+        db.commit()
+        db.refresh(b)
+
+        return {"id": b.id, "name": b.name, "icon": b.icon,
+                "items": made, "subitems": subs_made, "columns": len(custom_cols),
+                "report": {**parsed["report"],
+                           "people_matched": len(set(by_token.values())),
+                           "people_unmatched": unmatched}}
+
+
 @app.post("/api/boards/import")
 async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(None),
                        environment_id: Optional[int] = Form(None),
@@ -1799,6 +1973,10 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
     raw = await file.read()
     if len(raw) > 8 * 1024 * 1024:
         raise HTTPException(413, "הקובץ גדול מדי (מקסימום 8MB)")
+    # A monday.com API response is JSON, not a table, and carries the column
+    # types a CSV export would have flattened to text. It gets its own reader.
+    if (file.filename or "").lower().endswith(".json") or import_monday.looks_like_monday(raw):
+        return _import_monday_board(raw, file.filename, name, environment_id, folder_id, actor_id)
     try:
         rows = _imp_parse_tabular(raw, file.filename)
     except Exception:
@@ -2005,7 +2183,7 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
             # full replacement of the custom-column definitions
-            allowed = {"timeline", "text", "number", "date", "rating", "status",
+            allowed = {"timeline", "text", "email", "number", "date", "rating", "status",
                        "people", "dropdown", "files", "accounts", "checkbox", "formula",
                        "connect", "created_at", "created_by", "item_id", "mirror"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
