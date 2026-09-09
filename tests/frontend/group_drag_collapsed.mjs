@@ -51,7 +51,7 @@ ck('and it is written into the markup too, so a re-render keeps the hit area',
    /class="group-head\$\{shut\?' collapsed':''\}"/.test(src));
 
 // ── and the drag itself is still wired the way it was ──────────────────────
-const grp = (()=>{ const j=src.indexOf("new Sortable(el,{handle:'.g-handle'"); let d=0;
+const grp = (()=>{ const j=src.indexOf("sortableOn(el,{handle:'.g-handle'"); let d=0;
   for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } })();
 ck('a group is still dragged by its grip or its name',
    /handle:'\.g-handle'/.test(grp) && /draggable:'\.group'/.test(grp));

@@ -59,7 +59,7 @@ ck('which only holds while the slot rule is written after the lifted one',
    'chosen at '+(chosen&&chosen.index)+', slot at '+src.indexOf(slot));
 
 // ── and the drag still hands out those two classes ─────────────────────────
-const grp = (()=>{ const j=src.indexOf("new Sortable(el,{handle:'.g-handle'"); let d=0;
+const grp = (()=>{ const j=src.indexOf("sortableOn(el,{handle:'.g-handle'"); let d=0;
   for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } })();
 ck('the group left in the list is the one marked as the slot',
    /ghostClass:'sortable-ghost'/.test(grp));

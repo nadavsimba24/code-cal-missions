@@ -2385,6 +2385,28 @@ function mobileBlocked(what){
    preventDefault, so a disabled list leaves native touch scrolling untouched. */
 const TOUCH_Q='(pointer:coarse)';
 function isTouch(){ return !!(window.matchMedia && window.matchMedia(TOUCH_Q).matches); }
+/* One Sortable per element, however many times the thing around it is rendered.
+
+   Sortable hangs its listeners on the element and keeps only a reference to
+   itself there; constructing a second one on the same element overwrites that
+   reference and leaves the first instance bound and listening. Most lists here
+   are rebuilt from innerHTML, so each render hands Sortable a brand-new element
+   and there is nothing to collide with. Two are not: the board view — the
+   container the GROUPS are dragged inside, which renderView empties but never
+   replaces — and the form builder's row list.
+
+   So every re-render of a board added another instance to the same element, and
+   a board re-renders constantly: a cell edited, a filter changed, a sort, a
+   live update, a drag landing. Two instances then raced to drag the same group
+   on one pointerdown, three raced, four — and reordering groups went from jumpy
+   to not working at all the longer the board stayed open. Item drag was never
+   affected, because its tbody is thrown away and rebuilt each time, which is
+   why this looked like a fault in group dragging alone. */
+function sortableOn(el,opts){
+  if(!el||!window.Sortable)return null;
+  const prev=Sortable.get(el); if(prev)prev.destroy();
+  return new Sortable(el,opts);
+}
 const ITEM_DRAG_SEL='.tbl tbody[data-gid],.sub-body[data-parent],.kcol-body';
 function syncItemDrag(){
   if(!window.Sortable)return;
@@ -2605,9 +2627,9 @@ const Folders = {
       .then(()=>{ toast('הלוח הועבר'); loadBoards(); }).catch(()=>toast('שגיאה')); },
   initSort(){ if(!window.Sortable)return;
     const fwrap=document.getElementById('sb-folders');
-    if(fwrap) new Sortable(fwrap,{group:'sb-folders',handle:'.sb-folder-head',draggable:'.sb-folder',animation:150,onEnd:()=>Folders.persist()});
+    if(fwrap) sortableOn(fwrap,{group:'sb-folders',handle:'.sb-folder-head',draggable:'.sb-folder',animation:150,onEnd:()=>Folders.persist()});
     document.querySelectorAll('#board-list .sb-folder-boards').forEach(c=>{
-      new Sortable(c,{group:'sb-boards',draggable:'.sb-item',animation:150,onEnd:()=>Folders.persist()});
+      sortableOn(c,{group:'sb-boards',draggable:'.sb-item',animation:150,onEnd:()=>Folders.persist()});
     }); },
   persist(){ const env=Env.active(); if(!env)return;
     const folders=[...document.querySelectorAll('#sb-folders .sb-folder')].map((el,i)=>({id:+el.dataset.fid,position:i}));
@@ -5563,7 +5585,7 @@ function vTable(el){
   });
   if(window.Sortable){
     // drag by the grip OR the group name to reorder groups
-    new Sortable(el,{handle:'.g-handle',draggable:'.group',filter:'[data-orphan]',
+    sortableOn(el,{handle:'.g-handle',draggable:'.group',filter:'[data-orphan]',
       forceFallback:true,fallbackTolerance:3,animation:150,
       chosenClass:'drag-chosen',ghostClass:'sortable-ghost',dragClass:'sortable-drag',
       onMove:evt=>!evt.related.hasAttribute('data-orphan'),
@@ -5584,7 +5606,7 @@ function vTable(el){
     // group name, so Sortable will not accept a row from another one: a row
     // dragged out is refused and springs back where it came from.
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      new Sortable(tb,{draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
+      sortableOn(tb,{draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item); },
         // a top-level item never lands inside a sub-item panel row
@@ -5616,7 +5638,7 @@ function vTable(el){
     // reorder sub-items — each parent's panel is its own table, so the drag is
     // naturally bounded to that parent (no cross-parent moves possible)
     el.querySelectorAll('.sub-body[data-parent]').forEach(sb=>{
-      new Sortable(sb,{draggable:'tr[data-sid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
+      sortableOn(sb,{draggable:'tr[data-sid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         // the copy of the row that follows the cursor lives in this table too,
         // and carries the same id — counting it would post a duplicate and make
@@ -8269,7 +8291,7 @@ function vKanban(el){
   }).join('')+'</div>';
   if(!window.Sortable){toast('גרירה לא זמינה (Sortable לא נטען) — לחץ על אווטאר לשיוך');return;}
   el.querySelectorAll('.kcol-body').forEach(body=>{
-    new Sortable(body,{group:'kanban',disabled:isTouch(),animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
+    sortableOn(body,{group:'kanban',disabled:isTouch(),animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
       const id=ev.item.dataset.id, status=ev.to.dataset.status;
       try{await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status,actor_id:meId()})});
         const t=tasks.find(x=>x.id==id);if(t)t.status=status;toast('עודכן ל'+bStat(status).he);
@@ -8840,7 +8862,7 @@ const Forms={
   set(i,k,v){ this.fields[i][k]=v; },
   setCon(i,k,v){ this.fields[i][k]=v||undefined; },
   attachSort(){ const el=document.getElementById('fb-list'); if(!el||!window.Sortable)return;
-    new Sortable(el,{handle:'.fb-drag',draggable:'.fb-row',filter:'.locked',animation:150,ghostClass:'sortable-ghost',onEnd:()=>{
+    sortableOn(el,{handle:'.fb-drag',draggable:'.fb-row',filter:'.locked',animation:150,ghostClass:'sortable-ghost',onEnd:()=>{
       const order=[...el.querySelectorAll('.fb-row')].map(r=>r.dataset.key);
       this.fields.sort((a,b)=>order.indexOf(a.key)-order.indexOf(b.key));
       this.fields.sort((a,b)=>(a.key==='title'?-1:b.key==='title'?1:0));

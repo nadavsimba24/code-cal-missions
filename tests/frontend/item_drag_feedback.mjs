@@ -90,7 +90,7 @@ ck('and nothing is painted on the row after it lands',
 // ── how the list is wired ──────────────────────────────────────────────────
 const body=(anchor,head)=>{ const i=src.indexOf(anchor); const j=src.indexOf(head,i); let d=0;
   for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } };
-const itemList = body("el.querySelectorAll('.tbl tbody[data-gid]')",'new Sortable(tb,{');
+const itemList = body("el.querySelectorAll('.tbl tbody[data-gid]')",'sortableOn(tb,{');
 const onEnd = body("el.querySelectorAll('.tbl tbody[data-gid]')",'onEnd:async(evt)=>{');
 ck('each group is a list of its own — no shared group name to cross',
    !/group:/.test(itemList), itemList.slice(0,120));
