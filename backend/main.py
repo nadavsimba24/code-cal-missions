@@ -1818,7 +1818,10 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         raise HTTPException(400, "לא ניתן לקרוא את הקובץ — ודא שהוא JSON תקין")
     if not parsed["items"]:
         raise HTTPException(400, "לא נמצאו פריטים בקובץ")
-    parsed["items"] = parsed["items"][:IMPORT_MAX_ROWS]
+    if len(parsed["items"]) > IMPORT_MAX_ROWS:
+        # a cut this size is not something to notice by counting rows afterwards
+        parsed["report"]["rows_dropped"] = len(parsed["items"]) - IMPORT_MAX_ROWS
+        parsed["items"] = parsed["items"][:IMPORT_MAX_ROWS]
 
     with Session(engine) as db:
         env_id = environment_id

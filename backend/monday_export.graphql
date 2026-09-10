@@ -1,0 +1,94 @@
+# The query the importer reads, for the migration off monday.com.
+#
+# Everything the board is comes from here, so a field left out is a field the
+# import cannot invent: without `name` the board arrives under the file's name,
+# without `groups` / `group` every item lands in one unnamed group, and without
+# `subitems` the children stay behind. `column_values` carries each cell's type,
+# which is the whole reason for migrating from the JSON rather than from an
+# Excel export of the same board — an xlsx has lost the types by the time it is
+# written, and the import would be guessing at every column.
+#
+# The two queries are kept separate and complete rather than sharing a fragment,
+# because a document holding two operations needs an operationName to say which
+# one to run, and Postman's GraphQL body does not send one.
+#
+# limit is 500, monday's maximum. A board longer than that answers with a cursor
+# instead of null: run the second query with it, again and again, until the
+# cursor comes back null. Then put the responses in one file, as a JSON array —
+#
+#     [ {first response}, {second}, {third} ]
+#
+# — and import that file. The pages are read as the one board they are. An
+# import whose last page still has a cursor says so in the report, rather than
+# quietly building half a board and leaving it to be discovered by counting.
+
+# ── page one ────────────────────────────────────────────────────────────────
+# variables: { "boardId": [6204255781] }
+query ($boardId: [ID!]) {
+  boards(ids: $boardId) {
+    id
+    name
+    groups { id title }
+    items_page(limit: 500) {
+      cursor
+      items {
+        id
+        name
+        group { id title }
+        column_values {
+          id
+          type
+          column { title }
+          text
+          value
+          ... on FileValue { files { ... on FileAssetValue { asset_id } } }
+        }
+        assets { id name public_url }
+        subitems {
+          id
+          name
+          column_values { id type column { title } text value }
+        }
+        updates {
+          id body text_body created_at
+          creator { name email }
+          replies { id body text_body created_at creator { name email } }
+          assets { id name public_url }
+        }
+      }
+    }
+  }
+}
+
+# ── every page after it ─────────────────────────────────────────────────────
+# variables: { "cursor": "<the cursor the previous response returned>" }
+query ($cursor: String!) {
+  next_items_page(limit: 500, cursor: $cursor) {
+    cursor
+    items {
+      id
+      name
+      group { id title }
+      column_values {
+        id
+        type
+        column { title }
+        text
+        value
+        ... on FileValue { files { ... on FileAssetValue { asset_id } } }
+      }
+      assets { id name public_url }
+      subitems {
+        id
+        name
+        column_values { id type column { title } text value }
+      }
+      updates {
+        id body text_body created_at
+        creator { name email }
+        replies { id body text_body created_at creator { name email } }
+        assets { id name public_url }
+      }
+    }
+  }
+}

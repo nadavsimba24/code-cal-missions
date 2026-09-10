@@ -90,17 +90,71 @@ class NotMondayJson(Exception):
     pass
 
 
+def _boards_in(doc):
+    """Every board object in the document, however many responses it holds."""
+    if isinstance(doc, list):
+        out = []
+        for one in doc:
+            out.extend(_boards_in(one))
+        return out
+    if not isinstance(doc, dict):
+        return []
+    data = doc.get("data") or {}
+    boards = data.get("boards") or doc.get("boards")
+    if isinstance(boards, list):
+        return [b for b in boards if isinstance(b, dict)]
+    # page two onwards is fetched at the root, by cursor, and comes back without
+    # the board around it — it is still a page of the same board
+    nxt = data.get("next_items_page") or doc.get("next_items_page")
+    return [{"items_page": nxt}] if isinstance(nxt, dict) else []
+
+
 def _items_of(doc):
-    """monday nests the items differently depending on how the query was written."""
-    boards = (((doc or {}).get("data") or {}).get("boards")) or doc.get("boards")
-    if not isinstance(boards, list) or not boards:
+    """monday nests the items differently depending on how the query was written.
+
+    A board longer than one page comes back as several responses, each holding
+    the cursor that fetched the next. Handed all of them in one file — a JSON
+    array of the responses — the pages are read as the one board they are. Two
+    *different* boards in a file are not: one import builds one board, and
+    quietly taking the first would import half a migration and say nothing.
+
+    The cursor of the last page comes back too. A cursor that is still set means
+    the export stopped before the board ended, which is the one thing a
+    migration must not discover later.
+    """
+    boards = _boards_in(doc)
+    if not boards:
         raise NotMondayJson("no boards in the response")
-    board = boards[0]
-    page = board.get("items_page")
-    items = (page or {}).get("items") if isinstance(page, dict) else board.get("items")
-    if not isinstance(items, list):
+    ids = {str(b["id"]) for b in boards if b.get("id")}
+    if len(ids) > 1:
+        raise NotMondayJson("the file holds more than one board: " + ", ".join(sorted(ids)))
+
+    board, items, cursor, seen = {}, [], None, set()
+    for b in boards:
+        # the board's name and groups ride on every page; the first page that
+        # carries them settles it, so a later page without them takes nothing
+        for k in ("id", "name", "groups"):
+            if b.get(k) and not board.get(k):
+                board[k] = b[k]
+        page = b.get("items_page")
+        got = (page or {}).get("items") if isinstance(page, dict) else b.get("items")
+        if not isinstance(got, list):
+            continue
+        cursor = (page or {}).get("cursor") if isinstance(page, dict) else None
+        # a page is taken as monday sent it; only an item already read from an
+        # *earlier* page is a repeat — the same page handed over twice
+        before = seen
+        seen = set(before)
+        for it in got:
+            iid = (it or {}).get("id")
+            if iid is not None:
+                seen.add(iid)
+                if iid in before:
+                    continue
+            items.append(it)
+    if not items:
         raise NotMondayJson("no items in the response")
-    return board, items
+    return board, items, cursor
 
 
 def looks_like_monday(raw):
@@ -129,7 +183,7 @@ def _iso(d):
     return d[:10] if isinstance(d, str) and len(d) >= 10 and d[4] == "-" and d[7] == "-" else None
 
 
-def _cell_value(cv, ctype, assets_by_name):
+def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
     """The value for one cell, in the form our column type stores.
 
     `text` is monday's own rendering and is right for most types; `value` is the
@@ -191,15 +245,30 @@ def _cell_value(cv, ctype, assets_by_name):
     if ctype == "files":
         # The bytes live behind monday's auth and the signed links in an export
         # expire within the hour, so what survives is the name — which is the
-        # half that tells you which item had a spec attached.
-        names = []
+        # half that tells you which item had a spec attached. An asset id, when
+        # the query asked for one, names the file from the asset itself, which
+        # is the one place the name is still right after someone renames it.
+        out, seen = [], set()
+
+        def add(aid, name):
+            a = (assets_by_id or {}).get(str(aid or ""))
+            name = (a or {}).get("name") or name
+            if not name or name in seen:
+                return
+            seen.add(name)
+            out.append({"name": name,
+                        "url": (a or {}).get("url") or assets_by_name.get(name, "")})
+
+        for f in cv.get("files") or []:                  # ... on FileValue
+            if isinstance(f, dict):
+                add(f.get("asset_id"), None)
         for f in ((val or {}).get("files") or []) if isinstance(val, dict) else []:
-            n = f.get("name") if isinstance(f, dict) else None
-            if n:
-                names.append(n)
-        if not names and text:
-            names = [p.strip() for p in text.split(",") if p.strip()]
-        return [{"name": n, "url": assets_by_name.get(n, "")} for n in names] or None
+            if isinstance(f, dict):
+                add(f.get("assetId") or f.get("asset_id"), f.get("name"))
+        if not out and text:
+            for part in text.split(","):
+                add(None, part.strip())
+        return out or None
 
     # text, and everything that lands in text
     if isinstance(val, dict):
@@ -218,7 +287,7 @@ def parse(raw, max_cols):
     is not one of them.
     """
     doc = json.loads(raw)
-    board, items = _items_of(doc)
+    board, items, cursor = _items_of(doc)
 
     # ── survey the columns: title, type, and how many items actually use them ──
     meta, fill, order = {}, {}, []
@@ -277,11 +346,16 @@ def parse(raw, max_cols):
         by_title.setdefault((c["title"], c["type"]), c["key"])
 
     def read(it, lookup_by_title=False):
-        # a file's real link, when the item happens to carry it, keyed by name
-        assets = {}
+        # a file's real name and link, when the item happens to carry them
+        assets, by_id = {}, {}
         for a in it.get("assets") or []:
-            if isinstance(a, dict) and a.get("name"):
+            if not isinstance(a, dict):
+                continue
+            if a.get("name"):
                 assets[a["name"]] = a.get("public_url") or ""
+            if a.get("id") is not None:
+                by_id[str(a["id"])] = {"name": a.get("name") or "",
+                                       "url": a.get("public_url") or ""}
         vals = {}
         for cv in it.get("column_values") or []:
             if lookup_by_title:
@@ -291,7 +365,7 @@ def parse(raw, max_cols):
                 key = cv.get("id") if cv.get("id") in by_key else None
             if not key:
                 continue
-            v = _cell_value(cv, by_key[key], assets)
+            v = _cell_value(cv, by_key[key], assets, by_id)
             if v is not None and v != "" and v != []:
                 vals[key] = v
         return vals
@@ -343,6 +417,7 @@ def parse(raw, max_cols):
             "items": len(rows),
             "subitems": sub_total,
             "groups": len(groups),
+            "truncated": bool(cursor),
             "columns_found": len(meta),
             "columns_imported": len(columns),
             "mapping": [{"title": c["title"], "from": c["monday_type"],

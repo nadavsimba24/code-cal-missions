@@ -1629,6 +1629,7 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .imp-grp{margin-bottom:10px}
 .imp-why{font-size:12px;color:var(--text-muted);margin-bottom:5px}
 .imp-cols{display:flex;flex-wrap:wrap;gap:4px}
+.imp-warn .imp-sec-t,.imp-warn .imp-sec-t i{color:var(--red)}
 /* settings modal */
 .set-label{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
 .set-label i{color:var(--primary)}
@@ -3291,6 +3292,16 @@ function importReport(b){
         <div class="imp-grp"><div class="imp-why">${esc(note)}</div>
         <div class="imp-cols">${titles.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>`).join('')}
     </div>`:'';
+  /* An export that stopped mid-board looks exactly like a small board once it
+     is imported, so the one moment it can be said is now. */
+  const cut=[];
+  if(r.truncated) cut.push('הייצוא נעצר לפני סוף הלוח — בתשובה יש cursor להמשך, ולכן יובאו רק הפריטים שבקובץ. הרץ את השאילתה עם limit גבוה יותר, או צרף את כל העמודים לקובץ אחד כמערך JSON.');
+  if(r.rows_dropped) cut.push(`${r.rows_dropped} פריטים מעבר לתקרה לא יובאו.`);
+  const cutHTML=cut.length?`
+    <div class="imp-sec imp-warn"><div class="imp-sec-t">
+      <i class="fa-solid fa-triangle-exclamation"></i> הקובץ אינו הלוח המלא</div>
+      ${cut.map(t=>`<div class="imp-why">${esc(t)}</div>`).join('')}
+    </div>`:'';
   const peopleHTML=missing.length?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-user-slash"></i> ${missing.length} אנשים ללא חשבון במערכת</div>
@@ -3305,7 +3316,7 @@ function importReport(b){
         ${stat(`${r.columns_imported||0}/${r.columns_found||0}`,'עמודות')}
         ${r.groups?stat(r.groups,'קבוצות'):''}
       </div>
-      ${mapHTML}${skipHTML}${peopleHTML}
+      ${cutHTML}${mapHTML}${skipHTML}${peopleHTML}
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>`);
 }

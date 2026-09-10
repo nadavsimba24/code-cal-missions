@@ -330,6 +330,141 @@ def test_the_board_keeps_its_own_groups_and_each_item_lands_in_its_own(client):
     assert pos["ראשון"] == 0 and pos["שלישי"] == 1 and pos["שני"] == 0
 
 
+def test_the_board_arrives_under_its_own_name(client):
+    """The export names the board. Falling back to the file name was right only
+    while the query did not ask for it."""
+    raw = _resp([_item("פריט", [_cv("t", "טקסט", "text", text="א")])],
+                board_name="ניהול תוכן אתר החברה")
+    d = _upload(client, raw, filename="response781 (1).json").json()
+    assert d["name"] == "ניהול תוכן אתר החברה", f"got {d['name']!r}"
+
+
+def test_a_name_typed_in_the_dialog_still_wins_over_the_one_in_the_file(client):
+    raw = _resp([_item("פריט", [_cv("t", "טקסט", "text", text="א")])], board_name="שם מהקובץ")
+    assert _upload(client, raw, name="שם שנבחר").json()["name"] == "שם שנבחר"
+
+
+def test_a_group_the_board_declares_is_built_even_with_nothing_in_it(client):
+    """An empty stage is part of how the board is laid out. Building only the
+    groups that happen to hold an item would quietly redraw the board."""
+    raw = json.dumps({"data": {"boards": [{
+        "id": "6204255781", "name": "לוח",
+        "groups": [{"id": "g1", "title": "לביצוע"},
+                   {"id": "g2", "title": "ריקה"},
+                   {"id": "g3", "title": "הושלם"}],
+        "items_page": {"cursor": None, "items": [
+            dict(_item("פריט", [_cv("t", "טקסט", "text", text="א")]),
+                 group={"id": "g3", "title": "הושלם"})]}}]}}, ensure_ascii=False).encode()
+    bid = _upload(client, raw).json()["id"]
+    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
+    assert [g["name"] for g in board["groups"]] == ["לביצוע", "ריקה", "הושלם"], \
+        "the groups the board declares, in the board's own order"
+    last = board["groups"][2]["id"]
+    assert board["tasks"][0]["group_id"] == last
+
+
+def test_a_group_with_no_title_is_still_a_group_of_its_own(client):
+    items = [dict(_item("פריט", [_cv("t", "טקסט", "text", text="א")]),
+                  group={"id": "g1", "title": ""})]
+    bid = _upload(client, _resp(items)).json()["id"]
+    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
+    assert len(board["groups"]) == 1 and board["tasks"][0]["group_id"] == board["groups"][0]["id"]
+
+
+# ── a board longer than one page ────────────────────────────────────────
+def _page(items, cursor=None, board_name=None, groups=None, bid="6204255781"):
+    b = {"id": bid, "items_page": {"cursor": cursor, "items": items}}
+    if board_name:
+        b["name"] = board_name
+    if groups:
+        b["groups"] = groups
+    return {"data": {"boards": [b]}}
+
+
+def _row(iid, title, gid=None):
+    it = dict(_item(title, [_cv("t", "טקסט", "text", text=title)]), id=iid)
+    if gid:
+        it["group"] = {"id": gid, "title": gid}
+    return it
+
+
+def test_the_pages_of_one_board_are_read_as_the_one_board_they_are(client):
+    """A board past the page limit comes back as several responses. Put in one
+    file, they are one board — not one board and a lost remainder."""
+    raw = json.dumps([
+        _page([_row("1", "אחד"), _row("2", "שתיים")], cursor="abc", board_name="לוח ארוך"),
+        _page([_row("3", "שלוש")], cursor=None),
+    ], ensure_ascii=False).encode()
+    d = _upload(client, raw).json()
+    assert d["name"] == "לוח ארוך", "the name is on the first page and only there"
+    assert d["items"] == 3, f"got {d['items']} items out of two pages"
+    assert d["report"]["truncated"] is False, "the last page ended the board"
+
+
+def test_page_two_fetched_by_cursor_belongs_to_the_same_board(client):
+    """next_items_page comes back at the root, with no board around it. It is
+    still the same board, and reading it as anything else loses the remainder."""
+    raw = json.dumps([
+        _page([_row("1", "אחד")], cursor="abc", board_name="לוח"),
+        {"data": {"next_items_page": {"cursor": None, "items": [_row("2", "שתיים")]}}},
+    ], ensure_ascii=False).encode()
+    d = _upload(client, raw).json()
+    assert d["name"] == "לוח" and d["items"] == 2, d
+
+
+def test_a_page_handed_over_twice_does_not_double_the_items(client):
+    page = _page([_row("1", "אחד"), _row("2", "שתיים")], cursor="abc")
+    raw = json.dumps([page, page, _page([_row("3", "שלוש")])], ensure_ascii=False).encode()
+    assert _upload(client, raw).json()["items"] == 3
+
+
+def test_an_export_that_stopped_before_the_end_of_the_board_says_so(client):
+    """A cursor still set means the query had a limit and the board went on. The
+    import cannot fetch the rest — but a half-imported board that says nothing
+    is the failure this whole reader exists to prevent."""
+    raw = json.dumps(_page([_row("1", "אחד")], cursor="MSw2MjA0MjU1NzgxLA"),
+                     ensure_ascii=False).encode()
+    assert _upload(client, raw).json()["report"]["truncated"] is True
+
+
+def test_two_different_boards_in_one_file_are_refused_not_half_imported(client):
+    raw = json.dumps([_page([_row("1", "אחד")], bid="111"),
+                      _page([_row("2", "שתיים")], bid="222")], ensure_ascii=False).encode()
+    r = _upload(client, raw)
+    assert r.status_code == 400, r.text
+    assert "111" in r.text and "222" in r.text, "the refusal names both boards"
+
+
+def test_the_groups_of_the_board_survive_being_split_across_pages(client):
+    raw = json.dumps([
+        _page([_row("1", "אחד", "g1")], cursor="abc", board_name="לוח",
+              groups=[{"id": "g1", "title": "לביצוע"}, {"id": "g2", "title": "הושלם"}]),
+        _page([_row("2", "שתיים", "g2")]),
+    ], ensure_ascii=False).encode()
+    bid = _upload(client, raw).json()["id"]
+    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
+    assert [g["name"] for g in board["groups"]] == ["לביצוע", "הושלם"]
+    where = {t["title"]: t["group_id"] for t in board["tasks"]}
+    assert where["אחד"] != where["שתיים"]
+
+
+def test_a_file_is_named_by_its_asset_even_after_someone_renamed_it(client):
+    """The new query asks for asset_id, and the asset carries the name the file
+    has now — which the cell's own copy does not."""
+    cols = [{"id": "f", "type": "file", "column": {"title": "מסמך"},
+             "text": "https://monday.com/protected/x",
+             "value": json.dumps({"files": [{"name": "אפיון-ישן.docx", "assetId": 77}]}),
+             "files": [{"asset_id": 77}]}]
+    it = dict(_item("פריט", cols),
+              assets=[{"id": 77, "name": "אפיון סופי.docx",
+                       "public_url": "https://files.monday.com/a.docx"}])
+    bid = _upload(client, _resp([it])).json()["id"]
+    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "מסמך")
+    assert board["tasks"][0]["custom_fields"][col["id"]] == \
+        [{"name": "אפיון סופי.docx", "url": "https://files.monday.com/a.docx"}]
+
+
 def test_a_file_with_no_groups_gets_one_unnamed_group(client):
     """Without `group { id title }` the export says nothing about how the board
     was divided. Three invented stages would be a claim the file does not make,
