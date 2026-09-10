@@ -170,6 +170,20 @@ stages:
           #                       not even exist — the router is only mounted in
           #                       `entra` mode. Failing closed is correct; being
           #                       closed in production is not.
+          #   WEBSITES_CONTAINER_START_TIME_LIMIT
+          #                       how long App Service waits for the container to
+          #                       answer before deciding it is dead, killing it
+          #                       and starting it again. The default is 230
+          #                       seconds, and a cold pull of this image from the
+          #                       registry plus the app's own start does not fit
+          #                       in that — so the platform was killing a healthy
+          #                       container part-way up, repeatedly, and the site
+          #                       only came back once a retry happened to find
+          #                       the image already cached on the worker. That is
+          #                       what "never reported image_tag" meant on the
+          #                       last two releases: not a bad build, a start that
+          #                       was never allowed to finish. 1800 is the maximum
+          #                       the platform accepts.
           #   ENTRA_REDIRECT_URI  derived from the Web App's own hostnames, so
           #                       it cannot be left pointing at the host of some
           #                       previous home, and so a domain added later is
@@ -183,6 +197,7 @@ stages:
           az webapp config appsettings set "${COMMON[@]}" --settings \
             MISSIONS_IMAGE_TAG="$(tag)" \
             CITYOS_AUTH_MODE="entra" \
+            WEBSITES_CONTAINER_START_TIME_LIMIT="1800" \
             ENTRA_REDIRECT_URI="$REDIRECT_URIS" \
             --output none
 
@@ -212,11 +227,25 @@ stages:
           # answer and the check can be strict. If one is ever added, this will
           # start failing on 403 — and that is the moment to add an exception
           # for the agent, not to loosen the check.
-          for i in $(seq 1 60); do
+          # Ten minutes was less than a cold start costs, so the gate went red
+          # on two releases that had in fact deployed — and a gate that cries
+          # wolf is worse than no gate, because the next genuine failure looks
+          # exactly like the last two false ones. Thirty minutes is past the
+          # worst start seen; with the start-time limit above it should rarely
+          # spend more than the first minute of it.
+          for i in $(seq 1 120); do
             body=$(curl -fsS --max-time 10 "https://$HOST/api/status" 2>/dev/null || true)
             running=$(printf '%s' "$body" | python3 -c \
               'import json,sys; print(json.load(sys.stdin).get("image_tag",""))' 2>/dev/null || true)
-            echo "  [$i] serving=${running:-<no answer>}"
+            # "no answer" is a container still coming up; the OLD tag answering
+            # is a different thing entirely — the image never changed — and the
+            # two must not read the same in the log.
+            case "${running:-}" in
+              "")        state="<still starting>" ;;
+              "$(tag)")  state="$running" ;;
+              *)         state="$running  ← STILL THE OLD IMAGE" ;;
+            esac
+            echo "  [$i/120] serving=$state"
             if [ "$running" = "$(tag)" ]; then
               mode=$(printf '%s' "$body" | python3 -c \
                 'import json,sys; print(json.load(sys.stdin).get("auth_mode",""))' 2>/dev/null || true)
@@ -226,12 +255,23 @@ stages:
               fi
               exit 0
             fi
-            sleep 10
+            sleep 15
           done
 
-          echo "##vso[task.logissue type=error]$HOST never reported image_tag=$(tag)"
-          echo "Either the container did not come up, or this build predates the"
-          echo "MISSIONS_IMAGE_TAG stamp in /api/status (backend/main.py)."
+          # Say which of the two failures this is. "The deploy did not apply" and
+          # "the deploy applied and the app never came up" need different people
+          # and different fixes, and the old message covered both.
+          CONFIGURED=$(az webapp sitecontainers list "${COMMON[@]}" \
+                         --query "[?name=='$CONTAINER'].image | [0]" -o tsv)
+          echo "##vso[task.logissue type=error]$HOST never reported image_tag=$(tag) within 30 minutes"
+          if [ "$CONFIGURED" = "$IMAGE" ]; then
+            echo "The site container IS pointed at $IMAGE — the image was deployed"
+            echo "and the app did not answer in time. Check the logs below before"
+            echo "rolling back: it may still be starting."
+          else
+            echo "The site container is on $CONFIGURED, not $IMAGE — the deploy"
+            echo "itself did not take."
+          fi
           timeout 45 az webapp log tail "${COMMON[@]}" || true
           echo "roll back with:"
           echo "  az webapp sitecontainers update ${COMMON[*]} --container-name $CONTAINER --image $PREV --target-port $(siteContainerPort) --is-main true --registry-username <acr-user> --registry-password <acr-pass>"
