@@ -210,6 +210,63 @@ stages:
             --generic-configurations "{\"healthCheckPath\": \"$(healthCheckPath)\"}" \
             --output none
 
+          # ── let the agent through the front door, for this run only ───────
+          # The site sits behind an IP allow-list ending in "Deny all". The
+          # hosted agent's address is not on it, so its verification request
+          # comes back 403 — and `curl -fsS` turns that into the same empty
+          # string a container that has not finished starting gives. Three
+          # releases deployed correctly and were reported as failures, with all
+          # 120 attempts logged as "<still starting>" while the same URL
+          # answered instantly from an address that was on the list.
+          #
+          # The fix is to let the agent in, not to stop checking: a rule for
+          # this one address, at a priority above the deny, named after the run
+          # and removed by the trap on every exit — success, failure, or the
+          # agent being killed mid-run. A rule is only added when there is
+          # something to be let through; adding one to a site with no allow-list
+          # would *create* an allow-list and lock out everyone not named in it.
+          RULE=""
+          cleanup() {
+            [ -n "$RULE" ] || return 0
+            echo "── removing the temporary allow rule $RULE"
+            az webapp config access-restriction remove "${COMMON[@]}" \
+              --rule-name "$RULE" --output none || \
+              echo "##vso[task.logissue type=warning]could not remove $RULE — remove it by hand"
+          }
+          trap cleanup EXIT
+
+          DEFAULT_ACTION=$(az webapp config access-restriction show "${COMMON[@]}" \
+                             --query ipSecurityRestrictionsDefaultAction -o tsv 2>/dev/null || true)
+          if [ "$DEFAULT_ACTION" = "Deny" ]; then
+            # An agent killed outright never runs its trap, so a rule from a
+            # previous run can be left behind — an address that has since gone
+            # back to the pool, still allowed in. Sweep them first: the only
+            # rule by this name that should exist is the one about to be added.
+            for stale in $(az webapp config access-restriction show "${COMMON[@]}" \
+                             --query "ipSecurityRestrictions[?name != null] | [?starts_with(name, 'pipeline-verify-')].name" \
+                             -o tsv 2>/dev/null || true); do
+              echo "── removing a leftover rule from an earlier run: $stale"
+              az webapp config access-restriction remove "${COMMON[@]}" \
+                --rule-name "$stale" --output none || true
+            done
+
+            AGENT_IP=$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)
+            if [ -n "$AGENT_IP" ]; then
+              RULE="pipeline-verify-$(tag)"
+              echo "── allow-list is deny-by-default; letting the agent ($AGENT_IP) in as $RULE"
+              az webapp config access-restriction add "${COMMON[@]}" \
+                --rule-name "$RULE" --priority 100 --action Allow \
+                --ip-address "$AGENT_IP/32" \
+                --description "temporary, added and removed by build $(tag)" \
+                --output none || {
+                  RULE=""
+                  echo "##vso[task.logissue type=warning]could not add the allow rule — the check below will see 403"
+                }
+            else
+              echo "##vso[task.logissue type=warning]could not learn the agent's own address — the check below will see 403"
+            fi
+          fi
+
           # Changing the image does not by itself stop the container that is
           # already running — without this the site can keep serving the old
           # build until something else happens to recycle it, which is the exact
@@ -223,27 +280,39 @@ stages:
           # restarted answers 200 all day — but "is the build this run produced
           # the one serving". /api/status echoes MISSIONS_IMAGE_TAG.
           #
-          # This Web App has no IP allow-list, so a hosted agent gets a genuine
-          # answer and the check can be strict. If one is ever added, this will
-          # start failing on 403 — and that is the moment to add an exception
-          # for the agent, not to loosen the check.
+          # The agent can reach the site (above), so the check stays strict —
+          # and every way it can fail now says which one it is. A refusal, an
+          # answer from the old image and a container still coming up are three
+          # different problems, and the log must not spell them the same way.
           # Ten minutes was less than a cold start costs, so the gate went red
           # on two releases that had in fact deployed — and a gate that cries
           # wolf is worse than no gate, because the next genuine failure looks
           # exactly like the last two false ones. Thirty minutes is past the
           # worst start seen; with the start-time limit above it should rarely
           # spend more than the first minute of it.
+          refused=0
           for i in $(seq 1 120); do
-            body=$(curl -fsS --max-time 10 "https://$HOST/api/status" 2>/dev/null || true)
+            # -f would collapse every HTTP error into the empty string that a
+            # container still starting also gives, so the code is read instead.
+            resp=$(curl -sS --max-time 10 -w '\n%{http_code}' \
+                     "https://$HOST/api/status" 2>/dev/null || true)
+            code=${resp##*$'\n'}
+            body=${resp%$'\n'*}
+            [ "$body" = "$code" ] && body=""
             running=$(printf '%s' "$body" | python3 -c \
               'import json,sys; print(json.load(sys.stdin).get("image_tag",""))' 2>/dev/null || true)
-            # "no answer" is a container still coming up; the OLD tag answering
-            # is a different thing entirely — the image never changed — and the
-            # two must not read the same in the log.
-            case "${running:-}" in
-              "")        state="<still starting>" ;;
-              "$(tag)")  state="$running" ;;
-              *)         state="$running  ← STILL THE OLD IMAGE" ;;
+            # Four different things, spelled four different ways: nothing
+            # answering is a container still coming up, a refusal is the
+            # allow-list, the OLD tag answering means the image never changed,
+            # and anything else is the site itself in trouble.
+            case "${code:-000}:${running:-}" in
+              "200:$(tag)") state="$running" ;;
+              200:)         state="<200, but no image_tag — is this our app?>" ;;
+              200:*)        state="$running  ← STILL THE OLD IMAGE" ;;
+              403:*)        state="<403 refused — the agent is not on the allow-list>"
+                            refused=$((refused + 1)) ;;
+              000:*)        state="<still starting>" ;;
+              *)            state="<http $code>" ;;
             esac
             echo "  [$i/120] serving=$state"
             if [ "$running" = "$(tag)" ]; then
@@ -264,6 +333,12 @@ stages:
           CONFIGURED=$(az webapp sitecontainers list "${COMMON[@]}" \
                          --query "[?name=='$CONTAINER'].image | [0]" -o tsv)
           echo "##vso[task.logissue type=error]$HOST never reported image_tag=$(tag) within 30 minutes"
+          if [ "$refused" -gt 0 ]; then
+            echo "$refused of the attempts were refused with 403. The agent was not"
+            echo "let through the allow-list on $APP, so this run proves nothing"
+            echo "about what production is serving — check it from an address that"
+            echo "is on the list before touching anything."
+          fi
           if [ "$CONFIGURED" = "$IMAGE" ]; then
             echo "The site container IS pointed at $IMAGE — the image was deployed"
             echo "and the app did not answer in time. Check the logs below before"
