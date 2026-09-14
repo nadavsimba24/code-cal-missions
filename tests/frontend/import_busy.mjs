@@ -46,7 +46,8 @@ function stubDom(log){
 {
   const log=[]; const document=stubDom(log);
   const {importBusy,importBusyDone} = new Function('document',
-    grab('importBusy')+'\n'+grab('importBusyDone')+'\nreturn {importBusy,importBusyDone};')(document);
+    grab('busyCover')+'\n'+grab('busyCoverDone')
+    +'\nreturn {importBusy:busyCover,importBusyDone:busyCoverDone};')(document);
 
   importBusy('מעלה את הקובץ…');
   ck('the cover goes up', log.join()==='append:imp-busy', log.join());
@@ -100,6 +101,21 @@ ck('it covers the whole page, so a click cannot reach the board behind it',
    /position:fixed;inset:0/.test(css));
 ck('and the pointer says the page is busy rather than broken',
    /cursor:progress/.test(css));
+
+// ── every other upload gets the same treatment ─────────────────────────────
+// Picking a file and watching nothing happen is the same wait wherever it is
+// done, so the cover is not the importer's private property.
+ck('the import keeps its own names for the cover',
+   /const importBusy=busyCover, importBusyDone=busyCoverDone;/.test(src));
+for(const [what, fn, label] of [
+      ['a file column', grab('uploadFileCell'), /busyCover\('מעלה את '/],
+      ['a workspace icon', src.slice(src.indexOf('uploadLook(){'), src.indexOf('uploadLook(){')+1200), /busyCover\('מעלה את התמונה/],
+      ['a profile photo', src.slice(src.indexOf('async uploadAvatar(userId,file){'), src.indexOf('async uploadAvatar(userId,file){')+2200), /busyCover\('מעלה את התמונה/]]){
+  ck(`${what} says it is uploading, before it uploads`,
+     label.test(fn) && fn.search(label) < (fn.search(/fetch\(|api\(/)>=0?fn.search(/fetch\(|api\(/):1e9), fn.slice(0,200));
+  ck(`...gives the page a frame to draw that in`, /paintFirst\(\)/.test(fn));
+  ck(`...and never leaves the page covered`, /finally\{ busyCoverDone\(\);/.test(fn), fn.slice(-200));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

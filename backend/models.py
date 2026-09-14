@@ -314,13 +314,96 @@ class Automation(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # ── how the rule is MANAGED (the ניהול tab) ──
+    # A rule is also an operational object, not only a recipe: someone owns it,
+    # it matters more or less than the rule beside it, and it can be a draft
+    # nobody has switched on yet.
+    name = Column(String(120), default="")        # optional; the sentence stands in for it
+    description = Column(Text, default="")        # תיאור עסקי — the process it serves
+    # draft | active | paused | paused_error | deleting. `is_active` below is what
+    # the ENGINE reads; status is what a person manages. _set_automation_status
+    # is the one place that keeps the two from disagreeing.
+    status = Column(String(16), default="active")
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # critical|high|normal|low. For sorting and filtering ONLY — it never affects
+    # which rule runs first. `run_order` below is the field that does.
+    importance = Column(String(10), default="normal")
+    # the actual precedence the engine reads: lower runs first when one event
+    # trips several rules. Independent of `importance` above.
+    run_order = Column(Integer, default=0)
     # light run telemetry — helps a board admin see whether a rule actually fires
     last_run_at = Column(DateTime, nullable=True)
     run_count = Column(Integer, default=0)
+    # durable counters: the run log is pruned per board, these are not, so the
+    # success rate stays honest long after the rows behind it are gone
+    fail_count = Column(Integer, default=0)
+    skip_count = Column(Integer, default=0)
+    consecutive_failures = Column(Integer, default=0)   # what takes a rule out of service
+    last_success_at = Column(DateTime, nullable=True)
+    last_failure_at = Column(DateTime, nullable=True)
+    last_outcome = Column(String(12), default="")       # ran | skipped | failed
     # engine bookkeeping (not user config) — e.g. which items a date trigger
     # already fired for, so a due date cannot notify the same item twice
     state = Column(JSON, default=dict)
     board = relationship("Board")
+
+
+class AutomationRun(Base):
+    """One attempt of one rule on one item — the "היסטוריית הפעלות" log.
+
+    Written whatever the outcome: a rule that fired, a rule that matched but had
+    nothing to do (`skipped`), and a rule that blew up (`failed`). A board admin
+    reading this is usually asking "why did nothing happen?", which only a row
+    for the non-events can answer.
+
+    The row is self-describing on purpose. `sentence` is the rule as it read at
+    run time and `task_title` the item as it was named then, so history survives
+    both the rule being rewritten and the item being renamed; `automation_id`
+    goes NULL when the rule is deleted rather than taking its history with it.
+    `event` keeps the trigger's own context (which status, which link), which is
+    what a retry replays.
+    """
+    __tablename__ = "automation_runs"
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=True, index=True)
+    recipe_id = Column(String(60), nullable=False)
+    sentence = Column(Text, default="")
+    trigger_key = Column(String(40), default="")
+    action_key = Column(String(40), default="")
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
+    task_title = Column(String(300), default="")
+    event = Column(JSON, default=dict)
+    outcome = Column(String(12), default="ran")      # ran | skipped | failed
+    # a "בדיקה על פריט": the action really ran, inside a transaction that was
+    # then rolled back, so the outcome is real but nothing it did survived
+    is_test = Column(Boolean, default=False)
+    reason = Column(Text, default="")                # why it skipped, or what failed
+    depth = Column(Integer, default=0)               # 0 = the change itself, >0 = a cascade
+    actor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    retry_of = Column(Integer, ForeignKey("automation_runs.id"), nullable=True)
+    retried_at = Column(DateTime, nullable=True)     # set on the run a retry replayed
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class AutomationVersion(Base):
+    """What a rule looked like after each change — the גרסאות list.
+
+    A rule is configuration that quietly rewrites items, so "who changed it, and
+    to what?" has to be answerable later. Each row is the whole rule as it stood
+    after one edit, plus the sentence it read as at the time, so an old version
+    is legible without replaying anything.
+    """
+    __tablename__ = "automation_versions"
+    id = Column(Integer, primary_key=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=False, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    version = Column(Integer, default=1)
+    sentence = Column(Text, default="")
+    snapshot = Column(JSON, default=dict)
+    summary = Column(String(300), default="")     # what changed, in words
+    changed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    changed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class Comment(Base):
@@ -334,6 +417,12 @@ class Comment(Base):
     mentions = Column(JSON, default=list)      # [user_id, ...]
     likes = Column(JSON, default=list)         # [user_id, ...]
     seen_by = Column(JSON, default=list)       # [user_id, ...] — read receipts
+    # Where an imported message came from: {"source","author","external_id"}.
+    # An import brings conversations written by people who may have no account
+    # here. Attributing those to whoever ran the import would put words in a
+    # colleague's mouth, so `user_id` stays empty and the original author is
+    # named from here instead.
+    origin = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     task = relationship("Task", back_populates="comments")
     replies = relationship("Comment", backref="parent", remote_side=[id])

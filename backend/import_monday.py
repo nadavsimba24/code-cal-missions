@@ -15,7 +15,9 @@ monday has a type we have no counterpart for, the cell comes in as text rather
 than being dropped — a phone number in a text column is still the phone number,
 and losing it silently is the one outcome a migration cannot afford.
 """
+import html as _html
 import json
+import re
 
 # monday column type -> our column type, per the migration mapping sheet.
 TYPE_MAP = {
@@ -280,6 +282,80 @@ def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
     return text or None
 
 
+# An item's conversation ("updates" in monday). Capped per item so one very
+# chatty item cannot fill an import on its own; what is left out is reported.
+MAX_UPDATES_PER_ITEM = 100
+MAX_UPDATE_CHARS = 20000
+
+
+def _plain(body, text_body):
+    """An update's text. monday sends the body as HTML and, when the query asks
+    for it, the same thing as plain text — which is the one to trust. Falling
+    back to the HTML, the tags come out rather than being shown to a reader as
+    markup they never wrote."""
+    if isinstance(text_body, str) and text_body.strip():
+        return text_body.strip()[:MAX_UPDATE_CHARS]
+    s = body or ""
+    if not isinstance(s, str):
+        return ""
+    s = re.sub(r"<br\s*/?>|</p>|</div>|</li>|</tr>", "\n", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = _html.unescape(s)
+    return re.sub(r"\n{3,}", "\n\n", s).strip()[:MAX_UPDATE_CHARS]
+
+
+def _one_update(up):
+    """One message: its text, who wrote it, when, and what was attached.
+
+    The author comes back as a name and, when the query asked for it, an e-mail.
+    Both travel: the caller matches them against real accounts, and an author
+    with no account here is kept by name rather than being turned into whoever
+    happened to run the import.
+    """
+    if not isinstance(up, dict):
+        return None
+    text = _plain(up.get("body"), up.get("text_body"))
+    who = up.get("creator") or {}
+    files = []
+    for a in up.get("assets") or []:
+        if isinstance(a, dict) and a.get("name"):
+            files.append({"name": a["name"], "url": a.get("public_url") or ""})
+    if not text and not files:
+        return None                       # an empty update carries nothing
+    return {"external_id": str(up.get("id") or ""), "body": text,
+            "created_at": up.get("created_at") or up.get("updated_at") or "",
+            "author": (who.get("name") or "").strip(),
+            "email": (who.get("email") or "").strip(),
+            "assets": files, "replies": []}
+
+
+def _updates_of(it):
+    """The item's conversation, oldest first, with replies kept under the message
+    they answer. Returns (messages, dropped)."""
+    ups, dropped = [], 0
+    raw = it.get("updates")
+    if not isinstance(raw, list):
+        return [], 0
+    for up in raw:
+        one = _one_update(up)
+        if one is None:
+            continue
+        if len(ups) >= MAX_UPDATES_PER_ITEM:
+            dropped += 1
+            continue
+        for rep in (up.get("replies") or []):
+            r = _one_update(rep)
+            if r is not None:
+                r.pop("replies", None)
+                one["replies"].append(r)
+        ups.append(one)
+    # monday returns the newest update first; a conversation reads the other way
+    ups.sort(key=lambda u: u.get("created_at") or "")
+    for u in ups:
+        u["replies"].sort(key=lambda r: r.get("created_at") or "")
+    return ups, dropped
+
+
 def parse(raw, max_cols):
     """Read a monday response and return what to build, and what was left out.
 
@@ -380,7 +456,7 @@ def parse(raw, max_cols):
             seen_g[gid] = (g.get("title") or "").strip() or "קבוצה"
             groups.append({"id": gid, "title": seen_g[gid]})
 
-    rows, sub_total = [], 0
+    rows, sub_total, talk_dropped = [], 0, [0]
     for it in items:
         g = it.get("group") or {}
         gid = g.get("id")
@@ -389,11 +465,16 @@ def parse(raw, max_cols):
             groups.append({"id": gid, "title": seen_g[gid]})
         subs = []
         for s in it.get("subitems") or []:
+            sups, sdrop = _updates_of(s)
+            talk_dropped[0] += sdrop
             subs.append({"name": (s.get("name") or "").strip() or "תת-פריט",
-                         "values": read(s, lookup_by_title=True)})
+                         "values": read(s, lookup_by_title=True), "updates": sups})
         sub_total += len(subs)
+        ups, dropped = _updates_of(it)
+        talk_dropped[0] += dropped
         rows.append({"name": (it.get("name") or "").strip() or "פריט",
-                     "group": gid, "values": read(it), "subitems": subs})
+                     "group": gid, "values": read(it), "subitems": subs,
+                     "updates": ups})
 
     # the options a status/dropdown column offers = what the board actually used
     for c in columns:
@@ -416,6 +497,12 @@ def parse(raw, max_cols):
         "report": {
             "items": len(rows),
             "subitems": sub_total,
+            # the conversation on the items, and what a per-item ceiling cut
+            "updates": sum(len(r["updates"]) + sum(len(u["replies"]) for u in r["updates"])
+                           + sum(len(s["updates"]) + sum(len(u["replies"]) for u in s["updates"])
+                                 for s in r["subitems"])
+                           for r in rows),
+            "updates_dropped": talk_dropped[0],
             "groups": len(groups),
             "truncated": bool(cursor),
             "columns_found": len(meta),

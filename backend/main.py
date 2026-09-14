@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -22,7 +23,7 @@ from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
 import entra_guests
 import import_monday
 from models import (
-    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, ItemLink, BoardView,
+    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, ItemLink, BoardView,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -154,7 +155,8 @@ def _migrate():
     from sqlalchemy import text
     with engine.begin() as conn:
         cols = {r[1] for r in conn.execute(text("PRAGMA table_info(comments)"))}
-        for name, ddl in [("parent_id", "INTEGER"), ("mentions", "JSON"), ("likes", "JSON"), ("seen_by", "JSON")]:
+        for name, ddl in [("parent_id", "INTEGER"), ("mentions", "JSON"), ("likes", "JSON"),
+                          ("seen_by", "JSON"), ("origin", "JSON")]:
             if name not in cols:
                 conn.execute(text(f"ALTER TABLE comments ADD COLUMN {name} {ddl}"))
         tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
@@ -204,6 +206,34 @@ def _migrate():
         ncols = {r[1] for r in conn.execute(text("PRAGMA table_info(notifications)"))}
         if ncols and "task_id" not in ncols:
             conn.execute(text("ALTER TABLE notifications ADD COLUMN task_id INTEGER"))
+        # automations: the management columns (owner, importance, status, counters)
+        acols = {r[1] for r in conn.execute(text("PRAGMA table_info(automations)"))}
+        for name, ddl in [("name", "VARCHAR(120)"), ("description", "TEXT"),
+                          ("status", "VARCHAR(16) DEFAULT 'active'"),
+                          ("owner_id", "INTEGER"),
+                          ("importance", "VARCHAR(10) DEFAULT 'normal'"),
+                          ("run_order", "INTEGER DEFAULT 0"),
+                          ("fail_count", "INTEGER DEFAULT 0"),
+                          ("skip_count", "INTEGER DEFAULT 0"),
+                          ("consecutive_failures", "INTEGER DEFAULT 0"),
+                          ("last_success_at", "DATETIME"), ("last_failure_at", "DATETIME"),
+                          ("last_outcome", "VARCHAR(12)")]:
+            if acols and name not in acols:
+                conn.execute(text(f"ALTER TABLE automations ADD COLUMN {name} {ddl}"))
+        # a rule stored before status existed is described by the switch it has
+        if acols and "status" not in acols:
+            conn.execute(text("UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END"))
+        rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
+        if rcols and "is_test" not in rcols:
+            conn.execute(text("ALTER TABLE automation_runs ADD COLUMN is_test BOOLEAN DEFAULT 0"))
+        # the trigger/action columns were renamed: both words are SQL keywords, and
+        # a table created under the old names is still out there. The old columns
+        # are left in place — dropping them would take their values with them.
+        for old_c, new_c in (("trigger", "trigger_key"), ("action", "action_key")):
+            if rcols and new_c not in rcols:
+                conn.execute(text(f"ALTER TABLE automation_runs ADD COLUMN {new_c} VARCHAR(40)"))
+                if old_c in rcols:
+                    conn.execute(text(f'UPDATE automation_runs SET {new_c} = "{old_c}"'))
         # users: job title + contact phone (for the profile card)
         ucols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)"))}
         if "title" not in ucols:
@@ -241,6 +271,7 @@ else:
     from sqlalchemy import text as _text
     _PG_MIGRATIONS = [
         "ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON",
+        "ALTER TABLE comments ADD COLUMN IF NOT EXISTS origin JSON",
         "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER",
@@ -255,6 +286,34 @@ else:
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid_board INTEGER",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS entra_object_id VARCHAR(64)",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS name VARCHAR(120)",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS description TEXT",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS status VARCHAR(16) DEFAULT 'active'",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS owner_id INTEGER",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS importance VARCHAR(10) DEFAULT 'normal'",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS run_order INTEGER DEFAULT 0",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS fail_count INTEGER DEFAULT 0",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS skip_count INTEGER DEFAULT 0",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER DEFAULT 0",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_success_at TIMESTAMP",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_failure_at TIMESTAMP",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_outcome VARCHAR(12)",
+        "UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END WHERE status IS NULL",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
+        'ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS trigger_key VARCHAR(40)',
+        'ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS action_key VARCHAR(40)',
+        # carried over only on a database that has the pre-rename columns; a
+        # bare UPDATE would fail — and log — on every startup of a fresh one
+        """DO $$ BEGIN
+             IF EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name='automation_runs' AND column_name='trigger') THEN
+               UPDATE automation_runs SET trigger_key = "trigger" WHERE trigger_key IS NULL;
+             END IF;
+             IF EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name='automation_runs' AND column_name='action') THEN
+               UPDATE automation_runs SET action_key = "action" WHERE action_key IS NULL;
+             END IF;
+           END $$;""",
         # tags was removed from the product; the column goes and takes its values
         "ALTER TABLE tasks DROP COLUMN IF EXISTS tags",
     ]
@@ -385,6 +444,7 @@ def _purge_removed_demo_users():
         db.query(Environment).filter(Environment.created_by.in_(ids)).update({Environment.created_by: None}, synchronize_session=False)
         db.query(Automation).filter(Automation.created_by.in_(ids)).update({Automation.created_by: None}, synchronize_session=False)
         db.query(Automation).filter(Automation.updated_by.in_(ids)).update({Automation.updated_by: None}, synchronize_session=False)
+        db.query(AutomationRun).filter(AutomationRun.actor_id.in_(ids)).update({AutomationRun.actor_id: None}, synchronize_session=False)
         db.query(ItemLink).filter(ItemLink.created_by.in_(ids)).update({ItemLink.created_by: None}, synchronize_session=False)
         db.query(Board).filter(Board.deleted_by.in_(ids)).update({Board.deleted_by: None}, synchronize_session=False)
         db.query(Task).filter(Task.deleted_by.in_(ids)).update({Task.deleted_by: None}, synchronize_session=False)
@@ -1805,8 +1865,133 @@ def _imp_parse_tabular(raw, filename):
     return [list(r) for r in _csv.reader(_io.StringIO(text), delimiter=delim)]
 
 
+def _imp_conversation_sheet(raw, filename):
+    """The rows of the workbook's conversation sheet, when it has one.
+
+    A board exported from here writes its items on one sheet and its
+    conversation on another; reading only the first sheet back meant every
+    exported board lost its conversation on the way home. The sheet is found by
+    name and, failing that, by its headers — a file someone rebuilt by hand does
+    not have to guess at our sheet name.
+    """
+    if not (filename or "").lower().endswith((".xlsx", ".xlsm")):
+        return []                                # a CSV holds one sheet, the items
+    import io as _io
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(_io.BytesIO(raw), data_only=True, read_only=True)
+    except Exception:                            # noqa: BLE001 — the caller reports it
+        return []
+    try:
+        want = {"פריט", "תוכן"}
+        best = None
+        for ws in wb.worksheets:
+            if ws is wb.worksheets[0]:
+                continue                         # the first sheet is the board itself
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+            if not rows:
+                continue
+            head = {str(c).strip() for c in rows[0] if c is not None}
+            if ws.title.strip() in ("שיחות", "שיחה") or want <= head:
+                best = rows
+                break
+        return best or []
+    finally:
+        wb.close()
+
+
+def _imp_attach_conversation(db, rows, tasks, actor_id, budget):
+    """Write an imported conversation onto the items it names.
+
+    Rows are matched to items by name, which is the only handle a file and a
+    freshly created board share — the ids in the file belong to the board it
+    came from. A row naming an item that is not here is counted and reported
+    rather than being attached to something arbitrary.
+
+    Threading survives the trip: the file gives every message an id and names
+    the one it answers, so roots are written first and replies are hung off
+    whatever those ids became here.
+    """
+    if not rows:
+        return {"messages": 0, "replies": 0, "unmatched_items": [], "unmatched_people": []}
+    head = [str(c).strip() if c is not None else "" for c in rows[0]]
+    idx = {h: i for i, h in enumerate(head)}
+    need = ("פריט", "תוכן")
+    if not all(h in idx for h in need):
+        return {"messages": 0, "replies": 0, "unmatched_items": [], "unmatched_people": []}
+    cell = lambda r, h: (str(r[idx[h]]).strip()
+                         if h in idx and idx[h] < len(r) and r[idx[h]] is not None else "")
+
+    by_title = {}
+    for t in tasks:
+        by_title.setdefault((t.title or "").strip(), t)
+    names = {}
+    for u in db.query(User).all():
+        if u.name:
+            names.setdefault(u.name.strip().lower(), u.id)
+        if u.email:
+            names.setdefault(u.email.strip().lower(), u.id)
+
+    def when_of(r):
+        v = r[idx["נכתב"]] if "נכתב" in idx and idx["נכתב"] < len(r) else None
+        if isinstance(v, datetime):
+            return v.replace(tzinfo=None)
+        try:
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00")).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            return None
+
+    made = {"messages": 0, "replies": 0}
+    missing_items, missing_people, id_map = set(), set(), {}
+    # roots first: a reply can only be hung off a message that already exists
+    for pas in (0, 1):
+        for r in rows[1:]:
+            if budget[0] <= 0:
+                break
+            parent_src = cell(r, "בתגובה להודעה")
+            if bool(parent_src) != bool(pas):
+                continue
+            title = cell(r, "פריט")
+            task = by_title.get(title)
+            if task is None:
+                if title:
+                    missing_items.add(title)
+                continue
+            body = cell(r, "תוכן")
+            files = [{"name": n.strip(), "url": ""} for n in cell(r, "קבצים").split(",") if n.strip()]
+            if not body and not files:
+                continue
+            author = cell(r, "מאת")
+            uid = names.get(author.lower()) if author else None
+            if author and not uid:
+                missing_people.add(author)
+            parent_id = id_map.get(parent_src) if parent_src else None
+            if parent_src and parent_id is None:
+                continue                          # its message is not in this file
+            c = Comment(task_id=task.id, user_id=uid, parent_id=parent_id,
+                        content=body[:20000], attachments=files[:20],
+                        mentions=[], likes=[], seen_by=[],
+                        created_at=when_of(r) or datetime.now(timezone.utc).replace(tzinfo=None),
+                        origin={"source": "xlsx", "author": author[:120],
+                                "external_id": cell(r, "מזהה הודעה")[:40],
+                                "matched": bool(uid)})
+            db.add(c)
+            db.flush()
+            src_id = cell(r, "מזהה הודעה")
+            if src_id:
+                id_map[src_id] = c.id
+            budget[0] -= 1
+            made["replies" if parent_id else "messages"] += 1
+    return {**made, "unmatched_items": sorted(missing_items)[:20],
+            "unmatched_people": sorted(missing_people)[:20]}
+
+
 IMPORT_MAX_ROWS = 2000
 IMPORT_MAX_COLS = 40
+# Messages one import may bring in, across every item on the board. A board's
+# conversation can be far longer than the board itself, so it gets a ceiling of
+# its own — and what it cuts is named in the report rather than just missing.
+IMPORT_MAX_MESSAGES = 10000
 
 
 # Colours handed to imported status/dropdown options. Same list the status
@@ -1816,6 +2001,61 @@ IMPORT_PALETTE = [
     "#53CCC5", "#FD6C42", "#9DD335", "#276FDC", "#FD5AC3", "#117FB3", "#7E5348",
     "#B93255", "#FECA29", "#6ACDFD", "#784DCF", "#0F7F4D", "#9BADBC",
 ]
+
+
+def _import_comment(db, task, msg, by_token, parent_id=None):
+    """One imported message, written onto the item it belongs to.
+
+    The author is matched to an account by e-mail first and by name second — the
+    same order the people columns use, for the same reason. An author with no
+    account here keeps their name through `origin` instead of being replaced by
+    whoever ran the import: a conversation is a record of who said what, and an
+    import that rewrites that is worse than one that drops it.
+    """
+    uid = (by_token.get((msg.get("email") or "").lower())
+           or by_token.get((msg.get("author") or "").lower()))
+    when = None
+    raw = (msg.get("created_at") or "").strip()
+    if raw:
+        try:
+            when = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            when = None
+    c = Comment(task_id=task.id, user_id=uid, parent_id=parent_id,
+                content=(msg.get("body") or "")[:20000],
+                attachments=[{"name": a.get("name", ""), "url": a.get("url", "")}
+                             for a in (msg.get("assets") or [])][:20],
+                mentions=[], likes=[], seen_by=[],
+                created_at=when or datetime.now(timezone.utc).replace(tzinfo=None),
+                origin={"source": "monday", "author": (msg.get("author") or "")[:120],
+                        "external_id": (msg.get("external_id") or "")[:40],
+                        "matched": bool(uid)})
+    db.add(c)
+    db.flush()
+    return c
+
+
+def _import_conversation(db, task, updates, by_token, budget):
+    """An item's whole conversation, replies kept under the message they answer.
+
+    `budget` is a one-element list — the import's remaining message allowance,
+    shared across every item so a single board cannot write an unbounded number
+    of rows. Returns how many messages were written.
+    """
+    made = 0
+    for up in updates or []:
+        if budget[0] <= 0:
+            break
+        root = _import_comment(db, task, up, by_token)
+        budget[0] -= 1
+        made += 1
+        for rep in up.get("replies") or []:
+            if budget[0] <= 0:
+                break
+            _import_comment(db, task, rep, by_token, parent_id=root.id)
+            budget[0] -= 1
+            made += 1
+    return made
 
 
 def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_id):
@@ -1859,6 +2099,11 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 for c in parsed["columns"]:
                     if c["type"] == "people":
                         people_wanted.update(src["values"].get(c["key"]) or [])
+                # whoever wrote the item's conversation is a person to look for
+                # as much as whoever was assigned to it
+                for up in src.get("updates") or []:
+                    for msg in [up] + (up.get("replies") or []):
+                        people_wanted.update(t for t in (msg.get("email"), msg.get("author")) if t)
         by_token = {}
         if people_wanted:
             low = [t.lower() for t in people_wanted]
@@ -1974,7 +2219,9 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                     sub_used.add(col_ids[c["key"]])
             return cf
 
-        made = subs_made = 0
+        made = subs_made = talked = 0
+        # the conversation's own ceiling, shared across the whole import
+        budget = [IMPORT_MAX_MESSAGES]
         gpos = {}
         for row in parsed["items"]:
             grp = gmap.get(row.get("group")) or g1
@@ -1986,6 +2233,7 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             db.flush()
             _ensure_item_uid(db, t)
             made += 1
+            talked += _import_conversation(db, t, row.get("updates"), by_token, budget)
             for spos, sub in enumerate(row["subitems"]):
                 stask = Task(board_id=b.id, group_id=grp.id, parent_id=t.id,
                              title=sub["name"][:500], status=TaskStatus.BACKLOG,
@@ -1996,6 +2244,7 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 db.flush()
                 _ensure_item_uid(db, stask)
                 subs_made += 1
+                talked += _import_conversation(db, stask, sub.get("updates"), by_token, budget)
 
         if sub_used:
             # sub-items show only the columns they actually carry, in board order
@@ -2006,9 +2255,15 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         db.commit()
         db.refresh(b)
 
+        wanted = parsed["report"].get("updates") or 0
         return {"id": b.id, "name": b.name, "icon": b.icon,
                 "items": made, "subitems": subs_made, "columns": len(custom_cols),
+                "messages": talked,
                 "report": {**parsed["report"],
+                           "messages_imported": talked,
+                           # a conversation cut by the import's own ceiling, as
+                           # opposed to one the file never carried
+                           "messages_dropped": max(0, wanted - talked),
                            "people_matched": len(set(by_token.values())),
                            "people_unmatched": unmatched}}
 
@@ -2021,12 +2276,23 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
     raw = await file.read()
     if len(raw) > 8 * 1024 * 1024:
         raise HTTPException(413, "הקובץ גדול מדי (מקסימום 8MB)")
+    # Reading a workbook and writing a few hundred rows is seconds of CPU and of
+    # blocking database calls. Run on the event loop, that is not just this one
+    # request being slow: every other request in the app waits behind it — the
+    # board someone else is opening, the avatars, the live event stream — which
+    # is what makes an import feel like the whole system froze. Off the loop, the
+    # import takes exactly as long and nothing else notices.
+    return await run_in_threadpool(_import_board_file, raw, file.filename, name,
+                                   environment_id, folder_id, actor_id)
+
+
+def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id):
     # A monday.com API response is JSON, not a table, and carries the column
     # types a CSV export would have flattened to text. It gets its own reader.
-    if (file.filename or "").lower().endswith(".json") or import_monday.looks_like_monday(raw):
-        return _import_monday_board(raw, file.filename, name, environment_id, folder_id, actor_id)
+    if (filename or "").lower().endswith(".json") or import_monday.looks_like_monday(raw):
+        return _import_monday_board(raw, filename, name, environment_id, folder_id, actor_id)
     try:
-        rows = _imp_parse_tabular(raw, file.filename)
+        rows = _imp_parse_tabular(raw, filename)
     except Exception:
         raise HTTPException(400, "לא ניתן לקרוא את הקובץ — ודא שהוא CSV או Excel תקין")
     # drop fully-empty rows
@@ -2056,7 +2322,7 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
         dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
         maxpos = (db.query(func.max(Board.position))
                   .filter(Board.environment_id == env_id, Board.folder_id == folder_id).scalar())
-        base = os.path.splitext(os.path.basename(file.filename or ""))[0]
+        base = os.path.splitext(os.path.basename(filename or ""))[0]
         board_name = (name or "").strip() or base or "לוח מיובא"
         col_ids = ["col_" + uuid.uuid4().hex[:8] for _ in col_types]
         custom_cols = [{"id": cid, "type": ctype, "title": labels[j + 1], "options": None,
@@ -2089,7 +2355,7 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
             Group(board_id=b.id, name="בביצוע", position=1, color="#fdab3d", task_status=TaskStatus.IN_PROGRESS),
             Group(board_id=b.id, name="הושלם", position=2, color="#00c875", task_status=TaskStatus.DONE)])
         db.flush()
-        pos = 0
+        pos, made_tasks = 0, []
         for r in data:
             title = _cell(r, 0) or f"פריט {pos + 1}"
             cf = {"status_unset": True, "priority_unset": True}
@@ -2103,11 +2369,21 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
             db.flush()
             _ensure_item_uid(db, t)
             _audit(db, t.id, "create", field="item", old=None, new=t.title, user_id=creator)
+            made_tasks.append(t)
             pos += 1
+        # the conversation sheet, when the workbook carries one
+        talk = _imp_attach_conversation(db, _imp_conversation_sheet(raw, filename),
+                                        made_tasks, creator, [IMPORT_MAX_MESSAGES])
         db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
         db.commit()
         db.refresh(b)
-        return {"id": b.id, "name": b.name, "icon": b.icon, "items": pos, "columns": len(custom_cols)}
+        return {"id": b.id, "name": b.name, "icon": b.icon, "items": pos,
+                "columns": len(custom_cols),
+                "messages": talk["messages"] + talk["replies"],
+                "report": {"messages_imported": talk["messages"] + talk["replies"],
+                           "replies_imported": talk["replies"],
+                           "conversation_items_unmatched": talk["unmatched_items"],
+                           "people_unmatched": talk["unmatched_people"]}}
 
 
 @app.patch("/api/boards/{board_id}")
@@ -4458,6 +4734,45 @@ import automations as recipes   # noqa: E402  (pure data — no app imports)
 # bounded rather than trusted.
 AUTOMATION_MAX_DEPTH = 3
 
+# How many rows the run history keeps per board. Old rows fall off the front so
+# a busy board's log cannot grow without limit.
+AUTOMATION_RUN_LOG_MAX = 500
+
+
+# The five states a rule can be in. Only "active" runs — see _set_automation_status.
+AUTOMATION_STATUSES = ("draft", "active", "paused", "paused_error", "deleting")
+AUTOMATION_IMPORTANCE = ("critical", "high", "normal", "low")
+# Failures in a row that take a rule out of service. A rule that cannot work is
+# worse than no rule: it looks configured while quietly doing nothing, so it is
+# suspended and its owner is told, rather than failing forever in the log.
+AUTOMATION_FAIL_CUTOFF = 5
+
+
+def _set_automation_status(a, status):
+    """Move a rule between states, keeping the engine's switch in step.
+
+    `status` is what a person manages; `is_active` is what the engine reads. Two
+    fields that mean almost the same thing drift apart unless exactly one place
+    writes both, and this is that place.
+    """
+    a.status = status if status in AUTOMATION_STATUSES else "active"
+    a.is_active = (a.status == "active")
+    if a.status == "active":
+        a.consecutive_failures = 0          # reactivating clears the strike count
+
+
+class _Skipped(Exception):
+    """A rule matched but had nothing to do — a skip, not a failure.
+
+    The recipient left the board, the item is already in that status, the link
+    already exists. Each carries the Hebrew reason the history shows, because
+    "why did nothing happen?" is the question the log exists to answer.
+    """
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
 
 def _task_status_key(task):
     """The vocabulary key an item's status actually shows as — a board-defined
@@ -4560,7 +4875,12 @@ def _automation_label(db, board, a):
 
 def _run_action(db, a, task, actor_id, board):
     """Perform one rule's action. Returns follow-up events so a rule can trigger
-    another (bounded by AUTOMATION_MAX_DEPTH)."""
+    another (bounded by AUTOMATION_MAX_DEPTH).
+
+    Raises _Skipped where there is nothing to do. These used to return quietly,
+    which made a rule that never had any effect indistinguishable from one that
+    worked — so each dead end now names itself, and the run history says so.
+    """
     r = recipes.recipe(a.recipe_id)
     cfg = a.config or {}
     act = r["action"]
@@ -4573,49 +4893,70 @@ def _run_action(db, a, task, actor_id, board):
     # time, or a rule becomes a standing way to reach someone who was taken off
     # the board on purpose.
     if act == "notify_person":
-        if _can_be_assigned(db, task.board_id, cfg.get("a_person")):
-            _notify(db, cfg.get("a_person"), "automation", "אוטומציה הופעלה", body,
-                    board_id=task.board_id, task_id=task.id)
+        if not _can_be_assigned(db, task.board_id, cfg.get("a_person")):
+            raise _Skipped("נמען ההתראה אינו חבר בלוח")
+        _notify(db, cfg.get("a_person"), "automation", "אוטומציה הופעלה", body,
+                board_id=task.board_id, task_id=task.id)
     elif act == "notify_assignees":
-        for u in list(task.assignees):
+        people = list(task.assignees)
+        if not people:
+            raise _Skipped("לפריט אין משויכים")
+        for u in people:
             _notify(db, u.id, "automation", "אוטומציה הופעלה", body,
                     board_id=task.board_id, task_id=task.id)
     elif act == "assign_person":
         u = db.query(User).filter(User.id == cfg.get("a_person")).first()
-        if u and not _can_be_assigned(db, task.board_id, u.id):
-            u = None
-        if u and u not in task.assignees:
-            task.assignees.append(u)
-            _notify(db, u.id, "assign", "שויכת למשימה", body,
-                    board_id=task.board_id, task_id=task.id)
-            out.append({"type": "person_assigned", "user_id": u.id})
+        if not u or not _can_be_assigned(db, task.board_id, u.id):
+            raise _Skipped("האדם שהכלל משייך אינו חבר בלוח")
+        if u in task.assignees:
+            raise _Skipped("האדם משויך לפריט כבר")
+        task.assignees.append(u)
+        _notify(db, u.id, "assign", "שויכת למשימה", body,
+                board_id=task.board_id, task_id=task.id)
+        out.append({"type": "person_assigned", "user_id": u.id})
     elif act == "set_status":
-        if _task_status_key(task) != str(cfg.get("a_status")) and _apply_status_key(db, task, cfg.get("a_status")):
-            out.append({"type": "status_changes_to", "status": str(cfg.get("a_status"))})
+        if _task_status_key(task) == str(cfg.get("a_status")):
+            raise _Skipped("הפריט נמצא בסטטוס הזה כבר")
+        if not _apply_status_key(db, task, cfg.get("a_status")):
+            raise _Skipped("הסטטוס שהכלל מבקש אינו קיים בלוח")
+        out.append({"type": "status_changes_to", "status": str(cfg.get("a_status"))})
     elif act == "set_priority":
-        if _task_priority_key(task) != str(cfg.get("a_priority")) and _apply_priority_key(db, task, cfg.get("a_priority")):
-            out.append({"type": "priority_changes_to", "priority": str(cfg.get("a_priority"))})
+        if _task_priority_key(task) == str(cfg.get("a_priority")):
+            raise _Skipped("לפריט יש את העדיפות הזו כבר")
+        if not _apply_priority_key(db, task, cfg.get("a_priority")):
+            raise _Skipped("העדיפות שהכלל מבקש אינה קיימת בלוח")
+        out.append({"type": "priority_changes_to", "priority": str(cfg.get("a_priority"))})
     elif act == "move_to_group":
         g = db.query(Group).filter(Group.id == cfg.get("a_group"),
                                    Group.board_id == task.board_id).first()
-        if g:
-            task.group_id = g.id
+        if not g:
+            raise _Skipped("הקבוצה שהכלל מבקש אינה קיימת בלוח")
+        if task.group_id == g.id:
+            raise _Skipped("הפריט נמצא בקבוצה הזו כבר")
+        task.group_id = g.id
     elif act == "create_subitem":
         db.add(Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
                     title=cfg.get("a_text") or "תת־פריט", status=TaskStatus.TODO,
                     priority=Priority.MEDIUM, created_by=actor_id))
     elif act == "link_to_item":
         col = _find_col(db, task.board_id, cfg.get("a_connect"))
+        if not col or col.get("type") != "connect":
+            raise _Skipped("עמודת הקישור אינה קיימת בלוח")
         other = db.query(Task).filter(Task.id == cfg.get("a_item")).first()
-        if col and col.get("type") == "connect" and other is not None:
-            if _apply_automation_link(db, task, col, [other.id], actor_id):
-                out.append({"type": "link_added", "col": col["id"], "item_ids": [other.id]})
+        if other is None:
+            raise _Skipped("הפריט שהכלל מקשר אליו אינו קיים")
+        if not _apply_automation_link(db, task, col, [other.id], actor_id):
+            raise _Skipped("הקישור קיים כבר")
+        out.append({"type": "link_added", "col": col["id"], "item_ids": [other.id]})
     elif act == "create_and_link":
         col = _find_col(db, task.board_id, cfg.get("a_connect"))
+        if not col or col.get("type") != "connect":
+            raise _Skipped("עמודת הקישור אינה קיימת בלוח")
         made = _create_linked_item(db, task, col, cfg.get("a_board"),
-                                   cfg.get("a_text"), actor_id) if col else None
-        if made is not None:
-            out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
+                                   cfg.get("a_text"), actor_id)
+        if made is None:
+            raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
+        out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
     return out
 
 
@@ -4687,20 +5028,123 @@ def _create_linked_item(db, task, col, board_id, title, actor_id):
     return made
 
 
-def _run_one_automation(db, a, task, actor_id):
-    """Run a single rule against one item, then let its result cascade."""
+_runs_logged = 0
+
+
+def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
+                        actor_id=None, retry_of=None):
+    """Record one attempt, whatever came of it.
+
+    Never raises: the history is a record of the work, never a reason for the
+    work to fail. The row copies the rule's sentence and the item's title as
+    they read now, so the log still makes sense after either is rewritten.
+    """
+    global _runs_logged
+    try:
+        r = recipes.recipe(a.recipe_id) or {}
+        row = AutomationRun(
+            board_id=a.board_id, automation_id=a.id, recipe_id=a.recipe_id,
+            sentence=_automation_label(db, board, a),
+            trigger_key=r.get("trigger") or "", action_key=r.get("action") or "",
+            task_id=task.id, task_title=(task.title or "")[:300],
+            event=event or {}, outcome=outcome, reason=(reason or "")[:400],
+            depth=depth, actor_id=actor_id, retry_of=retry_of,
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None))
+        db.add(row)
+        db.flush()
+        _runs_logged += 1
+        # trimmed now and then rather than on every write — one count query per
+        # hundred runs instead of one per run
+        if _runs_logged % 100 == 1:
+            _prune_automation_runs(db, a.board_id)
+        return row
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  automation run log failed ({a.id}): {e}", flush=True)
+        return None
+
+
+def _prune_automation_runs(db, board_id):
+    """Keep the newest AUTOMATION_RUN_LOG_MAX rows for the board."""
+    n = db.query(AutomationRun).filter(AutomationRun.board_id == board_id).count()
+    if n <= AUTOMATION_RUN_LOG_MAX:
+        return
+    cut = (db.query(AutomationRun.id).filter(AutomationRun.board_id == board_id)
+           .order_by(AutomationRun.id.desc()).offset(AUTOMATION_RUN_LOG_MAX).first())
+    if cut:
+        (db.query(AutomationRun)
+           .filter(AutomationRun.board_id == board_id, AutomationRun.id <= cut[0])
+           .delete(synchronize_session=False))
+
+
+def _suspend_if_broken(db, a, board):
+    """Take a rule out of service once it has failed AUTOMATION_FAIL_CUTOFF times
+    in a row, and tell whoever is responsible for it.
+
+    Only an active rule is suspended — a rule someone already paused, or a draft,
+    has nothing to be taken away.
+    """
+    if a.status != "active" or (a.consecutive_failures or 0) < AUTOMATION_FAIL_CUTOFF:
+        return
+    _set_automation_status(a, "paused_error")
+    a.consecutive_failures = AUTOMATION_FAIL_CUTOFF      # keep the count that suspended it
+    who = a.owner_id or a.created_by
+    if who:
+        _notify(db, who, "automation", "אוטומציה הושהתה עקב שגיאות",
+                f"האוטומציה בלוח '{board.name}' נכשלה {AUTOMATION_FAIL_CUTOFF} פעמים "
+                f"ברצף והושהתה: {_automation_label(db, board, a)}",
+                board_id=a.board_id)
+
+
+def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
+    """Run one matching rule against one item, record what came of it, and let
+    the result cascade.
+
+    Never raises: a broken rule must not take down the edit that triggered it.
+    The three outcomes the history distinguishes are decided here — the action
+    did something (`ran`), it had nothing to do (`skipped`), or it blew up
+    (`failed`).
+    """
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board:
-        return
+        return None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     try:
         follow = _run_action(db, a, task, actor_id, board)
+    except _Skipped as sk:
+        # an attempt all the same: "הפעלה אחרונה" is when it last tried, which is
+        # a different question from when it last did something
+        a.last_run_at, a.last_outcome = now, "skipped"
+        a.skip_count = (a.skip_count or 0) + 1
+        return _log_automation_run(db, board, a, task, event, "skipped", sk.reason,
+                                   depth, actor_id, retry_of)
     except Exception as e:                         # noqa: BLE001
         print(f"⚠️  automation {a.id} ({a.recipe_id}) failed: {e}", flush=True)
-        return
-    a.last_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        a.last_run_at, a.last_failure_at, a.last_outcome = now, now, "failed"
+        a.fail_count = (a.fail_count or 0) + 1
+        a.consecutive_failures = (a.consecutive_failures or 0) + 1
+        row = _log_automation_run(db, board, a, task, event, "failed",
+                                  f"{type(e).__name__}: {e}", depth, actor_id, retry_of)
+        _suspend_if_broken(db, a, board)
+        return row
+    a.last_run_at = a.last_success_at = now
+    a.last_outcome = "ran"
     a.run_count = (a.run_count or 0) + 1
+    a.consecutive_failures = 0
+    row = _log_automation_run(db, board, a, task, event, "ran", "", depth, actor_id, retry_of)
     for ev in follow or []:
-        _run_automations(db, task, ev, actor_id, 1)
+        _run_automations(db, task, ev, actor_id, depth + 1)
+        # a rule that changed this item's status is a status change like any
+        # other, so items linked to it hear about it too — bounded by the same
+        # depth, or two rules pointing at each other would ping-pong
+        if ev.get("type") == "status_changes_to":
+            _fan_out_linked_status(db, task, ev.get("status"), actor_id, depth + 1)
+    return row
+
+
+def _run_one_automation(db, a, task, actor_id):
+    """Run a single rule against one item — the date sweep's entry point, which
+    picks its own items instead of reacting to an event."""
+    _fire_rule(db, a, task, {"type": "due_date_arrives"}, actor_id, 0)
 
 
 # How many fired item ids a date rule remembers. Bounded so the marker cannot
@@ -4717,7 +5161,8 @@ def _sweep_due_date_automations(db, board_id, actor_id):
     """
     rules = [a for a in db.query(Automation).filter(
                 Automation.board_id == board_id,
-                Automation.is_active == True).all()                      # noqa: E712
+                Automation.is_active == True)                             # noqa: E712
+                .order_by(Automation.run_order, Automation.id).all()
              if (recipes.recipe(a.recipe_id) or {}).get("trigger") == "due_date_arrives"]
     if not rules:
         return
@@ -4775,35 +5220,28 @@ def _fan_out_linked_status(db, task, status_key, actor_id, depth=0):
 
 
 def _run_automations(db, task, event, actor_id, depth=0):
-    """Fire every active rule on the item's board that matches this event.
-
-    Never raises: a broken rule must not take down the edit that triggered it,
-    so a failure is logged and the remaining rules still run.
-    """
-    if task is None or depth >= AUTOMATION_MAX_DEPTH:
+    """Fire every active rule on the item's board that matches this event."""
+    if task is None:
         return
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board or board.deleted_at:
         return
-    rules = db.query(Automation).filter(Automation.board_id == task.board_id,
-                                        Automation.is_active == True).order_by(Automation.id).all()  # noqa: E712
-    for a in rules:
-        if not _automation_matches(a, event):
-            continue
-        try:
-            follow = _run_action(db, a, task, actor_id, board)
-        except Exception as e:                     # noqa: BLE001 — one bad rule must not break the request
-            print(f"⚠️  automation {a.id} ({a.recipe_id}) failed: {e}", flush=True)
-            continue
-        a.last_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        a.run_count = (a.run_count or 0) + 1
-        for ev in follow or []:
-            _run_automations(db, task, ev, actor_id, depth + 1)
-            # a rule that changed this item's status is a status change like any
-            # other, so items linked to it hear about it too — bounded by the
-            # same depth, or two rules pointing at each other would ping-pong
-            if ev.get("type") == "status_changes_to":
-                _fan_out_linked_status(db, task, ev.get("status"), actor_id, depth + 1)
+    # "סדר ביצוע" — which rule goes first when one event trips several. The id is
+    # the tiebreak, so rules nobody ordered still run oldest-first as before.
+    rules = (db.query(Automation)
+               .filter(Automation.board_id == task.board_id, Automation.is_active == True)  # noqa: E712
+               .order_by(Automation.run_order, Automation.id).all())
+    matching = [a for a in rules if _automation_matches(a, event)]
+    if depth >= AUTOMATION_MAX_DEPTH:
+        # The cascade has gone as far as it is allowed to go. What would have run
+        # here is recorded as skipped rather than dropped: a chain that stops
+        # half way is exactly what someone opens the history to understand.
+        for a in matching:
+            _log_automation_run(db, board, a, task, event, "skipped",
+                                "שרשרת האוטומציות הגיעה לעומק המקסימלי", depth, actor_id)
+        return
+    for a in matching:
+        _fire_rule(db, a, task, event, actor_id, depth)
 
 
 # ── Automations API ─────────────────────────────────────────────────
@@ -4820,25 +5258,119 @@ def _can_manage_automations(db, board, user_id):
 def _automation_json(db, board, a):
     r = recipes.recipe(a.recipe_id) or {}
     uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+    iso = lambda d: d.isoformat() if d else None
+    ran, failed, skipped = a.run_count or 0, a.fail_count or 0, a.skip_count or 0
+    tried = ran + failed                  # a skip is neither a success nor a failure
+    # a new rule is owned by its creator; the fallback covers rules written before
+    # the column existed, which have no owner recorded at all
+    owner = a.owner_id or a.created_by
+    sentence = _automation_label(db, board, a)
     return {
         "id": a.id, "board_id": a.board_id, "recipe_id": a.recipe_id,
-        "sentence": _automation_label(db, board, a),
+        "sentence": sentence,
+        # what the list shows as the rule's heading: its name if it has one, and
+        # the sentence itself if it does not, so a row is never nameless
+        "name": a.name or "", "display_name": a.name or sentence.replace("«", "").replace("»", ""),
+        "description": a.description or "",
         "trigger": r.get("trigger"), "action": r.get("action"),
         "fields": r.get("fields", []), "config": a.config or {},
+        "status": a.status or ("active" if a.is_active else "paused"),
         "is_active": bool(a.is_active),
+        "importance": a.importance or "normal",
+        "run_order": a.run_order or 0,
+        "owner_id": owner, "owner_name": uname(owner),
+        "owner_is_creator": owner == a.created_by,
         "created_by": a.created_by, "created_by_name": uname(a.created_by),
-        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "created_at": iso(a.created_at),
         "updated_by": a.updated_by, "updated_by_name": uname(a.updated_by),
-        "updated_at": a.updated_at.isoformat() if a.updated_at else None,
-        "run_count": a.run_count or 0,
-        "last_run_at": a.last_run_at.isoformat() if a.last_run_at else None,
+        "updated_at": iso(a.updated_at),
+        "run_count": ran, "fail_count": failed, "skip_count": skipped,
+        "consecutive_failures": a.consecutive_failures or 0,
+        "last_run_at": iso(a.last_run_at), "last_success_at": iso(a.last_success_at),
+        "last_failure_at": iso(a.last_failure_at), "last_outcome": a.last_outcome or "",
+        # a rate over nothing is not 0% — it is unknown, and the UI says so
+        "success_rate": round(100 * ran / tried) if tried else None,
+        # what a board admin has to go and look at: a rule taken out of service,
+        # and one whose last attempt failed but has not hit the cutoff yet
+        "needs_attention": (a.status == "paused_error") or (a.last_outcome == "failed"),
     }
+
+
+def _automation_counts(rows):
+    """The tiles above the ניהול list. Always over the whole board — switching a
+    filter must not change the totals it is being filtered against."""
+    st_of = lambda a: a["status"]
+    return {"total": len(rows),
+            "active": sum(1 for a in rows if st_of(a) == "active"),
+            "paused": sum(1 for a in rows if st_of(a) in ("paused", "paused_error")),
+            "paused_error": sum(1 for a in rows if st_of(a) == "paused_error"),
+            "draft": sum(1 for a in rows if st_of(a) == "draft"),
+            "deleting": sum(1 for a in rows if st_of(a) == "deleting"),
+            "needs_attention": sum(1 for a in rows if a["needs_attention"])}
+
+
+def _automation_people(db, board_id, rows):
+    """Who can appear in the owner and creator filters: everyone named on a rule,
+    plus the board's members, so an owner can be handed over to any of them."""
+    ids, out = set(), []
+    for a in rows:
+        ids.update([a.get("owner_id"), a.get("created_by")])
+    for m in db.query(BoardMember.user_id).filter(BoardMember.board_id == board_id).all():
+        ids.add(m[0])
+    for uid in [i for i in ids if i]:
+        u = db.query(User).filter(User.id == uid).first()
+        if u:
+            out.append({"id": u.id, "name": u.name, "avatar_url": u.avatar_url})
+    out.sort(key=lambda x: x["name"] or "")
+    return out
+
+
+# The parts of a rule a version keeps, and what each is called when it changes.
+_VERSIONED = {"recipe_id": "המתכון", "config": "הגדרות הכלל", "name": "השם",
+              "description": "התיאור העסקי", "status": "הסטטוס", "importance": "החשיבות",
+              "owner_id": "הבעלים", "run_order": "סדר הביצוע"}
+
+
+def _snapshot_automation(a):
+    return {k: getattr(a, k) for k in _VERSIONED}
+
+
+def _record_automation_version(db, board, a, user_id, before=None, note=""):
+    """Keep what the rule looks like now, and say what moved.
+
+    A rule quietly rewrites items, so "who changed it, and to what?" has to stay
+    answerable. Nothing is written when nothing actually changed — a PATCH that
+    re-sends the same values is not a version.
+    """
+    snap = _snapshot_automation(a)
+    if before is not None:
+        moved = [he for k, he in _VERSIONED.items() if before.get(k) != snap.get(k)]
+        if not moved:
+            return None
+        summary = note or ("שונו: " + ", ".join(moved) if len(moved) > 1 else "שונה: " + moved[0])
+    else:
+        summary = note or "נוצרה"
+    n = db.query(AutomationVersion).filter(AutomationVersion.automation_id == a.id).count()
+    row = AutomationVersion(automation_id=a.id, board_id=a.board_id, version=n + 1,
+                            sentence=_automation_label(db, board, a), snapshot=snap,
+                            summary=summary[:300], changed_by=user_id,
+                            changed_at=datetime.now(timezone.utc).replace(tzinfo=None))
+    db.add(row)
+    return row
 
 
 @app.get("/api/automations/recipes")
 def automation_recipes(user_id: int = Depends(current_user_id)):
-    """The if-then catalog the 'new automation' picker is built from."""
-    return {"recipes": recipes.catalog()}
+    """What the יצירה tab is built from.
+
+    `recipes` are the ready-made templates. `blueprint` is the same set indexed
+    the other way round — trigger → the actions that may follow it — which is
+    what "אוטומציה מאפס" walks through. Building from scratch therefore lands on
+    a recipe too, so both paths store the same row and share one validation.
+    """
+    return {"recipes": recipes.catalog(), "blueprint": recipes.blueprint(),
+            "triggers": {k: recipes.plain(v) for k, v in recipes.TRIGGERS.items()},
+            "actions": {k: recipes.plain(v) for k, v in recipes.ACTIONS.items()}}
 
 
 @app.get("/api/boards/{board_id}/automations")
@@ -4851,8 +5383,12 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
             raise HTTPException(404, "board not found")
         if user_id is not None and _board_role(db, board_id, user_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
-        rows = db.query(Automation).filter(Automation.board_id == board_id).order_by(Automation.id).all()
-        return {"automations": [_automation_json(db, b, a) for a in rows],
+        rows = (db.query(Automation).filter(Automation.board_id == board_id)
+                  .order_by(Automation.run_order, Automation.id).all())
+        out = [_automation_json(db, b, a) for a in rows]
+        return {"automations": out, "counts": _automation_counts(out),
+                "people": _automation_people(db, board_id, out),
+                "statuses": list(AUTOMATION_STATUSES), "importance": list(AUTOMATION_IMPORTANCE),
                 "can_manage": _can_manage_automations(db, b, user_id)}
 
 
@@ -4876,6 +5412,59 @@ def _check_automation_person(db, board_id, cfg):
         raise HTTPException(400, "אפשר לבחור רק משתמשים שהוזמנו ללוח")
 
 
+def _automation_meta(db, board_id, data, a=None):
+    """Read the management fields off a request body.
+
+    Returns only the keys the caller actually sent, so a PATCH that changes the
+    owner does not silently reset the importance. The status is deliberately NOT
+    returned here — it goes through _set_automation_status, which also moves the
+    engine's switch.
+    """
+    out = {}
+    if "name" in data:
+        out["name"] = (str(data.get("name") or "")).strip()[:120]
+    if "description" in data:
+        out["description"] = (str(data.get("description") or "")).strip()[:2000]
+    if "importance" in data:
+        imp = str(data.get("importance") or "normal")
+        if imp not in AUTOMATION_IMPORTANCE:
+            raise HTTPException(400, "דרגת חשיבות לא מוכרת")
+        out["importance"] = imp
+    if "run_order" in data:
+        try:
+            out["run_order"] = max(0, min(int(data.get("run_order") or 0), 9999))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "סדר ביצוע חייב להיות מספר")
+    if "owner_id" in data:
+        oid = data.get("owner_id")
+        if oid in (None, "", 0):
+            out["owner_id"] = None              # unclaimed — answers to its creator
+        else:
+            try:
+                oid = int(oid)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "בעלים לא תקין")
+            # the same bar as naming someone in the rule itself: a person who was
+            # never invited cannot be made responsible for the board's automation
+            if not _can_be_assigned(db, board_id, oid):
+                raise HTTPException(400, "אפשר לבחור כבעלים רק משתמשים שהוזמנו ללוח")
+            out["owner_id"] = oid
+    return out
+
+
+def _automation_status_from(data, current="active"):
+    """The state a request asks for. `status` wins; a bare `is_active` — what the
+    switch in the list sends, and every older client — maps onto it."""
+    if "status" in data:
+        want = str(data.get("status") or "")
+        if want not in AUTOMATION_STATUSES:
+            raise HTTPException(400, "סטטוס אוטומציה לא מוכר")
+        return want
+    if "is_active" in data:
+        return "active" if data.get("is_active") else "paused"
+    return current
+
+
 @app.post("/api/boards/{board_id}/automations")
 def create_automation(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -4888,15 +5477,128 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
         if err:
             raise HTTPException(400, err)
         _check_automation_person(db, board_id, cfg)
+        meta = _automation_meta(db, board_id, data)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         a = Automation(board_id=board_id, recipe_id=data["recipe_id"], config=cfg,
-                       is_active=bool(data.get("is_active", True)),
                        created_by=user_id, updated_by=user_id,
-                       created_at=now, updated_at=now, run_count=0, state={})
+                       created_at=now, updated_at=now, run_count=0, state={},
+                       fail_count=0, skip_count=0, consecutive_failures=0, last_outcome="",
+                       name=meta.get("name", ""), description=meta.get("description", ""),
+                       importance=meta.get("importance", "normal"),
+                       run_order=meta.get("run_order", 0),
+                       # unset means the creator, so a new rule is never ownerless
+                       owner_id=meta.get("owner_id", user_id))
+        # a rule saved as a draft is written but does not run until someone says so
+        _set_automation_status(a, _automation_status_from(data))
         db.add(a)
+        db.flush()
+        _record_automation_version(db, b, a, user_id)
         db.commit()
         db.refresh(a)
         return _automation_json(db, b, a)
+
+
+@app.post("/api/automations/{automation_id}/duplicate")
+def duplicate_automation(automation_id: int, user_id: int = Depends(current_user_id)):
+    """Copy a rule, as a draft.
+
+    A copy that started running the moment it was made would double every action
+    the original takes, on a board where nobody asked for that yet. So the copy
+    is written switched off, for someone to adjust and publish deliberately.
+    """
+    with Session(engine) as db:
+        src = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not src:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == src.board_id).first()
+        if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לשכפל אוטומציות")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        name = (src.name or _automation_label(db, b, src).replace("«", "").replace("»", ""))[:105]
+        a = Automation(board_id=src.board_id, recipe_id=src.recipe_id, config=dict(src.config or {}),
+                       name=f"{name} (עותק)"[:120], description=src.description or "",
+                       importance=src.importance or "normal", run_order=src.run_order or 0,
+                       owner_id=src.owner_id or user_id,
+                       created_by=user_id, updated_by=user_id, created_at=now, updated_at=now,
+                       run_count=0, fail_count=0, skip_count=0, consecutive_failures=0,
+                       last_outcome="", state={})
+        _set_automation_status(a, "draft")
+        db.add(a)
+        db.flush()
+        _record_automation_version(db, b, a, user_id, note=f"שוכפלה מאוטומציה #{src.id}")
+        db.commit()
+        db.refresh(a)
+        return _automation_json(db, b, a)
+
+
+@app.get("/api/automations/{automation_id}/versions")
+def automation_versions(automation_id: int, user_id: int = Depends(current_user_id)):
+    """Every version of the rule, newest first. Readable by any board member —
+    the same bar as reading the rules themselves."""
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        if user_id is not None and _board_role(db, a.board_id, user_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+        rows = (db.query(AutomationVersion)
+                  .filter(AutomationVersion.automation_id == automation_id)
+                  .order_by(AutomationVersion.version.desc()).all())
+        return {"versions": [{
+            "id": v.id, "version": v.version, "summary": v.summary or "",
+            "sentence": v.sentence or "", "snapshot": v.snapshot or {},
+            "changed_by": v.changed_by, "changed_by_name": uname(v.changed_by),
+            "changed_at": v.changed_at.isoformat() if v.changed_at else None,
+        } for v in rows]}
+
+
+@app.post("/api/automations/{automation_id}/test")
+def test_automation(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Run the rule against one item for real — then undo everything it did.
+
+    A dry run that only reasons about the rule would miss exactly what a test is
+    for: the status that does not exist any more, the recipient who left the
+    board. So the action genuinely executes, inside a transaction that is rolled
+    back — notifications, links and edits included — and only the verdict is kept
+    afterwards, written to the history marked as a test.
+    """
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול להריץ בדיקה")
+        task = db.query(Task).filter(Task.id == data.get("task_id"),
+                                     Task.board_id == a.board_id).first()
+        if not task or task.deleted_at:
+            raise HTTPException(400, "יש לבחור פריט מהלוח הזה")
+        trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
+        event = {"type": trig, "test": True}
+        row = _fire_rule(db, a, task, event, user_id, 0)
+        # read it out before the rollback takes the row with it
+        got = {"outcome": row.outcome if row else "failed",
+               "reason": (row.reason if row else "לא ניתן היה להריץ את הכלל") or "",
+               "sentence": row.sentence if row else _automation_label(db, b, a),
+               "task_id": task.id, "task_title": (task.title or "")[:300],
+               "board_id": a.board_id, "recipe_id": a.recipe_id,
+               "trigger_key": row.trigger_key if row else trig,
+               "action_key": row.action_key if row else ""}
+        db.rollback()
+    # a second session, because the first one was undone on purpose
+    with Session(engine) as db:
+        rec = AutomationRun(board_id=got["board_id"], automation_id=automation_id,
+                            recipe_id=got["recipe_id"], sentence=got["sentence"],
+                            trigger_key=got["trigger_key"], action_key=got["action_key"],
+                            task_id=got["task_id"], task_title=got["task_title"], event=event,
+                            outcome=got["outcome"], reason=got["reason"], depth=0,
+                            actor_id=user_id, is_test=True,
+                            created_at=datetime.now(timezone.utc).replace(tzinfo=None))
+        db.add(rec)
+        db.commit()
+        db.refresh(rec)
+        return {"result": _automation_run_json(db, rec), "undone": True}
 
 
 @app.patch("/api/automations/{automation_id}")
@@ -4909,8 +5611,11 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לשנות אוטומציות")
-        if "is_active" in data:
-            a.is_active = bool(data["is_active"])
+        before = _snapshot_automation(a)
+        if "is_active" in data or "status" in data:
+            _set_automation_status(a, _automation_status_from(data, a.status or "active"))
+        for k, v in _automation_meta(db, a.board_id, data).items():
+            setattr(a, k, v)
         if "config" in data:
             cfg, err = recipes.validate(a.recipe_id, data.get("config") or {})
             if err:
@@ -4919,6 +5624,7 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
             a.config = cfg
         a.updated_by = user_id
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        _record_automation_version(db, b, a, user_id, before=before)
         db.commit()
         db.refresh(a)
         return _automation_json(db, b, a)
@@ -4933,9 +5639,108 @@ def delete_automation(automation_id: int, user_id: int = Depends(current_user_id
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול למחוק אוטומציות")
+        # the rule goes; what it did stays. Each history row already carries the
+        # sentence and the item title, so it still reads without the rule behind it
+        (db.query(AutomationRun).filter(AutomationRun.automation_id == a.id)
+           .update({AutomationRun.automation_id: None}, synchronize_session=False))
         db.delete(a)
         db.commit()
         return {"status": "deleted", "id": automation_id}
+
+
+# ── Run history (היסטוריית הפעלות) ───────────────────────────────────
+RUN_OUTCOMES = ("ran", "skipped", "failed")
+
+
+def _automation_run_json(db, row):
+    uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+    return {
+        "id": row.id, "automation_id": row.automation_id, "recipe_id": row.recipe_id,
+        "sentence": row.sentence or "",
+        "trigger": row.trigger_key or "", "action": row.action_key or "",
+        "task_id": row.task_id, "task_title": row.task_title or "",
+        "outcome": row.outcome or "ran", "reason": row.reason or "",
+        "depth": row.depth or 0, "event_type": (row.event or {}).get("type") or "",
+        "actor_id": row.actor_id, "actor_name": uname(row.actor_id),
+        "is_retry": row.retry_of is not None, "retry_of": row.retry_of,
+        "retried_at": row.retried_at.isoformat() if row.retried_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        # a rule that is gone, or an item that is gone, cannot be run again
+        "is_test": bool(row.is_test),
+        # a test was rolled back on purpose; "try again" would do it for real
+        "can_retry": (row.outcome in ("skipped", "failed")) and row.automation_id is not None
+                     and not row.is_test,
+    }
+
+
+@app.get("/api/boards/{board_id}/automations/runs")
+def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 0,
+                         limit: int = 150, user_id: int = Depends(current_user_id)):
+    """Every attempt the board's rules made, newest first.
+
+    Filterable by outcome, because the three questions are different ones: what
+    ran, what was skipped and why, and what failed. `counts` is always over the
+    whole board, so switching filters never changes the totals above them.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if user_id is not None and _board_role(db, board_id, user_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        q = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
+        if outcome in RUN_OUTCOMES:
+            q = q.filter(AutomationRun.outcome == outcome)
+        elif outcome == "retried":
+            q = q.filter(AutomationRun.retry_of != None)            # noqa: E711
+        if automation_id:
+            q = q.filter(AutomationRun.automation_id == automation_id)
+        rows = q.order_by(AutomationRun.id.desc()).limit(max(1, min(limit, 500))).all()
+        base = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
+        counts = {k: base.filter(AutomationRun.outcome == k).count() for k in RUN_OUTCOMES}
+        counts["retried"] = base.filter(AutomationRun.retry_of != None).count()   # noqa: E711
+        counts["total"] = sum(counts[k] for k in RUN_OUTCOMES)
+        return {"runs": [_automation_run_json(db, r) for r in rows], "counts": counts,
+                "can_manage": _can_manage_automations(db, b, user_id)}
+
+
+@app.post("/api/automation-runs/{run_id}/retry")
+def retry_automation_run(run_id: int, user_id: int = Depends(current_user_id)):
+    """Run the rule again against the same item, replaying the same trigger.
+
+    Only a run that did not do anything — skipped or failed — can be retried;
+    replaying a run that already worked would apply its action a second time.
+    The retry is its own history row pointing back at the one it replayed, so
+    the record shows both attempts rather than overwriting the first.
+    """
+    with Session(engine) as db:
+        row = db.query(AutomationRun).filter(AutomationRun.id == run_id).first()
+        if not row:
+            raise HTTPException(404, "run not found")
+        b = db.query(Board).filter(Board.id == row.board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול להפעיל אוטומציה שוב")
+        if row.is_test:
+            raise HTTPException(400, "בדיקה אינה מופעלת שוב — הריצו בדיקה חדשה")
+        if row.outcome not in ("skipped", "failed"):
+            raise HTTPException(400, "אפשר להפעיל שוב רק הפעלה שדילגה או נכשלה")
+        a = (db.query(Automation).filter(Automation.id == row.automation_id).first()
+             if row.automation_id else None)
+        if not a:
+            raise HTTPException(400, "האוטומציה נמחקה — אין מה להפעיל שוב")
+        task = db.query(Task).filter(Task.id == row.task_id).first()
+        if not task or task.deleted_at:
+            raise HTTPException(400, "הפריט אינו קיים עוד")
+        event = row.event or {"type": (recipes.recipe(a.recipe_id) or {}).get("trigger")}
+        made = _fire_rule(db, a, task, event, user_id, 0, retry_of=row.id)
+        row.retried_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+        if not made:
+            raise HTTPException(400, "ההפעלה החוזרת לא נרשמה")
+        db.refresh(made)
+        return {"run": _automation_run_json(db, made)}
 
 
 @app.get("/api/tasks/{task_id}")
@@ -5263,10 +6068,17 @@ def _safe_media_type(declared: str) -> tuple[str, bool]:
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...), actor_id: int = Depends(current_user_id)):
+def upload_file(file: UploadFile = File(...), actor_id: int = Depends(current_user_id)):
     """Store the upload in the DB so it persists and is shared across serverless
-    instances (Vercel's local filesystem is ephemeral and per-instance)."""
-    content = await file.read()
+    instances (Vercel's local filesystem is ephemeral and per-instance).
+
+    Deliberately a plain `def`: writing several megabytes into the database is a
+    blocking call, and on the event loop it holds up every other request for as
+    long as the write takes — against a remote database, that is the whole app
+    pausing while one person attaches a photo. FastAPI runs a sync endpoint in a
+    worker thread, where the wait costs only the person waiting.
+    """
+    content = file.file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "הקובץ גדול מדי (מקסימום 10MB)")
     media_type, _ = _safe_media_type(file.content_type)
@@ -5379,12 +6191,17 @@ def _serialize_comment(c, db):
     if seen_ids:
         for su in db.query(User).filter(User.id.in_(seen_ids)).all():
             seen_users.append({"id": su.id, "name": su.name, "avatar_url": su.avatar_url})
+    org = c.origin if isinstance(c.origin, dict) else None
     return {
         "id": c.id, "task_id": c.task_id, "parent_id": c.parent_id,
         "content": c.content, "attachments": c.attachments or [],
         "mentions": c.mentions or [], "likes": c.likes or [],
         "seen_users": seen_users,
-        "user_id": c.user_id, "user_name": u.name if u else "—",
+        # an imported message whose author has no account here is still theirs:
+        # the name comes off the import, and the message says where it came from
+        "origin": org,
+        "user_id": c.user_id,
+        "user_name": u.name if u else ((org or {}).get("author") or "—"),
         # the author's photo travels with the comment. avatarInner resolves by id
         # against the loaded users first, so this is the fallback for an author
         # who is not in that list — without it they could only ever be initials.

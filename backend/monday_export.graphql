@@ -8,6 +8,12 @@
 # Excel export of the same board — an xlsx has lost the types by the time it is
 # written, and the import would be guessing at every column.
 #
+# `updates` is the item's conversation, and it is asked for on the items and on
+# their sub-items alike: the messages are most of what happened on a board, and
+# a migration that brings the cells without them arrives with the decisions and
+# none of the reasoning behind them. `text_body` is asked for beside `body`
+# because the body is HTML — the plain text is what a reader should get.
+#
 # The two queries are kept separate and complete rather than sharing a fragment,
 # because a document holding two operations needs an operationName to say which
 # one to run, and Postman's GraphQL body does not send one.
@@ -48,6 +54,12 @@ query ($boardId: [ID!]) {
           id
           name
           column_values { id type column { title } text value }
+          updates {
+            id body text_body created_at
+            creator { name email }
+            replies { id body text_body created_at creator { name email } }
+            assets { id name public_url }
+          }
         }
         updates {
           id body text_body created_at
@@ -82,6 +94,12 @@ query ($cursor: String!) {
         id
         name
         column_values { id type column { title } text value }
+        updates {
+          id body text_body created_at
+          creator { name email }
+          replies { id body text_body created_at creator { name email } }
+          assets { id name public_url }
+        }
       }
       updates {
         id body text_body created_at

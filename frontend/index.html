@@ -431,6 +431,89 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-recipe .ph{font-weight:700;color:var(--primary);background:var(--primary-soft);border:1px dashed var(--primary);border-radius:12px;padding:1px 8px;margin:0 2px;white-space:nowrap}
 .au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
 .au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
+/* ── the automations page: three tabs (יצירה · ניהול · היסטוריית הפעלות) ── */
+.au-count{background:rgba(255,255,255,.25);border-radius:9px;padding:0 6px;font-size:11px;font-weight:700}
+.lg-tab:not(.on) .au-count{background:var(--border);color:var(--text-muted)}
+.au-seg{display:inline-flex;gap:0;border:1px solid var(--border);border-radius:9px;overflow:hidden;margin-bottom:4px}
+.au-seg-b{border:none;background:var(--surface);color:var(--text-muted);font:inherit;font-size:12.5px;font-weight:600;padding:7px 14px;cursor:pointer;display:flex;align-items:center;gap:7px}
+.au-seg-b+.au-seg-b{border-inline-start:1px solid var(--border)}
+.au-seg-b:hover{background:var(--row-hover)}
+.au-seg-b.on{background:var(--primary);color:#fff}
+.au-step{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--text);margin:16px 0 9px}
+.au-step small{font-weight:500;color:var(--text-light);font-size:11.5px}
+.au-step-n{width:19px;height:19px;border-radius:50%;background:var(--primary);color:#fff;font-size:11px;display:grid;place-items:center}
+.au-picks{display:flex;flex-wrap:wrap;gap:7px}
+.au-pick{background:var(--bg);border:1px solid var(--border);border-radius:18px;padding:7px 14px;font:inherit;font-size:12.5px;color:var(--text);cursor:pointer;transition:.12s}
+.au-pick:hover{border-color:var(--primary);color:var(--primary)}
+.au-pick.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.au-chips{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-bottom:11px}
+.au-chip{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:5px 12px;font:inherit;font-size:12px;color:var(--text-muted);cursor:pointer}
+.au-chip b{font-weight:700;color:var(--text)}
+.au-chip:hover{background:var(--row-hover)}
+.au-chip.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.au-chip.on b{color:#fff}
+.au-lnk{background:none;border:none;padding:0;font:inherit;font-size:11px;color:var(--primary);cursor:pointer;text-decoration:underline}
+.au-chips select{font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);max-width:260px}
+/* one attempt: what came of it, on what, and why */
+.ah-row{display:flex;align-items:flex-start;gap:11px;padding:11px 2px;border-bottom:1px solid var(--border)}
+.ah-row:last-child{border-bottom:none}
+.ah-out{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;border-radius:14px;padding:3px 10px;white-space:nowrap;color:#fff;background:var(--dark-grey)}
+.ah-out.ok{background:var(--green)} .ah-out.skip{background:var(--orange)} .ah-out.fail{background:var(--red)}
+.ah-main{flex:1;min-width:0}
+.ah-l1{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.ah-tag{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:1px 7px;display:inline-flex;align-items:center;gap:4px}
+.ah-sent{font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-top:3px}
+.ah-sent b{font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:4px;padding:0 5px}
+.ah-why{font-size:11.5px;color:var(--text-light);margin-top:3px}
+.ah-when{flex:0 0 auto;font-size:11px;color:var(--text-light);white-space:nowrap;padding-top:4px}
+.ah-retry{flex:0 0 auto;font-size:11.5px;padding:5px 10px}
+/* ── ניהול: the tiles, the filter bar and the two row densities ── */
+.am-tiles{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 12px}
+.am-tile{flex:1 1 108px;min-width:98px;text-align:start;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:9px 12px;cursor:pointer;font:inherit;transition:.12s}
+.am-tile:hover{border-color:var(--primary)}
+.am-tile.on{border-color:var(--primary);background:var(--primary-soft)}
+.am-tile b{display:block;font-size:19px;line-height:1.2;color:var(--text)}
+.am-tile span{font-size:11px;color:var(--text-muted)}
+.am-tile.warn b{color:var(--red)}
+.am-bar{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-bottom:10px}
+.am-bar select,.am-in{font:inherit;font-size:12px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text)}
+.am-in{min-width:190px}
+.am-in:focus,.am-bar select:focus{outline:none;border-color:var(--primary)}
+.am-spacer{flex:1 1 auto}
+.am-row{display:flex;align-items:flex-start;gap:11px;padding:13px 2px;border-bottom:1px solid var(--border)}
+.am-row:last-child{border-bottom:none}
+.am-row.dim .am-main{opacity:.6}
+.am-main{flex:1;min-width:0}
+.am-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.am-name{font-size:13.5px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.am-st{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;border-radius:12px;padding:2px 9px;white-space:nowrap;color:#fff;background:var(--dark-grey)}
+.am-st.on{background:var(--green)} .am-st.off{background:var(--dark-grey)}
+.am-st.err{background:var(--red)} .am-st.draft{background:var(--blue)} .am-st.del{background:var(--orange)}
+.am-imp{font-size:10.5px;font-weight:700;border-radius:10px;padding:1px 8px;border:1px solid currentColor;white-space:nowrap}
+.am-imp.crit{color:var(--red)} .am-imp.high{color:var(--orange)}
+.am-imp.norm{color:var(--text-light)} .am-imp.low{color:var(--text-light)}
+.am-ord{font-size:10.5px;color:var(--text-light);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:1px 7px;white-space:nowrap}
+.am-desc{font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.6}
+.am-own,.am-metrics{font-size:11px;color:var(--text-light);margin-top:5px;display:flex;flex-wrap:wrap;gap:4px 12px}
+.am-metrics b{color:var(--text-muted);font-weight:700}
+.am-metrics .bad{color:var(--red)}
+.am-acts{flex:0 0 auto;display:flex;align-items:center;gap:4px}
+.am-ico{width:28px;height:28px;border-radius:7px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:grid;place-items:center;font-size:12px}
+.am-ico:hover{background:var(--row-hover);border-color:var(--border);color:var(--primary)}
+.am-ico.danger:hover{color:var(--red)}
+/* compact: one line per rule, scannable rather than described */
+.am-row.compact{align-items:center;padding:8px 2px;gap:9px}
+.am-row.compact .am-name{font-size:12.5px;font-weight:600}
+.am-row.compact .am-flow{font-size:11px;color:var(--text-light);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.am-row.compact .am-num{font-size:11px;color:var(--text-muted);white-space:nowrap}
+/* the editor for everything the sentence does not say */
+.am-ed{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg)}
+.am-ed-g{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:11px}
+.am-f{display:flex;flex-direction:column;gap:4px;flex:1 1 190px}
+.am-f>label{font-size:11px;font-weight:700;color:var(--text-muted)}
+.am-f input,.am-f select,.am-f textarea{font:inherit;font-size:12.5px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text)}
+.am-f textarea{min-height:62px;resize:vertical}
+.am-f small{font-size:10.5px;color:var(--text-light)}
 .notif-badge{position:absolute;top:-3px;inset-inline-end:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:var(--red,#e2445c);color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;box-sizing:border-box;line-height:1}
 .notif-pop{min-width:330px;max-width:360px;padding:0;overflow:hidden}
 .notif-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px}
@@ -1812,6 +1895,11 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   #modal.modal-80 .mbody{padding:12px}
   #modal .logs-list{padding:0}
   .lg-tabs{flex-wrap:wrap}
+  .ah-row{flex-wrap:wrap}
+  .am-row{flex-wrap:wrap}
+  .am-in{min-width:0;flex:1 1 100%}
+  .am-tile{flex:1 1 44%}
+  .ah-when{padding-top:0}
   /* "נצפה לאחרונה" is already one line per person — it only wants the width */
   .sn-row{gap:9px;padding:10px 4px}
 }
@@ -2739,7 +2827,8 @@ function renderBoardHead(){
     `<span class="bt-icon${canEdit?' editable':''}" ${canEdit?'onclick="editBoardIcon(event)" title="שנה אייקון"':''}>${st.board.icon||'📋'}</span> `+
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
     ownerChipHTML()+
-    `<button class="bh-log" id="bh-log" onclick="BoardLog.open()" title="לוג פעילות הלוח" aria-label="לוג פעילות הלוח"><i class="fa-solid fa-bolt"></i></button>`+
+    `<button class="bh-log" id="bh-auto" onclick="Automations.open()" title="אוטומציות" aria-label="אוטומציות"><i class="fa-solid fa-bolt"></i></button>`+
+    `<button class="bh-log" id="bh-log" onclick="BoardLog.open()" title="לוג פעילות הלוח" aria-label="לוג פעילות הלוח"><i class="fa-solid fa-clock-rotate-left"></i></button>`+
     `<button class="bh-menu" id="bh-menu" onclick="boardMenu(event)" title="תפריט הלוח" aria-label="תפריט הלוח"><i class="fa-solid fa-ellipsis"></i></button>`;
 }
 /* ===== board activity log =====
@@ -3254,7 +3343,12 @@ async function newBoardQuick(){
 
    So the wait is stated while it happens, and a click during it lands on the
    cover instead of on a board that is not there yet. */
-function importBusy(text){
+/* The "we are working, the app has not died" cover.
+   Shown the moment a file is picked, before anything is read or sent: between
+   clicking Open and the first thing changing on screen there is real work —
+   the browser materialising the file, the upload, the server reading it — and
+   with nothing painted in that gap it reads as a freeze rather than as a wait. */
+function busyCover(text){
   let el=document.getElementById('imp-busy');
   if(!el){
     el=document.createElement('div'); el.id='imp-busy'; el.className='imp-busy';
@@ -3264,7 +3358,9 @@ function importBusy(text){
   document.getElementById('imp-busy-t').textContent=text;
   return el;
 }
-function importBusyDone(){ const el=document.getElementById('imp-busy'); if(el)el.remove(); }
+function busyCoverDone(){ const el=document.getElementById('imp-busy'); if(el)el.remove(); }
+// the import's own names, kept — it is the loudest caller and reads better this way
+const importBusy=busyCover, importBusyDone=busyCoverDone;
 /* Two frames: one for the browser to take the change, one for it to paint it.
    Added and then blocked in the same frame, the cover is never drawn — and the
    wait goes on looking exactly like the freeze it was meant to explain. */
@@ -3299,7 +3395,8 @@ async function importBoardFile(){
       // the cover comes off before the report, or the report opens behind it
       importBusyDone();
       if(b.report) importReport(b);
-      else toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות');
+      else toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות'
+                 +(b.messages?', '+b.messages+' הודעות':''));
     }catch(e){ toast((e&&e.message)||'שגיאה בייבוא הקובץ'); }
     finally{ importBusyDone(); }   // a failed import must not leave the page covered
   };
@@ -3344,10 +3441,21 @@ function importReport(b){
       <i class="fa-solid fa-triangle-exclamation"></i> הקובץ אינו הלוח המלא</div>
       ${cut.map(t=>`<div class="imp-why">${esc(t)}</div>`).join('')}
     </div>`:'';
+  const talkCut=[];
+  if(r.messages_dropped) talkCut.push(`${r.messages_dropped} הודעות מעבר לתקרת הייבוא לא יובאו.`);
+  if(r.updates_dropped) talkCut.push(`${r.updates_dropped} הודעות מעבר לתקרה לפריט בודד לא יובאו.`);
+  const noItem=r.conversation_items_unmatched||[];
+  const talkHTML=(talkCut.length||noItem.length)?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-comments"></i> השיחות שבקובץ</div>
+      ${talkCut.map(t=>`<div class="imp-why">${esc(t)}</div>`).join('')}
+      ${noItem.length?`<div class="imp-why">הודעות ששייכות לפריטים שאינם בקובץ הזה לא צורפו לאף פריט:</div>
+        <div class="imp-cols">${noItem.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
+    </div>`:'';
   const peopleHTML=missing.length?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-user-slash"></i> ${missing.length} אנשים ללא חשבון במערכת</div>
-      <div class="imp-why">השמות האלה מופיעים בקובץ אך אין להם משתמש כאן, ולכן עמודות האחראים שלהם נשארו ריקות.</div>
+      <div class="imp-why">השמות האלה מופיעים בקובץ אך אין להם משתמש כאן. עמודות האחראים שלהם נשארו ריקות, והודעות שהם כתבו נשמרו על שמם ומסומנות כמיובאות.</div>
       <div class="imp-cols">${missing.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
     </div>`:'';
   showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(b.name||'הלוח יובא')}</h2>
@@ -3355,10 +3463,11 @@ function importReport(b){
       <div class="imp-stats">
         ${stat(b.items||0,'פריטים')}
         ${b.subitems?stat(b.subitems,'פריטי־תת'):''}
-        ${stat(`${r.columns_imported||0}/${r.columns_found||0}`,'עמודות')}
+        ${(r.columns_found||r.columns_imported)?stat(`${r.columns_imported||0}/${r.columns_found||0}`,'עמודות'):''}
         ${r.groups?stat(r.groups,'קבוצות'):''}
+        ${b.messages?stat(b.messages,'הודעות בשיחות'):''}
       </div>
-      ${cutHTML}${mapHTML}${skipHTML}${peopleHTML}
+      ${cutHTML}${mapHTML}${skipHTML}${talkHTML}${peopleHTML}
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>`);
 }
@@ -3544,7 +3653,9 @@ const Profile = {
   },
   async uploadAvatar(userId,file){
     if(file.size>15*1024*1024){ toast('התמונה גדולה מדי (עד 15MB)'); return; }
-    toast('מעלה תמונה…');
+    // a phone photo is a decode, a resize and an upload — seconds, under a cover
+    busyCover('מעלה את התמונה…');
+    await paintFirst();
     try{
       // Normalise before upload — a center-cropped square at a fixed high
       // resolution. This is what keeps avatars crisp: one controlled, high
@@ -3563,6 +3674,7 @@ const Profile = {
       // sidebar, open modals and the chat panel all redraw from st.users
       this.open(userId); renderMe(); renderSidebar(); renderView(); Chat.refreshAvatars();
     }catch(e){ toast(String(e.message||'').includes('403')?'אפשר להחליף רק את התמונה שלך':'שגיאה בהעלאת תמונה'); }
+    finally{ busyCoverDone(); }
   },
   /* Remove the picture — the person falls back to the default representation,
      the coloured initials circle. Applied everywhere at once, like a change. */
@@ -4228,16 +4340,35 @@ const Live = {
   },
 };
 
-/* ===== automations (אוטומציות) — Monday-style if-then rules per board ===== */
+/* ===== automations (אוטומציות) — Monday-style if-then rules per board =====
+   One page behind the board's ⚡ button, in three tabs, because three different
+   questions get asked about automations and each wants a different screen:
+     יצירה             — what can I build (a template, or one from scratch)
+     ניהול             — what is built, and is it on
+     היסטוריית הפעלות  — what actually happened, including what did not
+   The rule a person ends up with is the same either way they build it: picking
+   a trigger and an action from scratch resolves to the same recipe a template
+   would have given, so there is one stored shape and one validation. */
 const Automations = {
-  data:{automations:[],can_manage:false}, recipes:[], members:[], building:null,
+  data:{automations:[],can_manage:false}, recipes:[], blueprint:[], members:[],
+  trigLabels:{}, actLabels:{},
+  building:null, editing:null, viewing:null, testing:null, tab:'manage', mode:'templates', scratch:{trigger:''},
+  f:{q:'',status:'',owner:0,creator:0,importance:'',trigger:'',action:'',last:''},
+  sort:'order', view:'expanded',
+  runs:[], runCounts:{}, runOutcome:'', runAuto:0, runsLoading:false, runsLoaded:false,
 
   async open(){
     if(!st.board){ toast('פתח לוח תחילה'); return; }
     showModal('<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
-    document.getElementById('modal').classList.add('modal-wide');
+    document.getElementById('modal').classList.add('modal-80');
+    this.building=null; this.mode='templates'; this.scratch={trigger:''};
+    this.editing=this.viewing=this.testing=null; this.sort='order';
+    this.f={q:'',status:'',owner:0,creator:0,importance:'',trigger:'',action:'',last:''};
+    try{ this.view=localStorage.getItem('cc_au_view')||'expanded'; }catch(e){ this.view='expanded'; }
+    this.runOutcome=''; this.runAuto=0; this.runsLoaded=false;
     await this.load();
-    this.building=null;
+    // a board with no rules has nothing to manage, so it opens where the work is
+    this.tab=(this.data.automations||[]).length?'manage':'create';
     this.render();
   },
 
@@ -4246,47 +4377,589 @@ const Automations = {
     try{ this.data=await api('/api/boards/'+bid+'/automations'+q); }
     catch(e){ this.data={automations:[],can_manage:false}; }
     if(!this.recipes.length){
-      try{ this.recipes=(await api('/api/automations/recipes'+q)).recipes||[]; }catch(e){ this.recipes=[]; }
+      try{
+        const d=await api('/api/automations/recipes'+q);
+        this.recipes=d.recipes||[]; this.blueprint=d.blueprint||[];
+        this.trigLabels=d.triggers||{}; this.actLabels=d.actions||{};
+      }catch(e){ this.recipes=[]; this.blueprint=[]; }
     }
     // the person picker offers the board's own members, matching who can be assigned
     try{ this.members=(await api('/api/boards/'+bid+'/members')).members||[]; }catch(e){ this.members=[]; }
   },
 
+  setTab(t){
+    this.tab=t; this.building=null; this.editing=this.viewing=this.testing=null;
+    this.render();
+    if(t==='history'&&!this.runsLoaded) this.loadRuns();
+  },
+
   render(){
     const m=document.getElementById('modal'); if(!m||!m.classList.contains('open'))return;
-    const can=this.data.can_manage;
+    const body=this.tab==='create'?this.createHTML():this.tab==='history'?this.historyHTML():this.manageHTML();
     m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+
       `<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות — ${esc(st.board.name)}</h2>
-      <div class="mbody">
-        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> כלל "אם–אז" שרץ על הלוח הזה בלבד.${can?'':' <b>רק מנהל הלוח יכול להגדיר או לשנות.</b>'}</div>
-        ${this.building?this.buildHTML():`
-          <div id="au-list">${this.listHTML()}</div>
-          ${can?`<div style="margin-top:14px"><button class="btn btn-primary" onclick="Automations.startNew()"><i class="fa-solid fa-plus"></i> אוטומציה חדשה</button></div>`:''}
-        `}
+      <div class="mbody">${this.tabsHTML()}${body}</div>`;
+  },
+
+  tabsHTML(){
+    const n=(this.data.automations||[]).length, h=this.runCounts.total||0;
+    const b=(id,he,ic,badge)=>`<button class="lg-tab ${this.tab===id?'on':''}" onclick="Automations.setTab('${id}')">
+        <i class="fa-solid ${ic}"></i> ${he}${badge?` <span class="au-count">${badge}</span>`:''}</button>`;
+    return `<div class="lg-tabs">${b('create','יצירה','fa-plus')}${b('manage','ניהול','fa-sliders',n)}${
+      b('history','היסטוריית הפעלות','fa-clock-rotate-left',h)}</div>`;
+  },
+
+  /* ---- יצירה ---- a template, or the same thing assembled by hand ---- */
+  createHTML(){
+    if(!this.data.can_manage)
+      return '<div class="empty" style="padding:34px"><i class="fa-solid fa-lock"></i><div>רק מנהל הלוח יכול ליצור אוטומציות</div></div>';
+    if(this.building) return this.buildHTML();
+    const seg=(id,he,ic)=>`<button class="au-seg-b ${this.mode===id?'on':''}" onclick="Automations.setMode('${id}')"><i class="fa-solid ${ic}"></i> ${he}</button>`;
+    return `<div class="au-seg">${seg('templates','תבניות','fa-wand-magic-sparkles')}${seg('scratch','אוטומציה מאפס','fa-pen-ruler')}</div>`+
+      (this.mode==='templates'?this.catalogHTML():this.scratchHTML());
+  },
+  setMode(m){ this.mode=m; this.scratch={trigger:''}; this.render(); },
+
+  catalogHTML(){
+    const byTrig={};
+    this.recipes.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
+    const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc((this.trigLabels||{})[t]||t)}</div>`+
+      byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
+        esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
+          const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
+      }</button>`).join('')).join('');
+    return `<div style="font-size:12.5px;color:var(--text-muted);margin:12px 0 2px">בחר תבנית מוכנה והשלם את השדות:</div>${blocks}`;
+  },
+
+  /* Building from scratch is the catalog read the other way round: what starts
+     the rule, then what it does. The pair lands on a recipe, so from here on it
+     is the same fill-in-the-blanks screen a template opens. */
+  scratchHTML(){
+    const t=this.scratch.trigger, cur=(this.blueprint||[]).find(x=>x.trigger===t);
+    const step1=(this.blueprint||[]).map(x=>
+      `<button class="au-pick ${t===x.trigger?'on':''}" onclick="Automations.setTrigger('${x.trigger}')">${esc(x.label)}</button>`).join('')
+      ||'<div class="au-hint">קטלוג האוטומציות לא נטען</div>';
+    const step2=cur
+      ? cur.actions.map(a=>`<button class="au-pick" onclick="Automations.pick('${a.recipe_id}')">${esc(a.label)}</button>`).join('')
+      : '<div class="au-hint"><i class="fa-solid fa-arrow-up"></i> בחר קודם מה יפעיל את האוטומציה</div>';
+    return `<div class="au-step"><span class="au-step-n">1</span> מה יפעיל את האוטומציה? <small>הטריגר</small></div>
+      <div class="au-picks">${step1}</div>
+      <div class="au-step"><span class="au-step-n">2</span> ומה יקרה אז? <small>הפעולה</small></div>
+      <div class="au-picks">${step2}</div>`;
+  },
+  setTrigger(t){ this.scratch={trigger:t}; this.render(); },
+
+  /* ---- ניהול ---- every rule on the board, in the shape the question needs ----
+     A rule is an operational object, not just a sentence: someone owns it, it
+     matters more or less than its neighbour, and it can be a draft nobody has
+     switched on. The tiles answer "is anything wrong?", the bar narrows the list
+     down, and the two densities answer two different questions — מורחבת to read
+     what a rule is for, קומפקטית to scan thirty of them. */
+  ST:{draft:{he:'טיוטה',cls:'draft',ic:'fa-pencil'},
+      active:{he:'פעילה',cls:'on',ic:'fa-circle-play'},
+      paused:{he:'מושהית',cls:'off',ic:'fa-circle-pause'},
+      paused_error:{he:'מושהית עקב שגיאה',cls:'err',ic:'fa-triangle-exclamation'},
+      deleting:{he:'בתהליך מחיקה',cls:'del',ic:'fa-trash-can'}},
+  IMP:{critical:{he:'קריטית',cls:'crit'},high:{he:'גבוהה',cls:'high'},
+       normal:{he:'רגילה',cls:'norm'},low:{he:'נמוכה',cls:'low'}},
+  OUT:{ran:'הצליחה',skipped:'דילגה',failed:'נכשלה'},
+  SORTS:{order:'סדר ביצוע (קדימות בפועל)',importance:'חשיבות (תצוגה בלבד)',updated:'עדכון אחרון',
+         last_run:'הפעלה אחרונה',success:'שיעור הצלחה',name:'שם'},
+
+  manageHTML(){
+    if(this.editing) return this.editHTML();
+    if(this.viewing) return this.versionsHTML();
+    if(this.testing) return this.testHTML();
+    const rows=this.data.automations||[], can=this.data.can_manage, c=this.data.counts||{};
+    if(!rows.length)
+      return `<div class="empty" style="padding:30px"><i class="fa-solid fa-bolt"></i><div>אין אוטומציות בלוח הזה</div></div>`+
+        (can?`<div style="text-align:center"><button class="btn btn-primary" onclick="Automations.setTab('create')"><i class="fa-solid fa-plus"></i> בנה את הראשונה</button></div>`:'');
+    return this.tilesHTML(c)+this.barHTML(rows)+
+      (can?'':'<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i> <b>רק מנהל הלוח יכול להגדיר או לשנות.</b></div>')+
+      `<div id="au-list">${this.listBody()}</div>`;
+  },
+
+  tilesHTML(c){
+    const t=(v,he,n,cls)=>`<button class="am-tile ${this.f.status===v?'on':''} ${cls||''}" onclick="Automations.tile('${v}')"><b>${n||0}</b><span>${he}</span></button>`;
+    return `<div class="am-tiles">${t('','סה״כ',c.total)}${t('active','פעילות',c.active)}${
+      t('paused','מושהות',c.paused)}${t('draft','טיוטות',c.draft)}${
+      t('attention','דורשות טיפול',c.needs_attention,'warn')}</div>`;
+  },
+
+  barHTML(rows){
+    const people=this.data.people||[];
+    const sel=(key,label,opts,cur)=>`<select onchange="Automations.setF('${key}',this.value)">
+        <option value="">${esc(label)}</option>
+        ${opts.map(o=>`<option value="${esc(o.v)}" ${String(cur||'')===String(o.v)?'selected':''}>${esc(o.he)}</option>`).join('')}</select>`;
+    const uniq=(k,labels)=>[...new Set(rows.map(a=>a[k]).filter(Boolean))]
+      .map(v=>({v:v,he:(labels||{})[v]||v}));
+    const keys=o=>Object.keys(o).map(k=>({v:k,he:o[k].he}));
+    const seg=(id,he,ic)=>`<button class="au-seg-b ${this.view===id?'on':''}" onclick="Automations.setView('${id}')" title="${he}"><i class="fa-solid ${ic}"></i> ${he}</button>`;
+    const dirty=this.f.q||this.f.status||this.f.owner||this.f.creator||this.f.importance||
+                this.f.trigger||this.f.action||this.f.last;
+    return `<div class="am-bar">
+      <input class="am-in" id="am-q" placeholder="חיפוש בשם, במשפט ובתיאור" value="${esc(this.f.q)}"
+             oninput="Automations.setQ(this.value)">
+      ${sel('status','כל הסטטוסים',keys(this.ST),this.f.status)}
+      ${sel('owner','כל הבעלים',people.map(p=>({v:p.id,he:p.name})),this.f.owner)}
+      ${sel('creator','כל היוצרים',people.map(p=>({v:p.id,he:p.name})),this.f.creator)}
+      ${sel('importance','כל דרגות החשיבות',keys(this.IMP),this.f.importance)}
+      ${sel('trigger','כל הגורמים המפעילים',uniq('trigger',this.trigLabels),this.f.trigger)}
+      ${sel('action','כל הפעולות',uniq('action',this.actLabels),this.f.action)}
+      ${sel('last','כל תוצאות ההפעלה האחרונה',
+            [{v:'ran',he:'ההפעלה האחרונה הצליחה'},{v:'skipped',he:'ההפעלה האחרונה דילגה'},
+             {v:'failed',he:'ההפעלה האחרונה נכשלה'},{v:'none',he:'טרם הופעלה'}],this.f.last)}
+      <select onchange="Automations.setSort(this.value)">
+        ${Object.keys(this.SORTS).map(k=>`<option value="${k}" ${this.sort===k?'selected':''}>מיון: ${esc(this.SORTS[k])}</option>`).join('')}
+      </select>
+      ${dirty?'<button class="btn btn-ghost" onclick="Automations.clearF()">נקה סינון</button>':''}
+      <span class="am-spacer"></span>
+      <div class="au-seg">${seg('expanded','מורחבת','fa-bars-staggered')}${seg('compact','קומפקטית','fa-list')}</div>
+      ${this.data.can_manage?`<button class="btn btn-primary" onclick="Automations.setTab('create')"><i class="fa-solid fa-plus"></i> אוטומציה חדשה</button>`:''}
+    </div>`;
+  },
+
+  listBody(){
+    const can=this.data.can_manage, shown=this.filtered(this.data.automations||[]);
+    if(!shown.length)
+      return `<div class="empty" style="padding:26px"><div>אין אוטומציות בסינון הזה</div></div>`;
+    return shown.map(a=>this.view==='compact'?this.compactRow(a,can):this.ruleRow(a,can)).join('');
+  },
+  /* Typing repaints the list alone: rebuilding the bar would take the focus out
+     of the box being typed into. */
+  paintList(){
+    const el=document.getElementById('au-list');
+    if(!el){ this.render(); return; }
+    el.innerHTML=this.listBody();
+  },
+
+  filtered(rows){
+    const f=this.f, q=(f.q||'').trim().toLowerCase();
+    const out=rows.filter(a=>{
+      if(f.status==='attention'){ if(!a.needs_attention)return false; }
+      else if(f.status==='paused'){ if(a.status!=='paused'&&a.status!=='paused_error')return false; }
+      else if(f.status&&a.status!==f.status) return false;
+      if(f.owner&&a.owner_id!==+f.owner) return false;
+      if(f.creator&&a.created_by!==+f.creator) return false;
+      if(f.importance&&a.importance!==f.importance) return false;
+      if(f.trigger&&a.trigger!==f.trigger) return false;
+      if(f.action&&a.action!==f.action) return false;
+      if(f.last&&(a.last_outcome||'none')!==f.last) return false;
+      if(q&&![a.display_name,a.name,a.sentence,a.description].join(' ').toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const _t=v=>v?(new Date(String(v).replace(' ','T')).getTime()||0):0;
+    const IMPN={critical:0,high:1,normal:2,low:3};
+    const rate=a=>a.success_rate==null?-1:a.success_rate;
+    const S={order:(a,b)=>(a.run_order-b.run_order)||(a.id-b.id),
+             importance:(a,b)=>(IMPN[a.importance]-IMPN[b.importance])||(a.run_order-b.run_order),
+             updated:(a,b)=>_t(b.updated_at)-_t(a.updated_at),
+             last_run:(a,b)=>_t(b.last_run_at)-_t(a.last_run_at),
+             success:(a,b)=>rate(b)-rate(a),
+             name:(a,b)=>String(a.display_name||'').localeCompare(String(b.display_name||''),'he')};
+    return out.sort(S[this.sort]||S.order);
+  },
+
+  tile(v){ this.f.status=(this.f.status===v?'':v); this.render(); },
+  setF(k,v){ this.f[k]=v; this.render(); },
+  setQ(v){ this.f.q=v; this.paintList(); },
+  clearF(){ this.f={q:'',status:'',owner:0,creator:0,importance:'',trigger:'',action:'',last:''}; this.render(); },
+  setSort(v){ this.sort=v; this.render(); },
+  setView(v){
+    this.view=v;
+    try{ localStorage.setItem('cc_au_view',v); }catch(e){}
+    this.render();
+  },
+
+  /* how well a rule actually works, in the order those questions get asked */
+  metricsHTML(a){
+    const ago=v=>v?BoardLog.ago(v):'—';
+    const rate=a.success_rate==null?'—':a.success_rate+'%';
+    const bad=a.fail_count?'bad':'';
+    return `<div class="am-metrics">
+      <span>עדכון אחרון: <b>${esc(ago(a.updated_at))}</b></span>
+      <span>הפעלה אחרונה: <b>${esc(ago(a.last_run_at))}</b>${
+        a.last_outcome?' · '+esc(this.OUT[a.last_outcome]||a.last_outcome):''}</span>
+      <span>הצלחה אחרונה: <b>${esc(ago(a.last_success_at))}</b></span>
+      <span>שיעור הצלחה: <b>${rate}</b> <small>(${a.run_count||0} מתוך ${(a.run_count||0)+(a.fail_count||0)})</small></span>
+      <span class="${bad}">כשלים: <b>${a.fail_count||0}</b></span>
+      <span>דילוגים: <b>${a.skip_count||0}</b></span>
+      ${(a.run_count||a.fail_count||a.skip_count)?`<button class="au-lnk" onclick="Automations.historyFor(${a.id})">היסטוריית הפעלות</button>`:''}
+    </div>`;
+  },
+
+  headBitsHTML(a){
+    const st=this.ST[a.status]||this.ST.active, imp=this.IMP[a.importance]||this.IMP.normal;
+    return `<span class="am-st ${st.cls}" title="סטטוס האוטומציה"><i class="fa-solid ${st.ic}"></i> ${st.he}</span>
+      <span class="am-imp ${imp.cls}" title="חשיבות: ${imp.he} — למיון ולסינון בלבד, אינה משפיעה על סדר הביצוע">${imp.he}</span>
+      <span class="am-ord" title="סדר ביצוע ${a.run_order||0} — מספר נמוך רץ ראשון כשאותו אירוע מפעיל כמה אוטומציות. זה מה שקובע קדימות בפועל.">סדר ${a.run_order||0}</span>`;
+  },
+
+  /* ---- the actions menu ----
+     Everything that can be done to one rule, in one place, rather than spread
+     between icons that have to be guessed at. The three that take a value —
+     owner, importance, running order — answer inside the same popup instead of
+     opening a screen of their own. */
+  actsHTML(a,can){
+    if(!can) return '';
+    const on=a.status==='active';
+    return `<div class="am-acts">
+      <button class="am-ico" title="${on?'השהה':'הפעל'}" onclick="Automations.toggle(${a.id},${!on})"><i class="fa-solid ${on?'fa-pause':'fa-play'}"></i></button>
+      <button class="am-ico" title="פעולות" onclick="Automations.menu(event,${a.id})"><i class="fa-solid fa-ellipsis"></i></button>
+    </div>`;
+  },
+
+  menu(e,id){
+    e.preventDefault(); e.stopPropagation();
+    this._anchor=e.currentTarget;
+    this.showMenu(id,'main');
+  },
+  showMenu(id,which){
+    const a=(this.data.automations||[]).find(x=>x.id===id);
+    if(!a||!this._anchor)return;
+    openCellPop(this._anchor,`<div class="row-menu" onclick="event.stopPropagation()">${this.menuHTML(a,which)}</div>`,'row-menu-pop');
+  },
+  menuHTML(a,which){
+    const item=(ic,label,act,cls)=>`<button class="rm-item${cls?' '+cls:''}" onclick="${act}"><i class="fa-solid ${ic}"></i> ${label}</button>`;
+    const back=item('fa-arrow-right','חזרה',`Automations.showMenu(${a.id},'main')`);
+    if(which==='owner')
+      return back+'<div class="rm-sep"></div>'+((this.data.people||[]).map(p=>
+        `<button class="rm-item" onclick="Automations.setOwner(${a.id},${p.id})">
+           ${a.owner_id===p.id?'<i class="fa-solid fa-check"></i>':'<i class="fa-solid fa-user"></i>'} ${esc(p.name)}</button>`).join('')
+        ||'<div class="rm-note">אין חברים בלוח</div>');
+    if(which==='importance')
+      return back+'<div class="rm-sep"></div>'+Object.keys(this.IMP).map(k=>
+        `<button class="rm-item" onclick="Automations.setImportance(${a.id},'${k}')">
+           ${a.importance===k?'<i class="fa-solid fa-check"></i>':`<i class="fa-solid fa-flag" style="opacity:.5"></i>`} ${esc(this.IMP[k].he)}</button>`).join('')
+        +'<div class="rm-note">למיון ולסינון בלבד — אינה משפיעה על סדר הביצוע</div>';
+    if(which==='order')
+      return back+`<div class="rm-sep"></div>
+        <div class="rm-note">מספר נמוך רץ ראשון כשאותו אירוע מפעיל כמה אוטומציות. זה השדה שקובע קדימות בפועל.</div>
+        <input id="am-ordin" class="au-in" type="number" min="0" max="9999" value="${a.run_order||0}"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setOrder(${a.id});}">
+        <button class="rm-item" onclick="Automations.setOrder(${a.id})"><i class="fa-solid fa-check"></i> שמור</button>`;
+    const on=a.status==='active';
+    return item('fa-pen','ערוך',`closeCellPops();Automations.edit(${a.id})`)
+      +item('fa-copy','שכפל',`closeCellPops();Automations.duplicate(${a.id})`)
+      +item(on?'fa-pause':'fa-play',on?'השהה':'הפעל',`closeCellPops();Automations.toggle(${a.id},${!on})`)
+      +'<div class="rm-sep"></div>'
+      +item('fa-user-pen','העבר בעלות',`Automations.showMenu(${a.id},'owner')`)
+      +item('fa-flag','שנה חשיבות',`Automations.showMenu(${a.id},'importance')`)
+      +item('fa-arrow-down-1-9','שנה סדר ביצוע',`Automations.showMenu(${a.id},'order')`)
+      +'<div class="rm-sep"></div>'
+      +item('fa-vial','בדיקה על פריט',`closeCellPops();Automations.startTest(${a.id})`)
+      +item('fa-code-branch','צפייה בגרסאות',`closeCellPops();Automations.versions(${a.id})`)
+      +item('fa-clock-rotate-left','לוג הפעלות',`closeCellPops();Automations.historyFor(${a.id})`)
+      +'<div class="rm-sep"></div>'
+      +item('fa-trash','מחק',`closeCellPops();Automations.del(${a.id})`,'danger');
+  },
+
+  async patchRule(id,body,msg){
+    try{
+      await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
+                {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(msg) toast(msg);
+    }catch(e){ toast(e.detail||'לא ניתן לשנות'); return false; }
+    closeCellPops();
+    await this.load(); this.render();
+    return true;
+  },
+  setOwner(id,uid){ this.patchRule(id,{owner_id:uid},'הבעלות הועברה'); },
+  setImportance(id,v){ this.patchRule(id,{importance:v},'החשיבות עודכנה'); },
+  setOrder(id){
+    const el=document.getElementById('am-ordin');
+    this.patchRule(id,{run_order:Math.max(0,+((el&&el.value)||0))},'סדר הביצוע עודכן');
+  },
+
+  async duplicate(id){
+    try{
+      const made=await api('/api/automations/'+id+'/duplicate'+(meId()?'?user_id='+meId():''),
+                           {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+      toast('העותק נשמר כטיוטה — הפעילו אותו כשהוא מוכן');
+      await this.load();
+      this.editing={id:made.id,a:(this.data.automations||[]).find(x=>x.id===made.id)||made};
+      this.render();
+    }catch(e){ toast(e.detail||'לא ניתן לשכפל'); }
+  },
+
+  /* ---- גרסאות ---- what the rule looked like after each change ---- */
+  async versions(id){
+    const a=(this.data.automations||[]).find(x=>x.id===id); if(!a)return;
+    this.viewing={id:id,a:a,rows:null}; this.render();
+    try{ this.viewing.rows=(await api('/api/automations/'+id+'/versions'+(meId()?'?user_id='+meId():''))).versions||[]; }
+    catch(e){ this.viewing.rows=[]; toast('טעינת הגרסאות נכשלה'); }
+    this.render();
+  },
+  closePanel(){ this.viewing=null; this.testing=null; this.render(); },
+
+  versionsHTML(){
+    const v=this.viewing;
+    if(!v.rows) return '<div class="spin"></div>';
+    const rows=v.rows.map(x=>`<div class="am-row">
+        <span class="am-ord" title="מספר גרסה">v${x.version}</span>
+        <div class="am-main">
+          <div class="am-head"><span class="am-name">${esc(x.summary)}</span></div>
+          <div class="au-sent" style="margin-top:4px">${esc(x.sentence).replace(/«([^»]*)»/g,(_,y)=>'<b>'+y+'</b>')}</div>
+          <div class="am-own">${esc(x.changed_by_name||'—')} · ${esc(fdatetime(x.changed_at))}
+            ${(x.snapshot&&x.snapshot.name)?' · שם: '+esc(x.snapshot.name):''}
+            ${(x.snapshot&&x.snapshot.status)?' · סטטוס: '+esc((this.ST[x.snapshot.status]||{}).he||x.snapshot.status):''}
+            ${(x.snapshot&&x.snapshot.importance)?' · חשיבות: '+esc((this.IMP[x.snapshot.importance]||{}).he||x.snapshot.importance):''}
+            ${(x.snapshot&&x.snapshot.run_order!=null)?' · סדר ביצוע: '+esc(x.snapshot.run_order):''}
+          </div>
+        </div>
+      </div>`).join('')||'<div class="empty" style="padding:26px"><div>אין גרסאות</div></div>';
+    return `<div class="au-group-h">גרסאות — ${esc(v.a.display_name)}</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i> כל שינוי בכלל נשמר כגרסה, עם מי שינה ומה השתנה.</div>
+      <div class="logs-list">${rows}</div>
+      <div style="margin-top:12px"><button class="btn btn-ghost" onclick="Automations.closePanel()">חזרה לרשימה</button></div>`;
+  },
+
+  /* ---- בדיקה על פריט ----
+     The action really runs against the item you pick, inside a transaction the
+     server then rolls back. A test that only reasoned about the rule would miss
+     the two things worth testing: a status that no longer exists, and a
+     recipient who has left the board. */
+  async startTest(id){
+    const a=(this.data.automations||[]).find(x=>x.id===id); if(!a)return;
+    this.testing={id:id,a:a,q:'',items:null,result:null,busy:false};
+    this.render();
+    await this.testItems();
+  },
+  async testItems(){
+    const t=this.testing; if(!t)return;
+    try{
+      const d=await api('/api/items/search?limit=30&board_ids='+st.board.id+(t.q?'&q='+encodeURIComponent(t.q):''));
+      t.items=(d.items||[]).map(x=>({id:x.id,title:x.title}));
+    }catch(e){ t.items=[]; }
+    this.render();
+  },
+  testSearch(v){
+    const t=this.testing; if(!t)return;
+    t.q=v;
+    clearTimeout(this._testT);
+    this._testT=setTimeout(()=>this.testItems(),250);
+  },
+  async runTest(taskId){
+    const t=this.testing; if(!t||t.busy)return;
+    t.busy=true; this.render();
+    try{
+      const d=await api('/api/automations/'+t.id+'/test'+(meId()?'?user_id='+meId():''),
+                        {method:'POST',headers:{'Content-Type':'application/json'},
+                         body:JSON.stringify({task_id:taskId})});
+      t.result=d.result||null;
+    }catch(e){ toast(e.detail||'הבדיקה נכשלה'); }
+    t.busy=false;
+    this.runsLoaded=false;          // the test is a line in the history now
+    this.render();
+  },
+
+  testHTML(){
+    const t=this.testing;
+    const O={ran:{he:'הכלל היה מתבצע',cls:'ok',ic:'fa-circle-check'},
+             skipped:{he:'הכלל לא היה עושה דבר',cls:'skip',ic:'fa-forward'},
+             failed:{he:'הכלל נכשל',cls:'fail',ic:'fa-triangle-exclamation'}};
+    const r=t.result, o=r?(O[r.outcome]||O.ran):null;
+    const items=t.items===null?'<div class="spin"></div>'
+      :(t.items.length?t.items.map(x=>`<button class="rm-item" style="width:100%" onclick="Automations.runTest(${x.id})">
+            <i class="fa-solid fa-vial" style="color:var(--primary)"></i> ${esc(x.title)}</button>`).join('')
+        :'<div class="rm-note">אין פריטים תואמים בלוח</div>');
+    return `<div class="au-group-h">בדיקה על פריט — ${esc(t.a.display_name)}</div>
+      <div class="am-ed">
+        <div class="au-sent" style="margin-bottom:10px">${esc(t.a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>')}</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px"><i class="fa-solid fa-circle-info"></i>
+          הפעולה תרוץ באמת על הפריט שתבחרו ומיד תבוטל — הפריט, ההתראות והקישורים יישארו כפי שהם.</div>
+        ${r?`<div class="ah-row" style="border:none;padding:0 0 12px">
+              <span class="ah-out ${o.cls}"><i class="fa-solid ${o.ic}"></i> ${o.he}</span>
+              <div class="ah-main"><div class="am-name">${esc(r.task_title)}</div>
+                ${r.reason?`<div class="ah-why"><i class="fa-solid fa-circle-info"></i> ${esc(r.reason)}</div>`:
+                           '<div class="ah-why">הפעולה הושלמה ובוטלה</div>'}</div>
+            </div>`:''}
+        ${t.busy?'<div class="spin"></div>':`
+          <div class="am-f"><label for="am-tq">${r?'בדיקה על פריט נוסף':'בחרו פריט לבדיקה'}</label>
+            <input id="am-tq" class="am-in" placeholder="חיפוש פריט" value="${esc(t.q)}" oninput="Automations.testSearch(this.value)"></div>
+          <div class="logs-list" style="margin-top:8px;max-height:230px;overflow:auto">${items}</div>`}
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="Automations.closePanel()">חזרה לרשימה</button>
+          ${r?`<button class="btn btn-ghost" onclick="Automations.historyFor(${t.id})">צפייה בלוג ההפעלות</button>`:''}
+        </div>
       </div>`;
   },
 
-  listHTML(){
-    const rows=this.data.automations||[], can=this.data.can_manage;
-    if(!rows.length) return '<div class="empty" style="padding:26px 0"><i class="fa-solid fa-bolt"></i><div>אין אוטומציות בלוח הזה</div></div>';
-    return rows.map(a=>{
-      const on=a.is_active;
-      // «value» markers come from the server — render them as highlighted chips
-      const sent=esc(a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>');
-      const created=a.created_by_name?`נוצר ע"י ${esc(a.created_by_name)}`:'';
-      const upd=a.updated_by_name?` · עודכן לאחרונה ע"י ${esc(a.updated_by_name)}`:'';
-      const when=a.updated_at?' · '+new Date(a.updated_at).toLocaleDateString('he-IL'):'';
-      const runs=a.run_count?` · הופעלה ${a.run_count} פעמים`:' · טרם הופעלה';
-      return `<div class="au-row ${on?'':'off'}">
-        <label class="sa-toggle ${on?'on':''}" title="${on?'פעיל':'לא פעיל'}" ${can?`onclick="event.preventDefault();Automations.toggle(${a.id},${!on})"`:'style="opacity:.6;cursor:default"'}>
-          <span class="sa-tk"></span><span class="sa-tl">${on?'פעיל':'כבוי'}</span>
-        </label>
-        <div class="au-sent">${sent}
-          <div class="au-meta">${created}${upd}${when}${runs}</div>
+  ruleRow(a,can){
+    // «value» markers come from the server — render them as highlighted chips
+    const sent=esc(a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>');
+    const owner=a.owner_name?`בעלים: <b>${esc(a.owner_name)}</b>${a.owner_is_creator?' (גם היוצר)':''}`:'';
+    const by=a.created_by_name?` · נוצר ע"י ${esc(a.created_by_name)}`:'';
+    const upd=a.updated_by_name?` · שונה לאחרונה ע"י ${esc(a.updated_by_name)}`:'';
+    return `<div class="am-row ${a.status==='active'?'':'dim'}">
+      <div class="am-main">
+        <div class="am-head">${this.headBitsHTML(a)}<span class="am-name">${esc(a.display_name)}</span></div>
+        <div class="au-sent" style="margin-top:5px">${sent}</div>
+        ${a.description?`<div class="am-desc"><i class="fa-solid fa-quote-right" style="font-size:9px"></i> ${esc(a.description)}</div>`:''}
+        <div class="am-own">${owner}${by}${upd}</div>
+        ${this.metricsHTML(a)}
+      </div>
+      ${this.actsHTML(a,can)}
+    </div>`;
+  },
+
+  compactRow(a,can){
+    const st=this.ST[a.status]||this.ST.active;
+    const flow=`${esc((this.trigLabels||{})[a.trigger]||a.trigger)} → ${esc((this.actLabels||{})[a.action]||a.action)}`;
+    const rate=a.success_rate==null?'טרם הופעלה':a.success_rate+'% הצלחה';
+    return `<div class="am-row compact ${a.status==='active'?'':'dim'}">
+      <span class="am-st ${st.cls}" title="${st.he}"><i class="fa-solid ${st.ic}"></i></span>
+      <span class="am-name" style="flex:0 1 34%" title="${esc(a.display_name)}">${esc(a.display_name)}</span>
+      <span class="am-flow" style="flex:1 1 auto">${flow}</span>
+      <span class="am-num" title="שיעור הצלחה">${esc(rate)}</span>
+      <span class="am-num" title="הפעלה אחרונה">${a.last_run_at?esc(BoardLog.ago(a.last_run_at)):'—'}</span>
+      <span class="am-imp ${(this.IMP[a.importance]||this.IMP.normal).cls}">${(this.IMP[a.importance]||this.IMP.normal).he}</span>
+      ${this.actsHTML(a,can)}
+    </div>`;
+  },
+
+  /* ---- everything the sentence does not say ----
+     The if-then part is built in יצירה. This is the rest of it: who answers for
+     the rule, how much it matters, when it runs relative to its neighbours, and
+     what process it is there to serve. */
+  edit(id){
+    const a=(this.data.automations||[]).find(x=>x.id===id); if(!a)return;
+    this.editing={id:id,a:a}; this.render();
+  },
+  cancelEdit(){ this.editing=null; this.render(); },
+
+  editHTML(){
+    const a=this.editing.a;
+    const people=this.data.people||[];
+    const sent=esc(a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>');
+    const opts=(o,cur)=>Object.keys(o).map(k=>`<option value="${k}" ${cur===k?'selected':''}>${esc(o[k].he)}</option>`).join('');
+    return `<div class="au-group-h">עריכת פרטי האוטומציה</div>
+      <div class="am-ed">
+        <div class="au-sent" style="margin-bottom:12px">${sent}</div>
+        <div class="am-ed-g">
+          <div class="am-f"><label for="am-nm">שם האוטומציה</label>
+            <input id="am-nm" value="${esc(a.name)}" placeholder="${esc(a.display_name)}" maxlength="120">
+            <small>ריק — ומשפט האוטומציה משמש כשם</small></div>
+          <div class="am-f"><label for="am-st">סטטוס</label>
+            <select id="am-st">${opts(this.ST,a.status)}</select>
+            <small>רק אוטומציה <b>פעילה</b> רצה</small></div>
         </div>
-        ${can?`<button class="mem-del" title="מחק אוטומציה" onclick="Automations.del(${a.id})"><i class="fa-solid fa-trash"></i></button>`:''}
+        <div class="am-ed-g">
+          <div class="am-f"><label for="am-ow">בעלים</label>
+            <select id="am-ow">${people.map(p=>`<option value="${p.id}" ${a.owner_id===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select>
+            <small>נוצר ע"י ${esc(a.created_by_name||'—')} — נתון היסטורי שאינו משתנה</small></div>
+          <div class="am-f"><label for="am-im">חשיבות</label>
+            <select id="am-im">${opts(this.IMP,a.importance)}</select>
+            <small>למיון ולסינון בלבד — <b>אינה משפיעה על סדר הביצוע</b></small></div>
+          <div class="am-f"><label for="am-or">סדר ביצוע</label>
+            <input id="am-or" type="number" min="0" max="9999" value="${a.run_order||0}">
+            <small>מספר נמוך רץ ראשון כשאותו אירוע מפעיל כמה אוטומציות — <b>זה מה שקובע קדימות בפועל</b></small></div>
+        </div>
+        <div class="am-f"><label for="am-ds">תיאור עסקי</label>
+          <textarea id="am-ds" maxlength="2000" placeholder="איזה תהליך האוטומציה הזאת משרתת?">${esc(a.description)}</textarea></div>
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="Automations.saveEdit()"><i class="fa-solid fa-check"></i> שמור</button>
+          <button class="btn btn-ghost" onclick="Automations.cancelEdit()">ביטול</button>
+        </div>
       </div>`;
-    }).join('');
+  },
+
+  async saveEdit(){
+    const id=this.editing&&this.editing.id; if(!id)return;
+    const v=i=>{ const el=document.getElementById(i); return el?el.value:undefined; };
+    const body={name:v('am-nm')||'',description:v('am-ds')||'',status:v('am-st'),
+                importance:v('am-im'),owner_id:+v('am-ow')||null,run_order:+v('am-or')||0};
+    try{
+      await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
+                {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      toast('פרטי האוטומציה נשמרו');
+      this.editing=null;
+    }catch(e){ toast(e.detail||'לא ניתן לשמור'); return; }
+    await this.load(); this.render();
+  },
+
+  /* ---- היסטוריית הפעלות ---- what ran, what was skipped, what failed ---- */
+  async loadRuns(){
+    this.runsLoading=true; this.render();
+    const qs=[]; if(meId())qs.push('user_id='+meId());
+    if(this.runOutcome)qs.push('outcome='+this.runOutcome);
+    if(this.runAuto)qs.push('automation_id='+this.runAuto);
+    try{
+      const d=await api('/api/boards/'+st.board.id+'/automations/runs'+(qs.length?'?'+qs.join('&'):''));
+      this.runs=d.runs||[]; this.runCounts=d.counts||{};
+    }catch(e){ this.runs=[]; this.runCounts={}; toast('טעינת ההיסטוריה נכשלה'); }
+    this.runsLoading=false; this.runsLoaded=true; this.render();
+  },
+  setOutcome(v){ this.runOutcome=v; this.loadRuns(); },
+  setRunAuto(v){ this.runAuto=+v||0; this.loadRuns(); },
+  historyFor(id){
+    this.runAuto=id; this.runOutcome=''; this.tab='history';
+    this.building=this.editing=this.viewing=this.testing=null;
+    this.loadRuns();
+  },
+
+  historyHTML(){
+    if(this.runsLoading) return '<div class="spin"></div>';
+    const c=this.runCounts||{};
+    const chip=(v,he,n)=>`<button class="au-chip ${this.runOutcome===v?'on':''}" onclick="Automations.setOutcome('${v}')">${he}${n===undefined?'':` <b>${n||0}</b>`}</button>`;
+    const rules=this.data.automations||[];
+    const sel=rules.length>1?`<select onchange="Automations.setRunAuto(this.value)">
+        <option value="0">כל האוטומציות</option>
+        ${rules.map(a=>`<option value="${a.id}" ${this.runAuto===a.id?'selected':''}>${esc(a.sentence.replace(/[«»]/g,''))}</option>`).join('')}
+      </select>`:'';
+    const rows=this.runs.length?this.runs.map(r=>this.runRow(r)).join('')
+      :`<div class="empty" style="padding:40px"><i class="fa-solid fa-clock-rotate-left"></i><div>${
+         this.runOutcome||this.runAuto?'אין הפעלות בסינון הזה':'האוטומציות של הלוח עוד לא הופעלו'}</div></div>`;
+    return `<div class="au-chips">${chip('','הכל',c.total)}${chip('ran','הופעלו',c.ran)}${chip('skipped','דילוגים',c.skipped)}${
+        chip('failed','כשלים',c.failed)}${chip('retried','ניסיונות חוזרים',c.retried)}${sel}</div>
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i>
+        כל הפעלה נרשמת — גם כלל שהתאים ולא היה לו מה לעשות. הפעלה שדילגה או נכשלה אפשר לנסות שוב.</div>
+      <div class="logs-list">${rows}</div>`;
+  },
+
+  runRow(r){
+    const O={ran:{he:'הופעלה',ic:'fa-circle-check',cls:'ok'},
+             skipped:{he:'דילוג',ic:'fa-forward',cls:'skip'},
+             failed:{he:'כשל',ic:'fa-triangle-exclamation',cls:'fail'}};
+    const o=O[r.outcome]||O.ran;
+    const sent=esc(r.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>');
+    const item=r.task_id
+      ? `<button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${r.task_id})">${esc(r.task_title||'—')}</button>`
+      : `<span class="ah-tag">${esc(r.task_title||'הפריט נמחק')}</span>`;
+    const can=r.can_retry&&this.data.can_manage;
+    return `<div class="ah-row">
+      <span class="ah-out ${o.cls}"><i class="fa-solid ${o.ic}"></i> ${o.he}</span>
+      <div class="ah-main">
+        <div class="ah-l1">${item}
+          ${r.is_retry?'<span class="ah-tag"><i class="fa-solid fa-rotate-right"></i> ניסיון חוזר</span>':''}
+          ${r.depth>0?'<span class="ah-tag" title="הופעלה בעקבות אוטומציה אחרת">שרשור</span>':''}
+          ${r.retried_at?'<span class="ah-tag" title="כבר נוסתה שוב"><i class="fa-solid fa-check"></i> נוסתה שוב</span>':''}
+        </div>
+        <div class="ah-sent">${sent}</div>
+        ${r.reason?`<div class="ah-why"><i class="fa-solid fa-circle-info"></i> ${esc(r.reason)}</div>`:''}
+      </div>
+      <span class="ah-when" title="${esc(fdatetime(r.created_at))}">${esc(BoardLog.ago(r.created_at))}</span>
+      ${can?`<button class="btn btn-ghost ah-retry" onclick="Automations.retry(${r.id})"><i class="fa-solid fa-rotate-right"></i> נסה שוב</button>`:''}
+    </div>`;
+  },
+
+  /* A retry can change the item it ran on, so the board behind the page is
+     refetched — otherwise the row here says "הופעלה" while the table still
+     shows the old status. */
+  async retry(runId){
+    let out=null;
+    try{
+      const d=await api('/api/automation-runs/'+runId+'/retry'+(meId()?'?user_id='+meId():''),
+                        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+      out=(d.run||{}).outcome;
+      toast(out==='ran'?'האוטומציה הופעלה'
+           :out==='skipped'?'הכלל התאים אך לא היה לו מה לעשות':'ההפעלה החוזרת נכשלה');
+    }catch(e){ toast(e.detail||'לא ניתן להפעיל שוב'); return; }
+    if(out==='ran'){
+      try{ st.board=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); renderView(); }catch(e){}
+    }
+    await this.load();
+    await this.loadRuns();
   },
 
   async toggle(id,on){
@@ -4304,17 +4977,21 @@ const Automations = {
       try{ await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),{method:'DELETE'}); toast('האוטומציה נמחקה'); }
       catch(e){ toast('לא ניתן למחוק'); }
       await this.load(); this.render();
-    },{title:'מחיקת אוטומציה',confirmText:'מחק',note:a?a.sentence.replace(/[«»]/g,'"'):''});
+    },{title:'מחיקת אוטומציה',confirmText:'מחק',
+       note:(a?a.sentence.replace(/[«»]/g,'"'):'')+' — היסטוריית ההפעלות שלה תישמר.'});
   },
 
-  /* ---- creating one from a recipe: fill in the blanks ----
+  /* ---- filling in the blanks ----
      The recipe reads as one sentence whose values are blanks. An unfilled blank
      shows the placeholder's name; clicking it opens the choices in place, and it
      becomes a chip in the value's own colour. "צור" stays disabled until the
      sentence is complete, so a half-built rule can never be saved. */
-  startNew(){ this.building={recipe:null,values:{}}; this.render(); },
   cancelNew(){ this.building=null; this.render(); },
-  pick(rid){ this.building={recipe:this.recipes.find(r=>r.id===rid)||null,values:{}}; this.render(); },
+  pick(rid){
+    this.building={recipe:this.recipes.find(r=>r.id===rid)||null,values:{},
+                   meta:{name:'',description:''}};
+    this.tab='create'; this.render();
+  },
 
   buildHTML(){
     const r=this.building.recipe;
@@ -4322,28 +4999,23 @@ const Automations = {
     let sent=esc(r.sentence);
     r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.blankHTML(f)); });
     const ready=r.fields.every(f=>this.building.values[f.key]!==undefined);
+    const meta=this.building.meta||(this.building.meta={name:'',description:''});
     return `<div class="au-group-h">אוטומציה חדשה</div>
       <div class="au-build">${sent}</div>
       ${ready?'':'<div class="au-hint"><i class="fa-solid fa-circle-info"></i> לחץ על כל שדה מודגש כדי להשלים אותו</div>'}
-      <div style="margin-top:14px;display:flex;gap:8px">
-        <button class="btn btn-primary" ${ready?'':'disabled title="יש להשלים את כל השדות"'} onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור אוטומציה</button>
-        <button class="btn btn-ghost" onclick="Automations.cancelNew()">חזרה לאוטומציות</button>
+      <div class="am-ed-g" style="margin-top:14px">
+        <div class="am-f"><label for="au-nm">שם האוטומציה <small>(לא חובה)</small></label>
+          <input id="au-nm" maxlength="120" value="${esc(meta.name)}" placeholder="ריק — ומשפט האוטומציה משמש כשם"
+                 oninput="Automations.building.meta.name=this.value"></div>
+        <div class="am-f"><label for="au-ds">תיאור עסקי <small>(לא חובה)</small></label>
+          <input id="au-ds" maxlength="2000" value="${esc(meta.description)}" placeholder="איזה תהליך זה משרת?"
+                 oninput="Automations.building.meta.description=this.value"></div>
+      </div>
+      <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" ${ready?'':'disabled title="יש להשלים את כל השדות"'} onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור והפעל</button>
+        <button class="btn btn-ghost" ${ready?'':'disabled title="יש להשלים את כל השדות"'} onclick="Automations.save(true)"><i class="fa-solid fa-pencil"></i> שמור כטיוטה</button>
+        <button class="btn btn-ghost" onclick="Automations.cancelNew()">חזרה לבחירה</button>
       </div>`;
-  },
-
-  catalogHTML(){
-    const byTrig={};
-    this.recipes.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
-    const TRIG_HE={item_created:'כאשר נוצר פריט',status_changes_to:'כאשר הסטטוס משתנה',
-                   priority_changes_to:'כאשר העדיפות משתנה',person_assigned:'כאשר משויך אדם',
-                   due_date_arrives:'כאשר מגיע תאריך היעד'};
-    const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc(TRIG_HE[t]||t)}</div>`+
-      byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
-        esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
-          const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
-      }</button>`).join('')).join('');
-    return `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:6px">בחר מתכון:</div>${blocks}
-      <div style="margin-top:14px"><button class="btn btn-ghost" onclick="Automations.cancelNew()">ביטול</button></div>`;
   },
 
   blankHTML(f){
@@ -4436,7 +5108,7 @@ const Automations = {
     closeCellPops(); this.render();
   },
 
-  async save(){
+  async save(asDraft){
     const r=this.building&&this.building.recipe; if(!r)return;
     const config={};
     for(const f of r.fields){
@@ -4444,14 +5116,19 @@ const Automations = {
       if(cur===undefined){ toast('יש להשלים את כל השדות'); return; }
       config[f.key]=['person','group','item','board'].includes(f.type)?+cur.v:cur.v;
     }
+    const meta=this.building.meta||{};
     try{
       await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
                 {method:'POST',headers:{'Content-Type':'application/json'},
-                 body:JSON.stringify({recipe_id:r.id,config})});
-      toast('האוטומציה נוצרה');
+                 body:JSON.stringify({recipe_id:r.id,config,name:meta.name||'',
+                                      description:meta.description||'',
+                                      status:asDraft?'draft':'active'})});
+      toast(asDraft?'האוטומציה נשמרה כטיוטה':'האוטומציה נוצרה');
       this.building=null;
     }catch(e){ toast('לא ניתן ליצור אוטומציה'); return; }
-    await this.load(); this.render();
+    await this.load();
+    this.tab='manage';           // the new rule is now something to manage
+    this.render();
   },
 };
 
@@ -4918,6 +5595,9 @@ const SysAdmin = {
     inp.type='file'; inp.accept='image/*';
     inp.onchange=async()=>{
       const f=inp.files&&inp.files[0]; if(!f)return;
+      if(fileTooBig(f))return;
+      busyCover('מעלה את התמונה…');
+      await paintFirst();
       const fd=new FormData(); fd.append('file',f);
       try{
         const r=await fetch('/api/upload',{method:'POST',body:fd,headers:authHeaders()});
@@ -4926,6 +5606,7 @@ const SysAdmin = {
         if(!(d.type||'').startsWith('image/')){ toast('צריך קובץ תמונה'); return; }
         L.icon=d.url; this.renderLook();
       }catch(err){ toast('העלאת הקובץ נכשלה'); }
+      finally{ busyCoverDone(); }
     };
     inp.click();
   },
@@ -7033,11 +7714,14 @@ function uploadFileCell(taskId,colId){
   const inp=document.createElement('input');inp.type='file';
   inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
     if(fileTooBig(f))return;
+    busyCover('מעלה את '+(f.name||'הקובץ')+'…');
+    await paintFirst();                      // or the cover is never drawn
     const fd=new FormData();fd.append('file',f);
     try{const r=await fetch('/api/upload',{method:'POST',body:fd,headers:authHeaders()});if(!r.ok)throw 0;const data=await r.json();
       const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();arr.push(data);
       await setCell(taskId,colId,arr);renderView();toast('הקובץ הועלה');
     }catch(e){toast('שגיאה בהעלאת הקובץ');}
+    finally{ busyCoverDone(); }              // a failed upload must not leave the page covered
   };
   inp.click();
 }
@@ -9413,10 +10097,15 @@ const Chat = {
           ${canMod?`<button title="מחק" onclick="Chat.del(${c.id})"><i class="fa-regular fa-trash-can"></i></button>`:''}
           ${(c.seen_users||[]).length?`<span class="seen-ind" title="נצפה על ידי ${(c.seen_users||[]).length}" onmouseenter="Chat.seenPop(event,${c.id})" onmouseleave="Chat.seenPopClose()"><i class="fa-solid fa-eye"></i> ${(c.seen_users||[]).length}</span>`:''}
         </div>`;
+    const org=(c.origin&&!c.user_id)?c.origin:null;
+    const src=org?(org.source==='monday'?'יובאה ממאנדיי':'יובאה מקובץ'):'';
     return `<div class="cmt ${isReply?'cmt-reply':''}">
-      <span class="av av-click" style="background:var(--primary)" title="הצג פרופיל" onclick="Profile.open(${c.user_id})">${avatarInner(c)}</span>
+      <span class="av${org?'':' av-click'}" style="background:${org?'var(--dark-grey)':'var(--primary)'}"
+            ${org?`title="${esc(c.user_name||'')} — ${esc(src)}"`:`title="הצג פרופיל" onclick="Profile.open(${c.user_id})"`}>${avatarInner(c)}</span>
       <div class="cmt-main">
-        <div class="cmt-head"><b>${esc(c.user_name)}</b>${ROLE_HE[c.user_role]?`<span class="cmt-role">${ROLE_HE[c.user_role]}</span>`:''}<span class="cmt-time">${fdatetime(c.created_at)}</span></div>
+        <div class="cmt-head"><b>${esc(c.user_name)}</b>${ROLE_HE[c.user_role]?`<span class="cmt-role">${ROLE_HE[c.user_role]}</span>`:''}${
+          org?`<span class="cmt-role" title="${esc(src)} — הכותב אינו משתמש במערכת"><i class="fa-solid fa-file-import" style="font-size:9px"></i> מיובאת</span>`:''
+        }<span class="cmt-time">${fdatetime(c.created_at)}</span></div>
         ${bodyOrEdit}
         ${replies?`<div class="cmt-replies">${replies}</div>`:''}
       </div>

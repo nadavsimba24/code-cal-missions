@@ -154,6 +154,40 @@ def sentence(recipe_id):
     return f"{trig}, {act}"
 
 
+def plain(text):
+    """A trigger's or action's wording with its blanks shown as "…" — what a
+    from-scratch picker lists, before any value has been chosen."""
+    out, depth = [], 0
+    for ch in text:
+        if ch == "{":
+            depth += 1
+            if depth == 1:
+                out.append("…")
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+def blueprint():
+    """Trigger → the actions that may follow it, for building a rule from scratch.
+
+    A rule built from scratch is still one of the recipes: picking a trigger and
+    then an action lands on the recipe that pairs them. Nothing else is stored,
+    so a hand-built rule and one picked off a template are the same row, checked
+    by the same validation — the two paths cannot drift apart.
+    """
+    out = []
+    for trig, text in TRIGGERS.items():
+        acts = [{"action": r["action"], "label": plain(ACTIONS[r["action"]]),
+                 "recipe_id": r["id"]}
+                for r in RECIPES if r["trigger"] == trig]
+        if acts:
+            out.append({"trigger": trig, "label": plain(text), "actions": acts})
+    return out
+
+
 def catalog():
     """The full catalog the UI renders in the 'automation from a recipe' picker."""
     return [{"id": r["id"], "trigger": r["trigger"], "action": r["action"],
