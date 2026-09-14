@@ -1872,15 +1872,21 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
 
         # ── the columns ──────────────────────────────────────────────────────
         col_ids, custom_cols, sub_used = {}, [], set()
+        status_opts = {}   # column key -> {label: the option its cells point at}
         for c in parsed["columns"]:
             cid = "col_" + uuid.uuid4().hex[:8]
             col_ids[c["key"]] = cid
             col = {"id": cid, "type": c["type"], "title": c["title"][:60], "options": None,
                    "formula": None, "connect": None, "copy_mode": None, "perms": {}}
             if c["type"] == "status":
-                col["options"] = [{"label": str(o)[:40],
-                                   "color": IMPORT_PALETTE[j % len(IMPORT_PALETTE)]}
-                                  for j, o in enumerate(c.get("options") or [])]
+                # through the same normaliser a column edited by hand goes
+                # through, so every label gets the stable id a cell points at —
+                # renaming the option later then carries its cells with it
+                col["options"] = _status_col_options(
+                    [{"label": str(o)[:40],
+                      "color": IMPORT_PALETTE[j % len(IMPORT_PALETTE)]}
+                     for j, o in enumerate(c.get("options") or [])])
+                status_opts[c["key"]] = {o["label"]: o for o in (col["options"] or [])}
             elif c["type"] == "dropdown":
                 col["options"] = [str(o)[:40] for o in (c.get("options") or [])]
             custom_cols.append(col)
@@ -1892,6 +1898,14 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
                 {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"},
             ] + custom_cols,
+            # The board's four built-in columns — אחראים, סטטוס, עדיפות,
+            # תאריך יעד — are not in the file and nothing in this import fills
+            # them. Left showing, they are four columns of "טרם הוגדר" standing
+            # in front of the board that was actually imported, and they follow
+            # it into every export of it.
+            # Hidden, not removed: a board admin turns any of them back on the
+            # moment there is something to put in it.
+            "col_hidden": ["assignees", "status", "priority", "due"],
         }
         base = os.path.splitext(os.path.basename(filename or ""))[0]
         board_name = (name or "").strip() or parsed["board_name"] or base or "לוח מיובא"
@@ -1934,7 +1948,19 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 v = values.get(c["key"])
                 if v is None or v == "" or v == []:
                     continue
-                if c["type"] == "people":
+                if c["type"] == "status":
+                    # A status cell references an option; it does not hold a
+                    # word. Written as the bare label monday rendered, it
+                    # matches nothing in the column's vocabulary and the board
+                    # shows "טרם הוגדר" over data that is in fact there.
+                    # The label and colour ride along as the fallback the rest
+                    # of the system already uses for an option since removed —
+                    # which is also where a label past the column's own ceiling
+                    # lands, shown in grey rather than swallowed.
+                    o = status_opts.get(c["key"], {}).get(str(v))
+                    v = ({"id": o["id"], "label": o["label"], "color": o["color"]} if o
+                         else {"label": str(v)[:40], "color": "#c4c4c4"})
+                elif c["type"] == "people":
                     ids = []
                     for tok in v:
                         uid = by_token.get(str(tok).lower())
@@ -2044,6 +2070,14 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
                 {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"},
             ] + custom_cols,
             "col_labels": {"item": labels[0]},   # name the item column after the first header
+            # The board's four built-in columns — אחראים, סטטוס, עדיפות,
+            # תאריך יעד — are not in the file and nothing in this import fills
+            # them. Left showing, they are four columns of "טרם הוגדר" standing
+            # in front of the board that was actually imported, and they follow
+            # it into every export of it.
+            # Hidden, not removed: a board admin turns any of them back on the
+            # moment there is something to put in it.
+            "col_hidden": ["assignees", "status", "priority", "due"],
         }
         b = Board(name=board_name, description="", department_id=dept_id, environment_id=env_id,
                   folder_id=folder_id, position=(maxpos + 1) if maxpos is not None else 0,

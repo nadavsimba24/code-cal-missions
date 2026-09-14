@@ -37,12 +37,16 @@ const GROUPS = [{id:1, name:'בביצוע', tasks:[
   {title:'ללא תתי-פריטים', custom_fields:{status:'בתהליך', budget:5}, subtasks:[]},
 ]}];
 
-const exportGrid = new Function(
+const EXPORTABLE = /^const EXPORT_AUTO_COLS=[\s\S]*?\n(const exportable=.*)$/m.exec(src);
+const build = (itemCols,subCols) => new Function(
   'orderedColumns','subColumns','groupsOf','sortedSubs','exportCell','subColLabel',
+  /^const EXPORT_AUTO_COLS=.*$/m.exec(src)[0]+'\n'+
+  /^const exportable=.*$/m.exec(src)[0]+'\n'+
   grab('exportGrid')+'; return exportGrid;')(
-    ()=>ITEM_COLS, ()=>SUB_COLS, ()=>GROUPS, s=>s,
+    ()=>itemCols, ()=>subCols, ()=>GROUPS, s=>s,
     (c,t)=> c.kind==='builtin' ? (t.title||'') : ((t.custom_fields||{})[c.col.id] ?? ''),
     c=> c.kind==='builtin' ? c.label : (c.col&&c.col.title)||'');
+const exportGrid = build(ITEM_COLS, SUB_COLS);
 
 const g = exportGrid();
 const kinds = g.rows.map(r=> r.group?'group' : r.subhead?'subhead' : 'L'+r.level);
@@ -85,6 +89,36 @@ ck('the band starts one column in, under the item it belongs to',
 ck('the group row is untouched by any of this',
    g.rows[0].group===true && g.rows[0].cells[0]==='בביצוע'
    && g.rows[0].cells.slice(1).every(x=>x===''));
+
+/* ── the columns the system issues on its own stay out of the file ────────
+   מספר מזהה, מועד יצירה and יוצר הרשומה are added to every board without
+   anyone asking. In the grid they belong; in an exported file they are three
+   columns of provenance in front of the board's own, read as though someone
+   had entered them. */
+const auto = (id,title,type) => ({kind:'custom', id, col:{id,title,type}});
+const WITH_AUTO = [ITEM_COLS[0],
+  auto('sys_item_id','מספר מזהה','item_id'),
+  auto('sys_created_at','מועד יצירה','created_at'),
+  auto('sys_created_by','יוצר הרשומה','created_by'),
+  ITEM_COLS[1], ITEM_COLS[2]];
+const g2 = build(WITH_AUTO, [SUB_COLS[0], auto('sys_item_id','מספר מזהה','item_id'), SUB_COLS[2]]);
+const head2 = g2().columns;
+ck('the file opens on the board\'s own columns, not on three of provenance',
+   head2.slice(0,3).join('|')==='פריט|סטטוס|תקציב', head2.join('|'));
+for(const t of ['מספר מזהה','מועד יצירה','יוצר הרשומה'])
+  ck(`${t} is not a column in the file`, !head2.includes(t), head2.join('|'));
+ck('and an item row is as wide as the header, not three cells adrift',
+   g2().rows[1].cells.length===head2.length);
+const band2 = g2().rows.find(r=>r.subhead);
+ck('the sub-item band drops them too', !band2.cells.includes('מספר מזהה'),
+   band2.cells.join('|'));
+ck('what a person actually filled in is untouched',
+   g2().rows[1].cells.join('|')==='גשר הרצל|בתהליך|125000', g2().rows[1].cells.join('|'));
+/* a board with nothing but the automatic columns still exports its items —
+   the file is narrower, not empty */
+const only = build([ITEM_COLS[0], auto('a','מועד יצירה','created_at')], [SUB_COLS[0]]);
+ck('a board carrying only automatic columns still exports its rows',
+   only().rows.filter(r=>!r.group&&!r.subhead).length>0);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

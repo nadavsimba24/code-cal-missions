@@ -110,7 +110,51 @@ def test_the_column_types_survive_the_trip(client):
     assert cf[by_title["מספר"]] == 72
     assert cf[by_title["רשימה"]] == ["אלפא", "ביתא"]
     assert cf[by_title["סימון"]] is True
-    assert cf[by_title["סטטוס"]] == "בטיפול"
+    # a status cell points at one of the column's options; it does not hold the
+    # word. The bare label matches nothing and the board shows "טרם הוגדר" over
+    # a value that is in fact there.
+    st = cf[by_title["סטטוס"]]
+    opts = next(c for c in board["columns"] if c["title"] == "סטטוס")["options"]
+    assert st["label"] == "בטיפול"
+    assert st["id"] == next(o["id"] for o in opts if o["label"] == "בטיפול"), \
+        "the cell does not reference the option it was imported as"
+    assert st["color"] == next(o["color"] for o in opts if o["label"] == "בטיפול")
+
+
+def test_every_status_cell_arrives_showing_its_status(client):
+    """The column came over, the vocabulary came over, and every cell was blank.
+
+    A status cell references an option by id; written as the bare label monday
+    rendered it matches nothing, and the board shows "טרם הוגדר" over data that
+    is sitting right there. The whole column reads as never filled in — which is
+    the worst way for a migration to fail, because it looks like a small board
+    rather than a broken one."""
+    labels = ["מעוניינים", "בטיפול", "נחתם", "מעוניינים"]
+    items = [dict(_item(f"לקוח {i}", [_cv("s", "סטטוס לקוח", "status", text=v)]), id=str(i))
+             for i, v in enumerate(labels)]
+    bid = _upload(client, _resp(items), name="לקוחות").json()["id"]
+    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "סטטוס לקוח")
+    by_label = {o["label"]: o for o in col["options"]}
+
+    shown = [t["custom_fields"][col["id"]] for t in board["tasks"]]
+    assert len(shown) == 4, "an item lost its status cell entirely"
+    assert [v["label"] for v in shown] == labels, [v.get("label") for v in shown]
+    for v in shown:
+        assert v["id"] == by_label[v["label"]]["id"], \
+            "the cell does not point at the option the column offers"
+        assert v["color"] == by_label[v["label"]]["color"]
+    # two items on the same status are the same option, not two that look alike
+    assert shown[0]["id"] == shown[3]["id"]
+
+
+def test_a_status_option_carries_an_id_a_cell_can_point_at(client):
+    items = [_item("פריט", [_cv("s", "שלב", "status", text="בחינה")])]
+    bid = _upload(client, _resp(items), name="מזהים").json()["id"]
+    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "שלב")
+    assert all(o.get("id") for o in col["options"]), \
+        "an option with no id can only ever be matched by its own name"
 
 
 def test_a_status_column_keeps_the_labels_the_board_actually_used(client):
@@ -166,8 +210,12 @@ def test_subitems_become_children_and_show_only_their_own_columns(client):
     top = board["tasks"][0]
     assert len(top["subtasks"]) == 1 and top["subtasks"][0]["title"] == "בן"
     by_title = {c["title"]: c["id"] for c in board["columns"] if c["id"].startswith("col_")}
-    # matched to the parent's column by title, not by monday's own id
-    assert top["subtasks"][0]["custom_fields"][by_title["סטטוס"]] == "בוצע"
+    # matched to the parent's column by title, not by monday's own id — and a
+    # sub-item's status references the same vocabulary the parent column has
+    sub_st = top["subtasks"][0]["custom_fields"][by_title["סטטוס"]]
+    opts = next(c for c in board["columns"] if c["title"] == "סטטוס")["options"]
+    assert sub_st["label"] == "בוצע"
+    assert sub_st["id"] == next(o["id"] for o in opts if o["label"] == "בוצע")
     assert by_title["רק באב"] not in (board.get("sub_cols") or []), \
         "sub-items show a column none of them carries"
 
@@ -463,6 +511,36 @@ def test_a_file_is_named_by_its_asset_even_after_someone_renamed_it(client):
     col = next(c for c in board["columns"] if c.get("title") == "מסמך")
     assert board["tasks"][0]["custom_fields"][col["id"]] == \
         [{"name": "אפיון סופי.docx", "url": "https://files.monday.com/a.docx"}]
+
+
+def test_the_built_in_columns_the_file_never_had_are_not_shown(client):
+    """סטטוס and עדיפות are columns of this system, not of the file.
+
+    Nothing in the import fills them, so on an imported board they are four
+    columns of "טרם הוגדר" standing in front of the board that was actually
+    migrated — and because the export is built from the same column list, they
+    follow it into the file too. They are hidden, not removed: they are still
+    the board's columns the moment there is something to put in them."""
+    r = _upload(client, _resp([_item("פריט", [_cv("t", "טקסט", "text", text="א")])]),
+                name="הסבה").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    assert set(board["col_hidden"]) == {"assignees", "status", "priority", "due"}, \
+        board["col_hidden"]
+    # the item column is not among them — it is the one that cannot be hidden
+    assert "item" not in board["col_hidden"]
+
+
+def test_a_hidden_built_in_column_is_still_the_board_s_to_bring_back(client, admin_id):
+    """Hiding is a display decision, so it is one an admin can undo — if the
+    import had removed the columns instead there would be nothing to turn on."""
+    r = _upload(client, _resp([_item("פריט", [_cv("t", "טקסט", "text", text="א")])])).json()
+    bid = r["id"]
+    resp = client.patch(f"/api/boards/{bid}",
+                        json={"col_hidden": ["assignees", "due"], "user_id": 1}, headers=H)
+    assert resp.status_code == 200, resp.text
+    board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
+    assert set(board["col_hidden"]) == {"assignees", "due"}, \
+        "סטטוס and עדיפות could not be turned back on"
 
 
 def test_a_file_with_no_groups_gets_one_unnamed_group(client):

@@ -1050,6 +1050,12 @@ body.coldragging .col-grip{opacity:1}
 .term-in{flex:1;background:none;border:none;color:#c9d1d9;font-family:inherit;font-size:13.5px;outline:none}
 .term-model{background:#161b22;border:1px solid #30363d;color:#58a6ff;border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12px}
 
+/* The cover an import works behind. Above the modal it replaces (z-index 300)
+   because it covers the dialog the file was chosen from, and cursor:progress
+   over the whole page because the whole page is what is unavailable. */
+.imp-busy{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:400;display:flex;align-items:center;justify-content:center;cursor:progress}
+.imp-busy-box{display:flex;align-items:center;gap:11px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:11px;padding:15px 22px;font-size:14px;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+.imp-busy-box i{color:var(--primary);font-size:17px}
 /* overlay/modal/toast */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:150;display:none}
 .overlay.open{display:block}
@@ -3239,8 +3245,33 @@ async function newBoardQuick(){
     setTimeout(startBoardRename,180);
   }catch(e){toast('שגיאה ביצירת לוח');}
 }
-/* Import a board from a CSV / Excel file: the server reads the header row into
-   columns (type inferred per column) and one item per data row. */
+/* An import is three waits in a row and only the middle one is the server's:
+   the file goes up, the board comes back, and then the browser lays out every
+   row of it in one go. On a board of a few hundred items that last one is the
+   longest, and it is the one that looks like the machine has stopped — a main
+   thread building a grid cannot repaint or answer a click while it does it.
+   Nothing was on screen for any of it except a toast that had already faded.
+
+   So the wait is stated while it happens, and a click during it lands on the
+   cover instead of on a board that is not there yet. */
+function importBusy(text){
+  let el=document.getElementById('imp-busy');
+  if(!el){
+    el=document.createElement('div'); el.id='imp-busy'; el.className='imp-busy';
+    el.innerHTML='<div class="imp-busy-box"><i class="fa-solid fa-spinner fa-spin"></i><span id="imp-busy-t"></span></div>';
+    document.body.appendChild(el);
+  }
+  document.getElementById('imp-busy-t').textContent=text;
+  return el;
+}
+function importBusyDone(){ const el=document.getElementById('imp-busy'); if(el)el.remove(); }
+/* Two frames: one for the browser to take the change, one for it to paint it.
+   Added and then blocked in the same frame, the cover is never drawn — and the
+   wait goes on looking exactly like the freeze it was meant to explain. */
+const paintFirst=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+/* Import a board from a CSV / Excel / monday JSON file: the server reads the
+   header row into columns (type inferred per column) and one item per row. */
 async function importBoardFile(){
   if(mobileBlocked('ייבוא לוח'))return;
   if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
@@ -3251,19 +3282,26 @@ async function importBoardFile(){
     const f=inp.files&&inp.files[0]; if(!f)return;
     const fd=new FormData(); fd.append('file',f);
     const env=(Env.active()||{}).id; if(env)fd.append('environment_id',env);
-    toast('מייבא את הקובץ…');
+    importBusy('מעלה את הקובץ…');
+    await paintFirst();
     try{
       const r=await fetch('/api/boards/import',{method:'POST',headers:{...authHeaders()},body:fd});
       if(!r.ok){ let d=''; try{ d=(await r.json()).detail||''; }catch(_){}
         throw new Error(d || (r.status===413?'הקובץ גדול מדי (מקסימום 8MB)':'שגיאה בייבוא הקובץ')); }
       const b=await r.json();
       closeModals();
+      // the board is built now — the part that actually holds the screen up
+      importBusy('בונה את הלוח — '+(b.items||0)+' פריטים…');
+      await paintFirst();
       st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
       renderSidebar();
       await openBoard(b.id);
+      // the cover comes off before the report, or the report opens behind it
+      importBusyDone();
       if(b.report) importReport(b);
       else toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות');
     }catch(e){ toast((e&&e.message)||'שגיאה בייבוא הקובץ'); }
+    finally{ importBusyDone(); }   // a failed import must not leave the page covered
   };
   inp.click();
 }
@@ -6443,9 +6481,16 @@ function exportCell(c,t){
    and the rows below it are read against that header, so nothing on screen is
    missing from the file. Both the band and its rows stay at outline level 2, so
    Excel still folds them into their item. */
+/* The three columns the system issues on its own: the item's identifier, when
+   it was created, and by whom. Nobody typed them and nobody asked for them —
+   in a file they push the board's own columns three places to the right and
+   are read as data that came from somewhere. The board goes on showing them;
+   what is being asked for here is the file. */
+const EXPORT_AUTO_COLS=new Set(['item_id','created_at','created_by']);
+const exportable=cols=>cols.filter(c=>c.kind!=='custom'||!EXPORT_AUTO_COLS.has(c.col.type));
 function exportGrid(){
-  const cols=orderedColumns();
-  const subs=subColumns();
+  const cols=exportable(orderedColumns());
+  const subs=exportable(subColumns());
   const blank=n=>Array(n).fill('');
   // the sheet is as wide as the wider of the two structures; the item header
   // simply runs out of names where the sub-item band is the longer one
