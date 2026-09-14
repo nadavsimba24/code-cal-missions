@@ -834,6 +834,23 @@ def _valid_hex(c):
 # A custom "status" column carries its own vocabulary — the board admin names and
 # colours the labels of every such column separately (the built-in status column
 # has its own, board-wide list above). Stored on the column as
+def _number_col_cfg(raw):
+    """How a number column is shown: a unit beside the figure, and whether the
+    thousands are grouped. Or None, which is a plain number.
+
+    Presentation only — the cell stores a number and goes on storing one, so
+    sorting, formulas and the Excel export are untouched by anything set here,
+    and the unit can be changed as often as anyone likes without rewriting a
+    single cell. Stored as nothing when it says nothing, so a board that never
+    opened the screen does not carry the defaults around.
+    """
+    if not isinstance(raw, dict):
+        return None
+    unit = str(raw.get("unit") or "").strip()[:6]
+    thousands = bool(raw.get("thousands"))
+    return {"unit": unit, "thousands": thousands} if (unit or thousands) else None
+
+
 # options=[{label,color}]; an empty/absent list means "use the client defaults".
 STATUS_COL_MAX = 30
 
@@ -2250,6 +2267,9 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     # itself ("id", the default) or a link to the item ("url")
                     "copy_mode": (c.get("copy_mode") if c.get("copy_mode") in ("id", "url") else "id")
                                  if c["type"] == "item_id" else None,
+                    # "מספר": the unit shown beside the figure and whether the
+                    # thousands are grouped — how it is read, not what is stored
+                    "number": _number_col_cfg(c.get("number")) if c["type"] == "number" else None,
                     "perms": c.get("perms") or {},
                 })
             _conn_n = sum(1 for c in cols if c.get("type") == "connect")

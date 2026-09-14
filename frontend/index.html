@@ -693,6 +693,10 @@ body.coldragging .col-grip{opacity:1}
    only when there is an address to write to. */
 .cc-mailwrap{display:flex;align-items:center;gap:4px}
 .cc-mailwrap .cc-inp{direction:ltr;text-align:center}
+/* A number and its unit are one run of latin-script text, and "1,234 ₪" only
+   reads that way left-to-right — on an RTL board the grouped digits and the
+   symbol otherwise change places between typing and reading. */
+.cc-num{direction:ltr;text-align:center;font-variant-numeric:tabular-nums}
 .cc-mail{color:var(--text-light);font-size:12px;flex:0 0 auto;padding:2px}
 .cc-mail:hover{color:var(--primary)}
 .cc-date{cursor:pointer;color:var(--text-muted)}
@@ -6273,6 +6277,27 @@ function initColResizers(root){
   });
 }
 function cellValue(t,colId){return (t.custom_fields||{})[colId];}
+/* ===== how a number column is *shown* =====
+   The cell stores a number and nothing else. The unit and the grouping are
+   presentation, kept out of the stored value on purpose: sorting compares
+   numbers, formulas read numbers, and the export writes a number Excel will
+   treat as one. A "1,234 ₪" in the database would break all three, and would
+   have to be parsed back the moment anyone changed the currency. */
+const NUM_LEAD='$€£¥';   /* the symbols the world writes before the digits */
+function numCfg(c){
+  const n=(c&&c.number)||{};
+  return {unit:String(n.unit||'').trim(),thousands:!!n.thousands};
+}
+function fnum(v,c){
+  if(v==null||v==='')return '';
+  const n=Number(v); if(!isFinite(n))return String(v);
+  const {unit,thousands}=numCfg(c);
+  /* en-US, not the browser's locale: the separator a board agreed on should not
+     change with whoever is looking at it. */
+  const s=thousands?n.toLocaleString('en-US',{maximumFractionDigits:20}):String(n);
+  if(!unit)return s;
+  return NUM_LEAD.indexOf(unit)>=0?unit+s:s+' '+unit;
+}
 /* One date cell: our text for reading, the native input for picking and typing.
    The reason the input does not draw itself is in .cc-datewrap in the
    stylesheet — in short, its format is the viewer's browser's, not ours, and a
@@ -6311,7 +6336,7 @@ function customCellHTML(c,t){
   const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
   if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
   if(c.type==='email')  return `<td class="cell cell-custom"><div class="cc-mailwrap">${v?`<a class="cc-mail" href="mailto:${esc(v)}" title="שלח דוא&quot;ל" onclick="event.stopPropagation()"><i class="fa-solid fa-envelope"></i></a>`:''}<input class="cc-inp" type="email" value="${esc(v==null?'':v)}" placeholder="—" onchange="setEmailCell(${id},'${c.id}',this)"></div></td>`;
-  if(c.type==='number') return `<td class="cell cell-custom"><input type="number" class="cc-inp" value="${v==null?'':esc(v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value===''?null:Number(this.value))"></td>`;
+  if(c.type==='number') return `<td class="cell cell-custom"><input class="cc-inp cc-num" ${cc} inputmode="decimal" data-raw="${v==null?'':esc(v)}" value="${esc(fnum(v,c))}" placeholder="—" onfocus="numFocus(this)" onblur="numBlur(this)" onchange="setNumCell(${id},'${c.id}',this)"></td>`;
   if(c.type==='date')   return `<td class="cell cell-custom">${dateCellHTML(v,`setCell(${id},'${c.id}',this.value||null)`)}</td>`;
   if(c.type==='rating') return `<td class="cell cell-custom">${ratingStars(id,c.id,+v||0)}</td>`;
   if(c.type==='status') return `<td class="cell cell-custom"><span class="status-clik" onclick="statusCellMenu(event,${id},'${c.id}')">${statusCellPill(v,c)}</span></td>`;
@@ -7092,6 +7117,34 @@ async function setEmailCell(taskId,colId,el){
   if(v && !EMAIL_RE.test(v)){ toast('כתובת דוא"ל לא תקינה'); el.focus(); return; }
   await setCell(taskId,colId,v||null);
   refreshRow(taskId);   // the envelope appears or goes with the address
+}
+
+/* A formatted number cannot be typed into. On the way in the cell shows the
+   bare number, on the way out the separators and the unit come back — so what
+   is edited is the value and what is read is the presentation, and neither has
+   to be parsed out of the other. */
+function numColOf(el){ return customColumns().find(x=>x.id===el.dataset.col); }
+/* A cell holding something that is not a figure keeps holding it: the value was
+   refused, and reformatting it back to the last good number on the way out
+   would throw away the keystrokes the person was just told to correct. */
+function numFocus(el){
+  if(el.dataset.bad){ delete el.dataset.bad; return; }
+  el.value=el.dataset.raw||'';
+}
+function numBlur(el){
+  if(el.dataset.bad)return;
+  const r=el.dataset.raw;
+  el.value=fnum(r===''||r==null?null:Number(r),numColOf(el));
+}
+async function setNumCell(taskId,colId,el){
+  /* Someone who types over the formatted value — "1,234 ₪" — means 1234, and
+     pasting a figure out of a spreadsheet brings its separators along. */
+  const typed=(el.value||'').trim();
+  const raw=typed.replace(/[,\s]/g,'').replace(new RegExp('['+NUM_LEAD+'₪%]','g'),'');
+  if(raw!==''&&!isFinite(Number(raw))){ el.dataset.bad='1'; toast('ערך מספרי לא תקין'); return; }
+  const n=raw===''?null:Number(raw);
+  el.dataset.raw=n==null?'':String(n);
+  await setCell(taskId,colId,n);
 }
 
 /* ===== inline editing of built-in columns (סטטוס/עדיפות/תאריך/תגיות/כותרת) ===== */
@@ -8013,6 +8066,7 @@ function colMenu(e,colId){
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +idSettings
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
+    +(c&&c.type==='number'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();numberSettings('${colId}')"><i class="fa-solid fa-sliders"></i> הגדרות עמודת מספר</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     +(c&&c.type==='mirror'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openMirrorConfig('${colId}')"><i class="fa-solid fa-clone"></i> הגדרות שדה מראה</button>`:'')
     +(c&&c.type==='connect'&&isBoardAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
@@ -8051,13 +8105,82 @@ async function saveItemIdSettings(colId){
   closeModals();
   await saveColumns(cols); toast('ההגדרה נשמרה');
 }
+/* "הגדרות עמודת מספר" — a unit beside the figure, and whether the thousands are
+   grouped. Both are presentation: the cell goes on storing a number, so this
+   screen can be changed as often as anyone likes without touching the data.
+   The four choices are the ones a municipal board actually needs — nothing,
+   shekels, dollars, and whatever else someone is counting (מ"ר, טון, %). */
+const NUM_PRESETS=[['','ללא','1234.5'],['₪','ש"ח','1,234.5 ₪'],['$','דולר','$1,234.5']];
+function numberSettings(colId){
+  const c=customColumns().find(x=>x.id===colId); if(!c)return;
+  if(!isBoardAdmin()){toast('רק מנהל הלוח');return;}
+  const cfg=numCfg(c);
+  const preset=NUM_PRESETS.some(p=>p[0]===cfg.unit)?cfg.unit:'custom';
+  const opt=(v,t,ex)=>`<label class="subc-opt" style="align-items:center">
+      <input type="radio" name="num-unit" class="num-unit" value="${v}" ${preset===v?'checked':''} onchange="numPrevUpd()">
+      <span style="display:flex;align-items:center;gap:8px;flex:1"><b style="font-weight:600">${t}</b>
+        <small style="color:var(--text-light);font-size:11.5px;direction:ltr">${ex}</small></span>
+    </label>`;
+  showModal(`<h2><i class="fa-solid fa-hashtag" style="color:var(--primary)"></i> הגדרות עמודת מספר</h2>
+    <div class="mbody">
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        הסימון והמפריד הם תצוגה בלבד. בתא נשמר המספר עצמו, ולכן המיון, הנוסחאות והייצוא לאקסל ממשיכים לקרוא מספר — אפשר לשנות כאן בכל שלב בלי לגעת בנתונים.</div>
+      <div class="subc-list">
+        ${NUM_PRESETS.map(p=>opt(p[0],p[1],p[2])).join('')}
+        <label class="subc-opt" style="align-items:center">
+          <input type="radio" name="num-unit" class="num-unit" value="custom" ${preset==='custom'?'checked':''} onchange="numPrevUpd();document.getElementById('num-free').focus()">
+          <span style="display:flex;align-items:center;gap:8px;flex:1"><b style="font-weight:600">בחירה חופשית</b>
+            <input id="num-free" style="width:96px;border:1px solid var(--border-strong);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12.5px" maxlength="6"
+                   placeholder='מ"ר' value="${preset==='custom'?esc(cfg.unit):''}"
+                   oninput="document.querySelector('.num-unit[value=custom]').checked=true;numPrevUpd()"></span>
+        </label>
+      </div>
+      <label class="subc-opt" style="align-items:center;margin-top:10px">
+        <input type="checkbox" id="num-thou" ${cfg.thousands?'checked':''} onchange="numPrevUpd()">
+        <span style="display:flex;flex-direction:column;gap:2px"><b style="font-weight:600">מפריד אלפים</b>
+          <small style="color:var(--text-light);font-size:11.5px">1,234,567 במקום 1234567</small></span>
+      </label>
+      <div style="margin-top:14px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:9px;text-align:center">
+        <small style="color:var(--text-light);font-size:11.5px;display:block;margin-bottom:4px">כך ייראה התא</small>
+        <b id="num-prev" style="font-size:17px;direction:ltr;display:inline-block"></b>
+      </div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="saveNumberSettings('${colId}')"><i class="fa-solid fa-check"></i> שמור</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+  numPrevUpd();
+}
+/* what the dialog currently describes, in the shape the column stores */
+function numDlgCfg(){
+  const sel=document.querySelector('.num-unit:checked');
+  const free=document.getElementById('num-free');
+  const v=sel?sel.value:'';
+  const thou=document.getElementById('num-thou');
+  return {unit:v==='custom'?String((free&&free.value)||'').trim().slice(0,6):v,
+          thousands:!!(thou&&thou.checked)};
+}
+/* The preview is the point of the screen: 1234567.5 is long enough to show the
+   grouping and small enough to read at a glance. */
+function numPrevUpd(){
+  const el=document.getElementById('num-prev'); if(!el)return;
+  el.textContent=fnum(1234567.5,{number:numDlgCfg()});
+}
+async function saveNumberSettings(colId){
+  const cfg=numDlgCfg();
+  const keep=(cfg.unit||cfg.thousands)?cfg:null;   // the default is stored as nothing
+  const cols=customColumns().map(x=>x.id===colId?{...x,number:keep}:x);
+  closeModals();
+  await saveColumns(cols); renderView(); toast('ההגדרה נשמרה');
+}
+
 /* duplicating a "מזהה פריט" column adds another one; since the identifier lives
    on the item, both columns show the same number for the same item */
 async function duplicateColumn(e,colId){
   e.stopPropagation(); closeCellPops();
   const c=customColumns().find(x=>x.id===colId); if(!c)return;
   const cols=customColumns().slice();
-  cols.push({type:c.type,title:(c.title||'')+' (עותק)',options:c.options,formula:c.formula,copy_mode:c.copy_mode});
+  cols.push({type:c.type,title:(c.title||'')+' (עותק)',options:c.options,formula:c.formula,copy_mode:c.copy_mode,number:c.number});
   await saveColumns(cols); toast('העמודה שוכפלה');
 }
 async function editFormula(e,colId){
