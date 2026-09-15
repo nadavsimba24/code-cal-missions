@@ -87,7 +87,7 @@ DISPLAY_VALUE_TYPES = ("formula", "mirror", "board_relation", "dependency")
 # says so — an import that quietly retypes a column is an import you cannot
 # check.
 RETYPED = {
-    "formula":        "הערך המחושב יובא כטקסט; הנוסחה עצמה לא הועברה",
+    "formula":        "הערך המחושב יובא כטקסט; הנוסחה עצמה אינה בקובץ",
     "mirror":         "הערך המוצג יובא כטקסט; הלוח שממנו הוא נשאב לא יובא",
     "board_relation": "שמות הפריטים המקושרים יובאו כטקסט; הלוח המקושר לא יובא",
     "item_id":        "מזהה מאנדיי נשמר כטקסט; הפריט מקבל מזהה MISSIONS משלו",
@@ -181,11 +181,21 @@ def looks_like_monday(raw):
 # ── formulas ────────────────────────────────────────────────────────
 # monday keeps a formula column's definition in the column's own settings, as an
 # expression over column IDs: {"formula": "{numeric_mkl3sp} + 5"}. This app's
-# formula column reads the same shape over column TITLES, and computes plain
-# arithmetic and nothing else. So a formula is translated and then judged: one
-# this app can actually compute comes in as a live formula column, and one it
-# cannot comes in as the computed text monday sent — with the expression kept
-# beside it either way, so nobody has to go back to monday to read it.
+# formula column reads the same shape over column TITLES.
+#
+# An imported formula column arrives as TEXT, holding the value monday worked
+# out. That is the migration's own rule, and it is the conservative one: a live
+# formula recomputes from the columns that came across, so any column the export
+# left behind, any cell the import retyped, any function monday has and this app
+# spells differently, and the board shows a number that is not the number it
+# showed in monday — without saying so. The migrated board is meant to be the
+# board, and a value is a fact where a formula is a promise about twenty other
+# columns.
+#
+# The expression is still translated and kept on the column, and the column menu
+# offers turning it into a live formula column — per column, once someone has
+# looked at the numbers. What cannot be computed here is said in the report
+# rather than discovered as a blank column.
 _FORMULA_REF = re.compile(r"\{([^{}]+)\}")
 _FORMULA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 _FORMULA_STRING = re.compile(r"'[^']*'|\"[^\"]*\"")
@@ -406,11 +416,6 @@ def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
                 add(None, part.strip())
         return out or None
 
-    if ctype == "formula":
-        # a live formula column computes its own cells; storing monday's snapshot
-        # beside it would leave two answers, one of them going stale
-        return None
-
     # ── the three types monday answers somewhere other than `text` ──────
     # formula:        "The computed result is returned in display_value. The text
     #                  and value fields are not populated for formula columns."
@@ -563,10 +568,24 @@ def parse(raw, max_cols):
         else:
             keep.append(cid)
 
+    # ── a column with nothing in it is not a column of this board ─────────
+    # monday's response carries a cell for every column it holds, including the
+    # ones nobody sees: a column hidden in the board's view, an archived one, a
+    # formula whose result the query never asked for. Created here they are
+    # columns she does not have in monday, standing empty in front of the board
+    # that was migrated — "עמודה שלא קיימת במקור".
+    #
+    # So the rule is the file's own evidence: no value on any of the items, no
+    # column. Nothing is lost quietly — every one is named in the report, split
+    # into the ones that are empty in monday too and the ones whose values the
+    # export simply never asked for. And it is self-correcting: re-export with
+    # the query that asks, and the columns that DO have values come in.
+    blank = [cid for cid in keep if not fill[cid]]
+    keep = [cid for cid in keep if fill[cid]]
+
     # Over the limit, the fullest columns win — a column two items use carries
-    # less of the board than one that every item fills, and a column nobody has
-    # filled yet carries none of it. Ties keep the original order so the same
-    # file always imports the same way.
+    # less of the board than one that every item fills. Ties keep the original
+    # order so the same file always imports the same way.
     keep.sort(key=lambda c: (-fill[c], order.index(c)))
     over = keep[max_cols:]
     keep = keep[:max_cols]
@@ -581,19 +600,16 @@ def parse(raw, max_cols):
         skipped.append({"title": meta[cid]["title"] or cid, "type": meta[cid]["type"],
                         "reason": f"מעבר לתקרה של {max_cols} עמודות (מלאה ב-{fill[cid]} פריטים)"})
 
-    # named, not dropped: a column the board has but nobody has filled yet is
-    # structure someone will use, and recreating it by hand after a migration is
-    # exactly the work a migration is supposed to save
-    empty = [meta[cid]["title"] or cid for cid in keep if not fill[cid]]
+    # named, so that "it is not here" is answerable without counting columns
+    empty = [meta[cid]["title"] or cid for cid in blank]
     # An empty formula / mirror / connect column is usually not an empty column:
     # monday answers those in display_value, and a file exported by a query that
     # never asked for it carries nothing for them on any item. That is a file to
     # re-export, not a column to shrug at — and the two are indistinguishable
     # without saying which one this is.
     reexport = [{"title": meta[cid]["title"] or cid, "type": meta[cid]["type"]}
-                for cid in keep
-                if not fill[cid] and meta[cid]["type"] in DISPLAY_VALUE_TYPES
-                and cid not in asked]
+                for cid in blank
+                if meta[cid]["type"] in DISPLAY_VALUE_TYPES and cid not in asked]
     empty = [t for t in empty if t not in {r["title"] for r in reexport}]
     columns = [{"key": cid, "title": meta[cid]["title"] or cid,
                 "type": TYPE_MAP[meta[cid]["type"]], "monday_type": meta[cid]["type"],
@@ -604,7 +620,7 @@ def parse(raw, max_cols):
     # ── the formulas, now that every column has a title here ────────────
     defs = _column_defs(board)
     titles_by_id = {c["key"]: c["title"] for c in columns}
-    formulas_live, formulas_as_text = [], []
+    formulas = []
     for c in columns:
         if c["monday_type"] != "formula":
             continue
@@ -614,22 +630,24 @@ def parse(raw, max_cols):
             # is simply not in the file — the computed values still come across
             continue
         expr, missing = translate_formula(raw, titles_by_id)
+        # The column stays text, holding monday's computed value. The expression
+        # rides along so the column can be turned into a live one here, and
+        # whether that would actually compute is answered now rather than found
+        # out by an empty column later.
         c["formula"] = expr
         unsupported = formula_unsupported(expr)
-        if missing or unsupported:
-            # kept, shown, and editable — but the value stays monday's, because
-            # this app cannot work the expression out
+        computable = not (missing or unsupported)
+        if computable:
+            c["note"] = ("הערך המחושב יובא כטקסט; הנוסחה נשמרה בעמודה וניתן "
+                         "להפוך אותה לעמודת נוסחה מחשבת")
+        else:
             why = ("היא מפנה לעמודה שלא יובאה" if missing
                    else "היא משתמשת ב" + ", ".join(unsupported))
-            c["note"] = (f"הנוסחה יובאה כפי שהיא ומוצגת בעמודה, אך {why} — "
-                         "לכן הערך שיוצג הוא מה שמאנדיי חישב")
-            formulas_as_text.append({"title": c["title"], "formula": expr,
-                                     "missing": sorted(set(missing)),
-                                     "unsupported": unsupported})
-        else:
-            c["type"] = "formula"
-            c["note"] = "הנוסחה יובאה ומחושבת כאן מחדש"
-            formulas_live.append({"title": c["title"], "formula": expr})
+            c["note"] = (f"הערך המחושב יובא כטקסט; הנוסחה נשמרה בעמודה, אך {why} — "
+                         "ולכן היא לא תחושב כאן")
+        formulas.append({"title": c["title"], "formula": expr,
+                         "missing": sorted(set(missing)),
+                         "unsupported": unsupported, "computable": computable})
 
     by_key = {c["key"]: c["type"] for c in columns}
     # sub-items are their own monday board with their own column ids, so they are
@@ -722,13 +740,21 @@ def parse(raw, max_cols):
                            for r in rows),
             "updates_dropped": talk_dropped[0],
             "groups": len(groups),
+            "group_names": [g["title"] for g in groups][:40],
+            # A response that asked for neither `groups` on the board nor
+            # `group { id title }` on the items says nothing about how the board
+            # is divided, and everything lands in one group. That is not a board
+            # with one group — it is a question the file was never asked, and the
+            # only place it can be said is in the report.
+            "groups_need_reexport": not groups,
+            "groups_from": "file" if groups else "",
             "truncated": bool(cursor),
             "columns_found": len(meta),
             "columns_imported": len(columns),
             "columns_empty": empty,
-            # a formula this app recomputes, and one it shows monday's answer for
-            "formulas_live": formulas_live,
-            "formulas_as_text": formulas_as_text,
+            # every formula column: the expression that came with it, and
+            # whether this app could compute it if asked to
+            "formulas": formulas,
             "columns_need_reexport": reexport,
             "as_subitems": as_subitems,
             "mapping": [{"title": c["title"], "from": c["monday_type"],

@@ -83,7 +83,12 @@ app.add_middleware(ConditionalGZip)
 # Endpoints that may be reached without an identity. Everything else under /api/
 # requires one — so a route added tomorrow is protected by default instead of
 # being protected only if its author remembered the dependency.
-PUBLIC_API_PATHS = {"/api/status"}
+# /api/auth/dev-users is the local picker's directory, and the picker is what
+# someone uses BEFORE they have an identity — so it cannot be behind the check.
+# The route itself answers 404 in every mode but dev (see dev_picker_users), and
+# dev mode already accepts any user id from a header or a cookie, so it opens
+# nothing that was closed.
+PUBLIC_API_PATHS = {"/api/status", "/api/auth/dev-users"}
 
 
 @app.middleware("http")
@@ -1836,10 +1841,41 @@ def _imp_to_date_iso(v):
     return None
 
 
+# A monday Excel export writes a file cell as the file's ADDRESS, several of
+# them comma-joined in one cell. As text that is a 2,000-character cell nobody
+# can read; as a file column it is what it is — named chips, each opening the
+# file in monday. The shape is monday's own asset address, so an ordinary link
+# column ("קישור לדף הבית") is not mistaken for an attachment.
+# The path is anything but a comma, because monday writes the file's real name
+# into the address without escaping it: ".../resources/1476615869/הפרויקטים שלנו .docx"
+# has a space in it, and requiring "no whitespace" matched none of her files.
+_MONDAY_ASSET = re.compile(
+    r"^https://[^/\s]+\.monday\.com/(?:protected_static|resources)/[^,]+$|"
+    r"^https://files-monday-com\.s3[^/\s]*\.amazonaws\.com/[^,]+$")
+
+
+def _imp_asset_urls(v):
+    """The monday file addresses in one cell, or None if that is not what it is."""
+    parts = [p.strip() for p in str(v or "").split(",")]
+    parts = [p for p in parts if p]
+    if not parts or not all(_MONDAY_ASSET.match(p) for p in parts):
+        return None
+    return parts
+
+
+def _imp_file_name(url):
+    """The file's name out of its address — the last segment, un-escaped."""
+    path = urllib.parse.urlparse(url).path
+    name = urllib.parse.unquote((path.rsplit("/", 1)[-1] or "").strip())
+    return name[:255] or "קובץ"
+
+
 def _imp_infer_type(values):
     non_empty = [v for v in values if v is not None and str(v).strip() != ""]
     if not non_empty:
         return "text"
+    if all(_imp_asset_urls(v) for v in non_empty):
+        return "files"
     if all(_imp_to_number(v) is not None for v in non_empty):
         return "number"
     if all(_imp_to_date_iso(v) is not None for v in non_empty):
@@ -1854,6 +1890,9 @@ def _imp_coerce(v, ctype):
         return _imp_to_number(v)
     if ctype == "date":
         return _imp_to_date_iso(v)
+    if ctype == "files":
+        urls = _imp_asset_urls(v) or []
+        return [{"name": _imp_file_name(u), "url": u} for u in urls] or None
     s = str(v).strip()
     return s or None
 
@@ -1922,6 +1961,59 @@ def _imp_parse_tabular(raw, filename, with_shape=False):
     return [(0, False, r) for r in rows] if with_shape else rows
 
 
+def _imp_formula_text(raw, filename, shaped):
+    """Fill the cells a spreadsheet left uncalculated with the formula itself.
+
+    Excel stores two things for a formula cell: the formula, and the value it
+    last worked out. A file written by a program — or one never opened since the
+    formula was typed — carries the formula and no value, and read for values
+    those cells come back empty. A whole column of them then arrives as a column
+    nobody ever filled, which is the opposite of what the file says.
+
+    So where there is no value, the formula is what the file says about that
+    cell, and it comes across as text — "=B2*2", verbatim, in a text column.
+    Nothing is computed here: a spreadsheet's formula is over cell addresses
+    (B2), and the addresses are gone the moment the rows become items.
+
+    Returns (shaped, how many cells were filled this way).
+    """
+    if not (filename or "").lower().endswith((".xlsx", ".xlsm")):
+        return shaped, 0                     # a CSV holds text, formulas included
+    import io as _io
+    import zipfile
+    try:
+        # Reading the workbook a second time is not free, so first ask the file
+        # whether it has any formulas at all: the sheet's XML carries an <f>
+        # element per formula cell, and the board is the first sheet.
+        with zipfile.ZipFile(_io.BytesIO(raw)) as z:
+            sheets = sorted(n for n in z.namelist() if n.startswith("xl/worksheets/sheet"))
+            if not sheets or b"<f" not in z.read(sheets[0]):
+                return shaped, 0
+    except Exception:                        # noqa: BLE001 — not a readable zip; the caller reports
+        return shaped, 0
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(_io.BytesIO(raw), data_only=False, read_only=True)
+    except Exception:                        # noqa: BLE001
+        return shaped, 0
+    try:
+        src = [list(r) for r in wb.active.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+    filled = 0
+    for i, (_lvl, _band, vals) in enumerate(shaped):
+        if i >= len(src):
+            break
+        for j, v in enumerate(vals):
+            if v is not None and str(v).strip() != "":
+                continue
+            f = src[i][j] if j < len(src[i]) else None
+            if isinstance(f, str) and f.startswith("="):
+                vals[j] = f
+                filled += 1
+    return shaped, filled
+
+
 def _imp_conversation_sheet(raw, filename):
     """The rows of the workbook's conversation sheet, when it has one.
 
@@ -1955,6 +2047,108 @@ def _imp_conversation_sheet(raw, filename):
         return best or []
     finally:
         wb.close()
+
+
+def _imp_files_sheet(raw, filename):
+    """The rows of the workbook's file sheet, when it has one.
+
+    A file cell holds the file's name, because that is what a grid can show. The
+    address it is served at does not fit in the grid at all, so a board exported
+    from here writes it on a sheet of its own — the same answer the conversation
+    got. Read back, the files come home as files; ignored, they come home as
+    names with nothing behind them.
+    """
+    if not (filename or "").lower().endswith((".xlsx", ".xlsm")):
+        return []
+    import io as _io
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(_io.BytesIO(raw), data_only=True, read_only=True)
+    except Exception:                            # noqa: BLE001 — the caller reports it
+        return []
+    try:
+        want = {"פריט", "שם הקובץ"}
+        for ws in wb.worksheets:
+            if ws is wb.worksheets[0]:
+                continue                         # the first sheet is the board itself
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+            if not rows:
+                continue
+            head = {str(c).strip() for c in rows[0] if c is not None}
+            if ws.title.strip() == "קבצים" or want <= head:
+                return rows
+        return []
+    finally:
+        wb.close()
+
+
+def _imp_attach_files(db, rows, tasks, board, files, max_cols):
+    """Hang an imported file sheet on the items and columns it names.
+
+    Matched by name — the item's title and the column's title — because the ids
+    in the file belong to the board it came from. A column the sheet names that
+    came in as text IS that file column: the grid could only carry its names, so
+    the names are replaced by the files themselves.
+    """
+    out = {"attached": 0, "unmatched_items": [], "unmatched_cols": []}
+    if not rows:
+        return out
+    head = [str(c).strip() if c is not None else "" for c in rows[0]]
+    idx = {h: i for i, h in enumerate(head)}
+    if not all(h in idx for h in ("פריט", "שם הקובץ")):
+        return out
+    cell = lambda r, h: (str(r[idx[h]]).strip()
+                         if h in idx and idx[h] < len(r) and r[idx[h]] is not None else "")
+
+    by_title = {}
+    for t in tasks:
+        by_title.setdefault((t.title or "").strip(), t)
+    settings = dict(board.settings or {})
+    cols = [dict(c) for c in (settings.get("columns") or [])]
+    by_col = {(c.get("title") or "").strip(): c for c in cols if c["id"].startswith("col_")}
+    custom = [c for c in cols if c["id"].startswith("col_")]
+
+    # item -> column -> [entries], gathered first so one cell is written once
+    wanted, missing_items, missing_cols = {}, set(), set()
+    for r in rows[1:]:
+        title, cname = cell(r, "פריט"), cell(r, "עמודה")
+        name, url = cell(r, "שם הקובץ"), cell(r, "כתובת")
+        if not (name or url):
+            continue
+        t = by_title.get(title)
+        if t is None:
+            missing_items.add(title or "—")
+            continue
+        col = by_col.get(cname)
+        if col is None:
+            if len(custom) >= max_cols - 1:
+                missing_cols.add(cname or "—")
+                continue
+            col = {"id": "col_" + uuid.uuid4().hex[:8], "type": "files", "title": cname or "קבצים",
+                   "options": None, "formula": None, "connect": None, "copy_mode": None,
+                   "perms": {}}
+            cols.append(col)
+            custom.append(col)
+            by_col[cname] = col
+        col["type"] = "files"           # a file column, whatever the grid made of it
+        wanted.setdefault(t.id, {}).setdefault(col["id"], []).append({"name": name, "url": url})
+
+    if not wanted and not missing_items and not missing_cols:
+        return out
+    settings["columns"] = cols
+    board.settings = settings
+    tasks_by_id = {t.id: t for t in tasks}
+    for tid, per_col in wanted.items():
+        t = tasks_by_id[tid]
+        cf = dict(t.custom_fields or {})
+        for cid, entries in per_col.items():
+            got = _import_attachments(db, entries, files["budget"], files["stats"])
+            cf[cid] = got
+            out["attached"] += len(got)
+        t.custom_fields = cf
+    out["unmatched_items"] = sorted(missing_items)[:20]
+    out["unmatched_cols"] = sorted(missing_cols)[:20]
+    return out
 
 
 def _imp_attach_conversation(db, rows, tasks, actor_id, budget):
@@ -2094,6 +2288,16 @@ _IMPORT_OPENER = urllib.request.build_opener(_NoRedirects)
 IMPORT_FILE_FAIL_STREAK = 5
 
 
+def _stored_file_token(url):
+    """The token in one of this app's own file addresses, or None.
+
+    `/api/files/<32 hex>` is where an uploaded file is served from, so a file
+    cell in a board exported from here names a blob this database already holds.
+    """
+    m = re.fullmatch(r"(?:https?://[^/]+)?/api/files/([0-9a-f]{8,64})", (url or "").strip())
+    return m.group(1) if m else None
+
+
 def _signed_url_expired(url, now=None):
     """Has this pre-signed link already lapsed, going by the link itself?
 
@@ -2126,10 +2330,17 @@ def _fetch_import_file(url):
             return None
         req = urllib.request.Request(url, headers={"User-Agent": "CODE-CAL-MISSIONS/import"})
         with _IMPORT_OPENER.open(req, timeout=IMPORT_FILE_TIMEOUT) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            # A monday link that needs a session does not answer 401 — it answers
+            # 200 with the login page. Stored, that is a docx-shaped file holding
+            # monday's HTML, which is worse than the name on its own: it opens,
+            # and it is not the file.
+            if ctype == "text/html":
+                return None
             data = resp.read(MAX_UPLOAD_BYTES + 1)
             if not data or len(data) > MAX_UPLOAD_BYTES:
                 return None
-            return data, (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+            return data, ctype
     except Exception:                              # noqa: BLE001 — see the docstring
         return None
 
@@ -2149,6 +2360,32 @@ def _import_attachments(db, files, budget, stats):
                             stats.__setitem__(why, stats.get(why, 0) + 1))
         if not url:
             out.append({"name": name[:255], "url": ""})
+            continue
+        # ── the file is already stored here ───────────────────────────────
+        # A board exported from here and imported back names its files by the
+        # address they are served at. The bytes never left, so nothing is
+        # fetched and nothing is copied — the cell points at the same blob.
+        token = _stored_file_token(url)
+        if token:
+            if db.query(UploadedFile.id).filter(UploadedFile.token == token).first():
+                out.append({"name": name[:255], "url": url})
+                stats["reused"] = stats.get("reused", 0) + 1
+            else:
+                out.append({"name": name[:255], "url": ""})
+                stats["gone"] = stats.get("gone", 0) + 1
+            continue
+        # ── a link this server cannot fetch ───────────────────────────────
+        # monday's /protected_static/ address is the file behind a LOGIN, and the
+        # login is the user's, not this server's: unauthenticated it answers 200
+        # with monday's sign-in page. It is what a monday Excel export writes for
+        # every attachment, so the name and the link are kept — a chip that opens
+        # the file in monday, where the user is signed in — and no round trip is
+        # spent being told so. Anything on a host this server does not fetch from
+        # is the same answer.
+        parts = urllib.parse.urlparse(url)
+        if (parts.path.startswith("/protected_static/")
+                or not _import_host_allowed(parts.hostname)):
+            keep("linked")
             continue
         # the two questions that can be answered without a round trip
         if _signed_url_expired(url):
@@ -2181,9 +2418,133 @@ def _import_attachments(db, files, budget, stats):
 
 # Column headings that mean "the item this row belongs under". A CSV cannot
 # indent, so naming the parent is the only way such a file can say it.
+# The three columns the system issues on its own — the item's identifier, when
+# it was created and by whom. An imported board gets them like any other board,
+# but AFTER the columns that came out of the file: nobody typed them, nobody
+# asked for them, and in front of the board they read as data that came from
+# somewhere. A function, because each import needs its own dicts to mutate.
+def IMPORT_SYSTEM_COLS():
+    return [{"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
+            {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
+            {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"}]
+
+
 IMPORT_PARENT_HEADERS = {"פריט אב", "תת פריט של", "תת־פריט של", "תת-פריט של",
                          "שייך לפריט", "parent", "parent item", "sub-item of",
                          "subitem of", "sub item of"}
+
+
+# Column headings that mean "the group this row belongs to". A flat sheet — a
+# CSV, or one built by hand — cannot indent and has no group rows, so a column
+# naming the group is the only way such a file can say how the board is divided.
+IMPORT_GROUP_HEADERS = {"קבוצה", "שם הקבוצה", "קבוצת", "קיבוץ", "group",
+                        "group name", "group title", "board group"}
+
+# What monday calls the column it writes its sub-items' names into. It is not a
+# column of the board — the sub-items come in as themselves, under their items —
+# so it is the same names a second time, comma-joined, as text.
+IMPORT_SUBITEMS_HEADERS = {"subitems", "sub-items", "sub items", "subtasks",
+                           "תתי פריטים", "תתי־פריטים", "תתי-פריטים",
+                           "תת פריטים", "תתי משימות"}
+
+
+def _imp_monday_layout(shaped):
+    """monday's own Excel/CSV export, read as the divided board it describes.
+
+    monday does not write one table. It writes the board's name on a line of its
+    own and then, for every group, that group's name on a line of its own
+    followed by a fresh copy of the header row:
+
+        ניהול תוכן אתר החברה           ← the board
+        עליה לאוויר - יוני             ← a group
+        Name | Subitems | מטפל | …     ← the header
+        דף הבית | … | …                ← an item
+        Subitems | Name | מטפל | …     ← the sub-item header (a "band")
+             | הפרויקטים שלנו | …      ← a sub-item
+        באגים                          ← the next group
+        Name | Subitems | מטפל | …     ← the header, again
+
+    Read as one flat table from row 0 — which is what happened until now — the
+    board's NAME becomes the header row: every column arrives titled "עמודה 3",
+    the real header and each group name arrive as items, the sub-items arrive as
+    nameless items, and the whole board lands in one invented group. Nothing
+    about the file is unclear; it states its division on every one of those
+    lines.
+
+    Returns `(title, header, body, summaries)`, the body in the same `(level,
+    is_band, values)` shape a board exported from here is already read in — a
+    group at 0, an item at 1, a sub-item at 2 — so everything downstream of here
+    is unchanged. A sheet that is not this layout returns None and is read
+    exactly as before: the first row its header, every row under it an item.
+    """
+    def txt(vals):
+        return [("" if c is None else str(c).strip()) for c in vals]
+
+    rows = [txt(v) for _, _, v in shaped]
+    if len(rows) < 3:
+        return None
+    filled = [sum(1 for c in r if c) for r in rows]
+    # a line carrying one cell, and that cell the first: a name, not a row
+    lone = [f == 1 and bool(r and r[0]) for r, f in zip(rows, filled)]
+    head = next((i for i, f in enumerate(filled) if f >= 3), None)
+    # the header sits under the board's name, and under the first group's name
+    # when there is one. Anything else — a header on row 0, a preamble longer
+    # than that — is not this layout.
+    if head is None or head not in (1, 2) or not all(lone[:head]):
+        return None
+    if head + 1 >= len(rows):
+        return None
+    header = rows[head]
+    labels = [c for c in header if c]
+    name_lbl = header[0]
+    sub_lbl = header[1] if len(header) > 1 else ""
+
+    def is_header(r):
+        return [c for c in r if c] == labels
+
+    def is_band(r):
+        # the sub-item header monday writes: its own column's title first, the
+        # item-name column's title second, and the sub-item columns after them
+        return bool(sub_lbl) and len(r) > 1 and r[0] == sub_lbl and r[1] == name_lbl
+
+    body, in_band, i, summaries = [], False, head + 1, 0
+    if head == 2:
+        body.append((0, False, shaped[1][2]))        # the group this header is for
+    while i < len(shaped):
+        r, vals = rows[i], shaped[i][2]
+        # A name on a line of its own, with the header repeated beneath it, is
+        # how monday says "a new group starts here". The header-beneath is what
+        # tells it apart from an item nobody filled anything in for.
+        if lone[i] and i + 1 < len(rows) and is_header(rows[i + 1]):
+            body.append((0, False, vals))
+            in_band, i = False, i + 2                # the repeat is not a row of the board
+            continue
+        if is_header(r):
+            i += 1
+            continue
+        if is_band(r):
+            body.append((2, True, vals))
+            in_band, i = True, i + 1
+            continue
+        if in_band and not r[0]:
+            body.append((2, False, vals))            # a sub-item: its name is in the second cell
+            i += 1
+            continue
+        if not r[0] and not (len(r) > 1 and r[1]):
+            # monday closes each group with a summary line — no name anywhere, and
+            # in the date column the group's rolled-up range ("2024-05-05 to
+            # 2024-05-30"). Imported, that is a "פריט 38" holding one date that
+            # belongs to nobody; it was four of the forty-one items her real file
+            # "had". A row with a name in the second cell is a sub-item whose
+            # band went unread, and it is kept — counted as one of these, it
+            # would be a row of the board dropped without a word.
+            summaries += 1
+            i += 1
+            continue
+        in_band = False
+        body.append((1, False, vals))
+        i += 1
+    return rows[0][0], shaped[head][2], body, summaries
 
 
 # Colours handed to imported status/dropdown options. Same list the status
@@ -2334,11 +2695,9 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
 
         settings = {
             "views": ["table"],
-            "columns": [
-                {"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
-                {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
-                {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"},
-            ] + custom_cols,
+            # the board's own columns in the board's own order, and the three the
+            # system issues after them — see the note in _import_board_file
+            "columns": custom_cols + IMPORT_SYSTEM_COLS(),
             # The board's four built-in columns — אחראים, סטטוס, עדיפות,
             # תאריך יעד — are not in the file and nothing in this import fills
             # them. Left showing, they are four columns of "טרם הוגדר" standing
@@ -2510,6 +2869,8 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         shaped = _imp_parse_tabular(raw, filename, with_shape=True)
     except Exception:
         raise HTTPException(400, "לא ניתן לקרוא את הקובץ — ודא שהוא CSV או Excel תקין")
+    # Before anything is dropped, so the rows still line up with the sheet's own.
+    shaped, formula_cells = _imp_formula_text(raw, filename, shaped)
     # drop fully-empty rows
     shaped = [(lvl, band, r) for (lvl, band, r) in shaped
               if any(c is not None and str(c).strip() != "" for c in r)]
@@ -2519,8 +2880,20 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     ncols = min(max(len(r) for r in rows), IMPORT_MAX_COLS)
     if ncols < 1:
         raise HTTPException(400, "לא נמצאו עמודות בקובץ")
-    header = rows[0]
-    body = shaped[1:IMPORT_MAX_ROWS + 1]
+    # A board exported from monday states its name and its group division on
+    # lines of their own above the header; read from row 0 those lines become the
+    # header and two items. Read that layout as what it is, and fall back to
+    # "row 0 is the header" for every other sheet.
+    md = _imp_monday_layout(shaped)
+    if md:
+        sheet_title, header, all_body, summary_rows = md[0], md[1], md[2], md[3]
+    else:
+        sheet_title, header, all_body, summary_rows = None, rows[0], shaped[1:], 0
+    body = all_body[:IMPORT_MAX_ROWS]
+    # A sheet past the ceiling was cut here without a word, which is the one
+    # thing an import must not do: a board short by its last 400 rows looks
+    # exactly like a board that has 2,000.
+    rows_dropped = len(all_body) - len(body)
 
     def _cell(r, i):
         return (str(r[i]).strip() if i < len(r) and r[i] is not None else "")
@@ -2535,6 +2908,10 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     hier = any(lvl >= 1 for lvl, _, _ in body)
     parent_at = next((i for i in range(1, ncols)
                       if labels[i].strip().lower() in IMPORT_PARENT_HEADERS), None)
+    # and the same for the group: a sheet with a "קבוצה" column is dividing its
+    # board by it, the way an exported one divides by its group rows.
+    group_at = next((i for i in range(1, ncols)
+                     if labels[i].strip().lower() in IMPORT_GROUP_HEADERS), None)
 
     # ── read the sheet into groups, items and sub-items ──────────────────
     # `band` is the grey header this app writes over a sub-item block, naming the
@@ -2556,6 +2933,22 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         plan.append(("item", vals))
     item_rows = [v for kind, v in plan if kind == "item"]
     sub_rows = [v for kind, v in plan if kind == "sub"]
+    # monday writes its sub-items twice: once as their own rows under the band,
+    # and once comma-joined into a column of the item ("Subitems"). Kept, that
+    # column is the same names a second time as text, standing beside the
+    # sub-items it names. The band says which column it is — its own title is
+    # the band's first cell.
+    # The band names it — its own title is the band's first cell — and for a board
+    # whose sub-items were not exported there is no band, so monday's own name
+    # for the column stands in. Only ever inside monday's layout: a column
+    # someone here called "תתי משימות" by hand is a column of their board.
+    sub_col_at = None
+    if md:
+        _st = _cell(band_vals or [], 0)
+        def _is_sub_col(i):
+            return (labels[i] == _st if _st
+                    else labels[i].strip().lower() in IMPORT_SUBITEMS_HEADERS)
+        sub_col_at = next((i for i in range(1, ncols) if _is_sub_col(i)), None)
     if not item_rows:
         raise HTTPException(400, "לא נמצאו פריטים בקובץ")
 
@@ -2564,11 +2957,24 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     # sub-items have is typed from the sub-items, and one they share with the
     # items keeps the item column — sub-items on a board show a subset of its
     # columns, never a parallel set of their own.
-    def _blank_col(i):
-        return (not _cell(header, i)
-                and not any((r[i].strip() if i < len(r) and r[i] else "") for r in item_rows))
+    # A column with nothing under it on any row is not a column of this board —
+    # the same rule the monday import follows. It is created neither when the
+    # sheet gives it no heading (a column that is not there at all) nor when it
+    # has a heading and no values: an empty column standing in front of the
+    # board that was actually imported is a column nobody asked for. Named in
+    # the report either way, so "where is it?" has an answer.
+    def _has_values(i):
+        return any((str(r[i]).strip() if i < len(r) and r[i] is not None else "")
+                   for r in item_rows)
 
-    data_at = [i for i in range(1, ncols) if i != parent_at and not _blank_col(i)]
+    def _blank_col(i):
+        return not _cell(header, i) and not _has_values(i)
+
+    empty_cols = [labels[i] for i in range(1, ncols)
+                  if i not in (parent_at, group_at, sub_col_at)
+                  and _cell(header, i) and not _has_values(i)]
+    data_at = [i for i in range(1, ncols)
+               if i not in (parent_at, group_at, sub_col_at) and _has_values(i)]
     col_types = [_imp_infer_type([(r[i] if i < len(r) else None) for r in item_rows])
                  for i in data_at]
     col_ids = ["col_" + uuid.uuid4().hex[:8] for _ in data_at]
@@ -2580,6 +2986,10 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     sub_map = []          # (index in the sub row, column id)
     sub_col_ids = []
     for i in range(2, len(sub_labels)):
+        # a band cell with nothing written in it names no column; invented, it
+        # arrives as an "עמודה 21" the sub-items show and nobody can fill
+        if not _cell(band_vals or [], i):
+            continue
         if len(custom_cols) >= IMPORT_MAX_COLS - 1 and sub_labels[i] not in by_label:
             continue
         hit = by_label.get(sub_labels[i])
@@ -2607,14 +3017,19 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         maxpos = (db.query(func.max(Board.position))
                   .filter(Board.environment_id == env_id, Board.folder_id == folder_id).scalar())
         base = os.path.splitext(os.path.basename(filename or ""))[0]
-        board_name = (name or "").strip() or base or "לוח מיובא"
+        # An exported board names itself on its first line; the file it was saved
+        # as carries whatever the browser called it ("Spotical_1786443119").
+        board_name = (name or "").strip() or (sheet_title or "").strip() or base or "לוח מיובא"
         settings = {
             "views": ["table"],
-            "columns": [
-                {"id": "sys_item_id", "type": "item_id", "title": "מספר מזהה"},
-                {"id": "sys_created_at", "type": "created_at", "title": "מועד יצירה"},
-                {"id": "sys_created_by", "type": "created_by", "title": "יוצר הרשומה"},
-            ] + custom_cols,
+            # The file's columns first, in the file's own order, and the three
+            # the system issues on its own after them. Put first — which is
+            # where a board created by hand starts with them — they sit between
+            # the item's name and the first column of the board that was
+            # actually imported, so the migrated board reads three columns of
+            # metadata before it reads anything anybody wrote. It is the same
+            # judgement the export already makes (see EXPORT_AUTO_COLS).
+            "columns": custom_cols + IMPORT_SYSTEM_COLS(),
             "col_labels": {"item": labels[0]},   # name the item column after the first header
             # The board's four built-in columns — אחראים, סטטוס, עדיפות,
             # תאריך יעד — are not in the file and nothing in this import fills
@@ -2639,10 +3054,28 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         # divided; inventing בתכנון/בביצוע/הושלם over it would file every item
         # under a heading the file never claimed. A flat sheet has no such
         # division, and the three stages are the board it is being turned into.
-        named = [v[0] for kind, v in plan if kind == "group" and v[0]]
+        #
+        # Three ways a file names the division, in the order they are trusted:
+        # the group rows an exported board writes between its items, a column
+        # naming each row's group — the only way a CSV can say it — and, failing
+        # both, nothing, which is the one case that gets the default stages.
+        named = [_cell(v, 0) for kind, v in plan if kind == "group" and _cell(v, 0)]
+        col_groups = []
+        if not named and group_at is not None:
+            for kind, vals in plan:
+                if kind != "item":
+                    continue
+                g = _cell(vals, group_at)
+                if g and g not in col_groups:
+                    col_groups.append(g)
+        # an item whose group cell is empty belongs to no group the file named,
+        # and filing it under the first one would be a quiet misplacement
+        col_blank = bool(col_groups) and any(
+            not _cell(v, group_at) for kind, v in plan if kind == "item")
+        from_file = named or col_groups
         groups = []
-        if named:
-            for i, gname in enumerate(named):
+        if from_file:
+            for i, gname in enumerate(list(from_file) + (["ללא קבוצה"] if col_blank else [])):
                 groups.append(Group(board_id=b.id, name=gname[:200], position=i,
                                     color=IMPORT_PALETTE[i % len(IMPORT_PALETTE)],
                                     task_status=TaskStatus.BACKLOG))
@@ -2655,12 +3088,23 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                             task_status=TaskStatus.DONE)]
         db.add_all(groups)
         db.flush()
+        by_group = {g.name: g for g in groups} if col_groups else {}
+
+        # The same budget the monday import runs under, shared by every file in
+        # this one: the cells that hold addresses, and the file sheet.
+        files = {"budget": [IMPORT_MAX_FILES, IMPORT_MAX_FILE_MB * 1024 * 1024],
+                 "stats": {}}
 
         def cells_of(vals, pairs):
             cf = {"status_unset": True, "priority_unset": True}
             for i, cid in pairs:
                 col = next((c for c in custom_cols if c["id"] == cid), None)
                 val = _imp_coerce(vals[i] if i < len(vals) else None, col["type"] if col else "text")
+                if col and col["type"] == "files" and val:
+                    # a name is enough to see that an item had a spec attached,
+                    # and useless for opening it — so the bytes come too, where
+                    # they can be had at all
+                    val = _import_attachments(db, val, files["budget"], files["stats"])
                 if val is not None and val != "":
                     cf[cid] = val
             return cf
@@ -2679,7 +3123,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                 continue
             if kind == "sub":
                 # the band's first column is the sub-item's own name
-                title = (vals[1] if len(vals) > 1 else "") or f"תת־פריט {subs_made + 1}"
+                title = _cell(vals, 1) or f"תת־פריט {subs_made + 1}"
                 if last_item is None:
                     continue                      # a sub-item with nothing above it
                 t = Task(board_id=b.id, group_id=last_item.group_id, parent_id=last_item.id,
@@ -2693,8 +3137,11 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                 made_tasks.append(t)
                 subs_made += 1
                 continue
-            title = vals[0] if vals else ""
-            title = title or f"פריט {pos + 1}"
+            title = _cell(vals, 0) or f"פריט {pos + 1}"
+            if by_group:
+                # the row names its own group, so the row decides — not its place
+                # in the file, which for a flat sheet says nothing
+                grp = by_group.get(_cell(vals, group_at)) or groups[-1]
             p = gpos[grp.id] = gpos.get(grp.id, -1) + 1
             t = Task(board_id=b.id, group_id=grp.id, title=title[:500], status=TaskStatus.BACKLOG,
                      priority=Priority.MEDIUM, position=p, created_by=creator,
@@ -2706,7 +3153,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
             made_tasks.append(t)
             by_title.setdefault(t.title, t)
             if parent_at is not None:
-                pname = vals[parent_at] if parent_at < len(vals) else ""
+                pname = _cell(vals, parent_at)
                 if pname:
                     parent_of[t.id] = pname
             last_item = t
@@ -2735,21 +3182,60 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         # the conversation sheet, when the workbook carries one
         talk = _imp_attach_conversation(db, _imp_conversation_sheet(raw, filename),
                                         made_tasks, creator, [IMPORT_MAX_MESSAGES])
+        # and the file sheet, which is where the addresses of the attachments are
+        attached = _imp_attach_files(db, _imp_files_sheet(raw, filename), made_tasks, b,
+                                     files, IMPORT_MAX_COLS)
         db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
         db.commit()
         db.refresh(b)
+        st_files = files["stats"]
         return {"id": b.id, "name": b.name, "icon": b.icon, "items": pos,
                 "subitems": subs_made, "columns": len(custom_cols),
                 "messages": talk["messages"] + talk["replies"],
+                "files": st_files.get("imported", 0) + st_files.get("reused", 0),
                 "report": {"messages_imported": talk["messages"] + talk["replies"],
+                           # the files: brought across, already here, or a named
+                           # link to somewhere this server cannot fetch from
+                           "files_imported": st_files.get("imported", 0),
+                           "files_bytes": st_files.get("bytes", 0),
+                           "files_reused": st_files.get("reused", 0),
+                           "files_linked": st_files.get("linked", 0),
+                           "files_unreachable": st_files.get("failed", 0),
+                           "files_expired": st_files.get("expired", 0),
+                           "files_over_budget": st_files.get("over_budget", 0),
+                           "files_gone": st_files.get("gone", 0),
+                           "files_items_unmatched": attached["unmatched_items"],
                            "replies_imported": talk["replies"],
                            "conversation_items_unmatched": talk["unmatched_items"],
                            "people_unmatched": talk["unmatched_people"],
-                           "groups": len(named),
+                           # the division that came out of the FILE — a board
+                           # that got the three default stages instead says so
+                           # with a 0 here and "default" below, rather than
+                           # reporting three groups nobody asked for
+                           "groups": len(from_file),
+                           "group_names": [g.name for g in groups][:40],
+                           # and where it came from, because "3 קבוצות" over an
+                           # undivided board reads exactly like a division
+                           "groups_from": ("sheet" if named else
+                                           "column" if col_groups else "default"),
+                           "groups_column": labels[group_at] if (col_groups and group_at is not None) else "",
+                           # the line monday writes under each group, holding
+                           # that group's rolled-up dates and no name
+                           "summary_rows": summary_rows,
+                           # cells the spreadsheet never worked out, which came
+                           # across as the formula itself rather than as empty
+                           "formula_cells_as_text": formula_cells,
+                           # a heading in the file with nothing under it: named,
+                           # not created — see _has_values above
+                           "columns_empty": empty_cols,
+                           "rows_dropped": rows_dropped,
                            # how the file said what belongs under what
-                           "hierarchy": ("indent" if (hier and sub_rows)
+                           "hierarchy": ("band" if (md and sub_rows)
+                                         else "indent" if (hier and sub_rows)
                                          else "parent_column" if (parent_at is not None and subs_made)
                                          else ""),
+                           # the columns that were the sub-items themselves
+                           "as_subitems": ([labels[sub_col_at]] if sub_col_at is not None else []),
                            "parents_unmatched": sorted(set(orphans))[:20]}}
 
 
@@ -3568,6 +4054,41 @@ TALK_HEADERS = ["מספר מזהה", "פריט", "סוג", "מאת", "נכתב",
                 "לייקים", "קבצים", "מזהה הודעה", "בתגובה להודעה"]
 
 
+# The sheet that carries the attachments. A file cell shows the file's NAME, and
+# that is what a grid can hold — so exported as a grid, a board's files become a
+# list of names, and re-imported they are names with nothing behind them. The
+# names stay in the cell where a reader expects them, and the sheet below carries
+# what a cell cannot: which item, which column, and where the bytes are.
+FILE_HEADERS = ["מספר מזהה", "פריט", "עמודה", "שם הקובץ", "כתובת"]
+
+
+def _export_files(db, board_id):
+    """Every file attached to a cell of this board: one row per file.
+
+    Read from the board rather than from the grid the browser sent, because the
+    grid holds the rendered cell — the names — and the address of each file is
+    exactly the half it drops.
+    """
+    b = db.query(Board).filter(Board.id == board_id).first()
+    cols = [c for c in ((b.settings or {}).get("columns") or [])
+            if c.get("type") == "files"] if b else []
+    if not cols:
+        return []
+    titles = {c["id"]: (c.get("title") or "") for c in cols}
+    rows = []
+    for t in (db.query(Task).filter(Task.board_id == board_id)
+              .order_by(Task.id).limit(XLSX_MAX_ROWS).all()):
+        for cid, title in titles.items():
+            for f in (t.custom_fields or {}).get(cid) or []:
+                if not isinstance(f, dict) or not (f.get("name") or f.get("url")):
+                    continue
+                rows.append([t.item_uid or "", t.title or "", title,
+                             f.get("name") or "", f.get("url") or ""])
+                if len(rows) >= XLSX_MAX_ROWS:
+                    return rows
+    return rows
+
+
 def _export_conversation(db, board_id):
     """Every comment on the board's items, threaded, oldest first.
 
@@ -3626,6 +4147,7 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
             raise HTTPException(403, "אין לך גישה ללוח זה")
         board_color = b.color if _valid_hex(b.color) else "#0073ea"
         talk = _export_conversation(db, board_id)
+        attached = _export_files(db, board_id)
 
     headers = [str(h)[:XLSX_MAX_TEXT] for h in (data.get("columns") or [])][:XLSX_MAX_COLS]
     rows = (data.get("rows") or [])[:XLSX_MAX_ROWS]
@@ -3707,6 +4229,31 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
             vertical="top", wrap_text=True)
     for i, w in enumerate(twidths, start=1):
         ts.column_dimensions[get_column_letter(i)].width = w
+
+    # ── sheet 3: the files ─────────────────────────────────────────────────
+    # Written whenever the board has a file column, empty or not, for the same
+    # reason the conversation sheet always is: a predictable shape can be read
+    # back, and "this board has file columns and nothing in them" is an answer.
+    if attached or any(c.get("type") == "files"
+                       for c in ((b.settings or {}).get("columns") or [])):
+        fs = wb.create_sheet("קבצים")
+        fs.sheet_view.rightToLeft = True
+        for i, h in enumerate(FILE_HEADERS, start=1):
+            c = fs.cell(row=1, column=i, value=h)
+            c.data_type = "s"
+            c.font = Font(color="FFFFFFFF")
+            c.fill = head_fill
+            c.alignment = Alignment(vertical="center")
+        fs.freeze_panes = "A2"
+        fs.auto_filter.ref = f"A1:{get_column_letter(len(FILE_HEADERS))}1"
+        fwidths = [len(h) + 2 for h in FILE_HEADERS]
+        for n, frow in enumerate(attached, start=2):
+            for i, spec in enumerate(frow, start=1):
+                cell = _xlsx_cell(fs, n, i, spec)
+                text = "" if cell.value is None else str(cell.value)
+                fwidths[i - 1] = max(fwidths[i - 1], min(len(text) + 2, 60))
+        for i, w in enumerate(fwidths, start=1):
+            fs.column_dimensions[get_column_letter(i)].width = w
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -9265,6 +9812,32 @@ def whoami(request: Request):
             "ws_role": _ws_role(db, u.id),
             "auth_mode": auth_mode(),
         }
+
+
+@app.get("/api/auth/dev-users")
+def dev_picker_users():
+    """The directory the local picker offers. Dev mode only.
+
+    Signed out there is no identity to read /api/users with, and the way round
+    it was for the picker to sign in as user 1, then 2, then 3 and try each. Those
+    are the ids the demo seed happens to create: on a database whose demo users
+    have been removed — which is what a real local database looks like after a
+    while — all three are refused, the picker's list comes back empty, and the
+    login screen says "אין משתמשים" with no way past it.
+
+    Not an opening: dev mode already accepts any user id from a header or a
+    cookie, so anyone who can reach this server can already act as anyone on it.
+    That is why dev mode must never be on in production (main prints the warning
+    at boot), and why this route answers 404 — not 403 — in every other mode:
+    outside dev it does not exist.
+    """
+    if auth_mode() != "dev":
+        raise HTTPException(404, "not found")
+    with Session(engine) as db:
+        users = (db.query(User).filter(User.is_active.isnot(False))
+                 .order_by(User.id).all())
+        return [{"id": u.id, "name": u.name, "email": u.email, "role": u.role,
+                 "avatar_url": u.avatar_url} for u in users]
 
 
 @app.get("/api/users/{uid}/login-history")

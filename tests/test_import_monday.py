@@ -78,8 +78,15 @@ def test_every_dropped_column_is_named_with_a_reason(client):
                _cv("b1", "כפתור", "button", text="Click me")])
     rep = _upload(client, _resp([_item("פריט", cols)]), name="דוח").json()["report"]
     named = {s["title"] for s in rep["skipped"]}
-    assert {"תמיד ריקה", "נוסחה", "כפתור"} <= named
+    assert "כפתור" in named
     assert all(s["reason"] for s in rep["skipped"]), "a column was dropped with no reason given"
+    # A column with no value on any item is not created, and is named in its own
+    # part of the report rather than among the columns that were dropped: an
+    # empty text column is empty in monday too, while an empty formula column is
+    # one the export never asked for the result of. Either way it is NAMED —
+    # nothing leaves the file without appearing somewhere in the report.
+    assert rep["columns_empty"] == ["תמיד ריקה"]
+    assert [c["title"] for c in rep["columns_need_reexport"]] == ["נוסחה"]
     assert rep["columns_found"] == len(cols)
 
 

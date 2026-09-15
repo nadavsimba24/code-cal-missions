@@ -907,6 +907,10 @@ body.coldragging .col-grip{opacity:1}
 .pop-sub:hover > .pop-subm,.pop-sub.open > .pop-subm{display:block}
 .pop-sub.open > .rm-item,.pop-sub.open > .cell-pop-opt2{background:var(--row-hover)}
 .pop-subm .cell-pop-opt2{width:100%;font-size:12.5px}
+/* a line of a flyout that is something to read rather than something to click —
+   the formula an imported column carries */
+.pop-note{padding:7px 9px;margin-bottom:3px;font-size:12px;line-height:1.5;color:var(--text);
+  background:var(--bg);border:1px solid var(--border);border-radius:6px;word-break:break-word}
 /* when the menu itself opened upward (e.g. the bottom selection bar), its
    side flyouts must grow up too, so a long קבוצה/לוח list stays fully visible */
 .cell-pop.subm-up .pop-subm{top:auto;bottom:-6px}
@@ -2430,14 +2434,18 @@ const Auth = {
   /* The picker exists only in local dev mode. In production the identity comes
      from Entra ID via Azure Easy Auth and cannot be chosen in the browser. */
   _pickerUsers: [],
+  _pickerError:'',
   async loadPickerUsers(){
-    // signed out, so /api/users is closed to us — dev mode signs in as the first
-    // seeded user to read the directory, then lets the developer switch.
-    for(const probe of [1,2,3]){
-      setDevUser(probe);
-      try{ this._pickerUsers=await api('/api/users'); return; }catch(e){}
-    }
-    setDevUser(null); this._pickerUsers=[];
+    /* Signed out, /api/users is closed to us. It used to be read by signing in
+       as user 1, then 2, then 3 — the ids the demo seed happens to create. On a
+       database whose demo users have been removed (ids 8, 9, 10 on hers) all
+       three are refused and the login screen offers "אין משתמשים" with no way
+       past it. Dev mode has a directory of its own, which exists only while the
+       server is in dev mode. */
+    setDevUser(null);          // we are signed out; a stale cookie is not us
+    this._pickerError='';
+    try{ this._pickerUsers=await api('/api/auth/dev-users'); }
+    catch(e){ this._pickerUsers=[]; this._pickerError=(e&&e.detail)||(e&&e.message)||''; }
   },
   showLogin(){
     const box=document.getElementById('login-users');
@@ -2446,7 +2454,14 @@ const Auth = {
         <span class="av" style="background:var(--primary)">${avatarInner(u)}</span>
         <span class="lu-info"><span class="lu-name">${esc(u.name)}</span><span class="lu-role">${esc(ROLE_HE[u.role]||u.role)}</span></span>
         <i class="fa-solid fa-arrow-left"></i>
-      </button>`).join('')||'<div class="empty" style="padding:20px">אין משתמשים</div>';
+      </button>`).join('')||('<div class="empty" style="padding:20px">'
+        + (this._pickerError
+           ? '<div>לא ניתן לקרוא את רשימת המשתמשים</div>'
+             +'<div style="font-size:12px">'+esc(this._pickerError)+'</div>'
+           : '<div>אין משתמשים פעילים במסד הנתונים</div>'
+             +'<div style="font-size:12px">יש להוסיף משתמש, או למחוק את cityos.db ולהפעיל '
+             +'מחדש כדי לזרוע מחדש נתוני דמו.</div>')
+        + '</div>');
     document.getElementById('login').classList.add('open');
   },
   showSignedOut(){
@@ -3492,6 +3507,7 @@ function importReport(b){
      with more top-level items than it should have. So the file's own answer is
      stated, and every name that found no parent is listed. */
   const HIER_HE={indent:'ההיררכיה נקראה מההזחה בקובץ — פריט, ותחתיו תתי־הפריטים שלו',
+                 band:'ההיררכיה נקראה מכותרות תתי־הפריטים שמאנדיי כותב בקובץ — פריט, מתחתיו כותרת, ומתחתיה תתי־הפריטים שלו',
                  parent_column:'ההיררכיה נקראה מעמודת פריט האב'};
   const lost=r.parents_unmatched||[];
   const hierHTML=(r.hierarchy||lost.length)?`
@@ -3523,29 +3539,58 @@ function importReport(b){
      links last about an hour. So the report says how many bytes actually crossed
      and how many are now a name only — and what to do about it. */
   const mb=n=>n>=1048576?(n/1048576).toFixed(1)+'MB':Math.max(1,Math.round(n/1024))+'KB';
-  const fileHTML=(r.files_imported||r.files_unreachable||r.files_over_budget)?`
-    <div class="imp-sec${(r.files_unreachable||r.files_over_budget)?' imp-warn':''}"><div class="imp-sec-t">
+  const fileAny=r.files_imported||r.files_unreachable||r.files_over_budget
+                ||r.files_reused||r.files_linked||r.files_gone
+                ||(r.files_items_unmatched||[]).length;
+  const fileHTML=fileAny?`
+    <div class="imp-sec${(r.files_unreachable||r.files_over_budget||r.files_gone)?' imp-warn':''}"><div class="imp-sec-t">
       <i class="fa-solid fa-paperclip"></i> קבצים</div>
-      ${r.files_imported?`<div class="imp-why">${r.files_imported} קבצים הועברו לכאן (${esc(mb(r.files_bytes||0))}) — הם נשמרו במערכת וניתן לפתוח אותם.</div>`:''}
+      ${r.files_imported?`<div class="imp-why">${r.files_imported} קבצים הועברו לכאן (${esc(mb(r.files_bytes||0))}) — הם נשמרו במערכת וניתן לפתוח אותם, בדיוק כמו קובץ שהועלה כאן ביד.</div>`:''}
+      ${r.files_reused?`<div class="imp-why">${r.files_reused} קבצים היו כבר כאן — הלוח יוצא מהמערכת הזאת וחזר אליה, והקבצים עצמם מעולם לא עזבו. התאים מפנים לאותם קבצים; שום דבר לא הועתק פעמיים.</div>`:''}
+      ${r.files_linked?`<div class="imp-why">${r.files_linked} קבצים הגיעו <b>כקישור בעל שם</b> ולא כקובץ שמור. כך מאנדיי כותב קבצים בייצוא לאקסל: הכתובת מסוג <b dir="ltr">/protected_static/</b> היא הקובץ מאחורי ההתחברות שלך למאנדיי, והשרת הזה אינו מחובר. לחיצה על הקובץ תפתח אותו במאנדיי. <b>כדי להביא את הקבצים עצמם:</b> לייצא ב־JSON (backend/monday_export.graphql מבקש <b dir="ltr">assets { public_url }</b>) ולייבא בתוך אותה שעה — אז הבייטים עוברים לכאן.</div>`:''}
+      ${r.files_gone?`<div class="imp-why">${r.files_gone} קבצים שהקובץ מפנה אליהם אינם קיימים יותר במערכת — נשמר השם בלבד. זה קורה כשהלוח המקורי או הקובץ נמחקו מאז הייצוא.</div>`:''}
+      ${(r.files_items_unmatched||[]).length?`<div class="imp-why">קבצים ששייכים לפריטים שאינם בקובץ הזה לא צורפו לאף פריט:</div>
+        <div class="imp-cols">${(r.files_items_unmatched||[]).map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
       ${r.files_expired?`<div class="imp-why">${r.files_expired} קבצים נשארו כשם בלבד — <b>הקישורים בקובץ פגו</b>. מאנדיי חותם אותם לשעה אחת בלבד (הזמן כתוב בקישור עצמו, ולכן לא ניסינו להוריד אותם לחינם). כדי להביא גם את הקבצים: לייצא ולייבא ברצף, בתוך אותה שעה.</div>`:''}
       ${r.files_unreachable?`<div class="imp-why">${r.files_unreachable} קבצים לא נענו — קישור שנחסם, או קובץ שאינו זמין יותר. השם נשמר.</div>`:''}
       ${r.files_over_budget?`<div class="imp-why">${r.files_over_budget} קבצים מעבר לתקציב הייבוא נשארו כשם בלבד.</div>`:''}
     </div>`:'';
-  /* The formulas. A migrated board whose formula columns are frozen numbers is
-     a board nobody can adjust, so the expression itself comes across — and the
-     report says which ones this app recomputes and which show monday's answer. */
-  const fLive=r.formulas_live||[], fText=r.formulas_as_text||[];
+  /* The formulas.
+     A formula column comes in as TEXT, holding the value monday worked out — a
+     value is a fact, where a formula is a promise about twenty other columns
+     that may not all have made the trip. The expression comes across too and is
+     kept on the column, so the report's job is to say which ones this app could
+     compute if asked to turn the column live, and what stands in the way of the
+     rest. */
+  const forms=r.formulas||[];
   const fRow=f=>`<div class="imp-grp"><div class="imp-why">${esc(f.title)}</div>
       <div class="imp-cols"><span class="tag" dir="ltr">${esc(f.formula)}</span>${
         (f.missing||[]).length?`<span class="tag">עמודה שלא יובאה: ${esc((f.missing||[]).join(', '))}</span>`:''}${
         (f.unsupported||[]).length?`<span class="tag">פונקציה שאינה נתמכת: ${esc((f.unsupported||[]).join(', '))}</span>`:''}</div></div>`;
-  const formulaHTML=(fLive.length||fText.length)?`
+  const fOk=forms.filter(f=>f.computable), fNo=forms.filter(f=>!f.computable);
+  /* A spreadsheet keeps a formula AND the value it last worked out. A file
+     written by a program carries the formula and no value, so those cells read
+     as empty — and the formula is what the file actually says about them. */
+  const cellFormulaHTML=r.formula_cells_as_text?`
     <div class="imp-sec"><div class="imp-sec-t">
-      <i class="fa-solid fa-calculator"></i> נוסחאות</div>
-      ${fLive.length?`<div class="imp-why"><b>${fLive.length} נוסחאות מחושבות כאן מחדש</b> — הן תתעדכנו לבד כשהערכים ישתנו.</div>
-        ${fLive.map(fRow).join('')}`:''}
-      ${fText.length?`<div class="imp-why"><b>${fText.length} נוסחאות יובאו אך אינן מחושבות כאן</b> — מה שחסר רשום ליד כל אחת, ולכן מוצג הערך שמאנדיי חישב. הנוסחה עצמה נשמרה בעמודה וניתן לערוך אותה.</div>
-        ${fText.map(fRow).join('')}`:''}
+      <i class="fa-solid fa-calculator"></i> ${r.formula_cells_as_text} תאים עם נוסחה שלא חושבה בקובץ</div>
+      <div class="imp-why">אקסל שומר גם את הנוסחה וגם את הערך שחישב ממנה לאחרונה — וקובץ שנוצר
+        בתוכנה, או שלא נפתח מאז שהנוסחה נכתבה בו, מגיע עם הנוסחה ובלי הערך. התאים האלה היו
+        מגיעים ריקים, ולכן <b>הנוסחה עצמה יובאה כטקסט</b> (למשל <b dir="ltr">=B2*2</b>). היא לא
+        מחושבת כאן: נוסחה של גיליון מפנה לכתובות תאים, והכתובות נעלמות ברגע שהשורות הופכות
+        לפריטים. כדי לקבל את הערכים: לפתוח את הקובץ באקסל, לשמור, ולייבא מחדש.</div>
+    </div>`:'';
+  const formulaHTML=forms.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-calculator"></i> ${forms.length} עמודות נוסחה — <b>הערך המחושב יובא כטקסט</b></div>
+      <div class="imp-why">כך הלוח מראה בדיוק את מה שמאנדיי הראה. נוסחה חיה מחשבת מחדש מהעמודות
+        שהגיעו לכאן, וכל עמודה שנשארה מאחור הופכת אותה למספר אחר — בלי להגיד. הנוסחה עצמה
+        יובאה ונשמרה בעמודה: בתפריט העמודה אפשר לראות אותה, ולהפוך את העמודה לעמודת נוסחה
+        מחשבת אחרי שהסתכלו על המספרים.</div>
+      ${fOk.length?`<div class="imp-why"><b>${fOk.length} מהן יחושבו כאן נכון</b> אם תהפכי אותן לעמודת נוסחה:</div>
+        ${fOk.map(fRow).join('')}`:''}
+      ${fNo.length?`<div class="imp-why"><b>${fNo.length} מהן לא יחושבו כאן</b> — מה שחסר רשום ליד כל אחת. הערך שמאנדיי חישב נשאר בהן כטקסט:</div>
+        ${fNo.map(fRow).join('')}`:''}
     </div>`:'';
   const reexport=(r.columns_need_reexport||[]).map(x=>typeof x==='string'?{title:x,type:''}:x);
   const REEXP_HE={formula:'עמודות נוסחה — במאנדיי נוסחה אינה נשמרת אלא מחושבת, והתוצאה מגיעה רק אם מבקשים אותה',
@@ -3556,11 +3601,12 @@ function importReport(b){
   reexport.forEach(x=>{ (byKind[x.type||'other']=byKind[x.type||'other']||[]).push(x.title); });
   const reexportHTML=reexport.length?`
     <div class="imp-sec imp-warn"><div class="imp-sec-t">
-      <i class="fa-solid fa-rotate"></i> ${reexport.length} עמודות ריקות שאפשר למלא — <b>יש להן ערכים במאנדיי</b></div>
-      <div class="imp-why"><b>מה קרה:</b> העמודות יובאו, אבל בכל ${
-        r.items||''} הפריטים לא היה בקובץ אף ערך עבורן — <b>לא כי הן ריקות במאנדיי</b>, אלא כי
-        מאנדיי מחזיר את הערכים של הסוגים האלה רק כשהשאילתה מבקשת אותם במפורש, והשאילתה
-        שהפיקה את הקובץ הזה לא ביקשה. שום דבר לא נמחק.</div>
+      <i class="fa-solid fa-rotate"></i> ${reexport.length} עמודות שלא נוצרו — <b>יש להן ערכים במאנדיי</b></div>
+      <div class="imp-why"><b>מה קרה:</b> בכל ${
+        r.items||''} הפריטים לא היה בקובץ אף ערך עבורן, ולכן הן לא נוצרו — עמודה ריקה שעומדת
+        לפני הלוח שיובא היא עמודה שאף אחד לא ביקש. אבל <b>הן לא ריקות במאנדיי</b>: מאנדיי מחזיר
+        את הערכים של הסוגים האלה רק כשהשאילתה מבקשת אותם במפורש, והשאילתה שהפיקה את הקובץ
+        הזה לא ביקשה. שום דבר לא נמחק — ואחרי ייצוא מחדש הן ייווצרו עם הערכים.</div>
       ${Object.keys(byKind).map(k=>`<div class="imp-grp">
           <div class="imp-why">${esc(REEXP_HE[k]||'סוג שמצריך בקשה מפורשת')}</div>
           <div class="imp-cols">${byKind[k].map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
@@ -3572,12 +3618,49 @@ function importReport(b){
   const emptyCols=r.columns_empty||[];
   const emptyHTML=emptyCols.length?`
     <div class="imp-sec"><div class="imp-sec-t">
-      <i class="fa-solid fa-table-columns"></i> ${emptyCols.length} עמודות ריקות שאין מה למלא — <b>הן ריקות גם במאנדיי</b></div>
-      <div class="imp-why">מאנדיי כן שלח אותן, ומה ששלח היה ריק בכל הפריטים — אף אחד עדיין לא
-        מילא אותן בלוח המקור. <b>ייצוא מחדש לא ישנה כאן דבר</b> (להבדיל מהעמודות שלמעלה).
-        הן נוצרו כאן כדי שלא יהיה צריך לבנות אותן מחדש ביד כשיתחילו למלא.</div>
+      <i class="fa-solid fa-table-columns"></i> ${emptyCols.length} עמודות ריקות שלא נוצרו — <b>הן ריקות גם במאנדיי</b></div>
+      <div class="imp-why">הקובץ כן הכיל אותן, ומה שהיה בהן היה ריק בכל הפריטים — אף אחד לא
+        מילא אותן בלוח המקור, או שהן מוסתרות/בארכיון שם. <b>ייצוא מחדש לא ישנה כאן דבר</b>
+        (להבדיל מהעמודות שלמעלה). אם עמודה כזאת דרושה, אפשר להוסיף אותה כאן ידנית —
+        היא רשומה כאן בשמה בדיוק בשביל זה.</div>
       <div class="imp-cols">${emptyCols.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
     </div>`:'';
+  /* How the board came out divided.
+     A board that arrives as one long list looks like a board nobody ever
+     organised, and the file almost always did say how it is divided — in a
+     place that was not being read (monday writes the group name on a line of
+     its own) or in a field the export was never asked for. So the division is
+     stated: where it was read from, what the groups are called, and when there
+     was none, what to do to get it. */
+  const GROUPS_HE={sheet:'החלוקה נקראה מהקובץ — שורות הקבוצה שבין הפריטים',
+                   column:'החלוקה נקראה מעמודת הקבוצה שבקובץ',
+                   file:'החלוקה נקראה מהקבוצות שבקובץ הייצוא'};
+  const gNames=r.group_names||[];
+  const groupHTML=r.groups_need_reexport?`
+    <div class="imp-sec imp-warn"><div class="imp-sec-t">
+      <i class="fa-solid fa-layer-group"></i> הלוח לא חולק לקבוצות — <b>הקובץ אינו אומר איך הלוח מחולק</b></div>
+      <div class="imp-why"><b>מה קרה:</b> השאילתה שהפיקה את הקובץ לא ביקשה את הקבוצות, ולכן בתשובה
+        אין לא <b>groups</b> ברמת הלוח ולא <b>group</b> בכל פריט. ${r.items||''} הפריטים הגיעו בלי
+        שיוך לקבוצה, ולכן נכנסו כולם לקבוצה אחת — והיא נשארה בלי שם, כי שם היה כותרת מעל חלוקה
+        שהקובץ לא מכיל. שום דבר לא נמחק.</div>
+      <div class="imp-why"><b>מה עושים:</b> מריצים את הייצוא ממאנדיי מחדש עם השאילתה המעודכנת
+        (<b>backend/monday_export.graphql</b>) — היא מבקשת <b dir="ltr">groups { id title }</b> ברמת
+        הלוח ו-<b dir="ltr">group { id title }</b> בכל פריט — ומייבאים את הקובץ החדש. אז כל פריט
+        ייכנס לקבוצה שלו, ובסדר שהלוח מסדר אותן.</div>
+    </div>`:(r.groups?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-layer-group"></i> ${r.groups} קבוצות</div>
+      ${GROUPS_HE[r.groups_from]?`<div class="imp-why">${esc(GROUPS_HE[r.groups_from])}${
+        r.groups_column?` ("${esc(r.groups_column)}")`:''} — כל פריט נכנס לקבוצה שהקובץ נותן לו.</div>`:''}
+      <div class="imp-cols">${gNames.map(n=>`<span class="tag">${esc(n||'ללא שם')}</span>`).join('')}</div>
+      ${r.summary_rows?`<div class="imp-why">${r.summary_rows} שורות הסיכום שמאנדיי כותב בתחתית כל קבוצה — תאריך מגולל בלי שם — לא יובאו כפריטים.</div>`:''}
+    </div>`:(r.groups_from==='default'?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-layer-group"></i> הקובץ אינו מחלק את הלוח לקבוצות</div>
+      <div class="imp-why">אין בו שורות קבוצה ואין בו עמודה בשם "קבוצה", ולכן נוצרו שלוש קבוצות
+        ברירת מחדל (בתכנון, בביצוע, הושלם) וכל הפריטים נכנסו לראשונה. אפשר לחלק אותן כאן, או
+        להוסיף לקובץ עמודה בשם "קבוצה" ולייבא שוב.</div>
+    </div>`:''));
   const peopleHTML=missing.length?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-user-slash"></i> ${missing.length} אנשים ללא חשבון במערכת</div>
@@ -3602,7 +3685,7 @@ function importReport(b){
   showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(b.name||'הלוח יובא')}</h2>
     <div class="mbody">
       ${statsHTML}
-      ${cutHTML}${mapHTML}${formulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}
+      ${cutHTML}${groupHTML}${mapHTML}${formulaHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>`);
 }
@@ -9682,6 +9765,18 @@ function colMenu(e,colId){
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&c.type==='number'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();numberSettings('${colId}')"><i class="fa-solid fa-sliders"></i> הגדרות עמודת מספר</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
+    /* An imported formula column holds monday's computed value as text, and the
+       expression rides along on the column. Stored and shown nowhere it is the
+       same as lost, so it is reachable here: read it, and turn the column live
+       once the numbers have been looked at. */
+    +(c&&c.type!=='formula'&&c.formula?`<div class="pop-sub">
+      <button class="cell-pop-opt2" onclick="togglePopSub(event)"><i class="fa-solid fa-calculator"></i> נוסחה מיובאת<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
+      <div class="pop-subm">
+        <div class="pop-note" dir="ltr">${esc(c.formula)}</div>
+        <button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();makeFormulaCol('${colId}')"><i class="fa-solid fa-bolt"></i> הפוך לעמודת נוסחה מחשבת</button>
+        <button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-pen"></i> ערוך נוסחה</button>
+      </div>
+    </div>`:'')
     +(c&&c.type==='mirror'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openMirrorConfig('${colId}')"><i class="fa-solid fa-clone"></i> הגדרות שדה מראה</button>`:'')
     +(c&&c.type==='connect'&&isBoardAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
     +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
@@ -9796,6 +9891,21 @@ async function duplicateColumn(e,colId){
   const cols=customColumns().slice();
   cols.push({type:c.type,title:(c.title||'')+' (עותק)',options:c.options,formula:c.formula,copy_mode:c.copy_mode,number:c.number});
   await saveColumns(cols); toast('העמודה שוכפלה');
+}
+/* Turn an imported text column that carries a formula into a live formula
+   column. The computed values monday sent stay in the cells untouched — a
+   formula column does not read them — so this is reversible: switch the column
+   back and monday's numbers are there again, exactly as imported. */
+function makeFormulaCol(colId){
+  const c=customColumns().find(x=>x.id===colId);
+  if(!c||!c.formula)return;
+  askConfirm(`העמודה "${c.title||''}" תחושב מעתה מהעמודות שבלוח הזה.`,async()=>{
+    const cols=customColumns().map(x=>x.id===colId?{...x,type:'formula'}:x);
+    await saveColumns(cols); toast('העמודה מחשבת עכשיו את הנוסחה');
+  },{title:'הפיכה לעמודת נוסחה', confirmText:'הפוך לנוסחה', danger:false,
+     icon:'fa-calculator',
+     noteHTML:`<div dir="ltr" style="margin-bottom:6px">${esc(c.formula)}</div>`
+       +'הערכים שמאנדיי חישב נשמרים, ויחזרו אם העמודה תוחזר לטקסט.'});
 }
 async function editFormula(e,colId){
   e.stopPropagation();closeCellPops();

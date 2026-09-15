@@ -81,10 +81,16 @@ query ($boardId: [ID!]) {
           name
           column_values {
             id type column { title } text value
+            ... on FileValue { files { ... on FileAssetValue { asset_id } } }
             ... on BoardRelationValue { display_value linked_item_ids linked_items { id name } }
             ... on MirrorValue { display_value }
             ... on FormulaValue { display_value }
           }
+          # A file cell names its asset, and the asset — its real name and the link
+          # that can actually be fetched — is carried by the ROW the cell sits on.
+          # Asked for on the items and not on their sub-items, every file attached to
+          # a sub-item arrived as a bare name with nothing behind it.
+          assets { id name public_url }
           updates {
             id body text_body created_at
             creator { name email }
@@ -140,10 +146,16 @@ query ($cursor: String!) {
         name
         column_values {
           id type column { title } text value
+          ... on FileValue { files { ... on FileAssetValue { asset_id } } }
           ... on BoardRelationValue { display_value linked_item_ids linked_items { id name } }
           ... on MirrorValue { display_value }
           ... on FormulaValue { display_value }
         }
+        # A file cell names its asset, and the asset — its real name and the link
+        # that can actually be fetched — is carried by the ROW the cell sits on.
+        # Asked for on the items and not on their sub-items, every file attached to
+        # a sub-item arrived as a bare name with nothing behind it.
+        assets { id name public_url }
         updates {
           id body text_body created_at
           creator { name email }

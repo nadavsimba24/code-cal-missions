@@ -40,23 +40,30 @@ def _titles(board_id):
 
 
 def test_the_columns_come_out_in_the_order_the_file_has_them(client, admin_id):
-    """They used to come out fullest-first, which is a different board."""
-    cells = [_cv("c1", "ראשונה", text="ערך"),
-             _cv("c2", "שנייה", text=""),          # emptier — used to jump to the end
-             _cv("c3", "שלישית", text="ערך"),
-             _cv("c4", "רביעית", text="")]
-    d = _import(client, admin_id, _resp([{"id": "1", "name": "פריט",
-                                          "column_values": cells}]))
+    """They used to come out fullest-first, which is a different board. Every
+    column here carries a value on at least one item — a column with none is not
+    created at all (see test_import_completeness.py), so order is asked of the
+    columns that exist."""
+    def item(i):
+        # column 2 and 4 are filled on one item of the three, 1 and 3 on all —
+        # so fullest-first would rearrange them and the file's order must not
+        return {"id": str(i), "name": f"פריט {i}", "column_values": [
+            _cv("c1", "ראשונה", text="ערך"),
+            _cv("c2", "שנייה", text="ערך" if i == 1 else ""),
+            _cv("c3", "שלישית", text="ערך"),
+            _cv("c4", "רביעית", text="ערך" if i == 1 else "")]}
+    d = _import(client, admin_id, _resp([item(1), item(2), item(3)]))
     assert _titles(d["id"]) == ["ראשונה", "שנייה", "שלישית", "רביעית"], _titles(d["id"])
 
 
 def test_a_partly_filled_board_is_not_reordered_by_how_full_it_is(client, admin_id):
-    """Two items, and the middle column is the only full one."""
+    """Three columns, each filled a different number of times, and the fullest
+    is in the middle."""
     def item(i, middle):
         return {"id": str(i), "name": f"פריט {i}",
                 "column_values": [_cv("a", "א", text="" if i == 1 else "ערך"),
                                   _cv("b", "ב", text=middle),
-                                  _cv("c", "ג", text="")]}
+                                  _cv("c", "ג", text="ערך" if i == 2 else "")]}
     d = _import(client, admin_id, _resp([item(1, "מלא"), item(2, "מלא")]))
     assert _titles(d["id"]) == ["א", "ב", "ג"], _titles(d["id"])
 
@@ -75,14 +82,19 @@ def test_the_boards_own_column_list_decides_the_order(client, admin_id):
 
 def test_the_ceiling_still_keeps_the_fullest_columns(client, admin_id):
     """The order is the board's; which columns survive is still decided by what
-    actually carries the board."""
+    actually carries the board. A column filled on one item of the four carries
+    less of it than one every item fills — and an empty column is not in this
+    contest at all, it was never created."""
     n = cityos_main.IMPORT_MAX_COLS + 5
-    cells = [_cv(f"c{i}", f"עמודה {i}", text=("" if i == 0 else "ערך")) for i in range(n)]
-    d = _import(client, admin_id, _resp([{"id": "1", "name": "פריט",
-                                          "column_values": cells}]))
+
+    def item(i):
+        return {"id": str(i), "name": f"פריט {i}", "column_values":
+                [_cv(f"c{j}", f"עמודה {j}",
+                     text=("ערך" if (j or i == 1) else "")) for j in range(n)]}
+    d = _import(client, admin_id, _resp([item(1), item(2), item(3), item(4)]))
     r = d["report"]
     over = [s["title"] for s in r["skipped"] if "תקרה" in s["reason"]]
-    assert "עמודה 0" in over, "the empty column survived ahead of full ones"
+    assert "עמודה 0" in over, "the sparse column survived ahead of full ones"
     kept = _titles(d["id"])
     # and what survived is still in the file's order, not sorted by fill
     nums = [int(t.split()[-1]) for t in kept]

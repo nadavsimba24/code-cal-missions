@@ -76,27 +76,42 @@ def _monday_cols(colspecs, items=2):
                   for i in range(1, items + 1)]}}]}}).encode()
 
 
-def test_a_column_nobody_has_filled_yet_is_still_the_boards_column(client, admin_id):
-    """It exists in monday and someone will use it; dropping it means rebuilding
-    it by hand, which is the work a migration is meant to save."""
+def test_a_column_with_no_value_on_any_item_is_not_created(client, admin_id):
+    """monday's response carries a cell for every column the board holds,
+    including the ones nobody sees — one hidden in the board's view, an archived
+    one, a formula whose result the query never asked for. Created here they are
+    columns that are not on the board she migrated, standing empty in front of
+    the board that is."""
     d = _import(client, admin_id, _monday_cols([("מלאה", "text", True),
                                                 ("ריקה", "text", False)])).json()
     r = d["report"]
-    assert r["columns_imported"] == 2
+    assert r["columns_imported"] == 1
+    assert r["columns_empty"] == ["ריקה"]
+    titles = [c["title"] for c in _cols(d["id"])]
+    assert titles == ["מלאה"], titles
+
+
+def test_a_column_that_was_not_created_is_still_named(client, admin_id):
+    """Not created is not the same as not mentioned: the report says which
+    columns the file held and had nothing in, so "where is it?" is answerable
+    without counting columns against monday."""
+    r = _import(client, admin_id, _monday_cols([("מלאה", "text", True),
+                                                ("ריקה", "text", False)])).json()["report"]
     assert r["columns_empty"] == ["ריקה"]
     assert not [s for s in r["skipped"] if s["title"] == "ריקה"], \
-        "an empty column is reported as a loss"
-    titles = [c["title"] for c in _cols(d["id"])]
-    assert "ריקה" in titles, titles
+        "an empty column is not a column that was lost"
 
 
-def test_an_empty_column_is_the_first_to_go_when_the_ceiling_bites(client, admin_id):
-    """It carries none of the board, so it queues behind every column that does."""
-    specs = [(f"מלאה {i}", "text", True) for i in range(cityos_main.IMPORT_MAX_COLS - 1)]
+def test_an_empty_column_never_reaches_the_ceiling_at_all(client, admin_id):
+    """It carries none of the board, so it does not get to cost a column that
+    does — it is gone before the ceiling is counted."""
+    specs = [(f"מלאה {i}", "text", True) for i in range(cityos_main.IMPORT_MAX_COLS)]
     specs.append(("ריקה", "text", False))
     r = _import(client, admin_id, _monday_cols(specs)).json()["report"]
     over = [s["title"] for s in r["skipped"] if "תקרה" in s["reason"]]
-    assert over == ["ריקה"], over
+    assert "ריקה" not in over, over
+    assert r["columns_imported"] == cityos_main.IMPORT_MAX_COLS - 1
+    assert r["columns_empty"] == ["ריקה"]
 
 
 def test_the_sub_items_column_is_not_reported_as_a_column_that_was_lost(client, admin_id):
@@ -125,7 +140,7 @@ def _cols(board_id):
 
 
 def test_the_report_says_where_the_sub_items_and_the_empty_columns_went():
-    for marker in ("as_subitems", "columns_empty", "עמודות ריקות שאין מה למלא",
+    for marker in ("as_subitems", "columns_empty", "עמודות ריקות שלא נוצרו",
                    "אינה עמודה כאן"):
         assert marker in SRC, f"the report says nothing about {marker}"
 
@@ -157,11 +172,14 @@ def test_a_formula_the_file_DID_ask_for_and_that_is_genuinely_empty(client, admi
 
 def test_the_report_tells_the_two_apart():
     assert "columns_need_reexport" in SRC
-    for marker in ("יש להן ערכים במאנדיי", "לא כי הן ריקות במאנדיי",
-                   "שום דבר לא נמחק", "מה עושים", "monday_export.graphql"):
+    for marker in ("יש להן ערכים במאנדיי", "הן לא ריקות במאנדיי",
+                   "שום דבר לא נמחק", "מה עושים", "monday_export.graphql",
+                   # they are not created, and the notice has to say that rather
+                   # than "imported" — which is what it used to say
+                   "עמודות שלא נוצרו", "ייווצרו עם הערכים"):
         assert marker in SRC, f"the fixable-columns notice does not say {marker}"
     for marker in ("הן ריקות גם במאנדיי", "ייצוא מחדש לא ישנה כאן דבר",
-                   "להבדיל מהעמודות שלמעלה"):
+                   "להבדיל מהעמודות שלמעלה", "מוסתרות/בארכיון"):
         assert marker in SRC, f"the genuinely-empty notice does not say {marker}"
 
 
