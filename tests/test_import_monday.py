@@ -274,11 +274,19 @@ def test_every_type_on_the_mapping_sheet_lands_where_the_sheet_says(client):
 
 
 def test_the_types_the_sheet_calls_unsupported_are_reported_not_guessed_at(client):
-    for monday_type in ("dependency", "progress", "subtasks", "team",
-                        "time_tracking", "vote"):
+    for monday_type in ("dependency", "progress", "team", "time_tracking", "vote"):
         assert monday_type in import_monday.UNSUPPORTED, \
             f"{monday_type} is neither imported nor explained"
         assert monday_type not in import_monday.TYPE_MAP
+
+
+def test_the_sub_items_column_is_neither_imported_nor_a_loss(client):
+    """It is the one type on the sheet whose content does come in — as the
+    items' sub-items. Called "unsupported" it reads as "the sub-items did not
+    come in", which is the opposite of what happens."""
+    assert import_monday.SUBITEMS_TYPE == "subtasks"
+    assert "subtasks" not in import_monday.TYPE_MAP
+    assert "subtasks" not in import_monday.UNSUPPORTED
 
 
 def test_a_column_that_lands_somewhere_other_than_the_obvious_place_says_so(client):
@@ -555,3 +563,58 @@ def test_a_file_with_no_groups_gets_one_unnamed_group(client):
     assert len(board["tasks"]) == 1, "the item did not land in the group"
     assert board["tasks"][0]["group_id"] == board["groups"][0]["id"]
     assert r["report"]["groups"] == 0, "an invented group was counted as one the file had"
+
+
+# ── the types monday answers somewhere other than `text` ────────────────────
+
+def _dv(cid, title, mtype, display_value=None, **extra):
+    cv = {"id": cid, "type": mtype, "column": {"title": title}, "text": None, "value": None}
+    if display_value is not None:
+        cv["display_value"] = display_value
+    cv.update(extra)
+    return cv
+
+
+def test_a_formula_column_is_read_from_display_value(client):
+    """monday: "the computed result is returned in display_value; the text and
+    value fields are not populated". Read from text, every formula column on
+    every board arrives empty."""
+    cols = [_dv("f", "ימים עד לעליה לאוויר", "formula", display_value="14")]
+    r = _upload(client, _resp([_item("פריט", cols)]), name="נוסחה").json()
+    assert r["report"]["columns_imported"] == 1, r["report"]["skipped"]
+    assert not r["report"]["columns_empty"], "a filled formula column counted as empty"
+
+
+def test_a_connect_boards_column_is_read_from_its_linked_items(client):
+    """monday: "the text and value fields always return null" for connect boards."""
+    cols = [_dv("b", "תחום מבקש הפיתוח", "board_relation", display_value="חינוך, רווחה")]
+    r = _upload(client, _resp([_item("פריט", cols)]), name="קישור").json()
+    assert r["report"]["columns_imported"] == 1
+    assert not r["report"]["columns_empty"]
+
+
+def test_a_connect_column_falls_back_to_the_linked_item_names(client):
+    cols = [_dv("b", "מוטמע בתחומים", "board_relation",
+                linked_items=[{"id": "1", "name": "חינוך"}, {"id": "2", "name": "רווחה"}])]
+    r = _upload(client, _resp([_item("פריט", cols)]), name="קישור2").json()
+    assert r["report"]["columns_imported"] == 1
+    assert not r["report"]["columns_empty"]
+
+
+def test_a_mirror_column_is_read_from_display_value(client):
+    cols = [_dv("m", "מראה", "mirror", display_value="ערך מראה")]
+    r = _upload(client, _resp([_item("פריט", cols)]), name="מראה").json()
+    assert r["report"]["columns_imported"] == 1
+    assert not r["report"]["columns_empty"]
+
+
+def test_the_export_query_asks_for_those_three(client):
+    """The reader cannot find what the query never asked for."""
+    import pathlib
+    q = (pathlib.Path(__file__).resolve().parent.parent / "backend" / "monday_export.graphql"
+         ).read_text(encoding="utf-8")
+    for frag in ("... on BoardRelationValue", "... on MirrorValue", "... on FormulaValue"):
+        assert q.count(frag) >= 2, f"{frag} is missing from one of the two queries"
+    assert "display_value" in q
+    # and the limit that will bite a board with six of them is written down
+    assert "FIVE formula columns" in q

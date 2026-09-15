@@ -14,6 +14,10 @@
 # none of the reasoning behind them. `text_body` is asked for beside `body`
 # because the body is HTML — the plain text is what a reader should get.
 #
+# `columns` is where a formula column's expression lives. Without it the computed
+# values still arrive (see FormulaValue below) but the formula itself does not,
+# and a migrated board has a column of frozen numbers nobody can adjust.
+#
 # The two queries are kept separate and complete rather than sharing a fragment,
 # because a document holding two operations needs an operationName to say which
 # one to run, and Postman's GraphQL body does not send one.
@@ -35,6 +39,14 @@ query ($boardId: [ID!]) {
     id
     name
     groups { id title }
+    # The board's own column definitions. A formula lives ONLY here — the copy of
+    # a column that rides inside every item carries its title and type and
+    # nothing else — and `settings_str` is the JSON holding the expression:
+    #   {"formula": "{numeric_mkl3sp} + 5"}   (references are column IDs)
+    # It is the deprecated spelling of the typed `settings` object, and it is
+    # asked for deliberately: it exists in every API version this export runs
+    # against, while `settings` does not. The importer reads either shape.
+    columns { id title type settings_str }
     items_page(limit: 500) {
       cursor
       items {
@@ -48,12 +60,31 @@ query ($boardId: [ID!]) {
           text
           value
           ... on FileValue { files { ... on FileAssetValue { asset_id } } }
+          # Three types do not answer in `text` at all, and asking only for it
+          # is what made them arrive empty on every single item:
+          #   board_relation — "the text and value fields always return null"
+          #   mirror         — the mirrored content lives in display_value
+          #   formula        — "the computed result is returned in display_value;
+          #                     the text and value fields are not populated"
+          ... on BoardRelationValue { display_value linked_item_ids linked_items { id name } }
+          ... on MirrorValue { display_value }
+          # ⚠ monday allows at most FIVE formula columns per request (and 10,000
+          # formula values a minute). A board with more than five gets an error or
+          # empty strings back: export it twice, each run naming a different set
+          # of column `ids`, or drop this line and accept that the formulas —
+          # which are computed, never stored — do not come across.
+          ... on FormulaValue { display_value }
         }
         assets { id name public_url }
         subitems {
           id
           name
-          column_values { id type column { title } text value }
+          column_values {
+            id type column { title } text value
+            ... on BoardRelationValue { display_value linked_item_ids linked_items { id name } }
+            ... on MirrorValue { display_value }
+            ... on FormulaValue { display_value }
+          }
           updates {
             id body text_body created_at
             creator { name email }
@@ -88,12 +119,31 @@ query ($cursor: String!) {
         text
         value
         ... on FileValue { files { ... on FileAssetValue { asset_id } } }
+        # Three types do not answer in `text` at all, and asking only for it
+        # is what made them arrive empty on every single item:
+        #   board_relation — "the text and value fields always return null"
+        #   mirror         — the mirrored content lives in display_value
+        #   formula        — "the computed result is returned in display_value;
+        #                     the text and value fields are not populated"
+        ... on BoardRelationValue { display_value linked_item_ids linked_items { id name } }
+        ... on MirrorValue { display_value }
+        # ⚠ monday allows at most FIVE formula columns per request (and 10,000
+        # formula values a minute). A board with more than five gets an error or
+        # empty strings back: export it twice, each run naming a different set
+        # of column `ids`, or drop this line and accept that the formulas —
+        # which are computed, never stored — do not come across.
+        ... on FormulaValue { display_value }
       }
       assets { id name public_url }
       subitems {
         id
         name
-        column_values { id type column { title } text value }
+        column_values {
+          id type column { title } text value
+          ... on BoardRelationValue { display_value linked_item_ids linked_items { id name } }
+          ... on MirrorValue { display_value }
+          ... on FormulaValue { display_value }
+        }
         updates {
           id body text_body created_at
           creator { name email }

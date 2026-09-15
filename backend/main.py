@@ -1,7 +1,7 @@
 """
 CityOS — FastAPI Backend Server
 """
-import os, sys, json, uuid, csv, io, re, secrets, urllib.parse
+import os, sys, json, uuid, csv, io, re, secrets, urllib.parse, urllib.request
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
@@ -1834,17 +1834,47 @@ def _imp_coerce(v, ctype):
     return s or None
 
 
-def _imp_parse_tabular(raw, filename):
-    """Return a list of rows (each a list of cell values) from CSV or XLSX bytes."""
+# The grey band this app's export writes over a sub-item block, naming the
+# columns those sub-items have. It is a header, not an item.
+IMPORT_SUBHEAD_FILL = "FFEDEFF5"
+
+
+def _imp_parse_tabular(raw, filename, with_shape=False):
+    """Rows (each a list of cell values) from CSV or XLSX bytes.
+
+    With `with_shape`, each row is paired with what the sheet says it is:
+    `(level, is_band, values)`. A board exported from here indents the first cell
+    by two per level — a group at 0, an item at 1, a sub-item at 2 — and paints
+    the sub-item column band grey. Both survive a read-back (the outline levels
+    do not, in the streaming reader), so they are what the hierarchy is read
+    from. A file with no indentation reads as level 0 throughout, which is what a
+    flat CSV is.
+    """
     name = (filename or "").lower()
     if name.endswith((".xlsx", ".xlsm")):
         import io as _io
         from openpyxl import load_workbook
         wb = load_workbook(_io.BytesIO(raw), data_only=True, read_only=True)
         ws = wb.active
-        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        if not with_shape:
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+            wb.close()
+            return rows
+        shaped = []
+        for cells in ws.iter_rows():
+            first = cells[0] if cells else None
+            indent = 0
+            band = False
+            try:
+                indent = int((first.alignment.indent or 0) if first is not None else 0)
+                fill = getattr(first, "fill", None)
+                band = bool(fill is not None and getattr(fill, "fgColor", None) is not None
+                            and str(fill.fgColor.rgb or "").upper() == IMPORT_SUBHEAD_FILL)
+            except (AttributeError, TypeError, ValueError):
+                pass
+            shaped.append((indent // 2, band, [c.value for c in cells]))
         wb.close()
-        return rows
+        return shaped
     # CSV / TSV / plain text
     import csv as _csv, io as _io
     text = None
@@ -1862,7 +1892,10 @@ def _imp_parse_tabular(raw, filename):
         delim = ";"
     elif sample.count("\t") > max(sample.count(","), sample.count(";")):
         delim = "\t"
-    return [list(r) for r in _csv.reader(_io.StringIO(text), delimiter=delim)]
+    rows = [list(r) for r in _csv.reader(_io.StringIO(text), delimiter=delim)]
+    # a CSV carries no indentation, so every row is flat — a parent column is the
+    # only way such a file can name a hierarchy
+    return [(0, False, r) for r in rows] if with_shape else rows
 
 
 def _imp_conversation_sheet(raw, filename):
@@ -1987,11 +2020,146 @@ def _imp_attach_conversation(db, rows, tasks, actor_id, budget):
 
 
 IMPORT_MAX_ROWS = 2000
-IMPORT_MAX_COLS = 40
+# How many columns a board may be imported with. 40 was below what a real
+# monday board carries — a 64-column board lost five columns that had data in
+# them purely to the ceiling, which is the one kind of loss a migration cannot
+# afford. 80 is the width this app's own export already writes at
+# (XLSX_MAX_COLS), so a board that can be imported can also be exported whole.
+IMPORT_MAX_COLS = 80
 # Messages one import may bring in, across every item on the board. A board's
 # conversation can be far longer than the board itself, so it gets a ceiling of
 # its own — and what it cuts is named in the report rather than just missing.
 IMPORT_MAX_MESSAGES = 10000
+# ── the files an import brings with it ───────────────────────────────
+# monday's export carries a pre-signed link per attachment. Those links work for
+# about an hour and then the file is behind monday's auth forever, so the only
+# moment the bytes can be brought across is the import itself. What arrives
+# without them is a list of file NAMES — enough to see that an item had a spec
+# attached, and useless for opening it.
+#
+# Fetched under a budget, because a board's attachments can dwarf the board:
+# past either ceiling the rest keep their names and the report says how many.
+IMPORT_MAX_FILES = int(os.getenv("IMPORT_MAX_FILES", "600"))
+IMPORT_MAX_FILE_MB = int(os.getenv("IMPORT_MAX_FILE_MB", "150"))
+IMPORT_FILE_TIMEOUT = 20            # seconds per file
+
+# Only monday's own asset hosts. The URLs come out of a file the user supplied,
+# and fetching whatever it names would let an import point this server at an
+# address inside the network it runs in.
+def _import_host_allowed(host):
+    host = (host or "").lower()
+    return (host == "monday.com" or host.endswith(".monday.com")
+            or (host.startswith("files-monday-com.s3.") and host.endswith(".amazonaws.com"))
+            or host == "files-monday-com.s3.amazonaws.com")
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """A pre-signed asset link does not redirect. Refusing to follow one closes
+    the hole where an allowed host bounces the fetch somewhere it should not go."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_IMPORT_OPENER = urllib.request.build_opener(_NoRedirects)
+
+
+# Consecutive failures after which the import stops trying. When a file's links
+# have expired, every link in that file has expired — and discovering that 300
+# times over cost three minutes of an import that had nothing else to do.
+IMPORT_FILE_FAIL_STREAK = 5
+
+
+def _signed_url_expired(url, now=None):
+    """Has this pre-signed link already lapsed, going by the link itself?
+
+    monday's asset URLs are S3 signatures carrying the moment they were minted
+    and how long they last (`X-Amz-Date` + `X-Amz-Expires`, an hour). Reading it
+    is free and exact, which beats spending a round trip per file to be told 403.
+    """
+    try:
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url or "").query)
+        minted = (q.get("X-Amz-Date") or [""])[0]
+        window = int((q.get("X-Amz-Expires") or ["0"])[0])
+        if not minted or window <= 0:
+            return False                       # not a signed link — let the fetch decide
+        t = datetime.strptime(minted, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return (now or datetime.now(timezone.utc)) > t + timedelta(seconds=window)
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def _fetch_import_file(url):
+    """(bytes, content_type) for one attachment, or None if it cannot be had.
+
+    Never raises: an expired link, a redirect, a host we do not fetch from and a
+    file over the per-file ceiling all mean the same thing to the caller — this
+    one keeps its name only.
+    """
+    try:
+        parts = urllib.parse.urlparse(url or "")
+        if parts.scheme != "https" or not _import_host_allowed(parts.hostname):
+            return None
+        req = urllib.request.Request(url, headers={"User-Agent": "CODE-CAL-MISSIONS/import"})
+        with _IMPORT_OPENER.open(req, timeout=IMPORT_FILE_TIMEOUT) as resp:
+            data = resp.read(MAX_UPLOAD_BYTES + 1)
+            if not data or len(data) > MAX_UPLOAD_BYTES:
+                return None
+            return data, (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+    except Exception:                              # noqa: BLE001 — see the docstring
+        return None
+
+
+def _import_attachments(db, files, budget, stats):
+    """Bring a list of [{name,url}] across, and return it pointing here.
+
+    `budget` is [files_left, bytes_left], shared by the whole import. An entry
+    whose bytes could not be fetched keeps its name and its original link, so
+    nothing is lost that was there before — it simply is not openable.
+    """
+    out = []
+    for f in files or []:
+        name = (f.get("name") or "").strip() or "קובץ"
+        url = f.get("url") or ""
+        keep = lambda why: (out.append({"name": name[:255], "url": url}),
+                            stats.__setitem__(why, stats.get(why, 0) + 1))
+        if not url:
+            out.append({"name": name[:255], "url": ""})
+            continue
+        # the two questions that can be answered without a round trip
+        if _signed_url_expired(url):
+            keep("expired")
+            continue
+        if stats.get("streak", 0) >= IMPORT_FILE_FAIL_STREAK:
+            keep("failed")
+            continue
+        got = _fetch_import_file(url) if (budget[0] > 0 and budget[1] > 0) else None
+        if got is None:
+            stats["streak"] = stats.get("streak", 0) + 1
+            keep("failed")
+            continue
+        stats["streak"] = 0
+        data, ctype = got
+        if len(data) > budget[1]:
+            keep("over_budget")
+            continue
+        token = uuid.uuid4().hex
+        media_type, _ = _safe_media_type(ctype)
+        db.add(UploadedFile(token=token, name=name[:255], content_type=media_type,
+                            data=data, size=len(data)))
+        budget[0] -= 1
+        budget[1] -= len(data)
+        stats["imported"] = stats.get("imported", 0) + 1
+        stats["bytes"] = stats.get("bytes", 0) + len(data)
+        out.append({"name": name[:255], "url": f"/api/files/{token}"})
+    return out
+
+
+# Column headings that mean "the item this row belongs under". A CSV cannot
+# indent, so naming the parent is the only way such a file can say it.
+IMPORT_PARENT_HEADERS = {"פריט אב", "תת פריט של", "תת־פריט של", "תת-פריט של",
+                         "שייך לפריט", "parent", "parent item", "sub-item of",
+                         "subitem of", "sub item of"}
 
 
 # Colours handed to imported status/dropdown options. Same list the status
@@ -2003,7 +2171,7 @@ IMPORT_PALETTE = [
 ]
 
 
-def _import_comment(db, task, msg, by_token, parent_id=None):
+def _import_comment(db, task, msg, by_token, parent_id=None, files=None):
     """One imported message, written onto the item it belongs to.
 
     The author is matched to an account by e-mail first and by name second — the
@@ -2021,10 +2189,14 @@ def _import_comment(db, task, msg, by_token, parent_id=None):
             when = datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
         except ValueError:
             when = None
+    atts = [{"name": a.get("name", ""), "url": a.get("url", "")}
+            for a in (msg.get("assets") or [])][:20]
+    if files is not None:
+        # the bytes, while monday's links still work — see _import_attachments
+        atts = _import_attachments(db, atts, files["budget"], files["stats"])
     c = Comment(task_id=task.id, user_id=uid, parent_id=parent_id,
                 content=(msg.get("body") or "")[:20000],
-                attachments=[{"name": a.get("name", ""), "url": a.get("url", "")}
-                             for a in (msg.get("assets") or [])][:20],
+                attachments=atts,
                 mentions=[], likes=[], seen_by=[],
                 created_at=when or datetime.now(timezone.utc).replace(tzinfo=None),
                 origin={"source": "monday", "author": (msg.get("author") or "")[:120],
@@ -2035,7 +2207,7 @@ def _import_comment(db, task, msg, by_token, parent_id=None):
     return c
 
 
-def _import_conversation(db, task, updates, by_token, budget):
+def _import_conversation(db, task, updates, by_token, budget, files=None):
     """An item's whole conversation, replies kept under the message they answer.
 
     `budget` is a one-element list — the import's remaining message allowance,
@@ -2046,13 +2218,13 @@ def _import_conversation(db, task, updates, by_token, budget):
     for up in updates or []:
         if budget[0] <= 0:
             break
-        root = _import_comment(db, task, up, by_token)
+        root = _import_comment(db, task, up, by_token, files=files)
         budget[0] -= 1
         made += 1
         for rep in up.get("replies") or []:
             if budget[0] <= 0:
                 break
-            _import_comment(db, task, rep, by_token, parent_id=root.id)
+            _import_comment(db, task, rep, by_token, parent_id=root.id, files=files)
             budget[0] -= 1
             made += 1
     return made
@@ -2122,7 +2294,7 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             cid = "col_" + uuid.uuid4().hex[:8]
             col_ids[c["key"]] = cid
             col = {"id": cid, "type": c["type"], "title": c["title"][:60], "options": None,
-                   "formula": None, "connect": None, "copy_mode": None, "perms": {}}
+                   "formula": c.get("formula"), "connect": None, "copy_mode": None, "perms": {}}
             if c["type"] == "status":
                 # through the same normaliser a column edited by hand goes
                 # through, so every label gets the stable id a cell points at —
@@ -2205,6 +2377,10 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                     o = status_opts.get(c["key"], {}).get(str(v))
                     v = ({"id": o["id"], "label": o["label"], "color": o["color"]} if o
                          else {"label": str(v)[:40], "color": "#c4c4c4"})
+                elif c["type"] == "files":
+                    # a name is enough to see that an item had a spec attached,
+                    # and useless for opening it — so the bytes come too
+                    v = _import_attachments(db, v, files["budget"], files["stats"])
                 elif c["type"] == "people":
                     ids = []
                     for tok in v:
@@ -2222,6 +2398,9 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         made = subs_made = talked = 0
         # the conversation's own ceiling, shared across the whole import
         budget = [IMPORT_MAX_MESSAGES]
+        # and the attachments': [files left, bytes left]
+        files = {"budget": [IMPORT_MAX_FILES, IMPORT_MAX_FILE_MB * 1024 * 1024],
+                 "stats": {}}
         gpos = {}
         for row in parsed["items"]:
             grp = gmap.get(row.get("group")) or g1
@@ -2233,7 +2412,7 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             db.flush()
             _ensure_item_uid(db, t)
             made += 1
-            talked += _import_conversation(db, t, row.get("updates"), by_token, budget)
+            talked += _import_conversation(db, t, row.get("updates"), by_token, budget, files)
             for spos, sub in enumerate(row["subitems"]):
                 stask = Task(board_id=b.id, group_id=grp.id, parent_id=t.id,
                              title=sub["name"][:500], status=TaskStatus.BACKLOG,
@@ -2244,7 +2423,8 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 db.flush()
                 _ensure_item_uid(db, stask)
                 subs_made += 1
-                talked += _import_conversation(db, stask, sub.get("updates"), by_token, budget)
+                talked += _import_conversation(db, stask, sub.get("updates"), by_token,
+                                                   budget, files)
 
         if sub_used:
             # sub-items show only the columns they actually carry, in board order
@@ -2259,8 +2439,19 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         return {"id": b.id, "name": b.name, "icon": b.icon,
                 "items": made, "subitems": subs_made, "columns": len(custom_cols),
                 "messages": talked,
+                "files": files["stats"].get("imported", 0),
                 "report": {**parsed["report"],
                            "messages_imported": talked,
+                           "files_imported": files["stats"].get("imported", 0),
+                           "files_bytes": files["stats"].get("bytes", 0),
+                           # a link that had already expired, or a host we do not
+                           # fetch from: the name is kept, the file is not here
+                           "files_unreachable": files["stats"].get("failed", 0),
+                           # a link whose own signature says it lapsed before the
+                           # import ran — the one failure worth naming separately,
+                           # because the fix is "export and import in one go"
+                           "files_expired": files["stats"].get("expired", 0),
+                           "files_over_budget": files["stats"].get("over_budget", 0),
                            # a conversation cut by the import's own ceiling, as
                            # opposed to one the file never carried
                            "messages_dropped": max(0, wanted - talked),
@@ -2292,24 +2483,93 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     if (filename or "").lower().endswith(".json") or import_monday.looks_like_monday(raw):
         return _import_monday_board(raw, filename, name, environment_id, folder_id, actor_id)
     try:
-        rows = _imp_parse_tabular(raw, filename)
+        shaped = _imp_parse_tabular(raw, filename, with_shape=True)
     except Exception:
         raise HTTPException(400, "לא ניתן לקרוא את הקובץ — ודא שהוא CSV או Excel תקין")
     # drop fully-empty rows
-    rows = [r for r in rows if any(c is not None and str(c).strip() != "" for c in r)]
-    if not rows:
+    shaped = [(lvl, band, r) for (lvl, band, r) in shaped
+              if any(c is not None and str(c).strip() != "" for c in r)]
+    if not shaped:
         raise HTTPException(400, "הקובץ ריק")
+    rows = [r for _, _, r in shaped]
     ncols = min(max(len(r) for r in rows), IMPORT_MAX_COLS)
     if ncols < 1:
         raise HTTPException(400, "לא נמצאו עמודות בקובץ")
-    header, data = rows[0], rows[1:IMPORT_MAX_ROWS + 1]
+    header = rows[0]
+    body = shaped[1:IMPORT_MAX_ROWS + 1]
 
     def _cell(r, i):
         return (str(r[i]).strip() if i < len(r) and r[i] is not None else "")
 
     labels = [(_cell(header, i) or f"עמודה {i + 1}") for i in range(ncols)]
-    col_types = [_imp_infer_type([(r[i] if i < len(r) else None) for r in data])
-                 for i in range(1, ncols)]
+
+    # ── what the file says about sub-items ───────────────────────────────
+    # Two ways a sheet can say "this belongs under that", read in this order:
+    # the indentation a board exported from here writes — where the structure IS
+    # the sheet — and failing that a column naming the parent by its title, which
+    # is how a CSV or a hand-made sheet says the same thing.
+    hier = any(lvl >= 1 for lvl, _, _ in body)
+    parent_at = next((i for i in range(1, ncols)
+                      if labels[i].strip().lower() in IMPORT_PARENT_HEADERS), None)
+
+    # ── read the sheet into groups, items and sub-items ──────────────────
+    # `band` is the grey header this app writes over a sub-item block, naming the
+    # columns those sub-items have. It is a header, not an item, and its labels
+    # are what a sub-item's cells are read against.
+    plan, band_vals, sub_labels = [], None, []
+    for lvl, is_band, r in body:
+        vals = [_cell(r, i) for i in range(ncols)]
+        if hier and lvl == 0:
+            plan.append(("group", vals))
+            continue
+        if hier and lvl >= 2:
+            if is_band or (band_vals is not None and vals[1:] == band_vals[1:]):
+                band_vals = vals
+                sub_labels = [v or f"עמודה {i + 1}" for i, v in enumerate(vals)]
+                continue
+            plan.append(("sub", vals))
+            continue
+        plan.append(("item", vals))
+    item_rows = [v for kind, v in plan if kind == "item"]
+    sub_rows = [v for kind, v in plan if kind == "sub"]
+    if not item_rows:
+        raise HTTPException(400, "לא נמצאו פריטים בקובץ")
+
+    # ── the columns ──────────────────────────────────────────────────────
+    # An item column is typed from what the items put in it. A column only the
+    # sub-items have is typed from the sub-items, and one they share with the
+    # items keeps the item column — sub-items on a board show a subset of its
+    # columns, never a parallel set of their own.
+    def _blank_col(i):
+        return (not _cell(header, i)
+                and not any((r[i].strip() if i < len(r) and r[i] else "") for r in item_rows))
+
+    data_at = [i for i in range(1, ncols) if i != parent_at and not _blank_col(i)]
+    col_types = [_imp_infer_type([(r[i] if i < len(r) else None) for r in item_rows])
+                 for i in data_at]
+    col_ids = ["col_" + uuid.uuid4().hex[:8] for _ in data_at]
+    by_label = {labels[i]: (cid, i) for i, cid in zip(data_at, col_ids)}
+    custom_cols = [{"id": cid, "type": ctype, "title": labels[i], "options": None,
+                    "formula": None, "connect": None, "copy_mode": None, "perms": {}}
+                   for cid, ctype, i in zip(col_ids, col_types, data_at)]
+    # a sub-item column maps to the board column of the same name, or becomes one
+    sub_map = []          # (index in the sub row, column id)
+    sub_col_ids = []
+    for i in range(2, len(sub_labels)):
+        if len(custom_cols) >= IMPORT_MAX_COLS - 1 and sub_labels[i] not in by_label:
+            continue
+        hit = by_label.get(sub_labels[i])
+        if hit:
+            cid = hit[0]
+        else:
+            cid = "col_" + uuid.uuid4().hex[:8]
+            ctype = _imp_infer_type([(r[i] if i < len(r) else None) for r in sub_rows])
+            custom_cols.append({"id": cid, "type": ctype, "title": sub_labels[i], "options": None,
+                                "formula": None, "connect": None, "copy_mode": None, "perms": {}})
+            by_label[sub_labels[i]] = (cid, None)
+        sub_map.append((i, cid))
+        if cid not in sub_col_ids:
+            sub_col_ids.append(cid)
 
     with Session(engine) as db:
         creator = actor_id
@@ -2324,10 +2584,6 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                   .filter(Board.environment_id == env_id, Board.folder_id == folder_id).scalar())
         base = os.path.splitext(os.path.basename(filename or ""))[0]
         board_name = (name or "").strip() or base or "לוח מיובא"
-        col_ids = ["col_" + uuid.uuid4().hex[:8] for _ in col_types]
-        custom_cols = [{"id": cid, "type": ctype, "title": labels[j + 1], "options": None,
-                        "formula": None, "connect": None, "copy_mode": None, "perms": {}}
-                       for j, (cid, ctype) in enumerate(zip(col_ids, col_types))]
         settings = {
             "views": ["table"],
             "columns": [
@@ -2345,32 +2601,113 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
             # moment there is something to put in it.
             "col_hidden": ["assignees", "status", "priority", "due"],
         }
+        if sub_col_ids:
+            # sub-items show the columns the file gave them, in board order
+            settings["sub_cols"] = ["item"] + sub_col_ids
         b = Board(name=board_name, description="", department_id=dept_id, environment_id=env_id,
                   folder_id=folder_id, position=(maxpos + 1) if maxpos is not None else 0,
                   board_type=BoardType.KANBAN, icon="\U0001F4CB", color="#0073ea", settings=settings)
         db.add(b)
         db.flush()
-        g1 = Group(board_id=b.id, name="בתכנון", position=0, color="#579bfc", task_status=TaskStatus.BACKLOG)
-        db.add_all([g1,
-            Group(board_id=b.id, name="בביצוע", position=1, color="#fdab3d", task_status=TaskStatus.IN_PROGRESS),
-            Group(board_id=b.id, name="הושלם", position=2, color="#00c875", task_status=TaskStatus.DONE)])
+
+        # ── groups: the file's own where it has them ─────────────────────
+        # A sheet that names its groups is describing a board someone already
+        # divided; inventing בתכנון/בביצוע/הושלם over it would file every item
+        # under a heading the file never claimed. A flat sheet has no such
+        # division, and the three stages are the board it is being turned into.
+        named = [v[0] for kind, v in plan if kind == "group" and v[0]]
+        groups = []
+        if named:
+            for i, gname in enumerate(named):
+                groups.append(Group(board_id=b.id, name=gname[:200], position=i,
+                                    color=IMPORT_PALETTE[i % len(IMPORT_PALETTE)],
+                                    task_status=TaskStatus.BACKLOG))
+        else:
+            groups = [Group(board_id=b.id, name="בתכנון", position=0, color="#579bfc",
+                            task_status=TaskStatus.BACKLOG),
+                      Group(board_id=b.id, name="בביצוע", position=1, color="#fdab3d",
+                            task_status=TaskStatus.IN_PROGRESS),
+                      Group(board_id=b.id, name="הושלם", position=2, color="#00c875",
+                            task_status=TaskStatus.DONE)]
+        db.add_all(groups)
         db.flush()
-        pos, made_tasks = 0, []
-        for r in data:
-            title = _cell(r, 0) or f"פריט {pos + 1}"
+
+        def cells_of(vals, pairs):
             cf = {"status_unset": True, "priority_unset": True}
-            for j, ctype in enumerate(col_types):
-                val = _imp_coerce(r[j + 1] if (j + 1) < len(r) else None, ctype)
+            for i, cid in pairs:
+                col = next((c for c in custom_cols if c["id"] == cid), None)
+                val = _imp_coerce(vals[i] if i < len(vals) else None, col["type"] if col else "text")
                 if val is not None and val != "":
-                    cf[col_ids[j]] = val
-            t = Task(board_id=b.id, group_id=g1.id, title=title[:500], status=TaskStatus.BACKLOG,
-                     priority=Priority.MEDIUM, position=pos, created_by=creator, custom_fields=cf)
+                    cf[cid] = val
+            return cf
+
+        item_pairs = list(zip(data_at, col_ids))
+        pos, subs_made, made_tasks = 0, 0, []
+        by_title, parent_of = {}, {}
+        grp = groups[0]
+        gi, gpos, last_item = -1, {}, None
+        for kind, vals in plan:
+            if kind == "group":
+                gi += 1
+                if gi < len(groups):
+                    grp = groups[gi]
+                last_item = None
+                continue
+            if kind == "sub":
+                # the band's first column is the sub-item's own name
+                title = (vals[1] if len(vals) > 1 else "") or f"תת־פריט {subs_made + 1}"
+                if last_item is None:
+                    continue                      # a sub-item with nothing above it
+                t = Task(board_id=b.id, group_id=last_item.group_id, parent_id=last_item.id,
+                         title=title[:500], status=TaskStatus.BACKLOG, priority=Priority.MEDIUM,
+                         position=subs_made, created_by=creator,
+                         custom_fields=cells_of(vals, sub_map))
+                db.add(t)
+                db.flush()
+                _ensure_item_uid(db, t)
+                _audit(db, t.id, "create", field="subitem", old=None, new=t.title, user_id=creator)
+                made_tasks.append(t)
+                subs_made += 1
+                continue
+            title = vals[0] if vals else ""
+            title = title or f"פריט {pos + 1}"
+            p = gpos[grp.id] = gpos.get(grp.id, -1) + 1
+            t = Task(board_id=b.id, group_id=grp.id, title=title[:500], status=TaskStatus.BACKLOG,
+                     priority=Priority.MEDIUM, position=p, created_by=creator,
+                     custom_fields=cells_of(vals, item_pairs))
             db.add(t)
             db.flush()
             _ensure_item_uid(db, t)
             _audit(db, t.id, "create", field="item", old=None, new=t.title, user_id=creator)
             made_tasks.append(t)
+            by_title.setdefault(t.title, t)
+            if parent_at is not None:
+                pname = vals[parent_at] if parent_at < len(vals) else ""
+                if pname:
+                    parent_of[t.id] = pname
+            last_item = t
             pos += 1
+
+        # ── a parent named by column ─────────────────────────────────────
+        # Resolved after every row is in, because a file may name a parent that
+        # appears below the row pointing at it. A name that matches nothing is
+        # left as a top-level item and reported — guessing at the nearest title
+        # would file someone's item under the wrong parent silently.
+        orphans = []
+        for t in made_tasks:
+            pname = parent_of.get(t.id)
+            if not pname:
+                continue
+            parent = by_title.get(pname)
+            if parent is None or parent.id == t.id:
+                orphans.append(pname)
+                continue
+            t.parent_id = parent.id
+            t.group_id = parent.group_id
+            pos -= 1
+            subs_made += 1
+        db.flush()
+
         # the conversation sheet, when the workbook carries one
         talk = _imp_attach_conversation(db, _imp_conversation_sheet(raw, filename),
                                         made_tasks, creator, [IMPORT_MAX_MESSAGES])
@@ -2378,12 +2715,18 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         db.commit()
         db.refresh(b)
         return {"id": b.id, "name": b.name, "icon": b.icon, "items": pos,
-                "columns": len(custom_cols),
+                "subitems": subs_made, "columns": len(custom_cols),
                 "messages": talk["messages"] + talk["replies"],
                 "report": {"messages_imported": talk["messages"] + talk["replies"],
                            "replies_imported": talk["replies"],
                            "conversation_items_unmatched": talk["unmatched_items"],
-                           "people_unmatched": talk["unmatched_people"]}}
+                           "people_unmatched": talk["unmatched_people"],
+                           "groups": len(named),
+                           # how the file said what belongs under what
+                           "hierarchy": ("indent" if (hier and sub_rows)
+                                         else "parent_column" if (parent_at is not None and subs_made)
+                                         else ""),
+                           "parents_unmatched": sorted(set(orphans))[:20]}}
 
 
 @app.patch("/api/boards/{board_id}")

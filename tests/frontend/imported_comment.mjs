@@ -24,7 +24,7 @@ function grabMethod(obj, name){
 const {args, code} = grabMethod('Chat','commentHTML');
 const stub={commentHTML:(c,r)=>fn.call(stub,c,r),composerHTML:()=>'',renderContent:t=>String(t),
             attPreview:()=>'',seenPop(){},seenPopClose(){},editing:null};
-const fn = new Function('esc','avatarInner','fdatetime','ROLE_HE','canComment','Chat','st','meId',
+const fn = new Function('esc','avatarInner','fdatetimeY','ROLE_HE','canComment','Chat','st','meId',
   `return function(${args})${code}`)(
   x=>String(x==null?'':x), ()=>'AV', ()=>'01/01/2026', {}, ()=>false,
   stub, {board:{},me:{role:'admin'}}, ()=>1);

@@ -67,11 +67,21 @@ TYPE_MAP = {
 UNSUPPORTED = {
     "dependency":     "תלות בין פריטים — לא נתמך",
     "progress":       "מעקב התקדמות — לא נתמך",
-    "subtasks":       "תתי־פריטים מיובאים בנפרד, לא כעמודה",
     "team":           "צוות — לא נתמך",
     "time_tracking":  "מעקב זמן — לא נתמך",
     "vote":           "הצבעה — לא נתמך",
+    "direct_doc":     "מסמך מאנדיי — נשאר במאנדיי, אין לו מקבילה כאן",
 }
+
+# monday's sub-items column is not a column here at all: its content arrives as
+# the items' own sub-items. Reported on its own, because listing it among the
+# columns that did not come in says the exact opposite of what happened.
+SUBITEMS_TYPE = "subtasks"
+
+# The types monday does not answer in `text`. Their values live in
+# `display_value` (and, for a connect column, in `linked_items`), and a query
+# that does not ask for it gets nothing for them on any item.
+DISPLAY_VALUE_TYPES = ("formula", "mirror", "board_relation", "dependency")
 
 # Where a monday type lands somewhere other than the obvious place, the report
 # says so — an import that quietly retypes a column is an import you cannot
@@ -133,9 +143,10 @@ def _items_of(doc):
 
     board, items, cursor, seen = {}, [], None, set()
     for b in boards:
-        # the board's name and groups ride on every page; the first page that
-        # carries them settles it, so a later page without them takes nothing
-        for k in ("id", "name", "groups"):
+        # the board's name, groups and column definitions ride on the page that
+        # asked for them; the first page carrying each settles it, so a later
+        # page without them takes nothing away
+        for k in ("id", "name", "groups", "columns"):
             if b.get(k) and not board.get(k):
                 board[k] = b[k]
         page = b.get("items_page")
@@ -165,6 +176,129 @@ def looks_like_monday(raw):
         return True
     except Exception:
         return False
+
+
+# ── formulas ────────────────────────────────────────────────────────
+# monday keeps a formula column's definition in the column's own settings, as an
+# expression over column IDs: {"formula": "{numeric_mkl3sp} + 5"}. This app's
+# formula column reads the same shape over column TITLES, and computes plain
+# arithmetic and nothing else. So a formula is translated and then judged: one
+# this app can actually compute comes in as a live formula column, and one it
+# cannot comes in as the computed text monday sent — with the expression kept
+# beside it either way, so nobody has to go back to monday to read it.
+_FORMULA_REF = re.compile(r"\{([^{}]+)\}")
+_FORMULA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+_FORMULA_STRING = re.compile(r"'[^']*'|\"[^\"]*\"")
+# The functions this app's own formula engine implements. It is the same list as
+# FORMULA_FUNCS in frontend/index.html, and a test compares the two — a name
+# here that the engine does not have would import a formula that shows nothing,
+# and a name the engine has but this list does not would freeze a formula that
+# would have worked.
+FORMULA_FUNCS = (
+    # numbers
+    "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUM", "AVERAGE",
+    "MIN", "MAX", "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE",
+    # logic
+    "IF", "AND", "OR", "NOT", "TRUE", "FALSE",
+    # text
+    "CONCATENATE", "TEXT", "LEN", "LEFT", "RIGHT", "UPPER", "LOWER", "TRIM", "SEARCH",
+    # dates
+    "TODAY", "DAYS", "ADD_DAYS", "YEAR", "MONTH", "DAY", "FORMAT_DATE",
+)
+# what is left once references, strings, functions and numbers are taken out
+_FORMULA_REST = re.compile(r"^[0-9+\-*/().,\s<>=!]*$")
+
+
+def _column_defs(board):
+    """The board's own column definitions, when the query asked for them.
+
+    Only this is where a formula lives — the copy of a column that rides inside
+    every item carries its title and type and nothing else.
+    """
+    out = {}
+    for c in board.get("columns") or []:
+        cid = (c or {}).get("id")
+        if not cid:
+            continue
+        raw = c.get("settings")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:                       # noqa: BLE001
+                raw = None
+        if not isinstance(raw, dict):
+            raw = None
+            for key in ("settings_str", "settings"):
+                v = c.get(key)
+                if isinstance(v, str) and v.strip():
+                    try:
+                        raw = json.loads(v)
+                        break
+                    except Exception:               # noqa: BLE001
+                        continue
+        out[str(cid)] = {"title": (c.get("title") or "").strip(),
+                         "type": c.get("type") or "",
+                         "settings": raw if isinstance(raw, dict) else {}}
+    return out
+
+
+def translate_formula(expr, titles_by_id):
+    """(expression over titles, ids it could not name). Pure text work."""
+    missing = []
+
+    def one(m):
+        key = m.group(1).strip()
+        title = titles_by_id.get(key)
+        if not title:
+            missing.append(key)
+            return m.group(0)
+        return "{" + title + "}"
+
+    return _FORMULA_REF.sub(one, expr or "").strip(), missing
+
+
+def formula_unsupported(expr):
+    """The function names in `expr` this app's engine does not implement.
+
+    Everything else in a formula — references, numbers, strings, arithmetic and
+    comparisons — the engine handles. So the question is only ever "does it know
+    these functions?", and the answer names them rather than being a yes/no: a
+    report that says "uses SWITCH" is actionable, "not supported" is not.
+    """
+    if not (expr or "").strip():
+        return ["—"]
+    stripped = _FORMULA_STRING.sub("''", _FORMULA_REF.sub("1", expr))
+    names = {m.group(0).upper() for m in _FORMULA_NAME.finditer(stripped)}
+    unknown = sorted(n for n in names if n not in FORMULA_FUNCS)
+    if unknown:
+        return unknown
+    # nothing unknown by name, but the leftovers still have to be syntax the
+    # engine reads — a stray character is a formula that will not run
+    rest = _FORMULA_NAME.sub("", stripped).replace("''", "")
+    return [] if _FORMULA_REST.match(rest) else ["תחביר לא מוכר"]
+
+
+def formula_is_computable(expr):
+    """Can this app's engine work it out? See formula_unsupported."""
+    return not formula_unsupported(expr)
+
+
+def _has_content(cv):
+    """Does this cell carry anything? Counted for the column survey.
+
+    `text` is where most types answer, but not all of them: a formula, a mirror
+    and a connect-boards column answer in `display_value` (and in `linked_items`),
+    and counting only `text` filed every one of them as "empty in every item".
+    """
+    if (cv.get("text") or "").strip():
+        return True
+    if str(cv.get("display_value") or "").strip():
+        return True
+    if cv.get("linked_items") or cv.get("linked_item_ids"):
+        return True
+    if cv.get("files"):
+        return True
+    return False
 
 
 def _blob(cv):
@@ -272,6 +406,30 @@ def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
                 add(None, part.strip())
         return out or None
 
+    if ctype == "formula":
+        # a live formula column computes its own cells; storing monday's snapshot
+        # beside it would leave two answers, one of them going stale
+        return None
+
+    # ── the three types monday answers somewhere other than `text` ──────
+    # formula:        "The computed result is returned in display_value. The text
+    #                  and value fields are not populated for formula columns."
+    # mirror:         display_value is the mirrored content as text.
+    # board_relation: "The text and value fields always return null"; the linked
+    #                 items come back in display_value / linked_items.
+    # Read only from `text`, all three arrive empty on every item — which is what
+    # made six formula columns and two connect columns look like columns nobody
+    # had ever filled.
+    mtype = (cv.get("type") or "").strip()
+    if mtype in DISPLAY_VALUE_TYPES:
+        dv = str(cv.get("display_value") or "").strip()
+        if dv:
+            return dv
+        names = [str((li or {}).get("name") or "").strip()
+                 for li in (cv.get("linked_items") or [])]
+        names = [n for n in names if n]
+        return ", ".join(names) or None
+
     # text, and everything that lands in text
     if isinstance(val, dict):
         if val.get("url"):
@@ -367,6 +525,7 @@ def parse(raw, max_cols):
 
     # ── survey the columns: title, type, and how many items actually use them ──
     meta, fill, order = {}, {}, []
+    asked = set()          # columns whose cells came with display_value at all
 
     def survey(it):
         for cv in it.get("column_values") or []:
@@ -378,18 +537,20 @@ def parse(raw, max_cols):
                              "type": cv.get("type") or ""}
                 fill[cid] = 0
                 order.append(cid)
-            if (cv.get("text") or "").strip():
+            if "display_value" in cv:
+                asked.add(cid)
+            if _has_content(cv):
                 fill[cid] += 1
 
     for it in items:
         survey(it)
 
-    skipped, keep = [], []
+    skipped, keep, as_subitems = [], [], []
     for cid in order:
         m = meta[cid]
         title = m["title"] or cid
-        if not fill[cid]:
-            skipped.append({"title": title, "type": m["type"], "reason": "ריקה בכל הפריטים"})
+        if m["type"] == SUBITEMS_TYPE:
+            as_subitems.append(title)
         elif m["type"] in UNSUPPORTED:
             skipped.append({"title": title, "type": m["type"], "reason": UNSUPPORTED[m["type"]]})
         elif m["type"] not in TYPE_MAP:
@@ -398,8 +559,9 @@ def parse(raw, max_cols):
             keep.append(cid)
 
     # Over the limit, the fullest columns win — a column two items use carries
-    # less of the board than one that every item fills. Ties keep the original
-    # order so the same file always imports the same way.
+    # less of the board than one that every item fills, and a column nobody has
+    # filled yet carries none of it. Ties keep the original order so the same
+    # file always imports the same way.
     keep.sort(key=lambda c: (-fill[c], order.index(c)))
     over = keep[max_cols:]
     keep = keep[:max_cols]
@@ -407,12 +569,56 @@ def parse(raw, max_cols):
         skipped.append({"title": meta[cid]["title"] or cid, "type": meta[cid]["type"],
                         "reason": f"מעבר לתקרה של {max_cols} עמודות (מלאה ב-{fill[cid]} פריטים)"})
 
+    # named, not dropped: a column the board has but nobody has filled yet is
+    # structure someone will use, and recreating it by hand after a migration is
+    # exactly the work a migration is supposed to save
+    empty = [meta[cid]["title"] or cid for cid in keep if not fill[cid]]
+    # An empty formula / mirror / connect column is usually not an empty column:
+    # monday answers those in display_value, and a file exported by a query that
+    # never asked for it carries nothing for them on any item. That is a file to
+    # re-export, not a column to shrug at — and the two are indistinguishable
+    # without saying which one this is.
+    reexport = [{"title": meta[cid]["title"] or cid, "type": meta[cid]["type"]}
+                for cid in keep
+                if not fill[cid] and meta[cid]["type"] in DISPLAY_VALUE_TYPES
+                and cid not in asked]
+    empty = [t for t in empty if t not in {r["title"] for r in reexport}]
     columns = [{"key": cid, "title": meta[cid]["title"] or cid,
                 "type": TYPE_MAP[meta[cid]["type"]], "monday_type": meta[cid]["type"],
                 "fill": fill[cid]} for cid in keep]
     for c in columns:
         if c["monday_type"] in RETYPED:
             c["note"] = RETYPED[c["monday_type"]]
+    # ── the formulas, now that every column has a title here ────────────
+    defs = _column_defs(board)
+    titles_by_id = {c["key"]: c["title"] for c in columns}
+    formulas_live, formulas_as_text = [], []
+    for c in columns:
+        if c["monday_type"] != "formula":
+            continue
+        raw = (defs.get(c["key"], {}).get("settings") or {}).get("formula")
+        if not isinstance(raw, str) or not raw.strip():
+            # the query did not ask for the column definitions, so the expression
+            # is simply not in the file — the computed values still come across
+            continue
+        expr, missing = translate_formula(raw, titles_by_id)
+        c["formula"] = expr
+        unsupported = formula_unsupported(expr)
+        if missing or unsupported:
+            # kept, shown, and editable — but the value stays monday's, because
+            # this app cannot work the expression out
+            why = ("היא מפנה לעמודה שלא יובאה" if missing
+                   else "היא משתמשת ב" + ", ".join(unsupported))
+            c["note"] = (f"הנוסחה יובאה כפי שהיא ומוצגת בעמודה, אך {why} — "
+                         "לכן הערך שיוצג הוא מה שמאנדיי חישב")
+            formulas_as_text.append({"title": c["title"], "formula": expr,
+                                     "missing": sorted(set(missing)),
+                                     "unsupported": unsupported})
+        else:
+            c["type"] = "formula"
+            c["note"] = "הנוסחה יובאה ומחושבת כאן מחדש"
+            formulas_live.append({"title": c["title"], "formula": expr})
+
     by_key = {c["key"]: c["type"] for c in columns}
     # sub-items are their own monday board with their own column ids, so they are
     # matched to the parent's columns by title — that is what shares a column on
@@ -507,6 +713,12 @@ def parse(raw, max_cols):
             "truncated": bool(cursor),
             "columns_found": len(meta),
             "columns_imported": len(columns),
+            "columns_empty": empty,
+            # a formula this app recomputes, and one it shows monday's answer for
+            "formulas_live": formulas_live,
+            "formulas_as_text": formulas_as_text,
+            "columns_need_reexport": reexport,
+            "as_subitems": as_subitems,
             "mapping": [{"title": c["title"], "from": c["monday_type"],
                          "to": c["type"], "note": c.get("note")} for c in columns],
             "skipped": skipped,

@@ -27,3 +27,14 @@ def test_the_import_report_accounts_for_the_conversation():
     like a board that never had one."""
     for marker in ("הודעות בשיחות", "messages_dropped", "conversation_items_unmatched"):
         assert marker in SRC, f"the import report says nothing about {marker}"
+
+
+def test_the_report_accounts_for_sub_items():
+    """A parent named in a column that matches nothing looks exactly like a board
+    with more top-level items than it should have — so it is stated."""
+    for marker in ("תתי־פריטים", "parents_unmatched", "ההיררכיה נקראה מההזחה",
+                   "ההיררכיה נקראה מעמודת פריט האב"):
+        assert marker in SRC, f"the import report says nothing about {marker}"
+    # the tile was already there for the monday import; the tabular one now fills
+    # it too, and it is read against what the file held
+    assert "outOf(b.subitems||0, r.subitems, 'פריטי־תת')" in SRC

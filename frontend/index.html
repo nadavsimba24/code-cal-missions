@@ -3395,7 +3395,9 @@ async function importBoardFile(){
       // the cover comes off before the report, or the report opens behind it
       importBusyDone();
       if(b.report) importReport(b);
-      else toast('הלוח יובא — '+(b.items||0)+' פריטים, '+(b.columns||0)+' עמודות'
+      else toast('הלוח יובא — '+(b.items||0)+' פריטים'
+                 +(b.subitems?', '+b.subitems+' תתי־פריטים':'')
+                 +', '+(b.columns||0)+' עמודות'
                  +(b.messages?', '+b.messages+' הודעות':''));
     }catch(e){ toast((e&&e.message)||'שגיאה בייבוא הקובץ'); }
     finally{ importBusyDone(); }   // a failed import must not leave the page covered
@@ -3441,6 +3443,20 @@ function importReport(b){
       <i class="fa-solid fa-triangle-exclamation"></i> הקובץ אינו הלוח המלא</div>
       ${cut.map(t=>`<div class="imp-why">${esc(t)}</div>`).join('')}
     </div>`:'';
+  /* Sub-items are the part of an import most likely to be silently wrong: a
+     parent named in a column that matches nothing looks exactly like a board
+     with more top-level items than it should have. So the file's own answer is
+     stated, and every name that found no parent is listed. */
+  const HIER_HE={indent:'ההיררכיה נקראה מההזחה בקובץ — פריט, ותחתיו תתי־הפריטים שלו',
+                 parent_column:'ההיררכיה נקראה מעמודת פריט האב'};
+  const lost=r.parents_unmatched||[];
+  const hierHTML=(r.hierarchy||lost.length)?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-diagram-project"></i> תתי־פריטים</div>
+      ${r.hierarchy?`<div class="imp-why">${esc(HIER_HE[r.hierarchy]||r.hierarchy)}</div>`:''}
+      ${lost.length?`<div class="imp-why">השורות האלה מצביעות על פריט אב שאינו בקובץ, ולכן נשארו פריטים רגילים:</div>
+        <div class="imp-cols">${lost.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
+    </div>`:'';
   const talkCut=[];
   if(r.messages_dropped) talkCut.push(`${r.messages_dropped} הודעות מעבר לתקרת הייבוא לא יובאו.`);
   if(r.updates_dropped) talkCut.push(`${r.updates_dropped} הודעות מעבר לתקרה לפריט בודד לא יובאו.`);
@@ -3452,22 +3468,97 @@ function importReport(b){
       ${noItem.length?`<div class="imp-why">הודעות ששייכות לפריטים שאינם בקובץ הזה לא צורפו לאף פריט:</div>
         <div class="imp-cols">${noItem.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
     </div>`:'';
+  const asSub=r.as_subitems||[];
+  const subColHTML=asSub.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-diagram-project"></i> תתי־פריטים</div>
+      <div class="imp-why">${asSub.map(t=>esc(t)).join(', ')} אינה עמודה כאן — מה שהיה בה יובא
+        כתתי־פריטים של הפריטים עצמם${b.subitems?` (${b.subitems})`:''}.</div>
+    </div>`:'';
+  /* The files are the one part of an import with an expiry date on it: monday's
+     links last about an hour. So the report says how many bytes actually crossed
+     and how many are now a name only — and what to do about it. */
+  const mb=n=>n>=1048576?(n/1048576).toFixed(1)+'MB':Math.max(1,Math.round(n/1024))+'KB';
+  const fileHTML=(r.files_imported||r.files_unreachable||r.files_over_budget)?`
+    <div class="imp-sec${(r.files_unreachable||r.files_over_budget)?' imp-warn':''}"><div class="imp-sec-t">
+      <i class="fa-solid fa-paperclip"></i> קבצים</div>
+      ${r.files_imported?`<div class="imp-why">${r.files_imported} קבצים הועברו לכאן (${esc(mb(r.files_bytes||0))}) — הם נשמרו במערכת וניתן לפתוח אותם.</div>`:''}
+      ${r.files_expired?`<div class="imp-why">${r.files_expired} קבצים נשארו כשם בלבד — <b>הקישורים בקובץ פגו</b>. מאנדיי חותם אותם לשעה אחת בלבד (הזמן כתוב בקישור עצמו, ולכן לא ניסינו להוריד אותם לחינם). כדי להביא גם את הקבצים: לייצא ולייבא ברצף, בתוך אותה שעה.</div>`:''}
+      ${r.files_unreachable?`<div class="imp-why">${r.files_unreachable} קבצים לא נענו — קישור שנחסם, או קובץ שאינו זמין יותר. השם נשמר.</div>`:''}
+      ${r.files_over_budget?`<div class="imp-why">${r.files_over_budget} קבצים מעבר לתקציב הייבוא נשארו כשם בלבד.</div>`:''}
+    </div>`:'';
+  /* The formulas. A migrated board whose formula columns are frozen numbers is
+     a board nobody can adjust, so the expression itself comes across — and the
+     report says which ones this app recomputes and which show monday's answer. */
+  const fLive=r.formulas_live||[], fText=r.formulas_as_text||[];
+  const fRow=f=>`<div class="imp-grp"><div class="imp-why">${esc(f.title)}</div>
+      <div class="imp-cols"><span class="tag" dir="ltr">${esc(f.formula)}</span>${
+        (f.missing||[]).length?`<span class="tag">עמודה שלא יובאה: ${esc((f.missing||[]).join(', '))}</span>`:''}${
+        (f.unsupported||[]).length?`<span class="tag">פונקציה שאינה נתמכת: ${esc((f.unsupported||[]).join(', '))}</span>`:''}</div></div>`;
+  const formulaHTML=(fLive.length||fText.length)?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-calculator"></i> נוסחאות</div>
+      ${fLive.length?`<div class="imp-why"><b>${fLive.length} נוסחאות מחושבות כאן מחדש</b> — הן תתעדכנו לבד כשהערכים ישתנו.</div>
+        ${fLive.map(fRow).join('')}`:''}
+      ${fText.length?`<div class="imp-why"><b>${fText.length} נוסחאות יובאו אך אינן מחושבות כאן</b> — מה שחסר רשום ליד כל אחת, ולכן מוצג הערך שמאנדיי חישב. הנוסחה עצמה נשמרה בעמודה וניתן לערוך אותה.</div>
+        ${fText.map(fRow).join('')}`:''}
+    </div>`:'';
+  const reexport=(r.columns_need_reexport||[]).map(x=>typeof x==='string'?{title:x,type:''}:x);
+  const REEXP_HE={formula:'עמודות נוסחה — במאנדיי נוסחה אינה נשמרת אלא מחושבת, והתוצאה מגיעה רק אם מבקשים אותה',
+                  board_relation:'עמודות קישור בין לוחות — שמות הפריטים המקושרים מגיעים רק אם מבקשים אותם',
+                  mirror:'עמודות מראה (mirror) — הערך המשוקף מגיע רק אם מבקשים אותו',
+                  dependency:'עמודות תלות — מגיעות רק אם מבקשים אותן'};
+  const byKind={};
+  reexport.forEach(x=>{ (byKind[x.type||'other']=byKind[x.type||'other']||[]).push(x.title); });
+  const reexportHTML=reexport.length?`
+    <div class="imp-sec imp-warn"><div class="imp-sec-t">
+      <i class="fa-solid fa-rotate"></i> ${reexport.length} עמודות ריקות שאפשר למלא — <b>יש להן ערכים במאנדיי</b></div>
+      <div class="imp-why"><b>מה קרה:</b> העמודות יובאו, אבל בכל ${
+        r.items||''} הפריטים לא היה בקובץ אף ערך עבורן — <b>לא כי הן ריקות במאנדיי</b>, אלא כי
+        מאנדיי מחזיר את הערכים של הסוגים האלה רק כשהשאילתה מבקשת אותם במפורש, והשאילתה
+        שהפיקה את הקובץ הזה לא ביקשה. שום דבר לא נמחק.</div>
+      ${Object.keys(byKind).map(k=>`<div class="imp-grp">
+          <div class="imp-why">${esc(REEXP_HE[k]||'סוג שמצריך בקשה מפורשת')}</div>
+          <div class="imp-cols">${byKind[k].map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
+        </div>`).join('')}
+      <div class="imp-why"><b>מה עושים:</b> מריצים את הייצוא ממאנדיי מחדש עם השאילתה המעודכנת
+        (<b>backend/monday_export.graphql</b>) ומייבאים את הקובץ החדש. אז הקישורים יגיעו עם שמות
+        הפריטים המקושרים, והנוסחאות יגיעו עם הביטוי עצמן — רובן מחושבות כאן מחדש.</div>
+    </div>`:'';
+  const emptyCols=r.columns_empty||[];
+  const emptyHTML=emptyCols.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-table-columns"></i> ${emptyCols.length} עמודות ריקות שאין מה למלא — <b>הן ריקות גם במאנדיי</b></div>
+      <div class="imp-why">מאנדיי כן שלח אותן, ומה ששלח היה ריק בכל הפריטים — אף אחד עדיין לא
+        מילא אותן בלוח המקור. <b>ייצוא מחדש לא ישנה כאן דבר</b> (להבדיל מהעמודות שלמעלה).
+        הן נוצרו כאן כדי שלא יהיה צריך לבנות אותן מחדש ביד כשיתחילו למלא.</div>
+      <div class="imp-cols">${emptyCols.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
+    </div>`:'';
   const peopleHTML=missing.length?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-user-slash"></i> ${missing.length} אנשים ללא חשבון במערכת</div>
       <div class="imp-why">השמות האלה מופיעים בקובץ אך אין להם משתמש כאן. עמודות האחראים שלהם נשארו ריקות, והודעות שהם כתבו נשמרו על שמם ומסומנות כמיובאות.</div>
       <div class="imp-cols">${missing.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
     </div>`:'';
+  /* Every tile answers one question — "did all of it come in?" — so each one
+     that CAN be compared against the file is shown as a fraction of it. The
+     columns tile read 39/64 while the items tile read a bare 320, which is
+     exactly the shape of report that leaves someone wondering whether items
+     were lost too. */
+  const outOf=(got,inFile,label)=>stat(
+    (typeof inFile==='number'&&inFile>=got)?`${got}/${inFile}`:String(got), label);
+  const statsHTML=`<div class="imp-stats">
+      ${outOf(b.items||0, r.items, 'פריטים')}
+      ${(b.subitems||r.subitems)?outOf(b.subitems||0, r.subitems, 'פריטי־תת'):''}
+      ${(r.columns_found||r.columns_imported)?stat(`${r.columns_imported||0}/${r.columns_found||0}`,'עמודות'):''}
+      ${r.groups?stat(r.groups,'קבוצות'):''}
+      ${(b.messages||r.updates)?outOf(b.messages||0, r.updates, 'הודעות בשיחות'):''}
+      ${r.files_imported?stat(r.files_imported,'קבצים'):''}
+    </div>`;
   showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(b.name||'הלוח יובא')}</h2>
     <div class="mbody">
-      <div class="imp-stats">
-        ${stat(b.items||0,'פריטים')}
-        ${b.subitems?stat(b.subitems,'פריטי־תת'):''}
-        ${(r.columns_found||r.columns_imported)?stat(`${r.columns_imported||0}/${r.columns_found||0}`,'עמודות'):''}
-        ${r.groups?stat(r.groups,'קבוצות'):''}
-        ${b.messages?stat(b.messages,'הודעות בשיחות'):''}
-      </div>
-      ${cutHTML}${mapHTML}${skipHTML}${talkHTML}${peopleHTML}
+      ${statsHTML}
+      ${cutHTML}${mapHTML}${formulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>`);
 }
@@ -7745,29 +7836,235 @@ async function saveAccount(taskId,colId,clear){
   if(!clear){const l=(document.getElementById('ac-label').value||'').trim();const u=(document.getElementById('ac-url').value||'').trim();if(l)val={label:l,url:u||undefined};}
   await setCell(taskId,colId,val);closeModals();renderView();
 }
-/* formula column — safe arithmetic over {ColumnTitle} references */
-function safeEval(s){
-  if(!/^[0-9+\-*/().\s]*$/.test(s))throw new Error('bad');
-  let i=0;const skip=()=>{while(/\s/.test(s[i]))i++;};
-  function expr(){let v=term();skip();while(s[i]==='+'||s[i]==='-'){const op=s[i++];const r=term();v=op==='+'?v+r:v-r;skip();}return v;}
-  function term(){let v=fac();skip();while(s[i]==='*'||s[i]==='/'){const op=s[i++];const r=fac();v=op==='*'?v*r:v/r;skip();}return v;}
-  function fac(){skip();if(s[i]==='('){i++;const v=expr();skip();if(s[i]===')')i++;return v;}if(s[i]==='-'){i++;return -fac();}let n='';while(/[0-9.]/.test(s[i]))n+=s[i++];return parseFloat(n||'0');}
-  return expr();
+/* ===== formula column =====
+   A formula reads "{Column Title}" references and works out one value per item.
+
+   It started as arithmetic and nothing else, which was enough for a column
+   somebody typed here by hand and not enough for one migrated off monday: a
+   board arrives with IF, ROUND and CONCATENATE in it, and a formula this engine
+   cannot work out is a column of blanks. So the engine is a small interpreter —
+   tokens, precedence, a named function table — and the function table is the
+   contract the importer reads to decide whether a formula can live here.
+
+   Everything is computed in the browser, from values already on screen. There
+   is no eval() anywhere near it: the parser only ever builds numbers, strings
+   and calls into the table below. */
+const FORMULA_FUNCS = {
+  /* ── numbers ── */
+  ROUND:      (n, d) => _fround(n, d),
+  ROUNDUP:    (n, d) => _fceilfloor(n, d, Math.ceil),
+  ROUNDDOWN:  (n, d) => _fceilfloor(n, d, Math.floor),
+  ABS:        n => Math.abs(_fnum(n)),
+  SQRT:       n => Math.sqrt(_fnum(n)),
+  POWER:      (a, b) => Math.pow(_fnum(a), _fnum(b)),
+  SUM:        (...a) => _fflat(a).reduce((s, x) => s + _fnum(x), 0),
+  AVERAGE:    (...a) => { const v = _fflat(a); return v.length ? v.reduce((s, x) => s + _fnum(x), 0) / v.length : null; },
+  MIN:        (...a) => { const v = _fflat(a).map(_fnum); return v.length ? Math.min(...v) : null; },
+  MAX:        (...a) => { const v = _fflat(a).map(_fnum); return v.length ? Math.max(...v) : null; },
+  ADD:        (a, b) => _fnum(a) + _fnum(b),
+  SUBTRACT:   (a, b) => _fnum(a) - _fnum(b),
+  MULTIPLY:   (a, b) => _fnum(a) * _fnum(b),
+  DIVIDE:     (a, b) => _fnum(b) === 0 ? null : _fnum(a) / _fnum(b),
+  /* ── logic ── */
+  IF:         (c, a, b) => _ftruthy(c) ? a : (b === undefined ? null : b),
+  AND:        (...a) => _fflat(a).every(_ftruthy),
+  OR:         (...a) => _fflat(a).some(_ftruthy),
+  NOT:        a => !_ftruthy(a),
+  TRUE:       () => true,
+  FALSE:      () => false,
+  /* ── text ── */
+  CONCATENATE:(...a) => _fflat(a).map(_ftext).join(''),
+  TEXT:       a => _ftext(a),
+  LEN:        a => _ftext(a).length,
+  LEFT:       (a, n) => _ftext(a).slice(0, Math.max(0, _fnum(n === undefined ? 1 : n))),
+  RIGHT:      (a, n) => { const k = Math.max(0, _fnum(n === undefined ? 1 : n)); return k ? _ftext(a).slice(-k) : ''; },
+  UPPER:      a => _ftext(a).toUpperCase(),
+  LOWER:      a => _ftext(a).toLowerCase(),
+  TRIM:       a => _ftext(a).trim(),
+  /* 1-based like a spreadsheet, 0 when it is not there */
+  SEARCH:     (needle, hay) => _ftext(hay).toLowerCase().indexOf(_ftext(needle).toLowerCase()) + 1,
+  /* ── dates ── a date is an ISO string, which is how the board stores one ── */
+  TODAY:      () => new Date().toISOString().slice(0, 10),
+  DAYS:       (a, b) => { const x = _fdate(a), y = _fdate(b);
+                          return (x && y) ? Math.round((x - y) / 86400000) : null; },
+  ADD_DAYS:   (d, n) => { const x = _fdate(d);
+                          return x ? new Date(x.getTime() + _fnum(n) * 86400000).toISOString().slice(0, 10) : null; },
+  YEAR:       d => { const x = _fdate(d); return x ? x.getUTCFullYear() : null; },
+  MONTH:      d => { const x = _fdate(d); return x ? x.getUTCMonth() + 1 : null; },
+  DAY:        d => { const x = _fdate(d); return x ? x.getUTCDate() : null; },
+  FORMAT_DATE:d => { const x = _fdate(d); return x ? _fpad(x.getUTCDate()) + '/' + _fpad(x.getUTCMonth() + 1) + '/' + x.getUTCFullYear() : null; },
+};
+const _fpad = n => String(n).padStart(2, '0');
+const _fflat = a => a.reduce((out, x) => out.concat(Array.isArray(x) ? x : [x]), []);
+function _fnum(v){
+  if(v===true)return 1; if(v===false||v==null||v==='')return 0;
+  if(typeof v==='number')return isFinite(v)?v:0;
+  const n=parseFloat(String(v).replace(/,/g,''));
+  return isFinite(n)?n:0;
 }
+function _ftext(v){
+  if(v==null)return '';
+  if(v===true)return 'TRUE'; if(v===false)return 'FALSE';
+  if(typeof v==='number')return String(Math.round(v*1e10)/1e10);
+  return String(v);
+}
+/* blank, zero and FALSE are false; everything else is true — a status label,
+   a date, a non-zero number */
+function _ftruthy(v){
+  if(v==null||v===false||v==='')return false;
+  if(v===true)return true;
+  if(typeof v==='number')return v!==0;
+  const s=String(v).trim();
+  return s!=='' && s!=='0' && s.toUpperCase()!=='FALSE';
+}
+function _fdate(v){
+  if(v==null||v==='')return null;
+  const s=String(v).trim();
+  const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(s) || /^(\d{2})\/(\d{2})\/(\d{4})$/.test(s)
+    ? (/^(\d{4})-(\d{2})-(\d{2})/.exec(s) || (([d,mo,y])=>[null,y,mo,d])(s.split('/')))
+    : null;
+  if(!m)return null;
+  const t=Date.UTC(+m[1], +m[2]-1, +m[3]);
+  return isNaN(t)?null:new Date(t);
+}
+function _fround(n, d){
+  const k=Math.pow(10, Math.max(0, Math.min(10, _fnum(d===undefined?0:d))));
+  return Math.round(_fnum(n)*k)/k;
+}
+function _fceilfloor(n, d, how){
+  const k=Math.pow(10, Math.max(0, Math.min(10, _fnum(d===undefined?0:d))));
+  return how(_fnum(n)*k)/k;
+}
+
+/* ---- tokens ---- {Reference}, 'text', "text", number, name, operator ---- */
+function formulaTokens(src){
+  const out=[]; let i=0; const s=String(src||'');
+  const OPS=['<=','>=','<>','!=','==','+','-','*','/','(',')',',','<','>','='];
+  while(i<s.length){
+    const ch=s[i];
+    if(/\s/.test(ch)){ i++; continue; }
+    if(ch==='{'){
+      const j=s.indexOf('}', i);
+      if(j<0) throw new Error('סוגר } חסר');
+      out.push({t:'ref', v:s.slice(i+1, j).trim()}); i=j+1; continue;
+    }
+    if(ch==='"'||ch==="'"){
+      const j=s.indexOf(ch, i+1);
+      if(j<0) throw new Error('מרכאות לא נסגרו');
+      out.push({t:'str', v:s.slice(i+1, j)}); i=j+1; continue;
+    }
+    if(/[0-9.]/.test(ch)){
+      let n=''; while(i<s.length && /[0-9.]/.test(s[i])) n+=s[i++];
+      out.push({t:'num', v:parseFloat(n)}); continue;
+    }
+    if(/[A-Za-z_֐-׿]/.test(ch)){
+      let w=''; while(i<s.length && /[A-Za-z0-9_.֐-׿]/.test(s[i])) w+=s[i++];
+      out.push({t:'name', v:w}); continue;
+    }
+    const op=OPS.find(o=>s.startsWith(o, i));
+    if(!op) throw new Error('תו לא מוכר: '+ch);
+    out.push({t:'op', v:op}); i+=op.length;
+  }
+  return out;
+}
+
+/* ---- parse + evaluate ---- one pass, because a formula is evaluated once per
+   cell and the expressions are short ---- */
+function formulaEval(src, lookup){
+  const tk=formulaTokens(src);
+  let p=0;
+  const peek=()=>tk[p];
+  const eat=v=>{ const t=tk[p]; if(!t||t.t!=='op'||t.v!==v) throw new Error('חסר '+v); p++; };
+  const CMP={'=':(a,b)=>_fcmp(a,b)===0,'==':(a,b)=>_fcmp(a,b)===0,
+             '<>':(a,b)=>_fcmp(a,b)!==0,'!=':(a,b)=>_fcmp(a,b)!==0,
+             '>':(a,b)=>_fcmp(a,b)>0,'<':(a,b)=>_fcmp(a,b)<0,
+             '>=':(a,b)=>_fcmp(a,b)>=0,'<=':(a,b)=>_fcmp(a,b)<=0};
+  function expr(){
+    let v=add();
+    while(peek() && peek().t==='op' && CMP[peek().v]){ const op=tk[p++].v; v=CMP[op](v, add()); }
+    return v;
+  }
+  function add(){
+    let v=mul();
+    while(peek() && peek().t==='op' && (peek().v==='+'||peek().v==='-')){
+      const op=tk[p++].v; const r=mul();
+      v = op==='+' ? _fnum(v)+_fnum(r) : _fnum(v)-_fnum(r);
+    }
+    return v;
+  }
+  function mul(){
+    let v=unary();
+    while(peek() && peek().t==='op' && (peek().v==='*'||peek().v==='/')){
+      const op=tk[p++].v; const r=unary();
+      if(op==='*') v=_fnum(v)*_fnum(r);
+      else { const d=_fnum(r); if(d===0) throw new Error('חלוקה באפס'); v=_fnum(v)/d; }
+    }
+    return v;
+  }
+  function unary(){
+    if(peek() && peek().t==='op' && peek().v==='-'){ p++; return -_fnum(unary()); }
+    return primary();
+  }
+  function primary(){
+    const t=tk[p];
+    if(!t) throw new Error('ביטוי חסר');
+    if(t.t==='num'||t.t==='str'){ p++; return t.v; }
+    if(t.t==='ref'){ p++; return lookup(t.v); }
+    if(t.t==='op'&&t.v==='('){ p++; const v=expr(); eat(')'); return v; }
+    if(t.t==='name'){
+      const fname=t.v.toUpperCase(); p++;
+      const fn=FORMULA_FUNCS[fname];
+      if(!fn) throw new Error('פונקציה לא מוכרת: '+t.v);
+      const args=[];
+      if(peek() && peek().t==='op' && peek().v==='('){
+        p++;
+        if(!(peek() && peek().t==='op' && peek().v===')')){
+          args.push(expr());
+          while(peek() && peek().t==='op' && peek().v===','){ p++; args.push(expr()); }
+        }
+        eat(')');
+      }
+      return fn(...args);
+    }
+    throw new Error('ביטוי לא תקין');
+  }
+  const out=expr();
+  if(p<tk.length) throw new Error('טקסט מיותר בסוף הנוסחה');
+  return out;
+}
+/* numbers compare as numbers, everything else as text — so {סטטוס}="בוצע"
+   works and {שעות}>8 does too */
+function _fcmp(a,b){
+  const na=(typeof a==='number')||(a!==''&&a!=null&&!isNaN(parseFloat(a))&&/^[\d.,\s-]+$/.test(String(a)));
+  const nb=(typeof b==='number')||(b!==''&&b!=null&&!isNaN(parseFloat(b))&&/^[\d.,\s-]+$/.test(String(b)));
+  if(na&&nb){ const x=_fnum(a), y=_fnum(b); return x<y?-1:x>y?1:0; }
+  const x=_ftext(a), y=_ftext(b);
+  return x<y?-1:x>y?1:0;
+}
+
 function evalFormula(col,t){
   if(!col.formula)return null;
-  let ex=col.formula;
-  customColumns().forEach(c=>{
-    if(c.id===col.id)return;
-    const tok='{'+c.title+'}';
-    if(ex.indexOf(tok)>=0){
-      const val=cellValue(t,c.id);let n=0;
-      if(c.type==='checkbox')n=val?1:0; else n=parseFloat(val)||0;
-      ex=ex.split(tok).join('('+n+')');
-    }
-  });
-  try{const r=safeEval(ex);return (r==null||isNaN(r)||!isFinite(r))?null:(Math.round(r*100)/100);}catch(e){return null;}
+  const cols=customColumns();
+  const lookup=title=>{
+    const c=cols.find(x=>x.title===title && x.id!==col.id);
+    // A reference to a column that is not here (renamed, removed, or the
+    // formula's own column) makes the whole formula wrong. Answering 0 for it
+    // would show a confident number computed from something missing.
+    if(!c)throw new Error('אין עמודה בשם '+title);
+    const v=cellValue(t,c.id);
+    if(c.type==='checkbox')return v?1:0;
+    if(c.type==='number')return v==null||v===''?null:_fnum(v);
+    return v==null?null:(typeof v==='object'?_ftext(v.label||v.text||''):v);
+  };
+  try{
+    const r=formulaEval(col.formula, lookup);
+    if(r==null||r==='')return null;
+    if(typeof r==='boolean')return r?'✓':'';
+    if(typeof r==='number')return (isNaN(r)||!isFinite(r))?null:(Math.round(r*100)/100);
+    return String(r);
+  }catch(e){ return null; }
 }
+
 function findAnyTask(id){
   for(const t of (st.board.tasks||[])){ if(t.id==id)return t; for(const s of (t.subtasks||[])) if(s.id==id)return s; }
   return null;
@@ -9891,7 +10188,9 @@ function openForms(){ Forms.open(); }
 // doesn't read them as local, then always render in Israel (Jerusalem) time
 function _utc(d){ return (typeof d==='string' && !/(?:[zZ]|[+-]\d\d:?\d\d)$/.test(d)) ? d.replace(' ','T')+'Z' : d; }
 const fdatetime = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}):'';
-// same, but with the year — used by the "מועד יצירה" (created_at) column
+/* Same, with the year. Used by the "מועד יצירה" column and by everything in the
+   item's panel — a conversation can span years (an imported one certainly does),
+   and "14.09, 12:34" on a message from two years ago reads as today. */
 const fdatetimeY = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',timeZone:'Asia/Jerusalem'}).replace(/\./g,'/'):'';
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
@@ -10105,7 +10404,7 @@ const Chat = {
       <div class="cmt-main">
         <div class="cmt-head"><b>${esc(c.user_name)}</b>${ROLE_HE[c.user_role]?`<span class="cmt-role">${ROLE_HE[c.user_role]}</span>`:''}${
           org?`<span class="cmt-role" title="${esc(src)} — הכותב אינו משתמש במערכת"><i class="fa-solid fa-file-import" style="font-size:9px"></i> מיובאת</span>`:''
-        }<span class="cmt-time">${fdatetime(c.created_at)}</span></div>
+        }<span class="cmt-time">${fdatetimeY(c.created_at)}</span></div>
         ${bodyOrEdit}
         ${replies?`<div class="cmt-replies">${replies}</div>`:''}
       </div>
@@ -10466,7 +10765,7 @@ const Chat = {
     wrap.innerHTML=list.length? `<div class="files-list">${list.map(f=>`
       <a class="file-row" href="${esc(f.url)}" target="_blank">
         ${this.extBadge(f.name,f.type)}
-        <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}${f.created_at?' · <i class="fa-regular fa-clock" style="font-size:10px"></i> '+fdatetime(f.created_at):''}</div></div>
+        <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}${f.created_at?' · <i class="fa-regular fa-clock" style="font-size:10px"></i> '+fdatetimeY(f.created_at):''}</div></div>
         <i class="fa-solid fa-download fr-dl"></i>
         ${this.canDeleteFile(f)?`<button class="fr-del" title="מחק קובץ" onclick="Chat.deleteFile(event,'${encodeURIComponent(f.url)}')"><i class="fa-solid fa-trash-can"></i></button>`:''}
       </a>`).join('')}</div>`
@@ -10491,7 +10790,7 @@ const Chat = {
     const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
     const rows=d.activity.map(a=>`<div class="log-row">
       <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':a.action==='create'?'fa-plus':'fa-pen'}"></i></div>
-      <div style="flex:1;min-width:0"><div class="log-txt"><b>${esc(a.user_name)}</b> ${this.logText(a)}</div><div class="log-time">${fdatetime(a.created_at)}</div></div>
+      <div style="flex:1;min-width:0"><div class="log-txt"><b>${esc(a.user_name)}</b> ${this.logText(a)}</div><div class="log-time">${fdatetimeY(a.created_at)}</div></div>
       ${a.can_undo&&isMgr?`<button class="log-undo" onclick="Chat.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
     </div>`).join('')||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות</div></div>';
     body.innerHTML=`<div class="log-filters">
