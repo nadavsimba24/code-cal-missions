@@ -5,6 +5,8 @@ business description, an owner distinct from whoever wrote it, a state (draft,
 active, paused, suspended by errors, being deleted), an importance, a place in
 the running order, and a record of how well it actually works.
 """
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 import main as cityos_main
 from models import Automation, Notification, Task
@@ -93,6 +95,8 @@ def test_the_old_switch_still_works_and_maps_onto_the_states(client, admin_id):
 
 def test_ownership_is_separate_from_authorship(client, admin_id, guinea_id):
     bid = _mk_board(client, admin_id, invite=guinea_id)
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "admin"})
     aid = _add(client, bid, admin_id, "created_set_priority", {"a_priority": "high"}).json()["id"]
     row = next(a for a in _list(client, bid, admin_id)["automations"] if a["id"] == aid)
     # nobody named it, so it answers to whoever wrote it
@@ -172,7 +176,13 @@ def test_a_skip_is_an_attempt_but_not_a_failure(client, admin_id):
     bid = _mk_board(client, admin_id)
     aid = _add(client, bid, admin_id, "due_notify_assignees", {}).json()["id"]
     tid = _mk_item(client, bid, admin_id)
-    client.patch(f"/api/tasks/{tid}", json={"due_date": "2020-01-01", "user_id": admin_id})
+    client.patch(f"/api/tasks/{tid}", json={"due_date": "2026-01-01", "user_id": admin_id})
+    # an activation does not reach backwards, so the rule has to have been on
+    # before that date arrived
+    with Session(cityos_main.engine) as db:
+        row = db.query(Automation).filter(Automation.id == aid).first()
+        row.activated_at = datetime(2025, 1, 1)
+        db.commit()
     client.get(f"/api/boards/{bid}?user_id={admin_id}")          # the date sweep runs on read
     row = next(a for a in _list(client, bid, admin_id)["automations"] if a["id"] == aid)
     assert row["skip_count"] == 1 and row["last_outcome"] == "skipped"
@@ -312,65 +322,70 @@ def test_a_duplicate_says_where_it_came_from(client, admin_id):
     assert v[0]["summary"] == f"שוכפלה מאוטומציה #{src['id']}"
 
 
-def test_versions_are_readable_by_a_member_and_nobody_else(client, admin_id, guinea_id, member_id):
+def test_versions_follow_the_automations_permission(client, admin_id, guinea_id, member_id):
     bid = _mk_board(client, admin_id, invite=guinea_id)
     aid = _add(client, bid, admin_id, "created_set_priority", {"a_priority": "high"}).json()["id"]
-    assert client.get(f"/api/automations/{aid}/versions?user_id={guinea_id}").status_code == 200
+    assert client.get(f"/api/automations/{aid}/versions?user_id={admin_id}").status_code == 200
+    # a board editor needs the dedicated capability; see test_automations_matrix.py
+    assert client.get(f"/api/automations/{aid}/versions?user_id={guinea_id}").status_code == 403
     assert client.get(f"/api/automations/{aid}/versions?user_id={member_id}").status_code == 403
 
 
-def test_testing_a_rule_on_an_item_reports_what_happened_and_changes_nothing(client, admin_id):
-    """The action really runs — that is the only way to catch a status that no
-    longer exists — and is then rolled back."""
+def test_a_dry_run_reports_what_would_happen_and_changes_nothing(client, admin_id):
+    """It is worked out, not performed — see tests/test_automations_dryrun.py for
+    the whole contract."""
     bid = _mk_board(client, admin_id)
-    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "in_progress"},
+    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"},
                status="draft").json()["id"]
     tid = _mk_item(client, bid, admin_id, "פריט לבדיקה")
     before = client.get(f"/api/tasks/{tid}?user_id={admin_id}").json()
 
     r = client.post(f"/api/automations/{aid}/test?user_id={admin_id}", json={"task_id": tid})
     assert r.status_code == 200, r.text
-    res = r.json()["result"]
-    assert res["outcome"] == "ran" and res["is_test"] is True and r.json()["undone"] is True
+    d = r.json()
+    assert d["verdict"] == "would_run" and d["changed_nothing"] is True
+    assert d["notified_nobody"] is True and d["retention_days"] == 30
 
     after = client.get(f"/api/tasks/{tid}?user_id={admin_id}").json()
-    assert after["status"] == before["status"], "the test left the item changed"
+    assert after["status"] == before["status"], "the dry run changed the item"
     with Session(cityos_main.engine) as db:
         a = db.query(Automation).filter(Automation.id == aid).first()
-        assert (a.run_count or 0) == 0, "a test counted as a real run"
+        assert (a.run_count or 0) == 0, "a dry run counted as a real run"
 
 
-def test_a_test_that_would_do_nothing_says_why(client, admin_id):
+def test_a_dry_run_that_would_do_nothing_says_why(client, admin_id):
     bid = _mk_board(client, admin_id)
-    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "todo"}).json()["id"]
-    tid = _mk_item(client, bid, admin_id)          # already created as "todo"
-    res = client.post(f"/api/automations/{aid}/test?user_id={admin_id}",
-                      json={"task_id": tid}).json()["result"]
-    assert res["outcome"] == "skipped" and "כבר" in res["reason"]
+    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"}).json()["id"]
+    tid = _mk_item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
+    d = client.post(f"/api/automations/{aid}/test?user_id={admin_id}",
+                    json={"task_id": tid}).json()
+    assert d["verdict"] == "would_skip"
+    assert any(x["no_op"] and "כבר" in x["note"] for x in d["actions"]), d["actions"]
 
 
-def test_a_test_appears_in_the_history_marked_as_one(client, admin_id):
+def test_a_dry_run_is_kept_in_its_own_log_not_the_run_history(client, admin_id):
     bid = _mk_board(client, admin_id)
-    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "in_progress"}).json()["id"]
+    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"},
+               status="draft").json()["id"]
     tid = _mk_item(client, bid, admin_id)
     client.post(f"/api/automations/{aid}/test?user_id={admin_id}", json={"task_id": tid})
     runs = client.get(f"/api/boards/{bid}/automations/runs?user_id={admin_id}").json()["runs"]
-    tests = [r for r in runs if r["is_test"]]
-    assert len(tests) == 1 and tests[0]["task_id"] == tid
-    # it was undone on purpose, so "try again" must not offer to do it for real
-    assert tests[0]["can_retry"] is False
-    assert client.post(f"/api/automation-runs/{tests[0]['id']}/retry?user_id={admin_id}").status_code == 400
+    assert not [r for r in runs if r["is_test"]], "a test landed in the run history"
+    tests = client.get(f"/api/boards/{bid}/automations/tests?user_id={admin_id}").json()
+    assert len(tests["tests"]) == 1 and tests["tests"][0]["task_id"] == tid
+    assert tests["retention_days"] == 30
 
 
-def test_a_test_runs_even_on_a_paused_rule(client, admin_id):
+def test_a_dry_run_works_on_a_paused_rule(client, admin_id):
     """Checking a rule before switching it on is the main reason to test one."""
     bid = _mk_board(client, admin_id)
-    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "in_progress"},
+    aid = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"},
                status="draft").json()["id"]
     tid = _mk_item(client, bid, admin_id)
-    res = client.post(f"/api/automations/{aid}/test?user_id={admin_id}",
-                      json={"task_id": tid}).json()["result"]
-    assert res["outcome"] == "ran"
+    d = client.post(f"/api/automations/{aid}/test?user_id={admin_id}",
+                    json={"task_id": tid}).json()
+    assert d["verdict"] == "would_run"
 
 
 def test_a_test_needs_an_item_from_the_same_board(client, admin_id):

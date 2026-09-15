@@ -342,6 +342,14 @@ class Automation(Base):
     last_success_at = Column(DateTime, nullable=True)
     last_failure_at = Column(DateTime, nullable=True)
     last_outcome = Column(String(12), default="")       # ran | skipped | failed
+    # When it was last switched on. An activation applies to events from that
+    # moment forward — it is not a licence to act on everything that happened
+    # while the rule was off.
+    activated_at = Column(DateTime, nullable=True)
+    # The version number of the edit waiting to be published. An edit to a
+    # running rule does not change what runs: it is written as a draft version
+    # and this points at it until someone publishes it.
+    draft_version = Column(Integer, nullable=True)
     # engine bookkeeping (not user config) — e.g. which items a date trigger
     # already fired for, so a due date cannot notify the same item twice
     state = Column(JSON, default=dict)
@@ -378,6 +386,10 @@ class AutomationRun(Base):
     # a "בדיקה על פריט": the action really ran, inside a transaction that was
     # then rolled back, so the outcome is real but nothing it did survived
     is_test = Column(Boolean, default=False)
+    # Which version of the rule this run was carried out under. A run is decided
+    # by the version in force when the event arrived, and this is where that is
+    # answerable afterwards.
+    version = Column(Integer, nullable=True)
     reason = Column(Text, default="")                # why it skipped, or what failed
     depth = Column(Integer, default=0)               # 0 = the change itself, >0 = a cascade
     actor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -402,8 +414,81 @@ class AutomationVersion(Base):
     sentence = Column(Text, default="")
     snapshot = Column(JSON, default=dict)
     summary = Column(String(300), default="")     # what changed, in words
+    # A draft version is an edit that has not been published. The live rule is
+    # unchanged until someone activates it, which is what lets an active rule be
+    # edited without the board changing under it mid-day.
+    is_draft = Column(Boolean, default=False)
+    published_at = Column(DateTime, nullable=True)
     changed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     changed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AutomationUsage(Base):
+    """How much automation a board actually consumed, by calendar month.
+
+    Counted here rather than from the run log, because that log is trimmed per
+    board: a quota read off it would quietly shrink as the log rolled over, and
+    a quota nobody can trust is worse than none. One row per board per month,
+    incremented as rules fire.
+    """
+    __tablename__ = "automation_usage"
+    __table_args__ = (UniqueConstraint("period", "board_id", name="uq_automation_usage"),)
+    id = Column(Integer, primary_key=True)
+    period = Column(String(7), nullable=False, index=True)      # "2026-09"
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    ran = Column(Integer, default=0)
+    skipped = Column(Integer, default=0)
+    failed = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AutomationFreeze(Base):
+    """An emergency stop on automations — one board's, or the whole organisation's.
+
+    Deliberately a record and not a flag. A freeze carries the reason it was
+    imposed, who imposed it and when, and it is released only by someone saying
+    so: nothing here expires it, because an automation that switches itself back
+    on is exactly what an emergency stop exists to prevent. `released_at` closes
+    a freeze without erasing it, so the audit reads as the sequence it was.
+    """
+    __tablename__ = "automation_freezes"
+    id = Column(Integer, primary_key=True)
+    scope = Column(String(10), nullable=False)          # "org" | "board"
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=True, index=True)
+    reason = Column(Text, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    released_at = Column(DateTime, nullable=True)
+    released_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    release_reason = Column(Text, default="")
+
+
+class AutomationTestRun(Base):
+    """A "בדיקה על פריט" — a dry run, kept in a log of its own.
+
+    Separate from the run history on purpose: a test is not something the board
+    did, and mixing the two makes the history unreadable exactly when someone is
+    trying to work out what really happened. `details` holds the whole analysis
+    — the trigger match, each condition, the actions and their expected values,
+    the permissions that are missing and the conflicts found — so a test can be
+    re-read later without being run again.
+
+    Kept for AUTOMATION_TEST_LOG_DAYS and then swept: a test is a working note,
+    not a record of the board.
+    """
+    __tablename__ = "automation_test_runs"
+    id = Column(Integer, primary_key=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=True, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
+    task_title = Column(String(300), default="")
+    sentence = Column(Text, default="")
+    version = Column(Integer, nullable=True)
+    verdict = Column(String(16), default="would_run")   # would_run|would_skip|blocked
+    summary = Column(String(400), default="")
+    details = Column(JSON, default=dict)
+    tested_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class Comment(Base):

@@ -20,11 +20,12 @@ function grabConst(name){
 const st={board:{id:1,name:'לוח תשתיות',groups:[],my_role:'admin'},boards:[]};
 const stored={};
 const localStorage={getItem:k=>stored[k]||null,setItem:(k,v)=>{stored[k]=String(v);}};
-const A=new Function('st','esc','toast','BoardLog','fdatetime','avatarInner','boardStatusList',
+const A=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','avatarInner','boardStatusList',
   'boardPriorityList','customColumns','meId','api','openCellPop','closeCellPops','askConfirm',
   'showModal','closeModals','document','renderView','localStorage',
   grabConst('Automations')+' return Automations;')(
   st, x=>String(x==null?'':x), ()=>{}, {ago:()=>'עכשיו',goto(){}}, ()=>'01/01/2026',
+  ()=>'01/01/2026',
   ()=>'', ()=>[], ()=>[], ()=>[], ()=>1, async()=>({}), ()=>{}, ()=>{}, ()=>{},
   ()=>{}, ()=>{}, {getElementById:()=>null}, ()=>{}, localStorage);
 
@@ -223,7 +224,7 @@ let mm=menu(11,'main');
  ['השהה','Automations.toggle(11,false)'],['העבר בעלות',"Automations.showMenu(11,'owner')"],
  ['שנה חשיבות',"Automations.showMenu(11,'importance')"],
  ['שנה סדר ביצוע',"Automations.showMenu(11,'order')"],
- ['בדיקה על פריט','Automations.startTest(11)'],['צפייה בגרסאות','Automations.versions(11)'],
+ ['בדיקה על פריט (ללא שינוי)','Automations.startTest(11)'],['צפייה בגרסאות','Automations.versions(11)'],
  ['לוג הפעלות','Automations.historyFor(11)'],['מחק','Automations.del(11)']].forEach(([he,act])=>
   ck(`the menu offers "${he}"`, mm.includes(he) && mm.includes(act), mm.slice(0,900)));
 ck('a paused rule is offered activation rather than pausing',
@@ -250,23 +251,93 @@ ck('the versions panel lists each version with what changed',
    vs.includes('v2') && vs.includes('שונה: השם') && vs.includes('נוצרה'), vs.slice(0,400));
 ck('...who changed it and when', vs.includes('יואב') && vs.includes('01/01/2026'));
 ck('...and the rule as it read at the time', vs.includes('שלח התראה ל'));
+ck('a version can be restored where the data capability allows it',
+   (A.data.can_export=true, A.data.can_manage=true,
+    A.versionsHTML().includes('Automations.restore(11,1)')), A.versionsHTML().slice(0,300));
+ck('...and the newest version offers no restore, being the current one',
+   !A.versionsHTML().includes('Automations.restore(11,2)'));
+ck('...and nothing is offered without the data capability',
+   (A.data.can_export=false, !A.versionsHTML().includes('Automations.restore(')));
+A.data.can_export=true;
 A.viewing={id:11,a:RULES[0],rows:null};
 ck('the versions panel waits rather than showing an empty history', A.versionsHTML().includes('spin'));
 A.closePanel();
 
 // a test on one item
-A.testing={id:11,a:RULES[0],q:'',items:[{id:7,title:'תיקון מדרכה'}],result:null,busy:false};
+A.testing={id:11,a:RULES[0],q:'',items:[{id:7,title:'תיקון מדרכה'}],result:null,busy:false,real:false};
 let ts=A.testHTML();
-ck('the test screen promises the run will be undone',
-   ts.includes('תרוץ באמת') && ts.includes('מיד תבוטל'), ts.slice(0,600));
+ck('the test screen promises it changes nothing',
+   ts.includes('אינה משנה מידע ואינה שולחת התראה'), ts.slice(0,700));
 ck('...and offers the board\'s own items to run it on', ts.includes('Automations.runTest(7)'));
-A.testing.result={outcome:'skipped',task_title:'תיקון מדרכה',reason:'נמען ההתראה אינו חבר בלוח'};
+A.testing.result={verdict:'would_run',summary:'הכלל היה מתבצע',task_title:'תיקון מדרכה',
+  retention_days:30,
+  trigger:{label:'כאשר הסטטוס משתנה ל…',matches:true,note:'הסטטוס בפריט: בוצע'},
+  conditions:[{label:'סטטוס',expected:'בוצע',actual:'בוצע',ok:true}],
+  actions:[{what:'שליחת התראה',to:'דנה',from:'',no_op:false,note:'בבדיקה לא נשלחת התראה'}],
+  missing_permissions:[],broken_dependencies:[],conflicts:[],loop_risk:[]};
 ts=A.testHTML();
-ck('a test that would do nothing says so, with the reason',
-   ts.includes('הכלל לא היה עושה דבר') && ts.includes('נמען ההתראה אינו חבר בלוח'), ts.slice(0,900));
+ck('the verdict is stated', ts.includes('הכלל היה מתבצע'), ts.slice(0,400));
+ck('the trigger match is shown', ts.includes('גורם מפעיל') && ts.includes('הסטטוס בפריט: בוצע'));
+ck('each condition is shown with expected and actual',
+   ts.includes('תנאים') && ts.includes('בפריט: בוצע'));
+ck('the actions and their expected values are shown',
+   ts.includes('פעולות וערכים צפויים') && ts.includes('דנה'));
+ck('...including that no notification is sent', ts.includes('לא נשלחת התראה'));
+ck('the retention of the test log is stated', ts.includes('30 ימים'));
+A.testing.result={verdict:'blocked',summary:'הכלל חסום',task_title:'תיקון מדרכה',retention_days:30,
+  trigger:{label:'x',matches:true,note:''},conditions:[],actions:[],
+  missing_permissions:['דנה אינו חבר בלוח'],broken_dependencies:['הקבוצה נמחקה'],
+  conflicts:[{id:12,name:'כלל אחר'}],loop_risk:[{id:13,name:'כלל מחזיר',cycle:true}]};
+ts=A.testHTML();
+ck('a blocked test names the missing permission', ts.includes('הרשאות חסרות') && ts.includes('דנה אינו חבר בלוח'));
+ck('...and the broken dependency', ts.includes('תלויות חסרות') && ts.includes('הקבוצה נמחקה'));
+ck('...and warns about a conflict', ts.includes('התנגשות') && ts.includes('כלל אחר'));
+ck('...and about a loop', ts.includes('סיכון ללולאה') && ts.includes('מזינה את האוטומציה הזאת בחזרה'));
+A.testing.real=true;
 A.testing.result={outcome:'ran',task_title:'תיקון מדרכה',reason:''};
-ck('a test that would work says that instead', A.testHTML().includes('הכלל היה מתבצע'));
+ck('a manual run says it really happened', A.testHTML().includes('הכלל בוצע'));
+ck('...and warns it will stay', A.testHTML().includes('ותישאר'));
 A.closePanel();
+
+// the impact preview, before switching a rule on
+A.imp={id:11,then:'',data:{sentence:'כאשר נוצר פריט חדש, שייך את «דנה»',missing_fields:[],
+  boards:[{id:7,name:'לוח תשתיות',mode:'read_write',why:'הלוח שהאוטומציה יושבת בו'},
+          {id:9,name:'לוח יעד',mode:'write',why:'האוטומציה יוצרת בו פריטים'}],
+  reads:['סטטוס'],writes:['אחראים'],
+  links:[{kind:'connect',column:'קישור',two_way:true,boards:[{id:9,name:'לוח יעד'}]},
+         {kind:'mirror',column:'מראה',through:'קישור',boards:[]}],
+  recipients:[{name:'דנה',kind:'נמען מוגדר',ok:false}],
+  missing_permissions:['דנה אינו חבר בלוח'],
+  others:[{id:12,name:'כלל אחר',status:'active',fields:['אחראים'],runs_before:true}],
+  loop_risk:[{id:13,name:'כלל מחזיר',cycle:true}]}};
+let ip=A.impactHTML();
+ck('the preview lists the boards and how each is touched',
+   ip.includes('לוח תשתיות') && ip.includes('קורא ומעדכן') && ip.includes('לוח יעד') && ip.includes('מעדכן'));
+ck('...the fields read and written', ip.includes('שדות נקראים') && ip.includes('שדות מתעדכנים'));
+ck('...the connect and mirror dependencies',
+   ip.includes('תלויות בקישור ובמראה') && ip.includes('דו־כיוונית') && ip.includes('עמודת מראה'));
+ck('...who would be notified, and that they cannot be',
+   ip.includes('נמעני התראות') && ip.includes('דנה') && ip.includes('אינו חבר בלוח'));
+ck('...other automations writing the same fields',
+   ip.includes('אוטומציות נוספות שמעדכנות אותם שדות') && ip.includes('רצה לפניה'));
+ck('...and the loop risk', ip.includes('סיכון ללולאה'));
+ck('the preview can lead straight into a test', ip.includes('Automations.startTest(11)'));
+A.imp.data.missing_fields=['נמען'];
+ck('a rule missing a required field cannot be activated from here',
+   /disabled title="יש להשלים את שדות החובה"/.test(A.impactHTML()));
+A.imp=null;
+
+// the test log, separate from the run history
+A.tlog={id:11,days:30,rows:[{id:1,automation_id:11,task_title:'תיקון מדרכה',
+  sentence:'כאשר נוצר פריט חדש, שייך את «דנה»',verdict:'would_skip',summary:'לא היה עושה דבר',
+  tested_by_name:'שלי',created_at:'2026-09-14T09:00:00'}]};
+let tl=A.testLogHTML();
+ck('the test log says it is not the run history', tl.includes('אינן בלוג ההפעלות'));
+ck('...states the retention', tl.includes('30 ימים'));
+ck('...and lists each test with its verdict', tl.includes('לא היה עושה דבר') && tl.includes('שלי'));
+A.tlog={id:11,rows:[]};
+ck('an empty test log says so', A.testLogHTML().includes('לא בוצעו בדיקות'));
+A.tlog=null;
 
 A.data.can_manage=false;
 ck('a viewer gets the list but no controls',
@@ -294,6 +365,68 @@ ck('a board with no rules is pointed at יצירה instead of a filter bar',
 A.data.automations=RULES.map(r=>({...r}));
 A.data.counts={total:4,active:1,paused:2,paused_error:1,draft:1,deleting:0,needs_attention:1};
 
+// ── a draft version waiting to be published ──
+A.data.automations[0].draft_version=4;
+A.clearF(); A.view='expanded';
+let pd=A.manageHTML();
+ck('a waiting edit is announced', pd.includes('גרסה 4 ממתינה להפעלה'), pd.slice(0,500));
+ck('...saying the live version keeps running', pd.includes('ממשיכה לפעול עד שתפעילו'));
+ck('...and offers to publish, compare or discard',
+   pd.includes('Automations.publish(11)') && pd.includes('Automations.compare(11)')
+   && pd.includes('Automations.discard(11)'));
+A.data.automations[0].draft_version=null;
+ck('and nothing is announced when there is no draft', !A.manageHTML().includes('ממתינה להפעלה'));
+
+// a draft that cannot be switched on says what it is missing
+A.data.automations[1].status='draft';
+A.data.automations[1].missing_fields=['נמען','סטטוס'];
+ck('an incomplete draft lists the fields it needs',
+   A.manageHTML().includes('חסרים שדות חובה: נמען, סטטוס'), A.manageHTML().slice(0,400));
+A.data.automations[1].status='paused'; A.data.automations[1].missing_fields=[];
+
+// the statuses say what they mean
+ck('each status explains itself on hover',
+   ['אינה מאזינה לאירועים','מאזינה לאירועים','נעצרה ידנית','לולאה','ממתינה להשלמת']
+     .every(x=>Object.values(A.ST).some(v=>(v.what||'').includes(x))),
+   JSON.stringify(Object.values(A.ST).map(v=>v.what)));
+
+// the comparison, grouped the way the decision is made
+A.cmp={id:11,data:{a:{version:2,is_draft:false,changed_at:'2026-09-01T10:00:00',sentence:''},
+  b:{version:3,is_draft:true,changed_at:'2026-09-14T10:00:00',sentence:''},
+  identical:false,
+  groups:[{id:'conditions',label:'תנאים',changes:[{key:'t_status',label:'סטטוס',from:'בוצע',to:'בתהליך'}]},
+          {id:'permissions',label:'הרשאות',changes:[{key:'a_person',label:'נמען',from:'יואב',to:'דנה'}]}]}};
+let cm=A.compareHTML();
+ck('the comparison names both versions', cm.includes('גרסה <b>2</b>') && cm.includes('גרסה <b>3</b>'));
+ck('...marks the draft as one', cm.includes('(טיוטה)'));
+ck('...groups the changes', cm.includes('תנאים') && cm.includes('הרשאות'));
+ck('...shows each change as from → to', cm.includes('בוצע') && cm.includes('בתהליך')
+   && cm.includes('יואב') && cm.includes('דנה'));
+ck('...and offers to publish the draft from there', cm.includes('Automations.publish(11)'));
+A.cmp={id:11,data:{a:{version:1,is_draft:false},b:{version:1,is_draft:false},identical:true,groups:[]}};
+ck('two identical versions say so', A.compareHTML().includes('אין הבדל בין הגרסאות'));
+A.cmp=null;
+
+// ── ownership: an indicator, never a status change ──
+A.data.automations[0].needs_owner=true;
+A.data.automations[0].owner_problem='החשבון של דנה חסום';
+A.data.counts.needs_owner=1;
+A.clearF(); A.view='expanded';
+let og=A.manageHTML();
+ck('a rule that answers to nobody says so', og.includes('דורשת שיוך בעלים'), og.slice(0,400));
+ck('...with the reason', og.includes('החשבון של דנה חסום'));
+ck('...and is still shown as active, not suspended',
+   /am-st on[\s\S]{0,140}?פעילה/.test(og), 'the indicator changed the status');
+ck('there is a tile to find them by', og.includes("Automations.tile('needs_owner')"));
+A.setF('status','needs_owner');
+ck('...that filters to exactly those', A.listBody().includes('Automations.menu(event,11)')
+   && !A.listBody().includes('Automations.menu(event,12)'));
+A.clearF(); A.setView('compact');
+ck('the compact row carries it too', A.manageHTML().includes('דורשת בעלים'));
+A.setView('expanded');
+A.data.automations[0].needs_owner=false; A.data.counts.needs_owner=0;
+ck('and it is gone once someone owns it', !A.manageHTML().includes('דורשת שיוך בעלים'));
+
 // ── היסטוריית הפעלות: runs, skips, failures, retries ──
 A.tab='history'; A.runsLoading=false;
 let h=A.historyHTML();
@@ -307,6 +440,10 @@ ck('a failure carries what went wrong', h.includes('ValueError: boom'));
 ck('a retry is labelled as a retry', h.includes('ניסיון חוזר'));
 ck('a cascaded run says it was cascaded', h.includes('שרשור'));
 ck('the item each run touched is reachable', h.includes('BoardLog.goto(8)'));
+ck('the log can be exported where the data capability allows it',
+   (A.data.can_export=true, A.historyHTML().includes('Automations.exportRuns()')));
+ck('...and is not offered where it does not',
+   (A.data.can_export=false, !A.historyHTML().includes('Automations.exportRuns()')));
 ck('a run that can be retried offers it', h.includes('Automations.retry(2)'));
 ck('a run that already worked does not', !h.includes('Automations.retry(1)'), h);
 

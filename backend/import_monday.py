@@ -526,6 +526,11 @@ def parse(raw, max_cols):
     # ── survey the columns: title, type, and how many items actually use them ──
     meta, fill, order = {}, {}, []
     asked = set()          # columns whose cells came with display_value at all
+    # The board's own column order, from the board-level definitions when the
+    # query asked for them. It beats the order the cells happen to arrive in,
+    # and it is the order the source board actually shows.
+    board_order = {str(c.get("id")): i for i, c in enumerate(board.get("columns") or [])
+                   if isinstance(c, dict) and c.get("id")}
 
     def survey(it):
         for cv in it.get("column_values") or []:
@@ -565,6 +570,13 @@ def parse(raw, max_cols):
     keep.sort(key=lambda c: (-fill[c], order.index(c)))
     over = keep[max_cols:]
     keep = keep[:max_cols]
+    # The fill decided WHICH columns survive the ceiling. It has no business
+    # deciding their ORDER: a board whose columns come back sorted by how full
+    # they happen to be is not the board that was exported. So the survivors go
+    # back into the source board's own order — its column list where the file
+    # carries one, and the order the cells arrived in otherwise (monday sends a
+    # cell per column, in board order).
+    keep.sort(key=lambda c: (board_order.get(c, 10 ** 6), order.index(c)))
     for cid in over:
         skipped.append({"title": meta[cid]["title"] or cid, "type": meta[cid]["type"],
                         "reason": f"מעבר לתקרה של {max_cols} עמודות (מלאה ב-{fill[cid]} פריטים)"})

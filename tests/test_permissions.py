@@ -9,7 +9,11 @@ def test_matrix_shape_and_admin_locked(client):
     """The matrix exposes capabilities, roles (incl. locked admin + guest), and grid."""
     d = _matrix(client)
     caps = {c["key"] for c in d["capabilities"]}
-    assert caps == {"manage_system", "create_environment", "create_board"}
+    import main as cityos_main
+    assert caps == set(cityos_main.CAPABILITIES), "the screen and the server disagree"
+    assert {"manage_system", "create_environment", "create_board"} <= caps
+    assert all(c.get("label") or c.get("he") or c.get("name") for c in d["capabilities"]), \
+        "a capability with no name to show"
     role_keys = {r["key"] for r in d["roles"]}
     assert {"admin", "manager", "member", "viewer", "guest"} <= role_keys
     admin = next(r for r in d["roles"] if r["key"] == "admin")

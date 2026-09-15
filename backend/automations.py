@@ -194,6 +194,51 @@ def catalog():
              "sentence": sentence(r["id"]), "fields": r["fields"]} for r in RECIPES]
 
 
+def validate_partial(recipe_id, config):
+    """(clean_config, error) for a DRAFT — what is filled in is kept, what is
+    missing is allowed to be missing.
+
+    A draft exists so a half-built rule can be put down and picked up later, so
+    the only thing refused here is nonsense: an unknown recipe, or a value in a
+    field the recipe does not have. Completeness is the activation's problem —
+    see validate() and the blockers the engine re-derives before every run.
+    """
+    r = recipe(recipe_id)
+    if not r:
+        return None, "מתכון לא מוכר"
+    if not isinstance(config, dict):
+        return None, "הגדרות לא תקינות"
+    clean = {}
+    for f in r["fields"]:
+        v = config.get(f["key"])
+        if v is None or v == "":
+            continue                              # not filled in yet, and that is allowed
+        if f["type"] == "text":
+            v = (str(v)).strip()[:200]
+        elif f["type"] == "connect":
+            v = (str(v)).strip()
+        elif f["type"] in ("person", "group", "item", "board"):
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                continue                          # a half-typed value is simply not kept
+        else:
+            v = (str(v)).strip()
+        if v != "":
+            clean[f["key"]] = v
+    return clean, None
+
+
+def missing_fields(recipe_id, config):
+    """The placeholders a draft still has to fill before it can be switched on."""
+    r = recipe(recipe_id)
+    if not r:
+        return ["מתכון לא מוכר"]
+    cfg = config or {}
+    return [f["label"] for f in r["fields"]
+            if cfg.get(f["key"]) in (None, "", [])]
+
+
 def validate(recipe_id, config):
     """(clean_config, error). Every declared placeholder must be filled, and
     nothing else is stored — a rule can't smuggle in extra keys."""

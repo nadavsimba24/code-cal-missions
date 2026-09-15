@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import os
 from pydantic import BaseModel
-from sqlalchemy import create_engine, event, func, or_
+from sqlalchemy import and_, create_engine, event, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, with_loader_criteria
 
@@ -23,7 +23,9 @@ from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
 import entra_guests
 import import_monday
 from models import (
-    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, ItemLink, BoardView,
+    Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
+    AutomationTestRun,
+    AutomationFreeze, ItemLink, BoardView,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -217,7 +219,8 @@ def _migrate():
                           ("skip_count", "INTEGER DEFAULT 0"),
                           ("consecutive_failures", "INTEGER DEFAULT 0"),
                           ("last_success_at", "DATETIME"), ("last_failure_at", "DATETIME"),
-                          ("last_outcome", "VARCHAR(12)")]:
+                          ("last_outcome", "VARCHAR(12)"),
+                          ("activated_at", "DATETIME"), ("draft_version", "INTEGER")]:
             if acols and name not in acols:
                 conn.execute(text(f"ALTER TABLE automations ADD COLUMN {name} {ddl}"))
         # a rule stored before status existed is described by the switch it has
@@ -226,6 +229,13 @@ def _migrate():
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
         if rcols and "is_test" not in rcols:
             conn.execute(text("ALTER TABLE automation_runs ADD COLUMN is_test BOOLEAN DEFAULT 0"))
+        if rcols and "version" not in rcols:
+            conn.execute(text("ALTER TABLE automation_runs ADD COLUMN version INTEGER"))
+        vcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_versions)"))}
+        if vcols and "is_draft" not in vcols:
+            conn.execute(text("ALTER TABLE automation_versions ADD COLUMN is_draft BOOLEAN DEFAULT 0"))
+        if vcols and "published_at" not in vcols:
+            conn.execute(text("ALTER TABLE automation_versions ADD COLUMN published_at DATETIME"))
         # the trigger/action columns were renamed: both words are SQL keywords, and
         # a table created under the old names is still out there. The old columns
         # are left in place — dropping them would take their values with them.
@@ -300,6 +310,11 @@ else:
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_outcome VARCHAR(12)",
         "UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END WHERE status IS NULL",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS version INTEGER",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS draft_version INTEGER",
+        "ALTER TABLE automation_versions ADD COLUMN IF NOT EXISTS is_draft BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE automation_versions ADD COLUMN IF NOT EXISTS published_at TIMESTAMP",
         'ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS trigger_key VARCHAR(40)',
         'ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS action_key VARCHAR(40)',
         # carried over only on a database that has the pre-rename columns; a
@@ -611,11 +626,17 @@ _safe_startup(_backfill_auto_columns)
 # ── Configurable capability matrix (role → feature) ──────────────────
 # 'admin' always has every capability (implicit, never stored). These roles are
 # editable by a system admin from the SysAdmin → role-permissions panel.
-CAPABILITIES = ["manage_system", "create_environment", "create_board"]
+CAPABILITIES = ["manage_system", "create_environment", "create_board",
+                "view_automations", "export_automation_log"]
 CAP_HE = {
     "manage_system": "ניהול מערכת",
     "create_environment": "יצירת סביבה חדשה",
     "create_board": "יצירת לוח חדש",
+    # Two the automations matrix needs and a role alone cannot express: a board
+    # EDITOR sees the rules only where the first is granted, and a board ADMIN
+    # takes data out of the system only where the second is.
+    "view_automations": "צפייה באוטומציות של לוח (לחבר לוח)",
+    "export_automation_log": "ייצוא נתוני אוטומציות ושחזור גרסה",
 }
 EDITABLE_ROLES = ["manager", "member", "viewer", "guest"]
 ROLE_HE_BE = {"admin": "מנהל מערכת", "manager": "מנהל", "member": "חבר צוות",
@@ -1673,6 +1694,9 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "view_only": (b.settings or {}).get("view_only", False),
             "visibility": _board_visibility(b),
             "my_role": my_role,
+            # whether the automations page is offered at all — a board viewer
+            # never sees it, and an editor only where the capability is granted
+            "can_view_automations": _can_view_automations(db, b, user_id),
             "owners": owners,
             # who may be tagged in a people column — the pickers build from this
             "members": [{"id": mu.id, "name": mu.name, "avatar_url": mu.avatar_url}
@@ -5098,10 +5122,93 @@ def _set_automation_status(a, status):
     fields that mean almost the same thing drift apart unless exactly one place
     writes both, and this is that place.
     """
+    was = a.status
     a.status = status if status in AUTOMATION_STATUSES else "active"
     a.is_active = (a.status == "active")
     if a.status == "active":
         a.consecutive_failures = 0          # reactivating clears the strike count
+        if was != "active":
+            # an activation applies to events from here forward; it is not a
+            # licence to act on what happened while the rule was off
+            a.activated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _refuse_incomplete_activation(db, board, a):
+    """A draft may be half-built. Switching it on may not be.
+
+    Everything the rule needs is re-derived here: the placeholders it has not
+    filled, and then the dependencies and permissions the engine checks before
+    every run — so "active" cannot mean "will skip every time it fires".
+    """
+    missing = recipes.missing_fields(a.recipe_id, a.config or {})
+    if missing:
+        raise HTTPException(400, "לא ניתן להפעיל — חסרים שדות חובה: " + ", ".join(missing))
+    blockers = _automation_blockers(db, board, a)
+    if blockers:
+        raise HTTPException(400, "לא ניתן להפעיל — " + " · ".join(b["text"] for b in blockers[:3]))
+
+
+# ── rule 3: the engine's own identity and its grant ─────────────────
+# The engine does not borrow the rights of whoever tripped a rule, nor of the
+# person who wrote it. It acts as itself — a dedicated account — inside a grant
+# that names the action types automation may perform at all. A stored rule that
+# asks for anything else is refused at run time, which is what makes the grant
+# a boundary rather than a comment.
+AUTOMATION_IDENTITY_EMAIL = "automation@system.local"
+AUTOMATION_IDENTITY_NAME = "מנוע האוטומציות"
+
+# The action types approved for automation. Everything the recipe catalog can
+# ask for today, listed here on purpose: a recipe added later, or a row edited
+# by hand, cannot widen what the engine is allowed to do without this list
+# being changed too.
+AUTOMATION_GRANTED_ACTIONS = frozenset({
+    "notify_person", "notify_assignees", "assign_person", "set_status",
+    "set_priority", "move_to_group", "create_subitem", "link_to_item",
+    "create_and_link",
+})
+# The item fields automation may write. The recipes only ever touch these, and
+# an action that reached past them would be doing something nobody approved.
+AUTOMATION_GRANTED_FIELDS = frozenset({
+    "status", "priority", "group_id", "assignees", "custom_fields", "subitem",
+})
+_AUTOMATION_UID = None
+
+
+def _automation_identity(db):
+    """The engine's account. Read, never created here.
+
+    Created at startup instead, in a transaction of its own, because this is
+    read inside a firing — and a firing can be rolled back. A dry run ends in a
+    rollback by design, and an identity created inside one would vanish with it
+    while this cache went on handing out its id: every later run would sign its
+    work with a row that does not exist.
+    """
+    global _AUTOMATION_UID
+    if _AUTOMATION_UID is not None:
+        return _AUTOMATION_UID
+    try:
+        uid = (db.query(User.id)
+                 .filter(User.email == AUTOMATION_IDENTITY_EMAIL).scalar())
+        if uid:
+            _AUTOMATION_UID = uid
+        return uid
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  automation identity unavailable: {e}", flush=True)
+        return None
+
+
+def _ensure_automation_identity():
+    """Make the engine's account if it is not there. Startup, once, committed."""
+    with Session(engine) as db:
+        u = db.query(User).filter(User.email == AUTOMATION_IDENTITY_EMAIL).first()
+        if u is None:
+            # not a usable account: inactive, and the narrowest role there is —
+            # what the engine may do comes from its grant, never from this row
+            u = User(name=AUTOMATION_IDENTITY_NAME, email=AUTOMATION_IDENTITY_EMAIL,
+                     role="viewer", is_active=False)
+            db.add(u)
+            db.commit()
+            print(f"⚙️  automation identity ready ({AUTOMATION_IDENTITY_EMAIL})", flush=True)
 
 
 class _Skipped(Exception):
@@ -5115,6 +5222,9 @@ class _Skipped(Exception):
     def __init__(self, reason):
         super().__init__(reason)
         self.reason = reason
+
+
+_safe_startup(_ensure_automation_identity)
 
 
 def _task_status_key(task):
@@ -5374,6 +5484,16 @@ def _create_linked_item(db, task, col, board_id, title, actor_id):
 _runs_logged = 0
 
 
+def _live_version(db, a):
+    """The newest published version — the one in force when an event arrives."""
+    try:
+        return (db.query(func.max(AutomationVersion.version))
+                  .filter(AutomationVersion.automation_id == a.id,
+                          AutomationVersion.is_draft == False).scalar())     # noqa: E712
+    except Exception:                              # noqa: BLE001
+        return None
+
+
 def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
                         actor_id=None, retry_of=None):
     """Record one attempt, whatever came of it.
@@ -5391,6 +5511,9 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             trigger_key=r.get("trigger") or "", action_key=r.get("action") or "",
             task_id=task.id, task_title=(task.title or "")[:300],
             event=event or {}, outcome=outcome, reason=(reason or "")[:400],
+            # rule 4 — which version carried this out. The config is read once,
+            # when the event arrives, so this is the version that decided it.
+            version=_live_version(db, a),
             depth=depth, actor_id=actor_id, retry_of=retry_of,
             created_at=datetime.now(timezone.utc).replace(tzinfo=None))
         db.add(row)
@@ -5419,6 +5542,226 @@ def _prune_automation_runs(db, board_id):
            .delete(synchronize_session=False))
 
 
+# ── ownership ───────────────────────────────────────────────────────
+# The creator owns a rule when it is written, and ownership can be handed to
+# another authorised manager. What follows is what happens when the owner stops
+# being one — which is NOT the same event as the rule losing a permission it
+# needs. The rule keeps running; it is the answerability that is missing, and
+# that is a thing for people to fix rather than for the engine to act on.
+AUTOMATION_OWNER_ESCALATION_DAYS = 7
+
+
+def _automation_owner_state(db, board, a):
+    """Who answers for this rule, and whether anybody does.
+
+    "Nobody" means one of three things, and they read the same from the board's
+    point of view: no owner recorded, an owner whose account is blocked, or an
+    owner who is no longer a manager of this board. None of them stops the rule.
+    """
+    owner_id = a.owner_id or a.created_by
+    if not owner_id:
+        return {"owner_id": None, "needs_owner": True, "reason": "לאוטומציה אין בעלים"}
+    u = db.query(User).filter(User.id == owner_id).first()
+    if u is None:
+        return {"owner_id": owner_id, "needs_owner": True,
+                "reason": "הבעלים אינו קיים יותר במערכת"}
+    if u.is_active is False:
+        return {"owner_id": owner_id, "needs_owner": True,
+                "reason": f"החשבון של {u.name} חסום"}
+    if _board_role(db, a.board_id, owner_id) != "admin":
+        return {"owner_id": owner_id, "needs_owner": True,
+                "reason": f"{u.name} אינו מנהל הלוח יותר"}
+    return {"owner_id": owner_id, "needs_owner": False, "reason": ""}
+
+
+def _notify_owner_once(db, a, board, key, title, body):
+    """Tell the owner about a problem, once, until it clears.
+
+    A rule can fire hundreds of times a day, and a rule whose group was deleted
+    would fire the same notification every single time. The marker lives on the
+    rule, and a successful run wipes it — so the next occurrence is reported
+    again rather than being suppressed forever.
+    """
+    who = (_automation_owner_state(db, board, a) or {}).get("owner_id")
+    if not who:
+        return
+    st = dict(a.state or {})
+    told = dict(st.get("told") or {})
+    if told.get(key):
+        return
+    told[key] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    st["told"] = told
+    a.state = st
+    _notify(db, who, "automation", title, body, board_id=a.board_id)
+
+
+def _clear_owner_notices(a):
+    """A run that worked means the problems it was told about are over."""
+    if (a.state or {}).get("told"):
+        st = dict(a.state or {})
+        st.pop("told", None)
+        a.state = st
+
+
+def _sweep_automation_ownership(db, board, actor_id=None):
+    """Chase up the rules on this board that answer to nobody.
+
+    There is no scheduler here, so this runs when the board's automations are
+    read — by a board admin, which is exactly who has to act on it. The board's
+    admins are told once; after AUTOMATION_OWNER_ESCALATION_DAYS the system
+    admins are told too, and then daily, because an unowned rule that nobody
+    picks up is the sort of thing that goes quiet for a quarter.
+
+    Nothing here changes a rule's status. See rule 4 of the ownership rules:
+    the indicator is the point, not an automatic suspension.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    today = now.date().isoformat()
+    rules = db.query(Automation).filter(Automation.board_id == board.id).all()
+    admins = [m.user_id for m in db.query(BoardMember)
+              .filter(BoardMember.board_id == board.id, BoardMember.role == "admin").all()]
+    changed = False
+    for a in rules:
+        state = _automation_owner_state(db, board, a)
+        st = dict(a.state or {})
+        if not state["needs_owner"]:
+            had = [st.pop(k, None) for k in ("owner_gap_since", "owner_told", "owner_escalated")]
+            if any(x is not None for x in had):
+                a.state = st
+                changed = True
+            continue
+        since = st.get("owner_gap_since")
+        if not since:
+            since = now.isoformat()
+            st["owner_gap_since"] = since
+            changed = True
+        label = a.name or _automation_label(db, board, a)
+        # the board's own managers, once
+        if not st.get("owner_told"):
+            for uid in admins:
+                _notify(db, uid, "automation", "אוטומציה דורשת שיוך בעלים",
+                        f"בלוח '{board.name}': {state['reason']}. יש למנות בעלים חלופי "
+                        f"לאוטומציה — {label}. האוטומציה ממשיכה לפעול בינתיים.",
+                        board_id=board.id)
+            st["owner_told"] = today
+            changed = True
+        # and after a week, the system admins, every day until it is settled
+        try:
+            days = (now - datetime.fromisoformat(since)).days
+        except (TypeError, ValueError):
+            days = 0
+        if days >= AUTOMATION_OWNER_ESCALATION_DAYS and st.get("owner_escalated") != today:
+            for uid in [u.id for u in db.query(User).filter(User.role == "admin").all()]:
+                _notify(db, uid, "automation", "הסלמה — אוטומציה ללא בעלים",
+                        f"{days} ימים ללא בעלים: {label} (לוח '{board.name}'). "
+                        f"{state['reason']}. מנהלי הלוח קיבלו התראה ולא מונה בעלים חלופי.",
+                        board_id=board.id)
+            st["owner_escalated"] = today
+            changed = True
+        a.state = st
+    if changed:
+        db.commit()
+
+
+def _audit_owner_change(db, a, old_owner, new_owner, actor_id):
+    """Rule 7 — every handover, with both names, who did it and when.
+
+    Written to the audit log and not only to the rule's own versions: "who made
+    this person answerable, and when" is a question asked from outside the
+    board, and the audit is where the rest of the system answers it.
+    """
+    nm = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "—") if uid else "—"
+    db.add(AuditLog(entity_type="automation", entity_id=a.id, action="transfer_owner",
+                    field_name="owner_id",
+                    old_value=f"{nm(old_owner)} (#{old_owner})" if old_owner else "—",
+                    new_value=f"{nm(new_owner)} (#{new_owner})" if new_owner else "—",
+                    changed_by=actor_id))
+
+
+def _automation_blockers(db, board, a):
+    """What stands between this rule and running, re-derived NOW.
+
+    Two kinds, kept apart because they end differently (rule 5): a dependency
+    that is gone — a status removed from the board, a deleted group — makes this
+    one firing pointless, while a permission that is gone means the rule may no
+    longer do what it says at all, and it is taken out of service.
+
+    Deliberately re-read on every fire rather than trusted from the moment the
+    rule was saved. A rule is a standing instruction: the board it acts on, the
+    people it names and the columns it reads all change underneath it.
+    """
+    out = []
+    r = recipes.recipe(a.recipe_id)
+    if not r:
+        return [{"kind": "dependency", "text": "המתכון אינו מוכר בגרסה הזאת"}]
+    # the grant, before anything else: an action outside it is refused whatever
+    # the rest of the row says
+    if r["action"] not in AUTOMATION_GRANTED_ACTIONS:
+        return [{"kind": "permission",
+                 "text": f"הפעולה '{r['action']}' אינה מאושרת לאוטומציה"}]
+    cfg = a.config or {}
+    _, err = recipes.validate(a.recipe_id, cfg)
+    if err:
+        out.append({"kind": "dependency", "text": err})
+    for f in r.get("fields", []):
+        if not f["key"].startswith("a_"):
+            continue
+        v = cfg.get(f["key"])
+        if f["type"] == "person":
+            if not _can_be_assigned(db, a.board_id, v):
+                nm = db.query(User.name).filter(User.id == v).scalar() or v
+                out.append({"kind": "permission", "text": f"{nm} אינו חבר בלוח"})
+        elif f["type"] == "status":
+            if not any(x["key"] == str(v) for x in _board_statuses(board)):
+                out.append({"kind": "dependency", "text": f"הסטטוס '{v}' אינו קיים בלוח"})
+        elif f["type"] == "priority":
+            if not any(x["key"] == str(v) for x in _board_priorities(board)):
+                out.append({"kind": "dependency", "text": f"העדיפות '{v}' אינה קיימת בלוח"})
+        elif f["type"] == "group":
+            if not db.query(Group).filter(Group.id == v, Group.board_id == a.board_id).first():
+                out.append({"kind": "dependency", "text": "הקבוצה שהכלל מפנה אליה נמחקה"})
+        elif f["type"] == "connect":
+            col = _find_col(db, a.board_id, str(v))
+            if not col or col.get("type") != "connect":
+                out.append({"kind": "dependency", "text": "עמודת הקישור אינה קיימת בלוח"})
+        elif f["type"] == "item":
+            if not db.query(Task).filter(Task.id == v, Task.deleted_at == None).first():  # noqa: E711
+                out.append({"kind": "dependency", "text": "הפריט שהכלל מקשר אליו נמחק"})
+        elif f["type"] == "board":
+            tb = db.query(Board).filter(Board.id == v, Board.deleted_at == None).first()  # noqa: E711
+            if not tb:
+                out.append({"kind": "dependency", "text": "לוח היעד נמחק"})
+            else:
+                # the grant is per board too: the rule may only reach a board the
+                # connect column is still configured for
+                col = _find_col(db, a.board_id, str(cfg.get("a_connect") or ""))
+                allowed = {int(x) for x in (_connect_cfg(col).get("board_ids") or [])
+                           if str(x).lstrip("-").isdigit()} if col else set()
+                if int(v) not in allowed:
+                    out.append({"kind": "permission",
+                                "text": f"לוח '{tb.name}' אינו מאושר יותר לעמודת הקישור"})
+    return out
+
+
+def _suspend_for_lost_permission(db, a, board, why):
+    """Rule 5: a permission the rule needs is gone, so the rule stops.
+
+    Not a skip. A rule that cannot do what it says, every time, is a rule
+    somebody has to look at — and leaving it "active" means the board reads as
+    automated when it is not.
+    """
+    if a.status != "active":
+        return
+    _set_automation_status(a, "paused_error")
+    a.consecutive_failures = max(a.consecutive_failures or 0, 1)
+    who = a.owner_id or a.created_by
+    if who:
+        _notify(db, who, "automation", "אוטומציה הושהתה — הרשאה חסרה",
+                f"האוטומציה בלוח '{board.name}' הושהתה: {why}. "
+                f"{_automation_label(db, board, a)}",
+                board_id=a.board_id)
+
+
 def _suspend_if_broken(db, a, board):
     """Take a rule out of service once it has failed AUTOMATION_FAIL_CUTOFF times
     in a row, and tell whoever is responsible for it.
@@ -5438,6 +5781,44 @@ def _suspend_if_broken(db, a, board):
                 board_id=a.board_id)
 
 
+def _automation_freeze(db, board_id):
+    """The open freeze that covers this board — the organisation's, or its own.
+
+    An emergency stop is checked before anything runs, not inside the rules:
+    while it holds, no rule on the board fires at all. Nothing writes a run row
+    for it either — a freeze can hold for hours, and a board's history is not
+    the place to learn that by reading the same line four hundred times. The
+    freeze itself is the record, and the board says so on screen.
+    """
+    return (db.query(AutomationFreeze)
+              .filter(AutomationFreeze.released_at == None,          # noqa: E711
+                      or_(AutomationFreeze.scope == "org",
+                          and_(AutomationFreeze.scope == "board",
+                               AutomationFreeze.board_id == board_id)))
+              .order_by(AutomationFreeze.id.desc()).first())
+
+
+def _count_automation_usage(db, board_id, outcome):
+    """One month, one board, one counter. Never raises — accounting must not be
+    the reason a rule that worked is recorded as having failed."""
+    col = {"ran": "ran", "skipped": "skipped", "failed": "failed"}.get(outcome)
+    if not col:
+        return
+    period = datetime.now(timezone.utc).strftime("%Y-%m")
+    try:
+        row = (db.query(AutomationUsage)
+                 .filter(AutomationUsage.period == period,
+                         AutomationUsage.board_id == board_id).first())
+        if row is None:
+            row = AutomationUsage(period=period, board_id=board_id, ran=0, skipped=0, failed=0)
+            db.add(row)
+            db.flush()
+        setattr(row, col, (getattr(row, col) or 0) + 1)
+        row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  automation usage not counted ({board_id}): {e}", flush=True)
+
+
 def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
     """Run one matching rule against one item, record what came of it, and let
     the result cascade.
@@ -5451,13 +5832,38 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
     if not board:
         return None
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # rule 4 — re-checked here, on every single firing, and never taken on trust
+    # from when the rule was written
+    blockers = _automation_blockers(db, board, a)
+    if blockers:
+        lost = next((b for b in blockers if b["kind"] == "permission"), None)
+        why = " · ".join(b["text"] for b in blockers[:3])
+        a.last_run_at, a.last_outcome = now, "skipped"
+        a.skip_count = (a.skip_count or 0) + 1
+        _count_automation_usage(db, a.board_id, "skipped")
+        row = _log_automation_run(db, board, a, task, event, "skipped", why,
+                                  depth, actor_id, retry_of)
+        if lost:
+            _suspend_for_lost_permission(db, a, board, lost["text"])
+        else:
+            # a dependency that is gone is the owner's to fix, and they are told
+            # once rather than on every firing — see _notify_owner_once
+            _notify_owner_once(db, a, board, "dependency",
+                               "אוטומציה מדלגת — תלות חסרה",
+                               f"האוטומציה בלוח '{board.name}' אינה מתבצעת: {why}. "
+                               f"{_automation_label(db, board, a)}")
+        return row
+    # rule 3 — the engine acts as itself, not as whoever tripped the rule and not
+    # as whoever wrote it. `actor_id` stays the record of who tripped it.
+    engine_id = _automation_identity(db)
     try:
-        follow = _run_action(db, a, task, actor_id, board)
+        follow = _run_action(db, a, task, engine_id, board)
     except _Skipped as sk:
         # an attempt all the same: "הפעלה אחרונה" is when it last tried, which is
         # a different question from when it last did something
         a.last_run_at, a.last_outcome = now, "skipped"
         a.skip_count = (a.skip_count or 0) + 1
+        _count_automation_usage(db, a.board_id, "skipped")
         return _log_automation_run(db, board, a, task, event, "skipped", sk.reason,
                                    depth, actor_id, retry_of)
     except Exception as e:                         # noqa: BLE001
@@ -5465,6 +5871,7 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
         a.last_run_at, a.last_failure_at, a.last_outcome = now, now, "failed"
         a.fail_count = (a.fail_count or 0) + 1
         a.consecutive_failures = (a.consecutive_failures or 0) + 1
+        _count_automation_usage(db, a.board_id, "failed")
         row = _log_automation_run(db, board, a, task, event, "failed",
                                   f"{type(e).__name__}: {e}", depth, actor_id, retry_of)
         _suspend_if_broken(db, a, board)
@@ -5473,6 +5880,8 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
     a.last_outcome = "ran"
     a.run_count = (a.run_count or 0) + 1
     a.consecutive_failures = 0
+    _clear_owner_notices(a)
+    _count_automation_usage(db, a.board_id, "ran")
     row = _log_automation_run(db, board, a, task, event, "ran", "", depth, actor_id, retry_of)
     for ev in follow or []:
         _run_automations(db, task, ev, actor_id, depth + 1)
@@ -5502,6 +5911,8 @@ def _sweep_due_date_automations(db, board_id, actor_id):
     remembers which items it already fired for, so re-opening a board cannot
     notify the same person about the same item twice.
     """
+    if _automation_freeze(db, board_id) is not None:
+        return
     rules = [a for a in db.query(Automation).filter(
                 Automation.board_id == board_id,
                 Automation.is_active == True)                             # noqa: E712
@@ -5522,6 +5933,12 @@ def _sweep_due_date_automations(db, board_id, actor_id):
         for t in due:
             # a finished item is not "overdue" in any sense the user cares about
             if t.id in seen or _st_of(t) in ("done", "cancelled"):
+                continue
+            # rule 2 — the date arriving is the event, and an event from before
+            # the rule was switched on is not one it gets to act on. Without
+            # this, activating a due-date rule fires it at every item that was
+            # already overdue, which reads as the rule inventing history.
+            if a.activated_at and t.due_date and t.due_date < a.activated_at:
                 continue
             _run_one_automation(db, a, t, actor_id)
             fired.append(t.id)
@@ -5569,6 +5986,8 @@ def _run_automations(db, task, event, actor_id, depth=0):
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board or board.deleted_at:
         return
+    if _automation_freeze(db, task.board_id) is not None:
+        return                                     # an emergency stop is holding
     # "סדר ביצוע" — which rule goes first when one event trips several. The id is
     # the tiebreak, so rules nobody ordered still run oldest-first as before.
     rules = (db.query(Automation)
@@ -5582,6 +6001,19 @@ def _run_automations(db, task, event, actor_id, depth=0):
         for a in matching:
             _log_automation_run(db, board, a, task, event, "skipped",
                                 "שרשרת האוטומציות הגיעה לעומק המקסימלי", depth, actor_id)
+            # "מושהית עקב שגיאה" names a loop as one of its causes: a rule that
+            # keeps being cut off by the ceiling is in one, and leaving it active
+            # means the board reads as automated while this never completes
+            st = dict(a.state or {})
+            st["loop_hits"] = (st.get("loop_hits") or 0) + 1
+            a.state = st
+            if st["loop_hits"] >= AUTOMATION_FAIL_CUTOFF and a.status == "active":
+                _set_automation_status(a, "paused_error")
+                _notify_owner_once(db, a, board, "loop",
+                                   "אוטומציה הושהתה — לולאה",
+                                   f"האוטומציה בלוח '{board.name}' נקטעה שוב ושוב בעומק "
+                                   f"המקסימלי של שרשרת האוטומציות והושהתה: "
+                                   f"{_automation_label(db, board, a)}")
         return
     for a in matching:
         _fire_rule(db, a, task, event, actor_id, depth)
@@ -5589,19 +6021,60 @@ def _run_automations(db, task, event, actor_id, depth=0):
 
 # ── Automations API ─────────────────────────────────────────────────
 def _can_manage_automations(db, board, user_id):
-    """Who may add, edit, switch off or delete a board's rules: a board admin,
-    a manager of its environment, or a system admin. Deliberately the same bar
-    as deleting the board — a rule can rewrite every item on it."""
+    """Who may add, edit, switch off or delete a board's rules.
+
+    A board admin, and a system admin (who is admin on every board by role).
+    Deliberately NOT a manager of the environment, which it used to include: a
+    rule rewrites the items of one board, and the person answerable for that
+    board is the one who may write it. An environment manager who needs it can
+    be made an admin of the board, which is a decision someone takes rather
+    than a right that arrives with a workspace.
+    """
     if user_id is None:
         return True                                # auth disabled → no per-user gate
-    return (_board_role(db, board.id, user_id) == "admin"
-            or _can_manage_env(db, board.environment_id, user_id))
+    return _board_role(db, board.id, user_id) == "admin"
+
+
+def _can_view_automations(db, board, user_id):
+    """Who may read a board's rules, its run history and its versions.
+
+    A board admin always may. A board EDITOR — "חבר לוח" — only where the
+    `view_automations` capability is granted, which is what makes it a decision
+    someone took rather than a side effect of being invited. A board VIEWER
+    never does: the rules are how the board behaves, and someone who cannot
+    change anything on it has no business reading its machinery.
+    """
+    if user_id is None:
+        return True                                # auth disabled → no per-user gate
+    if _can_manage_automations(db, board, user_id):
+        return True
+    role = _board_role(db, board.id, user_id)
+    if role is None or role == "viewer":
+        return False
+    return _cap(db, user_id, "view_automations")
+
+
+def _can_export_automations(db, board, user_id):
+    """Taking the log — or a past version — out of the system.
+
+    A board admin, and only with the data capability: an export is a copy of who
+    did what on every item the rules touched, and it leaves the place where these
+    permissions are enforced.
+    """
+    if user_id is None:
+        return True
+    if _ws_role(db, user_id) == "admin":
+        return True
+    if _board_role(db, board.id, user_id) != "admin":
+        return False
+    return _cap(db, user_id, "export_automation_log")
 
 
 def _automation_json(db, board, a):
     r = recipes.recipe(a.recipe_id) or {}
     uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
     iso = lambda d: d.isoformat() if d else None
+    _own = _automation_owner_state(db, board, a) if board else {"needs_owner": False, "reason": ""}
     ran, failed, skipped = a.run_count or 0, a.fail_count or 0, a.skip_count or 0
     tried = ran + failed                  # a skip is neither a success nor a failure
     # a new rule is owned by its creator; the fallback covers rules written before
@@ -5623,12 +6096,18 @@ def _automation_json(db, board, a):
         "run_order": a.run_order or 0,
         "owner_id": owner, "owner_name": uname(owner),
         "owner_is_creator": owner == a.created_by,
+        # rule 4 — shown, never acted on: the rule keeps running
+        "needs_owner": _own["needs_owner"], "owner_problem": _own["reason"],
         "created_by": a.created_by, "created_by_name": uname(a.created_by),
         "created_at": iso(a.created_at),
         "updated_by": a.updated_by, "updated_by_name": uname(a.updated_by),
         "updated_at": iso(a.updated_at),
         "run_count": ran, "fail_count": failed, "skip_count": skipped,
         "consecutive_failures": a.consecutive_failures or 0,
+        # rule 3 — an edit waiting to be published; the rule below it is what runs
+        "draft_version": a.draft_version,
+        "activated_at": iso(a.activated_at),
+        "missing_fields": recipes.missing_fields(a.recipe_id, a.config or {}),
         "last_run_at": iso(a.last_run_at), "last_success_at": iso(a.last_success_at),
         "last_failure_at": iso(a.last_failure_at), "last_outcome": a.last_outcome or "",
         # a rate over nothing is not 0% — it is unknown, and the UI says so
@@ -5649,7 +6128,8 @@ def _automation_counts(rows):
             "paused_error": sum(1 for a in rows if st_of(a) == "paused_error"),
             "draft": sum(1 for a in rows if st_of(a) == "draft"),
             "deleting": sum(1 for a in rows if st_of(a) == "deleting"),
-            "needs_attention": sum(1 for a in rows if a["needs_attention"])}
+            "needs_attention": sum(1 for a in rows if a["needs_attention"]),
+            "needs_owner": sum(1 for a in rows if a.get("needs_owner"))}
 
 
 def _automation_people(db, board_id, rows):
@@ -5663,7 +6143,8 @@ def _automation_people(db, board_id, rows):
     for uid in [i for i in ids if i]:
         u = db.query(User).filter(User.id == uid).first()
         if u:
-            out.append({"id": u.id, "name": u.name, "avatar_url": u.avatar_url})
+            out.append({"id": u.id, "name": u.name, "avatar_url": u.avatar_url,
+                        "is_board_admin": _board_role(db, board_id, u.id) == "admin"})
     out.sort(key=lambda x: x["name"] or "")
     return out
 
@@ -5678,27 +6159,34 @@ def _snapshot_automation(a):
     return {k: getattr(a, k) for k in _VERSIONED}
 
 
-def _record_automation_version(db, board, a, user_id, before=None, note=""):
+def _record_automation_version(db, board, a, user_id, before=None, note="", draft=None):
     """Keep what the rule looks like now, and say what moved.
 
     A rule quietly rewrites items, so "who changed it, and to what?" has to stay
     answerable. Nothing is written when nothing actually changed — a PATCH that
     re-sends the same values is not a version.
     """
-    snap = _snapshot_automation(a)
+    snap = draft if draft is not None else _snapshot_automation(a)
     if before is not None:
         moved = [he for k, he in _VERSIONED.items() if before.get(k) != snap.get(k)]
         if not moved:
             return None
-        summary = note or ("שונו: " + ", ".join(moved) if len(moved) > 1 else "שונה: " + moved[0])
+        if draft is not None:
+            summary = note or "טיוטת עריכה: " + ", ".join(moved)
+        else:
+            summary = note or ("שונו: " + ", ".join(moved) if len(moved) > 1 else "שונה: " + moved[0])
     else:
-        summary = note or "נוצרה"
+        summary = note or ("טיוטת עריכה" if draft is not None else "נוצרה")
     n = db.query(AutomationVersion).filter(AutomationVersion.automation_id == a.id).count()
     row = AutomationVersion(automation_id=a.id, board_id=a.board_id, version=n + 1,
                             sentence=_automation_label(db, board, a), snapshot=snap,
                             summary=summary[:300], changed_by=user_id,
+                            is_draft=bool(draft is not None),
                             changed_at=datetime.now(timezone.utc).replace(tzinfo=None))
     db.add(row)
+    db.flush()
+    if draft is not None:
+        a.draft_version = row.version
     return row
 
 
@@ -5724,12 +6212,17 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b or b.deleted_at:
             raise HTTPException(404, "board not found")
-        if user_id is not None and _board_role(db, board_id, user_id) is None:
-            raise HTTPException(403, "אין לך גישה ללוח זה")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות באוטומציות של הלוח")
+        # chase up anything that answers to nobody — the person reading this
+        # screen is the person who has to appoint someone
+        if _can_manage_automations(db, b, user_id):
+            _sweep_automation_ownership(db, b, user_id)
         rows = (db.query(Automation).filter(Automation.board_id == board_id)
                   .order_by(Automation.run_order, Automation.id).all())
         out = [_automation_json(db, b, a) for a in rows]
         return {"automations": out, "counts": _automation_counts(out),
+                "can_export": _can_export_automations(db, b, user_id),
                 "people": _automation_people(db, board_id, out),
                 "statuses": list(AUTOMATION_STATUSES), "importance": list(AUTOMATION_IMPORTANCE),
                 "can_manage": _can_manage_automations(db, b, user_id)}
@@ -5787,10 +6280,13 @@ def _automation_meta(db, board_id, data, a=None):
                 oid = int(oid)
             except (TypeError, ValueError):
                 raise HTTPException(400, "בעלים לא תקין")
-            # the same bar as naming someone in the rule itself: a person who was
-            # never invited cannot be made responsible for the board's automation
             if not _can_be_assigned(db, board_id, oid):
                 raise HTTPException(400, "אפשר לבחור כבעלים רק משתמשים שהוזמנו ללוח")
+            # an owner answers for the rule, so an owner has to be able to change
+            # it — the same bar the bulk handover holds, and the same words
+            if _board_role(db, board_id, oid) != "admin":
+                nm = db.query(User.name).filter(User.id == oid).scalar() or ""
+                raise HTTPException(400, f"{nm} אינו מנהל הלוח — בעלות מועברת למנהל מורשה")
             out["owner_id"] = oid
     return out
 
@@ -5816,10 +6312,14 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
             raise HTTPException(404, "board not found")
         if not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול להגדיר אוטומציות")
-        cfg, err = recipes.validate(data.get("recipe_id"), data.get("config") or {})
+        # a draft is allowed to be half-built; anything that will run is not
+        _draft = (data.get("status") == "draft")
+        cfg, err = (recipes.validate_partial if _draft else recipes.validate)(
+            data.get("recipe_id"), data.get("config") or {})
         if err:
             raise HTTPException(400, err)
         _check_automation_person(db, board_id, cfg)
+        _check_automation_reach(db, board_id, data["recipe_id"], cfg, user_id)
         meta = _automation_meta(db, board_id, data)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         a = Automation(board_id=board_id, recipe_id=data["recipe_id"], config=cfg,
@@ -5882,8 +6382,9 @@ def automation_versions(automation_id: int, user_id: int = Depends(current_user_
         a = db.query(Automation).filter(Automation.id == automation_id).first()
         if not a:
             raise HTTPException(404, "automation not found")
-        if user_id is not None and _board_role(db, a.board_id, user_id) is None:
-            raise HTTPException(403, "אין לך גישה ללוח זה")
+        _vb = db.query(Board).filter(Board.id == a.board_id).first()
+        if not _vb or not _can_view_automations(db, _vb, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות בגרסאות האוטומציה")
         uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
         rows = (db.query(AutomationVersion)
                   .filter(AutomationVersion.automation_id == automation_id)
@@ -5896,57 +6397,16 @@ def automation_versions(automation_id: int, user_id: int = Depends(current_user_
         } for v in rows]}
 
 
-@app.post("/api/automations/{automation_id}/test")
-def test_automation(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
-    """Run the rule against one item for real — then undo everything it did.
-
-    A dry run that only reasons about the rule would miss exactly what a test is
-    for: the status that does not exist any more, the recipient who left the
-    board. So the action genuinely executes, inside a transaction that is rolled
-    back — notifications, links and edits included — and only the verdict is kept
-    afterwards, written to the history marked as a test.
-    """
-    with Session(engine) as db:
-        a = db.query(Automation).filter(Automation.id == automation_id).first()
-        if not a:
-            raise HTTPException(404, "automation not found")
-        b = db.query(Board).filter(Board.id == a.board_id).first()
-        if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
-            raise HTTPException(403, "רק מנהל הלוח יכול להריץ בדיקה")
-        task = db.query(Task).filter(Task.id == data.get("task_id"),
-                                     Task.board_id == a.board_id).first()
-        if not task or task.deleted_at:
-            raise HTTPException(400, "יש לבחור פריט מהלוח הזה")
-        trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
-        event = {"type": trig, "test": True}
-        row = _fire_rule(db, a, task, event, user_id, 0)
-        # read it out before the rollback takes the row with it
-        got = {"outcome": row.outcome if row else "failed",
-               "reason": (row.reason if row else "לא ניתן היה להריץ את הכלל") or "",
-               "sentence": row.sentence if row else _automation_label(db, b, a),
-               "task_id": task.id, "task_title": (task.title or "")[:300],
-               "board_id": a.board_id, "recipe_id": a.recipe_id,
-               "trigger_key": row.trigger_key if row else trig,
-               "action_key": row.action_key if row else ""}
-        db.rollback()
-    # a second session, because the first one was undone on purpose
-    with Session(engine) as db:
-        rec = AutomationRun(board_id=got["board_id"], automation_id=automation_id,
-                            recipe_id=got["recipe_id"], sentence=got["sentence"],
-                            trigger_key=got["trigger_key"], action_key=got["action_key"],
-                            task_id=got["task_id"], task_title=got["task_title"], event=event,
-                            outcome=got["outcome"], reason=got["reason"], depth=0,
-                            actor_id=user_id, is_test=True,
-                            created_at=datetime.now(timezone.utc).replace(tzinfo=None))
-        db.add(rec)
-        db.commit()
-        db.refresh(rec)
-        return {"result": _automation_run_json(db, rec), "undone": True}
-
-
 @app.patch("/api/automations/{automation_id}")
 def update_automation(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
-    """Switch a rule on/off, or change the values it was built with."""
+    """Switch a rule on/off, change what it was built with, or hand it over.
+
+    Two speeds on purpose. Metadata — the name, the description, the importance,
+    the running order, the owner — applies at once: none of it changes what the
+    rule does, and holding a rename for a publish would be absurd. The rule's own
+    configuration does not: while the rule is ACTIVE an edit is written as a
+    draft version and the live rule goes on running until someone publishes it.
+    """
     with Session(engine) as db:
         a = db.query(Automation).filter(Automation.id == automation_id).first()
         if not a:
@@ -5956,14 +6416,33 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
             raise HTTPException(403, "רק מנהל הלוח יכול לשנות אוטומציות")
         before = _snapshot_automation(a)
         if "is_active" in data or "status" in data:
-            _set_automation_status(a, _automation_status_from(data, a.status or "active"))
+            want = _automation_status_from(data, a.status or "active")
+            # a draft may be half-built; switching it on may not be
+            if want == "active" and a.status != "active":
+                _refuse_incomplete_activation(db, b, a)
+            _set_automation_status(a, want)
+        _prev_owner = a.owner_id
         for k, v in _automation_meta(db, a.board_id, data).items():
             setattr(a, k, v)
+        if "owner_id" in data and a.owner_id != _prev_owner:
+            _audit_owner_change(db, a, _prev_owner, a.owner_id, user_id)
         if "config" in data:
-            cfg, err = recipes.validate(a.recipe_id, data.get("config") or {})
+            live = (a.status == "active") and not data.get("publish")
+            cfg, err = (recipes.validate_partial if (a.status == "draft" or live)
+                        else recipes.validate)(a.recipe_id, data.get("config") or {})
             if err:
                 raise HTTPException(400, err)
             _check_automation_person(db, a.board_id, cfg)
+            _check_automation_reach(db, a.board_id, a.recipe_id, cfg, user_id)
+            if live:
+                snap = _snapshot_automation(a)
+                snap["config"] = cfg
+                _record_automation_version(db, b, a, user_id, before=before, draft=snap)
+                a.updated_by = user_id
+                a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                db.commit()
+                db.refresh(a)
+                return _automation_json(db, b, a)
             a.config = cfg
         a.updated_by = user_id
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -5995,6 +6474,35 @@ def delete_automation(automation_id: int, user_id: int = Depends(current_user_id
 RUN_OUTCOMES = ("ran", "skipped", "failed")
 
 
+def _can_see_run_item(db, row, user_id):
+    """May this reader see the item this run acted on?
+
+    A run row carries the item's title and the values the rule filled in — a
+    person's name, a linked item's name — and an item can be restricted to
+    particular people even inside a board someone may read. The history is not a
+    way around that, and neither is the export.
+    """
+    if user_id is None or not row.task_id:
+        return True
+    try:
+        _require_task_view(db, row.task_id, user_id)
+        return True
+    except HTTPException:
+        return False
+
+
+def _redact_run(row_json):
+    """The same row with what the reader may not see taken out, and said so."""
+    row_json = dict(row_json)
+    row_json["task_title"] = "פריט שאין לך הרשאה אליו"
+    row_json["sentence"] = "—"
+    row_json["reason"] = ""
+    row_json["task_id"] = None
+    row_json["redacted"] = True
+    row_json["can_retry"] = False
+    return row_json
+
+
 def _automation_run_json(db, row):
     uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
     return {
@@ -6008,9 +6516,11 @@ def _automation_run_json(db, row):
         "is_retry": row.retry_of is not None, "retry_of": row.retry_of,
         "retried_at": row.retried_at.isoformat() if row.retried_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
-        # a rule that is gone, or an item that is gone, cannot be run again
+        # which version of the rule carried this out
+        "version": row.version,
         "is_test": bool(row.is_test),
-        # a test was rolled back on purpose; "try again" would do it for real
+        # a rule that is gone, or an item that is gone, cannot be run again — and
+        # a test was rolled back on purpose, so "try again" would do it for real
         "can_retry": (row.outcome in ("skipped", "failed")) and row.automation_id is not None
                      and not row.is_test,
     }
@@ -6029,22 +6539,30 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b or b.deleted_at:
             raise HTTPException(404, "board not found")
-        if user_id is not None and _board_role(db, board_id, user_id) is None:
-            raise HTTPException(403, "אין לך גישה ללוח זה")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות בהיסטוריית ההפעלות")
         q = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
         if outcome in RUN_OUTCOMES:
             q = q.filter(AutomationRun.outcome == outcome)
         elif outcome == "retried":
-            q = q.filter(AutomationRun.retry_of != None)            # noqa: E711
+            q = q.filter(AutomationRun.retry_of != None)                   # noqa: E711
         if automation_id:
             q = q.filter(AutomationRun.automation_id == automation_id)
         rows = q.order_by(AutomationRun.id.desc()).limit(max(1, min(limit, 500))).all()
+        # an item-level restriction holds in the history too — see _redact_run
+        seen = {}
+        for r in rows:
+            if r.task_id not in seen:
+                seen[r.task_id] = _can_see_run_item(db, r, user_id)
         base = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
         counts = {k: base.filter(AutomationRun.outcome == k).count() for k in RUN_OUTCOMES}
         counts["retried"] = base.filter(AutomationRun.retry_of != None).count()   # noqa: E711
         counts["total"] = sum(counts[k] for k in RUN_OUTCOMES)
-        return {"runs": [_automation_run_json(db, r) for r in rows], "counts": counts,
-                "can_manage": _can_manage_automations(db, b, user_id)}
+        return {"runs": [_automation_run_json(db, r) if seen.get(r.task_id, True)
+                         else _redact_run(_automation_run_json(db, r))
+                         for r in rows], "counts": counts,
+                "can_manage": _can_manage_automations(db, b, user_id),
+                "can_export": _can_export_automations(db, b, user_id)}
 
 
 @app.post("/api/automation-runs/{run_id}/retry")
@@ -6084,6 +6602,1204 @@ def retry_automation_run(run_id: int, user_id: int = Depends(current_user_id)):
             raise HTTPException(400, "ההפעלה החוזרת לא נרשמה")
         db.refresh(made)
         return {"run": _automation_run_json(db, made)}
+
+
+@app.get("/api/boards/{board_id}/automations/runs/export")
+def export_automation_runs(board_id: int, outcome: str = "", automation_id: int = 0,
+                           user_id: int = Depends(current_user_id)):
+    """The run history as a .csv — the same filters the screen uses."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_export_automations(db, b, user_id):
+            raise HTTPException(403, "ייצוא לוג ההפעלות דורש הרשאת נתונים")
+        q = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
+        if outcome in RUN_OUTCOMES:
+            q = q.filter(AutomationRun.outcome == outcome)
+        elif outcome == "retried":
+            q = q.filter(AutomationRun.retry_of != None)                   # noqa: E711
+        if automation_id:
+            q = q.filter(AutomationRun.automation_id == automation_id)
+        rows = q.order_by(AutomationRun.id.desc()).limit(20000).all()
+        uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+        # the export is a file that leaves the system, so the same restriction
+        # holds here — more so, not less
+        seen = {}
+        for r in rows:
+            if r.task_id not in seen:
+                seen[r.task_id] = _can_see_run_item(db, r, user_id)
+        _OUT_HE = {"ran": "הופעלה", "skipped": "דילוג", "failed": "כשל"}
+        buf = io.StringIO()
+        buf.write("﻿")
+        w = csv.writer(buf)
+        w.writerow(["מועד", "תוצאה", "האוטומציה", "גרסה", "הפריט", "הסיבה",
+                    "גורם מפעיל", "פעולה", "עומק", "ניסיון חוזר", "מי הפעיל"])
+        for r in rows:
+            ok = seen.get(r.task_id, True)
+            w.writerow([(r.created_at.isoformat() if r.created_at else "")[:19].replace("T", " "),
+                        _OUT_HE.get(r.outcome, r.outcome or ""),
+                        (r.sentence or "").replace("«", "").replace("»", "") if ok else "—",
+                        r.version or "",
+                        (r.task_title or "") if ok else "פריט שאין לך הרשאה אליו",
+                        (r.reason or "") if ok else "",
+                        r.trigger_key or "", r.action_key or "", r.depth or 0,
+                        "כן" if r.retry_of else "", uname(r.actor_id)])
+        return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="automation-runs-{board_id}.csv"'})
+
+
+@app.post("/api/automations/{automation_id}/restore/{version}")
+def restore_automation_version(automation_id: int, version: int,
+                               user_id: int = Depends(current_user_id)):
+    """Offer an earlier version's configuration back — as a draft.
+
+    The rule as it stands goes on running, and putting the old wording into
+    force is a separate, deliberate act that gets checked like any activation.
+    What comes back is the rule's own configuration, never its counters or its
+    history: those are a record of what happened, not part of the settings.
+    """
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לשחזר גרסה")
+        if not _can_export_automations(db, b, user_id):
+            raise HTTPException(403, "שחזור גרסה דורש הרשאת נתונים")
+        v = (db.query(AutomationVersion)
+               .filter(AutomationVersion.automation_id == automation_id,
+                       AutomationVersion.version == version).first())
+        if not v:
+            raise HTTPException(404, "גרסה לא נמצאה")
+        snap = v.snapshot if isinstance(v.snapshot, dict) else {}
+        if snap.get("recipe_id") and snap["recipe_id"] != a.recipe_id:
+            # the trigger-and-action pair is what the rule IS; a version that
+            # changes it is a different rule wearing the same row
+            raise HTTPException(400, "הגרסה בנויה על מתכון אחר ולא ניתן לשחזר אותה")
+        before = _snapshot_automation(a)
+        want = dict(before)
+        for key in ("config", "name", "description", "importance", "run_order"):
+            if key in snap:
+                want[key] = snap[key]
+        if snap.get("owner_id") and _can_be_assigned(db, a.board_id, snap["owner_id"]):
+            want["owner_id"] = snap["owner_id"]
+        # never the status: the state it was in three versions ago is not a
+        # decision about now, and a rule that starts running again because its
+        # wording was restored is the surprise this screen exists to prevent
+        want["status"] = before["status"]
+        a.updated_by = user_id
+        a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        _record_automation_version(db, b, a, user_id, before=before, draft=want,
+                                   note=f"טיוטה משוחזרת מגרסה {version}")
+        db.commit()
+        db.refresh(a)
+        return _automation_json(db, b, a)
+
+
+# ── what a rule touches, and what a test finds out ──────────────────────
+# Two questions asked at two moments. Before switching a rule on: what will this
+# read, what will it write, who will hear about it, and what else is already
+# writing the same things. And on one chosen item: would it fire, and what
+# exactly would it do. Neither writes anything.
+AUTOMATION_TEST_LOG_DAYS = 30
+
+# What each action writes. Named here rather than inferred, because "which rules
+# write the same field" is the question the conflict warning answers.
+AUTOMATION_ACTION_WRITES = {
+    "notify_person":    [],
+    "notify_assignees": [],
+    "assign_person":    ["אחראים"],
+    "set_status":       ["סטטוס"],
+    "set_priority":     ["עדיפות"],
+    "move_to_group":    ["קבוצה"],
+    "create_subitem":   ["תתי־פריטים"],
+    "link_to_item":     ["קישור בין לוחות"],
+    "create_and_link":  ["קישור בין לוחות"],
+}
+# What each trigger reads.
+AUTOMATION_TRIGGER_READS = {
+    "item_created":             ["הפריט עצמו"],
+    "status_changes_to":        ["סטטוס"],
+    "priority_changes_to":      ["עדיפות"],
+    "person_assigned":          ["אחראים"],
+    "due_date_arrives":         ["תאריך יעד"],
+    "link_added":               ["קישור בין לוחות"],
+    "link_removed":             ["קישור בין לוחות"],
+    "linked_status_changes_to": ["סטטוס של פריט מקושר"],
+}
+
+
+def _automation_impact(db, board, a):
+    """Everything the rule reaches, for the screen shown before it is switched on.
+
+    A rule is a standing instruction that edits items by itself, and the moment
+    to understand its reach is before it starts — not from the log afterwards.
+    """
+    r = recipes.recipe(a.recipe_id) or {}
+    cfg = a.config or {}
+    trig, act = r.get("trigger", ""), r.get("action", "")
+    boards = [{"id": board.id, "name": board.name, "mode": "read_write",
+               "why": "הלוח שהאוטומציה יושבת בו"}]
+    reads = list(AUTOMATION_TRIGGER_READS.get(trig, []))
+    writes = list(AUTOMATION_ACTION_WRITES.get(act, []))
+    links, recipients, missing = [], [], []
+
+    for f in r.get("fields", []):
+        v = cfg.get(f["key"])
+        if v in (None, "", []):
+            continue
+        if f["type"] == "person":
+            u = db.query(User).filter(User.id == v).first()
+            recipients.append({"name": u.name if u else str(v),
+                               "kind": "נמען מוגדר",
+                               "ok": _can_be_assigned(db, board.id, v)})
+        elif f["type"] == "connect":
+            col = _find_col(db, board.id, str(v))
+            title = (col or {}).get("title") or str(v)
+            targets = [int(x) for x in (_connect_cfg(col).get("board_ids") or [])
+                       if str(x).lstrip("-").isdigit()] if col else []
+            links.append({"kind": "connect", "column": title,
+                          "two_way": bool(_is_two_way(col)) if col else False,
+                          "boards": [{"id": t, "name": db.query(Board.name)
+                                      .filter(Board.id == t).scalar() or str(t)}
+                                     for t in targets]})
+            for t in targets:
+                tb = db.query(Board).filter(Board.id == t).first()
+                if tb and not any(x["id"] == t for x in boards):
+                    boards.append({"id": t, "name": tb.name, "mode": "write",
+                                   "why": f"עמודת הקישור '{title}' מפנה אליו"})
+            # a mirror column reading through this connect column moves with it
+            for mc in (board.settings or {}).get("columns", []):
+                if mc.get("type") == "mirror" and (mc.get("mirror_of") or {}).get("col") == (col or {}).get("id"):
+                    links.append({"kind": "mirror", "column": mc.get("title") or mc.get("id"),
+                                  "through": title, "boards": []})
+                    reads.append(f"עמודת מראה '{mc.get('title') or mc.get('id')}'")
+        elif f["type"] == "board":
+            tb = db.query(Board).filter(Board.id == v).first()
+            if tb and not any(x["id"] == tb.id for x in boards):
+                boards.append({"id": tb.id, "name": tb.name, "mode": "write",
+                               "why": "האוטומציה יוצרת בו פריטים"})
+        elif f["type"] == "item":
+            t = db.query(Task).filter(Task.id == v).first()
+            if t:
+                tb = db.query(Board).filter(Board.id == t.board_id).first()
+                if tb and not any(x["id"] == tb.id for x in boards):
+                    boards.append({"id": tb.id, "name": tb.name, "mode": "write",
+                                   "why": "האוטומציה מקשרת אל פריט בו"})
+    if act == "notify_assignees":
+        recipients.append({"name": "משויכי הפריט", "kind": "נמענים דינמיים", "ok": True})
+
+    for b in _automation_blockers(db, board, a):
+        if b["kind"] == "permission":
+            missing.append(b["text"])
+
+    # ── other rules that write the same fields ──
+    others = []
+    same = set(writes)
+    if same:
+        for o in (db.query(Automation)
+                    .filter(Automation.board_id == board.id, Automation.id != a.id)
+                    .order_by(Automation.run_order, Automation.id).all()):
+            ro = recipes.recipe(o.recipe_id) or {}
+            ow = set(AUTOMATION_ACTION_WRITES.get(ro.get("action", ""), []))
+            if not (ow & same):
+                continue
+            others.append({"id": o.id,
+                           "name": o.name or _automation_label(db, board, o)
+                                             .replace("«", "").replace("»", ""),
+                           "status": o.status or ("active" if o.is_active else "paused"),
+                           "run_order": o.run_order or 0,
+                           "fields": sorted(ow & same),
+                           # the one that runs first decides, and the other overwrites
+                           "runs_before": (o.run_order or 0, o.id) < (a.run_order or 0, a.id)})
+    return {"boards": boards, "reads": sorted(set(reads)), "writes": sorted(set(writes)),
+            "links": links, "recipients": recipients, "missing_permissions": missing,
+            "others": others,
+            "loop_risk": _automation_loop_risk(db, board, a)}
+
+
+def _automation_loop_risk(db, board, a):
+    """Rules whose trigger is the very thing this rule's action produces.
+
+    Not a proof of a loop — two rules can feed each other harmlessly — but it is
+    the shape a loop has, and it is worth seeing before switching one on rather
+    than from the depth-ceiling skips afterwards.
+    """
+    r = recipes.recipe(a.recipe_id) or {}
+    produces = {"set_status": "status_changes_to", "set_priority": "priority_changes_to",
+                "assign_person": "person_assigned", "link_to_item": "link_added",
+                "create_and_link": "link_added"}.get(r.get("action", ""))
+    if not produces:
+        return []
+    out = []
+    for o in db.query(Automation).filter(Automation.board_id == board.id,
+                                         Automation.id != a.id).all():
+        ro = recipes.recipe(o.recipe_id) or {}
+        if ro.get("trigger") != produces:
+            continue
+        # and does IT produce what this one listens for? then it is a cycle
+        back = {"set_status": "status_changes_to", "set_priority": "priority_changes_to",
+                "assign_person": "person_assigned"}.get(ro.get("action", ""))
+        out.append({"id": o.id,
+                    "name": o.name or _automation_label(db, board, o)
+                                      .replace("«", "").replace("»", ""),
+                    "status": o.status or ("active" if o.is_active else "paused"),
+                    "cycle": back == r.get("trigger")})
+    return out
+
+
+@app.get("/api/automations/{automation_id}/impact")
+def automation_impact(automation_id: int, user_id: int = Depends(current_user_id)):
+    """What this rule reads, writes, notifies and collides with — shown before
+    it is switched on, and before a waiting draft is published."""
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות באוטומציה")
+        return {"automation_id": a.id, "sentence": _automation_label(db, b, a),
+                "status": a.status, "missing_fields": recipes.missing_fields(a.recipe_id, a.config or {}),
+                **_automation_impact(db, b, a)}
+
+
+def _dry_run_automation(db, board, a, task):
+    """Work out what the rule WOULD do to this item. Nothing is written.
+
+    Deliberately an analysis and not an execution-and-rollback. A rollback still
+    creates rows and notifications for the length of a transaction, and it can
+    only ever report the one outcome the engine reached — where what a person
+    testing a rule needs is each condition separately, the values the actions
+    would write, and what is in the way.
+    """
+    r = recipes.recipe(a.recipe_id) or {}
+    cfg = a.config or {}
+    trig, act = r.get("trigger", ""), r.get("action", "")
+    label = lambda key, v: _automation_value_label(db, board, r, key, v)
+
+    # ── the trigger ──
+    cur_status, cur_prio = _task_status_key(task), _task_priority_key(task)
+    trigger = {"key": trig, "label": recipes.plain(recipes.TRIGGERS.get(trig, trig)),
+               "matches": True, "note": ""}
+    if trig == "item_created":
+        trigger["note"] = "מתקיים בכל יצירת פריט"
+    elif trig == "due_date_arrives":
+        trigger["matches"] = bool(task.due_date)
+        trigger["note"] = ("תאריך היעד " + task.due_date.strftime("%d/%m/%Y")) if task.due_date \
+            else "לפריט אין תאריך יעד"
+    elif trig == "status_changes_to":
+        trigger["matches"] = str(cfg.get("t_status")) == str(cur_status)
+        trigger["note"] = f"הסטטוס בפריט: {label('t_status', cur_status)}"
+    elif trig == "priority_changes_to":
+        trigger["matches"] = str(cfg.get("t_priority")) == str(cur_prio)
+        trigger["note"] = f"העדיפות בפריט: {label('t_priority', cur_prio)}"
+    elif trig == "person_assigned":
+        trigger["matches"] = bool(list(task.assignees))
+        trigger["note"] = "לפריט משויכים" if list(task.assignees) else "לפריט אין משויכים"
+    elif trig in ("link_added", "link_removed", "linked_status_changes_to"):
+        trigger["note"] = "נבדק מול האירוע בפועל; בבדיקה מונח שהאירוע התרחש"
+
+    # ── each condition on its own ──
+    conditions = []
+    for f in r.get("fields", []):
+        if not f["key"].startswith("t_"):
+            continue
+        want = cfg.get(f["key"])
+        have = cur_status if f["type"] == "status" else cur_prio
+        conditions.append({"label": f["label"], "expected": label(f["key"], want),
+                           "actual": label(f["key"], have), "ok": str(want) == str(have)})
+
+    # ── what it would do, with the values ──
+    actions = []
+    if act == "set_status":
+        same = str(cfg.get("a_status")) == str(cur_status)
+        actions.append({"what": "שינוי סטטוס", "to": label("a_status", cfg.get("a_status")),
+                        "from": label("a_status", cur_status), "no_op": same,
+                        "note": "הפריט נמצא בסטטוס הזה כבר" if same else ""})
+    elif act == "set_priority":
+        same = str(cfg.get("a_priority")) == str(cur_prio)
+        actions.append({"what": "שינוי עדיפות", "to": label("a_priority", cfg.get("a_priority")),
+                        "from": label("a_priority", cur_prio), "no_op": same,
+                        "note": "לפריט יש את העדיפות הזו כבר" if same else ""})
+    elif act == "assign_person":
+        u = db.query(User).filter(User.id == cfg.get("a_person")).first()
+        already = bool(u and u in list(task.assignees))
+        actions.append({"what": "שיוך אדם", "to": u.name if u else "—", "from": "",
+                        "no_op": already,
+                        "note": "האדם משויך לפריט כבר" if already else ""})
+    elif act == "move_to_group":
+        g = db.query(Group).filter(Group.id == cfg.get("a_group")).first()
+        same = bool(g and task.group_id == g.id)
+        actions.append({"what": "העברה לקבוצה", "to": g.name if g else "—",
+                        "from": db.query(Group.name).filter(Group.id == task.group_id).scalar() or "",
+                        "no_op": same, "note": "הפריט בקבוצה הזו כבר" if same else ""})
+    elif act == "create_subitem":
+        actions.append({"what": "יצירת תת־פריט", "to": cfg.get("a_text") or "", "from": "",
+                        "no_op": False, "note": ""})
+    elif act in ("notify_person", "notify_assignees"):
+        if act == "notify_person":
+            u = db.query(User).filter(User.id == cfg.get("a_person")).first()
+            who = u.name if u else "—"
+            no_op = not _can_be_assigned(db, board.id, cfg.get("a_person"))
+            note = "הנמען אינו חבר בלוח — לא תישלח התראה" if no_op else ""
+        else:
+            people = [u.name for u in list(task.assignees)]
+            who = ", ".join(people) if people else "—"
+            no_op = not people
+            note = "לפריט אין משויכים" if no_op else ""
+        actions.append({"what": "שליחת התראה", "to": who, "from": "", "no_op": no_op,
+                        "note": note + (" · בבדיקה לא נשלחת התראה" if not no_op else "")})
+    elif act in ("link_to_item", "create_and_link"):
+        actions.append({"what": "קישור בין לוחות",
+                        "to": label("a_item", cfg.get("a_item")) if act == "link_to_item"
+                              else (cfg.get("a_text") or ""),
+                        "from": "", "no_op": False,
+                        "note": f"בעמודה {label('a_connect', cfg.get('a_connect'))}"})
+
+    blockers = _automation_blockers(db, board, a)
+    missing = [b["text"] for b in blockers if b["kind"] == "permission"]
+    broken = [b["text"] for b in blockers if b["kind"] == "dependency"]
+    impact = _automation_impact(db, board, a)
+    would = (trigger["matches"] and not blockers
+             and not all(x.get("no_op") for x in actions or [{}]))
+    verdict = "blocked" if blockers else ("would_run" if (trigger["matches"] and not
+                                          all(x.get("no_op") for x in actions or [{}]))
+                                          else "would_skip")
+    if verdict == "would_run":
+        summary = "הכלל היה מתבצע"
+    elif verdict == "blocked":
+        summary = "הכלל חסום: " + " · ".join((missing + broken)[:2])
+    elif not trigger["matches"]:
+        summary = "הגורם המפעיל אינו מתקיים על הפריט הזה"
+    else:
+        summary = "הכלל היה מתאים אך לא משנה דבר"
+    return {"verdict": verdict, "summary": summary, "trigger": trigger,
+            "conditions": conditions, "actions": actions,
+            "missing_permissions": missing, "broken_dependencies": broken,
+            "conflicts": impact["others"], "loop_risk": impact["loop_risk"],
+            "notified": [x for x in impact["recipients"]]}
+
+
+def _automation_value_label(db, board, r, key, v):
+    """A value as the board shows it — a status's label, a person's name."""
+    t = next((f["type"] for f in r.get("fields", []) if f["key"] == key), None)
+    if v in (None, "", []):
+        return "—"
+    if t == "status" or key in ("t_status", "a_status"):
+        e = next((x for x in _board_statuses(board) if x["key"] == str(v)), None)
+        return e["label"] if e else str(v)
+    if t == "priority" or key in ("t_priority", "a_priority"):
+        e = next((x for x in _board_priorities(board) if x["key"] == str(v)), None)
+        return e["label"] if e else str(v)
+    if t == "person":
+        return db.query(User.name).filter(User.id == v).scalar() or str(v)
+    if t == "group":
+        return db.query(Group.name).filter(Group.id == v).scalar() or str(v)
+    if t == "item":
+        return db.query(Task.title).filter(Task.id == v).scalar() or str(v)
+    if t == "board":
+        return db.query(Board.name).filter(Board.id == v).scalar() or str(v)
+    if t == "connect":
+        col = _find_col(db, board.id, str(v))
+        return (col or {}).get("title") or str(v)
+    return str(v)
+
+
+def _prune_test_runs(db):
+    """A test is a working note. After AUTOMATION_TEST_LOG_DAYS it goes."""
+    cut = (datetime.now(timezone.utc).replace(tzinfo=None)
+           - timedelta(days=AUTOMATION_TEST_LOG_DAYS))
+    db.query(AutomationTestRun).filter(AutomationTestRun.created_at < cut)\
+      .delete(synchronize_session=False)
+
+
+@app.get("/api/boards/{board_id}/automations/tests")
+def list_automation_tests(board_id: int, automation_id: int = 0, limit: int = 50,
+                          user_id: int = Depends(current_user_id)):
+    """The test log — separate from the run history, and only the last 30 days."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות בבדיקות")
+        _prune_test_runs(db)
+        db.commit()
+        q = db.query(AutomationTestRun).filter(AutomationTestRun.board_id == board_id)
+        if automation_id:
+            q = q.filter(AutomationTestRun.automation_id == automation_id)
+        rows = q.order_by(AutomationTestRun.id.desc()).limit(max(1, min(limit, 200))).all()
+        uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+        return {"tests": [{"id": t.id, "automation_id": t.automation_id,
+                           "task_id": t.task_id, "task_title": t.task_title or "",
+                           "sentence": t.sentence or "", "version": t.version,
+                           "verdict": t.verdict, "summary": t.summary or "",
+                           "details": t.details or {},
+                           "tested_by": t.tested_by, "tested_by_name": uname(t.tested_by),
+                           "created_at": t.created_at.isoformat() if t.created_at else None}
+                          for t in rows],
+                "retention_days": AUTOMATION_TEST_LOG_DAYS}
+
+
+@app.post("/api/automations/{automation_id}/publish")
+def publish_automation_draft(automation_id: int, data: dict = None,
+                             user_id: int = Depends(current_user_id)):
+    """Put the waiting draft into force — the explicit activation rule 3 asks for.
+
+    Until this is called the live rule has gone on running unchanged, which is
+    the whole point: an edit made at eleven does not change what the board does
+    at eleven-oh-one. The draft is checked the way an activation is checked, so
+    publishing cannot put a rule into service that will skip every time.
+    """
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול להפעיל גרסה")
+        v = (db.query(AutomationVersion)
+               .filter(AutomationVersion.automation_id == automation_id,
+                       AutomationVersion.version == (a.draft_version or 0),
+                       AutomationVersion.is_draft == True).first())            # noqa: E712
+        if not v:
+            raise HTTPException(400, "אין טיוטת גרסה שממתינה להפעלה")
+        snap = v.snapshot if isinstance(v.snapshot, dict) else {}
+        if snap.get("recipe_id") and snap["recipe_id"] != a.recipe_id:
+            raise HTTPException(400, "הטיוטה בנויה על מתכון אחר")
+        cfg, err = recipes.validate(a.recipe_id, snap.get("config") or a.config or {})
+        if err:
+            raise HTTPException(400, f"לא ניתן להפעיל את הטיוטה: {err}")
+        _check_automation_person(db, a.board_id, cfg)
+        _check_automation_reach(db, a.board_id, a.recipe_id, cfg, user_id)
+        before = _snapshot_automation(a)
+        a.config = cfg
+        for key in ("name", "description", "importance", "run_order"):
+            if key in snap:
+                setattr(a, key, snap[key])
+        _refuse_incomplete_activation(db, b, a)
+        v.is_draft = False
+        v.published_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        a.draft_version = None
+        a.updated_by = user_id
+        a.updated_at = v.published_at
+        # the rule was already active — publishing changes what it does, and the
+        # clock on "events from the activation onwards" starts again here
+        if a.status == "active":
+            a.activated_at = v.published_at
+        _record_automation_version(db, b, a, user_id, before=before,
+                                   note=f"גרסה {v.version} הופעלה")
+        db.commit()
+        db.refresh(a)
+        return _automation_json(db, b, a)
+
+
+@app.post("/api/automations/{automation_id}/discard-draft")
+def discard_automation_draft(automation_id: int, user_id: int = Depends(current_user_id)):
+    """Throw the waiting edit away. The live rule never moved, so there is
+    nothing to undo — the draft version stays in the history, marked as one."""
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לבטל טיוטה")
+        if not a.draft_version:
+            raise HTTPException(400, "אין טיוטה לבטל")
+        a.draft_version = None
+        a.updated_by = user_id
+        a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+        db.refresh(a)
+        return _automation_json(db, b, a)
+
+
+# What a comparison groups changes into. The spec asks for exactly these five,
+# and they are the five a reader is deciding between: what sets the rule off,
+# what narrows it, what it does, who it acts as, and when it goes.
+_VERSION_GROUPS = [
+    ("trigger", "גורם מפעיל", lambda k, f: k == "recipe_id"),
+    ("conditions", "תנאים", lambda k, f: k.startswith("t_")),
+    ("actions", "פעולות", lambda k, f: k.startswith("a_") and f != "person"),
+    ("permissions", "הרשאות", lambda k, f: k == "owner_id" or (k.startswith("a_") and f == "person")),
+    ("order", "סדר", lambda k, f: k in ("run_order", "importance")),
+]
+
+
+@app.get("/api/automations/{automation_id}/versions/compare")
+def compare_automation_versions(automation_id: int, a: int = 0, b: int = 0,
+                                user_id: int = Depends(current_user_id)):
+    """What changed between two versions, grouped the way the spec asks.
+
+    Values are rendered as the board shows them — a status label, a person's
+    name — because "from 3 to 7" is not a comparison anyone can act on when 3
+    and 7 are user ids.
+    """
+    with Session(engine) as db:
+        auto = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not auto:
+            raise HTTPException(404, "automation not found")
+        board = db.query(Board).filter(Board.id == auto.board_id).first()
+        if not board or not _can_view_automations(db, board, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות בגרסאות האוטומציה")
+        rows = {v.version: v for v in db.query(AutomationVersion)
+                .filter(AutomationVersion.automation_id == automation_id).all()}
+        if not rows:
+            raise HTTPException(404, "אין גרסאות להשוואה")
+        newest = max(rows)
+        va, vb = rows.get(a or (newest - 1 if newest > 1 else newest)), rows.get(b or newest)
+        if not va or not vb:
+            raise HTTPException(404, "גרסה לא נמצאה")
+        r = recipes.recipe(auto.recipe_id) or {}
+        ftype = {f["key"]: f["type"] for f in r.get("fields", [])}
+        labels = {f["key"]: f["label"] for f in r.get("fields", [])}
+
+        def shown(key, value):
+            t = ftype.get(key)
+            if value in (None, "", []):
+                return "—"
+            if t == "person" or key == "owner_id":
+                return db.query(User.name).filter(User.id == value).scalar() or str(value)
+            if t == "status":
+                e = next((x for x in _board_statuses(board) if x["key"] == str(value)), None)
+                return e["label"] if e else str(value)
+            if t == "priority":
+                e = next((x for x in _board_priorities(board) if x["key"] == str(value)), None)
+                return e["label"] if e else str(value)
+            if t == "group":
+                return db.query(Group.name).filter(Group.id == value).scalar() or str(value)
+            if t == "board":
+                return db.query(Board.name).filter(Board.id == value).scalar() or str(value)
+            if t == "item":
+                return db.query(Task.title).filter(Task.id == value).scalar() or str(value)
+            if t == "connect":
+                col = _find_col(db, auto.board_id, str(value))
+                return (col or {}).get("title") or str(value)
+            if key == "importance":
+                return {"critical": "קריטית", "high": "גבוהה",
+                        "normal": "רגילה", "low": "נמוכה"}.get(value, str(value))
+            return str(value)
+
+        sa, sb = (va.snapshot or {}), (vb.snapshot or {})
+        # config is compared key by key, everything else field by field
+        flat = lambda snap: {**{k: v for k, v in snap.items() if k != "config"},
+                             **(snap.get("config") or {})}
+        fa, fb = flat(sa), flat(sb)
+        groups = []
+        for gid, ghe, belongs in _VERSION_GROUPS:
+            items = []
+            for key in sorted(set(fa) | set(fb)):
+                if not belongs(key, ftype.get(key)):
+                    continue
+                if fa.get(key) == fb.get(key):
+                    continue
+                items.append({"key": key, "label": labels.get(key) or _VERSIONED.get(key) or key,
+                              "from": shown(key, fa.get(key)), "to": shown(key, fb.get(key))})
+            if items:
+                groups.append({"id": gid, "label": ghe, "changes": items})
+        # anything the five groups do not claim — the name, the description
+        rest = [{"key": k, "label": _VERSIONED.get(k, k),
+                 "from": shown(k, fa.get(k)), "to": shown(k, fb.get(k))}
+                for k in sorted(set(fa) | set(fb))
+                if fa.get(k) != fb.get(k)
+                and not any(belongs(k, ftype.get(k)) for _, _, belongs in _VERSION_GROUPS)]
+        if rest:
+            groups.append({"id": "other", "label": "פרטים", "changes": rest})
+        return {"a": {"version": va.version, "is_draft": bool(va.is_draft),
+                      "changed_at": va.changed_at.isoformat() if va.changed_at else None,
+                      "sentence": va.sentence or ""},
+                "b": {"version": vb.version, "is_draft": bool(vb.is_draft),
+                      "changed_at": vb.changed_at.isoformat() if vb.changed_at else None,
+                      "sentence": vb.sentence or ""},
+                "groups": groups, "identical": not groups}
+
+
+@app.post("/api/automations/{automation_id}/test")
+def test_automation(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """A Dry Run on one item: would it fire, and what exactly would it do.
+
+    Nothing is written and nothing is sent. This used to run the rule for real
+    inside a transaction and roll it back, which did answer "what happened" —
+    but it created rows and notifications for the length of that transaction,
+    and it could only ever report the single outcome the engine reached. What a
+    person testing a rule needs is each condition on its own, the values the
+    actions would write, the permissions in the way, and whether anything else
+    is writing the same fields. So it is worked out rather than performed.
+
+    The result goes to a log of its own, kept AUTOMATION_TEST_LOG_DAYS days — a
+    test is not something the board did, and mixing the two makes the run
+    history unreadable exactly when someone is trying to see what really did.
+    """
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול להריץ בדיקה")
+        task = db.query(Task).filter(Task.id == data.get("task_id"),
+                                     Task.board_id == a.board_id).first()
+        if not task or task.deleted_at:
+            raise HTTPException(400, "יש לבחור פריט מהלוח הזה")
+        found = _dry_run_automation(db, b, a, task)
+        row = AutomationTestRun(
+            automation_id=a.id, board_id=a.board_id, task_id=task.id,
+            task_title=(task.title or "")[:300],
+            sentence=_automation_label(db, b, a), version=_live_version(db, a),
+            verdict=found["verdict"], summary=found["summary"][:400], details=found,
+            tested_by=user_id,
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None))
+        db.add(row)
+        _prune_test_runs(db)
+        db.commit()
+        db.refresh(row)
+        return {"test_id": row.id, "task_title": row.task_title,
+                "retention_days": AUTOMATION_TEST_LOG_DAYS,
+                "changed_nothing": True, "notified_nobody": True, **found}
+
+
+@app.post("/api/automations/{automation_id}/run")
+def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Run a rule against one item for real — "הפעלה ידנית".
+
+    The sibling of the test above, and deliberately a separate endpoint rather
+    than a flag on it: one of the two keeps what it did and the other throws it
+    away, and that is not a difference to hide in a parameter. It runs even on a
+    paused rule — checking a rule by hand before switching it on is the point —
+    but never while an emergency stop is holding, which is the point of that.
+    """
+    with Session(engine) as db:
+        a = db.query(Automation).filter(Automation.id == automation_id).first()
+        if not a:
+            raise HTTPException(404, "automation not found")
+        b = db.query(Board).filter(Board.id == a.board_id).first()
+        if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול להפעיל אוטומציה ידנית")
+        if _automation_freeze(db, a.board_id) is not None:
+            raise HTTPException(400, "האוטומציות בלוח מושהות בהשהיית חירום")
+        task = db.query(Task).filter(Task.id == data.get("task_id"),
+                                     Task.board_id == a.board_id).first()
+        if not task or task.deleted_at:
+            raise HTTPException(400, "יש לבחור פריט מהלוח הזה")
+        trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
+        row = _fire_rule(db, a, task, {"type": trig, "manual": True}, user_id, 0)
+        db.commit()
+        if not row:
+            raise HTTPException(400, "ההפעלה לא נרשמה")
+        db.refresh(row)
+        return {"run": _automation_run_json(db, row)}
+
+
+def _check_automation_reach(db, board_id, recipe_id, cfg, actor_id):
+    """A rule that writes on ANOTHER board needs its author authorised there.
+
+    A connect recipe can create and link items on a second board. Saved by
+    someone with rights only here, it would be a way to write onto a board they
+    were never given — with the rule, not their own hands, doing the writing.
+    So every board the rule can reach is checked against the author, at the bar
+    that writing an item takes: admin or editor there.
+    """
+    if actor_id is None or _ws_role(db, actor_id) == "admin":
+        return                                     # a system admin reaches every board
+    r = recipes.recipe(recipe_id) or {}
+    targets = set()
+    for f in r.get("fields", []):
+        v = (cfg or {}).get(f["key"])
+        if f["type"] == "board" and v:
+            targets.add(int(v))
+        elif f["type"] == "item" and v:
+            t = db.query(Task).filter(Task.id == v).first()
+            if t and t.board_id != board_id:
+                targets.add(t.board_id)
+        elif f["type"] == "connect" and v:
+            col = _find_col(db, board_id, str(v))
+            for bid in (_connect_cfg(col).get("board_ids") or []) if col else []:
+                if str(bid).lstrip("-").isdigit() and int(bid) != board_id:
+                    targets.add(int(bid))
+    blocked = [t for t in targets
+               if _board_role(db, t, actor_id) not in ("admin", "editor")]
+    if blocked:
+        names = ", ".join((db.query(Board.name).filter(Board.id == t).scalar() or str(t))
+                          for t in blocked)
+        raise HTTPException(403, "אוטומציה בין לוחות דורשת הרשאה בכל הלוחות שהיא נוגעת בהם. "
+                                 f"אין לך הרשאה ב: {names}")
+
+
+# ── Organisational view of the automations (ניהול ארגוני) ────────────
+# A board admin sees their own board. Nobody could see the organisation: how
+# many rules exist, which of them answer to nobody, which have not fired in
+# months, which are failing, and how much they are consuming. That is the view
+# that makes automations governable rather than merely configurable.
+AUTOMATION_STALE_DAYS = 90
+# The monthly allowance a whole organisation's automations run under. Shown as
+# consumption, not enforced: a hard stop in the middle of a month would quietly
+# break the boards that depend on rules, which is a decision for a person.
+AUTOMATION_MONTHLY_QUOTA = int(os.getenv("AUTOMATION_MONTHLY_QUOTA", "20000"))
+# What an org-wide stop must be given before it takes effect.
+FREEZE_MIN_REASON = 10
+
+
+def _require_sys_admin(db, user_id):
+    """The organisational view is every board's rules at once, including boards
+    the reader was never invited to. That is a system-admin view by definition."""
+    if user_id is None:
+        return                                     # auth disabled → no per-user gate
+    if _ws_role(db, user_id) != "admin":
+        raise HTTPException(403, "רק מנהל מערכת יכול לצפות בניהול האוטומציות הארגוני")
+
+
+def _automation_health(db, board, a):
+    """What is wrong with this rule, in words, or [] when nothing is.
+
+    Read before switching a rule back on in bulk: a rule that names a status the
+    board no longer has, or a person who left it, is a rule that will skip every
+    time it fires — and switching a screenful of those back on looks like it
+    worked until someone reads the history.
+    """
+    problems = []
+    r = recipes.recipe(a.recipe_id)
+    if not r:
+        return ["המתכון אינו מוכר בגרסה הזאת"]
+    cfg = a.config or {}
+    _, err = recipes.validate(a.recipe_id, cfg)
+    if err:
+        problems.append(err)
+    for f in r.get("fields", []):
+        v = cfg.get(f["key"])
+        if f["type"] == "person" and not _can_be_assigned(db, a.board_id, v):
+            nm = db.query(User.name).filter(User.id == v).scalar() or v
+            problems.append(f"{nm} אינו חבר בלוח")
+        elif f["type"] == "status" and not any(
+                x["key"] == str(v) for x in _board_statuses(board)):
+            problems.append(f"הסטטוס '{v}' אינו קיים בלוח")
+        elif f["type"] == "priority" and not any(
+                x["key"] == str(v) for x in _board_priorities(board)):
+            problems.append(f"העדיפות '{v}' אינה קיימת בלוח")
+        elif f["type"] == "group" and not db.query(Group).filter(
+                Group.id == v, Group.board_id == a.board_id).first():
+            problems.append("הקבוצה שהכלל מפנה אליה נמחקה")
+        elif f["type"] == "connect":
+            col = _find_col(db, a.board_id, str(v))
+            if not col or col.get("type") != "connect":
+                problems.append("עמודת הקישור אינה קיימת בלוח")
+        elif f["type"] == "item" and not db.query(Task).filter(Task.id == v).first():
+            problems.append("הפריט שהכלל מקשר אליו נמחק")
+        elif f["type"] == "board" and not db.query(Board).filter(
+                Board.id == v, Board.deleted_at == None).first():           # noqa: E711
+            problems.append("לוח היעד נמחק")
+    return problems
+
+
+def _org_automation_row(db, a, board, dept_names, now):
+    """One rule as the organisational table reads it: which board and which unit
+    it belongs to, who answers for it, and the two things that make it worth
+    looking at — is it failing, and has it done anything lately."""
+    ran, failed = a.run_count or 0, a.fail_count or 0
+    _own = (_automation_owner_state(db, board, a) if board
+            else {"needs_owner": True, "reason": "הלוח נמחק"})
+    owner = a.owner_id or a.created_by
+    last = a.last_run_at
+    stale_days = (now - last).days if last else None
+    return {
+        "id": a.id, "board_id": a.board_id, "board_name": board.name if board else "—",
+        "environment_id": board.environment_id if board else None,
+        "department_id": board.department_id if board else None,
+        "department_name": dept_names.get(board.department_id if board else None, ""),
+        "sentence": _automation_label(db, board, a) if board else "",
+        "name": a.name or "",
+        "display_name": a.name or (_automation_label(db, board, a) if board else ""),
+        "status": a.status or ("active" if a.is_active else "paused"),
+        "is_active": bool(a.is_active),
+        "importance": a.importance or "normal",
+        "owner_id": owner,
+        "owner_name": (db.query(User.name).filter(User.id == owner).scalar() or "") if owner else "",
+        # one definition of "answers to nobody", shared with the board's own
+        # screen: no owner, a blocked account, or an owner who is no longer a
+        # manager of the board — see _automation_owner_state
+        "ownerless": _own["needs_owner"], "owner_problem": _own["reason"],
+        "run_count": ran, "fail_count": failed, "skip_count": a.skip_count or 0,
+        "success_rate": round(100 * ran / (ran + failed)) if (ran + failed) else None,
+        "last_run_at": last.isoformat() if last else None,
+        "last_outcome": a.last_outcome or "",
+        "stale_days": stale_days,
+        "stale": (stale_days is None) or (stale_days >= AUTOMATION_STALE_DAYS),
+        "needs_attention": (a.status == "paused_error") or (a.last_outcome == "failed"),
+    }
+
+
+@app.get("/api/admin/automations")
+def admin_automations(board_id: int = 0, department_id: int = 0, environment_id: int = 0,
+                      owner_id: int = 0, status: str = "", flag: str = "", q: str = "",
+                      user_id: int = Depends(current_user_id)):
+    """Every automation in the organisation, with the three questions the page
+    exists to answer: what has no owner, what needs attention, and what has not
+    run in AUTOMATION_STALE_DAYS.
+
+    Filters narrow the list; the tiles and the quota are always over the whole
+    organisation, so narrowing never changes the totals being narrowed.
+    """
+    with Session(engine) as db:
+        _require_sys_admin(db, user_id)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        boards = {b.id: b for b in db.query(Board).filter(Board.deleted_at == None).all()}  # noqa: E711
+        dept_names = {d.id: d.name for d in db.query(Department).all()}
+        for _b in boards.values():
+            _sweep_automation_ownership(db, _b, user_id)
+        rows = [_org_automation_row(db, a, boards.get(a.board_id), dept_names, now)
+                for a in db.query(Automation).order_by(Automation.board_id, Automation.run_order,
+                                                       Automation.id).all()
+                if a.board_id in boards]
+        totals = {
+            "total": len(rows),
+            "active": sum(1 for r in rows if r["status"] == "active"),
+            "paused": sum(1 for r in rows if r["status"] in ("paused", "paused_error")),
+            "draft": sum(1 for r in rows if r["status"] == "draft"),
+            "ownerless": sum(1 for r in rows if r["ownerless"]),
+            "needs_attention": sum(1 for r in rows if r["needs_attention"]),
+            "stale": sum(1 for r in rows if r["stale"]),
+            "boards": len({r["board_id"] for r in rows}),
+            "failures": sum(r["fail_count"] for r in rows),
+        }
+        shown = _filter_org_automations(rows, board_id, department_id, environment_id,
+                                        owner_id, status, flag, q)
+        period = now.strftime("%Y-%m")
+        usage = db.query(AutomationUsage).filter(AutomationUsage.period == period).all()
+        by_board = {u.board_id: u for u in usage}
+        used = sum((u.ran or 0) + (u.skipped or 0) + (u.failed or 0) for u in usage)
+        owners = sorted({(r["owner_id"], r["owner_name"]) for r in rows if r["owner_id"]},
+                        key=lambda x: x[1] or "")
+        return {
+            "automations": shown, "totals": totals,
+            "quota": {"period": period, "used": used, "limit": AUTOMATION_MONTHLY_QUOTA,
+                      "percent": round(100 * used / AUTOMATION_MONTHLY_QUOTA)
+                                 if AUTOMATION_MONTHLY_QUOTA else None,
+                      "ran": sum(u.ran or 0 for u in usage),
+                      "failed": sum(u.failed or 0 for u in usage),
+                      "skipped": sum(u.skipped or 0 for u in usage),
+                      # the boards consuming the most of it, which is the only
+                      # actionable half of a quota reading
+                      "top_boards": sorted(
+                          [{"board_id": bid, "board_name": boards[bid].name if bid in boards else "—",
+                            "runs": (u.ran or 0) + (u.skipped or 0) + (u.failed or 0)}
+                           for bid, u in by_board.items() if bid in boards],
+                          key=lambda x: -x["runs"])[:5]},
+            "stale_days": AUTOMATION_STALE_DAYS,
+            "departments": [{"id": d.id, "name": d.name} for d in db.query(Department).order_by(Department.name).all()],
+            "environments": [{"id": e.id, "name": e.name} for e in db.query(Environment).order_by(Environment.name).all()],
+            "boards": sorted([{"id": b.id, "name": b.name} for b in boards.values()],
+                             key=lambda x: x["name"] or ""),
+            "owners": [{"id": i, "name": n} for i, n in owners],
+            "freezes": [_freeze_json(db, f) for f in db.query(AutomationFreeze)
+                        .filter(AutomationFreeze.released_at == None)      # noqa: E711
+                        .order_by(AutomationFreeze.id.desc()).all()],
+        }
+
+
+def _filter_org_automations(rows, board_id, department_id, environment_id,
+                            owner_id, status, flag, q):
+    out = rows
+    if board_id:
+        out = [r for r in out if r["board_id"] == board_id]
+    if department_id:
+        out = [r for r in out if r["department_id"] == department_id]
+    if environment_id:
+        out = [r for r in out if r["environment_id"] == environment_id]
+    if owner_id:
+        out = [r for r in out if r["owner_id"] == owner_id]
+    if status == "paused":
+        out = [r for r in out if r["status"] in ("paused", "paused_error")]
+    elif status:
+        out = [r for r in out if r["status"] == status]
+    if flag == "ownerless":
+        out = [r for r in out if r["ownerless"]]
+    elif flag == "attention":
+        out = [r for r in out if r["needs_attention"]]
+    elif flag == "stale":
+        out = [r for r in out if r["stale"]]
+    if q:
+        needle = q.strip().lower()
+        out = [r for r in out
+               if needle in " ".join([r["display_name"], r["sentence"], r["board_name"],
+                                      r["owner_name"], r["department_name"]]).lower()]
+    return out
+
+
+@app.get("/api/admin/automations/export")
+def admin_automations_export(board_id: int = 0, department_id: int = 0, environment_id: int = 0,
+                             owner_id: int = 0, status: str = "", flag: str = "", q: str = "",
+                             user_id: int = Depends(current_user_id)):
+    """The filtered list as a .csv — the same filters, so what is exported is
+    what is on screen rather than a second query that might disagree."""
+    with Session(engine) as db:
+        _require_sys_admin(db, user_id)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        boards = {b.id: b for b in db.query(Board).filter(Board.deleted_at == None).all()}  # noqa: E711
+        dept_names = {d.id: d.name for d in db.query(Department).all()}
+        rows = [_org_automation_row(db, a, boards.get(a.board_id), dept_names, now)
+                for a in db.query(Automation).order_by(Automation.board_id, Automation.id).all()
+                if a.board_id in boards]
+        rows = _filter_org_automations(rows, board_id, department_id, environment_id,
+                                       owner_id, status, flag, q)
+        buf = io.StringIO()
+        buf.write("﻿")                        # BOM so Excel reads Hebrew UTF-8
+        w = csv.writer(buf)
+        w.writerow(["לוח", "יחידה ארגונית", "שם האוטומציה", "המשפט", "סטטוס", "חשיבות",
+                    "בעלים", "ללא בעלים", "דורשת טיפול", "הפעלה אחרונה", "ימים מאז",
+                    "הצלחות", "כשלים", "דילוגים", "שיעור הצלחה"])
+        _ST_HE = {"draft": "טיוטה", "active": "פעילה", "paused": "מושהית",
+                  "paused_error": "מושהית עקב שגיאה", "deleting": "בתהליך מחיקה"}
+        _IMP_HE = {"critical": "קריטית", "high": "גבוהה", "normal": "רגילה", "low": "נמוכה"}
+        for r in rows:
+            w.writerow([r["board_name"], r["department_name"], r["name"],
+                        r["sentence"].replace("«", "").replace("»", ""),
+                        _ST_HE.get(r["status"], r["status"]),
+                        _IMP_HE.get(r["importance"], r["importance"]),
+                        r["owner_name"], "כן" if r["ownerless"] else "",
+                        "כן" if r["needs_attention"] else "",
+                        (r["last_run_at"] or "")[:16].replace("T", " "),
+                        "" if r["stale_days"] is None else r["stale_days"],
+                        r["run_count"], r["fail_count"], r["skip_count"],
+                        "" if r["success_rate"] is None else f'{r["success_rate"]}%'])
+        return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="automations-org.csv"'})
+
+
+def _freeze_json(db, f):
+    uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+    b = db.query(Board).filter(Board.id == f.board_id).first() if f.board_id else None
+    return {"id": f.id, "scope": f.scope, "board_id": f.board_id,
+            "board_name": b.name if b else None, "reason": f.reason or "",
+            "created_by": f.created_by, "created_by_name": uname(f.created_by),
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+            "released_at": f.released_at.isoformat() if f.released_at else None,
+            "released_by_name": uname(f.released_by),
+            "release_reason": f.release_reason or ""}
+
+
+@app.post("/api/admin/automations/freeze")
+def admin_automations_freeze(data: dict, user_id: int = Depends(current_user_id)):
+    """Stop automations — one board's, or the whole organisation's.
+
+    An organisation-wide stop takes two things a board-level one does not: a
+    written reason and an explicit second confirmation. It is the one action
+    here that can halt work on every board at once, and it is recorded in the
+    audit log so that "who turned everything off, and why" has an answer that
+    does not depend on anyone remembering.
+
+    Nothing releases it but a person. There is no timer.
+    """
+    with Session(engine) as db:
+        _require_sys_admin(db, user_id)
+        scope = (data.get("scope") or "").strip()
+        if scope not in ("org", "board"):
+            raise HTTPException(400, "יש לבחור היקף: ארגון או לוח")
+        reason = (str(data.get("reason") or "")).strip()
+        board = None
+        if scope == "board":
+            board = db.query(Board).filter(Board.id == data.get("board_id"),
+                                           Board.deleted_at == None).first()   # noqa: E711
+            if not board:
+                raise HTTPException(404, "board not found")
+        else:
+            if len(reason) < FREEZE_MIN_REASON:
+                raise HTTPException(400, f"השבתה ארגונית מחייבת סיבה (לפחות {FREEZE_MIN_REASON} תווים)")
+            if not data.get("confirm"):
+                raise HTTPException(400, "השבתה ארגונית מחייבת אישור נוסף")
+        if not reason:
+            raise HTTPException(400, "יש לציין סיבה")
+        open_one = (db.query(AutomationFreeze)
+                      .filter(AutomationFreeze.released_at == None,            # noqa: E711
+                              AutomationFreeze.scope == scope,
+                              AutomationFreeze.board_id == (board.id if board else None))
+                      .first())
+        if open_one:
+            raise HTTPException(400, "השהיה כזאת פעילה כבר")
+        f = AutomationFreeze(scope=scope, board_id=board.id if board else None,
+                             reason=reason[:2000], created_by=user_id,
+                             created_at=datetime.now(timezone.utc).replace(tzinfo=None))
+        db.add(f)
+        db.flush()
+        db.add(AuditLog(entity_type="automation_freeze", entity_id=f.id,
+                        action="create", field_name=scope,
+                        old_value=None,
+                        new_value=f"{'ארגון' if scope == 'org' else board.name}: {reason}"[:2000],
+                        changed_by=user_id))
+        # the affected rules are counted for the report, not switched: releasing
+        # the freeze has to put the board back exactly as it was
+        n = db.query(Automation).filter(Automation.is_active == True)           # noqa: E712
+        if scope == "board":
+            n = n.filter(Automation.board_id == board.id)
+        affected = n.count()
+        db.commit()
+        db.refresh(f)
+        return {"freeze": _freeze_json(db, f), "affected": affected}
+
+
+@app.post("/api/admin/automations/release")
+def admin_automations_release(data: dict, user_id: int = Depends(current_user_id)):
+    """End a freeze. Explicit, audited, and the only way one ends."""
+    with Session(engine) as db:
+        _require_sys_admin(db, user_id)
+        f = db.query(AutomationFreeze).filter(AutomationFreeze.id == data.get("freeze_id"),
+                                              AutomationFreeze.released_at == None).first()  # noqa: E711
+        if not f:
+            raise HTTPException(404, "השהיה לא נמצאה")
+        f.released_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        f.released_by = user_id
+        f.release_reason = (str(data.get("reason") or "")).strip()[:2000]
+        db.add(AuditLog(entity_type="automation_freeze", entity_id=f.id,
+                        action="release", field_name=f.scope,
+                        old_value=f.reason, new_value=f.release_reason or "—",
+                        changed_by=user_id))
+        db.commit()
+        db.refresh(f)
+        return {"freeze": _freeze_json(db, f)}
+
+
+# ── Bulk actions for a board admin (פעולות מרובות) ───────────────────
+# Deliberately without delete. Everything here is reversible — a rule switched
+# off can be switched on, an owner handed over can be handed back — and a
+# screenful of checkboxes is exactly the wrong place to make an irreversible
+# choice. See the MVP note in the spec.
+AUTOMATION_BULK_ACTIONS = ("pause", "activate", "transfer")
+
+
+@app.post("/api/boards/{board_id}/automations/bulk")
+def bulk_automations(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Act on several rules at once, and say what happened to each.
+
+    `dry_run` answers the question the confirmation dialog asks — how many rules
+    this touches and what is worrying about them — without touching anything. The
+    real call then returns one line per rule, because "12 rules updated" hides
+    the two that did not.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לבצע פעולות על אוטומציות")
+        action = (data.get("action") or "").strip()
+        if action not in AUTOMATION_BULK_ACTIONS:
+            raise HTTPException(400, "פעולה לא מוכרת")
+        ids = [i for i in (data.get("ids") or []) if isinstance(i, int)][:500]
+        rules = (db.query(Automation).filter(Automation.board_id == board_id,
+                                             Automation.id.in_(ids)).all() if ids else [])
+        if not rules:
+            raise HTTPException(400, "לא נבחרו אוטומציות")
+        owner_id = None
+        if action == "transfer":
+            try:
+                owner_id = int(data.get("owner_id"))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "יש לבחור בעלים")
+            # the same bar as naming someone inside a rule: a manager who was
+            # never invited to the board cannot be made answerable for it
+            if not _can_be_assigned(db, board_id, owner_id):
+                raise HTTPException(400, "אפשר להעביר בעלות רק למי שהוזמן ללוח")
+            if _board_role(db, board_id, owner_id) != "admin" and not data.get("force_owner"):
+                nm = db.query(User.name).filter(User.id == owner_id).scalar() or ""
+                raise HTTPException(400, f"{nm} אינו מנהל הלוח — בעלות מועברת למנהל מורשה")
+
+        frozen = _automation_freeze(db, board_id)
+        warnings, results = [], []
+        if frozen is not None and action == "activate":
+            warnings.append("האוטומציות בלוח מושהות בהשהיית חירום — הפעלה לא תיכנס לתוקף עד שתוסר")
+        for a in rules:
+            problems = _automation_health(db, b, a) if action == "activate" else []
+            name = a.name or _automation_label(db, b, a).replace("«", "").replace("»", "")
+            row = {"id": a.id, "name": name, "ok": True, "message": ""}
+            if action == "pause":
+                if a.status in ("paused", "paused_error"):
+                    row.update(ok=True, message="מושהית כבר")
+                else:
+                    _set_automation_status(a, "paused")
+                    row["message"] = "הושהתה"
+            elif action == "activate":
+                if problems:
+                    # the health check is the point of this action: a rule that
+                    # cannot work is left off and says why
+                    row.update(ok=False, message=" · ".join(problems[:3]))
+                elif a.status == "active":
+                    row["message"] = "פעילה כבר"
+                else:
+                    _set_automation_status(a, "active")
+                    row["message"] = "הופעלה"
+            else:
+                if a.owner_id == owner_id:
+                    row["message"] = "הבעלות כבר שלו"
+                else:
+                    _prev = a.owner_id
+                    a.owner_id = owner_id
+                    _audit_owner_change(db, a, _prev, owner_id, user_id)
+                    row["message"] = "הבעלות הועברה"
+            if row["ok"] and row["message"] not in ("מושהית כבר", "פעילה כבר", "הבעלות כבר שלו"):
+                a.updated_by = user_id
+                a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                _record_automation_version(db, b, a, user_id,
+                                           note={"pause": "הושהתה בפעולה מרובה",
+                                                 "activate": "הופעלה בפעולה מרובה",
+                                                 "transfer": "הבעלות הועברה בפעולה מרובה"}[action])
+            results.append(row)
+
+        if data.get("dry_run"):
+            db.rollback()
+            # what the confirmation has to show: the count, and what will not work
+            bad = [r for r in results if not r["ok"]]
+            if action == "activate" and bad:
+                warnings.append(f"{len(bad)} אוטומציות לא יעברו בדיקת תקינות ויישארו כבויות")
+            if action == "pause":
+                live = [r for r in results if r["message"] == "הושהית"]
+                warnings.append(f"{len(live)} אוטומציות יפסיקו לפעול על הלוח הזה")
+            return {"dry_run": True, "affected": len(rules), "warnings": warnings,
+                    "results": results}
+        db.commit()
+        return {"dry_run": False, "affected": len(rules), "warnings": warnings,
+                "results": results,
+                "ok": sum(1 for r in results if r["ok"]),
+                "failed": sum(1 for r in results if not r["ok"])}
+
+
+@app.get("/api/boards/{board_id}/automations/export")
+def export_board_automations(board_id: int, user_id: int = Depends(current_user_id)):
+    """The board's rules as a .csv, for whoever has to review them off screen."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_export_automations(db, b, user_id):
+            raise HTTPException(403, "ייצוא נתוני אוטומציות דורש הרשאת נתונים")
+        rows = (db.query(Automation).filter(Automation.board_id == board_id)
+                  .order_by(Automation.run_order, Automation.id).all())
+        buf = io.StringIO()
+        buf.write("﻿")
+        w = csv.writer(buf)
+        w.writerow(["שם", "המשפט", "תיאור עסקי", "סטטוס", "חשיבות", "סדר ביצוע", "בעלים",
+                    "נוצר על ידי", "עדכון אחרון", "הפעלה אחרונה", "הצלחות", "כשלים",
+                    "דילוגים", "שיעור הצלחה"])
+        _ST_HE = {"draft": "טיוטה", "active": "פעילה", "paused": "מושהית",
+                  "paused_error": "מושהית עקב שגיאה", "deleting": "בתהליך מחיקה"}
+        _IMP_HE = {"critical": "קריטית", "high": "גבוהה", "normal": "רגילה", "low": "נמוכה"}
+        uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+        for a in rows:
+            ran, failed = a.run_count or 0, a.fail_count or 0
+            w.writerow([a.name or "", _automation_label(db, b, a).replace("«", "").replace("»", ""),
+                        a.description or "", _ST_HE.get(a.status, a.status or ""),
+                        _IMP_HE.get(a.importance, a.importance or ""), a.run_order or 0,
+                        uname(a.owner_id or a.created_by), uname(a.created_by),
+                        (a.updated_at.isoformat() if a.updated_at else "")[:16].replace("T", " "),
+                        (a.last_run_at.isoformat() if a.last_run_at else "")[:16].replace("T", " "),
+                        ran, failed, a.skip_count or 0,
+                        f"{round(100 * ran / (ran + failed))}%" if (ran + failed) else ""])
+        return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="automations-board-{board_id}.csv"'})
 
 
 @app.get("/api/tasks/{task_id}")

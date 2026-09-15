@@ -5,6 +5,8 @@ rule that fired, a rule that matched but had nothing to do, and a rule that
 failed. A skipped or failed attempt can be run again, and the retry is its own
 row pointing back at the attempt it replayed.
 """
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 import main as cityos_main
 from models import Automation, AutomationRun
@@ -56,7 +58,13 @@ def test_a_rule_with_nothing_to_do_is_recorded_as_a_skip(client, admin_id):
     _add(client, bid, admin_id, "created_notify_person", {"a_person": admin_id})
     _add(client, bid, admin_id, "due_notify_assignees", {})
     tid = _mk_item(client, bid, admin_id)
-    client.patch(f"/api/tasks/{tid}", json={"due_date": "2020-01-01", "user_id": admin_id})
+    client.patch(f"/api/tasks/{tid}", json={"due_date": "2026-01-01", "user_id": admin_id})
+    # an activation applies to events from then on, so the rule has to have been
+    # switched on before that date arrived
+    with Session(cityos_main.engine) as db:
+        for row in db.query(Automation).filter(Automation.board_id == bid).all():
+            row.activated_at = datetime(2025, 1, 1)
+        db.commit()
     client.get(f"/api/boards/{bid}?user_id={admin_id}")        # the date sweep runs on read
     skips = _runs(client, bid, admin_id, outcome="skipped")["runs"]
     assert any(r["action"] == "notify_assignees" and "משויכים" in r["reason"] for r in skips), \
@@ -126,9 +134,12 @@ def test_only_a_board_admin_may_retry(client, admin_id, guinea_id):
     assert r.status_code == 403
 
 
-def test_the_history_is_readable_by_any_member_and_nobody_else(client, admin_id, guinea_id, member_id):
+def test_the_history_follows_the_automations_permission(client, admin_id, guinea_id, member_id):
+    """A board admin always; a board editor only where the dedicated capability
+    is granted; nobody else. The whole matrix is in test_automations_matrix.py."""
     bid = _mk_board(client, admin_id, invite=guinea_id)
-    assert client.get(f"/api/boards/{bid}/automations/runs?user_id={guinea_id}").status_code == 200
+    assert client.get(f"/api/boards/{bid}/automations/runs?user_id={admin_id}").status_code == 200
+    assert client.get(f"/api/boards/{bid}/automations/runs?user_id={guinea_id}").status_code == 403
     assert client.get(f"/api/boards/{bid}/automations/runs?user_id={member_id}").status_code == 403
 
 
