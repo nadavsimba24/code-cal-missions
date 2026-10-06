@@ -315,6 +315,39 @@ def test_the_report_says_when_the_items_came_without_their_group():
         assert marker in SRC, f"the import report says nothing about {marker}"
 
 
+# ── the board's own name ───────────────────────────────────────────────────
+def test_a_board_whose_export_carries_its_name_arrives_under_it(client, admin_id):
+    d = _imp(client, admin_id, _json_board(), "response1992g.json")
+    assert d["name"] == "לוח"
+    assert d["report"]["board_name_from"] == "file"
+
+
+def test_a_board_named_after_the_download_says_so(client, admin_id):
+    """Her own export: no `name` on the board, so the only name left was what the
+    browser called the file. The board is right to arrive under it — and the one
+    thing the report must not do is let it pass for the board's name."""
+    doc = json.loads(_json_board())
+    doc["data"]["boards"][0].pop("name")
+    d = _imp(client, admin_id, json.dumps(doc).encode(), "response1992g.json")
+    assert d["name"] == "response1992g"
+    assert d["report"]["board_name_from"] == "filename"
+    assert d["report"]["board_name"] == "response1992g"
+
+
+def test_a_name_typed_at_import_wins_over_both(client, admin_id):
+    r = client.post(f"/api/boards/import?actor_id={admin_id}",
+                    files={"file": ("response1992g.json", _json_board(), "application/json")},
+                    data={"actor_id": admin_id, "name": "פיתוח לוחות"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["name"] == "פיתוח לוחות" and d["report"]["board_name_from"] == "typed"
+
+
+def test_the_report_says_where_the_name_came_from():
+    for marker in ("board_name_from", "על שם הקובץ, לא על שם הלוח", "שם הלוח נקרא מהקובץ"):
+        assert marker in SRC, f"the import report says nothing about {marker}"
+
+
 def test_the_query_shipped_with_the_app_asks_for_the_division():
     q = (pathlib.Path(__file__).resolve().parent.parent
          / "backend" / "monday_export.graphql").read_text(encoding="utf-8")

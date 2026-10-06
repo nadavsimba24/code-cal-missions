@@ -3635,6 +3635,26 @@ function importReport(b){
   const GROUPS_HE={sheet:'החלוקה נקראה מהקובץ — שורות הקבוצה שבין הפריטים',
                    column:'החלוקה נקראה מעמודת הקבוצה שבקובץ',
                    file:'החלוקה נקראה מהקבוצות שבקובץ הייצוא'};
+  /* The board's name, and where it came from. A board called "response1992g"
+     is not named — it is named after whatever the browser called the download,
+     because the export carried no name of its own and the filename was all that
+     was left. Falling back to it is right; letting it pass for the board's name
+     is not, and the title above says it either way. */
+  const NAME_HE={file:'שם הלוח נקרא מהקובץ',typed:'השם הוקלד בייבוא'};
+  const nameHTML=(r.board_name_from==='filename'||r.board_name_from==='default')?`
+    <div class="imp-sec imp-warn"><div class="imp-sec-t">
+      <i class="fa-solid fa-tag"></i> הלוח נקרא <b>${esc(r.board_name||b.name||'')}</b> — <b>על שם הקובץ, לא על שם הלוח</b></div>
+      <div class="imp-why"><b>מה קרה:</b> בתשובה שבקובץ אין <b>name</b> ברמת הלוח, ולכן השם היחיד
+        שהיה זמין הוא שם הקובץ שהורד. הלוח עצמו, הקבוצות, העמודות והפריטים יובאו כרגיל —
+        רק הכותרת היא לא זו שבמאנדיי.</div>
+      <div class="imp-why"><b>מה עושים:</b> או לשנות את שם הלוח כאן, או להוסיף לשאילתה
+        <b dir="ltr">id</b> ו-<b dir="ltr">name</b> מתחת לשורת
+        <b dir="ltr">boards(ids: $boardId)</b> ולייבא מחדש — אז הלוח יגיע בשמו.</div>
+    </div>`:(NAME_HE[r.board_name_from]?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-tag"></i> ${esc(r.board_name||b.name||'')}</div>
+      <div class="imp-why">${esc(NAME_HE[r.board_name_from])}.</div>
+    </div>`:'');
   const gNames=r.group_names||[];
   /* Groups in the file, but items with nothing saying which one they belong to.
      The names and the order came across and the items did not, so the board
@@ -3703,7 +3723,7 @@ function importReport(b){
   showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(b.name||'הלוח יובא')}</h2>
     <div class="mbody">
       ${statsHTML}
-      ${cutHTML}${groupHTML}${mapHTML}${formulaHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}
+      ${cutHTML}${nameHTML}${groupHTML}${mapHTML}${formulaHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}
     </div>
     <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>`);
 }

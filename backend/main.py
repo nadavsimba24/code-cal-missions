@@ -1528,6 +1528,22 @@ def _new_item_uid(db, board_id):
             return cand
     return str(secrets.randbelow(ITEM_UID_MAX - ITEM_UID_MIN + 1) + ITEM_UID_MIN)
 
+def _board_name_from(typed, in_file, base):
+    """Where an imported board's name came from.
+
+    A board that arrives called "response1992g" is not named — it is named after
+    whatever the browser happened to call the download, because the export did
+    not carry the board's own name and the filename was the only thing left. The
+    import is right to fall back to it; what it cannot do is leave that looking
+    like the board's name. So the report says which of the three it was.
+    """
+    if (typed or "").strip():
+        return "typed"
+    if (in_file or "").strip():
+        return "file"
+    return "filename" if (base or "").strip() else "default"
+
+
 def _mint_item_uids(n):
     """n identifiers, distinct from each other, minted without asking anything.
 
@@ -2830,6 +2846,7 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         }
         base = os.path.splitext(os.path.basename(filename or ""))[0]
         board_name = (name or "").strip() or parsed["board_name"] or base or "לוח מיובא"
+        name_from = _board_name_from(name, parsed["board_name"], base)
         maxpos = (db.query(func.max(Board.position))
                   .filter(Board.environment_id == env_id, Board.folder_id == folder_id).scalar())
         dept_id = db.query(Department.id).order_by(Department.id).limit(1).scalar()
@@ -2959,6 +2976,10 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 "messages": talked,
                 "files": files["stats"].get("imported", 0),
                 "report": {**parsed["report"],
+                           # the board's name, and which of the three places it
+                           # came from — see _board_name_from
+                           "board_name": board_name[:200],
+                           "board_name_from": name_from,
                            "messages_imported": talked,
                            "files_imported": files["stats"].get("imported", 0),
                            "files_bytes": files["stats"].get("bytes", 0),
@@ -3155,6 +3176,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         # An exported board names itself on its first line; the file it was saved
         # as carries whatever the browser called it ("Spotical_1786443119").
         board_name = (name or "").strip() or (sheet_title or "").strip() or base or "לוח מיובא"
+        name_from = _board_name_from(name, sheet_title, base)
         settings = {
             "views": ["table"],
             # The file's columns first, in the file's own order, and the three
@@ -3351,6 +3373,8 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                            "group_names": [g.name for g in groups][:40],
                            # and where it came from, because "3 קבוצות" over an
                            # undivided board reads exactly like a division
+                           "board_name": board_name[:200],
+                           "board_name_from": name_from,
                            "groups_from": ("sheet" if named else
                                            "column" if col_groups else "default"),
                            "groups_column": labels[group_at] if (col_groups and group_at is not None) else "",
