@@ -349,7 +349,9 @@ def test_a_file_whose_bytes_are_no_longer_here_keeps_its_name(client, admin_id):
     with Session(cityos_main.engine) as db:
         task = db.query(Task).filter(Task.board_id == d["id"]).first()
         cell = [v for k, v in (task.custom_fields or {}).items() if isinstance(v, list)][0]
-    assert cell == [{"name": "old.pdf", "url": ""}], cell
+    # the name is kept and the address is not a link; the entry says why, so the
+    # chip can show it as a name rather than as something to click
+    assert cell == [{"name": "old.pdf", "url": "", "why": "gone", "dead": True}], cell
 
 
 def _import_xlsx(client, admin_id, board_rows, file_rows=None, talk_rows=None):
@@ -531,3 +533,31 @@ def test_the_shipped_query_asks_for_a_reply_s_attachments():
     for m in re.finditer(r"replies \{[^}]*\{[^}]*\}[^}]*\}", q):
         assert "assets" in m.group(0), "a replies block that does not ask for assets"
     assert q.count("replies {") == 4
+
+
+def test_an_expired_attachment_is_marked_rather_than_handed_over_as_a_link(client, admin_id, monkeypatch):
+    """What she hit: the chips were there, and opening one answered with S3's
+    "Request has expired" instead of the file. The name is worth keeping — the
+    item did have a spec attached — but not as something to click."""
+    monkeypatch.setattr(cityos_main, "_signed_url_expired", lambda u: True)
+    url = f"{MONDAY_HOST}/spec.docx?X-Amz-Expires=3600"
+    calls = _serve(monkeypatch, {url: (b"x", "application/octet-stream")})
+    items = [_item("פריט", cols=[_filecol("מסמך", "spec.docx")],
+                   assets=[{"id": "1", "name": "spec.docx", "public_url": url}])]
+    d = _import(client, admin_id, _resp(items)).json()
+    assert d["report"]["files_expired"] == 1
+    assert not calls, "a signature that says it lapsed is not worth a round trip"
+    with Session(cityos_main.engine) as db:
+        task = db.query(Task).filter(Task.board_id == d["id"]).first()
+        cell = [v for k, v in (task.custom_fields or {}).items() if isinstance(v, list)][0]
+    assert cell[0]["name"] == "spec.docx", "the name survives"
+    assert cell[0]["dead"] is True and cell[0]["why"] == "expired"
+
+
+def test_the_chip_does_not_link_a_file_that_never_arrived():
+    import pathlib as _p
+    src = (_p.Path(__file__).resolve().parent.parent / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "FILE_DEAD_HE" in src and "fileDeadWhy" in src
+    assert "הקישור של מאנדיי פג" in src, "and says what would bring the file"
+    assert "file-dead" in src and "att-dead" in src, "the cell chip and the message one"
+

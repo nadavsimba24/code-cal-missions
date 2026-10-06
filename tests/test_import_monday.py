@@ -524,8 +524,12 @@ def test_a_file_is_named_by_its_asset_even_after_someone_renamed_it(client):
     bid = _upload(client, _resp([it])).json()["id"]
     board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
     col = next(c for c in board["columns"] if c.get("title") == "מסמך")
+    # the asset's own name wins over the cell's stale text. The bytes could not
+    # be had here, so the entry is marked as the name it is rather than left
+    # looking like a working link — see _import_attachments
     assert board["tasks"][0]["custom_fields"][col["id"]] == \
-        [{"name": "אפיון סופי.docx", "url": "https://files.monday.com/a.docx"}]
+        [{"name": "אפיון סופי.docx", "url": "https://files.monday.com/a.docx",
+          "why": "failed", "dead": True}]
 
 
 def test_the_built_in_columns_the_file_never_had_are_not_shown(client):

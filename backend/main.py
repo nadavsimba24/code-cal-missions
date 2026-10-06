@@ -2488,8 +2488,19 @@ def _import_attachments(db, files, budget, stats, cache=None):
     for f in files or []:
         name = (f.get("name") or "").strip() or "קובץ"
         url = f.get("url") or ""
-        keep = lambda why: (out.append({"name": name[:255], "url": url}),
-                            stats.__setitem__(why, stats.get(why, 0) + 1))
+        # An attachment that could not be fetched keeps its name and the address
+        # it had, and now says why. The two kinds of leftover are not the same
+        # thing and must not look the same: a /protected_static/ link opens the
+        # file in monday, where the user IS signed in, while an expired signature
+        # can never open again, for anyone. Handed over as a plain link, that one
+        # opens S3's XML complaint — "Request has expired" — which reads as a
+        # broken app rather than as a file that did not come across.
+        def keep(why, dead=True):
+            one = {"name": name[:255], "url": url, "why": why}
+            if dead:
+                one["dead"] = True
+            out.append(one)
+            stats[why] = stats.get(why, 0) + 1
         if not url:
             out.append({"name": name[:255], "url": ""})
             continue
@@ -2503,7 +2514,7 @@ def _import_attachments(db, files, budget, stats, cache=None):
                 out.append({"name": name[:255], "url": url})
                 stats["reused"] = stats.get("reused", 0) + 1
             else:
-                out.append({"name": name[:255], "url": ""})
+                out.append({"name": name[:255], "url": "", "why": "gone", "dead": True})
                 stats["gone"] = stats.get("gone", 0) + 1
             continue
         # ── a link this server cannot fetch ───────────────────────────────
@@ -2517,7 +2528,7 @@ def _import_attachments(db, files, budget, stats, cache=None):
         parts = urllib.parse.urlparse(url)
         if (parts.path.startswith("/protected_static/")
                 or not _import_host_allowed(parts.hostname)):
-            keep("linked")
+            keep("linked", dead=False)      # this one still opens, in monday
             continue
         # the two questions that can be answered without a round trip
         if _signed_url_expired(url):
