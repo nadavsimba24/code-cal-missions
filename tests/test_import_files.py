@@ -501,3 +501,33 @@ def test_the_export_query_asks_for_the_sub_items_assets():
         block = b.split("\n      updates")[0].split("\n        updates")[0]
         assert "assets { id name public_url }" in block, "a sub-item's files have no link"
         assert "FileValue" in block, "a sub-item's file cell names no asset"
+
+# ── a file attached to a reply ──────────────────────────────────────────────
+def test_a_file_attached_to_a_reply_comes_across(client, admin_id, monkeypatch):
+    """A reply is a message like any other and can carry the attachment the whole
+    thread was about. The parser always read `assets` off it — the export simply
+    never asked, and a reply holding nothing but a file was dropped whole, since
+    a message with no text and no file carries nothing."""
+    url = f"{MONDAY_HOST}/spec.docx"
+    _serve(monkeypatch, {url: (b"DOCX BYTES", "application/octet-stream")})
+    items = [_item("פריט", updates=[{
+        "id": "1", "body": "<p>ראו קובץ</p>", "text_body": "ראו קובץ",
+        "created_at": "2026-01-01T10:00:00Z", "creator": {"name": "משה", "email": "m@x.co"},
+        "assets": [],
+        "replies": [{"id": "2", "body": "", "text_body": "",
+                     "created_at": "2026-01-01T11:00:00Z",
+                     "creator": {"name": "דנה", "email": "d@x.co"},
+                     "assets": [{"id": "9", "name": "spec.docx", "public_url": url}]}],
+    }])]
+    r = _import(client, admin_id, _resp(items)).json()
+    assert r["report"]["files_imported"] == 1, "the reply's file is a file"
+    assert r["messages"] >= 2, "and the reply itself survives, having carried it"
+
+
+def test_the_shipped_query_asks_for_a_reply_s_attachments():
+    import pathlib, re
+    q = (pathlib.Path(__file__).resolve().parent.parent
+         / "backend" / "monday_export.graphql").read_text(encoding="utf-8")
+    for m in re.finditer(r"replies \{[^}]*\{[^}]*\}[^}]*\}", q):
+        assert "assets" in m.group(0), "a replies block that does not ask for assets"
+    assert q.count("replies {") == 4

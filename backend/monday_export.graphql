@@ -94,14 +94,14 @@ query ($boardId: [ID!]) {
           updates {
             id body text_body created_at
             creator { name email }
-            replies { id body text_body created_at creator { name email } }
+            replies { id body text_body created_at creator { name email } assets { id name public_url } }
             assets { id name public_url }
           }
         }
         updates {
           id body text_body created_at
           creator { name email }
-          replies { id body text_body created_at creator { name email } }
+          replies { id body text_body created_at creator { name email } assets { id name public_url } }
           assets { id name public_url }
         }
       }
@@ -159,14 +159,14 @@ query ($cursor: String!) {
         updates {
           id body text_body created_at
           creator { name email }
-          replies { id body text_body created_at creator { name email } }
+          replies { id body text_body created_at creator { name email } assets { id name public_url } }
           assets { id name public_url }
         }
       }
       updates {
         id body text_body created_at
         creator { name email }
-        replies { id body text_body created_at creator { name email } }
+        replies { id body text_body created_at creator { name email } assets { id name public_url } }
         assets { id name public_url }
       }
     }
