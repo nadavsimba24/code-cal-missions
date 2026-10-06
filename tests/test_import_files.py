@@ -230,7 +230,13 @@ def test_the_import_gives_up_after_a_run_of_failures(client, admin_id, monkeypat
                             "public_url": f"{MONDAY_HOST}/f{i}.txt"}])
              for i in range(20)]
     r = _import(client, admin_id, _resp(items)).json()["report"]
-    assert len(calls) == 3, f"tried {len(calls)} times before giving up"
+    # The files are fetched by a pool now, so up to one pool's worth are already
+    # in flight when the run trips — in flight together, which is the whole point:
+    # the rule exists to stop spending a timeout per file, and a handful at once
+    # costs one timeout, not a handful of them.
+    assert len(calls) <= 3 + cityos_main.IMPORT_FILE_WORKERS, \
+        f"tried {len(calls)} times before giving up"
+    assert len(calls) < 20, "it has to stop trying, not work through all of them"
     assert r["files_unreachable"] == 20, "the ones it stopped trying are still accounted for"
 
 

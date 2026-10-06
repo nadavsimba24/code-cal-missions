@@ -1,7 +1,8 @@
 """
 CityOS — FastAPI Backend Server
 """
-import os, sys, json, uuid, csv, io, re, secrets, urllib.parse, urllib.request
+import os, sys, json, uuid, csv, io, re, secrets, threading, urllib.parse, urllib.request
+import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
@@ -1527,6 +1528,21 @@ def _new_item_uid(db, board_id):
             return cand
     return str(secrets.randbelow(ITEM_UID_MAX - ITEM_UID_MIN + 1) + ITEM_UID_MIN)
 
+def _mint_item_uids(n):
+    """n identifiers, distinct from each other, minted without asking anything.
+
+    For the rows of a board being created in this same transaction — there is
+    nothing on it yet for them to collide with. A board that already holds items
+    goes through _new_item_uid, which checks.
+    """
+    out, seen = [], set()
+    while len(out) < n:
+        c = str(secrets.randbelow(ITEM_UID_MAX - ITEM_UID_MIN + 1) + ITEM_UID_MIN)
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
 def _ensure_item_uid(db, task):
     """Give the task an identifier if it has none, or a fresh one if the one it
     carries was minted for a different board. Returns the identifier."""
@@ -2260,6 +2276,11 @@ IMPORT_MAX_MESSAGES = 10000
 IMPORT_MAX_FILES = int(os.getenv("IMPORT_MAX_FILES", "600"))
 IMPORT_MAX_FILE_MB = int(os.getenv("IMPORT_MAX_FILE_MB", "150"))
 IMPORT_FILE_TIMEOUT = 20            # seconds per file
+# How many attachments are fetched at once. The files are an import's only
+# outbound calls and they do not depend on each other, so the wait is the one
+# thing worth overlapping. Eight is modest on purpose: the other side is
+# monday's S3, and an import is not the only thing this server is doing.
+IMPORT_FILE_WORKERS = int(os.getenv("IMPORT_FILE_WORKERS", "8"))
 
 # Only monday's own asset hosts. The URLs come out of a file the user supplied,
 # and fetching whatever it names would let an import point this server at an
@@ -2345,7 +2366,95 @@ def _fetch_import_file(url):
         return None
 
 
-def _import_attachments(db, files, budget, stats):
+def _import_fetchable(url):
+    """Whether this address is one the import would spend a round trip on.
+
+    The same questions _import_attachments asks before fetching, in the same
+    order — kept here so the prefetch warms exactly the set the import would
+    have fetched itself, and nothing besides.
+    """
+    if not url or _stored_file_token(url):
+        return False
+    parts = urllib.parse.urlparse(url)
+    if parts.path.startswith("/protected_static/") or not _import_host_allowed(parts.hostname):
+        return False
+    return not _signed_url_expired(url)
+
+
+def _prefetch_import_files(urls, budget, workers=None):
+    """Fetch an import's attachments together rather than one after another.
+
+    They were fetched in the order the items are read, one at a time, inside the
+    request: a fresh monday export of 320 items carried 307 live S3 links, and
+    307 round trips end to end is minutes of a request that spends them waiting.
+    The bytes do not depend on each other. Fetched at once, the import then
+    walks the items exactly as before and finds each file already in hand.
+
+    What comes back is {url: (bytes, content_type) or None} — None meaning the
+    fetch failed, which is what the caller does with a failed fetch anyway. The
+    queue is the file's own order, deduplicated; the pool is bounded; and
+    submission stops once the import's byte ceiling is accounted for, because a
+    prefetch that pulled more than the import may keep would spend exactly the
+    time this exists to save.
+    """
+    seen, queue = set(), []
+    for u in urls:
+        if u and u not in seen and _import_fetchable(u):
+            seen.add(u)
+            queue.append(u)
+    queue = queue[:max(0, budget[0])]
+    if not queue:
+        return {}
+    left, lock, out, streak = [budget[1]], threading.Lock(), {}, [0]
+
+    def one(u):
+        with lock:
+            # the run-of-failures guard, honoured here too: if the first handful
+            # cannot be had the rest cannot either, and the point of that rule is
+            # not to spend a timeout per file proving it. Up to one pool's worth
+            # are already in flight when the run trips — but in flight together,
+            # so it costs one timeout rather than one each.
+            if left[0] <= 0 or streak[0] >= IMPORT_FILE_FAIL_STREAK:
+                return u, None
+        got = _fetch_import_file(u)
+        with lock:
+            if got:
+                streak[0] = 0
+                left[0] -= len(got[0])
+            else:
+                streak[0] += 1
+        return u, got
+
+    n = max(1, min(workers or IMPORT_FILE_WORKERS, len(queue)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n,
+                                               thread_name_prefix="import-file") as pool:
+        for u, got in pool.map(one, queue):
+            out[u] = got
+    return out
+
+
+def _attachment_urls(parsed, columns):
+    """Every address this import might fetch, in the order the file states them.
+
+    The cells of the file columns and the assets hanging off the conversation —
+    on the items and on their sub-items alike, which is where half of them were.
+    """
+    keys = [c["key"] for c in columns if c["type"] == "files"]
+    out = []
+    def msgs(src):
+        for up in src.get("updates") or []:
+            for m in [up] + (up.get("replies") or []):
+                out.extend((a or {}).get("url") or "" for a in (m.get("assets") or []))
+    for row in parsed["items"]:
+        for src in [row] + (row.get("subitems") or []):
+            for k in keys:
+                for f in src["values"].get(k) or []:
+                    out.append((f or {}).get("url") or "")
+            msgs(src)
+    return out
+
+
+def _import_attachments(db, files, budget, stats, cache=None):
     """Bring a list of [{name,url}] across, and return it pointing here.
 
     `budget` is [files_left, bytes_left], shared by the whole import. An entry
@@ -2394,7 +2503,12 @@ def _import_attachments(db, files, budget, stats):
         if stats.get("streak", 0) >= IMPORT_FILE_FAIL_STREAK:
             keep("failed")
             continue
-        got = _fetch_import_file(url) if (budget[0] > 0 and budget[1] > 0) else None
+        if budget[0] <= 0 or budget[1] <= 0:
+            got = None
+        elif cache is not None and url in cache:
+            got = cache[url]      # already in hand — see _prefetch_import_files
+        else:
+            got = _fetch_import_file(url)
         if got is None:
             stats["streak"] = stats.get("streak", 0) + 1
             keep("failed")
@@ -2556,7 +2670,7 @@ IMPORT_PALETTE = [
 ]
 
 
-def _import_comment(db, task, msg, by_token, parent_id=None, files=None):
+def _import_comment(db, task, msg, by_token, parent_id=None, files=None, flush=True):
     """One imported message, written onto the item it belongs to.
 
     The author is matched to an account by e-mail first and by name second — the
@@ -2578,7 +2692,8 @@ def _import_comment(db, task, msg, by_token, parent_id=None, files=None):
             for a in (msg.get("assets") or [])][:20]
     if files is not None:
         # the bytes, while monday's links still work — see _import_attachments
-        atts = _import_attachments(db, atts, files["budget"], files["stats"])
+        atts = _import_attachments(db, atts, files["budget"], files["stats"],
+                                   files.get("cache"))
     c = Comment(task_id=task.id, user_id=uid, parent_id=parent_id,
                 content=(msg.get("body") or "")[:20000],
                 attachments=atts,
@@ -2588,7 +2703,12 @@ def _import_comment(db, task, msg, by_token, parent_id=None, files=None):
                         "external_id": (msg.get("external_id") or "")[:40],
                         "matched": bool(uid)})
     db.add(c)
-    db.flush()
+    # Flushed only when the row's own id is about to be needed — a message whose
+    # replies hang off it. A reply is nobody's parent, and flushing it on its own
+    # made every single imported message a round trip of its own; left pending,
+    # they go out together with whatever flush comes next.
+    if flush:
+        db.flush()
     return c
 
 
@@ -2609,7 +2729,8 @@ def _import_conversation(db, task, updates, by_token, budget, files=None):
         for rep in up.get("replies") or []:
             if budget[0] <= 0:
                 break
-            _import_comment(db, task, rep, by_token, parent_id=root.id, files=files)
+            _import_comment(db, task, rep, by_token, parent_id=root.id, files=files,
+                            flush=False)
             budget[0] -= 1
             made += 1
     return made
@@ -2763,7 +2884,8 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 elif c["type"] == "files":
                     # a name is enough to see that an item had a spec attached,
                     # and useless for opening it — so the bytes come too
-                    v = _import_attachments(db, v, files["budget"], files["stats"])
+                    v = _import_attachments(db, v, files["budget"], files["stats"],
+                                            files.get("cache"))
                 elif c["type"] == "people":
                     ids = []
                     for tok in v:
@@ -2784,16 +2906,29 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         # and the attachments': [files left, bytes left]
         files = {"budget": [IMPORT_MAX_FILES, IMPORT_MAX_FILE_MB * 1024 * 1024],
                  "stats": {}}
+        # The attachments, fetched together before the walk begins. Nothing below
+        # changes: _import_attachments asks the same questions in the same order
+        # and gets the same answers — it just does not wait for them one by one.
+        files["cache"] = _prefetch_import_files(
+            _attachment_urls(parsed, parsed["columns"]), files["budget"])
+        # Identifiers for every row this import writes, minted in one go. Asked
+        # per row, each one cost a SELECT ("is this taken on this board?") and
+        # the UPDATE that followed the insert — 782 round trips for a board whose
+        # every row is being written in this same transaction, and whose answer
+        # to that question could only ever be "no": it was created a moment ago
+        # and holds nothing.
+        uids = iter(_mint_item_uids(len(parsed["items"])
+                                    + sum(len(r["subitems"]) for r in parsed["items"])))
         gpos = {}
         for row in parsed["items"]:
             grp = gmap.get(row.get("group")) or g1
             pos = gpos[grp.id] = gpos.get(grp.id, -1) + 1
             t = Task(board_id=b.id, group_id=grp.id, title=row["name"][:500],
                      status=TaskStatus.BACKLOG, priority=Priority.MEDIUM, position=pos,
-                     created_by=actor_id, custom_fields=cells(row["values"]))
+                     created_by=actor_id, custom_fields=cells(row["values"]),
+                     item_uid=next(uids), item_uid_board=b.id)
             db.add(t)
             db.flush()
-            _ensure_item_uid(db, t)
             made += 1
             talked += _import_conversation(db, t, row.get("updates"), by_token, budget, files)
             for spos, sub in enumerate(row["subitems"]):
@@ -2801,10 +2936,10 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                              title=sub["name"][:500], status=TaskStatus.BACKLOG,
                              priority=Priority.MEDIUM, position=spos,
                              created_by=actor_id,
-                             custom_fields=cells(sub["values"], track_sub=True))
+                             custom_fields=cells(sub["values"], track_sub=True),
+                             item_uid=next(uids), item_uid_board=b.id)
                 db.add(stask)
                 db.flush()
-                _ensure_item_uid(db, stask)
                 subs_made += 1
                 talked += _import_conversation(db, stask, sub.get("updates"), by_token,
                                                    budget, files)
