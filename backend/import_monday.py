@@ -712,6 +712,15 @@ def parse(raw, max_cols):
                      "group": gid, "values": read(it), "subitems": subs,
                      "updates": ups})
 
+    # An item with no `group` of its own lands in the first group — there is
+    # nowhere else to put it. Counted, because the board's own `groups` can be
+    # in the file while `group { id title }` on the items is not: a query
+    # trimmed by hand, or an older one. The report then said "2 קבוצות,
+    # החלוקה נקראה מהקובץ" over a board where all 320 items sat under "פתוח",
+    # which reads as the division having been imported. Only this number tells
+    # the two apart.
+    ungrouped = sum(1 for r in rows if not r["group"])
+
     # the options a status/dropdown column offers = what the board actually used
     for c in columns:
         if c["type"] not in ("status", "dropdown"):
@@ -748,6 +757,9 @@ def parse(raw, max_cols):
             # only place it can be said is in the report.
             "groups_need_reexport": not groups,
             "groups_from": "file" if groups else "",
+            # how many of them, and the group they all ended up in
+            "items_ungrouped": ungrouped,
+            "ungrouped_into": groups[0]["title"] if (ungrouped and groups) else "",
             "truncated": bool(cursor),
             "columns_found": len(meta),
             "columns_imported": len(columns),

@@ -287,6 +287,34 @@ def test_a_response_that_was_never_asked_for_the_groups_says_so(client, admin_id
     assert [g for g, _ in _groups(d["id"])] == [""], "a name here is a heading over nothing"
 
 
+def test_groups_in_the_file_but_no_group_on_the_items_is_said_out_loud(client, admin_id):
+    """The half-answered export: the board's `groups` came, `group` on the items
+    did not. Every item lands in the first group — "פתוח" over all of them —
+    while the report reads "2 קבוצות, החלוקה נקראה מהקובץ". The count is the
+    only thing that separates that from a division actually imported."""
+    raw = _json_board()
+    doc = json.loads(raw)
+    for it in doc["data"]["boards"][0]["items_page"]["items"]:
+        it.pop("group")
+    d = _imp(client, admin_id, json.dumps(doc).encode(), "board.json")
+    rep = d["report"]
+    assert rep["groups"] == 2 and rep["groups_need_reexport"] is False
+    assert rep["items_ungrouped"] == 2, "both items arrived with no group of their own"
+    assert rep["ungrouped_into"] == "תשתיות", "the group they all ended up in, by name"
+    assert _groups(d["id"]) == [("תשתיות", 2), ("חינוך", 0)]
+
+
+def test_a_division_that_did_come_across_reports_nothing_ungrouped(client, admin_id):
+    rep = _imp(client, admin_id, _json_board(), "board.json")["report"]
+    assert rep["items_ungrouped"] == 0 and rep["ungrouped_into"] == ""
+
+
+def test_the_report_says_when_the_items_came_without_their_group():
+    for marker in ("items_ungrouped", "ungrouped_into",
+                   "אף פריט לא הגיע עם שיוך לקבוצה", "פריטים הגיעו בלי שיוך לקבוצה"):
+        assert marker in SRC, f"the import report says nothing about {marker}"
+
+
 def test_the_query_shipped_with_the_app_asks_for_the_division():
     q = (pathlib.Path(__file__).resolve().parent.parent
          / "backend" / "monday_export.graphql").read_text(encoding="utf-8")

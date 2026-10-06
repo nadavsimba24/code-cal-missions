@@ -3636,6 +3636,12 @@ function importReport(b){
                    column:'החלוקה נקראה מעמודת הקבוצה שבקובץ',
                    file:'החלוקה נקראה מהקבוצות שבקובץ הייצוא'};
   const gNames=r.group_names||[];
+  /* Groups in the file, but items with nothing saying which one they belong to.
+     The names and the order came across and the items did not, so the board
+     shows the right groups with everything piled into the first — and the line
+     below ("כל פריט נכנס לקבוצה שהקובץ נותן לו") would be stating the opposite
+     of what happened. Said as its own warning, with the count. */
+  const ung=r.items_ungrouped||0, ungAll=!!(ung&&r.items&&ung>=r.items);
   const groupHTML=r.groups_need_reexport?`
     <div class="imp-sec imp-warn"><div class="imp-sec-t">
       <i class="fa-solid fa-layer-group"></i> הלוח לא חולק לקבוצות — <b>הקובץ אינו אומר איך הלוח מחולק</b></div>
@@ -3648,10 +3654,22 @@ function importReport(b){
         הלוח ו-<b dir="ltr">group { id title }</b> בכל פריט — ומייבאים את הקובץ החדש. אז כל פריט
         ייכנס לקבוצה שלו, ובסדר שהלוח מסדר אותן.</div>
     </div>`:(r.groups?`
-    <div class="imp-sec"><div class="imp-sec-t">
-      <i class="fa-solid fa-layer-group"></i> ${r.groups} קבוצות</div>
-      ${GROUPS_HE[r.groups_from]?`<div class="imp-why">${esc(GROUPS_HE[r.groups_from])}${
-        r.groups_column?` ("${esc(r.groups_column)}")`:''} — כל פריט נכנס לקבוצה שהקובץ נותן לו.</div>`:''}
+    <div class="imp-sec${ung?' imp-warn':''}"><div class="imp-sec-t">
+      <i class="fa-solid fa-layer-group"></i> ${r.groups} קבוצות${ung?` — <b>${
+        ungAll?'אף פריט לא הגיע עם שיוך לקבוצה'
+              :`${ung} פריטים הגיעו בלי שיוך לקבוצה`}</b>`:''}</div>
+      ${ung?`
+      <div class="imp-why"><b>מה קרה:</b> שמות הקבוצות והסדר שלהן כן נקראו מהקובץ (<b>groups</b> ברמת
+        הלוח), אבל ${ungAll?'באף פריט':`ב-${ung} מהפריטים`} אין <b dir="ltr">group</b> — ולכן ${
+        ungAll?'כולם נכנסו':'הם נכנסו'} לקבוצה הראשונה${
+        r.ungrouped_into?`, "${esc(r.ungrouped_into)}"`:''}.${
+        (ungAll&&r.groups>1)?' שאר הקבוצות נוצרו ריקות.':''} שום דבר לא נמחק.</div>
+      <div class="imp-why"><b>מה עושים:</b> מריצים את הייצוא ממאנדיי מחדש עם השאילתה המעודכנת
+        (<b>backend/monday_export.graphql</b>) — היא מבקשת <b dir="ltr">group { id title }</b> בכל
+        פריט, ולא רק <b dir="ltr">groups { id title }</b> ברמת הלוח — ומייבאים את הקובץ החדש. אז כל
+        פריט ייכנס לקבוצה שלו. עד אז אפשר גם לגרור פריטים בין הקבוצות כאן.</div>`
+      :(GROUPS_HE[r.groups_from]?`<div class="imp-why">${esc(GROUPS_HE[r.groups_from])}${
+        r.groups_column?` ("${esc(r.groups_column)}")`:''} — כל פריט נכנס לקבוצה שהקובץ נותן לו.</div>`:'')}
       <div class="imp-cols">${gNames.map(n=>`<span class="tag">${esc(n||'ללא שם')}</span>`).join('')}</div>
       ${r.summary_rows?`<div class="imp-why">${r.summary_rows} שורות הסיכום שמאנדיי כותב בתחתית כל קבוצה — תאריך מגולל בלי שם — לא יובאו כפריטים.</div>`:''}
     </div>`:(r.groups_from==='default'?`
