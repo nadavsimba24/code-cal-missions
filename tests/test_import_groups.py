@@ -343,6 +343,31 @@ def test_a_name_typed_at_import_wins_over_both(client, admin_id):
     assert d["name"] == "פיתוח לוחות" and d["report"]["board_name_from"] == "typed"
 
 
+def test_a_pretty_printed_export_is_not_rejected_for_its_indentation(client, admin_id):
+    """Her re-export was 11.7MB and refused; the content was 3.66MB and the rest
+    was the indentation Postman adds when a response is saved from its pretty
+    view. A board must not be turned away over how its file was formatted."""
+    doc = json.loads(_json_board())
+    pretty = json.dumps(doc, ensure_ascii=False, indent=4).encode()
+    compact = json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode()
+    assert len(pretty) > len(compact)
+    for raw in (pretty, compact):
+        d = _imp(client, admin_id, raw, "board.json")
+        assert d["name"] == "לוח" and d["report"]["groups"] == 2
+
+
+def test_a_file_past_the_ceiling_is_told_its_size_and_the_reason(client, admin_id):
+    big = b'{"data":{"boards":[{"name":"x","items_page":{"items":[]}}]}}' + b" " * (
+        cityos_main.IMPORT_MAX_UPLOAD_MB * 1024 * 1024)
+    r = client.post(f"/api/boards/import?actor_id={admin_id}",
+                    files={"file": ("board.json", big, "application/json")},
+                    data={"actor_id": admin_id})
+    assert r.status_code == 413
+    detail = r.json()["detail"]
+    assert str(cityos_main.IMPORT_MAX_UPLOAD_MB) in detail, "the ceiling is named"
+    assert "MB" in detail and "פוסטמן" in detail, "and the usual reason, which is actionable"
+
+
 def test_the_report_says_where_the_name_came_from():
     for marker in ("board_name_from", "על שם הקובץ, לא על שם הלוח", "שם הלוח נקרא מהקובץ"):
         assert marker in SRC, f"the import report says nothing about {marker}"

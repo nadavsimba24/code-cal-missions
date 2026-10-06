@@ -3442,7 +3442,7 @@ async function importBoardFile(){
     try{
       const r=await fetch('/api/boards/import',{method:'POST',headers:{...authHeaders()},body:fd});
       if(!r.ok){ let d=''; try{ d=(await r.json()).detail||''; }catch(_){}
-        throw new Error(d || (r.status===413?'הקובץ גדול מדי (מקסימום 8MB)':'שגיאה בייבוא הקובץ')); }
+        throw new Error(d || (r.status===413?'הקובץ גדול מדי':'שגיאה בייבוא הקובץ')); }
       const b=await r.json();
       closeModals();
       // the board is built now — the part that actually holds the screen up

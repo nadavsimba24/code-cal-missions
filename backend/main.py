@@ -2297,6 +2297,13 @@ IMPORT_FILE_TIMEOUT = 20            # seconds per file
 # thing worth overlapping. Eight is modest on purpose: the other side is
 # monday's S3, and an import is not the only thing this server is doing.
 IMPORT_FILE_WORKERS = int(os.getenv("IMPORT_FILE_WORKERS", "8"))
+# The upload ceiling for an import. It was 8MB, and a 320-item board exported
+# from monday rejected at 11.7MB — of which 8MB was the indentation Postman adds
+# when a response is saved from its pretty view. The content was 3.66MB. A limit
+# that turns on how a file was saved rather than on what is in it is a limit that
+# rejects the right board for the wrong reason, so there is room for a board
+# several times that size, pretty-printed.
+IMPORT_MAX_UPLOAD_MB = int(os.getenv("IMPORT_MAX_UPLOAD_MB", "32"))
 
 # Only monday's own asset hosts. The URLs come out of a file the user supplied,
 # and fetching whatever it names would let an import point this server at an
@@ -3004,8 +3011,16 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
                        folder_id: Optional[int] = Form(None),
                        actor_id: int = Depends(current_user_id)):
     raw = await file.read()
-    if len(raw) > 8 * 1024 * 1024:
-        raise HTTPException(413, "הקובץ גדול מדי (מקסימום 8MB)")
+    if len(raw) > IMPORT_MAX_UPLOAD_MB * 1024 * 1024:
+        # The size is said, because "too big" over a file the user believes is
+        # small is not something they can act on — and so is the reason it is
+        # usually bigger than it looks: a monday response saved from Postman's
+        # pretty view is about three times the JSON it holds, all of it
+        # indentation, and saving the raw body is the whole fix.
+        raise HTTPException(413,
+            f"הקובץ גדול מדי — {len(raw) / 1048576:.1f}MB, והמקסימום הוא "
+            f"{IMPORT_MAX_UPLOAD_MB}MB. אם שמרת את התשובה מהתצוגה המיופה של פוסטמן, "
+            "ההזחה היא כ-70% מהקובץ: שמור את ה-body הגולמי (Raw) ונסה שוב")
     # Reading a workbook and writing a few hundred rows is seconds of CPU and of
     # blocking database calls. Run on the event loop, that is not just this one
     # request being slow: every other request in the app waits behind it — the
