@@ -137,7 +137,7 @@ def test_the_plus_asks_board_or_folder_and_the_folder_icon_is_gone():
     src = _sidebar_src()
     assert "new-folder-btn" not in src, "the second add icon is gone, CSS and all"
     assert 'id="new-board-btn"' in src and 'onclick="newThingMenu(event)"' in src
-    assert "function newThingMenu" in src and "function _newThingPop" in src
+    assert "function newThingMenu" in src
     # the first menu: the two things the list holds
     assert "fa-folder-plus\"></i> תיקייה" in src
     assert "fa-table-columns\"></i> לוח" in src
@@ -145,18 +145,23 @@ def test_the_plus_asks_board_or_folder_and_the_folder_icon_is_gone():
     assert "closeCellPops();Folders.create()" in src
 
 
-def test_choosing_a_board_offers_empty_or_from_a_file():
+def test_choosing_a_board_flies_out_sideways_rather_than_replacing_the_menu():
+    """The choice already made stays on screen beside the one being made. Through
+    the .pop-sub / .pop-subm pair every other nested menu here uses, so it opens
+    leftwards in RTL, on hover and on click alike — the click being the only one
+    that works by touch."""
     src = _sidebar_src()
-    assert "function newBoardMenu" in src
-    assert "closeCellPops();newBoardQuick()" in src, "לוח ריק"
-    assert "closeCellPops();importBoardFile()" in src, "יצירת לוח מקובץ"
-    assert "לוח ריק" in src and "יצירת לוח מקובץ" in src
-    # the second menu is anchored to the + , not to the row that was clicked —
-    # that row is inside the popover about to be torn down
-    i = src.index("function _newThingPop")
+    i = src.index("function newThingMenu")
     body = src[i:i + 2600]
-    assert "getElementById('new-board-btn')" in body
-    assert "openCellPop(btn," in body
+    assert '<div class="pop-sub">' in body and '<div class="pop-subm">' in body
+    assert "togglePopSub(event)" in body, "and by click, not only by hover"
+    assert "pop-sub-caret" in body, "the row says it leads somewhere"
+    assert "newBoardMenu" not in src, "no second menu that replaces the first"
+    assert "closeCellPops();newBoardQuick()" in body, "לוח ריק"
+    assert "closeCellPops();importBoardFile()" in body, "יצירת לוח מקובץ"
+    assert "לוח ריק" in body and "יצירת לוח מקובץ" in body
+    # the menu is anchored to the + itself
+    assert "getElementById('new-board-btn')" in body and "openCellPop(btn," in body
 
 
 def test_the_plus_shows_for_whoever_may_create_either():

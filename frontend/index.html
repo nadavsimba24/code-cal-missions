@@ -3388,49 +3388,43 @@ async function createBoard(){
    creator becomes its admin, it lands at the bottom of the list and opens ready
    for inline rename. */
 /* The + beside "לוחות" makes either of the two things that list holds, so it
-   asks which instead of guessing. A folder is one step — a name is all it needs.
-   A board is two, because "empty" and "from a file" are different enough to be
-   worth saying out loud: the import was reachable only from inside a board that
-   already existed, which is the last place someone looks for how to create one.
+   asks which instead of guessing. A folder is one step from there — the dialog
+   that asks for its name. A board is two, because empty and from-a-file are
+   different enough to be worth saying out loud: the import was reachable only
+   from inside a board that already existed, which is the last place anyone
+   looks for how to create one.
 
-   Both levels are anchored to the + itself rather than to the row that was
-   clicked: the row lives inside the popover that is about to be torn down, and
-   the second menu should appear where the first one was, not shifted down by
-   however far the cursor had travelled. */
-function newThingMenu(e){ if(e)e.stopPropagation(); _newThingPop('root'); }
-function newBoardMenu(e){ if(e)e.stopPropagation(); _newThingPop('board'); }
-function _newThingPop(level){
+   The second level flies out sideways rather than replacing the first, through
+   the .pop-sub / .pop-subm pair the rest of the menus use: the choice already
+   made stays on screen beside the one being made, which is what makes a menu
+   readable — and `inset-inline-start:100%` continues the reading direction, so
+   in RTL it opens leftwards. It opens on hover and on click alike, the second
+   being the only one that works by touch. */
+function newThingMenu(e){
+  if(e)e.stopPropagation();
   const btn=document.getElementById('new-board-btn'); if(!btn)return;
   const env=(typeof Env!=='undefined')?Env.active():null;
   const canFolder=!!(env&&(isSysAdmin()||env.can_manage));
   const canBoard=hasCap('create_board');
   const mob=isMobile();
-  let html;
-  if(level==='board'){
-    html=`<div class="row-menu" onclick="event.stopPropagation()">
-      <button class="rm-item" style="font-weight:600" onclick="newThingMenu(event)">
-        <i class="fa-solid fa-chevron-right"></i> לוח חדש</button>
-      <div class="rm-sep"></div>
-      <button class="rm-item" onclick="closeCellPops();newBoardQuick()">
-        <i class="fa-regular fa-square-plus"></i> לוח ריק</button>
-      ${mob?'':`<button class="rm-item" onclick="closeCellPops();importBoardFile()">
-        <i class="fa-solid fa-file-import"></i> יצירת לוח מקובץ</button>`}
-    </div>`;
-  }else{
-    // On a phone a board can only be empty — the import is desktop-only — so the
-    // second menu would hold one row, and the first one may as well do it.
-    const boardAction=mob?'closeCellPops();newBoardQuick()':'newBoardMenu(event)';
-    html=`<div class="row-menu" onclick="event.stopPropagation()">
-      <div class="rm-sep" style="border-top:none;margin-top:0"><i class="fa-solid fa-plus"></i> הוספה</div>
-      ${canBoard?`<button class="rm-item" onclick="${boardAction}">
+  const board=canBoard?`<div class="pop-sub">
+      <button class="rm-item" onclick="togglePopSub(event)">
         <i class="fa-solid fa-table-columns"></i> לוח
-        ${mob?'':'<i class="fa-solid fa-chevron-left" style="margin-inline-start:auto;font-size:10px"></i>'}</button>`:''}
-      ${canFolder?`<button class="rm-item" onclick="closeCellPops();Folders.create()">
-        <i class="fa-solid fa-folder-plus"></i> תיקייה</button>`:''}
+        <i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
+      <div class="pop-subm">
+        <button class="rm-item" onclick="closeCellPops();newBoardQuick()">
+          <i class="fa-regular fa-square-plus"></i> לוח ריק</button>
+        ${mob?'':`<button class="rm-item" onclick="closeCellPops();importBoardFile()">
+          <i class="fa-solid fa-file-import"></i> יצירת לוח מקובץ</button>`}
+      </div>
+    </div>`:'';
+  const folder=canFolder?`<button class="rm-item" onclick="closeCellPops();Folders.create()">
+      <i class="fa-solid fa-folder-plus"></i> תיקייה</button>`:'';
+  openCellPop(btn,`<div class="row-menu" onclick="event.stopPropagation()">
+      <div class="rm-sep" style="border-top:none;margin-top:0"><i class="fa-solid fa-plus"></i> הוספה</div>
+      ${board}${folder}
       ${(canBoard||canFolder)?'':'<div class="rm-item" style="color:var(--text-light)">אין לך הרשאה ליצור לוח או תיקייה</div>'}
-    </div>`;
-  }
-  openCellPop(btn,html,'row-menu-pop');
+    </div>`,'row-menu-pop');
 }
 async function newBoardQuick(){
   if(mobileBlocked('יצירת לוח'))return;
