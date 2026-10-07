@@ -83,6 +83,16 @@ SUBITEMS_TYPE = "subtasks"
 # that does not ask for it gets nothing for them on any item.
 DISPLAY_VALUE_TYPES = ("formula", "mirror", "board_relation", "dependency")
 
+# What monday puts in display_value when a formula worked out to nothing. It is
+# the JavaScript leaking through, not a value anyone typed: a formula over a date
+# that is not filled in yet answers the four characters "null", and on her board
+# 315 of one column's 320 cells were exactly that — a column that read as full
+# and said nothing. Treated as empty, which is what it means.
+#
+# "#ERROR!" is deliberately not here: that is monday stating something true
+# about the formula, and a cell saying so is more use than a blank one.
+FORMULA_NOTHING = {"null", "nan", "undefined", "none"}
+
 # Where a monday type lands somewhere other than the obvious place, the report
 # says so — an import that quietly retypes a column is an import you cannot
 # check.
@@ -302,8 +312,9 @@ def _has_content(cv):
     """
     if (cv.get("text") or "").strip():
         return True
-    if str(cv.get("display_value") or "").strip():
-        return True
+    dv = str(cv.get("display_value") or "").strip()
+    if dv and dv.lower() not in FORMULA_NOTHING:
+        return True       # a column of 315 "null"s is not a column with content
     if cv.get("linked_items") or cv.get("linked_item_ids"):
         return True
     if cv.get("files"):
@@ -441,6 +452,8 @@ def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
     mtype = (cv.get("type") or "").strip()
     if mtype in DISPLAY_VALUE_TYPES:
         dv = str(cv.get("display_value") or "").strip()
+        if dv.lower() in FORMULA_NOTHING:
+            dv = ""                       # see FORMULA_NOTHING
         if dv:
             return dv
         names = [str((li or {}).get("name") or "").strip()
@@ -544,6 +557,11 @@ def parse(raw, max_cols):
     # ── survey the columns: title, type, and how many items actually use them ──
     meta, fill, order = {}, {}, []
     asked = set()          # columns whose cells came with display_value at all
+    # cells whose formula monday worked out to nothing — see FORMULA_NOTHING.
+    # Counted per column, because a formula column that arrives almost empty is
+    # the next thing someone asks about, and the answer is not "the import lost
+    # it": monday computed it and there was nothing to compute from.
+    nothing = {}
     # The board's own column order, from the board-level definitions when the
     # query asked for them. It beats the order the cells happen to arrive in,
     # and it is the order the source board actually shows.
@@ -562,6 +580,8 @@ def parse(raw, max_cols):
                 order.append(cid)
             if "display_value" in cv:
                 asked.add(cid)
+            if str(cv.get("display_value") or "").strip().lower() in FORMULA_NOTHING:
+                nothing[cid] = nothing.get(cid, 0) + 1
             if _has_content(cv):
                 fill[cid] += 1
 
@@ -780,6 +800,11 @@ def parse(raw, max_cols):
             # every formula column: the expression that came with it, and
             # whether this app could compute it if asked to
             "formulas": formulas,
+            # the formula cells monday itself answered with nothing
+            "formula_nothing": sum(n for cid, n in nothing.items() if cid in by_key),
+            "formula_nothing_cols": [{"title": meta[cid]["title"], "cells": n}
+                                     for cid, n in sorted(nothing.items(), key=lambda x: -x[1])
+                                     if cid in by_key and meta.get(cid)][:12],
             "columns_need_reexport": reexport,
             "as_subitems": as_subitems,
             "mapping": [{"title": c["title"], "from": c["monday_type"],

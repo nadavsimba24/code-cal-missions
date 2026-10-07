@@ -3643,6 +3643,24 @@ function importReport(b){
         מחושבת כאן: נוסחה של גיליון מפנה לכתובות תאים, והכתובות נעלמות ברגע שהשורות הופכות
         לפריטים. כדי לקבל את הערכים: לפתוח את הקובץ באקסל, לשמור, ולייבא מחדש.</div>
     </div>`:'';
+  /* A formula monday itself worked out to nothing. It answers the four
+     characters "null" — the JavaScript leaking through, not a value anyone
+     typed — most often for a formula over a date that has not been filled in
+     yet. Stored verbatim that filled 315 of one column's 320 cells with the
+     word "null": a column that read as full and said nothing. It is taken as
+     empty, and the count is stated here, because an almost-empty formula column
+     is the next thing someone asks about and the answer is not that the import
+     lost it. */
+  const nothingHTML=r.formula_nothing?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-calculator"></i> ${r.formula_nothing} תאי נוסחה חזרו ממאנדיי <b>בלי ערך</b></div>
+      <div class="imp-why">מאנדיי חישב אותם, והתוצאה הייתה ריקה — בדרך כלל נוסחה שתלויה בתאריך
+        או במספר שעדיין לא מולאו בפריט. מאנדיי מחזיר במקרה הזה את המילה <b dir="ltr">null</b>, והיא
+        לא ערך: התאים האלה יובאו ריקים, כי זה מה שהם. הנתון קיים במאנדיי רק ברגע שהעמודות שהנוסחה
+        נשענת עליהן יתמלאו.</div>
+      ${(r.formula_nothing_cols||[]).length?`<div class="imp-cols">${(r.formula_nothing_cols||[])
+        .map(x=>`<span class="tag">${esc(x.title)} · ${x.cells}</span>`).join('')}</div>`:''}
+    </div>`:'';
   const formulaHTML=forms.length?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-calculator"></i> ${forms.length} עמודות נוסחה — <b>הערך המחושב יובא כטקסט</b></div>
@@ -3785,7 +3803,7 @@ function importReport(b){
     </div>`;
   const title=(b.name||'הלוח יובא');
   const body=`${statsHTML}
-      ${cutHTML}${nameHTML}${groupHTML}${mapHTML}${formulaHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
+      ${cutHTML}${nameHTML}${groupHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
   // kept for the three things that can be done with it once it is on screen —
   // this report cannot be asked for again, so closing it is the one action
   // worth stopping to confirm

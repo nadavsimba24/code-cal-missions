@@ -681,3 +681,60 @@ def test_the_export_query_asks_for_those_three(client):
     assert "display_value" in q
     # and the limit that will bite a board with six of them is written down
     assert "FIVE formula columns" in q
+
+
+# ── a formula monday worked out to nothing ──────────────────────────────────
+def test_a_formula_that_came_back_null_is_empty_and_not_the_word(client):
+    """monday answers the four characters "null" for a formula that worked out to
+    nothing — a formula over a date nobody has filled in yet. Stored verbatim it
+    filled 315 of one column's 320 cells with the word, which reads as a column
+    that is full and says nothing."""
+    cols = [_cv("f", "משך", "formula"), _cv("f2", "ימים", "formula")]
+    items = [_item("א", [{**cols[0], "display_value": "null"},
+                         {**cols[1], "display_value": "47"}]),
+             _item("ב", [{**cols[0], "display_value": "NaN"},
+                         {**cols[1], "display_value": ""}])]
+    r = _upload(client, _resp(items), name="נוסחה").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    by_title = {c["title"]: c["id"] for c in board["columns"] if c["id"].startswith("col_")}
+    cells = [t["custom_fields"].get(by_title["ימים"]) for t in board["tasks"]]
+    assert "47" in cells, "a value monday did compute still arrives"
+    # the column whose every cell was "null" is not a column at all
+    assert "משך" not in by_title, "a column of nothing but null was created anyway"
+    assert r["report"]["formula_nothing"] == 0, \
+        "the count is of cells in columns that were imported"
+
+
+def test_the_count_of_empty_formula_cells_is_reported(client):
+    cols = [_cv("f", "משך", "formula")]
+    items = [_item("א", [{**cols[0], "display_value": "null"}]),
+             _item("ב", [{**cols[0], "display_value": "199.25"}])]
+    r = _upload(client, _resp(items), name="נוסחה2").json()
+    rep = r["report"]
+    assert rep["formula_nothing"] == 1
+    assert rep["formula_nothing_cols"] == [{"title": "משך", "cells": 1}]
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "משך")
+    vals = [t["custom_fields"].get(col["id"]) for t in board["tasks"]]
+    assert sorted(v for v in vals if v) == ["199.25"], vals
+    assert None in vals, "the null cell is empty, not the word"
+
+
+def test_an_error_monday_states_is_kept(client):
+    """"#ERROR!" is monday saying something true about the formula, and a cell
+    that says so is more use than a blank one."""
+    cols = [_cv("f", "משך", "formula")]
+    r = _upload(client, _resp([_item("א", [{**cols[0], "display_value": "#ERROR!"}])]),
+                name="שגיאה").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "משך")
+    assert board["tasks"][0]["custom_fields"][col["id"]] == "#ERROR!"
+
+
+def test_the_report_explains_an_almost_empty_formula_column():
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "formula_nothing" in src and "תאי נוסחה חזרו ממאנדיי" in src
+    assert "formula_nothing_cols" in src, "and names the columns it happened in"
+
