@@ -191,7 +191,16 @@ def test_a_file_column_arrives_as_a_files_column_holding_the_names(client):
 
 
 # ── people ──────────────────────────────────────────────────────────────
-def test_a_known_person_is_assigned_and_a_stranger_is_reported(client, admin_id):
+def test_a_known_person_is_assigned_and_a_stranger_is_kept_by_name(client, admin_id):
+    """A name with no account here is kept as the name, not thrown away.
+
+    A monday people cell carries monday's own person id and an export carries no
+    e-mail to resolve it against, so a display name is often the only key there
+    is — and on a real board it matches almost nobody. Dropping those cells left
+    two columns of 306 and 135 items empty over data plainly present in monday.
+    The name is a string, which is not an id and cannot become an assignment by
+    accident; the report still names everyone who did not match.
+    """
     me = client.get("/api/users", headers=H).json()[0]
     cols = [_cv("p", "אחראי", "people", text=me["name"]),
             _cv("p2", "גורם", "people", text="מישהו שלא קיים")]
@@ -200,8 +209,51 @@ def test_a_known_person_is_assigned_and_a_stranger_is_reported(client, admin_id)
     by_title = {c["title"]: c["id"] for c in board["columns"] if c["id"].startswith("col_")}
     cf = board["tasks"][0]["custom_fields"]
     assert cf[by_title["אחראי"]] == [me["id"]], "a matched person was not assigned"
-    assert by_title["גורם"] not in cf, "an unknown name was stored as if it were an account"
+    assert cf[by_title["גורם"]] == ["מישהו שלא קיים"], "the name was thrown away"
     assert "מישהו שלא קיים" in r["report"]["people_unmatched"]
+
+
+def test_a_cell_holding_both_keeps_the_account_and_the_name(client):
+    me = client.get("/api/users", headers=H).json()[0]
+    cols = [_cv("p", "אחראי", "people", text=f'{me["name"]}, Deleted member')]
+    r = _upload(client, _resp([_item("פריט", cols)]), name="מעורב").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "אחראי")
+    assert board["tasks"][0]["custom_fields"][col["id"]] == [me["id"], "Deleted member"]
+
+
+def test_a_kept_name_survives_an_edit_of_the_cell(client, admin_id):
+    """The membership rule has nothing to say about a name that is not an
+    assignment — and asking it would compare text to an integer column, which
+    Postgres refuses outright."""
+    me = client.get("/api/users", headers=H).json()[0]
+    cols = [_cv("p", "אחראי", "people", text="רעות אורן")]
+    r = _upload(client, _resp([_item("פריט", cols)]), name="עריכה").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "אחראי")
+    task = board["tasks"][0]
+    # the owner of the board adds themselves beside the imported name
+    up = client.patch(f"/api/tasks/{task['id']}", headers=H, json={
+        "actor_id": admin_id, "custom_fields": {col["id"]: ["רעות אורן", me["id"]]}})
+    assert up.status_code == 200, up.text
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    kept = next(t for t in board["tasks"] if t["id"] == task["id"])["custom_fields"][col["id"]]
+    assert "רעות אורן" in kept and me["id"] in kept
+
+
+def test_the_board_shows_a_kept_name_as_a_name_and_not_as_a_person():
+    """It is who was on the item in monday — not someone this system can notify
+    or assign, and the cell has to say which."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "function peopleGhost" in src
+    assert "av-ghost" in src and "אין לו חשבון כאן" in src
+    i = src.index("function peopleDisp")
+    body = src[i:i + 700]
+    assert "typeof v!=='number'" in body and "peopleGhost(v)" in body
+    # and it reads as a name wherever a people cell is turned into text
+    assert "? ((st.users||[]).find(u=>u.id===x)||{}).name : x" in src
 
 
 # ── sub-items ───────────────────────────────────────────────────────────

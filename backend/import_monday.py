@@ -381,11 +381,24 @@ def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
         # carries them. The caller resolves both against real accounts — that is
         # the only place the mapping can be done, and e-mail is the half that
         # survives someone changing their display name.
-        out = [p.strip() for p in text.split(",") if p.strip()]
-        for p in ((val or {}).get("personsAndTeams") or []) if isinstance(val, dict) else []:
-            e = (p or {}).get("email")
-            if e and e not in out:
-                out.append(e)
+        names = [p.strip() for p in text.split(",") if p.strip()]
+        persons = ((val or {}).get("personsAndTeams") or []) if isinstance(val, dict) else []
+        mails = [(p or {}).get("email") for p in persons]
+        # One person is one token. monday states the people of a cell twice —
+        # their display names in `text`, their accounts in `value` — and the two
+        # line up in order, so a person who arrives with an e-mail IS that
+        # e-mail and not also their name. Emitted as two tokens, a person whose
+        # display name had since changed came across as themselves plus a ghost
+        # of the old name, now that an unmatched name is kept rather than
+        # dropped. Where the two lists do not line up, nothing can be paired and
+        # the union is still the honest answer.
+        if persons and len(persons) == len(names):
+            out = [e or n for e, n in zip(mails, names)]
+        else:
+            out = list(names)
+            for e in mails:
+                if e and e not in out:
+                    out.append(e)
         return out or None
 
     if ctype == "files":

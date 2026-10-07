@@ -730,6 +730,10 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .av-more{background:var(--text-light)!important;font-size:10px}
 .av{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#fff;display:inline-grid;place-items:center;font-size:11px;font-weight:700;border:2px solid var(--surface);margin-inline-start:-8px;flex-shrink:0;box-sizing:border-box}
 .av:first-child{margin:0}
+/* a name that came across without an account: initials, muted, outlined rather
+   than filled — it is a record of who was on the item, not a person here */
+.av-ghost{background:var(--bg)!important;color:var(--text-light)!important;
+  box-shadow:inset 0 0 0 1px var(--border-strong);cursor:help}
 .add-row td{padding:8px 12px;color:var(--text-muted);font-size:13px;cursor:pointer;border-inline-start:4px solid transparent}
 .add-row:hover td{color:var(--primary)}
 /* sub-items (תת-פריטים) */
@@ -4329,7 +4333,9 @@ function customSortVal(t,col){
     return it&&it.title?it.title.toLowerCase():'\uffff';
   }
   if(col.type==='people'){                                                   // by the first name, not the id
-    const names=(Array.isArray(v)?v:[]).map(id=>((st.users||[]).find(u=>u.id===id)||{}).name)
+    // an imported name with no account sorts by itself, like any other name
+    const names=(Array.isArray(v)?v:[]).map(x=>typeof x==='number'
+                                            ? ((st.users||[]).find(u=>u.id===x)||{}).name : x)
                                        .filter(Boolean).sort((a,b)=>a.localeCompare(b,'he'));
     return (names[0]||'').toLowerCase();
   }
@@ -8132,7 +8138,8 @@ function exportCell(c,t){
     }
     case 'timeline': return (v&&v.from)?`${xdate(v.from)} – ${xdate(v.to||v.from)}`:'';
     case 'checkbox': return v?'כן':'';
-    case 'people':   return (Array.isArray(v)?v:[]).map(id=>((st.users||[]).find(u=>u.id===id)||{}).name).filter(Boolean).join(', ');
+    case 'people':   return (Array.isArray(v)?v:[]).map(x=>typeof x==='number'
+                       ? ((st.users||[]).find(u=>u.id===x)||{}).name : x).filter(Boolean).join(', ');
     case 'dropdown': return (Array.isArray(v)?v:[]).join(', ');
     case 'files':    return (Array.isArray(v)?v:[]).map(f=>f&&f.name).filter(Boolean).join(', ');
     case 'accounts': return (v&&v.label)?v.label:'';
@@ -8219,10 +8226,25 @@ async function exportBoardExcel(){
   finally{if(btn){btn.disabled=false;btn.classList.remove('busy');}}
 }
 /* people column */
+/* A name an import could not match to an account here.
+   A monday people cell names a person and carries monday's own id for them, and
+   an export has no e-mail to resolve that id against — so a display name is the
+   only key, and on a real board it matches almost nobody. The name is kept
+   anyway (see the people branch of the import) and shown as what it is: who was
+   on this item in monday, not someone this system can notify or assign. */
+function peopleGhost(name){
+  const w=String(name).trim().split(/\s+/).slice(0,2);
+  const ini=w.map(x=>x[0]||'').join('')||'?';
+  return `<span class="av av-ghost" title="${esc(name)} — יובא ממאנדיי, אין לו חשבון כאן">${esc(ini)}</span>`;
+}
 function peopleDisp(ids){
-  const users=(Array.isArray(ids)?ids:[]).map(uid=>(st.users||[]).find(u=>u.id===uid)).filter(Boolean);
-  if(!users.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>';
-  return '<div class="avatars">'+users.slice(0,3).map(u=>`<span class="av" title="${esc(u.name)}">${avatarInner(u)}</span>`).join('')+(users.length>3?`<span class="av" style="background:var(--text-light)">+${users.length-3}</span>`:'')+'</div>';
+  const chips=(Array.isArray(ids)?ids:[]).map(v=>{
+    if(typeof v!=='number') return peopleGhost(v);
+    const u=(st.users||[]).find(x=>x.id===v);
+    return u?`<span class="av" title="${esc(u.name)}">${avatarInner(u)}</span>`:'';
+  }).filter(Boolean);
+  if(!chips.length)return '<span style="color:var(--text-light)"><i class="fa-solid fa-circle-plus"></i></span>';
+  return '<div class="avatars">'+chips.slice(0,3).join('')+(chips.length>3?`<span class="av" style="background:var(--text-light)">+${chips.length-3}</span>`:'')+'</div>';
 }
 function buildPeoplePop(pop,taskId,colId){
   const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];

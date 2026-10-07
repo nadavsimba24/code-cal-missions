@@ -1182,8 +1182,14 @@ def _filter_people_values(db, board_id, cf, before):
         if not col or col.get("type") != "people":
             continue
         kept = [c for c in (before or {}).get(key, []) if c in val]   # preserved, order-safe
+        # An imported name with no account here is a string, not an id: a record
+        # of who was on the item in monday. It is no one's assignment, so the
+        # membership rule has nothing to say about it — and handing it to
+        # _can_be_assigned would compare text to an integer column, which
+        # Postgres refuses outright.
         cf[key] = [uid for uid in val
-                   if uid in kept or _can_be_assigned(db, board_id, uid)]
+                   if not isinstance(uid, int) or uid in kept
+                   or _can_be_assigned(db, board_id, uid)]
 
 _BROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
 def _require_board_edit(db, board_id, actor, need="editor", msg=None):
@@ -2922,14 +2928,37 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                     v = _import_attachments(db, v, files["budget"], files["stats"],
                                             files.get("cache"))
                 elif c["type"] == "people":
-                    ids = []
+                    # A name with no account here is kept AS the name.
+                    #
+                    # A monday people cell carries monday's own person id
+                    # ({"personsAndTeams":[{"id":11397425}]}) and the export
+                    # carries no e-mail to resolve it against, so a display name
+                    # character-for-character is the only key there is. On her
+                    # board that matched almost nobody — 31 people, one of them
+                    # "Deleted member" on 41 items, whom monday itself can no
+                    # longer name — and every cell that failed to match was
+                    # dropped whole: two columns, 306 and 135 items, arrived
+                    # empty over data that is plainly there in monday.
+                    #
+                    # So the name rides along beside the real ids, as a string.
+                    # It is not an assignment and cannot become one by accident:
+                    # nothing is notified, nothing is tagged, and the report
+                    # still names everyone who did not match. What it is, is the
+                    # board saying who was on the item — which is the whole
+                    # reason to migrate one.
+                    out, seen = [], set()
                     for tok in v:
-                        uid = by_token.get(str(tok).lower())
-                        if uid and uid not in ids:   # the name and the e-mail of one person
-                            ids.append(uid)
-                    if not ids:
+                        name = str(tok).strip()
+                        if not name:
+                            continue
+                        key = by_token.get(name.lower()) or name
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        out.append(key)
+                    if not out:
                         continue
-                    v = ids
+                    v = out
                 cf[col_ids[c["key"]]] = v
                 if track_sub:
                     sub_used.add(col_ids[c["key"]])
