@@ -124,6 +124,9 @@ LOG_EVENTS = {
     "pulse_name_updated":    ("update", "title"),
     "update_column_value":   ("update", "column"),
     "change_column_value":   ("update", "column"),
+    # one entry, many items, and no values: monday records that a column was
+    # set across them, which is who-and-when even without the what
+    "batch_change_pulses_column_value": ("update", "column"),
     "move_pulse_into_group": ("update", "group"),
 }
 
@@ -141,12 +144,17 @@ def _log_when(raw):
     if s.isdigit():
         n = int(s)
         from datetime import datetime, timezone
-        # monday documents microseconds, and sends them. The other units are
-        # tried after it rather than guessed at by digit count: what settles it
-        # is which divisor lands inside the range a real date can be in, and
-        # 1727259000000000 µs read as seconds is 1970 — which is what a wrong
-        # guess here looks like, on every row.
-        for div in (1_000_000, 1_000, 1, 1_000_000_000):
+        # monday documents microseconds. Its activity log sends SEVENTEEN
+        # digits — tenths of a microsecond, 10,000,000 to the second:
+        # 17913700065986844 is 2026-10-07, and read as microseconds it is the
+        # year 2537. Unlisted, the whole range check fell through and every
+        # imported row was stamped with the moment of the import instead, which
+        # is a log that says everything happened at once.
+        #
+        # Which unit it is settles itself: only one divisor puts the number
+        # inside the range a real date can occupy, so the list is tried rather
+        # than the digits counted.
+        for div in (10_000_000, 1_000_000, 1_000, 1, 1_000_000_000):
             secs = n / div
             if not 1_000_000_000 <= secs < 4_000_000_000:      # 2001 … 2096
                 continue
@@ -215,29 +223,46 @@ def _activity_of(board, people):
                 data = {}
         if not isinstance(data, dict):
             data = {}
-        item = data.get("pulse_id") or data.get("item_id")
-        if item is None:
+        # A batch column change names its items in the plural and carries no
+        # value at all: what it records is that someone set this column across
+        # these items, which is history even without the values.
+        ids = data.get("pulse_ids") if isinstance(data.get("pulse_ids"), list) else None
+        items_here = [str(i) for i in ids] if ids else None
+        if items_here is None:
+            one = data.get("pulse_id") or data.get("item_id")
+            items_here = [str(one)] if one is not None else []
+        if not items_here:
             dropped += 1
             continue
-        if len(rows) >= MAX_LOG_ENTRIES:
-            dropped += 1
+        if len(rows) + len(items_here) > MAX_LOG_ENTRIES:
+            dropped += len(items_here)
             continue
         who = people.get(str(e.get("user_id") or "")) or {}
-        rows.append({
-            "item": str(item),
-            "action": action,
-            "field": field,
-            # the column this touched, as monday names it; the importer turns it
-            # into the column it became here
-            "column": str(data.get("column_id") or "") if field == "column" else "",
-            "column_title": (data.get("column_title") or "").strip() if field == "column" else "",
-            "old": _log_value(data.get("previous_value")),
-            "new": _log_value(data.get("value") if "value" in data else data.get("name")),
-            "author": (who.get("name") or "").strip(),
-            "email": (who.get("email") or "").strip(),
-            "at": _log_when(e.get("created_at")),
-            "event": ev,
-        })
+        # A move does not state a value; it states the two groups, by name. Read
+        # as a value the row came out "changed group: — ← —", which is the
+        # shape of a row that knows something happened and nothing else.
+        if field == "group":
+            old = _log_value((data.get("source_group") or {}).get("title"))
+            new = _log_value((data.get("dest_group") or {}).get("title"))
+        else:
+            old = _log_value(data.get("previous_value"))
+            new = _log_value(data.get("value") if "value" in data else data.get("name"))
+        for item in items_here:
+            rows.append({
+                "item": item,
+                "action": action,
+                "field": field,
+                # the column this touched, as monday names it; the importer turns
+                # it into the column it became here
+                "column": str(data.get("column_id") or "") if field == "column" else "",
+                "column_title": (data.get("column_title") or "").strip() if field == "column" else "",
+                "old": old,
+                "new": new,
+                "author": (who.get("name") or "").strip(),
+                "email": (who.get("email") or "").strip(),
+                "at": _log_when(e.get("created_at")),
+                "event": ev,
+            })
     rows.sort(key=lambda r: r.get("at") or "")
     return rows, {"dropped": dropped, "unmapped": unmapped}
 

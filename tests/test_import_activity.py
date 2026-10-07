@@ -279,3 +279,63 @@ def test_the_order_of_the_two_responses_does_not_matter(client, admin_id):
     d = _upload(client, json.dumps([hist, main], ensure_ascii=False).encode(), name="")
     assert d["report"]["items"] == 1 and d["report"]["activity"] == 1
     assert d["name"] == "לוח", "the name was taken from whichever response had it"
+
+
+# ── what her real export turned up ──────────────────────────────────────────
+def test_mondays_seventeen_digit_timestamp_is_read_as_the_date_it_is():
+    """Its activity log counts in TENTHS of a microsecond — 10,000,000 to the
+    second. 17913700065986844 is 2026-10-07; read as microseconds, which is what
+    monday documents, it is the year 2537. Unrecognised, the whole range check
+    fell through and every imported row was stamped with the moment of the
+    import — a log saying everything happened at once, which is how this was
+    noticed: "I am not getting the history"."""
+    import import_monday as im
+    assert im._log_when("17913700065986844").startswith("2026-10-07")
+    assert im._log_when("1727259000000000").startswith("2024-09-25")   # plain µs still
+    assert im._log_when("1727259000000").startswith("2024-09-25")      # ms
+    assert im._log_when("1727259000").startswith("2024-09-25")         # seconds
+    assert im._log_when("banana") == "banana" and im._log_when("") == ""
+
+
+def test_a_move_between_groups_names_both_groups(client, admin_id):
+    """monday states a move as two group objects, not as a value. Read as a
+    value the row came out "changed group: — ← —" — a row that knows something
+    happened and nothing else."""
+    e = _log("move_pulse_into_group", 111,
+             source_group={"id": "g1", "title": "פתוח"},
+             dest_group={"id": "g2", "title": "סגור"})
+    d, board = _imported_board(client, [e])
+    task = next(t for t in board["tasks"] if t["title"] == "פריט א")
+    row = client.get(f"/api/tasks/{task['id']}/activity", headers=H).json()["activity"][0]
+    assert "פתוח" in json.dumps(row, ensure_ascii=False)
+    assert "סגור" in json.dumps(row, ensure_ascii=False)
+
+
+def test_a_batch_column_change_lands_on_every_item_it_names(client, admin_id):
+    """One entry, many items, and no values at all: monday records that someone
+    set this column across them. Taken as a single row it reached one item and
+    the other 485 of hers reached none."""
+    e = _log("batch_change_pulses_column_value", None, column_id="status",
+             column_title="סטטוס", pulse_ids=[111, 222])
+    d, board = _imported_board(client, [e],
+                               cols=[_cv("status", "סטטוס", "status", text="בוצע")])
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    mine = [r for r in rows if r.get("origin") == "monday"]
+    assert {r["task_title"] for r in mine} == {"פריט א", "פריט ב"}
+    assert d["report"]["activity"] == 2, "one entry, two items, two rows"
+
+
+def test_the_events_that_are_not_an_item_s_history_stay_out(client, admin_id):
+    """Her board's log is half board housekeeping — subscriptions, owners,
+    column settings, view changes. None of it is a change to an item, so none of
+    it belongs in an item's log; it is counted and named instead."""
+    logs = [_log("unsubscribe", 111), _log("change_column_settings", 111),
+            _log("add_owner", 111), _log("board_view_changed", 111),
+            _log("move_pulse_from_group", 111),          # the other half of a move
+            _log("update_name", 111, name="ב", previous_value="א")]
+    d, _ = _imported_board(client, logs)
+    rep = d["report"]
+    assert rep["activity"] == 1
+    assert dict(rep["activity_unmapped"]) == {
+        "unsubscribe": 1, "change_column_settings": 1, "add_owner": 1,
+        "board_view_changed": 1, "move_pulse_from_group": 1}
