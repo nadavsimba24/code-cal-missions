@@ -3805,8 +3805,8 @@ function importReportClose(){
         ייבוא חוזר של אותו קובץ יוצר לוח נוסף, לא את הדוח. מה לעשות איתו?</div>
       <div class="rm-sheet">
         <button class="rm-item" onclick="importReportSave()">
-          <i class="fa-solid fa-download"></i> שמירת הדוח כקובץ
-          <span class="rm-sub">קובץ HTML שנפתח בכל דפדפן, עם כל מה שמופיע כאן</span></button>
+          <i class="fa-solid fa-file-pdf"></i> שמירת הדוח כ-PDF
+          <span class="rm-sub">ייפתח חלון ההדפסה — לבחור יעד "שמירה כ-PDF". שם הקובץ מוצע מראש</span></button>
         <button class="rm-item" onclick="importReportWindow()">
           <i class="fa-solid fa-up-right-from-square"></i> פתיחה בחלון חדש
           <span class="rm-sub">הדוח נשאר פתוח לצד הלוח, ואפשר להמשיך לעבוד</span></button>
@@ -3821,7 +3821,14 @@ function importReportClose(){
    written again here, so a saved copy cannot drift from what was on screen; the
    two CDN sheets are re-linked, because the icons and the Hebrew faces come
    from them and they are not ours to inline. */
-function importReportDoc(){
+function importReportName(){
+  const r=st._impReport||{title:''};
+  const safe=(r.title||'לוח').replace(/[\\/:*?"<>|]/g,'-').slice(0,60);
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  return `דוח-ייבוא-${safe}-${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+function importReportDoc(opts){
+  opts=opts||{};
   const r=st._impReport||{title:'',body:''};
   const want=sel=>sel.includes('imp-')||sel.includes('.tag')||sel.includes('.mbody')
     ||sel.includes('.mfoot')||sel===':root'||sel==='h2'||sel.includes('.rm-');
@@ -3831,36 +3838,59 @@ function importReportDoc(){
     for(const rule of rules) if(rule.selectorText&&want(rule.selectorText)) css+=rule.cssText+'\n';
   }
   const when=new Date().toLocaleString('he-IL');
+  /* Printed rather than drawn. A PDF of Hebrew is only right if a real text
+     engine lays it out, and the browser's own is the one engine here that does
+     RTL properly — a canvas-to-PDF library would hand back a picture of the
+     report: unsearchable, and fuzzy the moment anyone zooms. The print dialogue
+     offers "שמירה כ-PDF" as its destination, and takes the suggested filename
+     from this document's own title, which is why the title IS the filename.
+     Printing waits for the fonts: printed before they arrive, the page comes out
+     in a fallback face with empty squares where the icons are. */
+  const printCss=opts.print?`
+@page{size:A4;margin:14mm}
+@media print{
+  html,body{background:#fff}
+  body{padding:0}
+  .wrap{border:none;border-radius:0;padding:0;max-width:none}
+  .imp-sec,.imp-stat,.imp-grp{break-inside:avoid;page-break-inside:avoid}
+}`:'';
+  const printJs=opts.print?`<script>
+((document.fonts&&document.fonts.ready)||Promise.resolve()).then(function(){
+  setTimeout(function(){ window.focus(); window.print(); },150);
+});
+window.onafterprint=function(){ setTimeout(function(){ try{window.close();}catch(e){} },80); };
+<\/script>`:'';
   return `<!doctype html><html dir="rtl" lang="he"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>דוח ייבוא — ${esc(r.title)}</title>
+<title>${esc(opts.print?importReportName():('דוח ייבוא — '+r.title))}</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 body{font-family:Rubik,Heebo,system-ui,sans-serif;background:#f6f7fb;color:#323338;
-  margin:0;padding:24px;line-height:1.55}
+  margin:0;padding:24px;line-height:1.55;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
 .wrap{max-width:760px;margin:0 auto;background:#fff;border:1px solid #e6e9ef;border-radius:14px;padding:22px 24px}
 h2{margin:0 0 4px;font-size:20px;display:flex;align-items:center;gap:9px}
 .stamp{font-size:12px;color:#676879;margin-bottom:16px}
-${css}
+${css}${printCss}
 </style></head><body><div class="wrap">
 <h2><i class="fa-solid fa-file-import" style="color:#0073ea"></i> ${esc(r.title)}</h2>
 <div class="stamp">דוח ייבוא · ${esc(when)}</div>
 <div class="mbody">${r.body}</div>
-</div></body></html>`;
+</div>${printJs}</body></html>`;
 }
 function importReportSave(){
   const r=st._impReport; if(!r){ closeModals(); return; }
-  const safe=(r.title||'לוח').replace(/[\\/:*?"<>|]/g,'-').slice(0,60);
-  const d=new Date(), p=n=>String(n).padStart(2,'0');
-  const name=`דוח-ייבוא-${safe}-${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}.html`;
-  try{
-    const url=URL.createObjectURL(new Blob([importReportDoc()],{type:'text/html;charset=utf-8'}));
-    const a=document.createElement('a'); a.href=url; a.download=name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),4000);   // after the browser has taken it
-    toast('הדוח נשמר — '+name);
-  }catch(e){ toast('לא ניתן לשמור את הדוח'); return; }
+  // Its own window rather than a hidden frame: the print dialogue takes the
+  // suggested filename from the printed document's title, and a frame prints
+  // under the app's title instead — "Missions.pdf" for every report there
+  // will ever be. The window closes itself once the dialogue is answered,
+  // whether it was answered with Save or with Cancel.
+  const w=window.open('','_blank');
+  if(!w){ toast('הדפדפן חסם את החלון — יש לאשר חלונות קופצים ולנסות שוב'); return; }
+  w.document.write(importReportDoc({print:true}));
+  w.document.close();
+  toast('נפתח חלון ההדפסה — לבחור יעד "שמירה כ-PDF"');
   st._impReport=null; closeModals();
 }
 function importReportWindow(){

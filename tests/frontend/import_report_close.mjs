@@ -44,19 +44,18 @@ const doc={
                                 remove(){}, setAttribute(){}}; made.push(el); return el; },
   body:{appendChild(){}},
 };
-const env = new Function('st','document','showModal','closeModals','toast','esc','URL','Blob','window','setTimeout','Date',
-  [grab('importReportClose'),grab('importReportDoc'),grab('importReportSave'),grab('importReportWindow'),
-   'return {importReportClose,importReportDoc,importReportSave,importReportWindow};'].join('\n'))(
+const win={open:()=>(opened={written:'',document:{write(h){opened.written=h;},close(){}}})};
+const env = new Function('st','document','showModal','closeModals','toast','esc','window','setTimeout','Date',
+  [grab('importReportClose'),grab('importReportName'),grab('importReportDoc'),
+   grab('importReportSave'),grab('importReportWindow'),
+   'return {importReportClose,importReportName,importReportDoc,importReportSave,importReportWindow};'].join('\n'))(
   st, doc, h=>{shown=h;}, ()=>{closed++;}, t=>{toasted=t;}, x=>String(x==null?'':x),
-  {createObjectURL:()=>'blob:x', revokeObjectURL(){}},
-  function Blob(parts){ this.parts=parts; },
-  {open:()=>opened={written:'',document:{write(h){opened.written=h;},close(){}}}},
-  ()=>{}, Date);
+  win, ()=>{}, Date);
 
 // ── the ✕ asks, and names three things ─────────────────────────────────────
 st._impReport={title:'לוח ניהול פרויקטים 2025', body:'<div class="imp-why">320 פריטים</div>'};
 env.importReportClose();
-ck('the ✕ offers saving as a file', shown.includes('שמירת הדוח כקובץ'), shown);
+ck('the ✕ offers saving as a PDF', shown.includes('שמירת הדוח כ-PDF'), shown);
 ck('the ✕ offers a new window', shown.includes('פתיחה בחלון חדש'), shown);
 ck('the ✕ offers closing', shown.includes('סגירה'), shown);
 ck('and says why it is worth asking', shown.includes('אינו ניתן לשחזור'), shown);
@@ -79,18 +78,40 @@ ck('leaves the rest of the app\'s CSS behind', !html.includes('.sb-item'), html)
 ck('survives a stylesheet it may not read', html.length>0);
 ck('re-links the icons and the Hebrew faces', html.includes('font-awesome')&&html.includes('fonts.googleapis.com'));
 ck('is stamped with when it was made', html.includes('דוח ייבוא ·'));
+ck('the on-screen copy does not print itself', !html.includes('window.print()'), html.slice(0,120));
 
-// ── saving it ──────────────────────────────────────────────────────────────
+// ── saving it, which is printing it ────────────────────────────────────────
+/* Printed, not drawn: a PDF of Hebrew is only right if a real text engine lays
+   it out. The dialogue takes its suggested filename from the printed document's
+   own title — which is why the title of the print copy IS the filename, and why
+   this goes through a window of its own rather than a hidden frame, where the
+   app's title would be printed instead. */
+opened=null;
 env.importReportSave();
-ck('hands the browser a file to keep', !!downloaded&&downloaded.href==='blob:x');
-ck('named after the board and the day', /^דוח-ייבוא-לוח ניהול פרויקטים 2025-\d{4}-\d{2}-\d{2}\.html$/.test(downloaded.name||''), downloaded&&downloaded.name);
-ck('says so, and closes', toasted.includes('הדוח נשמר')&&closed===2);
+ck('prints a document of its own', !!opened&&opened.written.includes('<!doctype html>'));
+ck('and prints it itself, once the fonts are there',
+   opened.written.includes('window.print()')&&opened.written.includes('document.fonts'), opened.written.slice(0,200));
+ck('on paper it is A4 with margins', opened.written.includes('@page{size:A4'));
+ck('a section is not split across a page break', opened.written.includes('break-inside:avoid'));
+ck('the colours survive the printer', opened.written.includes('print-color-adjust:exact'));
+ck('closes itself once the dialogue is answered', opened.written.includes('onafterprint'));
+ck('the title is the filename it will suggest',
+   /<title>דוח-ייבוא-לוח ניהול פרויקטים 2025-\d{4}-\d{2}-\d{2}<\/title>/.test(opened.written),
+   (opened.written.match(/<title>[^<]*/)||[''])[0]);
+ck('says what to pick, and closes', toasted.includes('שמירה כ-PDF')&&closed===2);
 ck('and lets the report go', st._impReport===null);
 
 // a name a filesystem would refuse is not one we hand it
 st._impReport={title:'a/b:c*d?e"f<g>h|i', body:''};
+ck('a title full of path characters is made safe', !/[\\/:*?"<>|]/.test(env.importReportName()), env.importReportName());
+
+// a blocked popup is not silence
+st._impReport={title:'לוח', body:''}; toasted=''; closed=0;
+const realOpen=win.open; win.open=()=>null;
 env.importReportSave();
-ck('a title full of path characters is made safe', !/[\\/:*?"<>|]/.test(downloaded.name.replace(/\.html$/,'')), downloaded.name);
+ck('a blocked window says so and keeps the report',
+   toasted.includes('חלונות קופצים')&&st._impReport!==null&&closed===0, toasted);
+win.open=realOpen;
 
 // ── the new window ─────────────────────────────────────────────────────────
 st._impReport={title:'לוח', body:'<div class="imp-why">x</div>'};
