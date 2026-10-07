@@ -322,6 +322,14 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .rm-item i{width:16px;text-align:center;color:var(--text-light)}
 .rm-item:hover{background:var(--row-hover)}
 .rm-item.danger{color:var(--red)}
+/* the ✕ of the import report offers three things rather than discarding it —
+   rows big enough to carry a line of explanation each */
+.rm-sheet{display:flex;flex-direction:column;gap:6px}
+.rm-sheet .rm-item{align-items:flex-start;flex-wrap:wrap;border:1px solid var(--border);
+  padding:11px 13px;font-size:13.5px;font-weight:600}
+.rm-sheet .rm-item i{margin-top:2px}
+.rm-sheet .rm-sub{flex:1 0 100%;padding-inline-start:26px;font-size:12px;font-weight:400;
+  color:var(--text-light)}
 .rm-item.danger i{color:var(--red)}
 .rm-item.danger:hover{background:#ffeaea}
 .rm-sep{font-size:11px;color:var(--text-light);font-weight:600;padding:8px 11px 3px;display:flex;align-items:center;gap:7px;border-top:1px solid var(--border);margin-top:4px}
@@ -3765,12 +3773,102 @@ function importReport(b){
       ${(b.messages||r.updates)?outOf(b.messages||0, r.updates, 'הודעות בשיחות'):''}
       ${r.files_imported?stat(r.files_imported,'קבצים'):''}
     </div>`;
-  showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(b.name||'הלוח יובא')}</h2>
+  const title=(b.name||'הלוח יובא');
+  const body=`${statsHTML}
+      ${cutHTML}${nameHTML}${groupHTML}${mapHTML}${formulaHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
+  // kept for the three things that can be done with it once it is on screen —
+  // this report cannot be asked for again, so closing it is the one action
+  // worth stopping to confirm
+  st._impReport={title,body};
+  showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(title)}</h2>
+    <div class="mbody">${body}</div>
+    <div class="mfoot"><button class="btn btn-primary" onclick="importReportClose()">הבנתי</button></div>`);
+  // the ✕ of this one modal asks first — see importReportClose
+  const x=document.querySelector('#modal .modal-x');
+  if(x) x.setAttribute('onclick','importReportClose()');
+}
+
+/* The import report is the only account of what a migration did and did not
+   bring, and it is built from a response that is gone the moment it closes:
+   re-importing the file does not reproduce it — it makes a second board. A ✕
+   that simply discarded it was therefore the one unlabelled irreversible action
+   in the flow, clicked exactly when someone has finished reading and wants the
+   board. So it asks, and the two things people actually wanted are offered
+   beside the closing: keep it as a file, or put it in its own window and go on
+   working with the board behind it. */
+function importReportClose(){
+  const r=st._impReport;
+  if(!r){ closeModals(); return; }
+  showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> דוח הייבוא</h2>
     <div class="mbody">
-      ${statsHTML}
-      ${cutHTML}${nameHTML}${groupHTML}${mapHTML}${formulaHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}
-    </div>
-    <div class="mfoot"><button class="btn btn-primary" onclick="closeModals()">הבנתי</button></div>`);
+      <div class="imp-why" style="margin-bottom:10px">הדוח הזה נבנה מהקובץ שיובא ואינו ניתן לשחזור —
+        ייבוא חוזר של אותו קובץ יוצר לוח נוסף, לא את הדוח. מה לעשות איתו?</div>
+      <div class="rm-sheet">
+        <button class="rm-item" onclick="importReportSave()">
+          <i class="fa-solid fa-download"></i> שמירת הדוח כקובץ
+          <span class="rm-sub">קובץ HTML שנפתח בכל דפדפן, עם כל מה שמופיע כאן</span></button>
+        <button class="rm-item" onclick="importReportWindow()">
+          <i class="fa-solid fa-up-right-from-square"></i> פתיחה בחלון חדש
+          <span class="rm-sub">הדוח נשאר פתוח לצד הלוח, ואפשר להמשיך לעבוד</span></button>
+        <button class="rm-item" onclick="st._impReport=null;closeModals()">
+          <i class="fa-solid fa-xmark"></i> סגירה
+          <span class="rm-sub">בלי לשמור</span></button>
+      </div>
+    </div>`);
+}
+/* The report as a page that stands on its own.
+   The rules that dress it are lifted from the page's own stylesheet rather than
+   written again here, so a saved copy cannot drift from what was on screen; the
+   two CDN sheets are re-linked, because the icons and the Hebrew faces come
+   from them and they are not ours to inline. */
+function importReportDoc(){
+  const r=st._impReport||{title:'',body:''};
+  const want=sel=>sel.includes('imp-')||sel.includes('.tag')||sel.includes('.mbody')
+    ||sel.includes('.mfoot')||sel===':root'||sel==='h2'||sel.includes('.rm-');
+  let css='';
+  for(const sheet of document.styleSheets){
+    let rules; try{ rules=sheet.cssRules; }catch(e){ continue; }   // a CDN sheet is not ours to read
+    for(const rule of rules) if(rule.selectorText&&want(rule.selectorText)) css+=rule.cssText+'\n';
+  }
+  const when=new Date().toLocaleString('he-IL');
+  return `<!doctype html><html dir="rtl" lang="he"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>דוח ייבוא — ${esc(r.title)}</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+body{font-family:Rubik,Heebo,system-ui,sans-serif;background:#f6f7fb;color:#323338;
+  margin:0;padding:24px;line-height:1.55}
+.wrap{max-width:760px;margin:0 auto;background:#fff;border:1px solid #e6e9ef;border-radius:14px;padding:22px 24px}
+h2{margin:0 0 4px;font-size:20px;display:flex;align-items:center;gap:9px}
+.stamp{font-size:12px;color:#676879;margin-bottom:16px}
+${css}
+</style></head><body><div class="wrap">
+<h2><i class="fa-solid fa-file-import" style="color:#0073ea"></i> ${esc(r.title)}</h2>
+<div class="stamp">דוח ייבוא · ${esc(when)}</div>
+<div class="mbody">${r.body}</div>
+</div></body></html>`;
+}
+function importReportSave(){
+  const r=st._impReport; if(!r){ closeModals(); return; }
+  const safe=(r.title||'לוח').replace(/[\\/:*?"<>|]/g,'-').slice(0,60);
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  const name=`דוח-ייבוא-${safe}-${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}.html`;
+  try{
+    const url=URL.createObjectURL(new Blob([importReportDoc()],{type:'text/html;charset=utf-8'}));
+    const a=document.createElement('a'); a.href=url; a.download=name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),4000);   // after the browser has taken it
+    toast('הדוח נשמר — '+name);
+  }catch(e){ toast('לא ניתן לשמור את הדוח'); return; }
+  st._impReport=null; closeModals();
+}
+function importReportWindow(){
+  const r=st._impReport; if(!r){ closeModals(); return; }
+  const w=window.open('','_blank');
+  if(!w){ toast('הדפדפן חסם את החלון החדש — אפשר לשמור את הדוח כקובץ'); return; }
+  w.document.write(importReportDoc()); w.document.close();
+  st._impReport=null; closeModals();
 }
 
 /* ============ views ============ */

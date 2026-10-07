@@ -23,9 +23,14 @@ function grab(name){
 }
 
 let shown='';
-const report = new Function('esc','showModal',
+/* importReport now keeps the report it built (st._impReport) for the three
+   things its ✕ offers, and re-points that ✕ at the asking. Neither is what these
+   checks are about, so both are stubbed: an object to hold it, and a document
+   that owns no ✕. */
+const st={};
+const report = new Function('esc','showModal','st','document',
   grab('importReport')+'\nreturn importReport;')(
-  x=>String(x==null?'':x), h=>{shown=h;});
+  x=>String(x==null?'':x), h=>{shown=h;}, st, {querySelector:()=>null});
 
 let pass=0, fail=0;
 const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console.log('  FAIL '+n+(x?'  → '+x.slice(0,400):''))); };
