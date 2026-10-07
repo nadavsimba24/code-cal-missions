@@ -61,18 +61,6 @@ query ($boardId: [ID!]) {
     id
     name
 
-    # The board's history: who changed what, when. `limit` is monday's maximum
-    # per page; `page` walks it. The import carries at most 20,000 entries and
-    # says in the report how many it took and from which date the log begins —
-    # monday keeps activity logs for a window that depends on the plan, so what
-    # arrives is what is still there, never the whole life of the board.
-    activity_logs(limit: 10000, page: 1) {
-      id
-      event
-      data
-      user_id
-      created_at
-    }
     groups { id title }
     # The board's own column definitions. A formula lives ONLY here — the copy of
     # a column that rides inside every item carries its title and type and
@@ -140,6 +128,47 @@ query ($boardId: [ID!]) {
           assets { id name public_url }
         }
       }
+    }
+  }
+}
+
+# ── the history, as a request of its own ────────────────────────────────────
+# The board's activity log: who changed what, when.
+#
+# A request of its own because asking for it beside 500 items does not fit: a
+# 320-item board came back REQUEST_MAX_COMPLEXITY_EXCEEDED, cost 5,125,801
+# against monday's ceiling of 5,000,000. Nothing is lost by splitting it — the
+# import reads a file holding SEVERAL responses as the one board they describe,
+# and takes the log from whichever of them carries it. Put both responses in one
+# file, as a JSON array:
+#
+#     [ {the items response}, {the history response} ]
+#
+# `users` is asked for here too, and for the reason it is asked for above: the
+# log names a person only by their monday user id, and without this every row
+# would read "מערכת".
+#
+# If this one is refused as well, halve the limit and walk `page`. The report
+# says how many entries came and the date the log starts at, which is how you
+# know a page is missing. monday keeps activity logs for a window that depends
+# on the plan, so what arrives is what is still there, never the whole life of
+# the board.
+# variables: { "boardId": [6204255781] }
+query ($boardId: [ID!]) {
+  users {
+    id
+    name
+    email
+  }
+
+  boards(ids: $boardId) {
+    id
+    activity_logs(limit: 10000, page: 1) {
+      id
+      event
+      data
+      user_id
+      created_at
     }
   }
 }

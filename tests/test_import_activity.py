@@ -239,3 +239,43 @@ def test_the_sweep_clears_history_that_points_at_nothing_or_at_a_stranger(client
     assert not any(r.new_value == "פריט 742" for r in rows), "a stranger's row survived"
     assert any(isinstance(r.origin, dict) and r.origin.get("source") == "monday"
                for r in rows), "imported history was swept away with the debris"
+
+
+# ── two requests, one file ──────────────────────────────────────────────────
+def test_the_history_can_arrive_in_a_response_of_its_own(client, admin_id):
+    """Asking for the log beside 500 items does not fit: her 320-item board came
+    back REQUEST_MAX_COMPLEXITY_EXCEEDED, cost 5,125,801 against monday's
+    ceiling of 5,000,000. So it is fetched separately and both responses go into
+    one file as a JSON array — the same mechanism that reads a long board's
+    pages, used across fields rather than across pages. The board's name, its
+    groups, its columns and its history are each taken from whichever response
+    carries them.
+    """
+    items = [_item(111, "פריט א"), _item(222, "פריט ב")]
+    first = {"data": {"boards": [{"id": "1", "name": "לוח",
+                                  "groups": [{"id": "g1", "title": "פתוח"}],
+                                  "items_page": {"cursor": None, "items": items}}]}}
+    second = {"data": {"users": [{"id": "777", "name": "רעות אורן", "email": "r@example.com"}],
+                       "boards": [{"id": "1", "activity_logs": [
+                           _log("update_name", 111, name="ב", previous_value="א")]}]}}
+    d = _upload(client, json.dumps([first, second], ensure_ascii=False).encode())
+    rep = d["report"]
+    assert rep["items"] == 2 and rep["groups"] == 1, "the items response was read"
+    assert rep["activity"] == 1 and rep["activity_asked"] is True, "and so was the history"
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    mine = [r for r in rows if r.get("origin") == "monday"]
+    assert len(mine) == 1
+    assert mine[0]["user_name"] == "רעות אורן", "the users list came from the second response"
+    assert mine[0]["can_undo"] is False
+
+
+def test_the_order_of_the_two_responses_does_not_matter(client, admin_id):
+    items = [_item(111, "פריט א")]
+    hist = {"data": {"boards": [{"id": "1", "activity_logs": [
+        _log("update_name", 111, name="ב", previous_value="א")]}]}}
+    main = {"data": {"boards": [{"id": "1", "name": "לוח",
+                                 "groups": [{"id": "g1", "title": "פתוח"}],
+                                 "items_page": {"cursor": None, "items": items}}]}}
+    d = _upload(client, json.dumps([hist, main], ensure_ascii=False).encode(), name="")
+    assert d["report"]["items"] == 1 and d["report"]["activity"] == 1
+    assert d["name"] == "לוח", "the name was taken from whichever response had it"

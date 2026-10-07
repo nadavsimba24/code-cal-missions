@@ -24,10 +24,19 @@ COLLECTION = ROOT / "backend" / "monday_export.postman_collection.json"
 SRC = GRAPHQL.read_text(encoding="utf-8")
 
 
+# The file holds three operations now. The board's history is one of them and
+# not a field of the first, because asking for it beside 500 items does not fit
+# inside monday's complexity ceiling: her 320-item board came back
+# REQUEST_MAX_COMPLEXITY_EXCEEDED at cost 5,125,801 against 5,000,000. Splitting
+# it costs nothing — the import reads a file of several responses as the one
+# board they describe.
+_BANNERS = r"page one|the history, as a request of its own|every page after it"
+
+
 def _operations():
-    """The two queries in the .graphql file, verbatim and comment-free."""
-    parts = re.split(r"^# ── (?:page one|every page after it) ─+\n", SRC, flags=re.M)
-    assert len(parts) == 3, "the file no longer has its two banner-separated queries"
+    """The queries in the .graphql file, verbatim and comment-free."""
+    parts = re.split(r"^# ── (?:" + _BANNERS + r") ─+\n", SRC, flags=re.M)
+    assert len(parts) == 4, "the file no longer has its three banner-separated queries"
     out = []
     for block in parts[1:]:
         lines = block.splitlines()
@@ -54,7 +63,7 @@ def test_the_collection_runs_exactly_the_query_the_importer_reads():
 
 
 def test_the_query_asks_for_everything_a_board_is():
-    page1, pageN = _operations()
+    page1, history, pageN = _operations()
     # the division into groups: the board's own list, and each item's group
     assert "groups { id title }" in page1
     assert page1.count("group { id title }") >= 1
@@ -69,6 +78,12 @@ def test_the_query_asks_for_everything_a_board_is():
     assert page1.count("text_body") >= 3
     # the attachments, by the link that can actually be fetched
     assert "public_url" in page1 and "public_url" in pageN
+    # the history: the log itself, and the one thing that turns a monday user id
+    # into a person — without it every imported row would read "מערכת"
+    assert "activity_logs(" in history and "users {" in history
+    assert "items_page(" not in history, "it is split off precisely to stay cheap"
+    assert "activity_logs(" not in page1, \
+        "asking for the log beside 500 items exceeds monday's complexity ceiling"
 
 
 def test_the_collection_carries_no_token():
@@ -88,6 +103,24 @@ def test_the_collection_says_how_to_run_it():
     desc = c["info"]["description"]
     for marker in ("cursor", "JSON array", "monday_export.graphql"):
         assert marker in desc, f"the collection does not explain {marker}"
-    assert len(c["item"]) == 2
+    assert len(c["item"]) == 3
     assert "{{boardId}}" in c["item"][0]["request"]["body"]["graphql"]["variables"]
-    assert "{{cursor}}" in c["item"][1]["request"]["body"]["graphql"]["variables"]
+    assert "{{boardId}}" in c["item"][1]["request"]["body"]["graphql"]["variables"]
+    assert "{{cursor}}" in c["item"][2]["request"]["body"]["graphql"]["variables"]
+
+
+def test_both_files_say_that_one_request_carries_one_query():
+    """The file holds two operations, and a request holding both comes back HTTP
+    200 with `operation name is required when multiple operations are defined` —
+    no data, and an error that reads like a dead token rather than like a query
+    with one query too many. It cost an afternoon: an export that had worked for
+    weeks was re-copied after a field was added to the query, and that time the
+    whole file went into the box. Both files a person opens have to say so."""
+    collection = COLLECTION.read_text(encoding="utf-8")
+    for path, raw in ((GRAPHQL, SRC), (COLLECTION, collection)):
+        assert "operation name is required" in raw, \
+            f"{path.name} does not name the error two operations in one request gives"
+        assert "one operation" in raw, \
+            f"{path.name} does not say that a request carries one operation"
+        assert "collection" in raw.lower(), \
+            f"{path.name} does not point at the collection, whose requests hold one each"
