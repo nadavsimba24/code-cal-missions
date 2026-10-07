@@ -1201,6 +1201,12 @@ body.coldragging .col-grip{opacity:1}
 /* universal top-left close (×) for every modal/popup */
 .modal-x{position:absolute;top:10px;left:10px;width:30px;height:30px;border:none;background:none;color:var(--text-light);font-size:26px;line-height:1;cursor:pointer;border-radius:8px;display:flex;align-items:center;justify-content:center;z-index:3;transition:background .12s,color .12s}
 .modal-x:hover{background:var(--row-hover,rgba(0,0,0,.06));color:var(--text)}
+/* a window-level action beside the ✕ — same size, same corner, so "what do I do
+   with this window" is one place to look rather than two */
+.modal-act{position:absolute;top:10px;left:44px;width:30px;height:30px;border:none;background:none;
+  color:var(--text-light);font-size:15px;line-height:1;cursor:pointer;border-radius:8px;display:flex;
+  align-items:center;justify-content:center;z-index:3;transition:background .12s,color .12s}
+.modal-act:hover{background:var(--row-hover,rgba(0,0,0,.06));color:var(--primary)}
 .modal.open{display:block}
 /* confirm dialog must sit above the chat panel (z-index 200), else it opens behind it */
 .overlay.confirm-overlay{z-index:300}
@@ -3781,11 +3787,23 @@ function importReport(b){
   // worth stopping to confirm
   st._impReport={title,body};
   showModal(`<h2><i class="fa-solid fa-file-import" style="color:var(--primary)"></i> ${esc(title)}</h2>
-    <div class="mbody">${body}</div>
-    <div class="mfoot"><button class="btn btn-primary" onclick="importReportClose()">הבנתי</button></div>`);
-  // the ✕ of this one modal asks first — see importReportClose
+    <div class="mbody">${body}</div>`);
+  /* No "הבנתי". A footer button that only closes is a second ✕ at the far end of
+     a report people scroll — and it was the likelier of the two to be clicked,
+     which made losing the report the easiest thing to do here.
+
+     What replaces it is the saving, as an icon beside the ✕: the corner is where
+     window actions already live, it is the first place the eye goes on finishing
+     a read, and keeping the two together is what makes them read as one question
+     — what do I do with this window. One click to a PDF, for the people who know
+     that is what they want; the ✕ still asks, for everyone else. */
   const x=document.querySelector('#modal .modal-x');
-  if(x) x.setAttribute('onclick','importReportClose()');
+  if(x){
+    x.setAttribute('onclick','importReportClose()');
+    x.insertAdjacentHTML('afterend',
+      '<button class="modal-act" title="שמירת הדוח כ-PDF" aria-label="שמירת הדוח כ-PDF"'
+      +' onclick="importReportSave()"><i class="fa-solid fa-file-pdf"></i></button>');
+  }
 }
 
 /* The import report is the only account of what a migration did and did not
