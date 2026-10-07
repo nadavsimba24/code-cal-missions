@@ -177,3 +177,65 @@ def test_the_query_asks_for_the_history_and_for_who_did_it():
          / "backend" / "monday_export.graphql").read_text(encoding="utf-8")
     assert "activity_logs(" in q
     assert "users {" in q, "without it every row reads מערכת"
+
+
+# ── the history of an item that is gone ─────────────────────────────────────
+# Found while looking for an imported item's log and finding one row that was
+# not its own: "created item 'פריט 742'", dated three weeks before the item
+# existed, from a board deleted weeks earlier. Destroying a board took its
+# items, their comments and their links, and left all of their history behind —
+# and ids are reissued, so the next item created into that id inherited it.
+def test_destroying_a_board_takes_its_history_with_it(client, admin_id):
+    from models import AuditLog
+    from sqlalchemy.orm import Session
+    d, board = _imported_board(client, [])
+    task_ids = [t["id"] for t in board["tasks"]]
+    with Session(cityos_main.engine) as db:
+        before = db.query(AuditLog).filter(AuditLog.entity_type == "task",
+                                           AuditLog.entity_id.in_(task_ids)).count()
+    client.patch(f"/api/tasks/{task_ids[0]}", headers=H,
+                 json={"actor_id": admin_id, "title": "שינוי כלשהו"})
+    with Session(cityos_main.engine) as db:
+        assert db.query(AuditLog).filter(AuditLog.entity_type == "task",
+                                         AuditLog.entity_id.in_(task_ids)).count() > before
+    assert client.delete(f"/api/boards/{d['id']}?user_id={admin_id}").status_code == 200
+    r = client.delete(f"/api/trash/boards/{d['id']}?user_id={admin_id}")
+    assert r.status_code in (200, 204), r.text
+    with Session(cityos_main.engine) as db:
+        left = db.query(AuditLog).filter(AuditLog.entity_type == "task",
+                                         AuditLog.entity_id.in_(task_ids)).count()
+    assert left == 0, f"{left} log rows outlived the board they described"
+
+
+def test_the_sweep_clears_history_that_points_at_nothing_or_at_a_stranger(client, admin_id):
+    """And leaves imported history alone — a monday change from 2024 written
+    onto an item created today is the one thing that legitimately predates it."""
+    from datetime import datetime, timedelta
+    from models import AuditLog
+    from sqlalchemy.orm import Session
+    d, board = _imported_board(client, [])
+    task = board["tasks"][0]
+    with Session(cityos_main.engine) as db:
+        t = db.query(cityos_main.Task).filter(cityos_main.Task.id == task["id"]).first()
+        born = t.created_at
+        db.add_all([
+            # points at no item at all
+            AuditLog(entity_type="task", entity_id=999_999, action="update",
+                     field_name="title", created_at=born),
+            # older than the item it names — a reissued id
+            AuditLog(entity_type="task", entity_id=t.id, action="create",
+                     field_name="item", new_value="פריט 742",
+                     created_at=born - timedelta(days=21)),
+            # imported, and older on purpose
+            AuditLog(entity_type="task", entity_id=t.id, action="update",
+                     field_name="title", created_at=born - timedelta(days=400),
+                     origin={"source": "monday", "author": "רעות אורן"}),
+        ])
+        db.commit()
+        orphans, wrong = cityos_main._sweep_stray_audit(db)
+        assert orphans >= 1 and wrong >= 1, (orphans, wrong)
+        rows = db.query(AuditLog).filter(AuditLog.entity_type == "task",
+                                         AuditLog.entity_id == t.id).all()
+    assert not any(r.new_value == "פריט 742" for r in rows), "a stranger's row survived"
+    assert any(isinstance(r.origin, dict) and r.origin.get("source") == "monday"
+               for r in rows), "imported history was swept away with the debris"

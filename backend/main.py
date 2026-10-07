@@ -3789,6 +3789,14 @@ def _hard_delete_board(db, board_id: int):
     task_ids = [t.id for t in tasks]
     if task_ids:
         db.query(Comment).filter(Comment.task_id.in_(task_ids)).delete(synchronize_session=False)
+        # The history goes with the items, the way _hard_delete_task has always
+        # taken it. Left behind it does not merely sit there: ids are reissued,
+        # so a destroyed board's log reattaches to whatever item is created into
+        # that id next — and an imported board showed one row of a stranger's
+        # history, dated three weeks before the item existed, under "יצר/ה את
+        # הפריט" with another board's item name in it.
+        db.query(AuditLog).filter(AuditLog.entity_type == "task",
+                                  AuditLog.entity_id.in_(task_ids)).delete(synchronize_session=False)
         # links reach across boards, so the far end is on a board that survives
         _drop_links_for_tasks(db, task_ids)
     for t in tasks:          # clear assignee links via the ORM relationship
@@ -3799,6 +3807,44 @@ def _hard_delete_board(db, board_id: int):
     db.query(BoardMember).filter(BoardMember.board_id == board_id).delete(synchronize_session=False)
     db.delete(b)
     return True
+
+
+def _sweep_stray_audit(db):
+    """Log rows that describe an item that is not there, or is not theirs.
+
+    Two kinds, and the second is why this exists rather than being left as
+    harmless clutter:
+
+      · rows pointing at an item that no longer exists — every board destroyed
+        before the delete above took the history with it left all of them;
+      · rows DATED BEFORE the item they point at was created. An id is reissued
+        once the row that held it is gone, so those are a deleted item's history
+        wearing a living item's id. A freshly imported board showed one such row
+        on an item — "created item 'פריט 742'", three weeks before that item
+        existed, from a board deleted weeks earlier.
+
+    Imported history is the one thing that legitimately predates its item: a
+    monday change from 2024 is written onto an item created today, and it is
+    skipped here by the `origin` that marks it.
+
+    Returns (orphans, misattributed).
+    """
+    stray = db.query(AuditLog.id).filter(
+        AuditLog.entity_type == "task",
+        ~db.query(Task.id).filter(Task.id == AuditLog.entity_id).exists()).all()
+    orphan_ids = [i for (i,) in stray]
+    wrong = db.query(AuditLog.id).join(Task, Task.id == AuditLog.entity_id).filter(
+        AuditLog.entity_type == "task", AuditLog.origin.is_(None),
+        Task.created_at != None, AuditLog.created_at != None,          # noqa: E711
+        AuditLog.created_at < Task.created_at).all()
+    wrong_ids = [i for (i,) in wrong]
+    for ids in (orphan_ids, wrong_ids):
+        for i in range(0, len(ids), 500):                 # SQLite caps the IN list
+            db.query(AuditLog).filter(AuditLog.id.in_(ids[i:i + 500])).delete(
+                synchronize_session=False)
+    if orphan_ids or wrong_ids:
+        db.commit()
+    return len(orphan_ids), len(wrong_ids)
 
 
 def _purge_expired_boards(db):
@@ -6042,6 +6088,22 @@ class _Skipped(Exception):
 
 
 _safe_startup(_ensure_automation_identity)
+
+
+def _sweep_stray_audit_on_boot():
+    """Clear the history that was left behind by boards destroyed before the
+    delete took it with them — see _sweep_stray_audit. Self-healing rather than
+    a one-time migration: the rows it removes are provably not about the items
+    they point at, and leaving them means an item showing a stranger's history.
+    """
+    with Session(engine) as db:
+        orphans, wrong = _sweep_stray_audit(db)
+    if orphans or wrong:
+        print(f"↻ cleared {orphans} log row(s) of deleted items"
+              + (f" and {wrong} that belonged to an item since replaced" if wrong else ""),
+              flush=True)
+
+_safe_startup(_sweep_stray_audit_on_boot)
 
 
 def _task_status_key(task):
