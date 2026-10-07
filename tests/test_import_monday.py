@@ -408,6 +408,37 @@ def test_a_person_is_found_by_e_mail_even_when_the_display_name_has_changed(clie
     assert board["tasks"][0]["custom_fields"][col["id"]] == [me["id"]]
 
 
+def test_a_person_is_found_through_the_account_s_user_list(client):
+    """A people cell states a person as monday's own id for them and usually
+    without an e-mail beside it — which is why her two people columns, 306 items
+    and 135, matched almost nobody: a display name character for character was
+    the only key there was. `users { id name email }` at the root of the query
+    turns that id into an address, and an address is what can be matched.
+    """
+    me = client.get("/api/users", headers=H).json()[0]
+    cols = [_cv("p", "אחראי", "people", text="שם שאינו שמו של אף חשבון",
+                value={"personsAndTeams": [{"id": 11397425, "kind": "person"}]})]
+    doc = json.loads(_resp([_item("פריט", cols)]).decode())
+    doc["data"]["users"] = [{"id": "11397425", "name": "מי שהוא", "email": me["email"]}]
+    r = _upload(client, json.dumps(doc, ensure_ascii=False).encode(), name="מיל").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "אחראי")
+    assert board["tasks"][0]["custom_fields"][col["id"]] == [me["id"]], \
+        "the id was never resolved to an address"
+    assert r["report"]["people_matched"] == 1
+
+
+def test_without_the_user_list_the_name_is_still_all_there_is(client):
+    """And then it is kept as a name rather than dropped — the behaviour the
+    board already relies on."""
+    cols = [_cv("p", "אחראי", "people", text="רעות אורן",
+                value={"personsAndTeams": [{"id": 11397425, "kind": "person"}]})]
+    r = _upload(client, _resp([_item("פריט", cols)]), name="בלי").json()
+    board = client.get(f"/api/boards/{r['id']}?user_id=1", headers=H).json()
+    col = next(c for c in board["columns"] if c.get("title") == "אחראי")
+    assert board["tasks"][0]["custom_fields"][col["id"]] == ["רעות אורן"]
+
+
 def test_one_person_named_twice_is_assigned_once(client):
     """monday's cell can carry both the display name and the e-mail of the same
     person; two tokens are not two people."""

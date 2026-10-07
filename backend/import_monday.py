@@ -499,7 +499,7 @@ def _iso(d):
     return d[:10] if isinstance(d, str) and len(d) >= 10 and d[4] == "-" and d[7] == "-" else None
 
 
-def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
+def _cell_value(cv, ctype, assets_by_name, assets_by_id=None, people_by_id=None):
     """The value for one cell, in the form our column type stores.
 
     `text` is monday's own rendering and is right for most types; `value` is the
@@ -553,7 +553,19 @@ def _cell_value(cv, ctype, assets_by_name, assets_by_id=None):
         # survives someone changing their display name.
         names = [p.strip() for p in text.split(",") if p.strip()]
         persons = ((val or {}).get("personsAndTeams") or []) if isinstance(val, dict) else []
-        mails = [(p or {}).get("email") for p in persons]
+        # The cell states a person as monday's own id for them, and only
+        # sometimes with an e-mail beside it. The account's user list — asked for
+        # at the root of the query — is what turns that id into an address, and
+        # an address is what can actually be matched to an account here. Without
+        # it the only key is a display name, character for character, which on a
+        # real board matched almost nobody: two columns of 306 and 135 items
+        # came across as names rather than as the colleagues they name.
+        mails = []
+        for p in persons:
+            e = (p or {}).get("email")
+            if not e and (people_by_id or {}):
+                e = ((people_by_id or {}).get(str((p or {}).get("id") or "")) or {}).get("email")
+            mails.append(e)
         # One person is one token. monday states the people of a cell twice —
         # their display names in `text`, their accounts in `value` — and the two
         # line up in order, so a person who arrives with an e-mail IS that
@@ -871,7 +883,7 @@ def parse(raw, max_cols):
                 key = cv.get("id") if cv.get("id") in by_key else None
             if not key:
                 continue
-            v = _cell_value(cv, by_key[key], assets, by_id)
+            v = _cell_value(cv, by_key[key], assets, by_id, people_by_id)
             if v is not None and v != "" and v != []:
                 vals[key] = v
         return vals
