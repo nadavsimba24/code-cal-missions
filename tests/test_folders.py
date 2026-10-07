@@ -120,3 +120,48 @@ def test_env_manager_can_delete_board_and_reorder(client, admin_id, guinea_id):
         assert not any(x["id"] == bid for x in client.get(f"/api/boards?user_id={admin_id}").json())
     finally:
         client.delete(f"/api/environments/{eid}?actor_id={admin_id}")
+
+# ── the + in the sidebar ────────────────────────────────────────────────────
+# One button now makes both of the things the boards list holds. The folder icon
+# beside it is gone: two icons for "add" is a guess the user has to decode, and
+# the one that mattered most — a board built from a file — was behind neither of
+# them. It lived in the menu of a board that already existed, which is the last
+# place anyone looks for how to make one.
+def _sidebar_src():
+    import pathlib as _p
+    return (_p.Path(__file__).resolve().parent.parent
+            / "frontend" / "index.html").read_text(encoding="utf-8")
+
+
+def test_the_plus_asks_board_or_folder_and_the_folder_icon_is_gone():
+    src = _sidebar_src()
+    assert "new-folder-btn" not in src, "the second add icon is gone, CSS and all"
+    assert 'id="new-board-btn"' in src and 'onclick="newThingMenu(event)"' in src
+    assert "function newThingMenu" in src and "function _newThingPop" in src
+    # the first menu: the two things the list holds
+    assert "fa-folder-plus\"></i> תיקייה" in src
+    assert "fa-table-columns\"></i> לוח" in src
+    # a folder still goes through the dialog that asks for its name
+    assert "closeCellPops();Folders.create()" in src
+
+
+def test_choosing_a_board_offers_empty_or_from_a_file():
+    src = _sidebar_src()
+    assert "function newBoardMenu" in src
+    assert "closeCellPops();newBoardQuick()" in src, "לוח ריק"
+    assert "closeCellPops();importBoardFile()" in src, "יצירת לוח מקובץ"
+    assert "לוח ריק" in src and "יצירת לוח מקובץ" in src
+    # the second menu is anchored to the + , not to the row that was clicked —
+    # that row is inside the popover about to be torn down
+    i = src.index("function _newThingPop")
+    body = src[i:i + 2600]
+    assert "getElementById('new-board-btn')" in body
+    assert "openCellPop(btn," in body
+
+
+def test_the_plus_shows_for_whoever_may_create_either():
+    src = _sidebar_src()
+    i = src.index("function updateNewBoardBtn")
+    body = src[i:i + 500]
+    assert "hasCap('create_board')||canFolder" in body, \
+        "an environment manager who may not create boards still makes folders"

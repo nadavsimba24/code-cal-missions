@@ -1893,7 +1893,7 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   #sb-resizer{display:none}                      /* the drawer has its own width */
   /* Desktop-only controls. !important because renderSidebar sets display inline
      from the user's permissions — the breakpoint has to win over that. */
-  #new-board-btn,#new-folder-btn,#env-manage-btn,#nav-sysadmin{display:none!important}
+  #new-board-btn,#env-manage-btn,#nav-sysadmin{display:none!important}
   .ws-opt-act,.ws-dd-foot{display:none!important}   /* env rename/members/new, not the switcher */
   /* Only the button goes; its column stays, so colgroup widths and the
      row-end colspan still line up with the header. */
@@ -1987,7 +1987,7 @@ body, body *{ font-weight:400!important; }
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
     <div class="sb-section">סביבת עבודה <span class="sb-sec-acts"><i id="env-trash-btn" class="fa-solid fa-trash-can" title="לוחות שנמחקו — ניתנים לשחזור" style="display:none" onclick="Trash.open()"></i> <i id="env-manage-btn" class="fa-solid fa-user-gear" title="ניהול משתמשים והרשאות בסביבה" style="display:none" onclick="Env.manageActive()"></i></span></div>
     <div id="ws-switch"></div>
-    <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-folder-btn" class="fa-solid fa-folder-plus" title="תיקייה חדשה" style="display:none" onclick="Folders.create()"></i> <i id="new-board-btn" class="fa-solid fa-plus" title="לוח חדש" onclick="newBoardQuick()"></i></span></div>
+    <div class="sb-section">לוחות <span class="sb-sec-acts"><i id="new-board-btn" class="fa-solid fa-plus" title="לוח או תיקייה חדשה" onclick="newThingMenu(event)"></i></span></div>
     <div class="sb-list" id="board-list"></div>
     <div class="sb-foot">
       <div class="sb-item" style="display:none" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
@@ -2725,7 +2725,10 @@ function renderSidebar(){
   const active = (typeof Env!=='undefined') ? Env.active() : null;
   const el=document.getElementById('board-list');
   const canManage = !!(active && (isSysAdmin() || active.can_manage));
-  const fbtn=document.getElementById('new-folder-btn'); if(fbtn)fbtn.style.display=canManage?'':'none';
+  // one + for both: shown to whoever may create either, and the menu behind it
+  // offers only what this user is actually allowed to create
+  const nbtn=document.getElementById('new-board-btn');
+  if(nbtn)nbtn.style.display=(hasCap('create_board')||canManage)?'':'none';
   // the environment-management icon sits by the "סביבת עבודה" title — visible only
   // when the active environment is one this user may manage
   const embtn=document.getElementById('env-manage-btn'); if(embtn)embtn.style.display=canManage?'':'none';
@@ -3384,6 +3387,51 @@ async function createBoard(){
 /* Quick create: one click on the "+" → a blank default board (empty, 3 groups),
    creator becomes its admin, it lands at the bottom of the list and opens ready
    for inline rename. */
+/* The + beside "לוחות" makes either of the two things that list holds, so it
+   asks which instead of guessing. A folder is one step — a name is all it needs.
+   A board is two, because "empty" and "from a file" are different enough to be
+   worth saying out loud: the import was reachable only from inside a board that
+   already existed, which is the last place someone looks for how to create one.
+
+   Both levels are anchored to the + itself rather than to the row that was
+   clicked: the row lives inside the popover that is about to be torn down, and
+   the second menu should appear where the first one was, not shifted down by
+   however far the cursor had travelled. */
+function newThingMenu(e){ if(e)e.stopPropagation(); _newThingPop('root'); }
+function newBoardMenu(e){ if(e)e.stopPropagation(); _newThingPop('board'); }
+function _newThingPop(level){
+  const btn=document.getElementById('new-board-btn'); if(!btn)return;
+  const env=(typeof Env!=='undefined')?Env.active():null;
+  const canFolder=!!(env&&(isSysAdmin()||env.can_manage));
+  const canBoard=hasCap('create_board');
+  const mob=isMobile();
+  let html;
+  if(level==='board'){
+    html=`<div class="row-menu" onclick="event.stopPropagation()">
+      <button class="rm-item" style="font-weight:600" onclick="newThingMenu(event)">
+        <i class="fa-solid fa-chevron-right"></i> לוח חדש</button>
+      <div class="rm-sep"></div>
+      <button class="rm-item" onclick="closeCellPops();newBoardQuick()">
+        <i class="fa-regular fa-square-plus"></i> לוח ריק</button>
+      ${mob?'':`<button class="rm-item" onclick="closeCellPops();importBoardFile()">
+        <i class="fa-solid fa-file-import"></i> יצירת לוח מקובץ</button>`}
+    </div>`;
+  }else{
+    // On a phone a board can only be empty — the import is desktop-only — so the
+    // second menu would hold one row, and the first one may as well do it.
+    const boardAction=mob?'closeCellPops();newBoardQuick()':'newBoardMenu(event)';
+    html=`<div class="row-menu" onclick="event.stopPropagation()">
+      <div class="rm-sep" style="border-top:none;margin-top:0"><i class="fa-solid fa-plus"></i> הוספה</div>
+      ${canBoard?`<button class="rm-item" onclick="${boardAction}">
+        <i class="fa-solid fa-table-columns"></i> לוח
+        ${mob?'':'<i class="fa-solid fa-chevron-left" style="margin-inline-start:auto;font-size:10px"></i>'}</button>`:''}
+      ${canFolder?`<button class="rm-item" onclick="closeCellPops();Folders.create()">
+        <i class="fa-solid fa-folder-plus"></i> תיקייה</button>`:''}
+      ${(canBoard||canFolder)?'':'<div class="rm-item" style="color:var(--text-light)">אין לך הרשאה ליצור לוח או תיקייה</div>'}
+    </div>`;
+  }
+  openCellPop(btn,html,'row-menu-pop');
+}
 async function newBoardQuick(){
   if(mobileBlocked('יצירת לוח'))return;
   if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
@@ -6994,7 +7042,9 @@ function isSysAdmin(){ const m=(st.wsMembers||[]).find(x=>x.user_id===meId()); r
 function canAdminEnvs(){ return isSysAdmin() || hasCap('manage_system'); }
 function updateNewBoardBtn(){
   const btn=document.getElementById('new-board-btn');
-  if(btn)btn.style.display=hasCap('create_board')?'':'none';
+  const a0=(typeof Env!=='undefined')?Env.active():null;
+  const canFolder=!!(a0&&(isSysAdmin()||a0.can_manage));
+  if(btn)btn.style.display=(hasCap('create_board')||canFolder)?'':'none';
   // deleted boards now live beside the environment they belonged to, shown to
   // whoever may manage it — the sidebar no longer carries a bin of its own
   const tb=document.getElementById('env-trash-btn');
