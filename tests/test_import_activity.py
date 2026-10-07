@@ -1,0 +1,179 @@
+"""The board's history, brought across with it.
+
+monday's `activity_logs` is the board's own record of who changed what and when.
+It lands here as the very rows the log already reads — AuditLog on the task — so
+it shows up in the item's own לוגים tab and in the board-level log at once.
+There is one log in this system, not two.
+
+The part that matters most is the part that does nothing: an imported row offers
+no undo. The change happened in monday, possibly a year ago, and reverting it
+would write that value onto the item as it stands now — from a button that looks
+exactly like every other undo on the page.
+"""
+import json
+
+import main as cityos_main
+
+H = {"X-CityOS-User": "1", "host": "localhost"}
+WHEN = 1727259000000000          # µs since the epoch — 2024-09-25, monday's unit
+
+
+def _log(event, pulse, when=WHEN, user="777", **data):
+    data.setdefault("pulse_id", pulse)
+    return {"id": str(when), "event": event, "user_id": user,
+            "created_at": str(when), "data": json.dumps(data)}
+
+
+def _resp(items, logs=None, users=None):
+    board = {"id": "1", "name": "לוח", "groups": [{"id": "g1", "title": "פתוח"}],
+             "items_page": {"cursor": None, "items": items}}
+    if logs is not None:
+        board["activity_logs"] = logs
+    doc = {"data": {"boards": [board]}}
+    if users is not None:
+        doc["data"]["users"] = users
+    return json.dumps(doc, ensure_ascii=False).encode()
+
+
+def _item(iid, name, cols=None):
+    return {"id": str(iid), "name": name, "group": {"id": "g1", "title": "פתוח"},
+            "column_values": cols or []}
+
+
+def _cv(cid, title, ctype, text=""):
+    return {"id": cid, "type": ctype, "column": {"title": title}, "text": text}
+
+
+def _upload(client, raw, name="היסטוריה"):
+    r = client.post("/api/boards/import?actor_id=1", headers=H,
+                    files={"file": ("response.json", raw, "application/json")},
+                    data={"actor_id": 1, "name": name})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _imported_board(client, logs, users=None, cols=None):
+    items = [_item(111, "פריט א", cols), _item(222, "פריט ב")]
+    d = _upload(client, _resp(items, logs, users))
+    board = client.get(f"/api/boards/{d['id']}?user_id=1", headers=H).json()
+    return d, board
+
+
+# ── it lands on the item, in the tab that already exists ────────────────────
+def test_the_history_shows_in_the_item_s_own_log_tab(client, admin_id):
+    me = client.get("/api/users", headers=H).json()[0]
+    logs = [_log("update_column_value", 111, column_id="status", column_title="סטטוס",
+                 previous_value={"label": {"text": "לביצוע"}},
+                 value={"label": {"text": "בוצע"}}),
+            _log("create_pulse", 111, when=WHEN - 60_000_000)]
+    users = [{"id": "777", "name": me["name"], "email": me["email"]}]
+    d, board = _imported_board(client, logs, users,
+                               cols=[_cv("status", "סטטוס", "status", text="בוצע")])
+    task = next(t for t in board["tasks"] if t["title"] == "פריט א")
+    rows = client.get(f"/api/tasks/{task['id']}/activity", headers=H).json()["activity"]
+    kinds = {r["action"] for r in rows}
+    assert {"create", "update"} <= kinds, rows
+    upd = next(r for r in rows if r["action"] == "update")
+    assert upd["user_name"] == me["name"], "the author was matched to the account"
+    assert "בוצע" in json.dumps(upd, ensure_ascii=False)
+    assert d["report"]["activity"] == 2
+    assert d["report"]["activity_from"] == "2024-09-25"
+
+
+def test_the_same_rows_are_the_board_level_log(client, admin_id):
+    logs = [_log("update_name", 222, name="שם חדש", previous_value="שם ישן")]
+    d, board = _imported_board(client, logs)
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    mine = [r for r in rows if r.get("origin") == "monday"]
+    assert len(mine) == 1 and mine[0]["task_title"] == "פריט ב"
+
+
+# ── and it cannot be undone ─────────────────────────────────────────────────
+def test_an_imported_row_offers_no_undo_and_refuses_one(client, admin_id):
+    """The whole reason this needed building rather than mapping."""
+    logs = [_log("update_column_value", 111, column_id="status", column_title="סטטוס",
+                 previous_value={"label": {"text": "לביצוע"}},
+                 value={"label": {"text": "בוצע"}})]
+    d, board = _imported_board(client, logs,
+                               cols=[_cv("status", "סטטוס", "status", text="בוצע")])
+    task = next(t for t in board["tasks"] if t["title"] == "פריט א")
+    row = next(r for r in client.get(f"/api/tasks/{task['id']}/activity",
+                                     headers=H).json()["activity"]
+               if r["action"] == "update")
+    assert row["origin"] == "monday"
+    assert row["can_undo"] is False, "an imported change must not offer an undo"
+    # and the endpoint refuses one that arrives anyway — an old page, a script
+    r = client.post(f"/api/activity/{row['id']}/undo", headers=H, json={"actor_id": admin_id})
+    assert r.status_code == 400
+    assert "מיובאת" in r.json()["detail"]
+
+
+def test_a_change_made_here_still_undoes(client, admin_id):
+    """The gate is about where the row came from, not about the board."""
+    d, board = _imported_board(client, [])
+    task = board["tasks"][0]
+    client.patch(f"/api/tasks/{task['id']}", headers=H,
+                 json={"actor_id": admin_id, "title": "שם אחר"})
+    row = next(r for r in client.get(f"/api/tasks/{task['id']}/activity",
+                                     headers=H).json()["activity"]
+               if r["action"] == "update")
+    assert row["can_undo"] is True and not row["origin"]
+    assert client.post(f"/api/activity/{row['id']}/undo", headers=H,
+                       json={"actor_id": admin_id}).status_code == 200
+
+
+# ── who did it ──────────────────────────────────────────────────────────────
+def test_an_author_with_no_account_keeps_their_name(client, admin_id):
+    """The audit has nowhere else to put a person, and "מערכת" over a change a
+    named colleague made is worse than no history at all."""
+    logs = [_log("update_name", 111, name="ב", previous_value="א")]
+    users = [{"id": "777", "name": "רעות אורן", "email": "reuto@example.com"}]
+    d, board = _imported_board(client, logs, users)
+    task = next(t for t in board["tasks"] if t["title"] == "פריט א")
+    row = client.get(f"/api/tasks/{task['id']}/activity", headers=H).json()["activity"][0]
+    assert row["user_name"] == "רעות אורן"
+    assert row["user_id"] is None, "a name is not an account"
+
+
+# ── what did not come, and why ──────────────────────────────────────────────
+def test_history_of_an_item_outside_the_import_is_counted_not_guessed(client, admin_id):
+    logs = [_log("update_name", 999, name="ב", previous_value="א"),   # no such item here
+            _log("update_name", 111, name="ב", previous_value="א")]
+    d, _ = _imported_board(client, logs)
+    assert d["report"]["activity"] == 2, "the parser read both"
+    assert d["report"]["activity_dropped"] == 0
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    assert len([r for r in rows if r.get("origin") == "monday"]) == 1, \
+        "only the one whose item is here was written"
+
+
+def test_events_with_no_counterpart_are_named(client, admin_id):
+    logs = [_log("delete_pulse", 111), _log("create_update", 111),
+            _log("update_name", 111, name="ב", previous_value="א")]
+    d, _ = _imported_board(client, logs)
+    rep = d["report"]
+    assert rep["activity"] == 1
+    assert dict(rep["activity_unmapped"]) == {"delete_pulse": 1, "create_update": 1}
+
+
+def test_a_query_that_never_asked_says_so(client, admin_id):
+    d, _ = _imported_board(client, None)      # no activity_logs key at all
+    assert d["report"]["activity"] == 0
+    assert d["report"]["activity_asked"] is False
+
+
+def test_the_report_and_the_log_say_where_a_row_came_from():
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "activity_asked" in src and "רשומות היסטוריה" in src
+    assert "log-src" in src and "אין מה לבטל כאן" in src
+    assert src.count("a.origin==='monday'") == 2, "the item tab and the board log"
+
+
+def test_the_query_asks_for_the_history_and_for_who_did_it():
+    import pathlib
+    q = (pathlib.Path(__file__).resolve().parent.parent
+         / "backend" / "monday_export.graphql").read_text(encoding="utf-8")
+    assert "activity_logs(" in q
+    assert "users {" in q, "without it every row reads מערכת"

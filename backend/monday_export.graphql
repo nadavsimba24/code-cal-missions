@@ -18,9 +18,21 @@
 # values still arrive (see FormulaValue below) but the formula itself does not,
 # and a migrated board has a column of frozen numbers nobody can adjust.
 #
-# The two queries are kept separate and complete rather than sharing a fragment,
+# ⚠ ONE of the two queries below goes into a request — never this file whole.
+# They are two operations, and a request carrying both comes back HTTP 200 with
+#
+#     "operation name is required when multiple operations are defined"
+#
 # because a document holding two operations needs an operationName to say which
-# one to run, and Postman's GraphQL body does not send one.
+# one to run, and Postman's GraphQL body does not send one. That is also why
+# they are kept separate and complete rather than sharing a fragment.
+#
+# Two things make this trap easy to walk into. Postman's query box APPENDS what
+# is pasted into it rather than replacing it, so a box that already held one
+# query ends up holding two — clear it first (⌘A, delete). And the box scrolls,
+# so a second operation can sit below the visible lines and look deleted. The
+# collection beside this file is the way around both: its two requests each hold
+# one operation already, and neither can pick up the other's text.
 #
 # limit is 500, monday's maximum. A board longer than that answers with a cursor
 # instead of null: run the second query with it, again and again, until the
@@ -35,9 +47,32 @@
 # ── page one ────────────────────────────────────────────────────────────────
 # variables: { "boardId": [6204255781] }
 query ($boardId: [ID!]) {
+  # The account's users. A people CELL carries monday's person id and the
+  # activity log carries only a user id — neither is a name, and this is the one
+  # thing that turns either into one. Without it a people column can only be
+  # matched by display name, and every log row reads "מערכת".
+  users {
+    id
+    name
+    email
+  }
+
   boards(ids: $boardId) {
     id
     name
+
+    # The board's history: who changed what, when. `limit` is monday's maximum
+    # per page; `page` walks it. The import carries at most 20,000 entries and
+    # says in the report how many it took and from which date the log begins —
+    # monday keeps activity logs for a window that depends on the plan, so what
+    # arrives is what is still there, never the whole life of the board.
+    activity_logs(limit: 10000, page: 1) {
+      id
+      event
+      data
+      user_id
+      created_at
+    }
     groups { id title }
     # The board's own column definitions. A formula lives ONLY here — the copy of
     # a column that rides inside every item carries its title and type and

@@ -251,6 +251,9 @@ def _migrate():
                 if old_c in rcols:
                     conn.execute(text(f'UPDATE automation_runs SET {new_c} = "{old_c}"'))
         # users: job title + contact phone (for the profile card)
+        alcols = {r[1] for r in conn.execute(text("PRAGMA table_info(audit_logs)"))}
+        if "origin" not in alcols:
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN origin JSON"))
         ucols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)"))}
         if "title" not in ucols:
             conn.execute(text("ALTER TABLE users ADD COLUMN title VARCHAR(120)"))
@@ -288,6 +291,7 @@ else:
     _PG_MIGRATIONS = [
         "ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON",
         "ALTER TABLE comments ADD COLUMN IF NOT EXISTS origin JSON",
+        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS origin JSON",
         "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER",
@@ -2984,6 +2988,10 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         uids = iter(_mint_item_uids(len(parsed["items"])
                                     + sum(len(r["subitems"]) for r in parsed["items"])))
         gpos = {}
+        # monday's own item id → the task it became. The board's history names
+        # items by that id and by nothing else, so this is the only moment the
+        # two can be put together.
+        by_monday_id = {}
         for row in parsed["items"]:
             grp = gmap.get(row.get("group")) or g1
             pos = gpos[grp.id] = gpos.get(grp.id, -1) + 1
@@ -2993,6 +3001,8 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                      item_uid=next(uids), item_uid_board=b.id)
             db.add(t)
             db.flush()
+            if row.get("id"):
+                by_monday_id[str(row["id"])] = t
             made += 1
             talked += _import_conversation(db, t, row.get("updates"), by_token, budget, files)
             for spos, sub in enumerate(row["subitems"]):
@@ -3007,6 +3017,52 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 subs_made += 1
                 talked += _import_conversation(db, stask, sub.get("updates"), by_token,
                                                    budget, files)
+
+        # ── the board's history ──────────────────────────────────────────────
+        # Written as the same AuditLog rows the log already reads, so it shows
+        # up in both places at once: the item's own לוגים tab and the board-level
+        # log. There is one log here, not two.
+        #
+        # `origin` marks every row as monday's, which is what stops it offering
+        # an undo — reverting a change made in monday a year ago would write
+        # that value onto the item now, from a button that looks like every
+        # other undo. It also keeps the author's name, for the people the
+        # account has no match for; the audit has nowhere else to put a person.
+        logged, log_unmatched = 0, 0
+        for row in parsed.get("activity") or []:
+            t = by_monday_id.get(str(row.get("item") or ""))
+            if t is None:
+                log_unmatched += 1
+                continue
+            uid = (by_token.get((row.get("email") or "").lower())
+                   or by_token.get((row.get("author") or "").lower()))
+            field = row.get("field")
+            if field == "column":
+                cid = col_ids.get(row.get("column") or "")
+                if not cid:
+                    # the column did not make the trip (its own budget, or a type
+                    # with nothing to carry) — so neither can its history
+                    log_unmatched += 1
+                    continue
+                field = "col:" + cid
+            when = None
+            if row.get("at"):
+                try:
+                    when = datetime.fromisoformat(str(row["at"]).replace("Z", "+00:00"))
+                    when = when.replace(tzinfo=None)
+                except ValueError:
+                    when = None
+            # values go in the shape the log's own reader expects of a column —
+            # JSON — so "ריק" stays empty rather than arriving as the word null
+            enc = lambda v: json.dumps(v, ensure_ascii=False) if v not in (None, "") else None
+            db.add(AuditLog(
+                entity_type="task", entity_id=t.id, action=row.get("action") or "update",
+                field_name=field, old_value=enc(row.get("old")), new_value=enc(row.get("new")),
+                changed_by=uid,
+                created_at=when or datetime.now(timezone.utc).replace(tzinfo=None),
+                origin={"source": "monday", "event": (row.get("event") or "")[:40],
+                        "author": (row.get("author") or "")[:120], "matched": bool(uid)}))
+            logged += 1
 
         if sub_used:
             # sub-items show only the columns they actually carry, in board order
@@ -9305,10 +9361,16 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
             if vals is None:
                 continue                      # the change was invisible to this viewer
             u = db.query(User).filter(User.id == l.changed_by).first()
+            og = l.origin if isinstance(l.origin, dict) else None
             out.append({"id": l.id, "action": l.action, "field": l.field_name,
                         "old": vals[0], "new": vals[1],
-                        "user_id": l.changed_by, "user_name": u.name if u else "מערכת",
-                        "can_undo": l.action == "update", "created_at": l.created_at})
+                        "origin": (og or {}).get("source") or "",
+                        "user_id": l.changed_by,
+                        "user_name": (u.name if u else None) or (og or {}).get("author") or "מערכת",
+                        # imported history is read-only — see the note in
+                        # _board_activity_rows
+                        "can_undo": l.action == "update" and not og,
+                        "created_at": l.created_at})
         return {"activity": out}
 
 # The board-defined status/priority machinery stores its bookkeeping in
@@ -9404,11 +9466,22 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
         vals = _log_link_row(db, l.field_name, l.old_value, l.new_value, cols, viewer)
         if vals is None:
             continue                          # the change was invisible to this viewer
+        og = l.origin if isinstance(l.origin, dict) else None
         out.append({"id": l.id, "action": l.action, "field": l.field_name,
                     "old": vals[0], "new": vals[1],
                     "task_id": l.entity_id, "task_title": titles.get(l.entity_id, "—"),
-                    "user_id": l.changed_by, "user_name": users.get(l.changed_by, "מערכת"),
-                    "can_undo": l.action == "update", "created_at": l.created_at})
+                    "user_id": l.changed_by,
+                    # an imported row's author may have no account here; the name
+                    # it came with is better than "מערכת"
+                    "user_name": (users.get(l.changed_by)
+                                  or (og or {}).get("author") or "מערכת"),
+                    # Nothing imported offers an undo. The change happened in
+                    # monday, possibly a year ago, and reverting it would write
+                    # that value onto the item now — from a button that looks
+                    # exactly like every other undo on the page.
+                    "origin": (og or {}).get("source") or "",
+                    "can_undo": l.action == "update" and not og,
+                    "created_at": l.created_at})
         if len(out) >= limit:
             break
     return out
@@ -9602,6 +9675,12 @@ def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_
         log = db.query(AuditLog).filter(AuditLog.id == log_id).first()
         if not log or log.entity_type != "task" or log.action != "update":
             raise HTTPException(400, "לא ניתן לבטל פעולה זו")
+        # The gate, not the hint. The row's button is hidden, and a request that
+        # arrives anyway — an old page, a script, a guessed id — is refused
+        # here: undoing a change that happened in monday would write a value
+        # from the board's past onto the item as it stands now.
+        if isinstance(log.origin, dict) and log.origin.get("source"):
+            raise HTTPException(400, "השורה הזאת היא היסטוריה מיובאת — אין מה לבטל כאן")
         task = db.query(Task).filter(Task.id == log.entity_id).first()
         if not task:
             raise HTTPException(404, "task not found")

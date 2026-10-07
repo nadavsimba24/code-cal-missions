@@ -330,6 +330,11 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .rm-sheet .rm-item i{margin-top:2px}
 .rm-sheet .rm-sub{flex:1 0 100%;padding-inline-start:26px;font-size:12px;font-weight:400;
   color:var(--text-light)}
+/* a log row that happened in monday, not here: it reads the same, it is counted
+   the same, and it has no undo — the tag is what says why */
+.log-src{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.02em;color:var(--text-light);
+  background:var(--bg);border:1px solid var(--border-strong);border-radius:4px;padding:0 5px;
+  vertical-align:middle;cursor:help}
 .rm-item.danger i{color:var(--red)}
 .rm-item.danger:hover{background:#ffeaea}
 .rm-sep{font-size:11px;color:var(--text-light);font-weight:600;padding:8px 11px 3px;display:flex;align-items:center;gap:7px;border-top:1px solid var(--border);margin-top:4px}
@@ -2978,7 +2983,8 @@ const BoardLog = {
         <button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})">${esc(a.task_title||'—')}</button>
         <span class="lg-l2">
           <span class="lg-field"><i class="fa-solid ${this.fieldIcon(a)}"></i> ${esc(this.fieldLabel(a))}</span>
-          <span class="lg-change">${this.change(a)}</span>
+          <span class="lg-change">${this.change(a)}${
+            a.origin==='monday'?' <span class="log-src" title="היסטוריה שיובאה ממאנדיי — אירעה שם, ולכן אין מה לבטל כאן">monday</span>':''}</span>
           ${a.can_undo&&isMgr
             ? `<button class="lg-undo" onclick="BoardLog.undo(${a.id})">בטל</button>`
             : `<span class="lg-undo-gap"></span>`}
@@ -3534,6 +3540,19 @@ async function importBoardFile(){
    column that did not come in is listed by name, with the reason. */
 function importReport(b){
   const r=b.report||{}, skipped=r.skipped||[], missing=r.people_unmatched||[];
+  /* Every "run the export again" notice ends the same way, so it is written
+     once. The second sentence is the trap she actually hit: the query file
+     holds TWO operations — page one, and the pages after it — and a request
+     carrying both answers 200 with "operation name is required when multiple
+     operations are defined", which reads like a broken token and is not. */
+  const REEXPORT_RUN='מריצים את הייצוא ממאנדיי מחדש עם השאילתה המעודכנת'
+    +' (<b>backend/monday_export.graphql</b>)';
+  const REEXPORT_ONE_OP='<b>שאילתה אחת בכל בקשה:</b> הקובץ מחזיק שתיים —'
+    +' העמוד הראשון, והעמודים שאחריו — ובקשה שמחזיקה את שתיהן חוזרת עם'
+    +' <b dir="ltr">operation name is required</b> ובלי נתונים. הדרך הבטוחה היא'
+    +' להריץ את ה-Collection שליד הקובץ'
+    +' (<b>backend/monday_export.postman_collection.json</b>), שבו כל בקשה'
+    +' מחזיקה שאילתה אחת.';
   /* A column that came in as a different type than its name suggests is still
      imported, and is the one thing a migration has to be able to check at a
      glance — so it is stated, not left to be noticed cell by cell. */
@@ -3610,7 +3629,8 @@ function importReport(b){
       <i class="fa-solid fa-paperclip"></i> קבצים</div>
       ${r.files_imported?`<div class="imp-why">${r.files_imported} קבצים הועברו לכאן (${esc(mb(r.files_bytes||0))}) — הם נשמרו במערכת וניתן לפתוח אותם, בדיוק כמו קובץ שהועלה כאן ביד.</div>`:''}
       ${r.files_reused?`<div class="imp-why">${r.files_reused} קבצים היו כבר כאן — הלוח יוצא מהמערכת הזאת וחזר אליה, והקבצים עצמם מעולם לא עזבו. התאים מפנים לאותם קבצים; שום דבר לא הועתק פעמיים.</div>`:''}
-      ${r.files_linked?`<div class="imp-why">${r.files_linked} קבצים הגיעו <b>כקישור בעל שם</b> ולא כקובץ שמור. כך מאנדיי כותב קבצים בייצוא לאקסל: הכתובת מסוג <b dir="ltr">/protected_static/</b> היא הקובץ מאחורי ההתחברות שלך למאנדיי, והשרת הזה אינו מחובר. לחיצה על הקובץ תפתח אותו במאנדיי. <b>כדי להביא את הקבצים עצמם:</b> לייצא ב־JSON (backend/monday_export.graphql מבקש <b dir="ltr">assets { public_url }</b>) ולייבא בתוך אותה שעה — אז הבייטים עוברים לכאן.</div>`:''}
+      ${r.files_linked?`<div class="imp-why">${r.files_linked} קבצים הגיעו <b>כקישור בעל שם</b> ולא כקובץ שמור. כך מאנדיי כותב קבצים בייצוא לאקסל: הכתובת מסוג <b dir="ltr">/protected_static/</b> היא הקובץ מאחורי ההתחברות שלך למאנדיי, והשרת הזה אינו מחובר. לחיצה על הקובץ תפתח אותו במאנדיי. <b>כדי להביא את הקבצים עצמם:</b> לייצא ב־JSON (backend/monday_export.graphql מבקש <b dir="ltr">assets { public_url }</b>) ולייבא בתוך אותה שעה — אז הבייטים עוברים לכאן.</div>
+      <div class="imp-why">${REEXPORT_ONE_OP}</div>`:''}
       ${r.files_gone?`<div class="imp-why">${r.files_gone} קבצים שהקובץ מפנה אליהם אינם קיימים יותר במערכת — נשמר השם בלבד. זה קורה כשהלוח המקורי או הקובץ נמחקו מאז הייצוא.</div>`:''}
       ${(r.files_items_unmatched||[]).length?`<div class="imp-why">קבצים ששייכים לפריטים שאינם בקובץ הזה לא צורפו לאף פריט:</div>
         <div class="imp-cols">${(r.files_items_unmatched||[]).map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
@@ -3661,6 +3681,32 @@ function importReport(b){
       ${(r.formula_nothing_cols||[]).length?`<div class="imp-cols">${(r.formula_nothing_cols||[])
         .map(x=>`<span class="tag">${esc(x.title)} · ${x.cells}</span>`).join('')}</div>`:''}
     </div>`:'';
+  /* The board's history. It lands as the same rows the log already reads, so it
+     shows in the item's own לוגים tab and in the board-level log at once — and
+     none of it offers an undo, because the change happened in monday. What the
+     report has to say is the part nobody can see from inside the board: which
+     date the history starts at. monday keeps activity logs for a window that
+     depends on the plan, so an import brings what is still there, never the
+     whole life of the board, and "the log starts in March" is a fact about
+     monday rather than about this import. */
+  const actHTML=r.activity?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-clock-rotate-left"></i> ${r.activity} רשומות היסטוריה</div>
+      <div class="imp-why">נכנסו ללשונית <b>לוגים</b> של הפריטים עצמם, ולוג הלוח מראה את כולן יחד.
+        ${r.activity_from?`הלוג מתחיל ב-<b>${esc(r.activity_from)}</b> ומסתיים ב-<b>${esc(r.activity_to)}</b> —
+        מאנדיי שומר היסטוריית פעילות לחלון שתלוי בתוכנית, ולכן זה מה שהיה שם, לא כל חיי הלוח.`:''}
+        <b>אין ביטול</b> לשורות האלה: השינוי קרה במאנדיי, וביטול היה כותב ערך מהעבר על הפריט כפי שהוא עכשיו.</div>
+      ${r.activity_dropped?`<div class="imp-why">${r.activity_dropped} רשומות לא נכנסו — הן מתייחסות
+        לפריט או לעמודה שאינם בייבוא הזה (פריט שנמחק במאנדיי, או עמודה שלא יובאה).</div>`:''}
+      ${(r.activity_unmapped||[]).length?`<div class="imp-why">סוגי אירועים שאין להם מקבילה כאן:</div>
+        <div class="imp-cols">${(r.activity_unmapped||[]).map(x=>`<span class="tag" dir="ltr">${esc(x[0])} · ${x[1]}</span>`).join('')}</div>`:''}
+    </div>`:(r.activity_asked===false?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-clock-rotate-left"></i> היסטוריית הלוח לא יובאה — <b>השאילתה לא ביקשה אותה</b></div>
+      <div class="imp-why">הוסף <b dir="ltr">activity_logs { id event data user_id created_at }</b> לרמת הלוח,
+        ו-<b dir="ltr">users { id name email }</b> בראש השאילתה — בלי השני כל שורה תירשם כ"מערכת", כי
+        הלוג של מאנדיי נותן מזהה משתמש ולא שם. ואז ייבוא מחדש יביא גם את ההיסטוריה.</div>
+    </div>`:'');
   const formulaHTML=forms.length?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-calculator"></i> ${forms.length} עמודות נוסחה — <b>הערך המחושב יובא כטקסט</b></div>
@@ -3692,9 +3738,10 @@ function importReport(b){
           <div class="imp-why">${esc(REEXP_HE[k]||'סוג שמצריך בקשה מפורשת')}</div>
           <div class="imp-cols">${byKind[k].map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
         </div>`).join('')}
-      <div class="imp-why"><b>מה עושים:</b> מריצים את הייצוא ממאנדיי מחדש עם השאילתה המעודכנת
-        (<b>backend/monday_export.graphql</b>) ומייבאים את הקובץ החדש. אז הקישורים יגיעו עם שמות
-        הפריטים המקושרים, והנוסחאות יגיעו עם הביטוי עצמן — רובן מחושבות כאן מחדש.</div>
+      <div class="imp-why"><b>מה עושים:</b> ${REEXPORT_RUN} ומייבאים את הקובץ החדש. אז הקישורים
+        יגיעו עם שמות הפריטים המקושרים, והנוסחאות יגיעו עם הביטוי עצמן — רובן מחושבות כאן
+        מחדש.</div>
+      <div class="imp-why">${REEXPORT_ONE_OP}</div>
     </div>`:'';
   const emptyCols=r.columns_empty||[];
   const emptyHTML=emptyCols.length?`
@@ -3750,10 +3797,10 @@ function importReport(b){
         אין לא <b>groups</b> ברמת הלוח ולא <b>group</b> בכל פריט. ${r.items||''} הפריטים הגיעו בלי
         שיוך לקבוצה, ולכן נכנסו כולם לקבוצה אחת — והיא נשארה בלי שם, כי שם היה כותרת מעל חלוקה
         שהקובץ לא מכיל. שום דבר לא נמחק.</div>
-      <div class="imp-why"><b>מה עושים:</b> מריצים את הייצוא ממאנדיי מחדש עם השאילתה המעודכנת
-        (<b>backend/monday_export.graphql</b>) — היא מבקשת <b dir="ltr">groups { id title }</b> ברמת
-        הלוח ו-<b dir="ltr">group { id title }</b> בכל פריט — ומייבאים את הקובץ החדש. אז כל פריט
-        ייכנס לקבוצה שלו, ובסדר שהלוח מסדר אותן.</div>
+      <div class="imp-why"><b>מה עושים:</b> ${REEXPORT_RUN} — היא מבקשת
+        <b dir="ltr">groups { id title }</b> ברמת הלוח ו-<b dir="ltr">group { id title }</b> בכל
+        פריט — ומייבאים את הקובץ החדש. אז כל פריט ייכנס לקבוצה שלו, ובסדר שהלוח מסדר אותן.</div>
+      <div class="imp-why">${REEXPORT_ONE_OP}</div>
     </div>`:(r.groups?`
     <div class="imp-sec${ung?' imp-warn':''}"><div class="imp-sec-t">
       <i class="fa-solid fa-layer-group"></i> ${r.groups} קבוצות${ung?` — <b>${
@@ -3765,10 +3812,11 @@ function importReport(b){
         ungAll?'כולם נכנסו':'הם נכנסו'} לקבוצה הראשונה${
         r.ungrouped_into?`, "${esc(r.ungrouped_into)}"`:''}.${
         (ungAll&&r.groups>1)?' שאר הקבוצות נוצרו ריקות.':''} שום דבר לא נמחק.</div>
-      <div class="imp-why"><b>מה עושים:</b> מריצים את הייצוא ממאנדיי מחדש עם השאילתה המעודכנת
-        (<b>backend/monday_export.graphql</b>) — היא מבקשת <b dir="ltr">group { id title }</b> בכל
-        פריט, ולא רק <b dir="ltr">groups { id title }</b> ברמת הלוח — ומייבאים את הקובץ החדש. אז כל
-        פריט ייכנס לקבוצה שלו. עד אז אפשר גם לגרור פריטים בין הקבוצות כאן.</div>`
+      <div class="imp-why"><b>מה עושים:</b> ${REEXPORT_RUN} — היא מבקשת
+        <b dir="ltr">group { id title }</b> בכל פריט, ולא רק <b dir="ltr">groups { id title }</b>
+        ברמת הלוח — ומייבאים את הקובץ החדש. אז כל פריט ייכנס לקבוצה שלו. עד אז אפשר גם לגרור
+        פריטים בין הקבוצות כאן.</div>
+      <div class="imp-why">${REEXPORT_ONE_OP}</div>`
       :(GROUPS_HE[r.groups_from]?`<div class="imp-why">${esc(GROUPS_HE[r.groups_from])}${
         r.groups_column?` ("${esc(r.groups_column)}")`:''} — כל פריט נכנס לקבוצה שהקובץ נותן לו.</div>`:'')}
       <div class="imp-cols">${gNames.map(n=>`<span class="tag">${esc(n||'ללא שם')}</span>`).join('')}</div>
@@ -3803,7 +3851,7 @@ function importReport(b){
     </div>`;
   const title=(b.name||'הלוח יובא');
   const body=`${statsHTML}
-      ${cutHTML}${nameHTML}${groupHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
+      ${cutHTML}${nameHTML}${groupHTML}${actHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
   // kept for the three things that can be done with it once it is on screen —
   // this report cannot be asked for again, so closing it is the one action
   // worth stopping to confirm
@@ -11777,7 +11825,8 @@ const Chat = {
     const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
     const rows=d.activity.map(a=>`<div class="log-row">
       <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':a.action==='create'?'fa-plus':'fa-pen'}"></i></div>
-      <div style="flex:1;min-width:0"><div class="log-txt"><b>${esc(a.user_name)}</b> ${this.logText(a)}</div><div class="log-time">${fdatetimeY(a.created_at)}</div></div>
+      <div style="flex:1;min-width:0"><div class="log-txt"><b>${esc(a.user_name)}</b> ${this.logText(a)}${
+        a.origin==='monday'?' <span class="log-src" title="היסטוריה שיובאה ממאנדיי — אירעה שם, ולכן אין מה לבטל כאן">monday</span>':''}</div><div class="log-time">${fdatetimeY(a.created_at)}</div></div>
       ${a.can_undo&&isMgr?`<button class="log-undo" onclick="Chat.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
     </div>`).join('')||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות</div></div>';
     body.innerHTML=`<div class="log-filters">

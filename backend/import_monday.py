@@ -108,6 +108,140 @@ RETYPED = {
 }
 
 
+# ── the board's activity log ────────────────────────────────────────────────
+# monday's `activity_logs` is the board's history: who changed what, when. The
+# events worth carrying across are the ones that describe an item this import is
+# also bringing; everything else is counted and named in the report rather than
+# dropped in silence.
+#
+# An entry's details live in `data`, which is a JSON *string* — monday does not
+# nest it — and `created_at` is microseconds since the epoch, as a string of 17
+# digits. Both are the kind of thing that looks like a bug the first time.
+LOG_EVENTS = {
+    "create_pulse":          ("create", None),
+    "pulse_create":          ("create", None),
+    "update_name":           ("update", "title"),
+    "pulse_name_updated":    ("update", "title"),
+    "update_column_value":   ("update", "column"),
+    "change_column_value":   ("update", "column"),
+    "move_pulse_into_group": ("update", "group"),
+}
+
+# How many log entries one import will carry. monday itself pages them, and a
+# board of a few hundred items with sixty columns has tens of thousands: past
+# some point this stops being history and becomes a table nobody reads.
+MAX_LOG_ENTRIES = 20000
+
+
+def _log_when(raw):
+    """monday's log timestamps are microseconds since the epoch, as a string."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if s.isdigit():
+        n = int(s)
+        from datetime import datetime, timezone
+        # monday documents microseconds, and sends them. The other units are
+        # tried after it rather than guessed at by digit count: what settles it
+        # is which divisor lands inside the range a real date can be in, and
+        # 1727259000000000 µs read as seconds is 1970 — which is what a wrong
+        # guess here looks like, on every row.
+        for div in (1_000_000, 1_000, 1, 1_000_000_000):
+            secs = n / div
+            if not 1_000_000_000 <= secs < 4_000_000_000:      # 2001 … 2096
+                continue
+            try:
+                return datetime.fromtimestamp(secs, timezone.utc).replace(tzinfo=None).isoformat()
+            except (OverflowError, OSError, ValueError):
+                return ""
+        return ""
+    return s
+
+
+def _log_value(v):
+    """One side of a logged change, as the words a person would read.
+
+    monday states a changed cell as the column type's own object — a status as
+    {"label":{"text":"Done"}}, a date as {"date":"2025-01-01"} — and the shape
+    differs per type. What the log needs is the text, so the known places are
+    tried in order and anything else is left as it came.
+    """
+    if v is None or v == "" or v == {}:
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, list):
+        return ", ".join(x for x in (_log_value(i) for i in v) if x)
+    if isinstance(v, dict):
+        for k in ("text", "name", "title", "date", "value", "label"):
+            if k in v:
+                got = _log_value(v[k])
+                if got:
+                    return got
+        for k in ("personsAndTeams", "chosenValues", "linkedPulseIds"):
+            if v.get(k):
+                return _log_value(v[k])
+        return ""
+    return str(v)
+
+
+def _activity_of(board, people):
+    """The board's log, as rows the importer can write, plus what was left out.
+
+    Each row names the monday item it belongs to; matching that to a task is the
+    importer's job, and the only moment it can be done — the mapping exists
+    while the import runs and nowhere after it.
+    """
+    raw = board.get("activity_logs")
+    if not isinstance(raw, list):
+        return [], {}
+    rows, dropped, unmapped = [], 0, {}
+    for e in raw:
+        if not isinstance(e, dict):
+            continue
+        ev = (e.get("event") or "").strip()
+        known = LOG_EVENTS.get(ev)
+        if not known:
+            unmapped[ev or "—"] = unmapped.get(ev or "—", 0) + 1
+            continue
+        action, field = known
+        data = e.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except ValueError:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        item = data.get("pulse_id") or data.get("item_id")
+        if item is None:
+            dropped += 1
+            continue
+        if len(rows) >= MAX_LOG_ENTRIES:
+            dropped += 1
+            continue
+        who = people.get(str(e.get("user_id") or "")) or {}
+        rows.append({
+            "item": str(item),
+            "action": action,
+            "field": field,
+            # the column this touched, as monday names it; the importer turns it
+            # into the column it became here
+            "column": str(data.get("column_id") or "") if field == "column" else "",
+            "column_title": (data.get("column_title") or "").strip() if field == "column" else "",
+            "old": _log_value(data.get("previous_value")),
+            "new": _log_value(data.get("value") if "value" in data else data.get("name")),
+            "author": (who.get("name") or "").strip(),
+            "email": (who.get("email") or "").strip(),
+            "at": _log_when(e.get("created_at")),
+            "event": ev,
+        })
+    rows.sort(key=lambda r: r.get("at") or "")
+    return rows, {"dropped": dropped, "unmapped": unmapped}
+
+
 class NotMondayJson(Exception):
     pass
 
@@ -129,6 +263,31 @@ def _boards_in(doc):
     # the board around it — it is still a page of the same board
     nxt = data.get("next_items_page") or doc.get("next_items_page")
     return [{"items_page": nxt}] if isinstance(nxt, dict) else []
+
+
+def _users_in(doc):
+    """The account's users, by monday id — {"11397425": {"name", "email"}}.
+
+    monday names a person in two places and neither is the one you need: a
+    people CELL carries their monday id, and the activity log carries only a
+    user id. Both are useless on their own, which is why the query asks for
+    `users { id name email }` at the root: it is the only thing that turns an id
+    into a person, and the e-mail is the half that survives a rename.
+    """
+    if isinstance(doc, list):
+        out = {}
+        for one in doc:
+            out.update(_users_in(one))
+        return out
+    if not isinstance(doc, dict):
+        return {}
+    users = (doc.get("data") or {}).get("users") or doc.get("users")
+    out = {}
+    for u in users if isinstance(users, list) else []:
+        if isinstance(u, dict) and u.get("id") is not None:
+            out[str(u["id"])] = {"name": (u.get("name") or "").strip(),
+                                 "email": (u.get("email") or "").strip()}
+    return out
 
 
 def _items_of(doc):
@@ -156,7 +315,7 @@ def _items_of(doc):
         # the board's name, groups and column definitions ride on the page that
         # asked for them; the first page carrying each settles it, so a later
         # page without them takes nothing away
-        for k in ("id", "name", "groups", "columns"):
+        for k in ("id", "name", "groups", "columns", "activity_logs"):
             if b.get(k) and not board.get(k):
                 board[k] = b[k]
         page = b.get("items_page")
@@ -553,6 +712,8 @@ def parse(raw, max_cols):
     """
     doc = json.loads(raw)
     board, items, cursor = _items_of(doc)
+    people_by_id = _users_in(doc)
+    activity, activity_left = _activity_of(board, people_by_id)
 
     # ── survey the columns: title, type, and how many items actually use them ──
     meta, fill, order = {}, {}, []
@@ -742,6 +903,9 @@ def parse(raw, max_cols):
         ups, dropped = _updates_of(it)
         talk_dropped[0] += dropped
         rows.append({"name": (it.get("name") or "").strip() or "פריט",
+                     # monday's own id for the item. The board's history names
+                     # items by this and by nothing else, so it has to travel.
+                     "id": str(it.get("id") or ""),
                      "group": gid, "values": read(it), "subitems": subs,
                      "updates": ups})
 
@@ -770,6 +934,8 @@ def parse(raw, max_cols):
     return {
         "board_name": (board.get("name") or "").strip() or None,
         "groups": groups,
+        # the board's own history, when the query asked for it
+        "activity": activity,
         "columns": columns,
         "items": rows,
         "report": {
@@ -800,6 +966,14 @@ def parse(raw, max_cols):
             # every formula column: the expression that came with it, and
             # whether this app could compute it if asked to
             "formulas": formulas,
+            # the board's history: what came, and what was left behind
+            "activity": len(activity),
+            "activity_from": (activity[0]["at"][:10] if activity else ""),
+            "activity_to": (activity[-1]["at"][:10] if activity else ""),
+            "activity_dropped": (activity_left or {}).get("dropped", 0),
+            "activity_unmapped": sorted(((activity_left or {}).get("unmapped") or {}).items(),
+                                        key=lambda kv: -kv[1])[:12],
+            "activity_asked": "activity_logs" in (board or {}),
             # the formula cells monday itself answered with nothing
             "formula_nothing": sum(n for cid, n in nothing.items() if cid in by_key),
             "formula_nothing_cols": [{"title": meta[cid]["title"], "cells": n}

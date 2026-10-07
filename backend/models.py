@@ -838,6 +838,13 @@ class AuditLog(Base):
     changed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     action = Column(String(50), nullable=False)  # "create", "update", "delete", "approve", "reject"
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Where this row came from, when it was not this system that did the thing.
+    # An imported monday activity entry keeps its own author's name here — the
+    # audit has nowhere else to put a person with no account — and the presence
+    # of this field is what stops the row from offering an undo: reverting a
+    # change made in monday last year would write that value onto the item now.
+    # Same shape as Comment.origin, for the same reason.
+    origin = Column(JSON, nullable=True)
     changer = relationship("User", foreign_keys=[changed_by])
 
 
