@@ -153,6 +153,15 @@ query ($boardId: [ID!]) {
 # know a page is missing. monday keeps activity logs for a window that depends
 # on the plan, so what arrives is what is still there, never the whole life of
 # the board.
+#
+# ⚠ The variable matters here as much as the query. `boards(ids: $boardId)` run
+# with boardId unset is `boards(ids: null)`, and monday answers that with the
+# first page of EVERY board in the account — twenty-six boards' logs instead of
+# this one's. It happens to this request and not to the first because it is run
+# second, in a fresh tab or a request whose variables were never filled in. The
+# import survives it now: the items settle which board the file is about, the
+# other boards are named in the report and their history is left behind. Setting
+# the variable is still the point — the log that was asked for is this board's.
 # variables: { "boardId": [6204255781] }
 query ($boardId: [ID!]) {
   users {

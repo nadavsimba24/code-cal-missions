@@ -2,7 +2,7 @@
   "info": {
     "name": "CODE-CAL MISSIONS — monday export",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "The export the importer reads. Generated from backend/monday_export.graphql and kept identical to it by tests/test_import_query.py — a collection that drifts from that file is how a board arrives with empty formula columns and no groups.\n\nSet two collection variables: MONDAY_TOKEN (monday → Developers → My access tokens) and boardId.\n\nRun the requests FROM HERE rather than pasting monday_export.graphql into a request of your own: that file holds both operations, and a request carrying both answers HTTP 200 with \"operation name is required when multiple operations are defined\". Postman's query box appends what is pasted instead of replacing it, and it scrolls — so a leftover second query is easy to miss. Each request here holds one operation.\n\nRun \"1 — page one\". If the response's `cursor` is not null, run \"2 — every page after it\" with that cursor, again and again until it is. Put the responses in ONE file as a JSON array — [ {first}, {second}, … ] — and import that file.\n\nFiles: monday's asset links last about an hour, so export and import in one go if the attachments matter."
+    "description": "The export the importer reads. Generated from backend/monday_export.graphql and kept identical to it by tests/test_import_query.py — a collection that drifts from that file is how a board arrives with empty formula columns and no groups.\n\nSet two collection variables: MONDAY_TOKEN (monday → Developers → My access tokens) and boardId.\n\nRun the requests FROM HERE rather than pasting monday_export.graphql into a request of your own: that file holds both operations, and a request carrying both answers HTTP 200 with \"operation name is required when multiple operations are defined\". Postman's query box appends what is pasted instead of replacing it, and it scrolls — so a leftover second query is easy to miss. Each request here holds one operation.\n\nRun \"1 — page one\". If the response's `cursor` is not null, run \"2 — every page after it\" with that cursor, again and again until it is. Put the responses in ONE file as a JSON array — [ {first}, {second}, … ] — and import that file.\n\nFiles: monday's asset links last about an hour, so export and import in one go if the attachments matter.\n\nIf boardId is empty the requests stop before they are sent, and the answer is checked for holding exactly the one board asked for. An empty or unresolved variable makes monday answer `boards(ids: [])` with the first 25 boards in the account — 200, no error, and a file that looks like an export of the wrong thing."
   },
   "variable": [
     {
@@ -71,7 +71,36 @@
         },
         "description": "Everything the board is: its name, its groups, its column definitions (where a formula's expression lives), and the first 500 items with their sub-items, conversations and assets."
       },
-      "response": []
+      "response": [],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const id = pm.variables.get('boardId');",
+              "if (!id || !String(id).trim()) {",
+              "  throw new Error('boardId ריק — מלא אותו ב-Variables של האוסף (Current value!). בלי זה מאנדיי מחזיר את כל הלוחות בחשבון, בלי שגיאה.');",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const boards = ((pm.response.json() || {}).data || {}).boards || [];",
+              "pm.test('לוח אחד בתשובה, ולא כל החשבון', function () {",
+              "  pm.expect(boards.length, 'מספר הלוחות בתשובה').to.eql(1);",
+              "});",
+              "pm.test('הלוח שביקשת', function () {",
+              "  pm.expect(String((boards[0] || {}).id)).to.eql(String(pm.variables.get('boardId')));",
+              "});"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "2 — the history",
@@ -119,7 +148,36 @@
         },
         "description": "Everything the board is: its name, its groups, its column definitions (where a formula's expression lives), and the first 500 items with their sub-items, conversations and assets."
       },
-      "response": []
+      "response": [],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const id = pm.variables.get('boardId');",
+              "if (!id || !String(id).trim()) {",
+              "  throw new Error('boardId ריק — מלא אותו ב-Variables של האוסף (Current value!). בלי זה מאנדיי מחזיר את כל הלוחות בחשבון, בלי שגיאה.');",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const boards = ((pm.response.json() || {}).data || {}).boards || [];",
+              "pm.test('לוח אחד בתשובה, ולא כל החשבון', function () {",
+              "  pm.expect(boards.length, 'מספר הלוחות בתשובה').to.eql(1);",
+              "});",
+              "pm.test('הלוח שביקשת', function () {",
+              "  pm.expect(String((boards[0] || {}).id)).to.eql(String(pm.variables.get('boardId')));",
+              "});"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "3 — every page after it",

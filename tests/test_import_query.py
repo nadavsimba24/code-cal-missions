@@ -124,3 +124,23 @@ def test_both_files_say_that_one_request_carries_one_query():
             f"{path.name} does not say that a request carries one operation"
         assert "collection" in raw.lower(), \
             f"{path.name} does not point at the collection, whose requests hold one each"
+
+
+def test_the_collection_refuses_to_send_an_empty_boardId():
+    """The one failure monday does not report. `boards(ids: [])` — which is what
+    an empty collection variable makes of `{"boardId": [{{boardId}}]}` — answers
+    HTTP 200 with the first 25 boards in the account. Her history export came
+    back that way: 20,064 log entries belonging to twenty-five boards, none of
+    them the board she was exporting, and nothing anywhere saying so.
+
+    Postman is the only place this can be caught while it is still cheap, so
+    every request that takes a board id checks the variable before it goes and
+    checks the answer when it returns."""
+    for item in _collection()["item"]:
+        if "{{boardId}}" not in item["request"]["body"]["graphql"]["variables"]:
+            continue
+        scripts = {e["listen"]: "\n".join(e["script"]["exec"]) for e in item.get("event") or []}
+        assert "boardId" in scripts.get("prerequest", ""), \
+            f"{item['name']} sends whatever is in the variable, empty or not"
+        assert "boards.length" in scripts.get("test", ""), \
+            f"{item['name']} accepts an answer holding the whole account"

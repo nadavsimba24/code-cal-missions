@@ -3579,6 +3579,20 @@ function importReport(b){
   const cut=[];
   if(r.truncated) cut.push('הייצוא נעצר לפני סוף הלוח — בתשובה יש cursor להמשך, ולכן יובאו רק הפריטים שבקובץ. הרץ את השאילתה עם limit גבוה יותר, או צרף את כל העמודים לקובץ אחד כמערך JSON.');
   if(r.rows_dropped) cut.push(`${r.rows_dropped} פריטים מעבר לתקרה לא יובאו.`);
+  /* A request run without the boardId variable asks for `boards(ids: null)` and
+     comes back with every board in the account — usually the history request,
+     which is run second and loses the variable easily. The items settle which
+     board the file is about; the other boards' logs are left where they were,
+     and this is the one place that can be said. */
+  const others=r.other_boards||[];
+  const othersHTML=others.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-layer-group"></i> בקובץ היו עוד ${others.length} לוחות — <b>לא יובאו</b></div>
+      <div class="imp-why">הם לא הביאו פריטים משלהם, אלא רק היסטוריה: כנראה בקשה שרצה בלי המשתנה
+        <b dir="ltr">boardId</b>, שחוזרת עם כל הלוחות בחשבון. יובא הלוח שהפריטים שייכים לו, וההיסטוריה
+        של האחרים נשארה במאנדיי.</div>
+      <div class="imp-cols">${others.slice(0,12).map(b=>`<span class="tag" dir="ltr">${esc(String(b))}</span>`).join('')}</div>
+    </div>`:'';
   const cutHTML=cut.length?`
     <div class="imp-sec imp-warn"><div class="imp-sec-t">
       <i class="fa-solid fa-triangle-exclamation"></i> הקובץ אינו הלוח המלא</div>
@@ -3698,14 +3712,21 @@ function importReport(b){
         <b>אין ביטול</b> לשורות האלה: השינוי קרה במאנדיי, וביטול היה כותב ערך מהעבר על הפריט כפי שהוא עכשיו.</div>
       ${r.activity_dropped?`<div class="imp-why">${r.activity_dropped} רשומות לא נכנסו — הן מתייחסות
         לפריט או לעמודה שאינם בייבוא הזה (פריט שנמחק במאנדיי, או עמודה שלא יובאה).</div>`:''}
+      ${r.activity_nameless?`<div class="imp-why">${r.activity_nameless} רשומות רשומות על <b>מערכת</b>:
+        ${r.activity_nameless_who>1?`${r.activity_nameless_who} אנשים שהלוג מזהה במספר`:'אדם שהלוג מזהה במספר'}
+        בלבד, ורשימת המשתמשים שבקובץ לא כוללת אותם — בדרך כלל מי שכבר אינו בחשבון. השמות של מי
+        שעדיין מופיע בעמודת אנשים בלוח כן נקראו משם.</div>`:''}
       ${(r.activity_unmapped||[]).length?`<div class="imp-why">סוגי אירועים שאין להם מקבילה כאן:</div>
         <div class="imp-cols">${(r.activity_unmapped||[]).map(x=>`<span class="tag" dir="ltr">${esc(x[0])} · ${x[1]}</span>`).join('')}</div>`:''}
     </div>`:(r.activity_asked===false?`
     <div class="imp-sec"><div class="imp-sec-t">
-      <i class="fa-solid fa-clock-rotate-left"></i> היסטוריית הלוח לא יובאה — <b>השאילתה לא ביקשה אותה</b></div>
-      <div class="imp-why">הוסף <b dir="ltr">activity_logs { id event data user_id created_at }</b> לרמת הלוח,
+      <i class="fa-solid fa-clock-rotate-left"></i> היסטוריית הלוח לא יובאה — <b>${others.length?'ההיסטוריה שבקובץ היא של לוחות אחרים':'השאילתה לא ביקשה אותה'}</b></div>
+      ${others.length?`<div class="imp-why">בקובץ יש היסטוריה, אבל לא של הלוח הזה: הבקשה רצה בלי המשתנה
+        <b dir="ltr">boardId</b>, ומאנדיי החזיר את ${others.length} הלוחות הראשונים בחשבון — הלוח הזה לא ביניהם.
+        הרץ את בקשת ההיסטוריה שוב עם <b dir="ltr">{"boardId": [${esc(String(r.board_id||''))}]}</b>, צרף את התשובה
+        לקובץ, וייבוא מחדש יביא גם את ההיסטוריה.</div>`:`<div class="imp-why">הוסף <b dir="ltr">activity_logs { id event data user_id created_at }</b> לרמת הלוח,
         ו-<b dir="ltr">users { id name email }</b> בראש השאילתה — בלי השני כל שורה תירשם כ"מערכת", כי
-        הלוג של מאנדיי נותן מזהה משתמש ולא שם. ואז ייבוא מחדש יביא גם את ההיסטוריה.</div>
+        הלוג של מאנדיי נותן מזהה משתמש ולא שם. ואז ייבוא מחדש יביא גם את ההיסטוריה.</div>`}
     </div>`:'');
   const formulaHTML=forms.length?`
     <div class="imp-sec"><div class="imp-sec-t">
@@ -3851,7 +3872,7 @@ function importReport(b){
     </div>`;
   const title=(b.name||'הלוח יובא');
   const body=`${statsHTML}
-      ${cutHTML}${nameHTML}${groupHTML}${actHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
+      ${cutHTML}${othersHTML}${nameHTML}${groupHTML}${actHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
   // kept for the three things that can be done with it once it is on screen —
   // this report cannot be asked for again, so closing it is the one action
   // worth stopping to confirm

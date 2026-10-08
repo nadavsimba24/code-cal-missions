@@ -339,3 +339,127 @@ def test_the_events_that_are_not_an_item_s_history_stay_out(client, admin_id):
     assert dict(rep["activity_unmapped"]) == {
         "unsubscribe": 1, "change_column_settings": 1, "add_owner": 1,
         "board_view_changed": 1, "move_pulse_from_group": 1}
+
+
+# ── a history request that came back with the whole account ─────────────────
+def test_the_history_of_the_other_boards_in_the_file_is_not_imported(client, admin_id):
+    """`boards(ids: $boardId)` run with the variable unset is `boards(ids: null)`,
+    which answers with every board in the account. It is easy to do to the
+    history request in particular: it is the second one run, and the first one's
+    variable does not carry over. Her merged file arrived that way — one board's
+    items beside twenty-six boards' logs — and was refused as twenty-seven
+    boards.
+
+    The items say which board the file is about. The rest brought no items, and
+    the first of them would otherwise have settled `activity_logs` for the whole
+    import: the history of a board nobody is importing, hung on items that are
+    not there."""
+    items = [_item(111, "פריט א")]
+    main = {"data": {"boards": [{"id": "1", "name": "לוח",
+                                 "groups": [{"id": "g1", "title": "פתוח"}],
+                                 "items_page": {"cursor": None, "items": items}}]}}
+    hist = {"data": {"users": [{"id": "777", "name": "רעות אורן", "email": "r@example.com"}],
+                     "boards": [
+                         # listed before the one being imported, which is the
+                         # order that used to decide whose log was read
+                         {"id": "999", "activity_logs": [
+                             _log("update_name", 555, name="ד", previous_value="ג")]},
+                         {"id": "1", "activity_logs": [
+                             _log("update_name", 111, name="ב", previous_value="א")]},
+                         {"id": "888", "activity_logs": []},
+                     ]}}
+    d = _upload(client, json.dumps([main, hist], ensure_ascii=False).encode())
+    rep = d["report"]
+    assert rep["items"] == 1, rep
+    assert rep["activity"] == 1, "this board's history, and only it"
+    assert rep["other_boards"] == ["888", "999"], \
+        "the boards that brought no items are named in the report, not dropped quietly"
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    mine = [r for r in rows if r.get("origin") == "monday"]
+    assert len(mine) == 1 and mine[0]["user_name"] == "רעות אורן"
+
+
+def test_a_file_of_one_board_says_nothing_about_other_boards(client, admin_id):
+    d = _upload(client, _resp([_item(111, "פריט א")],
+                              logs=[_log("update_name", 111, name="ב", previous_value="א")]))
+    assert d["report"]["other_boards"] == []
+
+
+def test_a_file_whose_history_is_other_boards_says_so_instead_of_blaming_the_query(client, admin_id):
+    """Her file, exactly: the history request ran without boardId, monday
+    answered with the first 25 boards in the account — ordered newest first, and
+    her board was older than all of them. So the file HAS history and none of it
+    is hers, which the report must not report as "the query never asked".
+    """
+    main = {"data": {"boards": [{"id": "6257071922", "name": "לוח",
+                                 "groups": [{"id": "g1", "title": "פתוח"}],
+                                 "items_page": {"cursor": None,
+                                                "items": [_item(111, "פריט א")]}}]}}
+    hist = {"data": {"boards": [{"id": "999", "activity_logs": [
+        _log("update_name", 555, name="ד", previous_value="ג")]}]}}
+    d = _upload(client, json.dumps([main, hist], ensure_ascii=False).encode())
+    rep = d["report"]
+    assert rep["activity"] == 0 and rep["activity_asked"] is False
+    assert rep["other_boards"] == ["999"], "the log that did come is named as another board's"
+    assert rep["board_id"] == "6257071922", \
+        "the report hands back the id the re-run needs as its variable"
+
+
+# ── naming the people the account's user list left out ──────────────────────
+def test_a_log_author_the_user_list_lost_is_named_by_the_board_s_own_cells(client, admin_id):
+    """`users` answers with the account as it is now; the log is the board as it
+    was. Her export came back with 200 users and a log written by 21 people,
+    fifteen of whom were not on the list — 4,672 rows heading for "מערכת".
+
+    Whoever was assigned work on this board is still named by the people cell
+    they sit in, which is where the names come from when the list has none."""
+    cell = {"id": "p", "type": "people", "column": {"title": "אחראי"},
+            "text": "אביב שמש",
+            "value": json.dumps({"personsAndTeams": [{"id": 34108305, "kind": "person"}]})}
+    items = [_item(111, "פריט א", [cell])]
+    raw = _resp(items, logs=[_log("update_name", 111, user="34108305",
+                                  name="ב", previous_value="א")],
+                users=[{"id": "777", "name": "מישהו אחר", "email": "x@example.com"}])
+    d = _upload(client, raw)
+    assert d["report"]["activity"] == 1
+    assert d["report"]["activity_nameless"] == 0, "the cell named the author"
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    mine = [r for r in rows if r.get("origin") == "monday"]
+    assert mine[0]["user_name"] == "אביב שמש"
+
+
+def test_the_account_s_list_wins_over_a_cell_when_it_has_an_answer(client, admin_id):
+    """The list carries the e-mail, which is the half that survives a rename —
+    a cell carries a display name and nothing else."""
+    cell = {"id": "p", "type": "people", "column": {"title": "אחראי"}, "text": "שם ישן",
+            "value": json.dumps({"personsAndTeams": [{"id": 777, "kind": "person"}]})}
+    raw = _resp([_item(111, "פריט א", [cell])],
+                logs=[_log("update_name", 111, name="ב", previous_value="א")],
+                users=[{"id": "777", "name": "רעות אורן", "email": "r@example.com"}])
+    d = _upload(client, raw)
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    assert [r["user_name"] for r in rows if r.get("origin") == "monday"] == ["רעות אורן"]
+
+
+def test_a_cell_whose_names_do_not_line_up_with_its_ids_names_nobody(client, admin_id):
+    """The pairing is positional. A name holding a comma would shift every name
+    after it onto the wrong person, and a log that names the wrong author is
+    worse than one that names none."""
+    cell = {"id": "p", "type": "people", "column": {"title": "אחראי"},
+            "text": "כהן, יעל, אבי לוי",      # two people, three comma-separated names
+            "value": json.dumps({"personsAndTeams": [{"id": 34108305, "kind": "person"},
+                                                     {"id": 21615439, "kind": "person"}]})}
+    raw = _resp([_item(111, "פריט א", [cell])],
+                logs=[_log("update_name", 111, user="34108305", name="ב", previous_value="א")])
+    d = _upload(client, raw)
+    assert d["report"]["activity_nameless"] == 1, "nobody was guessed at"
+
+
+def test_mondays_own_actors_are_the_system_and_not_a_missing_person(client, admin_id):
+    """monday's automations write to the log under a negative id. "מערכת" is the
+    truth about those, so they are not counted as people the file failed to
+    name — 1,847 of her rows were this."""
+    raw = _resp([_item(111, "פריט א")],
+                logs=[_log("update_name", 111, user="-4", name="ב", previous_value="א")])
+    d = _upload(client, raw)
+    assert d["report"]["activity"] == 1 and d["report"]["activity_nameless"] == 0

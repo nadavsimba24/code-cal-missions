@@ -206,6 +206,12 @@ def _activity_of(board, people):
     if not isinstance(raw, list):
         return [], {}
     rows, dropped, unmapped = [], 0, {}
+    # Rows whose author the file cannot name. monday's own actors have negative
+    # ids (-4 is its automations), and "מערכת" is the truth about those. A
+    # positive id with no name is a person: on her board 1,311 rows by someone
+    # who is neither in the account's user list nor in a people cell, and a log
+    # that quietly calls them the system is a log that lost them.
+    nameless = {}
     for e in raw:
         if not isinstance(e, dict):
             continue
@@ -237,7 +243,10 @@ def _activity_of(board, people):
         if len(rows) + len(items_here) > MAX_LOG_ENTRIES:
             dropped += len(items_here)
             continue
-        who = people.get(str(e.get("user_id") or "")) or {}
+        uid = str(e.get("user_id") or "")
+        who = people.get(uid) or {}
+        if not who and uid and not uid.startswith("-"):
+            nameless[uid] = nameless.get(uid, 0) + len(items_here)
         # A move does not state a value; it states the two groups, by name. Read
         # as a value the row came out "changed group: — ← —", which is the
         # shape of a row that knows something happened and nothing else.
@@ -264,7 +273,7 @@ def _activity_of(board, people):
                 "event": ev,
             })
     rows.sort(key=lambda r: r.get("at") or "")
-    return rows, {"dropped": dropped, "unmapped": unmapped}
+    return rows, {"dropped": dropped, "unmapped": unmapped, "nameless": nameless}
 
 
 class NotMondayJson(Exception):
@@ -315,6 +324,51 @@ def _users_in(doc):
     return out
 
 
+def _people_in_cells(items):
+    """Names for monday user ids, read off the board's own people cells.
+
+    `users` at the root of the query is the proper answer, and it is not a
+    complete one: monday's user list leaves out whoever is no longer an active
+    member of the account, and the activity log does not care — it names the
+    person who made the change years ago. Her export came back with 200 users and
+    a log written by 21 people; fifteen of them were not on the list, and 4,672
+    rows would have read "מערכת".
+
+    A people CELL carries both halves: the ids in `value.personsAndTeams` and the
+    display names in `text`, in the same order. It only names people who still
+    sit in a cell on this board, which is most of the ones the list dropped —
+    anyone who was assigned work here and has since left.
+
+    The pairing is positional, so it is taken only when the two sides are the
+    same length; a name with a comma in it would otherwise shift every name
+    after it onto the wrong person, which is worse than no name at all. No
+    e-mail comes from here, and the account's own list wins wherever it has an
+    answer.
+    """
+    out = {}
+    def scan(it):
+        for cv in (it or {}).get("column_values") or []:
+            if cv.get("type") != "people":
+                continue
+            try:
+                v = json.loads(cv.get("value") or "null") or {}
+            except ValueError:
+                continue
+            ids = [str(p.get("id")) for p in (v.get("personsAndTeams") or [])
+                   if isinstance(p, dict) and p.get("kind") == "person" and p.get("id") is not None]
+            names = [n.strip() for n in (cv.get("text") or "").split(",") if n.strip()]
+            if len(ids) != len(names):
+                continue
+            for uid, name in zip(ids, names):
+                if uid not in out and name:
+                    out[uid] = {"name": name, "email": ""}
+    for it in items or []:
+        scan(it)
+        for sub in (it or {}).get("subitems") or []:
+            scan(sub)
+    return out
+
+
 def _items_of(doc):
     """monday nests the items differently depending on how the query was written.
 
@@ -323,6 +377,9 @@ def _items_of(doc):
     array of the responses — the pages are read as the one board they are. Two
     *different* boards in a file are not: one import builds one board, and
     quietly taking the first would import half a migration and say nothing.
+    "Two boards" means two boards that each brought items; a board named by a
+    response that brought none of its own is one of the account's others, and it
+    is dropped and reported rather than treated as a second migration.
 
     The cursor of the last page comes back too. A cursor that is still set means
     the export stopped before the board ended, which is the one thing a
@@ -332,8 +389,29 @@ def _items_of(doc):
     if not boards:
         raise NotMondayJson("no boards in the response")
     ids = {str(b["id"]) for b in boards if b.get("id")}
-    if len(ids) > 1:
-        raise NotMondayJson("the file holds more than one board: " + ", ".join(sorted(ids)))
+    # Which board the file is about is settled by the ITEMS. A request run with
+    # the boardId variable unset asks `boards(ids: null)` and comes back with
+    # every board in the account — the history query especially, since it is run
+    # second and the variable is easy to lose: her merged file held one board's
+    # items beside twenty-six boards' logs, and was refused as twenty-seven
+    # boards. Those others carry no items and are not a migration; they are the
+    # same board's file with a log nobody asked for, so they are dropped and
+    # counted. Two boards that each brought ITEMS are a different thing, and
+    # still refused — one import builds one board, and quietly taking the first
+    # would import half a migration and say nothing.
+    with_items = {str(b["id"]) for b in boards
+                  if b.get("id") and ("items_page" in b or "items" in b)}
+    extra = []
+    if len(with_items) == 1:
+        keep = next(iter(with_items))
+        extra = sorted(ids - {keep})
+        # a page fetched by cursor has no board around it: it is this board's
+        boards = [b for b in boards if str(b.get("id") or keep) == keep]
+    elif len(ids) > 1:
+        raise NotMondayJson(
+            "the file holds more than one board: " + ", ".join(sorted(ids))
+            + " — a request run without the boardId variable answers with every "
+              "board in the account; re-run it with the board's id and merge again")
 
     board, items, cursor, seen = {}, [], None, set()
     for b in boards:
@@ -361,6 +439,8 @@ def _items_of(doc):
             items.append(it)
     if not items:
         raise NotMondayJson("no items in the response")
+    if extra:
+        board["_other_boards"] = extra
     return board, items, cursor
 
 
@@ -749,7 +829,10 @@ def parse(raw, max_cols):
     """
     doc = json.loads(raw)
     board, items, cursor = _items_of(doc)
-    people_by_id = _users_in(doc)
+    # the account's user list first, and the board's own people cells behind it
+    # for everyone the list no longer carries — see _people_in_cells
+    people_by_id = _people_in_cells(items)
+    people_by_id.update(_users_in(doc))
     activity, activity_left = _activity_of(board, people_by_id)
 
     # ── survey the columns: title, type, and how many items actually use them ──
@@ -1010,7 +1093,19 @@ def parse(raw, max_cols):
             "activity_dropped": (activity_left or {}).get("dropped", 0),
             "activity_unmapped": sorted(((activity_left or {}).get("unmapped") or {}).items(),
                                         key=lambda kv: -kv[1])[:12],
+            # rows by a person the file never names — see `nameless` above
+            "activity_nameless": sum(((activity_left or {}).get("nameless") or {}).values()),
+            "activity_nameless_who": len((activity_left or {}).get("nameless") or {}),
             "activity_asked": "activity_logs" in (board or {}),
+            # monday's own id for the board, so the report can hand back the
+            # variable a re-run needs rather than asking her to go and find it
+            "board_id": str((board or {}).get("id") or ""),
+            # boards the file carried that brought no items of their own — a
+            # request run without the boardId variable answers with the whole
+            # account. Their logs were left where they were, and saying so is
+            # the difference between a file that was read and a file that was
+            # guessed at.
+            "other_boards": (board or {}).get("_other_boards") or [],
             # the formula cells monday itself answered with nothing
             "formula_nothing": sum(n for cid, n in nothing.items() if cid in by_key),
             "formula_nothing_cols": [{"title": meta[cid]["title"], "cells": n}
