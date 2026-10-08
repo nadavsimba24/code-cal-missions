@@ -2475,15 +2475,37 @@ async function boot(){
     document.getElementById('view').innerHTML='<div class="empty"><i class="fa-solid fa-plug-circle-xmark"></i><div>השרת לא זמין</div><div style="font-size:12px">'+esc(e.message)+'</div></div>';
   }
 }
+/* The switcher and the open board are one statement about where you are, so a
+   board from another workspace must take its workspace with it — otherwise the
+   sidebar names one place and the board belongs to another. */
+function followBoardEnv(boardId){
+  const b=(st.boards||[]).find(x=>x.id===boardId); if(!b)return;
+  const env=(Env.items||[]).find(e=>e.id===b.environment_id);
+  if(env && (!st.env || st.env.id!==env.id)){ st.env=env; Env.render(); }
+}
 async function enterApp(){
   await loadBoards();
+  /* The app opens in the primary workspace — the one every user is in — and
+     Env.load is what settles which that is, so it is awaited here rather than
+     left to the render that happens to fire it. */
+  try{ if(!(Env.items||[]).length) await Env.load(); }catch(e){}
   if(st.boards.length){
-    // a deep link in the URL wins; otherwise return to the board open before refresh
+    // a deep link in the URL wins; otherwise the board you were on, as long as
+    // it is in the workspace that just opened
     const r=Router.parse();
     let target, wantItem=null;
     if(r.boardId && st.boards.some(b=>b.id===r.boardId)){ target=r.boardId; wantItem=r.itemId; }
-    else { const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
-           target=st.boards.some(b=>b.id===savedBoard)?savedBoard:st.boards[0].id; }
+    else {
+      const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
+      const active=Env.active();
+      const here=active?st.boards.filter(b=>b.environment_id===active.id):st.boards.slice();
+      target=(here.some(b=>b.id===savedBoard)?savedBoard:(here.length?here[0].id:null))
+          // nothing of theirs in the primary workspace: better the board they
+          // were on than an empty screen that says nothing about the boards
+          // they do have
+          || (st.boards.some(b=>b.id===savedBoard)?savedBoard:st.boards[0].id);
+    }
+    followBoardEnv(target);
     await openBoard(target);
     if(wantItem && findAnyTask(wantItem)) Chat.open(wantItem,{center:true});   // deep link to a specific item
   }
@@ -6400,16 +6422,25 @@ const Env = {
     let d={members:[],available:[],can_set_manager:false}; try{ d=await api('/api/environments/'+id+'/members?actor_id='+meId()); }catch(e){}
     this.membersData=d;
     const roleAdd=d.can_set_manager?`<select id="envm-role"><option value="member">חבר</option><option value="manager">מנהל סביבה</option></select>`:'';
+    /* The primary workspace has no member list to manage: everyone is in it.
+       What is left here is appointing its managers, so the screen says that
+       instead of offering an "add" that could only ever add somebody who is
+       already there. */
+    const everyone=!!d.everyone;
     // same design & logic as a board's "חברים והרשאות" — restricted to sysadmin / env manager
     showModal(`<h2><i class="fa-solid fa-user-shield" style="color:var(--primary)"></i> חברים והרשאות — ${esc(env?env.name:'סביבה')}</h2>
       <div class="mbody">
-        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> רק חברי הסביבה רואים אותה ואת לוחותיה. <b>מנהל סביבה</b> מנהל חברים, לוחות ותיקיות.${d.can_set_manager?'':' רק מנהל מערכת ממנה מנהל סביבה.'}</div>
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> ${everyone
+          ? `<b>כל משתמשי המערכת חברים בסביבה הזו</b> — היא נפתחת לכולם בכניסה למערכת, ואי אפשר להסיר ממנה משתמש.
+             הצפייה בלוחות שבתוכה נקבעת בלוח עצמו: לוח פרטי נראה רק למי שהוזמן אליו, ולוח ציבורי — לכולם.
+             כאן אפשר למנות <b>מנהלי סביבה</b>.${d.can_set_manager?'':' רק מנהל מערכת ממנה מנהל סביבה.'}`
+          : `רק חברי הסביבה רואים אותה ואת לוחותיה. <b>מנהל סביבה</b> מנהל חברים, לוחות ותיקיות.${d.can_set_manager?'':' רק מנהל מערכת ממנה מנהל סביבה.'}`}</div>
         <div id="envm-list">${this.membersHTML()}</div>
-        <div class="mem-add">
+        ${everyone?'':`<div class="mem-add">
           <select id="envm-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כל המשתמשים כבר בסביבה —</option>'}</select>
           ${roleAdd}
           <button class="btn btn-primary" onclick="Env.addMember()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-plus"></i> הוסף</button>
-        </div>
+        </div>`}
       </div>`);
   },
   membersHTML(){ const canSet=this.membersData.can_set_manager;
@@ -6419,7 +6450,9 @@ const Env = {
       ${canSet
         ? `<select onchange="Env.setMemberRole(${m.user_id},this.value)">${['manager','member'].map(r=>`<option value="${r}" ${(m.role||'member')===r?'selected':''}>${r==='manager'?'מנהל סביבה':'חבר'}</option>`).join('')}</select>`
         : `<span class="perm-badge">${esc(m.role_he||'חבר')}</span>`}
-      <button class="mem-del" title="הסר מהסביבה" onclick="Env.removeMember(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>
+      ${(this.membersData.everyone && (m.role||'member')!=='manager')
+        ? ''
+        : `<button class="mem-del" title="${this.membersData.everyone?'בטל מנהל סביבה':'הסר מהסביבה'}" onclick="Env.removeMember(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>`}
     </div>`).join('')||'<div style="padding:16px;text-align:center;color:var(--text-light);font-size:12.5px">אין משתמשים מורשים עדיין</div>'; },
   async refreshMembers(){ try{ this.membersData=await api('/api/environments/'+this.membersFor+'/members?actor_id='+meId()); }catch(e){}
     const l=document.getElementById('envm-list'); if(l)l.innerHTML=this.membersHTML();

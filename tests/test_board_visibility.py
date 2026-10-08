@@ -82,16 +82,39 @@ def test_public_is_read_only_without_an_invite(client, admin_id):
 
 
 def test_public_does_not_reach_someone_outside_the_environment(client, admin_id):
-    """'Everyone in the environment' is the limit — not everyone in the system."""
+    """'Everyone in the environment' is the limit — not everyone in the system.
+
+    Tested in an environment of its own, because the primary workspace is the
+    one environment everybody is in by definition: a public board there is
+    public to the organisation, which is what publishing it there means."""
     bid = _mk_board(client, admin_id)
     out = _outsider(client, admin_id, "vis.otherenv@cityos.test")
-    env_id = _env_of(bid)
-    with Session(cityos_main.engine) as db:   # make sure they are NOT in that env
+    r = client.post("/api/environments", json={"actor_id": admin_id, "name": "סביבה סגורה"})
+    env_id = r.json()["id"] if r.status_code == 200 else None
+    assert env_id, r.text
+    with Session(cityos_main.engine) as db:   # the board moves there; they do not
+        db.query(Board).filter(Board.id == bid).update({Board.environment_id: env_id})
         db.query(EnvironmentMember).filter(EnvironmentMember.environment_id == env_id,
                                            EnvironmentMember.user_id == out).delete()
         db.commit()
     client.patch(f"/api/boards/{bid}", json={"actor_id": admin_id, "visibility": "public"})
     assert bid not in _board_ids_for(client, out)
+
+
+def test_a_public_board_in_the_primary_workspace_reaches_everyone(client, admin_id):
+    """The other half of the same rule. Everybody is in the primary workspace,
+    so publishing a board there publishes it to the organisation — and a board
+    kept private there stays as private as anywhere else."""
+    bid = _mk_board(client, admin_id, name="לוח ציבורי בסביבה הראשית")
+    out = _outsider(client, admin_id, "vis.primary@cityos.test")
+    with Session(cityos_main.engine) as db:   # no row anywhere for them
+        db.query(EnvironmentMember).filter(EnvironmentMember.user_id == out).delete()
+        db.commit()
+    assert _env_of(bid) == cityos_main._primary_env_id(
+        Session(cityos_main.engine)), "the test board is not in the primary workspace"
+    assert bid not in _board_ids_for(client, out), "private is private, everywhere"
+    client.patch(f"/api/boards/{bid}", json={"actor_id": admin_id, "visibility": "public"})
+    assert bid in _board_ids_for(client, out)
 
 
 def test_only_a_board_admin_may_publish(client, admin_id, guinea_id):
