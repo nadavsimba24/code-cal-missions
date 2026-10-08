@@ -7425,6 +7425,47 @@ function refreshToolbar(){
    under a fixed name of its own. */
 const _gKey=gid=>(gid===null||gid===undefined||gid==='')?'none':String(gid);
 function groupCollapsed(gid){ return st.collapsedGroups.has(_gKey(gid)); }
+/* Folding one group: the header's class, the table, the progress bar and the
+   remembered state. In one place because three things fold groups now — the
+   caret, a drag that needs the board short enough to aim at, and the restore
+   that puts the board back afterwards — and three copies of this would drift. */
+function foldGroup(head,shut){
+  if(!head)return;
+  head.classList.toggle('collapsed',shut);
+  const t=head.nextElementSibling; if(t)t.style.display=shut?'none':'';
+  const grp=head.closest('.group'); const batt=grp&&grp.querySelector('.grp-batt');
+  if(batt)batt.hidden=shut;
+  setGroupCollapsed(head.dataset.gid===undefined?null:head.dataset.gid,shut);
+}
+/* Dragging a group while the board is open meant dragging a thousand rows: the
+   group being moved is as tall as its table, the groups it has to travel past
+   are as tall as theirs, and the drop never comes within reach of the pointer.
+   So the whole board folds for the length of the drag — the groups become a
+   short list of headers, which is the thing actually being reordered — and
+   unfolds into whatever it was as soon as the drag is over. Picking a group up
+   and putting it down must not cost anyone the rows they had open. */
+let _groupFoldedForDrag=null;
+function foldGroupsForDrag(el){
+  if(_groupFoldedForDrag)return;
+  const keys=[];
+  el.querySelectorAll('.group-head').forEach(h=>{
+    if(h.classList.contains('collapsed'))return;
+    keys.push(h.dataset.gid===undefined?null:h.dataset.gid);
+    foldGroup(h,true);
+  });
+  _groupFoldedForDrag=keys;
+}
+function unfoldGroupsAfterDrag(){
+  const keys=_groupFoldedForDrag; _groupFoldedForDrag=null;
+  if(!keys)return;
+  keys.forEach(k=>{
+    // the same nodes, wherever the drag left them
+    const h=(k===null||k===undefined||k==='')
+      ? document.querySelector('.group[data-orphan] .group-head')
+      : document.querySelector('.group-head[data-gid="'+k+'"]');
+    if(h) foldGroup(h,false); else setGroupCollapsed(k,false);
+  });
+}
 function setGroupCollapsed(gid,shut){
   if(shut)st.collapsedGroups.add(_gKey(gid)); else st.collapsedGroups.delete(_gKey(gid));
 }
@@ -7532,11 +7573,7 @@ function vTable(el){
     : '');
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
     if(!e.target.closest('.caret'))return;   // collapse/expand only from the arrow
-    const shut=!h.classList.contains('collapsed');
-    h.classList.toggle('collapsed',shut);
-    const t=h.nextElementSibling; if(t)t.style.display=shut?'none':'';   // the table (sibling within .grp-stick)
-    const grp=h.closest('.group'); const batt=grp&&grp.querySelector('.grp-batt'); if(batt)batt.hidden=shut;
-    setGroupCollapsed(h.dataset.gid===undefined?null:h.dataset.gid,shut);   // remembered across re-renders
+    foldGroup(h,!h.classList.contains('collapsed'));   // remembered across re-renders
   });
   if(window.Sortable){
     // drag by the grip OR the group name to reorder groups
@@ -7544,9 +7581,17 @@ function vTable(el){
       forceFallback:true,fallbackTolerance:3,animation:150,
       chosenClass:'drag-chosen',ghostClass:'sortable-ghost',dragClass:'sortable-drag',
       onMove:evt=>!evt.related.hasAttribute('data-orphan'),
+      // onChoose, not onStart: the fallback clone that follows the cursor is cut
+      // from the element as it stands when the drag begins, so a group folded
+      // one event later would still be dragged around as a full open table
+      onChoose:()=>{ foldGroupsForDrag(el); },
+      // fires on a drop and on a press that never became a drag alike, so a
+      // click on the group's name does not leave the board folded
+      onUnchoose:()=>{ unfoldGroupsAfterDrag(); },
       onStart:()=>{ _groupDragFrom=groupOrder(el).join(','); },
       onEnd:async()=>{
         const ids=groupOrder(el), was=_groupDragFrom; _groupDragFrom=null;
+        unfoldGroupsAfterDrag();   // before any renderView below reads the state
         if(!ids.length)return;
         // put back where it came from: re-render so the group sits where it
         // belongs again, and say nothing — nothing was moved

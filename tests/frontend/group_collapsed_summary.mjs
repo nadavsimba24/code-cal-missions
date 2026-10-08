@@ -50,7 +50,8 @@ ck('the Hebrew line is left to the page direction, not pinned to LTR',
 ck('a two-line header does not sit centred on its first line',
    /\.group-head\.collapsed\{align-items:flex-start/.test(src));
 ck('the collapse handler still only toggles classes (so CSS is what must switch it)',
-   /h\.classList\.toggle\('collapsed',shut\)/.test(src));
+   /head\.classList\.toggle\('collapsed',shut\)/.test(src) &&
+   !/renderView\(\)/.test(/function foldGroup\(head,shut\)\{[\s\S]*?\n\}/.exec(src)[0]));
 ck('it is counted off the tasks the group draws, so filters apply',
    /const sum=groupSummaryHTML\(g\.tasks\);/.test(src));
 

@@ -46,7 +46,7 @@ ck('and the space taken is the same either way, so the board does not shift',
    follows it live — which is the whole reason the rule keys on the header's
    class rather than on something rendered into the group once */
 ck('the collapsed state is a class on the header, which :has can follow',
-   /h\.classList\.toggle\('collapsed',shut\)/.test(src));
+   /head\.classList\.toggle\('collapsed',shut\)/.test(src));
 ck('and it is written into the markup too, so a re-render keeps the hit area',
    /class="group-head\$\{shut\?' collapsed':''\}"/.test(src));
 
