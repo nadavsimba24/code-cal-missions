@@ -4,7 +4,7 @@
    The line this draws is between the value and its presentation. The cell
    stores a number and only a number — so the board can be sorted on it, a
    formula can add it up, and the export hands Excel something it will treat as
-   a figure rather than as the string "1,234 ₪". Everything here is about how
+   a figure rather than as the string "₪1,234". Everything here is about how
    that number is read, and nothing here changes what is kept.
    Driven by tests/test_number_format.py. */
 import fs from 'fs';
@@ -31,8 +31,8 @@ const col = (unit,thousands)=>({number:{unit,thousands}});
 
 ck('a plain number column is still a plain number',
    fnum(1234.5,{})==='1234.5', fnum(1234.5,{}));
-ck('the shekel sign follows the figure, the way it is written in Hebrew',
-   fnum(1234,col('₪',false))==='1234 ₪', fnum(1234,col('₪',false)));
+ck('the shekel sign leads the figure, so it sits still down a column of them',
+   fnum(1234,col('₪',false))==='₪1234', fnum(1234,col('₪',false)));
 ck('the dollar sign leads it, the way it is written in English',
    fnum(1234,col('$',false))==='$1234', fnum(1234,col('$',false)));
 ck('a unit of someone\'s own follows the figure',
@@ -45,14 +45,16 @@ ck('the thousands are grouped when asked for',
 ck('and left alone when not',
    fnum(1234567,col('',false))==='1234567', fnum(1234567,col('',false)));
 ck('a unit and a separator together',
-   fnum(1234567.5,col('₪',true))==='1,234,567.5 ₪', fnum(1234567.5,col('₪',true)));
+   fnum(1234567.5,col('₪',true))==='₪1,234,567.5', fnum(1234567.5,col('₪',true)));
 ck('the decimals survive the grouping — a budget is not rounded for being shown',
    fnum(1234.56,col('',true))==='1,234.56', fnum(1234.56,col('',true)));
 ck('a long decimal is not cut off either',
    fnum(0.123456789,col('',true))==='0.123456789', fnum(0.123456789,col('',true)));
-ck('a negative figure keeps its sign in front of the digits',
-   fnum(-1234,col('₪',true))==='-1,234 ₪', fnum(-1234,col('₪',true)));
-ck('zero is a number and is shown', fnum(0,col('₪',true))==='0 ₪', fnum(0,col('₪',true)));
+ck('a negative figure keeps its sign in front of everything — a debt is -₪1,234',
+   fnum(-1234,col('₪',true))==='-₪1,234', fnum(-1234,col('₪',true)));
+ck('...and a trailing unit is untouched by that',
+   fnum(-1234,col('מ"ר',true))==='-1,234 מ"ר', fnum(-1234,col('מ"ר',true)));
+ck('zero is a number and is shown', fnum(0,col('₪',true))==='₪0', fnum(0,col('₪',true)));
 
 /* an empty cell is empty — not "0", and not "0 ₪", which would read as a
    budget of nothing where there is no budget entered at all */

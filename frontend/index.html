@@ -746,6 +746,16 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 /* trailing cell so the row's bottom border reaches the end of the table
    (covers the add-column + flexible spacer columns); no vertical divider */
 .tbl td.row-end{border-inline-start:none;padding:0}
+/* The group's totals, under the rows they are the total of. Quiet on purpose:
+   it is a reading of the column, not a row of the board — no hover, nothing to
+   click, and the number carries the column's own unit and separator. */
+.tbl tfoot .group-sum td{border-top:1px solid var(--border-strong);background:var(--bg);
+  padding:7px 10px;font-size:13px}
+.tbl tfoot .group-sum .gs-lbl{color:var(--text-light);font-weight:600;font-size:12px;
+  border-inline-start:4px solid transparent}
+.tbl tfoot .group-sum .gs-num{font-weight:700;color:var(--text);
+  font-variant-numeric:tabular-nums;direction:ltr;display:inline-block}
+.tbl tfoot .group-sum .gs-cell{text-align:center}
 .pill{display:inline-flex;align-items:center;justify-content:center;width:100%;min-width:96px;height:30px;border-radius:4px;color:#fff;font-weight:600;font-size:12.5px;padding:0 8px}
 .prio{min-width:80px}
 .avatars{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;height:28px}
@@ -859,7 +869,7 @@ body.coldragging .col-grip{opacity:1}
    only when there is an address to write to. */
 .cc-mailwrap{display:flex;align-items:center;gap:4px}
 .cc-mailwrap .cc-inp{direction:ltr;text-align:center}
-/* A number and its unit are one run of latin-script text, and "1,234 ₪" only
+/* A number and its unit are one run of latin-script text, and "₪1,234" only
    reads that way left-to-right — on an RTL board the grouped digits and the
    symbol otherwise change places between typing and reading. */
 .cc-num{direction:ltr;text-align:center;font-variant-numeric:tabular-nums}
@@ -7564,6 +7574,7 @@ function vTable(el){
         <tbody data-gid="${g.id===null?'':g.id}" style="--gcolor:${col}">${rows}
           <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
+        ${groupSumRowHTML(g.tasks)}
       </table>
       </div>
       <div class="grp-batt" style="margin-top:6px"${shut?' hidden':''}>${battery(g.tasks)}</div>
@@ -8202,7 +8213,12 @@ function cellValue(t,colId){return (t.custom_fields||{})[colId];}
    numbers, formulas read numbers, and the export writes a number Excel will
    treat as one. A "1,234 ₪" in the database would break all three, and would
    have to be parsed back the moment anyone changed the currency. */
-const NUM_LEAD='$€£¥';   /* the symbols the world writes before the digits */
+/* The symbols that are written BEFORE the digits. ₪ is one of them: it used to
+   trail — "1,234.5 ₪" — which is how Hebrew prose writes it, but a column of
+   figures is not prose. Leading, the sign sits in one place down the whole
+   column and the digits line up under each other; trailing, it moved with every
+   change of magnitude. */
+const NUM_LEAD='$€£¥₪';
 function numCfg(c){
   const n=(c&&c.number)||{};
   return {unit:String(n.unit||'').trim(),thousands:!!n.thousands};
@@ -8215,7 +8231,10 @@ function fnum(v,c){
      change with whoever is looking at it. */
   const s=thousands?n.toLocaleString('en-US',{maximumFractionDigits:20}):String(n);
   if(!unit)return s;
-  return NUM_LEAD.indexOf(unit)>=0?unit+s:s+' '+unit;
+  if(NUM_LEAD.indexOf(unit)<0) return s+' '+unit;
+  // the minus belongs to the amount, not between the sign and its digits: a
+  // debt is -₪50, never ₪-50
+  return n<0 ? '-'+unit+s.slice(1) : unit+s;
 }
 /* One date cell: our text for reading, the native input for picking and typing.
    The reason the input does not draw itself is in .cc-datewrap in the
@@ -8291,6 +8310,51 @@ function customCellHTML(c,t){
 /* every column cell for a row EXCEPT the item/name cell (which is rendered
    explicitly first), in the persisted column order. The trailing empty spacer
    cell + row-end are appended by the row itself, exactly as before. */
+/* ===== what a number column adds up to, per group =====
+   A number column is almost always counting something — a budget, square
+   metres, how many of a thing — and the number anybody actually wants out of a
+   group of them is the total. It is drawn under the rows it is the total of,
+   in the column it belongs to, so it needs no label of its own.
+
+   Summed over the rows the group is DRAWING: with a filter on, the total is the
+   total of what is on the screen, because a figure that disagrees with the rows
+   above it is worse than no figure. Sub-items are not in it — they carry their
+   own column set, and adding a sub-item's "price" into the parents' column
+   would be adding two different columns together.
+
+   A column where nothing has been filled in shows nothing rather than 0: 0 is a
+   claim that the work is worth nothing, and an empty column has not said. */
+function groupSums(tasks){
+  const out={};
+  customColumns().filter(c=>c.type==='number').forEach(c=>{
+    let sum=0, seen=0;
+    (tasks||[]).forEach(t=>{
+      const v=(t.custom_fields||{})[c.id];
+      if(v==null||v==='')return;
+      const n=Number(v); if(!isFinite(n))return;
+      sum+=n; seen++;
+    });
+    // float noise: 0.1 + 0.2 is not 0.30000000000000004 in a budget column
+    if(seen) out[c.id]={sum:Math.round(sum*1e10)/1e10,cells:seen};
+  });
+  return out;
+}
+function groupSumRowHTML(tasks){
+  const sums=groupSums(tasks);
+  if(!Object.keys(sums).length) return '';
+  const cells=orderedColumns().filter(c=>c.id!=='item').map(c=>{
+    const got=(c.kind==='custom')?sums[c.col.id]:null;
+    if(!got) return '<td class="cell gs-cell"></td>';
+    return `<td class="cell gs-cell gs-has" title="סכום ${got.cells} תאים בקבוצה זו">`
+         + `<span class="gs-num">${esc(fnum(got.sum,c.col))}</span></td>`;
+  }).join('');
+  return `<tfoot><tr class="group-sum">
+      <td class="c-item gs-lbl"><span>סה"כ</span></td>
+      ${cells}
+      <td class="cell gs-cell"></td>
+      <td class="row-end" colspan="${(isBoardAdmin()?1:0)+1}"></td>
+    </tr></tfoot>`;
+}
 function rowCellsAfterItem(t){
   return orderedColumns().filter(c=>c.id!=='item')
     .map(c=>c.kind==='builtin'?builtinCellHTML(c.key,t):customCellHTML(c.col,t)).join('');
@@ -9307,7 +9371,7 @@ async function setNumCell(taskId,colId,el){
   /* Someone who types over the formatted value — "1,234 ₪" — means 1234, and
      pasting a figure out of a spreadsheet brings its separators along. */
   const typed=(el.value||'').trim();
-  const raw=typed.replace(/[,\s]/g,'').replace(new RegExp('['+NUM_LEAD+'₪%]','g'),'');
+  const raw=typed.replace(/[,\s]/g,'').replace(new RegExp('['+NUM_LEAD+'%]','g'),'');
   if(raw!==''&&!isFinite(Number(raw))){ el.dataset.bad='1'; toast('ערך מספרי לא תקין'); return; }
   const n=raw===''?null:Number(raw);
   el.dataset.raw=n==null?'':String(n);
@@ -10289,7 +10353,7 @@ async function saveItemIdSettings(colId){
    screen can be changed as often as anyone likes without touching the data.
    The four choices are the ones a municipal board actually needs — nothing,
    shekels, dollars, and whatever else someone is counting (מ"ר, טון, %). */
-const NUM_PRESETS=[['','ללא','1234.5'],['₪','ש"ח','1,234.5 ₪'],['$','דולר','$1,234.5']];
+const NUM_PRESETS=[['','ללא','1234.5'],['₪','ש"ח','₪1,234.5'],['$','דולר','$1,234.5']];
 function numberSettings(colId){
   const c=customColumns().find(x=>x.id===colId); if(!c)return;
   if(!isBoardAdmin()){toast('רק מנהל הלוח');return;}

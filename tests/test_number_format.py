@@ -5,7 +5,7 @@ A budget column, a square-metre column and a count of complaints are all
 thousands separator are what make the figure readable — and they are
 presentation, not data: the cell goes on storing a number, so the board still
 sorts on it, formulas still add it up, and the export still hands Excel a
-figure rather than the string "1,234 ₪".
+figure rather than the string "₪1,234".
 
 What is asserted here is that the server keeps the setting, that it keeps only
 the setting (not an arbitrary blob), and that no cell value changed because of
