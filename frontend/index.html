@@ -652,6 +652,24 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group.drag-chosen{box-shadow:var(--shadow);border-radius:8px}
 .group.sortable-drag .group-head .g-name{color:var(--text)!important}
 .group-head .g-count{color:var(--text-light);font-weight:400;font-size:13px}
+/* What a collapsed group says about itself. Closed, the rows and the progress
+   bar are both gone, so the header is the only thing left — and a bare "12" is
+   not what someone folding a group away wants to still know.
+
+   The name and the line are one column so the numbers sit directly under the
+   name rather than trailing off its end, which is what makes a stack of
+   collapsed groups read as a list. Both spellings live in the DOM at once and
+   CSS picks between them, because collapsing toggles a class and never
+   re-renders the header. */
+.group-head .g-nm{display:inline-flex;flex-direction:column;align-items:flex-start;gap:1px;min-width:0}
+.group-head .g-sum{display:none;color:var(--text-light);font-weight:400;font-size:13px;
+                   letter-spacing:.1px;white-space:nowrap}
+.group-head.collapsed .g-count{display:none}
+.group-head.collapsed .g-sum{display:block}
+/* the line is a second row inside the header, so the header stops being a
+   single line of text and the rows under it must not be pulled up against it */
+.group-head.collapsed{align-items:flex-start;padding-bottom:10px}
+.group-head.collapsed .caret,.group-head.collapsed .g-drag{margin-top:2px}
 .group-head .g-menu-btn{margin-inline-start:4px;width:26px;height:26px;border-radius:6px;color:var(--text-light);opacity:0;transition:.12s;display:grid;place-items:center;font-size:14px}
 .group:hover .g-menu-btn{opacity:1}
 .group-head .g-menu-btn:hover{background:var(--row-hover);color:var(--text)}
@@ -7410,6 +7428,21 @@ function groupCollapsed(gid){ return st.collapsedGroups.has(_gKey(gid)); }
 function setGroupCollapsed(gid,shut){
   if(shut)st.collapsedGroups.add(_gKey(gid)); else st.collapsedGroups.delete(_gKey(gid));
 }
+/* The line a collapsed group shows instead of its bare count: how many items
+   it holds, and how many sub-items hang off them. The sub-items are counted
+   even though they are a level down — folded away, the whole subtree is out of
+   sight, and "8 פריטים" alone understates a group holding forty rows of work. A
+   group with no sub-items says nothing about them rather than "0". */
+function groupSummaryHTML(tasks){
+  const n=tasks.length;
+  const subs=tasks.reduce((a,t)=>a+((t.subtasks||[]).length),0);
+  // Both halves always, including a zero: several collapsed groups stack into a
+  // column, and a line that drops a number when it is 0 makes the reader check
+  // which number each row is showing. The number always leads, so the lines stay
+  // a column — but one is "1 פריט", not "1 פריטים".
+  return `<span class="g-sum">${n} ${n===1?'פריט':'פריטים'}`
+       + ` / ${subs} ${subs===1?'תת־פריט':'תתי־פריטים'}</span>`;
+}
 function groupsOf(){
   const gs = (st.board.groups||[]).slice();
   const tasks = applyFilters(st.board.tasks||[]);
@@ -7459,6 +7492,10 @@ function vTable(el){
   el.innerHTML = groups.map(g=>{
     const col=g.color||'#0073ea';
     const rows=g.tasks.map(t=>itemRow(t,col)).join('');
+    // Counted off the same tasks the group is drawing, so a filtered board says
+    // how much of itself is in this group rather than how much the group holds
+    // somewhere out of sight.
+    const sum=groupSummaryHTML(g.tasks);
     const real=g.id!==null;
     // a collapsed group must survive a re-render (sorting, editing a value,
     // refreshing the board) — otherwise it springs open and the rows below it
@@ -7468,13 +7505,13 @@ function vTable(el){
       ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}"><span class="gh-in">
           <i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
-          <span class="g-name g-handle" style="color:${col}" title="גרור לשינוי סדר">${esc(g.name)}</span>
+          <span class="g-nm"><span class="g-name g-handle" style="color:${col}" title="גרור לשינוי סדר">${esc(g.name)}</span>${sum}</span>
           <span class="g-count">${g.tasks.length}</span>
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
         </span></div>`
       : `<div class="group-head${shut?' collapsed':''}"><span class="gh-in">
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
-          <span class="g-name" style="color:${col}">${esc(g.name)}</span>
+          <span class="g-nm"><span class="g-name" style="color:${col}">${esc(g.name)}</span>${sum}</span>
           <span class="g-count">${g.tasks.length}</span>
         </span></div>`;
     return `<div class="group" ${real?'':'data-orphan="1"'}>
