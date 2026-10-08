@@ -279,6 +279,13 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .sb-item .sb-more{margin-inline-start:auto;flex-shrink:0;width:24px;height:24px;border:none;background:none;color:var(--text-light);border-radius:5px;cursor:pointer;opacity:0;transition:.12s;display:grid;place-items:center;font-size:13px}
 .sb-item:hover .sb-more,.sb-item.active .sb-more{opacity:1}
 .sb-item .sb-more:hover{background:rgba(0,0,0,.09);color:var(--text)}
+/* A finger never delivers :hover, so on a touch screen this button sat at the
+   end of every row invisible and fully tappable: a tap near the board's name
+   opened the row menu instead of the board, and nothing on screen explained
+   why. Showing it is what makes the rest of the row honestly the board. */
+@media (pointer:coarse){
+  .sb-item .sb-more,.sb-folder-head .sb-more{opacity:1}
+}
 .sb-item-name{overflow:hidden;text-overflow:ellipsis}
 .sb-sec-acts{display:inline-flex;gap:10px;align-items:center}
 .sb-sec-acts i{cursor:pointer}
@@ -2607,6 +2614,20 @@ function sortableOn(el,opts){
   return new Sortable(el,opts);
 }
 const ITEM_DRAG_SEL='.tbl tbody[data-gid],.sub-body[data-parent],.kcol-body';
+/* The sidebar reorders boards and folders by dragging them, and on a touch
+   screen Sortable claims the gesture from the first pixel of movement: a tap
+   that drifts becomes a drag and never opens the board, and a finger that
+   starts its scroll on a board row drags the board instead of scrolling the
+   list. Dragging is how a desktop reorders a sidebar; tapping is how a phone
+   opens a board, and the phone's half is the one that cannot be given up. */
+const SB_DRAG_SEL='#sb-folders,#board-list .sb-folder-boards';
+function syncSidebarDrag(){
+  if(!window.Sortable)return;
+  const off=isTouch();
+  document.querySelectorAll(SB_DRAG_SEL).forEach(el=>{
+    const s=Sortable.get(el); if(s)s.option('disabled',off);
+  });
+}
 function syncItemDrag(){
   if(!window.Sortable)return;
   const off=isTouch();
@@ -2619,7 +2640,9 @@ function syncItemDrag(){
 // a pointer can change under a live page — a tablet docked to a keyboard, a
 // desktop paired with a touch monitor — so the lists follow it rather than
 // keeping whatever was true when they were built
-if(window.matchMedia) matchMedia(TOUCH_Q).addEventListener('change',syncItemDrag);
+if(window.matchMedia) matchMedia(TOUCH_Q).addEventListener('change',()=>{
+  syncItemDrag(); syncSidebarDrag();
+});
 if(window.matchMedia) matchMedia(MOBILE_Q).addEventListener('change',()=>{
   syncItemDrag();
   syncItemColWidth();   // leaving mobile restores the full width, entering it re-applies the give
@@ -2640,7 +2663,10 @@ function toggleSidebar(force){
   }
 }
 function closeSidebarMobile(){
-  if(isMobile()) document.body.classList.remove('sb-open');
+  /* No isMobile() guard: the class does nothing outside the mobile media query,
+     and guarding it leaves the drawer armed behind a window that stopped being
+     narrow — rotate back and it is open again over the board. */
+  document.body.classList.remove('sb-open');
 }
 /* ===== sidebar width — drag the inner edge (desktop) =====
    Floor is the width the sidebar has always had, so "narrowest" is exactly
@@ -2832,7 +2858,8 @@ const Folders = {
     if(fwrap) sortableOn(fwrap,{group:'sb-folders',handle:'.sb-folder-head',draggable:'.sb-folder',animation:150,onEnd:()=>Folders.persist()});
     document.querySelectorAll('#board-list .sb-folder-boards').forEach(c=>{
       sortableOn(c,{group:'sb-boards',draggable:'.sb-item',animation:150,onEnd:()=>Folders.persist()});
-    }); },
+    });
+    syncSidebarDrag(); },
   persist(){ const env=Env.active(); if(!env)return;
     const folders=[...document.querySelectorAll('#sb-folders .sb-folder')].map((el,i)=>({id:+el.dataset.fid,position:i}));
     const boards=[];
@@ -2883,6 +2910,12 @@ async function openBoard(id){
   st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
+  /* The drawer closes on the tap, not when the board has finished arriving.
+     Behind the fetch it was a tap that did nothing visible until the network
+     came back — and on a board that answered 403, or any render below that
+     threw, it never closed at all. Nothing here reads the drawer's state, so
+     closing first costs nothing. */
+  closeSidebarMobile();
   document.getElementById('view').innerHTML='<div class="spin"></div>';
   // avatars are drawn from st.users, so refresh it alongside the board — a photo
   // someone changed elsewhere then shows on this board too. Fetched in parallel
@@ -2903,7 +2936,6 @@ async function openBoard(id){
   refreshToolbar();
   renderView();
   Router.set(id,null);   // reflect the open board in the URL
-  closeSidebarMobile();  // dismiss the drawer after picking a board on mobile
 }
 function renderBoardHead(){
   if(!st.board)return;
