@@ -8108,7 +8108,9 @@ function startColRename(kind,id,host){
   const commit=async(save)=>{
     if(done)return; done=true;
     const v=inp.value.trim();
-    if(!save||!v||v===cur){ renderView(); return; }
+    // unchanged: put the header's own label back, never a whole re-render —
+    // see titleEdit for the click this used to swallow
+    if(!save||!v||v===cur){ inp.replaceWith(lbl); return; }
     if(kind==='builtin'){ saveColLabel(id,v); }
     else{ const cols=customColumns().map(x=>x.id===id?{...x,title:v}:x); await saveColumns(cols); toast('שם העמודה עודכן'); }
   };
@@ -9584,11 +9586,30 @@ function fieldPicker(e,id,field,map){
 }
 function pickField(e,id,field,key){ e.stopPropagation(); closeCellPops(); setField(id,field,key); }
 function setDue(id,val){ setField(id,'due_date',val?new Date(val+'T12:00:00').toISOString():null); }
+/* Rename an item by editing its title IN PLACE. Nothing typed means nothing to
+   save, and then the title goes back exactly as it was — the same node, put
+   back where it came from — rather than through a full renderView().
+   That re-render was eating clicks. A blur fires on MOUSEDOWN, so rebuilding
+   the board there happens between the mousedown and the mouseup of the click
+   that caused it: by mouseup the element under the cursor is a different node,
+   so no click event is ever dispatched to it. The symptom was "+ הוסף פריט"
+   doing nothing at all, every time it was clicked straight after creating an
+   item — openNewItem opens the new title for editing, and the click that was
+   meant to add the next item was spent closing it. Clicking it again worked,
+   which is exactly what a swallowed click looks like.
+   Saving a real change is safe and keeps the full-render path: setField awaits
+   the server, so the DOM is replaced long after the click has landed. */
 function titleEdit(e,id){
   if(!canEditItem(findAnyTask(id)))return; e.stopPropagation();
   const span=e.currentTarget, old=findAnyTask(id).title;
   const inp=document.createElement('input'); inp.className='title-edit'; inp.value=old;
-  const commit=()=>{ const v=inp.value.trim(); if(v&&v!==old)setField(id,'title',v); else renderView(); };
+  let done=false;                                  // blur can fire again as the input leaves the DOM
+  const commit=()=>{
+    if(done)return; done=true;
+    const v=inp.value.trim();
+    if(v&&v!==old) setField(id,'title',v);
+    else inp.replaceWith(span);                    // the very node that was taken out, handlers and all
+  };
   inp.onblur=commit; inp.onkeydown=(ev)=>{ if(ev.key==='Enter'){ev.preventDefault();inp.blur();} if(ev.key==='Escape'){inp.value=old;inp.blur();} };
   span.replaceWith(inp); inp.focus(); inp.select();
 }
