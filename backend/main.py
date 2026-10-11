@@ -4299,6 +4299,30 @@ def _board_invite_html(invitee_name, board_name, inviter_name, role):
       </div>
     </div>"""
 
+def _env_invite_html(invitee_name, env_name, inviter_name, role):
+    """Being added to a workspace, said in the shape the board invite already
+    uses — same header, same table, same footer. A workspace is not a board: it
+    grants no board by itself, so the mail says what the person actually got."""
+    role_he = ENV_ROLE_HE.get(role, role)
+    base = os.environ.get("APP_BASE_URL", "https://code-cal-missions.vercel.app")
+    return f"""<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#1a1a2e">
+      <div style="background:#0073ea;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0">
+        <h2 style="margin:0;font-size:20px">נוספת לסביבה ב-CityOS</h2>
+      </div>
+      <div style="border:1px solid #e6e9ef;border-top:none;border-radius:0 0 12px 12px;padding:22px">
+        <p style="font-size:15px">שלום {invitee_name},</p>
+        <p style="font-size:15px"><b>{inviter_name}</b> הוסיף/ה אותך לסביבה <b>{env_name}</b> במערכת CityOS של עיריית הוד השרון.</p>
+        <table style="width:100%;font-size:14px;border-collapse:collapse;margin:16px 0">
+          <tr><td style="padding:8px 0;color:#676879">שם הסביבה</td><td style="padding:8px 0;font-weight:600">{env_name}</td></tr>
+          <tr><td style="padding:8px 0;color:#676879">התפקיד שלך</td><td style="padding:8px 0;font-weight:600">{role_he}</td></tr>
+          <tr><td style="padding:8px 0;color:#676879">נוספת על ידי</td><td style="padding:8px 0;font-weight:600">{inviter_name}</td></tr>
+        </table>
+        <p style="font-size:13.5px;color:#676879">הלוחות בתוך הסביבה נפתחים בנפרד — לוח ציבורי ייראה לך מיד, ולכל לוח אחר נדרשת הזמנה משלו.</p>
+        <a href="{base}" style="display:inline-block;background:#0073ea;color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:700;font-size:15px">כניסה למערכת</a>
+        <p style="color:#9699a6;font-size:12px;margin-top:22px">מייל זה נשלח אוטומטית ממערכת CityOS. אם לא ציפית לו, אפשר להתעלם ממנו.</p>
+      </div>
+    </div>"""
+
 @app.get("/api/boards/{board_id}/members")
 def list_board_members(board_id: int):
     with Session(engine) as db:
@@ -4978,12 +5002,31 @@ def environment_add_member(env_id: int, data: dict, actor_id: int = Depends(curr
             return {"status": "ok"}
         m = db.query(EnvironmentMember).filter(
             EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first()
+        is_new = m is None
         if m:
             m.role = role
         else:
             db.add(EnvironmentMember(environment_id=env_id, user_id=uid, role=role))
+        env = db.query(Environment).filter(Environment.id == env_id).first()
+        inviter = db.query(User).filter(User.id == actor).first()
+        # Being added to a workspace said nothing to the person it happened to —
+        # no mail, no notification, nothing to see. Only a board invitation ever
+        # spoke, so adding someone to a workspace and waiting for them to hear
+        # about it was a wait with no end.
+        # Like the board invitation: only a genuine new membership, never a role
+        # change, so promoting somebody does not read as a fresh invitation.
+        if is_new:
+            _notify(db, uid, "env_add", f"נוספת לסביבה '{env.name if env else ''}'",
+                    f"{(inviter.name + ' ') if inviter else ''}הוסיף/ה אותך לסביבה בתפקיד {ENV_ROLE_HE.get(role, role)}.")
         db.commit()
-        return {"status": "ok"}
+        if is_new:
+            invitee = db.query(User).filter(User.id == uid).first()
+            if invitee and invitee.email and env:
+                _send_email(invitee.email,
+                            f"נוספת לסביבה '{env.name}' ב-CityOS",
+                            _env_invite_html(invitee.name, env.name,
+                                             inviter.name if inviter else "מנהל הסביבה", role))
+        return {"status": "ok", "invited": is_new}
 
 @app.patch("/api/environments/{env_id}/members/{uid}")
 def environment_set_member_role(env_id: int, uid: int, data: dict, actor_id: int = Depends(current_user_id)):
