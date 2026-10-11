@@ -48,12 +48,20 @@ ck('every draggable item list asks the pointer, not the width',
 ck('and the live re-sync asks the same question',
    /function syncItemDrag\(\)\{[\s\S]*?const off=isTouch\(\);/.test(src));
 
-// ── the date cell must not eat the row's drag ──
+/* ── the date cell must not eat the row's drag ──
+   The native input covers the whole cell, so if it could be the click target
+   the entire date cell became undraggable and a row grabbed there never
+   lifted. It takes no clicks at all now: the typable box and the calendar
+   button are what the cell offers, and the native input is only the value and
+   the picker's anchor. */
 const rule = /\.cc-datewrap \.cc-date\{[^}]*\}/.exec(src);
 ck('the date input cannot be a click target at rest',
    rule && rule[0].includes('pointer-events:none'), rule&&rule[0]);
-ck('but it takes the pointer back once it has focus, so it can be used',
-   /\.cc-datewrap:focus-within \.cc-date\{[^}]*pointer-events:auto/.test(src));
+ck('and only takes the pointer back where showPicker cannot be asked at all',
+   /\.cc-datewrap\.cc-fallback \.cc-date\{[^}]*pointer-events:auto/.test(src));
+ck('what the cell offers instead is a typable box and a calendar button',
+   src.includes('class="cc-inp cc-date-txt"') && src.includes('class="cc-date-cal"')
+   && src.includes('onclick="dateCellPick(event)"'));
 ck('the row drag filter still skips real inputs',
    /filter:'input,textarea,select,button,a,\[contenteditable\],\.cc-inp/.test(src));
 

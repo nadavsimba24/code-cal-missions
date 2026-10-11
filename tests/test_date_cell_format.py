@@ -7,9 +7,12 @@ app, said 31/12/2026 to one person and 12/31/2026 to the next. A fix to that
 order could only ever appear for the half of the users whose browser already
 agreed with it, which is exactly how it was reported.
 
-The cell now carries its own text. Runs the real fdate, dateCellHTML,
-builtinCellHTML and customCellHTML out of index.html under node, the same way
-tests/test_item_col_shrink.py does; the harness names the failing case.
+The cell carries its own text now, in a box that can be typed into — the
+native control's segments could not be, so a date used to be something you
+could only click your way to. Runs the real fdate, fdateVal, parseTypedDate,
+dateCellHTML, builtinCellHTML and customCellHTML out of index.html under node,
+the same way tests/test_item_col_shrink.py does; the harness names the failing
+case.
 """
 import pathlib
 import shutil
