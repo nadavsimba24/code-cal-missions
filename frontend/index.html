@@ -157,16 +157,15 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .tl-in span{font-size:10.5px;font-weight:600;color:var(--text-muted)}
 .tl-in input{padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px;font:inherit;font-size:11.5px;width:100%}
 .tl-in input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
-/* מתאריך / עד תאריך draw their own text too. They are the one place on the
-   board where two dates are read against each other, and they were still two
-   bare `<input type="date">` — so the pair read 09/27 to one person and 27/09
-   to the next, right after the columns beneath them had been fixed.
-   `.tl-in span` styles the little label above the box, so the display span
-   needs its own type here or it would inherit the label's. */
+/* מתאריך / עד תאריך are the same typable box as a date column's cell — our own
+   DD/MM/YYYY, typed or picked. They are the one place on the board where two
+   dates are read against each other, and they were once two bare
+   `<input type="date">` — so the pair read 09/27 to one person and 27/09 to the
+   next. `.tl-in input` above already gives the box its size and border; what is
+   left here is the reading direction, since a range reads from its start. */
 .tl-in .tl-datewrap{display:block}
-.tl-in .tl-datewrap .cc-date-disp{font-size:11.5px;font-weight:400;color:var(--text);
-  text-align:start;padding:4px 6px;border:1px solid var(--border-strong);border-radius:6px}
-.tl-in .tl-datewrap:hover .cc-date-disp{box-shadow:none;border-color:var(--primary)}
+.tl-in .tl-datewrap .cc-date-txt{text-align:start;font-weight:400;color:var(--text);
+  padding-inline-start:6px}
 .tl-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
 .tl-month{font-weight:700;font-size:12.5px}
 .tl-nav{width:22px;height:22px;border-radius:6px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:grid;place-items:center;font-size:10px}
@@ -875,33 +874,49 @@ body.coldragging .col-grip{opacity:1}
 .cc-num{direction:ltr;text-align:center;font-variant-numeric:tabular-nums}
 .cc-mail{color:var(--text-light);font-size:12px;flex:0 0 auto;padding:2px}
 .cc-mail:hover{color:var(--primary)}
-.cc-date{cursor:pointer;color:var(--text-muted)}
-/* A date cell draws its OWN text, and the input draws none.
-   `<input type="date">` takes the day/month order from the *browser's* locale —
-   `<html lang="he">` has no say in it, and neither does anything else on the
-   page. So the same board read 31/12/2026 for someone whose Chrome is Hebrew
-   and 12/31/2026 for someone whose Chrome is English, in these two columns and
-   nowhere else, because every other date here is drawn by us. A fix to that
-   order could only ever appear for half the users.
-   The input stays — it is the native calendar, the keyboard entry and the thing
-   that works on a phone — but it is transparent until it has focus, and our own
-   DD/MM/YYYY sits beneath it. While someone is actually typing, their browser's
-   own control is what they should see, so it shows itself. */
+/* A date cell is a box to type in, like the text and number cells beside it,
+   plus a button for the calendar. The native `<input type="date">` is still
+   there behind both — it holds the value and it is what the picker opens over —
+   but it never draws anything, and nobody ever lands in it.
+   Two reasons it is not the control itself. Its day/month order comes from the
+   *browser's* locale — `<html lang="he">` has no say in it — so the same board
+   read 31/12/2026 to someone whose Chrome is Hebrew and 12/31/2026 to the next
+   person, in the date columns and nowhere else, because every other date here
+   is drawn by us. And its segments cannot really be typed into: a date was
+   something you could only click your way to. So the cell draws our own
+   DD/MM/YYYY and takes it back the same way (dateTyped), and the picker stays
+   one button away. */
 .cc-datewrap{position:relative;display:block}
-.cc-datewrap .cc-date-disp{display:block;text-align:center;font-size:13px;
-  color:var(--text-muted);padding:5px 6px;border-radius:5px;pointer-events:none}
-/* inset shadow, not a border: a border here would reflow the row on hover */
-.cc-datewrap:hover .cc-date-disp{box-shadow:inset 0 0 0 1px var(--border)}
-/* pointer-events:none matters more than it looks. The input covers the whole
-   cell, and the row's drag filter skips anything matching .cc-inp — so an input
-   that could be the click target made the entire date cell undraggable, and a
-   row grabbed there simply never lifted. The wrapper takes the click instead
-   and opens the picker itself, which leaves the cell draggable like every
-   other one. */
+/* .cc-inp already gives the box the look of a text cell. What is added here is
+   room for the calendar at the inline end, and a little at the other end so the
+   date does not sit flush against the cell's edge.
+   Keep that sum small. תאריך יעד is a 130px column — about 114px of box — and a
+   box whose text does not fit scrolls itself as soon as the caret lands in it,
+   taking the board's own sideways scroll with it. Padding of 21px at both ends
+   left 72px for a DD/MM/YYYY that wants 83: the hint came out clipped, and
+   every click on a date jumped the whole board sideways. */
+.cc-datewrap .cc-date-txt{padding-inline:5px 21px;font-variant-numeric:tabular-nums;
+  text-overflow:ellipsis}
+/* The hint is a hint: smaller than the dates it stands in for — ten latin caps
+   next to 13px Hebrew read far heavier than the date they describe — and narrow
+   enough to fit the column whole, since clipped it just reads as a broken cell. */
+.cc-datewrap .cc-date-txt::placeholder{color:var(--text-light);font-size:11.5px}
+.cc-date-cal{position:absolute;inset-inline-end:2px;top:50%;transform:translateY(-50%);
+  width:19px;height:19px;border:none;background:none;padding:0;border-radius:4px;
+  color:transparent;font-size:11px;cursor:pointer;display:grid;place-items:center}
+/* the calendar shows itself when the cell is in play, so a row of dates stays
+   a row of dates and not a row of icons */
+.cc-datewrap:hover .cc-date-cal,.cc-datewrap:focus-within .cc-date-cal{color:var(--text-light)}
+.cc-date-cal:hover{background:var(--row-hover);color:var(--primary)}
+/* The native input covers the cell: that box is where its picker opens. It
+   takes no clicks of its own — the row's drag filter skips anything matching
+   .cc-inp, and an input that could be the click target once made the whole date
+   cell undraggable, so a row grabbed there never lifted. */
 .cc-datewrap .cc-date{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none}
-.cc-datewrap:focus-within .cc-date{pointer-events:auto}
-.cc-datewrap:focus-within .cc-date{opacity:1}
-.cc-datewrap:focus-within .cc-date-disp{visibility:hidden}
+/* unless showPicker is missing or refused, when the native control is the only
+   way left to pick and dateCellPick hands the cell over to it */
+.cc-datewrap.cc-fallback .cc-date{opacity:1;pointer-events:auto}
+.cc-datewrap.cc-fallback .cc-date-txt,.cc-datewrap.cc-fallback .cc-date-cal{visibility:hidden}
 .rating{display:inline-flex;gap:3px;color:var(--yellow);font-size:14px;cursor:pointer}
 .rating .fa-regular{color:var(--border-strong)}
 .rating i:hover{transform:scale(1.18)}
@@ -8269,28 +8284,91 @@ function fnum(v,c){
   // debt is -₪50, never ₪-50
   return n<0 ? '-'+unit+s.slice(1) : unit+s;
 }
-/* One date cell: our text for reading, the native input for picking and typing.
-   The reason the input does not draw itself is in .cc-datewrap in the
+/* DD/MM/YYYY as plain text, for a box someone types in — fdate draws an em dash
+   for an empty date, which is right in a cell and wrong in an input. Read off
+   the ISO string rather than through a Date: a date here is a day, not an
+   instant, and parsing it would drag a timezone into it. */
+const fdateVal = d=>{
+  const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(d==null?'':d));
+  return m?`${m[3]}/${m[2]}/${m[1]}`:'';
+};
+/* A date somebody typed. DD/MM/YYYY is what the cell draws, so that is what it
+   reads back — along with the near misses that can only mean the same thing:
+   1.2.26, 1-2-2026, 01022026, a day and month with the year left off (this
+   year), and an ISO date pasted in from elsewhere. '' means it is not a date at
+   all, and the cell keeps what it had. */
+function parseTypedDate(s){
+  const t=String(s==null?'':s).trim(); if(!t) return '';
+  let y,m,d,g;
+  if((g=/^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t))){ y=+g[1]; m=+g[2]; d=+g[3]; }
+  else{
+    g=/^(\d{1,2})[./\-\s](\d{1,2})(?:[./\-\s](\d{2,4}))?$/.exec(t)
+      || /^(\d{2})(\d{2})(\d{4}|\d{2})$/.exec(t);
+    if(!g) return '';
+    d=+g[1]; m=+g[2];
+    y=g[3]===undefined ? new Date().getFullYear() : +g[3];
+    if(y<100) y+=2000;                     // 26 is 2026, the year boards are filled in
+  }
+  if(m<1||m>12||d<1||d>31||y<1000||y>9999) return '';
+  const x=new Date(Date.UTC(y,m-1,d));
+  if(x.getUTCMonth()!==m-1||x.getUTCDate()!==d) return '';   // 31/02 rolls over, so it is no date
+  const p=n=>String(n).padStart(2,'0');
+  return `${y}-${p(m)}-${p(d)}`;
+}
+/* One date cell: a box holding our own DD/MM/YYYY that can be typed into, a
+   calendar button, and the native date input behind them holding the value.
+   Why the native control does not draw itself is in .cc-datewrap in the
    stylesheet — in short, its format is the viewer's browser's, not ours, and a
    board must read the same to everyone looking at it. */
 function dateCellHTML(value,onchange,opts){
   const o=opts||{};
   const iso=value?String(value).slice(0,10):'';
-  return `<span class="cc-datewrap${o.cls?' '+o.cls:''}" onclick="dateCellPick(event)">`
-    +`<span class="cc-date-disp">${fdate(iso)}</span>`
-    +`<input type="date"${o.id?` id="${o.id}"`:''} class="cc-inp cc-date" value="${iso}" onchange="${onchange}">`
+  return `<span class="cc-datewrap${o.cls?' '+o.cls:''}">`
+    +`<input class="cc-inp cc-date-txt" value="${fdateVal(iso)}" placeholder="DD/MM/YYYY"`
+    +` inputmode="numeric" autocomplete="off" title="הקלד תאריך או בחר מלוח השנה"`
+    +` onkeydown="dateCellKey(event)" onchange="dateTyped(this)">`
+    +`<button type="button" class="cc-date-cal" tabindex="-1" title="בחר מלוח השנה"`
+    +` onclick="dateCellPick(event)"><i class="fa-regular fa-calendar"></i></button>`
+    +`<input type="date"${o.id?` id="${o.id}"`:''} class="cc-date" tabindex="-1" value="${iso}" onchange="${onchange}">`
     +`</span>`;
 }
-/* The input is transparent until it has focus, so its own calendar icon is not
-   something anyone can aim at — ask for the picker ourselves. Where showPicker
-   is missing, or refuses because the browser does not count this as a gesture,
-   a focused date input can still be typed into. */
+/* What was typed, saved. The native input is handed the parsed date and fires
+   the cell's own onchange, so a typed date and a picked one are the very same
+   event — nothing downstream needs to know which it was. */
+function dateTyped(inp){
+  const wrap=inp.closest('.cc-datewrap'); if(!wrap) return;
+  const nat=wrap.querySelector('input[type=date]'); if(!nat) return;
+  const cur=String(nat.value||'').slice(0,10), raw=inp.value.trim();
+  const iso=raw?parseTypedDate(raw):'';
+  if(raw&&!iso){ inp.value=fdateVal(cur); toast('תאריך לא תקין — הקלד בתבנית DD/MM/YYYY'); return; }
+  inp.value=fdateVal(iso);                 // 1/2/26 is shown back as 01/02/2026
+  if(iso===cur) return;
+  nat.value=iso;
+  // the handler may re-render the cell from under us, so this goes last
+  nat.dispatchEvent(new Event('change'));
+}
+/* Enter saves without waiting for the cell to lose focus; Escape puts back the
+   date the cell holds. Both then blur, which is what every other cell does. */
+function dateCellKey(e){
+  if(e.key==='Enter'){ e.preventDefault(); e.currentTarget.blur(); }
+  else if(e.key==='Escape'){
+    const wrap=e.currentTarget.closest('.cc-datewrap');
+    const nat=wrap&&wrap.querySelector('input[type=date]');
+    e.currentTarget.value=nat?fdateVal(nat.value):'';
+    e.currentTarget.blur();
+  }
+}
+/* The calendar button. The native input draws nothing, so its own icon is not
+   something anyone can aim at — ask for its picker ourselves. Where showPicker
+   is missing, or the browser refuses it here, the cell hands itself over to the
+   native control instead: it is then the only way left to pick a date, and
+   typing stays available as soon as the cell is drawn again. */
 function dateCellPick(e){
-  const inp=e.currentTarget.querySelector('input[type=date]'); if(!inp)return;
-  // focus first: it is what makes the input visible and typable, and it is the
-  // fallback for browsers with no showPicker (or that refuse it here)
-  inp.focus();
-  try{ inp.showPicker(); }catch(_){}
+  e.stopPropagation();
+  const wrap=e.currentTarget.closest('.cc-datewrap'); if(!wrap) return;
+  const nat=wrap.querySelector('input[type=date]'); if(!nat) return;
+  try{ nat.showPicker(); }
+  catch(_){ wrap.classList.add('cc-fallback'); nat.focus(); }
 }
 /* one built-in (non-item) cell for a given row */
 function builtinCellHTML(key,t){
