@@ -4154,18 +4154,67 @@ def _board_notify_on(board):
     return bool((board.settings or {}).get("notifications_enabled", True)) if board else True
 
 
+# ── Outgoing mail ───────────────────────────────────────────────────
+# One way out of the app (_send_email) and two providers behind it. Which one
+# sends is configuration, never a call site's business: MAIL_PROVIDER names it
+# outright, and with nothing named the choice is simply whichever key is set —
+# SendGrid first, since an environment holding a SendGrid key was given one on
+# purpose. Neither key set is not an error: the message is logged and dropped,
+# so an invite still goes through on a machine where mail was never configured.
+MAIL_ENDPOINTS = {"sendgrid": "https://api.sendgrid.com/v3/mail/send",
+                  "resend": "https://api.resend.com/emails"}
+
+
+def _mail_provider():
+    """Which provider sends, and with what key. ('', None) when mail is off."""
+    named = (os.environ.get("MAIL_PROVIDER") or "").strip().lower()
+    keys = {"sendgrid": os.environ.get("SENDGRID_API_KEY"),
+            "resend": os.environ.get("RESEND_API_KEY")}
+    if named in keys:
+        # an explicitly named provider is never silently swapped for the other:
+        # a missing key is a misconfiguration to see in the log, not to route
+        # around, or a test send goes out through a provider nobody chose
+        return (named, keys[named]) if keys[named] else ("", None)
+    for name in ("sendgrid", "resend"):
+        if keys[name]:
+            return name, keys[name]
+    return "", None
+
+
+def _mail_from():
+    """The From address, as (name, email).
+
+    INVITE_FROM_EMAIL takes either form — "CityOS <no-reply@x.gov.il>" or the
+    bare address. The default belongs to Resend's shared sandbox domain, which
+    only Resend will accept; SendGrid refuses any sender it has not verified,
+    so there it is better to send nothing and say why than to let every message
+    come back 403 from a default nobody chose.
+    """
+    import email.utils
+    name, addr = email.utils.parseaddr(
+        os.environ.get("INVITE_FROM_EMAIL", "CityOS <onboarding@resend.dev>"))
+    return name, addr
+
+
 def _send_email(to_email, subject, html):
-    """Send a transactional email via Resend. No-ops (logs) when RESEND_API_KEY
-    isn't configured, so an invite never fails just because email isn't set up."""
-    import urllib.request, json as _json
-    api_key = os.environ.get("RESEND_API_KEY")
-    if not api_key or not to_email:
-        print(f"[email] skipped (no RESEND_API_KEY) → {to_email}: {subject}")
+    """Send one transactional email. Returns True only if a provider took it.
+
+    Every caller stays out of the provider question — see _mail_provider.
+    """
+    provider, api_key = _mail_provider()
+    if not provider or not to_email:
+        print(f"[email] skipped (no mail provider configured) → {to_email}: {subject}")
         return False
-    from_addr = os.environ.get("INVITE_FROM_EMAIL", "CityOS <onboarding@resend.dev>")
-    # development mode: until a domain is verified in Resend, real recipients are
-    # blocked. Redirect every message to a single verified inbox so invites can be
-    # tested end-to-end, keeping the original recipient visible in the email.
+    from_name, from_addr = _mail_from()
+    if provider == "sendgrid" and from_addr.endswith("@resend.dev"):
+        print("[email] skipped (SENDGRID_API_KEY is set but INVITE_FROM_EMAIL is "
+              "still Resend's sandbox sender — set a verified SendGrid sender) "
+              f"→ {to_email}: {subject}")
+        return False
+    # development mode: until a domain is verified with the provider, real
+    # recipients are blocked. Redirect every message to a single verified inbox
+    # so invites can be tested end-to-end, keeping the original recipient
+    # visible in the email.
     redirect = os.environ.get("EMAIL_DEV_REDIRECT")
     actual_to = to_email
     if redirect:
@@ -4175,19 +4224,50 @@ def _send_email(to_email, subject, html):
                 f"border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12.5px;"
                 f"font-family:Arial'>⚙️ מצב פיתוח — הנמען המקורי של ההזמנה הוא "
                 f"<b>{to_email}</b>. מייל זה הופנה אליך לצורכי בדיקה.</div>") + html
-    payload = _json.dumps({"from": from_addr, "to": [actual_to],
-                           "subject": subject, "html": html}).encode("utf-8")
-    req = urllib.request.Request("https://api.resend.com/emails", data=payload,
+    if provider == "sendgrid":
+        body = {"personalizations": [{"to": [{"email": actual_to}]}],
+                "from": ({"email": from_addr, "name": from_name} if from_name
+                         else {"email": from_addr}),
+                "subject": subject,
+                "content": [{"type": "text/html", "value": html}]}
+        # sandbox_mode validates the whole request — sender identity included —
+        # and delivers nothing. It is how a deploy can prove mail is wired up
+        # without a message reaching anybody.
+        if (os.environ.get("SENDGRID_SANDBOX") or "").strip() not in ("", "0", "false"):
+            body["mail_settings"] = {"sandbox_mode": {"enable": True}}
+    else:
+        from_hdr = f"{from_name} <{from_addr}>" if from_name else from_addr
+        body = {"from": from_hdr, "to": [actual_to], "subject": subject, "html": html}
+    return _post_mail(provider, api_key, body, actual_to, subject)
+
+
+def _post_mail(provider, api_key, body, actual_to, subject):
+    """The one HTTP call. Split out so a test can exercise the payload alone."""
+    import urllib.request, urllib.error, json as _json
+    req = urllib.request.Request(MAIL_ENDPOINTS[provider],
+                                 data=_json.dumps(body).encode("utf-8"),
                                  headers={"Authorization": f"Bearer {api_key}",
                                           "Content-Type": "application/json",
                                           "User-Agent": "CityOS/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             r.read()
-        print(f"[email] sent → {actual_to}: {subject}")
+        print(f"[email] sent via {provider} → {actual_to}: {subject}")
         return True
+    except urllib.error.HTTPError as e:
+        # The refusal itself is the useful part — "does not match a verified
+        # Sender Identity" is the answer to nearly every mail that never
+        # arrives — so the body is logged, not just the status. It carries no
+        # credential; the key only ever goes out in the request header.
+        detail = ""
+        try:
+            detail = (e.read() or b"")[:400].decode("utf-8", "replace")
+        except Exception:
+            pass
+        print(f"[email] {provider} refused ({e.code}) → {actual_to}: {detail}")
+        return False
     except Exception as e:
-        print(f"[email] send failed → {actual_to}: {e}")
+        print(f"[email] send failed via {provider} → {actual_to}: {e}")
         return False
 
 
