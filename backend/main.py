@@ -4252,7 +4252,15 @@ def _post_mail(provider, api_key, body, actual_to, subject):
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             r.read()
-        print(f"[email] sent via {provider} → {actual_to}: {subject}")
+        # "sent" must mean a message somebody can receive. A sandbox send is
+        # accepted by the provider and then thrown away, so logging it the same
+        # way reads as a delivery that never happened — and the log is the only
+        # place anyone can see which of the two it was.
+        if ((body.get("mail_settings") or {}).get("sandbox_mode") or {}).get("enable"):
+            print(f"[email] validated by {provider}, NOT delivered "
+                  f"(SENDGRID_SANDBOX is on) → {actual_to}: {subject}")
+        else:
+            print(f"[email] sent via {provider} → {actual_to}: {subject}")
         return True
     except urllib.error.HTTPError as e:
         # The refusal itself is the useful part — "does not match a verified

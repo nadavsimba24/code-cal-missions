@@ -77,9 +77,14 @@ def test_sendgrid_payload(mail_env, sent):
     assert "mail_settings" not in call["body"]
 
 
-def test_sendgrid_sandbox_mode(mail_env, sent):
+def test_sendgrid_sandbox_mode(mail_env, sent, capsys):
     """SENDGRID_SANDBOX validates the send — sender identity included — and
-    delivers nothing, which is how a deploy proves mail is wired up."""
+    delivers nothing, which is how a deploy proves mail is wired up.
+
+    And it must SAY so. A sandbox send comes back accepted, so logging it as
+    "sent" describes a delivery that never happened; the log is the only place
+    anyone can tell the two apart, and reading it the wrong way is how an
+    invitation gets chased that was never going to arrive."""
     mail_env.setenv("SENDGRID_API_KEY", "SG.test-key")
     mail_env.setenv("INVITE_FROM_EMAIL", "no-reply@mashcal.co.il")
     mail_env.setenv("SENDGRID_SANDBOX", "1")
@@ -89,6 +94,8 @@ def test_sendgrid_sandbox_mode(mail_env, sent):
     assert sent[0]["body"]["mail_settings"] == {"sandbox_mode": {"enable": True}}
     # a bare address carries no display name, and SendGrid rejects an empty one
     assert sent[0]["body"]["from"] == {"email": "no-reply@mashcal.co.il"}
+    out = capsys.readouterr().out
+    assert "NOT delivered" in out and "sent via" not in out
 
 
 def test_resend_still_sends_its_own_shape(mail_env, sent):
