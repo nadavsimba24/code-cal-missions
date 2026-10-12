@@ -10868,17 +10868,34 @@ function bulkMoveMenu(e){
     +`</div>`;
   openCellPop(e.currentTarget,html,'row-menu-pop',true);   // bar is at the bottom → open upward
 }
+/* One request for the whole selection, and no refetch of the board afterwards.
+   It used to be a round trip per item — each of which renumbers the group the
+   item leaves and the group it joins — followed by GET /api/boards/{id} for the
+   entire board. Twelve items meant thirteen requests and the whole board back
+   over the wire, which is why it took as long as it did. The calls could not
+   simply be fired together either: two of them renumbering one group at once
+   leave two items claiming one position, and a row then springs back to where
+   it was.
+   The server moves the set in one transaction and answers with the new order of
+   every group it touched, so the rows already on screen are placed from that
+   answer. The group they land in does not restamp their status — see
+   moveItemToGroup. */
 async function bulkMoveToGroup(e,gid){
   e.stopPropagation(); closeCellPops();
-  const items=_selectedTopItems();
-  let ok=0, pos=(st.board.tasks||[]).filter(x=>x.group_id===gid&&!x.parent_id).length;
-  for(const t of items){
-    // the group they land in does not restamp their status — see moveItemToGroup
-    const body={group_id:gid,position:pos++};
-    try{ await api('/api/tasks/'+t.id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})}); ok++; }catch(e){}
-  }
-  try{ const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh; }catch(e){}
-  clearSelection(); renderView(); toast(`${ok} פריטים הועברו`);
+  const items=_selectedTopItems(); if(!items.length)return;
+  try{
+    const r=await api('/api/boards/'+st.board.id+'/items/move',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:withMe({ids:items.map(t=>t.id),group_id:gid})});
+    (r.order||[]).forEach(g=>g.ids.forEach((id,i)=>{
+      const t=findAnyTask(id); if(t){ t.group_id=g.group_id; t.position=i; }
+    }));
+    clearSelection(); renderView();
+    const n=(r.moved||[]).length, already=(r.unchanged||[]).length;
+    toast(n===items.length ? `${n} פריטים הועברו`
+        : already ? `${n} הועברו, ${already} כבר בקבוצה`
+        : `${n} מתוך ${items.length} הועברו`);
+  }catch(err){ toast('שגיאה בהעברת הפריטים'); }
 }
 async function bulkMoveToBoard(e,boardId){
   e.stopPropagation(); closeCellPops();

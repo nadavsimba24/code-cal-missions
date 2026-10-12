@@ -10135,6 +10135,71 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
         bus.publish("task.changed", board_id=_src_board, task_id=task_id, actor_id=actor)
         return {"status": "moved"}
 
+@app.post("/api/boards/{board_id}/items/move")
+def move_items_bulk(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+    """Move several items into one group — one request, one transaction.
+
+    Why this exists rather than calling /tasks/{id}/move per item: that endpoint
+    renumbers the whole group an item leaves AND the whole group it joins, so
+    twelve selected items were twelve round trips and twenty-four renumbers, and
+    the client then refetched the entire board on top of it. Nor can those calls
+    be fired in parallel to make them quick: two of them renumbering one group at
+    the same time leave two items claiming the same position, and the board reads
+    back ordered by position alone — which is how a row springs back to where it
+    was and a move looks like it did nothing.
+
+    So: one authorisation, one query for the items, each group renumbered once,
+    one event. The answer carries the new order of every group it touched, so
+    the caller can place the rows it already holds instead of asking for the
+    board again — and it names the ids it did NOT move, because "12 moved" hides
+    the two that were not.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        _require_board_edit(db, board_id, actor_id)
+        gid = data.get("group_id")
+        if gid is not None:
+            if not db.query(Group).filter(Group.id == gid, Group.board_id == board_id).first():
+                raise HTTPException(404, "הקבוצה לא נמצאה בלוח הזה")
+        ids = [i for i in (data.get("ids") or []) if isinstance(i, int)][:500]
+        if not ids:
+            raise HTTPException(400, "לא נבחרו פריטים")
+        # top-level items of THIS board only: a sub-item travels with its parent,
+        # and an id from somewhere else is not this board's business to move
+        found = {t.id: t for t in db.query(Task).filter(
+            Task.board_id == board_id, Task.parent_id == None,          # noqa: E711
+            Task.is_archived == False, Task.id.in_(ids)).all()}         # noqa: E712
+        picked = [found[i] for i in ids if i in found]                  # the caller's order
+        missing = [i for i in ids if i not in found]
+        # an item already in the target group is left exactly where it is —
+        # re-appending it would reorder a group nobody asked to reorder
+        moving = [t for t in picked if t.group_id != gid]
+        unchanged = [t.id for t in picked if t.group_id == gid]
+        if not moving:
+            return {"moved": [], "unchanged": unchanged, "missing": missing, "order": []}
+        src_groups = {t.group_id for t in moving}
+        # they land at the end of the target group, in the order they were given
+        tail = max([t.position or 0 for t in _group_items(db, board_id, gid)], default=-1)
+        for i, t in enumerate(moving):
+            t.group_id = gid
+            t.position = tail + 1 + i
+        db.flush()
+        touched = {gid} | src_groups
+        for g in touched:
+            _renumber_group(db, board_id, g)       # dense 0..n-1, order preserved
+        db.commit()
+        order = [{"group_id": g,
+                  "ids": [t.id for t in _group_items(db, board_id, g)]} for g in touched]
+        # One event, not one per item. A move between groups changes the list
+        # itself, which every client answers with a full refresh anyway — so
+        # twelve task.changed events would be twelve refetches of the same board.
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
+        return {"moved": [{"id": t.id, "group_id": t.group_id, "position": t.position}
+                          for t in moving],
+                "unchanged": unchanged, "missing": missing, "order": order}
+
 @app.post("/api/tasks/{parent_id}/subitems/reorder")
 def reorder_subitems(parent_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     """Persist a new ordering for one parent's sub-items. data = {order: [subId, ...]}.
