@@ -336,7 +336,7 @@ def test_the_screen_shows_the_preview_and_the_analysis():
     src = (pathlib.Path(__file__).resolve().parent.parent / "frontend" / "index.html"
            ).read_text(encoding="utf-8")
     # the preview, before switching a rule on
-    for marker in ("מה האוטומציה נוגעת בו", "שדות נקראים", "שדות מתעדכנים",
+    for marker in ("על מה משפיעה האוטומציה", "שדות נקראים", "שדות מתעדכנים",
                    "תלויות בקישור ובמראה", "נמעני התראות",
                    "אוטומציות נוספות שמעדכנות אותם שדות", "סיכון ללולאה"):
         assert marker in src, f"the preview says nothing about {marker}"

@@ -5433,7 +5433,7 @@ const Automations = {
       +item('fa-flag','שנה חשיבות',`Automations.showMenu(${a.id},'importance')`)
       +item('fa-arrow-down-1-9','שנה סדר ביצוע',`Automations.showMenu(${a.id},'order')`)
       +'<div class="rm-sep"></div>'
-      +item('fa-list-check','מה האוטומציה נוגעת בו',`closeCellPops();Automations.impact(${a.id})`)
+      +item('fa-list-check','על מה משפיעה האוטומציה',`closeCellPops();Automations.impact(${a.id})`)
       +item('fa-vial','בדיקה על פריט (ללא שינוי)',`closeCellPops();Automations.startTest(${a.id})`)
       +item('fa-bolt','הפעלה ידנית על פריט',`closeCellPops();Automations.startTest(${a.id},true)`)
       +item('fa-code-branch','צפייה בגרסאות',`closeCellPops();Automations.versions(${a.id})`)
@@ -5523,7 +5523,7 @@ const Automations = {
         <i class="fa-solid ${icon}"></i> ${title}</div>${body}</div>`:'';
     const chips=a=>`<div class="imp-cols">${a.map(x=>`<span class="tag">${esc(x)}</span>`).join('')}</div>`;
     const ST={draft:'טיוטה',active:'פעילה',paused:'מושהית',paused_error:'מושהית עקב שגיאה',deleting:'בתהליך מחיקה'};
-    return `<div class="au-group-h">לפני הפעלה — מה האוטומציה נוגעת בו</div>
+    return `<div class="au-group-h">לפני הפעלה — על מה משפיעה האוטומציה</div>
       <div class="au-sent">${esc(d.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>')}</div>
       ${(d.missing_fields||[]).length?`<div class="au-lack"><i class="fa-solid fa-circle-info"></i>
         חסרים שדות חובה: ${esc(d.missing_fields.join(', '))} — לא ניתן להפעיל</div>`:''}
