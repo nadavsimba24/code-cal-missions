@@ -174,6 +174,34 @@ ck('a board row carries its open-the-board tap wherever it is rendered',
    (src.match(/class="sb-item \$\{st\.board&&st\.board\.id===b\.id\?'active':''\}" data-bid="\$\{b\.id\}" onclick="openBoard\(\$\{b\.id\}\)"/g)||[]).length===1,
    'boardItem is one template used for folders and the root alike');
 
+/* ── switching workspace must not look like you are finished ─────────────── */
+{
+  body._c.add('sb-open');
+  const st2={env:null};
+  const closed=[];
+  const select=new Function('st','closeSidebarMobile','renderSidebar',
+    grabM('select')+'; return select;')(
+    st2, ()=>closed.push(1), ()=>{});
+  // `this` is the Env object: items to choose from, and _set closes the dropdown
+  const envObj={items:[{id:1,name:'סביבה ראשית'},{id:2,name:'בינוי'}],_setCalls:[],
+                _set(v){ this._setCalls.push(v); }};
+  select.call(envObj, 2);
+  ck('choosing a workspace leaves the drawer open, so a board can still be picked',
+     open() && closed.length===0, 'closes='+closed.length);
+  ck('...the workspace itself did change', st2.env && st2.env.id===2, JSON.stringify(st2.env));
+  ck('...and the dropdown over it closed', envObj._setCalls[0]===false, JSON.stringify(envObj._setCalls));
+  ck('the source no longer closes the drawer when a workspace is chosen',
+     !/closeSidebarMobile\(\)/.test(grabM('select')), grabM('select'));
+}
+/* and the drawer still closes on the thing that IS a choice: the board */
+{
+  body._c.add('sb-open');
+  const p2 = ctx()(1);
+  ck('tapping a board after the switch closes the drawer', !open());
+  releaseBoard && releaseBoard();
+  await p2.catch(()=>{});
+}
+
 /* ── opening a new browser tab from the sidebar ──────────────────────────── */
 {
   const foot=/<div class="sb-foot">[\s\S]*?<\/div>\s*<\/aside>/.exec(src);

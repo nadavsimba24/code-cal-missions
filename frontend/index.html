@@ -6431,7 +6431,13 @@ const Env = {
     if(v) setTimeout(()=>document.addEventListener('mousedown',this._onDoc),0); },
   _onDoc(ev){ const sw=document.getElementById('ws-switch'); if(!sw||!sw.contains(ev.target)) Env._set(false); },
   toggle(e){ e&&e.stopPropagation(); this._set(!this.open); },
-  select(id){ st.env=this.items.find(x=>x.id===id)||st.env; this._set(false); renderSidebar(); closeSidebarMobile(); },
+  /* Switching workspace leaves the drawer OPEN on a phone. It used to close it,
+     which read as "done" when nothing had been chosen yet: the point of picking
+     a workspace is to get at its boards, and the drawer is where they are. So
+     the dropdown closes (_set(false)) and the list behind it is now the new
+     workspace's — and the drawer closes a moment later, on the board, because
+     openBoard is what closes it. */
+  select(id){ st.env=this.items.find(x=>x.id===id)||st.env; this._set(false); renderSidebar(); },
   /* One field, one question. editPrompt is the app's own styled stand-in for
      the browser's prompt() — the same confirm/alert modal, with a text field —
      and it was sitting in this file unused while two different places still
