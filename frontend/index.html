@@ -911,14 +911,18 @@ body.coldragging .col-grip{opacity:1}
    a row of dates and not a row of icons */
 .cc-datewrap:hover .cc-date-cal,.cc-datewrap:focus-within .cc-date-cal{color:var(--text-light)}
 .cc-date-cal:hover{background:var(--row-hover);color:var(--primary)}
-/* The native input covers the cell: that box is where its picker opens. It
-   takes no clicks of its own — the row's drag filter skips anything matching
-   .cc-inp, and an input that could be the click target once made the whole date
-   cell undraggable, so a row grabbed there never lifted. */
-.cc-datewrap .cc-date{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none}
-/* unless showPicker is missing or refused, when the native control is the only
-   way left to pick and dateCellPick hands the cell over to it */
-.cc-datewrap.cc-fallback .cc-date{opacity:1;pointer-events:auto}
+/* The value itself is an `<input type="hidden">` — nothing to lay out, which is
+   the point: see dateCellPick for the three and a half thousand date widgets
+   that used to sit in one group of one board.
+   The real control is borrowed for the length of a pick and covers the cell,
+   because that box is where its picker opens. It takes no clicks of its own —
+   the row's drag filter skips anything matching .cc-inp, and an input that
+   could be the click target once made the whole date cell undraggable, so a row
+   grabbed there never lifted. */
+.cc-datewrap .cc-date-native{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none}
+/* unless showPicker is missing or refused, when the borrowed control is the
+   only way left to pick and dateCellPick hands the cell over to it */
+.cc-datewrap.cc-fallback .cc-date-native{opacity:1;pointer-events:auto}
 .cc-datewrap.cc-fallback .cc-date-txt,.cc-datewrap.cc-fallback .cc-date-cal{visibility:hidden}
 .rating{display:inline-flex;gap:3px;color:var(--yellow);font-size:14px;cursor:pointer}
 .rating .fa-regular{color:var(--border-strong)}
@@ -8379,7 +8383,7 @@ function dateCellHTML(value,onchange,opts){
     +` onkeydown="dateCellKey(event)" onchange="dateTyped(this)">`
     +`<button type="button" class="cc-date-cal" tabindex="-1" title="בחר מלוח השנה"`
     +` onclick="dateCellPick(event)"><i class="fa-regular fa-calendar"></i></button>`
-    +`<input type="date"${o.id?` id="${o.id}"`:''} class="cc-date" tabindex="-1" value="${iso}" onchange="${onchange}">`
+    +`<input type="hidden"${o.id?` id="${o.id}"`:''} class="cc-date" value="${iso}" onchange="${onchange}">`
     +`</span>`;
 }
 /* What was typed, saved. The native input is handed the parsed date and fires
@@ -8387,7 +8391,7 @@ function dateCellHTML(value,onchange,opts){
    event — nothing downstream needs to know which it was. */
 function dateTyped(inp){
   const wrap=inp.closest('.cc-datewrap'); if(!wrap) return;
-  const nat=wrap.querySelector('input[type=date]'); if(!nat) return;
+  const nat=wrap.querySelector('input.cc-date'); if(!nat) return;
   const cur=String(nat.value||'').slice(0,10), raw=inp.value.trim();
   const iso=raw?parseTypedDate(raw):'';
   if(raw&&!iso){ inp.value=fdateVal(cur); toast('תאריך לא תקין — הקלד בתבנית DD/MM/YYYY'); return; }
@@ -8403,20 +8407,42 @@ function dateCellKey(e){
   if(e.key==='Enter'){ e.preventDefault(); e.currentTarget.blur(); }
   else if(e.key==='Escape'){
     const wrap=e.currentTarget.closest('.cc-datewrap');
-    const nat=wrap&&wrap.querySelector('input[type=date]');
+    const nat=wrap&&wrap.querySelector('input.cc-date');
     e.currentTarget.value=nat?fdateVal(nat.value):'';
     e.currentTarget.blur();
   }
 }
-/* The calendar button. The native input draws nothing, so its own icon is not
-   something anyone can aim at — ask for its picker ourselves. Where showPicker
-   is missing, or the browser refuses it here, the cell hands itself over to the
-   native control instead: it is then the only way left to pick a date, and
-   typing stays available as soon as the cell is drawn again. */
+/* The calendar button, and the picker it opens — built here, on the press, and
+   gone again afterwards.
+   An `<input type="date">` is the most expensive thing a row can hold: a
+   browser widget with its own shadow tree, laid out whether or not anyone
+   intends to open it. One per date cell is invisible on a small board and
+   crushing on a real one — board 114 has fifteen date columns, so its larger
+   group alone held three and a half THOUSAND of them, all laid out in one go
+   the moment the group was expanded. The value lives in a hidden input instead
+   (hidden inputs are not rendered at all) and the widget is created for the
+   press that needs it.
+   Where showPicker is missing, or the browser refuses it here, the cell hands
+   itself over to the control: it is then the only way left to pick a date. */
 function dateCellPick(e){
   e.stopPropagation();
   const wrap=e.currentTarget.closest('.cc-datewrap'); if(!wrap) return;
-  const nat=wrap.querySelector('input[type=date]'); if(!nat) return;
+  const val=wrap.querySelector('input.cc-date'); if(!val) return;
+  let nat=wrap.querySelector('input.cc-date-native');
+  if(!nat){
+    nat=document.createElement('input');
+    nat.type='date'; nat.className='cc-date-native'; nat.value=val.value||'';
+    nat.onchange=()=>{
+      const iso=nat.value||'';
+      const txt=wrap.querySelector('.cc-date-txt'); if(txt) txt.value=fdateVal(iso);
+      nat.remove();                       // its weight does not belong in the row
+      if(iso!==String(val.value||'')){ val.value=iso; val.dispatchEvent(new Event('change')); }
+    };
+    // dismissed without choosing: take it out again rather than leave a widget
+    // per cell behind, one dismissed picker at a time
+    nat.onblur=()=>setTimeout(()=>{ if(!wrap.classList.contains('cc-fallback')) nat.remove(); },200);
+    wrap.appendChild(nat);
+  }
   try{ nat.showPicker(); }
   catch(_){ wrap.classList.add('cc-fallback'); nat.focus(); }
 }

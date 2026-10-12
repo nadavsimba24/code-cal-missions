@@ -54,11 +54,11 @@ ck('and the live re-sync asks the same question',
    lifted. It takes no clicks at all now: the typable box and the calendar
    button are what the cell offers, and the native input is only the value and
    the picker's anchor. */
-const rule = /\.cc-datewrap \.cc-date\{[^}]*\}/.exec(src);
-ck('the date input cannot be a click target at rest',
+const rule = /\.cc-datewrap \.cc-date-native\{[^}]*\}/.exec(src);
+ck('the borrowed date control cannot be a click target at rest',
    rule && rule[0].includes('pointer-events:none'), rule&&rule[0]);
 ck('and only takes the pointer back where showPicker cannot be asked at all',
-   /\.cc-datewrap\.cc-fallback \.cc-date\{[^}]*pointer-events:auto/.test(src));
+   /\.cc-datewrap\.cc-fallback \.cc-date-native\{[^}]*pointer-events:auto/.test(src));
 ck('what the cell offers instead is a typable box and a calendar button',
    src.includes('class="cc-inp cc-date-txt"') && src.includes('class="cc-date-cal"')
    && src.includes('onclick="dateCellPick(event)"'));

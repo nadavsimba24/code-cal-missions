@@ -62,8 +62,15 @@ ck('which says what it will take',
    cell.includes('placeholder="DD/MM/YYYY"'), cell);
 ck('the typable box keeps the class the drag filter looks for',
    /class="cc-inp cc-date-txt"/.test(cell), cell);
-ck('the native input is still there holding the value',
-   /<input type="date"[^>]*value="2026-12-31"/.test(cell), cell);
+ck('the value is carried by a hidden input, which costs the row nothing',
+   /<input type="hidden"[^>]*class="cc-date" value="2026-12-31"/.test(cell), cell);
+/* The performance invariant, and the reason the hidden input exists at all: an
+   `<input type="date">` is a browser widget with its own shadow tree, and a
+   board with fifteen date columns had three and a half thousand of them in one
+   group — all laid out the moment it was expanded. The real control is borrowed
+   for the length of a pick (dateCellPick) and never lives in a row. */
+ck('and the cell holds no date WIDGET — 15 columns × 237 rows of them is the cost',
+   !/type="date"/.test(cell), cell);
 ck('the calendar is a button of its own, and it asks for the picker',
    cell.includes('cc-date-cal') && cell.includes('dateCellPick(event)'), cell);
 ck('the change handler is wired through',
@@ -73,8 +80,8 @@ ck('the change handler is wired through',
 const empty = api.dateCellHTML('', 'noop()');
 ck('an empty date offers the format rather than a blank',
    empty.includes('placeholder="DD/MM/YYYY"') && /class="cc-inp cc-date-txt" value=""/.test(empty), empty);
-ck('and its native input is empty rather than absent',
-   /<input type="date"[^>]*value=""/.test(empty), empty);
+ck('and its carrier is empty rather than absent',
+   /<input type="hidden"[^>]*class="cc-date" value=""/.test(empty), empty);
 
 // ── a full ISO timestamp is trimmed to the day ──
 const stamped = api.dateCellHTML('2026-01-05T00:00:00', 'noop()');
