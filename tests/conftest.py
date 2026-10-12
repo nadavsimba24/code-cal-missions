@@ -21,6 +21,20 @@ os.environ["CITYOS_UPLOAD_DIR"] = os.path.join(_TMP, "uploads")
 # suite runs in dev mode, where the X-CityOS-User header carries it.
 os.environ["CITYOS_AUTH_MODE"] = "dev"
 
+# The suite must not send mail. Inviting somebody to a board is an ordinary
+# thing for a test to do, and _send_email is real: with a provider key in the
+# developer's own .env, every run delivered actual invitations to whatever
+# EMAIL_DEV_REDIRECT points at — until the provider's daily quota answered 429
+# and started failing sends for real work too. No key means _send_email logs and
+# drops, which is what a test wants; a test that cares about the mail asserts on
+# it by replacing the sender (see test_invite_tells_the_invitee.py).
+# Set empty rather than removed: main.py calls load_dotenv(), which fills in any
+# key that is ABSENT from the environment — deleting these just handed the
+# developer's .env a second chance to supply them. An empty value is present, so
+# dotenv leaves it alone, and every reader treats it as "not configured".
+for _k in ("SENDGRID_API_KEY", "RESEND_API_KEY", "EMAIL_DEV_REDIRECT", "MAIL_PROVIDER"):
+    os.environ[_k] = ""
+
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient as _RawTestClient  # noqa: E402
 import main as cityos_main  # noqa: E402  (imports trigger seeding into the temp DB)
