@@ -2498,33 +2498,64 @@ function followBoardEnv(boardId){
   const env=(Env.items||[]).find(e=>e.id===b.environment_id);
   if(env && (!st.env || st.env.id!==env.id)){ st.env=env; Env.render(); }
 }
+/* The entry screen when the workspace that opened has no board this person is
+   allowed to see — by design, since a board in the shared workspace is private
+   until someone is invited to it. It names the workspaces that do hold their
+   boards and opens one in a click, so "nothing here" never means "nothing". */
+function entryEmptyHTML(){
+  const active=(typeof Env!=='undefined')?Env.active():null;
+  const mine=(st.boards||[]);
+  if(!mine.length)
+    return '<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
+  // where their boards actually are, biggest first, the active one excluded
+  const byEnv=new Map();
+  mine.forEach(b=>{ if(!active||b.environment_id!==active.id)
+    byEnv.set(b.environment_id,(byEnv.get(b.environment_id)||[]).concat(b)); });
+  const envName=id=>{ const e=(((typeof Env!=='undefined')&&Env.items)||[]).find(x=>x.id===id);
+    return e?e.name:'סביבה אחרת'; };
+  const chips=[...byEnv.entries()].sort((a,b)=>b[1].length-a[1].length)
+    .map(([id,bs])=>`<button class="btn btn-ghost" onclick="Env.select(${id});openBoard(${bs[0].id})">
+       <i class="fa-solid fa-layer-group"></i> ${esc(envName(id))}
+       <span style="color:var(--text-light)">· ${bs.length} ${bs.length===1?'לוח':'לוחות'}</span></button>`).join('');
+  return `<div class="empty"><i class="fa-regular fa-folder-open"></i>
+    <div>אין לוחות שאפשר לראות ב"${esc(active?active.name:'')}"</div>
+    <div style="font-size:12px;max-width:430px">הצפייה בלוח היא לפי הרשאות הלוח — גם בסביבה המשותפת. אלה הסביבות שבהן יש לך לוחות:</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:4px">${chips}</div></div>`;
+}
 async function enterApp(){
   await loadBoards();
   /* The app opens in the primary workspace — the one every user is in — and
      Env.load is what settles which that is, so it is awaited here rather than
      left to the render that happens to fire it. */
   try{ if(!(Env.items||[]).length) await Env.load(); }catch(e){}
-  if(st.boards.length){
-    // a deep link in the URL wins; otherwise the board you were on, as long as
-    // it is in the workspace that just opened
-    const r=Router.parse();
-    let target, wantItem=null;
-    if(r.boardId && st.boards.some(b=>b.id===r.boardId)){ target=r.boardId; wantItem=r.itemId; }
-    else {
-      const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
-      const active=Env.active();
-      const here=active?st.boards.filter(b=>b.environment_id===active.id):st.boards.slice();
-      target=(here.some(b=>b.id===savedBoard)?savedBoard:(here.length?here[0].id:null))
-          // nothing of theirs in the primary workspace: better the board they
-          // were on than an empty screen that says nothing about the boards
-          // they do have
-          || (st.boards.some(b=>b.id===savedBoard)?savedBoard:st.boards[0].id);
-    }
+  // a deep link in the URL wins — a link to a board opens that board, wherever
+  // it lives; otherwise the board you were on, as long as it is in the
+  // workspace that just opened
+  const r=Router.parse();
+  let target=null, wantItem=null;
+  if(r.boardId && st.boards.some(b=>b.id===r.boardId)){ target=r.boardId; wantItem=r.itemId; }
+  else {
+    const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
+    const active=Env.active();
+    const here=active?st.boards.filter(b=>b.environment_id===active.id):st.boards.slice();
+    target=here.some(b=>b.id===savedBoard)?savedBoard:(here.length?here[0].id:null);
+  }
+  /* Nothing of theirs in the primary workspace does NOT send them somewhere
+     else any more. The entry used to fall back to a board in another workspace
+     — better a board than an empty screen — and the switcher followed it, so a
+     new user invited to one board in one department opened the app inside that
+     department and never saw the workspace everybody shares. The default
+     workspace is the answer to "where am I", and it cannot be a default that
+     the first invitation overrides.
+     What was right about that fallback was its reason: an empty screen saying
+     nothing about the boards you do have is no help. So the screen says it —
+     which workspaces hold your boards, and one click to each. */
+  if(target!=null){
     followBoardEnv(target);
     await openBoard(target);
     if(wantItem && findAnyTask(wantItem)) Chat.open(wantItem,{center:true});   // deep link to a specific item
   }
-  else document.getElementById('view').innerHTML='<div class="empty"><i class="fa-regular fa-folder-open"></i><div>אין לוחות שהוזמנת אליהם</div></div>';
+  else document.getElementById('view').innerHTML=entryEmptyHTML();
   Notif.start();
   setTimeout(showAgentHint,3500);
 }

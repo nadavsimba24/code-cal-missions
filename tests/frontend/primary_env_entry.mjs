@@ -1,6 +1,12 @@
-/* Where the app opens. The main URL opens the primary workspace; a link to a
-   board somewhere else opens that board, and takes its workspace with it.
-   Runs the real enterApp and followBoardEnv out of index.html.
+/* Where the app opens. The main URL opens the primary workspace — the one
+   every user is in — and it stays there even when the person can see no board
+   inside it, which is the ordinary case for somebody new: a board in the shared
+   workspace is private until they are invited to it. The entry used to fall
+   back to a board in another workspace and let the switcher follow, so a new
+   user invited to one departmental board opened the app inside that department
+   and never saw the shared workspace at all.
+   A link to a board still wins and still takes its workspace with it.
+   Runs the real enterApp, followBoardEnv and entryEmptyHTML out of index.html.
    Driven by tests/test_primary_env_entry.py. */
 import fs from 'fs';
 import path from 'path';
@@ -20,23 +26,29 @@ const OTHER={id:2,name:'בינוי'};
 
 async function enter({hash='', saved=null, boards, envs=[PRIMARY,OTHER], loaded=true}){
   const opened=[];
+  const view={innerHTML:''};
+  /* `loaded` is "Env.load already ran" — and a load that has run has ALWAYS
+     settled st.env (see Env.load: it points st.env at the primary when nothing
+     is chosen). Leaving it null here let a case pass only because opening a
+     board happened to set it on the way through. */
   const st={boards:boards.slice(), env:null, me:{id:1}};
+  if(loaded) st.env=envs.find(e=>e.is_primary)||envs[0]||null;
   const Env={items:loaded?envs.slice():[], renders:0,
     async load(){ this.items=envs.slice(); if(!st.env) st.env=this.items.find(e=>e.is_primary)||this.items[0]||null; },
     active(){ return st.env||this.items[0]||null; },
     render(){ this.renders++; }};
   const fn=new Function('st','Env','loadBoards','Router','localStorage','openBoard',
-    'findAnyTask','Chat','document','Notif','setTimeout','showAgentHint',
-    grab('followBoardEnv')+grab('enterApp')+'; return enterApp;')(
+    'findAnyTask','Chat','document','Notif','setTimeout','showAgentHint','esc',
+    grab('followBoardEnv')+grab('entryEmptyHTML')+grab('enterApp')+'; return enterApp;')(
     st, Env, async()=>{}, {parse:()=>{
       const m=hash.match(/board\/(\d+)(?:\/item\/(\d+))?/);
       return m?{boardId:+m[1],itemId:m[2]?+m[2]:null}:{boardId:null,itemId:null};
     }},
     {getItem:()=>saved===null?null:String(saved), setItem(){}},
     async id=>{opened.push(id);}, ()=>null, {open(){}},
-    {getElementById:()=>({innerHTML:''})}, {start(){}}, ()=>{}, ()=>{});
+    {getElementById:()=>view}, {start(){}}, ()=>{}, ()=>{}, x=>String(x==null?'':x));
   await fn();
-  return {opened, env:st.env, Env};
+  return {opened, env:st.env, Env, html:view.innerHTML};
 }
 
 let pass=0,fail=0; const ck=(n,c,x='')=>{c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+x:'')));};
@@ -65,10 +77,29 @@ const BOARDS=[{id:30,environment_id:2},{id:10,environment_id:1},{id:11,environme
   ck('...and the workspace follows the board', r.env===OTHER, r.env&&r.env.name);
 }
 {
+  // the new user: invited to one board, in somebody else's workspace
   const r=await enter({boards:[{id:30,environment_id:2}], saved:30});
-  ck('nothing of theirs in the primary workspace is not an empty screen',
-     r.opened[0]===30, JSON.stringify(r.opened));
-  ck('...and the switcher says where that board actually is', r.env===OTHER, r.env&&r.env.name);
+  ck('one board in another workspace does NOT become the place they land',
+     r.opened.length===0, JSON.stringify(r.opened));
+  ck('...the switcher stays on the workspace everybody shares',
+     r.env===PRIMARY, r.env&&r.env.name);
+  ck('...and the screen names the workspace that does hold their board',
+     r.html.includes('בינוי'), r.html);
+  ck('...with one click to open it there',
+     r.html.includes('Env.select(2)') && r.html.includes('openBoard(30)'), r.html);
+  ck('...and says why it is empty rather than just that it is',
+     r.html.includes('הרשאות הלוח'), r.html);
+}
+{
+  const r=await enter({boards:[], saved:null});
+  ck('somebody invited to nothing at all is told that, not shown a workspace list',
+     r.html.includes('אין לוחות שהוזמנת אליהם') && r.opened.length===0, r.html);
+}
+{
+  // a remembered board elsewhere is no different: the default is the default
+  const r=await enter({boards:[{id:30,environment_id:2},{id:10,environment_id:1}], saved:30});
+  ck('a remembered board elsewhere does not win over the default workspace',
+     r.opened[0]===10 && r.env===PRIMARY, JSON.stringify(r.opened));
 }
 {
   const r=await enter({boards:BOARDS, loaded:false});
