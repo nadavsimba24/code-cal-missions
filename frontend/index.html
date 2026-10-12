@@ -11359,7 +11359,28 @@ async function openNewItem(group){
     if(t&&t.id){
       // insert the new row in place — no full-board refetch/refresh
       (st.board.tasks=st.board.tasks||[]).push(t);
-      renderView();
+      /* A new item has nobody assigned, no priority, no link, no status anyone
+         chose and a placeholder for a title — so it answers almost no filter
+         and almost no search. With one active it was created and hidden in the
+         same breath: the row never appeared, focusNewItemTitle found nothing to
+         open, and the only thing left to do was click again. That is what the
+         board collected — two items called "פריט חדש", five seconds apart,
+         both still carrying the placeholder because neither was ever on screen
+         to be renamed.
+         Adding an item is a deliberate act and its result has to be visible, so
+         a filter that would hide it is cleared. Out loud, with a toast: the
+         filter was also something someone chose, and it disappearing without a
+         word is its own small mystery. */
+      // a group folded shut hides its table, so the row would be added inside
+      // something nobody can see — the same disappearance by a different route,
+      // and the one the "פריט חדש" button can reach on its own since it picks
+      // the group rather than being clicked inside it
+      setGroupCollapsed(gid, false);
+      if(!applyFilters([t]).length){
+        clearFilters();                       // re-renders and refreshes the toolbar
+        toast('הסינון נוקה כדי להציג את הפריט החדש');
+      }
+      else renderView();
       setTimeout(()=>focusNewItemTitle(t.id),40);   // rename it inline
     }
   }catch(e){ toast('שגיאה ביצירת הפריט'); }
