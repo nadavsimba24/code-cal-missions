@@ -385,6 +385,40 @@ def test_a_file_of_one_board_says_nothing_about_other_boards(client, admin_id):
     assert d["report"]["other_boards"] == []
 
 
+def test_a_history_that_came_in_pages_is_imported_whole(client, admin_id):
+    """`activity_logs` paginates by `page`, not by cursor: a board with more
+    history than one request can carry is several responses in the same file.
+    The merge used to take the log from the first response carrying one and drop
+    every page after it — and nothing says so, because a log that stops partway
+    reads like a board that went quiet."""
+    items = [_item(111, "פריט א"), _item(222, "פריט ב")]
+    main = {"data": {"boards": [{"id": "1", "name": "לוח",
+                                 "groups": [{"id": "g1", "title": "פתוח"}],
+                                 "items_page": {"cursor": None, "items": items}}]}}
+    page = lambda *logs: {"data": {"boards": [{"id": "1", "activity_logs": list(logs)}]}}
+    d = _upload(client, json.dumps([
+        main,
+        page(_log("update_name", 111, when=WHEN, name="ב", previous_value="א")),
+        page(_log("update_name", 222, when=WHEN - 1, name="ד", previous_value="ג"),
+             _log("update_name", 111, when=WHEN - 2, name="ו", previous_value="ה")),
+    ], ensure_ascii=False).encode())
+    assert d["report"]["activity"] == 3, "a page of history after the first was dropped"
+    assert d["report"]["activity_asked"] is True
+
+
+def test_the_same_page_of_history_handed_over_twice_is_not_twice_the_history(client, admin_id):
+    """Pasting the same response in twice is a mistake made while assembling the
+    array by hand, and it must not double the board's past."""
+    items = [_item(111, "פריט א")]
+    main = {"data": {"boards": [{"id": "1", "name": "לוח",
+                                 "groups": [{"id": "g1", "title": "פתוח"}],
+                                 "items_page": {"cursor": None, "items": items}}]}}
+    hist = {"data": {"boards": [{"id": "1", "activity_logs": [
+        _log("update_name", 111, when=WHEN, name="ב", previous_value="א")]}]}}
+    d = _upload(client, json.dumps([main, hist, hist], ensure_ascii=False).encode())
+    assert d["report"]["activity"] == 1
+
+
 def test_a_file_whose_history_is_other_boards_says_so_instead_of_blaming_the_query(client, admin_id):
     """Her file, exactly: the history request ran without boardId, monday
     answered with the first 25 boards in the account — ordered newest first, and

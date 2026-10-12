@@ -414,13 +414,34 @@ def _items_of(doc):
               "board in the account; re-run it with the board's id and merge again")
 
     board, items, cursor, seen = {}, [], None, set()
+    # The history is the one thing that arrives in SEVERAL pieces and still has
+    # to end up whole. `activity_logs` paginates by `page`, not by cursor, so a
+    # long log is several responses in the same file — and taking it from the
+    # first response carrying one dropped every page after it. Silently: a log
+    # that stops in March reads exactly like a board nobody touched since.
+    logs, logs_seen, logs_asked = [], set(), False
     for b in boards:
         # the board's name, groups and column definitions ride on the page that
         # asked for them; the first page carrying each settles it, so a later
         # page without them takes nothing away
-        for k in ("id", "name", "groups", "columns", "activity_logs"):
+        for k in ("id", "name", "groups", "columns"):
             if b.get(k) and not board.get(k):
                 board[k] = b[k]
+        got_logs = b.get("activity_logs")
+        if isinstance(got_logs, list):
+            logs_asked = True
+            # a page is taken as monday sent it, repeated ids and all — only an
+            # entry already read from an EARLIER page is the same page handed
+            # over twice
+            seen_logs_before = logs_seen
+            logs_seen = set(seen_logs_before)
+            for e in got_logs:
+                eid = (e or {}).get("id") if isinstance(e, dict) else None
+                if eid is not None:
+                    logs_seen.add(eid)
+                    if eid in seen_logs_before:
+                        continue
+                logs.append(e)
         page = b.get("items_page")
         got = (page or {}).get("items") if isinstance(page, dict) else b.get("items")
         if not isinstance(got, list):
@@ -437,6 +458,10 @@ def _items_of(doc):
                 if iid in before:
                     continue
             items.append(it)
+    if logs_asked:
+        # asked for and empty is not the same as never asked, and the report
+        # tells them apart by whether the key is here at all
+        board["activity_logs"] = logs
     if not items:
         raise NotMondayJson("no items in the response")
     if extra:

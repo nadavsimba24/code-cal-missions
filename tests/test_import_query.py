@@ -78,6 +78,9 @@ def test_the_query_asks_for_everything_a_board_is():
     assert page1.count("text_body") >= 3
     # the attachments, by the link that can actually be fetched
     assert "public_url" in page1 and "public_url" in pageN
+    # how many items the board holds, which is the only way to know that 500
+    # back out of 687 is half an export rather than a whole one
+    assert "items_count" in page1
     # the history: the log itself, and the one thing that turns a monday user id
     # into a person — without it every imported row would read "מערכת"
     assert "activity_logs(" in history and "users {" in history
@@ -106,6 +109,7 @@ def test_the_collection_says_how_to_run_it():
     assert len(c["item"]) == 3
     assert "{{boardId}}" in c["item"][0]["request"]["body"]["graphql"]["variables"]
     assert "{{boardId}}" in c["item"][1]["request"]["body"]["graphql"]["variables"]
+    assert "{{logPage}}" in c["item"][1]["request"]["body"]["graphql"]["variables"]
     assert "{{cursor}}" in c["item"][2]["request"]["body"]["graphql"]["variables"]
 
 
@@ -144,3 +148,61 @@ def test_the_collection_refuses_to_send_an_empty_boardId():
             f"{item['name']} sends whatever is in the variable, empty or not"
         assert "boards.length" in scripts.get("test", ""), \
             f"{item['name']} accepts an answer holding the whole account"
+def test_every_request_says_how_much_came_back():
+    """A page of 500 looks exactly like a board of 500. The count belongs in
+    Postman, where it is still cheap to act on: by the time the file is imported
+    the answer is already saved, and a report saying 500 of 687 came is a report
+    about an export that has to be run again."""
+    items, history, nxt = [
+        "\n".join(next(e["script"]["exec"] for e in item["event"] if e["listen"] == "test"))
+        for item in _collection()["item"]]
+    assert "items_count" in items and "items_page" in items
+    assert "activity_logs" in history
+    assert "next_items_page" in nxt
+    for name, script in (("1", items), ("3", nxt)):
+        assert "cursor" in script, f"request {name} says nothing about there being more"
+
+
+def test_the_collection_carries_the_cursor_so_nobody_retypes_it():
+    """70 characters of base64 copied by hand, and monday refuses the whole
+    request if one of them is wrong. Requests 1 and 3 store what they got, which
+    also means request 3 can simply be run again for the next page."""
+    items, _history, nxt = _collection()["item"]
+    for item in (items, nxt):
+        script = "\n".join(next(e["script"]["exec"] for e in item["event"]
+                                if e["listen"] == "test"))
+        assert "pm.collectionVariables.set('cursor'" in script, \
+            f"{item['name']} leaves the cursor to be copied by hand"
+
+
+def test_the_history_script_counts_against_the_limit_its_own_query_asks_for():
+    """The script says "that is the ceiling, ask for page 2" by comparing the
+    count to a number. If the query's limit changes and the number does not, it
+    says it about the wrong total — and the page that is missing is one nobody
+    goes looking for."""
+    _page1, history, _nxt = _operations()
+    limit = re.search(r"activity_logs\(limit: (\d+)", history).group(1)
+    script = "\n".join(next(e["script"]["exec"]
+                            for e in _collection()["item"][1]["event"]
+                            if e["listen"] == "test"))
+    assert limit in script, \
+        f"the history script does not count against the limit the query asks for ({limit})"
+def test_the_history_walks_its_own_pages_and_adds_them_up():
+    """monday has no count for the log — no `activity_logs_count` beside the
+    board's `items_count` — so "how many entries are there" has no answer until
+    the pages have been walked and summed. Which means the walking is the
+    feature: the request asks for the page after the last one on every Send and
+    carries the running total, because a person doing that by hand edits the
+    query between runs and loses count at page three."""
+    history = _operations()[1]
+    assert "$page: Int!" in history and "page: $page" in history, \
+        "the page is hard-coded, so every page after the first is a manual edit"
+
+    item = _collection()["item"][1]
+    keys = {v["key"] for v in _collection()["variable"]}
+    assert {"logPage", "logTotal"} <= keys, "the walk has nowhere to keep its place"
+    scripts = {e["listen"]: "\n".join(e["script"]["exec"]) for e in item["event"]}
+    # it advances, it tallies, and it stops when a page comes back short
+    assert "pm.collectionVariables.set('logPage'" in scripts["test"]
+    assert "pm.collectionVariables.set('logTotal'" in scripts["test"]
+    assert "logPage" in scripts["prerequest"], "a fresh collection starts nowhere"

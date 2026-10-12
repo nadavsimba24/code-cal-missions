@@ -60,6 +60,11 @@ query ($boardId: [ID!]) {
   boards(ids: $boardId) {
     id
     name
+    # How many items the board holds, against the 500 that fit in one page. It
+    # is what turns "did everything come?" into arithmetic instead of a feeling:
+    # 687 against 500 says a second request is needed before the first response
+    # is even read, and it is the number the pages are counted back against.
+    items_count
 
     groups { id title }
     # The board's own column definitions. A formula lives ONLY here — the copy of
@@ -148,11 +153,19 @@ query ($boardId: [ID!]) {
 # log names a person only by their monday user id, and without this every row
 # would read "מערכת".
 #
-# If this one is refused as well, halve the limit and walk `page`. The report
-# says how many entries came and the date the log starts at, which is how you
-# know a page is missing. monday keeps activity logs for a window that depends
-# on the plan, so what arrives is what is still there, never the whole life of
-# the board.
+# The log pages by `page`, and there is NO count for it — no `activity_logs_count`
+# the way the board has `items_count`. So how many entries the board holds is
+# only knowable by asking for a page, adding it up, and asking for the next: a
+# page that comes back short of the limit is the end, and nothing before that
+# says how far away the end is. `page` is a variable for exactly that reason —
+# the collection walks it and keeps the tally, so the number arrives without
+# anyone editing the query between runs.
+#
+# If a page is refused for complexity, halve the limit; the walk is unchanged.
+# The report says how many entries came and the date the log starts at, which is
+# how you know a page is missing. monday keeps activity logs for a window that
+# depends on the plan, so what arrives is what is still there, never the whole
+# life of the board.
 #
 # ⚠ The variable matters here as much as the query. `boards(ids: $boardId)` run
 # with boardId unset is `boards(ids: null)`, and monday answers that with the
@@ -162,8 +175,8 @@ query ($boardId: [ID!]) {
 # import survives it now: the items settle which board the file is about, the
 # other boards are named in the report and their history is left behind. Setting
 # the variable is still the point — the log that was asked for is this board's.
-# variables: { "boardId": [6204255781] }
-query ($boardId: [ID!]) {
+# variables: { "boardId": [6204255781], "page": 1 }
+query ($boardId: [ID!], $page: Int!) {
   users {
     id
     name
@@ -172,7 +185,7 @@ query ($boardId: [ID!]) {
 
   boards(ids: $boardId) {
     id
-    activity_logs(limit: 10000, page: 1) {
+    activity_logs(limit: 10000, page: $page) {
       id
       event
       data
