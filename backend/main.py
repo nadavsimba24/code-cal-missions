@@ -532,7 +532,16 @@ PRIMARY_ENV_NAME = "סביבה ראשית"
 # first carries this list, and only while it still answers to the old name — it
 # is an ordinary renameable workspace, so an admin who has given it a name of
 # their own must not find it renamed back under them on the next deploy.
-LEGACY_PRIMARY_NAMES = ("בדיקה",)
+#
+# "מערכות מידע" is in the list for a different reason than "בדיקה". It is not a
+# name this workspace shipped with; it is a name the default workspace was given
+# at some point, which left the one workspace EVERY user is in reading as a
+# single department's — and a new user, who gets this workspace and no other,
+# opened the app inside "מערכות מידע". The organisation's own department of that
+# name has its own workspace and is untouched. The rename is therefore
+# deliberate and deliberately overriding: name the default workspace that again
+# and the next boot will name it back.
+LEGACY_PRIMARY_NAMES = ("בדיקה", "מערכות מידע")
 
 def _seed_environments():
     """Seed environments on first run (idempotent by name):

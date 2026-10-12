@@ -88,3 +88,59 @@ def test_the_default_workspace_can_never_be_deleted(client, admin_id):
     assert r.status_code == 400
     with Session(cityos_main.engine) as db:
         assert db.query(Environment).filter(Environment.id == pid).count() == 1
+
+
+def test_a_default_workspace_named_after_a_department_is_renamed_back(client, admin_id):
+    """The workspace every user is in must read as everybody's.
+
+    It had been renamed to "מערכות מידע" — a department's name — so a new user,
+    who gets this workspace and no other, opened the app inside what looked like
+    one department. On boot the default workspace answering to that name is
+    named back; the department's own workspace is a different row and is left
+    exactly as it is.
+    """
+    with Session(cityos_main.engine) as db:
+        primary = _primaries(db)[0]
+        pid, original = primary.id, primary.name
+        # the real department, which must survive the boot untouched
+        dept = Environment(name="חדשנות טכנולוגיה ומערכות מידע", position=95)
+        db.add(dept); db.commit()
+        dept_id = dept.id
+
+    r = client.patch(f"/api/environments/{pid}",
+                     json={"actor_id": admin_id, "name": "מערכות מידע"})
+    assert r.status_code == 200, r.text
+    try:
+        cityos_main._seed_environments()          # what every server boot does
+        with Session(cityos_main.engine) as db:
+            prims = _primaries(db)
+            assert len(prims) == 1, [p.name for p in prims]
+            assert prims[0].id == pid
+            assert prims[0].name == cityos_main.PRIMARY_ENV_NAME
+            # and the department of that name is still itself
+            assert db.query(Environment).filter(Environment.id == dept_id).first().name \
+                == "חדשנות טכנולוגיה ומערכות מידע"
+    finally:
+        with Session(cityos_main.engine) as db:
+            db.query(Environment).filter(Environment.id == dept_id).delete()
+            db.query(Environment).filter(Environment.id == pid).update({Environment.name: original})
+            db.commit()
+
+
+def test_a_name_the_admin_chose_is_still_left_alone(client, admin_id):
+    """The rename is a correction of one specific name, not a policy of naming
+    the default workspace on every boot."""
+    with Session(cityos_main.engine) as db:
+        pid, original = (lambda p: (p.id, p.name))(_primaries(db)[0])
+
+    r = client.patch(f"/api/environments/{pid}",
+                     json={"actor_id": admin_id, "name": "המטה שלנו"})
+    assert r.status_code == 200, r.text
+    try:
+        cityos_main._seed_environments()
+        with Session(cityos_main.engine) as db:
+            assert _primaries(db)[0].name == "המטה שלנו"
+    finally:
+        with Session(cityos_main.engine) as db:
+            db.query(Environment).filter(Environment.id == pid).update({Environment.name: original})
+            db.commit()
