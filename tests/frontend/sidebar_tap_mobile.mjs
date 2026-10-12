@@ -15,6 +15,12 @@ function grab2(method){   /* a method on an object literal, e.g. Folders.initSor
   let i=src.indexOf('{',m.index), d=0;
   for(let j=i;j<src.length;j++){ if(src[j]==='{')d++; else if(src[j]==='}'){d--; if(!d) return src.slice(m.index,j+1);} }
 }
+function grabM(method){   /* an object-literal method WITH arguments, e.g. Folders.toggle */
+  const m = new RegExp(`^\\s*${method}\\(([^)]*)\\)\\{`,'m').exec(src);
+  if(!m) throw new Error('not found: '+method);
+  let i=src.indexOf('{',m.index+m[0].length-1), d=0;
+  for(let j=i;j<src.length;j++){ if(src[j]==='{')d++; else if(src[j]==='}'){d--; if(!d) return 'function '+src.slice(m.index,j+1).trim();} }
+}
 function grab(name){
   const m = new RegExp(`^(?:async )?function ${name}\\(`,'m').exec(src);
   if(!m) throw new Error('not found: '+name);
@@ -130,6 +136,61 @@ ck('a change of pointer re-syncs the sidebar, not only the item rows',
 ck('the row menu button is shown on a coarse pointer',
    /@media \(pointer:coarse\)\{\s*\.sb-item \.sb-more,\.sb-folder-head \.sb-more\{opacity:1\}/.test(src),
    'an invisible button at the end of the row still takes the tap');
+
+/* ── folding a folder open and shut, by finger ───────────────────────────── */
+{
+  const store={};
+  const st2={};
+  const toggle=new Function('st','localStorage','renderSidebar',
+    grabM('toggle')+'; return toggle;')(
+    st2, {setItem:(k,v)=>{store[k]=v;}, getItem:k=>store[k]||null}, ()=>{});
+
+  toggle(4);
+  ck('a tap on a folder head folds it shut', st2._foldersCollapsed.has(4));
+  ck('...and the state outlives the re-render it triggers',
+     JSON.parse(store['cc_folders_collapsed']||'[]').includes(4), store['cc_folders_collapsed']);
+  toggle(4);
+  ck('a second tap opens it again', !st2._foldersCollapsed.has(4));
+  ck('...and that is remembered too',
+     !JSON.parse(store['cc_folders_collapsed']||'[]').includes(4), store['cc_folders_collapsed']);
+  toggle(4); toggle(9);
+  ck('folders are remembered one by one, not all or nothing',
+     st2._foldersCollapsed.has(4) && st2._foldersCollapsed.has(9));
+}
+/* The folder head is BOTH the tap target that folds it and the handle that drags
+   it. That is only safe because the sidebar's sortables are disabled wherever
+   the pointer is coarse (tested above) — so the selector that disables them has
+   to cover the folder list, or a finger on a folder head is a drag attempt and
+   the fold never happens. */
+{
+  const SEL = /const SB_DRAG_SEL='([^']+)'/.exec(src)[1];
+  ck('the drag-disabling selector covers the folder list',
+     SEL.includes('#sb-folders'), SEL);
+  ck('...and the folder sortable is indeed handled by the head that takes the tap',
+     /sortableOn\(fwrap,\{[^}]*handle:'\.sb-folder-head'/.test(src));
+}
+/* ── a board inside a folder is the same tap as one at the root ──────────── */
+ck('a board row carries its open-the-board tap wherever it is rendered',
+   (src.match(/class="sb-item \$\{st\.board&&st\.board\.id===b\.id\?'active':''\}" data-bid="\$\{b\.id\}" onclick="openBoard\(\$\{b\.id\}\)"/g)||[]).length===1,
+   'boardItem is one template used for folders and the root alike');
+
+/* ── opening a new browser tab from the sidebar ──────────────────────────── */
+{
+  const foot=/<div class="sb-foot">[\s\S]*?<\/div>\s*<\/aside>/.exec(src);
+  const help=foot?foot[0]:'';
+  // the prose around it may well say the words "window.open"; what must not
+  // exist is a row that CALLS it
+  ck('the link out of the app is an anchor, not a div calling window.open',
+     /<a class="sb-item"[^>]*href="https:\/\//.test(help) && !/onclick="window\.open/.test(help),
+     help.slice(0,200));
+  ck('...it opens in a new tab, safely',
+     /target="_blank"/.test(help) && /rel="noopener noreferrer"/.test(help));
+  ck('...and it closes the drawer it was tapped in',
+     /onclick="closeSidebarMobile\(\)"/.test(help));
+  ck('an anchor in that row is not left looking like a link',
+     /\.sb-item\{[^}]*text-decoration:none/.test(src),
+     'no global anchor reset exists here, so .sb-item must say it');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

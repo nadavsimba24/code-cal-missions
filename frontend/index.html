@@ -266,7 +266,10 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .sb-section{padding:6px 12px;font-size:11px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin-top:6px;display:flex;justify-content:space-between;align-items:center}
 .sb-section i{cursor:pointer}
 .sb-list{flex:1;overflow-y:auto;padding:0 8px}
-.sb-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--text);font-size:14px;white-space:nowrap;overflow:hidden}
+/* text-decoration/color: the row is a <div> for a board and an <a> for a link
+   out of the app, and the two must be indistinguishable — there is no global
+   anchor reset here, so an <a> would otherwise arrive underlined and blue. */
+.sb-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--text);font-size:14px;white-space:nowrap;overflow:hidden;text-decoration:none}
 .sb-item:hover{background:var(--row-hover)}
 .sb-item.disabled{opacity:.5;cursor:not-allowed;pointer-events:auto}
 .sb-item.disabled:hover{background:transparent}
@@ -2066,7 +2069,15 @@ body, body *{ font-weight:400!important; }
       <div class="sb-item" style="display:none" onclick="AI.open()"><span class="ic"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i></span> CODE-CAL Agent</div>
       <div class="sb-item" style="display:none" onclick="setView('gis');renderView()"><span class="ic"><i class="fa-solid fa-globe" style="color:var(--green)"></i></span> ניתוח שטח</div>
       <div class="sb-item" id="nav-sysadmin" style="display:none" onclick="SysAdmin.open()" title="ניהול משתמשים והגדרות מערכת"><span class="ic"><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i></span> ניהול מערכת</div>
-      <div class="sb-item" onclick="window.open('https://assistcal.mashcal.co.il/servicePortal/submitSR','_blank','noopener,noreferrer')" title="פתיחת קריאת שירות במערכת סייאיד"><span class="ic"><i class="fa-solid fa-circle-question" style="color:var(--primary)"></i></span> עזרה</div>
+      <!-- A link, not a div calling window.open. The browser opens a target=_blank
+           anchor unconditionally; window.open is a popup, and a phone browser is
+           entitled to refuse it — on iOS it also opens a window rather than a
+           tab. An anchor is also the only form a long press can offer "open in a
+           new tab" for. closeSidebarMobile so the drawer is not left standing
+           open behind the tab that just took over the screen. -->
+      <a class="sb-item" href="https://assistcal.mashcal.co.il/servicePortal/submitSR"
+         target="_blank" rel="noopener noreferrer" onclick="closeSidebarMobile()"
+         title="פתיחת קריאת שירות במערכת סייאיד"><span class="ic"><i class="fa-solid fa-circle-question" style="color:var(--primary)"></i></span> עזרה</a>
     </div>
   </aside>
 
