@@ -2,8 +2,6 @@
 # Build and push an image to Azure Container Registry
 # https://docs.microsoft.com/azure/devops/pipelines/languages/docker
 
-# Every commit to main lands in QA. This is the only pipeline that deploys
-# automatically; prod is manual.
 trigger:
   branches:
     include:
@@ -24,22 +22,12 @@ variables:
   tag: '$(Build.BuildId)'
 
   # ── deploy target ────────────────────────────────────────────────────
-  # The Container App that serves QA. It pulls from the registry above, so the
-  # only thing a release does is point it at the image this run just built.
   containerAppName: 'missionspoccontainer'
   containerAppResourceGroup: 'rg-missions-qa'
-  # The RG was moved to its own subscription and renamed on 2026-08-24. Naming
-  # the subscription explicitly means a service connection scoped elsewhere
-  # fails loudly here instead of updating something else.
   azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'   # "Misssions"
   healthUrl: 'https://missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io/api/status'
 
-  # ARM service connection for the deploy stage. It reuses the SAME service
-  # principal that already backs the registry connection above, via workload
-  # identity federation — no new app registration, no client secret anywhere.
   azureServiceConnection: 'Missions-QA-ARM'
-
-  # Agent VM image name
   vmImageName: 'ubuntu-latest'
 
 stages:
@@ -51,6 +39,37 @@ stages:
     pool:
       vmImage: $(vmImageName)
     steps:
+    - task: PowerShell@2
+      displayName: 'Download Mend CLI'
+      inputs:
+        targetType: 'inline'
+        script: |
+          curl -L -o mend "https://downloads.mend.io/cli/linux_amd64/mend"
+          chmod +x mend
+          ./mend version
+
+    - task: PowerShell@2
+      displayName: 'Mend dependencies scan (SCA)'
+      inputs:
+        targetType: 'inline'
+        script: |
+          ./mend dep --scope $(System.TeamProject)//$(Build.Repository.Name) --update --reachability
+      env:
+        MEND_EMAIL: $(MENDEMAIL)
+        MEND_USER_KEY: $(MEND_USER_KEY)
+        MEND_URL: $(MENDURL)
+
+    - task: PowerShell@2
+      displayName: 'Mend code scan (SAST)'
+      inputs:
+        targetType: 'inline'
+        script: |
+          ./mend code --scope $(System.TeamProject)//$(Build.Repository.Name)
+      env:
+        MEND_EMAIL: $(MENDEMAIL)
+        MEND_USER_KEY: $(MEND_USER_KEY)
+        MEND_URL: $(MENDURL)
+
     - task: Docker@2
       displayName: Build and push an image to container registry
       inputs:
@@ -79,18 +98,11 @@ stages:
         scriptLocation: inlineScript
         inlineScript: |
           set -euo pipefail
-          # `containerapp` is a CLI extension and a hosted agent starts clean.
-          # Without this the install prompt blocks and the job hangs to timeout.
           az config set extension.use_dynamic_install=yes_without_prompt
 
           IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
           echo "── deploying $IMAGE ──"
 
-          # Deliberately the build-id tag, never :latest. A Container App creates
-          # a new revision only when the image STRING changes, so deploying
-          # :latest twice is a silent no-op: the pipeline goes green and the old
-          # container keeps serving. A unique tag per run makes that impossible,
-          # and makes the running revision say exactly what code it is.
           COMMON=(--subscription "$(azureSubscriptionId)"
                   --resource-group "$(containerAppResourceGroup)"
                   --name "$(containerAppName)")
@@ -100,10 +112,6 @@ stages:
                   --query "properties.latestRevisionName" -o tsv)
           echo "── new revision: $REV ──"
 
-          # Provisioning plus the traffic shift takes minutes, not seconds. The
-          # first version of this polled HTTP for two minutes and failed a deploy
-          # that had in fact succeeded — so wait on the revision's own state
-          # first, which says WHY if it never comes up.
           for i in $(seq 1 60); do
             read -r RUNNING HEALTH < <(az containerapp revision show "${COMMON[@]}" \
               --revision "$REV" \
@@ -119,20 +127,6 @@ stages:
             sleep 10
           done
 
-          # Only now is an HTTP check meaningful: the revision is up and holds
-          # the traffic, so the response tells us about the app, not the platform.
-          #
-          # 403 counts as reachable. The ingress carries an IP allow-list (office
-          # IPs and a few laptops) and a Microsoft-hosted agent is never on it —
-          # its address comes from Azure's dynamic ranges. So a 403 here is the
-          # ingress refusing THIS AGENT, which still proves it is up and routing
-          # for the new revision. Treating it as failure would fail every deploy
-          # forever, which is exactly what run 45862 did.
-          #
-          # Be honest about the limit: because the allow-list rejects before
-          # routing, a 403 cannot distinguish a healthy app from a dead one. The
-          # revision-state wait above is what covers that, and a container
-          # readinessProbe would cover it properly.
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$(healthUrl)" || echo 000)
             echo "  health attempt $i → HTTP $code"
