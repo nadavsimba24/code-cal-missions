@@ -10994,6 +10994,117 @@ def revoke_guest(uid: int, actor_id: int = Depends(current_user_id)):
     return {"status": "ok", "id": uid, "removed_from_group": removed}
 
 
+# ── deleting a person, for good ──────────────────────────────────────
+# What an irreversible deletion has to decide, per table: does the row GO, or
+# does it merely stop naming this person?
+#
+# It goes when the row IS the person's relationship to something — a membership,
+# an assignment, a notification, a saved view — or something they authored that
+# was asked to be erased with them: their messages, and the log rows recording
+# what they did.
+#
+# It only stops naming them when the row belongs to the municipality and would
+# be destroyed with them: the item somebody created, the board they deleted, the
+# permit assigned to them, the automation they own. Deleting a person is not
+# deleting their work, so the pointer is cleared and the object stays. An
+# automation left without an owner is already a case the system knows (it shows
+# as "דורשת שיוך בעלים"); an item without a creator reads as "טרם הוגדר", like
+# one imported from elsewhere.
+USER_PURGE_DELETE = [
+    # the person's own place in things
+    ("board_members", "user_id"), ("environment_members", "user_id"),
+    ("workspace_members", "user_id"), ("task_assignees", "user_id"),
+    ("notifications", "user_id"), ("board_views", "user_id"),
+    ("login_events", "user_id"),
+    # what they wrote and what they did
+    ("comments", "user_id"), ("audit_logs", "changed_by"),
+    ("automation_runs", "actor_id"), ("automation_versions", "changed_by"),
+    ("automation_test_runs", "tested_by"),
+]
+USER_PURGE_NULL = [
+    ("tasks", "created_by"), ("tasks", "deleted_by"), ("boards", "deleted_by"),
+    ("environments", "created_by"), ("item_links", "created_by"),
+    ("documents", "uploaded_by"),
+    ("automations", "created_by"), ("automations", "updated_by"),
+    ("automations", "owner_id"),
+    ("automation_freezes", "created_by"), ("automation_freezes", "released_by"),
+    ("permits", "assigned_to"), ("citizen_requests", "assigned_to"),
+    ("projects", "manager_id"), ("project_steps", "owner_id"),
+    ("approvals", "approver_user_id"),
+    ("change_requests", "requested_by"), ("change_requests", "approved_by"),
+]
+
+
+@app.delete("/api/users/{uid}")
+def delete_user(uid: int, actor_id: int = Depends(current_user_id)):
+    """Erase a person from the system. Irreversible, and system admin only.
+
+    The system could only ever deactivate somebody — `is_active=False`, the
+    account kept in the directory — which is the right default and was the only
+    thing on offer. An account that should never have existed here, or a person
+    who has asked to be removed, needs the other thing, and there was no way to
+    do it but by hand in the database.
+
+    Three accounts it refuses: your own (an admin locking themselves out of the
+    system by accident), the last workspace admin (nobody left who could undo
+    it), and the automation engine's identity, which is not a person at all and
+    is what the engine's own writes are attributed to.
+
+    The answer reports what went, table by table, because "the user is gone" is
+    not something anyone should have to take on trust.
+    """
+    with Session(engine) as db:
+        if not _cap(db, actor_id, "manage_system"):
+            raise HTTPException(403, "רק מנהל מערכת יכול למחוק משתמש")
+        u = db.query(User).filter(User.id == uid).first()
+        if not u:
+            raise HTTPException(404, "המשתמש לא נמצא")
+        if actor_id is not None and int(uid) == int(actor_id):
+            raise HTTPException(400, "אי אפשר למחוק את החשבון שאיתו אתה מחובר")
+        if (u.email or "").lower() == AUTOMATION_IDENTITY_EMAIL:
+            raise HTTPException(400, "זהות מנוע האוטומציות אינה אדם ואינה נמחקת")
+        if _ws_role(db, uid) == "admin":
+            admins = (db.query(WorkspaceMember)
+                        .filter(WorkspaceMember.role == "admin").count())
+            if admins <= 1:
+                raise HTTPException(400, "חייב להישאר מנהל מערכת אחד לפחות")
+        who = {"id": u.id, "email": u.email, "name": u.name, "role": u.role}
+
+        report = {}
+        for table, col in USER_PURGE_DELETE:
+            n = _purge_rows(db, f"DELETE FROM {table} WHERE {col} = :uid", uid)
+            if n:
+                report[f"{table}.{col}"] = {"deleted": n}
+        for table, col in USER_PURGE_NULL:
+            n = _purge_rows(db, f"UPDATE {table} SET {col} = NULL WHERE {col} = :uid", uid)
+            if n:
+                report[f"{table}.{col}"] = {"cleared": n}
+
+        # The one trace that must survive: that this person was erased, by whom
+        # and when. It is attributed to the actor, so it is not swept up by the
+        # audit rows being deleted above.
+        _audit(db, uid, "delete", "user",
+               f"{who['name']} <{who['email']}>", "", actor_id)
+        db.delete(u)
+        db.commit()
+        print(f"[users] purged #{who['id']} {who['email']} by {actor_id}: "
+              f"{sum(v.get('deleted', 0) for v in report.values())} row(s) deleted, "
+              f"{sum(v.get('cleared', 0) for v in report.values())} cleared", flush=True)
+        return {"status": "ok", "deleted": who, "affected": report}
+
+
+def _purge_rows(db, sql, uid):
+    """One statement of the purge. A table this deployment does not have is not
+    an error — the schema grew over time and an older database may predate it."""
+    from sqlalchemy import text
+    try:
+        return db.execute(text(sql), {"uid": uid}).rowcount or 0
+    except Exception as e:                           # noqa: BLE001
+        db.rollback()
+        print(f"[users] purge skipped ({e.__class__.__name__}): {sql}", flush=True)
+        return 0
+
+
 @app.get("/api/departments")
 def list_departments():
     with Session(engine) as db:
