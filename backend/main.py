@@ -11052,6 +11052,12 @@ def delete_user(uid: int, actor_id: int = Depends(current_user_id)):
 
     The answer reports what went, table by table, because "the user is gone" is
     not something anyone should have to take on trust.
+
+    Deliberately NOT reachable from the UI. It was built with a button in the
+    system-admin screen and used once, for an account that should never have
+    existed here; the button came out immediately afterwards, because a rare
+    irreversible act does not belong one click away from a rename. Reaching this
+    takes an explicit call, which is the friction it should have.
     """
     with Session(engine) as db:
         if not _cap(db, actor_id, "manage_system"):

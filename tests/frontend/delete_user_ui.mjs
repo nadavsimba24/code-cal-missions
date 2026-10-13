@@ -1,72 +1,43 @@
-/* The delete action in the system-admin users table.
-   Driven by tests/test_delete_user_ui.py.
+/* The users table must NOT offer permanent deletion.
 
-   What matters here is that an irreversible action is presented as one: it is
-   not offered for the account in hand, the dialog says what it takes with it
-   rather than asking "are you sure?", and it names the alternative — because
-   for somebody who simply left, deactivating is the right answer. */
+   The capability exists and is tested (DELETE /api/users/{uid}, system admin
+   only — tests/test_delete_user.py). It was built with a button in the
+   system-admin screen, used once for an account that should never have existed
+   here, and the button was then taken out on purpose: erasing a person is
+   irreversible, and one click away from a rename is the wrong place for it.
+
+   So this is a regression guard, not a feature test — it fails if anybody puts
+   the affordance back. Driven by tests/test_delete_user_ui.py. */
 import fs from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const src = fs.readFileSync(path.join(ROOT,'frontend','index.html'),'utf8');
 
-const grabMethod = name => {
-  const m = new RegExp(`\\n  ${name}\\(([^)]*)\\)\\{[\\s\\S]*?\\n  \\},`).exec(src);
-  if(!m) throw new Error('not found: '+name);
-  return m[0];
-};
-
 let pass=0,fail=0; const ck=(n,c,x='')=>{c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+x:'')));};
 
-// ── the menu entry ──
-let popped='';
-const menu=grabMethod('rowMenu');
-const runMenu=(uid,me)=>{
-  popped='';
-  new Function('openCellPop','esc','meId','ROLE_HE','st','closeCellPops','SysAdmin',
-    'const o={users:[{id:9,name:"בוריס",email:"b@x.test",role:"member"}],'+menu.trim().replace(/,$/,'')+'}; o.rowMenu({stopPropagation(){},currentTarget:{}},'+uid+');')
-    ((_a,html)=>{popped=html;}, x=>String(x==null?'':x), ()=>me,
-     {admin:'מנהל',manager:'מנהל ביניים',member:'חבר',viewer:'צופה',guest:'אורח'},
-     {depts:[]}, ()=>{}, {});
-};
-runMenu(9, 1);
-ck('a user row offers a permanent delete', popped.includes('מחק משתמש לצמיתות'), popped);
-ck('...wired to the handler', popped.includes('SysAdmin.deleteUser(9)'), popped);
-ck('...marked as the destructive one', /sa-del/.test(popped), popped);
-ck('...and separated from the everyday actions', popped.includes('sa-menu-sep'), popped);
-ck('the ordinary actions are still there', popped.includes('ערוך פרופיל')&&popped.includes('תפקיד'));
+// ── nothing in the page reaches the endpoint ──
+ck('no handler calls DELETE on a user', !/\/api\/users\/[^'"`]*['"`]?\s*,\s*\{method:\s*['"]DELETE/.test(src)
+   && !/SysAdmin\.deleteUser/.test(src), 'a delete path is wired up again');
+ck('no "מחק משתמש" affordance anywhere', !src.includes('מחק משתמש'), 'the button is back');
+ck('...and its styling is gone with it', !/\.sa-del\{/.test(src) && !/\.sa-menu-sep\{/.test(src));
 
-runMenu(9, 9);
-ck('it is NOT offered for the account in hand', !popped.includes('deleteUser'), popped);
-ck('...while everything else still is', popped.includes('ערוך פרופיל'), popped);
+// ── the row menu is back to what it was: edit, role, department ──
+const menu=/\n  rowMenu\(([^)]*)\)\{[\s\S]*?\n  \},/.exec(src);
+ck('the users row menu is still there', !!menu);
+const m=menu[0];
+ck('it offers editing the profile', m.includes('SysAdmin.editUser('), m);
+ck('...the role', m.includes('SysAdmin.setRole('), m);
+ck('...the department', m.includes('SysAdmin.setDept('), m);
+ck('and nothing destructive', !/trash|מחק|deleteUser/.test(m), m);
+ck('the comment says why it is absent, so it is not re-added as an oversight',
+   /No permanent-delete entry here, deliberately/.test(m), m);
 
-// ── the dialog, and the call ──
-let asked=null, called=null, toasted='', reopened=false;
-const del=grabMethod('deleteUser');
-const obj=new Function('askConfirm','api','toast','closeCellPops','withMe',
-  'return {users:[{id:9,name:"בוריס",email:"b@x.test"}], open(){this._re=true;}, '+del.trim().replace(/,$/,'')+'};')(
-  (msg,onYes,opts)=>{ asked={msg,opts,onYes}; },
-  async(url,o)=>{ called={url,method:o.method}; return {affected:{"comments.user_id":{deleted:3},"tasks.created_by":{cleared:2}}}; },
-  m=>{toasted=m;}, ()=>{}, b=>JSON.stringify(b));
-obj.deleteUser(9);
-ck('it asks before doing anything', !!asked && called===null);
-ck('the question names the person', asked.msg.includes('בוריס'), asked.msg);
-ck('the dialog says it cannot be undone', (asked.opts.note||'').includes('אינה הפיכה'), asked.opts.note);
-ck('...lists what is erased, the messages and the log among it',
-   /התגובות שכתב/.test(asked.opts.noteHTML) && /רשומות היומן/.test(asked.opts.noteHTML), asked.opts.noteHTML);
-ck('...says what survives, so the work is not feared lost',
-   /נשמרים/.test(asked.opts.noteHTML), asked.opts.noteHTML);
-ck('...and offers deactivating instead, for somebody who merely left',
-   /להשבית/.test(asked.opts.noteHTML), asked.opts.noteHTML);
-ck('the button is not a bland "OK"', asked.opts.confirmText==='מחק לצמיתות', asked.opts.confirmText);
-
-await asked.onYes();
-ck('confirming calls DELETE on the user', called && called.method==='DELETE' && called.url==='/api/users/9',
-   JSON.stringify(called));
-ck('the toast reports how much was touched, not just "done"',
-   toasted.includes('בוריס') && /5 רשומות/.test(toasted), toasted);
-ck('...and the table is reloaded afterwards', obj._re===true);
+// ── what IS offered for taking access away ──
+ck('revoking a guest is still available, which is the reversible answer',
+   /SysAdmin\.revokeGuest\(/.test(src));
+ck('...and deactivating an account, from the profile editor',
+   /SysAdmin\.setActive\(|is_active/.test(/\n  editUser\(([^)]*)\)\{[\s\S]*?\n  \},/.exec(src)[0]));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

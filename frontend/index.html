@@ -609,9 +609,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .notif-ic.mention{background:#a25ddc}
 .notif-ic.assign{background:#0073ea}
 .notif-ic.comment_like{background:#fdab3d}
-.sa-menu-sep{height:1px;background:var(--border);margin:3px 0 1px}
-.sa-del{color:var(--danger,#e2445c)}
-.sa-del:hover{background:color-mix(in srgb, var(--danger,#e2445c) 10%, transparent)}
 .notif-txt{flex:1;min-width:0}
 .notif-title{font-size:13.5px;font-weight:600;color:var(--text)}
 .notif-body{font-size:12.5px;color:var(--text-muted);margin-top:2px;line-height:1.4}
@@ -7355,40 +7352,17 @@ const SysAdmin = {
     const roles=['admin','manager','member','viewer','guest'];
     const roleSel=`<select class="sa-menu-sel" onchange="SysAdmin.setRole(${uid},this.value)">${roles.map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_HE[r]}</option>`).join('')}</select>`;
     const deptSel=`<select class="sa-menu-sel" onchange="SysAdmin.setDept(${uid},this.value)"><option value="">— ללא מחלקה —</option>${(st.depts||[]).map(d=>`<option value="${d.id}" ${u.department_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
-    /* Deleting is last, separated, and never offered for the account in hand:
-       an admin cannot lock themselves out of the system by accident. The server
-       refuses it too — this only keeps the button from being there to click. */
-    const me=(typeof meId==='function')?meId():null;
-    const del=(uid===me)?'' :
-      `<div class="sa-menu-sep"></div>
-       <button class="btn btn-ghost sa-del" style="justify-content:flex-start;gap:8px" onclick="SysAdmin.deleteUser(${uid})"><i class="fa-regular fa-trash-can"></i> מחק משתמש לצמיתות</button>`;
+    /* No permanent-delete entry here, deliberately. Erasing a person is rare
+       and irreversible — it was wanted once, for an account that should never
+       have existed here — and a button for it in the everyday admin screen puts
+       it one click away from a rename. The capability still exists and is still
+       tested (DELETE /api/users/{uid}, system admin only); it is reached on
+       purpose rather than from this menu. */
     openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()" style="min-width:214px;padding:10px;gap:9px;display:flex;flex-direction:column">
       <button class="btn btn-ghost" style="justify-content:flex-start;gap:8px" onclick="SysAdmin.editUser(${uid})"><i class="fa-solid fa-user-pen"></i> ערוך פרופיל</button>
       <div class="sa-menu-lbl">תפקיד</div>${roleSel}
       <div class="sa-menu-lbl">מחלקה</div>${deptSel}
-      ${del}
     </div>`,'row-menu-pop');
-  },
-  /* Irreversible, so the dialog says what it takes with it rather than asking
-     "are you sure?" — the one thing a person needs in order to decide. The
-     alternative is named in it too, because for somebody who simply left the
-     organisation, deactivating is the right answer and this is not. */
-  deleteUser(uid){
-    const u=(this.users||[]).find(x=>x.id===uid); if(!u)return;
-    closeCellPops();
-    askConfirm(`למחוק את ${u.name||u.email} לצמיתות?`,async()=>{
-      try{
-        const r=await api('/api/users/'+uid,{method:'DELETE',headers:{'Content-Type':'application/json'},body:withMe({})});
-        const n=Object.values((r&&r.affected)||{}).reduce((a,x)=>a+(x.deleted||0)+(x.cleared||0),0);
-        toast(`${u.name||u.email} נמחק/ה — ${n} רשומות טופלו`);
-        await this.open('users');
-      }catch(e){ toast(e.detail||'לא ניתן למחוק את המשתמש'); }
-    },{title:'מחיקת משתמש לצמיתות',confirmText:'מחק לצמיתות',
-       note:'הפעולה אינה הפיכה.',
-       noteHTML:`נמחקים: החברות שלו בלוחות ובסביבות, השיוכים לפריטים, ההתראות,
-         <b>התגובות שכתב</b> ו<b>רשומות היומן של הפעולות שלו</b>.<br>
-         נשמרים: הפריטים, הלוחות והאוטומציות שיצר — בלי שמו עליהם.<br>
-         אם האדם פשוט עזב את הארגון, עדיף להשבית את החשבון (עריכת פרופיל ← מצב) ולא למחוק.`});
   },
   editUser(uid){
     closeCellPops();

@@ -1,10 +1,13 @@
-"""The delete action in the system-admin users table, run under node.
+"""The users table must NOT offer permanent deletion.
 
-The server half is tests/test_delete_user.py. This is the part a person meets:
-an irreversible action has to be presented as one. It is not offered for the
-account in hand, the dialog says what it takes with it instead of asking "are
-you sure?", and it names the alternative — because for somebody who simply left
-the organisation, deactivating is the right answer and deleting is not.
+The capability exists and is covered by tests/test_delete_user.py — system
+admin only, every reference accounted for, the purge itself logged. It was
+built with a button in the system-admin screen and used once, for an account
+that should never have existed here; the button was then removed on purpose.
+Erasing a person is irreversible, and one click away from a rename is the wrong
+place for it, so it is reached deliberately rather than from a menu.
+
+This runs the guard under node: it fails if the affordance comes back.
 """
 import pathlib
 import shutil
@@ -16,7 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "tests" / "frontend" / "delete_user_ui.mjs"
 
 
-def test_the_users_table_can_delete_a_person_and_says_what_that_costs():
+def test_the_users_table_does_not_offer_permanent_deletion():
     node = shutil.which("node")
     if not node:
         pytest.skip("node not installed")
