@@ -748,6 +748,15 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    a quiet board stays quiet, but it always takes up its place in the row. */
 .item-check{flex-shrink:0;width:15px;height:15px;margin:0 0 0 2px;cursor:pointer;accent-color:var(--primary);opacity:.25;transition:opacity .12s}
 .tbl tr:hover .item-check,.item-check:checked,.item-check:focus-visible{opacity:1}
+/* The same box one level up. Dimmer than a row's until the group is in play,
+   and always visible once it is — a group holding part of the selection has to
+   say so even when the pointer is somewhere else. */
+.grp-check{flex-shrink:0;width:15px;height:15px;margin:0;cursor:pointer;accent-color:var(--primary);opacity:.3;transition:opacity .12s}
+.col-head-row:hover .grp-check,.grp-check:checked,.grp-check:indeterminate,.grp-check:focus-visible{opacity:1}
+/* The header centres its label, so the box cannot ride in the same flow and
+   still line up with the column of item checkboxes under it. 12px is the item
+   cell's own inline padding — the two are in one column, exactly. */
+.th-sel{position:absolute;inset-inline-start:12px;top:50%;transform:translateY(-50%);display:inline-flex;z-index:1}
 /* per-item 3-dots menu button — opens the item's actions (move/delete) */
 .item-menu{width:20px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--text-light);font-size:13px;opacity:0;transition:.12s;flex-shrink:0;cursor:pointer;margin-inline-start:-2px}
 .tbl tr:hover .item-menu{opacity:.7}
@@ -1930,6 +1939,7 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
      opacity:0 until :hover, which a touch screen never delivers — the button
      is still tappable where it sits, but it is not visible. */
   .item-check{display:none}
+  .grp-check{display:none}
   #sel-bar{display:none}
   /* sidebar becomes an off-canvas drawer sliding in from the right (RTL) */
   #sidebar{position:fixed;top:0;bottom:0;right:0;left:auto;width:82vw;max-width:320px;min-width:0;
@@ -7811,7 +7821,7 @@ function vTable(el){
           <span class="g-count">${g.tasks.length}</span>
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
         </span></div>`
-      : `<div class="group-head${shut?' collapsed':''}"><span class="gh-in">
+      : `<div class="group-head${shut?' collapsed':''}" data-gid=""><span class="gh-in">
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-nm"><span class="g-name" style="color:${col}">${esc(g.name)}</span>${sum}</span>
           <span class="g-count">${g.tasks.length}</span>
@@ -7821,7 +7831,7 @@ function vTable(el){
       ${head}
       <table class="tbl" ${shut?'style="display:none"':''}>
         ${colgroupHTML()}
-        <thead><tr class="col-head-row">${columnHeadersHTML(col)}<th class="th-spacer"></th></tr></thead>
+        <thead><tr class="col-head-row">${columnHeadersHTML(col,g)}<th class="th-spacer"></th></tr></thead>
         <tbody data-gid="${g.id===null?'':g.id}" style="--gcolor:${col}">${rows}
           <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
         </tbody>
@@ -7833,6 +7843,7 @@ function vTable(el){
   }).join('') + (isBoardAdmin()
     ? `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`
     : '');
+  syncGroupChecks();                 // indeterminate is a property, not an attribute
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
     if(!e.target.closest('.caret'))return;   // collapse/expand only from the arrow
     foldGroup(h,!h.classList.contains('collapsed'));   // remembered across re-renders
@@ -8266,8 +8277,13 @@ function colgroupHTML(){
 function builtinLabel(key,def){return (((st.board&&st.board.col_labels)||{})[key])||def;}
 /* unified header row: renders every ordered column (built-in + custom), with a
    board-admin drag grip (reorder) and a "..." menu (rename / hide / options). */
-function columnHeadersHTML(boardColor){
+/* `g` is the group this header belongs to — the "select the whole group" box
+   lives in the item column's header, directly above the item checkboxes it
+   stands for. Called without a group (anywhere the headers are drawn outside a
+   group) it simply has no box. */
+function columnHeadersHTML(boardColor,g){
   const admin=isBoardAdmin();
+  const sel=g?groupCheckHTML(g):'';
   const ths=orderedColumns().map(c=>{
     const grip=(admin&&c.id!=='item')?`<i class="fa-solid fa-grip-vertical col-grip" title="גרור לשינוי מיקום העמודה"></i>`:'';
     if(c.kind==='builtin'){
@@ -8275,7 +8291,8 @@ function columnHeadersHTML(boardColor){
       const fixed=c.key==='item'?'data-fixed="1"':'';
       const menu=admin?`<button class="th-menu" title="עמודה" onclick="builtinColMenu(event,'${c.key}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
       const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startColRename('builtin','${c.key}')"`:' class="th-lbl"';
-      return `<th data-colkey="${c.key}" ${fixed} ${style}><span class="th-in">${grip}<span${dbl}>${esc(c.label)}</span>${menu}${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
+      const box=c.key==='item'&&sel?`<span class="th-sel">${sel}</span>`:'';
+      return `<th data-colkey="${c.key}" ${fixed} ${style}>${box}<span class="th-in">${grip}<span${dbl}>${esc(c.label)}</span>${menu}${sortBtn(c.key)}</span>${resizerHTML(c.key)}</th>`;
     }
     const cc=c.col;
     const menu=admin?`<button class="th-menu" title="עמודה" onclick="colMenu(event,'${cc.id}')"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
@@ -10976,7 +10993,58 @@ function toggleItemSelect(e,id){
   const box=e.currentTarget, on=!!box.checked;
   if(on)st.selected.add(id); else st.selected.delete(id);
   const row=box.closest('tr'); if(row)row.classList.toggle('row-sel',on);
-  renderSelBar();
+  renderSelBar(); syncGroupChecks();
+}
+/* ===== סימון קבוצה =====
+   The same checkbox one level up: it marks every item in the group at once,
+   which is what "select these twelve and move them" asked for twelve clicks of
+   before. Three states, because two would lie — all of the group, none of it,
+   or some, which is what a tick on one row leaves the group in.
+
+   It covers the items the group is DRAWING, not the items it holds: with a
+   filter or a search on, the rows on screen are a subset, and a box that
+   silently took in what is out of sight would hand the bulk bar items nobody
+   can see. Items this person may not edit have no checkbox of their own, so
+   they are not in it either — and a group with none of those shows no box. */
+function groupSelectable(g){ return (g.tasks||[]).filter(t=>canEditItem(t)); }
+function _gidAttr(g){ return g.id===null?'':String(g.id); }
+function groupCheckHTML(g){
+  const sel=groupSelectable(g);
+  if(!sel.length) return '';
+  const on=sel.filter(t=>st.selected.has(t.id)).length;
+  return `<input type="checkbox" class="grp-check" title="סימון כל הפריטים בקבוצה"
+    data-gid="${_gidAttr(g)}" ${on===sel.length?'checked':''}
+    onclick="toggleGroupSelect(event,'${_gidAttr(g)}')">`;
+}
+function toggleGroupSelect(e,gid){
+  e.stopPropagation();                 // never the group's fold, never a drag
+  const on=!!e.currentTarget.checked;
+  const g=groupsOf().find(x=>_gidAttr(x)===String(gid));
+  if(!g)return;
+  const ids=new Set(groupSelectable(g).map(t=>t.id));
+  ids.forEach(id=>{ on?st.selected.add(id):st.selected.delete(id); });
+  // the rows are repainted in place: a re-render here would fold open sub-item
+  // panels and throw the scroll position away, for a change that is one class
+  // and one checked flag per row
+  const scope=e.currentTarget.closest('.group');
+  if(scope) scope.querySelectorAll('tr[data-tid]').forEach(r=>{
+    if(!ids.has(+r.dataset.tid))return;
+    r.classList.toggle('row-sel',on);
+    const box=r.querySelector('.item-check'); if(box)box.checked=on;
+  });
+  renderSelBar(); syncGroupChecks();
+}
+/* Every group box re-read off the selection. Called after any change to it,
+   from either level, because "some" has no HTML attribute to be written as. */
+function syncGroupChecks(){
+  const groups=(st.board&&st.board.tasks)?groupsOf():[];
+  document.querySelectorAll('.grp-check').forEach(box=>{
+    const g=groups.find(x=>_gidAttr(x)===(box.dataset.gid||''));
+    if(!g)return;
+    const sel=groupSelectable(g), on=sel.filter(t=>st.selected.has(t.id)).length;
+    box.checked=on>0&&on===sel.length;
+    box.indeterminate=on>0&&on<sel.length;
+  });
 }
 /* ===== bulk-selection action bar ===== */
 function renderSelBar(){
@@ -11001,6 +11069,9 @@ function clearSelection(){
   st.selected.clear();
   document.querySelectorAll('tr.row-sel').forEach(r=>r.classList.remove('row-sel'));
   document.querySelectorAll('.item-check:checked').forEach(c=>{c.checked=false;});
+  // the group boxes are read off the selection, so they empty with it — the
+  // indeterminate one included, which no :checked selector would have reached
+  document.querySelectorAll('.grp-check').forEach(c=>{c.checked=false;c.indeterminate=false;});
   closeCellPops(); renderSelBar();
 }
 function _selectedTopItems(){ return [...st.selected].map(id=>findAnyTask(id)).filter(t=>t&&!t.parent_id); }
