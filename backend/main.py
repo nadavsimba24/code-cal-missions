@@ -6414,11 +6414,92 @@ def _apply_priority_key(db, task, key):
     return True
 
 
+def _condition_value_label(db, board, kind, v):
+    """A condition's value as the board shows it — a status's label, a name."""
+    spec = recipes.condition(kind) or {}
+    t = spec.get("type")
+    if t == "status":
+        e = next((x for x in _board_statuses(board) if x["key"] == str(v)), None)
+        return e["label"] if e else str(v)
+    if t == "priority":
+        e = next((x for x in _board_priorities(board) if x["key"] == str(v)), None)
+        return e["label"] if e else str(v)
+    if t == "person":
+        return db.query(User.name).filter(User.id == v).scalar() or str(v)
+    if t == "group":
+        return db.query(Group.name).filter(Group.id == v).scalar() or str(v)
+    return str(v)
+
+
+def _condition_phrases(db, board, conds, quote=True):
+    """Each extra condition as a readable phrase, values filled in."""
+    out = []
+    for c in conds or []:
+        kind = c.get("kind")
+        spec = recipes.condition(kind)
+        if not spec:
+            continue
+        if spec["type"] is None:
+            out.append(recipes.condition_text(kind))
+        else:
+            shown = _condition_value_label(db, board, kind, c.get("value"))
+            out.append(recipes.condition_text(kind, f"«{shown}»" if quote else shown))
+    return out
+
+
+def _condition_holds(db, task, kind, v):
+    """One condition, against the item as it is right now."""
+    if kind in ("status_is", "status_is_not"):
+        same = str(_task_status_key(task)) == str(v)
+        return same if kind == "status_is" else not same
+    if kind in ("priority_is", "priority_is_not"):
+        same = str(_task_priority_key(task)) == str(v)
+        return same if kind == "priority_is" else not same
+    if kind in ("person_is", "person_is_not"):
+        try:
+            on = int(v) in {u.id for u in list(task.assignees or [])}
+        except (TypeError, ValueError):
+            on = False
+        return on if kind == "person_is" else not on
+    if kind in ("group_is", "group_is_not"):
+        try:
+            same = task.group_id is not None and int(v) == int(task.group_id)
+        except (TypeError, ValueError):
+            same = False
+        return same if kind == "group_is" else not same
+    if kind in ("has_assignee", "no_assignee"):
+        any_one = bool(list(task.assignees or []))
+        return any_one if kind == "has_assignee" else not any_one
+    if kind in ("has_due_date", "no_due_date"):
+        has = task.due_date is not None
+        return has if kind == "has_due_date" else not has
+    if kind in ("overdue", "not_overdue"):
+        # an item with no due date is not overdue — so "תאריך היעד לא עבר" holds
+        # for it, which is the reading a person expects of the words
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        late = bool(task.due_date and task.due_date < now)
+        return late if kind == "overdue" else not late
+    # an unknown condition is not a licence to act: a rule whose condition this
+    # version cannot evaluate holds its fire rather than firing unconditionally
+    return False
+
+
+def _conditions_hold(db, board, task, conds):
+    """(ok, why_not). The first condition that does not hold decides, and it is
+    named — "why did nothing happen" is answerable only if the answer is kept."""
+    for c in conds or []:
+        if not _condition_holds(db, task, c.get("kind"), c.get("value")):
+            phrase = (_condition_phrases(db, board, [c]) or [""])[0]
+            return False, f"התנאי אינו מתקיים על הפריט: {phrase}"
+    return True, ""
+
+
 def _automation_label(db, board, a):
     """The rule as a readable Hebrew sentence with its values filled in — shown
     in the list and quoted in the notifications it sends."""
-    text = recipes.sentence(a.recipe_id)
     cfg = a.config or {}
+    text = recipes.sentence(a.recipe_id,
+                            _condition_phrases(db, board, cfg.get(recipes.CONDITION_KEY)))
     r = recipes.recipe(a.recipe_id)
     for f in (r or {}).get("fields", []):
         v = cfg.get(f["key"])
@@ -6972,6 +7053,19 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
                                f"האוטומציה בלוח '{board.name}' אינה מתבצעת: {why}. "
                                f"{_automation_label(db, board, a)}")
         return row
+    # The other half of the "if". The trigger said what happened; the rule's
+    # conditions say what also had to be true of the item, and they are read
+    # here — now, off the item — not taken from when the rule was written.
+    # A rule held back by one is recorded as skipped with the condition named,
+    # which is the whole reason the history keeps the non-events.
+    ok, why_not = _conditions_hold(db, board, task,
+                                   (a.config or {}).get(recipes.CONDITION_KEY))
+    if not ok:
+        a.last_run_at, a.last_outcome = now, "skipped"
+        a.skip_count = (a.skip_count or 0) + 1
+        _count_automation_usage(db, a.board_id, "skipped")
+        return _log_automation_run(db, board, a, task, event, "skipped", why_not,
+                                   depth, actor_id, retry_of)
     # rule 3 — the engine acts as itself, not as whoever tripped the rule and not
     # as whoever wrote it. `actor_id` stays the record of who tripped it.
     engine_id = _automation_identity(db)
@@ -7209,6 +7303,11 @@ def _automation_json(db, board, a):
         "description": a.description or "",
         "trigger": r.get("trigger"), "action": r.get("action"),
         "fields": r.get("fields", []), "config": a.config or {},
+        # the extra conditions as stored, and as read — the UI shows the second
+        # and edits the first
+        "conditions": (a.config or {}).get(recipes.CONDITION_KEY) or [],
+        "condition_phrases": _condition_phrases(db, board, (a.config or {}).get(
+            recipes.CONDITION_KEY), quote=False) if board else [],
         "status": a.status or ("active" if a.is_active else "paused"),
         "is_active": bool(a.is_active),
         "importance": a.importance or "normal",
@@ -7320,7 +7419,10 @@ def automation_recipes(user_id: int = Depends(current_user_id)):
     """
     return {"recipes": recipes.catalog(), "blueprint": recipes.blueprint(),
             "triggers": {k: recipes.plain(v) for k, v in recipes.TRIGGERS.items()},
-            "actions": {k: recipes.plain(v) for k, v in recipes.ACTIONS.items()}}
+            "actions": {k: recipes.plain(v) for k, v in recipes.ACTIONS.items()},
+            # the second half of the "if": what else may be required of the item
+            "conditions": recipes.conditions_catalog(),
+            "max_conditions": recipes.MAX_CONDITIONS}
 
 
 @app.get("/api/boards/{board_id}/automations")
@@ -7356,6 +7458,15 @@ def _check_automation_person(db, board_id, cfg):
     Run time re-checks anyway (see _run_automations) — membership can change
     after the rule is stored.
     """
+    # a condition may name somebody too ("רק אם X משויך"), and a rule whose
+    # condition names a stranger to the board is a rule that can never hold
+    for c in (cfg or {}).get(recipes.CONDITION_KEY) or []:
+        spec = recipes.condition(c.get("kind")) or {}
+        if spec.get("type") != "person":
+            continue
+        if not _can_be_assigned(db, board_id, c.get("value")):
+            nm = db.query(User.name).filter(User.id == c.get("value")).scalar() or "המשתמש"
+            raise HTTPException(400, f"{nm} אינו חבר בלוח, ולכן לא ניתן להתנות בו")
     pid = (cfg or {}).get("a_person")
     if pid in (None, ""):
         return
@@ -7986,6 +8097,26 @@ def automation_impact(automation_id: int, user_id: int = Depends(current_user_id
                 **_automation_impact(db, b, a)}
 
 
+def _condition_actual(db, board, task, kind):
+    """What the item shows for the thing a condition asks about."""
+    spec = recipes.condition(kind) or {}
+    t = spec.get("type")
+    if t == "status":
+        return _condition_value_label(db, board, kind, _task_status_key(task))
+    if t == "priority":
+        return _condition_value_label(db, board, kind, _task_priority_key(task))
+    if t == "person":
+        names = [u.name for u in list(task.assignees or [])]
+        return ", ".join(names) if names else "אין משויכים"
+    if t == "group":
+        return db.query(Group.name).filter(Group.id == task.group_id).scalar() or "—"
+    if kind in ("has_assignee", "no_assignee"):
+        return "יש משויכים" if list(task.assignees or []) else "אין משויכים"
+    if kind in ("has_due_date", "no_due_date", "overdue", "not_overdue"):
+        return task.due_date.strftime("%d/%m/%Y") if task.due_date else "אין תאריך יעד"
+    return "—"
+
+
 def _dry_run_automation(db, board, a, task):
     """Work out what the rule WOULD do to this item. Nothing is written.
 
@@ -8031,6 +8162,17 @@ def _dry_run_automation(db, board, a, task):
         have = cur_status if f["type"] == "status" else cur_prio
         conditions.append({"label": f["label"], "expected": label(f["key"], want),
                            "actual": label(f["key"], have), "ok": str(want) == str(have)})
+    # the rule's own "רק אם" conditions, each answered separately — a test that
+    # reported only a verdict would leave the asker to guess which one held it
+    for c in (cfg.get(recipes.CONDITION_KEY) or []):
+        spec = recipes.condition(c.get("kind")) or {}
+        held = _condition_holds(db, task, c.get("kind"), c.get("value"))
+        conditions.append({
+            "label": (_condition_phrases(db, board, [c], quote=False) or [""])[0],
+            "expected": _condition_value_label(db, board, c.get("kind"), c.get("value"))
+                        if spec.get("type") else "—",
+            "actual": _condition_actual(db, board, task, c.get("kind")),
+            "ok": held})
 
     # ── what it would do, with the values ──
     actions = []
@@ -8083,9 +8225,13 @@ def _dry_run_automation(db, board, a, task):
     missing = [b["text"] for b in blockers if b["kind"] == "permission"]
     broken = [b["text"] for b in blockers if b["kind"] == "dependency"]
     impact = _automation_impact(db, board, a)
-    would = (trigger["matches"] and not blockers
+    # a condition that does not hold stops the rule exactly as a trigger that
+    # does not match does, so the test may not answer "would run" over one
+    unmet = [c for c in conditions if not c.get("ok")]
+    fires = trigger["matches"] and not unmet
+    would = (fires and not blockers
              and not all(x.get("no_op") for x in actions or [{}]))
-    verdict = "blocked" if blockers else ("would_run" if (trigger["matches"] and not
+    verdict = "blocked" if blockers else ("would_run" if (fires and not
                                           all(x.get("no_op") for x in actions or [{}]))
                                           else "would_skip")
     if verdict == "would_run":
@@ -8094,6 +8240,8 @@ def _dry_run_automation(db, board, a, task):
         summary = "הכלל חסום: " + " · ".join((missing + broken)[:2])
     elif not trigger["matches"]:
         summary = "הגורם המפעיל אינו מתקיים על הפריט הזה"
+    elif unmet:
+        summary = "התנאי אינו מתקיים על הפריט: " + unmet[0]["label"]
     else:
         summary = "הכלל היה מתאים אך לא משנה דבר"
     return {"verdict": verdict, "summary": summary, "trigger": trigger,
@@ -8243,7 +8391,7 @@ def discard_automation_draft(automation_id: int, user_id: int = Depends(current_
 # what narrows it, what it does, who it acts as, and when it goes.
 _VERSION_GROUPS = [
     ("trigger", "גורם מפעיל", lambda k, f: k == "recipe_id"),
-    ("conditions", "תנאים", lambda k, f: k.startswith("t_")),
+    ("conditions", "תנאים", lambda k, f: k.startswith("t_") or k == recipes.CONDITION_KEY),
     ("actions", "פעולות", lambda k, f: k.startswith("a_") and f != "person"),
     ("permissions", "הרשאות", lambda k, f: k == "owner_id" or (k.startswith("a_") and f == "person")),
     ("order", "סדר", lambda k, f: k in ("run_order", "importance")),
@@ -8282,6 +8430,9 @@ def compare_automation_versions(automation_id: int, a: int = 0, b: int = 0,
             t = ftype.get(key)
             if value in (None, "", []):
                 return "—"
+            if key == recipes.CONDITION_KEY:
+                # a list of {kind,value} is unreadable as a diff; the clause is not
+                return " וגם ".join(_condition_phrases(db, board, value, quote=False)) or "—"
             if t == "person" or key == "owner_id":
                 return db.query(User.name).filter(User.id == value).scalar() or str(value)
             if t == "status":
@@ -8317,7 +8468,9 @@ def compare_automation_versions(automation_id: int, a: int = 0, b: int = 0,
                     continue
                 if fa.get(key) == fb.get(key):
                     continue
-                items.append({"key": key, "label": labels.get(key) or _VERSIONED.get(key) or key,
+                items.append({"key": key,
+                              "label": ("תנאים נוספים" if key == recipes.CONDITION_KEY
+                                        else labels.get(key) or _VERSIONED.get(key) or key),
                               "from": shown(key, fa.get(key)), "to": shown(key, fb.get(key))})
             if items:
                 groups.append({"id": gid, "label": ghe, "changes": items})

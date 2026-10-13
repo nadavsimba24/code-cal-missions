@@ -17,6 +17,147 @@ so a recipe's wording can be improved later without rewriting saved rules.
 FIELD_TYPES = ("status", "priority", "person", "group", "text",
                "connect", "item", "board")
 
+# ── conditions ("רק אם") ────────────────────────────────────────────
+# A recipe pairs one trigger with one action, and for a long time that pair was
+# the whole "if": the moment the trigger fired, the action ran. A condition is
+# the other half of the if. The trigger says what happened; a condition says
+# what must ALSO be true of the item for the action to run. They are ANDed, and
+# read at the moment the trigger fires — against the item as it is then, not as
+# it was when the rule was written.
+#
+# Stored inside the rule's own `config`, under this reserved key, rather than in
+# a column of its own: drafts, versions, publishing, comparing and the export
+# all carry `config` already, so a condition travels through every one of them
+# without any of them learning a new field.
+CONDITION_KEY = "conditions"
+MAX_CONDITIONS = 3
+
+# `type` is the value the condition takes — None for one that asks about the
+# item itself and needs nothing filled in.
+CONDITIONS = {
+    "status_is":       {"text": "הסטטוס הוא {status}", "type": "status", "label": "סטטוס"},
+    "status_is_not":   {"text": "הסטטוס אינו {status}", "type": "status", "label": "סטטוס"},
+    "priority_is":     {"text": "העדיפות היא {priority}", "type": "priority", "label": "עדיפות"},
+    "priority_is_not": {"text": "העדיפות אינה {priority}", "type": "priority", "label": "עדיפות"},
+    "person_is":       {"text": "{person} משויך לפריט", "type": "person", "label": "אדם"},
+    "person_is_not":   {"text": "{person} אינו משויך לפריט", "type": "person", "label": "אדם"},
+    "group_is":        {"text": "הפריט בקבוצה {group}", "type": "group", "label": "קבוצה"},
+    "group_is_not":    {"text": "הפריט אינו בקבוצה {group}", "type": "group", "label": "קבוצה"},
+    "has_assignee":    {"text": "יש אחראי לפריט", "type": None},
+    "no_assignee":     {"text": "אין אחראי לפריט", "type": None},
+    "has_due_date":    {"text": "לפריט יש תאריך יעד", "type": None},
+    "no_due_date":     {"text": "לפריט אין תאריך יעד", "type": None},
+    "overdue":         {"text": "תאריך היעד עבר", "type": None},
+    "not_overdue":     {"text": "תאריך היעד לא עבר", "type": None},
+}
+
+# Pairs that cannot both hold, and kinds that take one value at a time — two of
+# those with different values is the same impossibility. Refused when the rule
+# is written: a rule that can never fire is not a narrow rule, it is a rule
+# somebody will wait on forever.
+_EXCLUSIVE = [("has_assignee", "no_assignee"), ("has_due_date", "no_due_date"),
+              ("overdue", "not_overdue"), ("overdue", "no_due_date")]
+_ONE_VALUE = ("status_is", "priority_is", "group_is")
+# "the status is X" and "the status is not X" are the same contradiction
+_NEGATES = {"status_is": "status_is_not", "priority_is": "priority_is_not",
+            "person_is": "person_is_not", "group_is": "group_is_not"}
+
+
+def condition(kind):
+    return CONDITIONS.get(kind)
+
+
+def condition_text(kind, shown=None):
+    """One condition as a phrase. `shown` is the value already rendered the way
+    the board shows it; without one the blank stays a blank."""
+    spec = CONDITIONS.get(kind)
+    if not spec:
+        return ""
+    if spec["type"] is None:
+        return spec["text"]
+    return spec["text"].replace("{" + spec["type"] + "}",
+                                shown if shown is not None else "…")
+
+
+def conditions_clause(phrases):
+    """The whole "רק אם" clause from already-rendered condition phrases."""
+    parts = [p for p in (phrases or []) if p]
+    if not parts:
+        return ""
+    return "ורק אם " + " וגם ".join(parts)
+
+
+def conditions_catalog():
+    """What the "רק אם" picker offers, in the order a person reads them."""
+    return [{"kind": k, "label": condition_text(k), "type": c["type"],
+             "value_label": c.get("label", "")} for k, c in CONDITIONS.items()]
+
+
+def validate_conditions(raw):
+    """(clean, error) for a rule's extra conditions.
+
+    A condition missing its value is refused even in a draft, unlike a recipe
+    placeholder. A placeholder is a blank somebody comes back to and the rule
+    cannot run until they do; a condition with no value would silently WIDEN
+    what the rule fires on — "only if the status is …" with no status is not a
+    narrower rule, it is the rule without the condition.
+    """
+    if raw in (None, "", []):
+        return [], None
+    if not isinstance(raw, list):
+        return None, "תנאים לא תקינים"
+    if len(raw) > MAX_CONDITIONS:
+        return None, f"אפשר להגדיר עד {MAX_CONDITIONS} תנאים"
+    clean, seen = [], set()
+    for c in raw:
+        if not isinstance(c, dict):
+            return None, "תנאים לא תקינים"
+        kind = str(c.get("kind") or "").strip()
+        spec = CONDITIONS.get(kind)
+        if not spec:
+            return None, "תנאי לא מוכר"
+        t, v = spec["type"], c.get("value")
+        if t is None:
+            v = None
+        elif t in ("person", "group"):
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                return None, f"חסר ערך בתנאי '{condition_text(kind)}'"
+        else:
+            v = str(v or "").strip()
+            if not v:
+                return None, f"חסר ערך בתנאי '{condition_text(kind)}'"
+        sig = (kind, v)
+        if sig in seen:
+            continue                    # the same condition twice narrows nothing
+        seen.add(sig)
+        clean.append({"kind": kind, "value": v})
+    err = _impossible(clean)
+    if err:
+        return None, err
+    return clean, None
+
+
+def _impossible(conds):
+    """The reason these conditions can never all hold, if there is one."""
+    kinds = {c["kind"] for c in conds}
+    for a, b in _EXCLUSIVE:
+        if a in kinds and b in kinds:
+            return (f"התנאים '{condition_text(a)}' ו'{condition_text(b)}' "
+                    f"אינם יכולים להתקיים יחד")
+    for kind in _ONE_VALUE:
+        vals = {str(c["value"]) for c in conds if c["kind"] == kind}
+        if len(vals) > 1:
+            return f"'{condition_text(kind)}' יכול להתקיים על ערך אחד בלבד"
+    for pos, neg in _NEGATES.items():
+        same = {str(c["value"]) for c in conds if c["kind"] == pos} & \
+               {str(c["value"]) for c in conds if c["kind"] == neg}
+        if same:
+            return f"תנאי '{condition_text(pos)}' סותר את ההיפוך שלו באותו ערך"
+    return None
+
+
 TRIGGERS = {
     "item_created":        "כאשר נוצר פריט חדש",
     "status_changes_to":   "כאשר הסטטוס משתנה ל{status}",
@@ -133,6 +274,33 @@ RECIPES = [
     {"id": "linked_status_set_priority", "trigger": "linked_status_changes_to",
      "action": "set_priority", "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר"),
                                           _f("a_priority", "priority", "עדיפות")]},
+
+    # ── templates that come WITH conditions ("רק אם") ──
+    # The same trigger-and-action pairs as above, but shipped with the second
+    # half of the if already on them, so the common two-clause rules are a pick
+    # and not an assembly. `conds` names the condition kinds the template starts
+    # with; their values are blanks the person fills, exactly like the recipe's
+    # own placeholders. Nothing new is stored — the conditions land in `config`
+    # under CONDITION_KEY like any other, so a template rule and a hand-built
+    # one remain the same row.
+    {"id": "cond_status_prio_notify_person", "trigger": "status_changes_to",
+     "action": "notify_person", "conds": ["priority_is"],
+     "fields": [_f("t_status", "status", "סטטוס"), _f("a_person", "person", "נמען")]},
+    {"id": "cond_status_prio_open_notify_assignees", "trigger": "status_changes_to",
+     "action": "notify_assignees", "conds": ["priority_is", "has_assignee"],
+     "fields": [_f("t_status", "status", "סטטוס")]},
+    {"id": "cond_created_prio_unassigned_assign", "trigger": "item_created",
+     "action": "assign_person", "conds": ["priority_is", "no_assignee"],
+     "fields": [_f("a_person", "person", "אחראי")]},
+    {"id": "cond_due_open_notify_assignees", "trigger": "due_date_arrives",
+     "action": "notify_assignees", "conds": ["status_is_not", "has_assignee"],
+     "fields": []},
+    {"id": "cond_status_group_prio_move", "trigger": "status_changes_to",
+     "action": "move_to_group", "conds": ["group_is", "priority_is"],
+     "fields": [_f("t_status", "status", "סטטוס"), _f("a_group", "group", "קבוצה")]},
+    {"id": "cond_created_no_due_notify_person", "trigger": "item_created",
+     "action": "notify_person", "conds": ["no_due_date"],
+     "fields": [_f("a_person", "person", "נמען")]},
 ]
 
 RECIPES_BY_ID = {r["id"]: r for r in RECIPES}
@@ -142,8 +310,14 @@ def recipe(recipe_id):
     return RECIPES_BY_ID.get(recipe_id)
 
 
-def sentence(recipe_id):
-    """The recipe as one '{placeholder}'-carrying sentence, for the UI to fill."""
+def sentence(recipe_id, cond_phrases=None):
+    """The recipe as one '{placeholder}'-carrying sentence, for the UI to fill.
+
+    `cond_phrases` are a stored rule's extra conditions, already rendered — they
+    go between the trigger and the action, which is where they belong in the
+    reading: what happened, what else had to be true, and only then what is
+    done about it.
+    """
     r = recipe(recipe_id)
     if not r:
         return ""
@@ -151,7 +325,8 @@ def sentence(recipe_id):
     act = ACTIONS[r["action"]]
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
-    return f"{trig}, {act}"
+    clause = conditions_clause(cond_phrases)
+    return f"{trig}, {clause + ', ' if clause else ''}{act}"
 
 
 def plain(text):
@@ -180,18 +355,37 @@ def blueprint():
     """
     out = []
     for trig, text in TRIGGERS.items():
+        # a conditioned template is NOT offered here: picking a trigger and an
+        # action has to land on exactly one recipe, and the conditions in this
+        # flow are step 2, chosen rather than inherited
         acts = [{"action": r["action"], "label": plain(ACTIONS[r["action"]]),
                  "recipe_id": r["id"]}
-                for r in RECIPES if r["trigger"] == trig]
+                for r in RECIPES if r["trigger"] == trig and not r.get("conds")]
         if acts:
             out.append({"trigger": trig, "label": plain(text), "actions": acts})
+    return out
+
+
+def recipe_conditions(recipe_id):
+    """The conditions a template arrives with, described for the picker: what
+    each one says, and what kind of value it still needs."""
+    out = []
+    for kind in (recipe(recipe_id) or {}).get("conds", []):
+        spec = CONDITIONS.get(kind)
+        if not spec:
+            continue
+        out.append({"kind": kind, "label": condition_text(kind),
+                    "type": spec["type"], "value_label": spec.get("label", "")})
     return out
 
 
 def catalog():
     """The full catalog the UI renders in the 'automation from a recipe' picker."""
     return [{"id": r["id"], "trigger": r["trigger"], "action": r["action"],
-             "sentence": sentence(r["id"]), "fields": r["fields"]} for r in RECIPES]
+             "sentence": sentence(r["id"]), "fields": r["fields"],
+             # a template that comes with its own conditions says so; one that
+             # does not sends an empty list and reads exactly as it always did
+             "conditions": recipe_conditions(r["id"])} for r in RECIPES]
 
 
 def validate_partial(recipe_id, config):
@@ -226,6 +420,11 @@ def validate_partial(recipe_id, config):
             v = (str(v)).strip()
         if v != "":
             clean[f["key"]] = v
+    conds, cerr = validate_conditions(config.get(CONDITION_KEY))
+    if cerr:
+        return None, cerr
+    if conds:
+        clean[CONDITION_KEY] = conds
     return clean, None
 
 
@@ -268,4 +467,9 @@ def validate(recipe_id, config):
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"
         clean[f["key"]] = v
+    conds, cerr = validate_conditions(config.get(CONDITION_KEY))
+    if cerr:
+        return None, cerr
+    if conds:
+        clean[CONDITION_KEY] = conds
     return clean, None

@@ -451,8 +451,23 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-recipe{display:block;width:100%;text-align:start;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:11px 13px;margin-bottom:8px;cursor:pointer;font-size:13.5px;line-height:1.6;color:var(--text);font-family:inherit;transition:.12s}
 .au-recipe:hover{border-color:var(--primary);background:color-mix(in srgb, var(--primary) 6%, var(--bg))}
 .au-recipe .ph{font-weight:700;color:var(--primary);background:var(--primary-soft);border:1px dashed var(--primary);border-radius:12px;padding:1px 8px;margin:0 2px;white-space:nowrap}
+/* A template that comes with its conditions: the "רק אם" on a line of its own,
+   so the row reads as the two clauses it is instead of one long sentence. */
+.au-recipe-if{margin-top:7px;padding-top:7px;border-top:1px dashed var(--border);font-size:12.5px;color:var(--text-muted);line-height:1.9}
+.au-ccount{font-size:10.5px;font-weight:700;color:#fff;background:var(--primary);border-radius:9px;padding:1px 7px;margin-inline-end:5px;vertical-align:middle}
 .au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
 .au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
+/* The "רק אם" block under the sentence: each condition is one line that reads
+   as a phrase, with its value as the same chip the sentence uses. Indented
+   under the rule it narrows, because that is what it is — part of the if. */
+.au-conds{border:1px dashed var(--border);border-radius:10px;padding:11px 13px;margin-top:10px;background:var(--surface)}
+.au-conds-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin-bottom:8px}
+.au-conds-h small{font-weight:400;color:var(--text-light)}
+.au-cond{display:flex;align-items:center;gap:7px;font-size:13px;line-height:2;padding:3px 0}
+.au-cond-and{font-size:11px;font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:10px;padding:1px 8px;flex-shrink:0}
+.au-cond-t{flex:1;min-width:0}
+.au-cond-x{border:none;background:none;color:var(--text-light);cursor:pointer;font-size:12px;padding:3px 5px;border-radius:6px;flex-shrink:0}
+.au-cond-x:hover{color:var(--danger,#e2445c);background:var(--bg)}
 /* ── the automations page: three tabs (יצירה · ניהול · היסטוריית הפעלות) ── */
 .au-count{background:rgba(255,255,255,.25);border-radius:9px;padding:0 6px;font-size:11px;font-weight:700}
 .lg-tab:not(.on) .au-count{background:var(--border);color:var(--text-muted)}
@@ -5037,9 +5052,9 @@ const Live = {
    would have given, so there is one stored shape and one validation. */
 const Automations = {
   data:{automations:[],can_manage:false}, recipes:[], blueprint:[], members:[],
-  trigLabels:{}, actLabels:{},
+  trigLabels:{}, actLabels:{}, conds:[], maxConds:3,
   building:null, editing:null, viewing:null, testing:null, cmp:null, imp:null, tlog:null,
-  tab:'manage', mode:'templates', scratch:{trigger:''},
+  tab:'manage', mode:'templates', scratch:{trigger:'',conds:[]},
   f:{q:'',status:'',owner:0,creator:0,importance:'',trigger:'',action:'',last:''},
   sort:'order', view:'expanded',
   runs:[], runCounts:{}, runOutcome:'', runAuto:0, runsLoading:false, runsLoaded:false,
@@ -5048,7 +5063,7 @@ const Automations = {
     if(!st.board){ toast('פתח לוח תחילה'); return; }
     showModal('<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
     document.getElementById('modal').classList.add('modal-80');
-    this.building=null; this.mode='templates'; this.scratch={trigger:''};
+    this.building=null; this.mode='templates'; this.scratch={trigger:'',conds:[]};
     this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=null;
     this.sort='order';
     this.picked=new Set(); this.bulkRes=null;
@@ -5070,6 +5085,7 @@ const Automations = {
         const d=await api('/api/automations/recipes'+q);
         this.recipes=d.recipes||[]; this.blueprint=d.blueprint||[];
         this.trigLabels=d.triggers||{}; this.actLabels=d.actions||{};
+        this.conds=d.conditions||[]; this.maxConds=d.max_conditions||3;
       }catch(e){ this.recipes=[]; this.blueprint=[]; }
     }
     // the person picker offers the board's own members, matching who can be assigned
@@ -5109,17 +5125,27 @@ const Automations = {
     return `<div class="au-seg">${seg('templates','תבניות','fa-wand-magic-sparkles')}${seg('scratch','אוטומציה מאפס','fa-pen-ruler')}</div>`+
       (this.mode==='templates'?this.catalogHTML():this.scratchHTML());
   },
-  setMode(m){ this.mode=m; this.scratch={trigger:''}; this.render(); },
+  setMode(m){ this.mode=m; this.scratch={trigger:'',conds:[]}; this.render(); },
 
   catalogHTML(){
     const byTrig={};
     this.recipes.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
+    /* A template that arrives with conditions says so on its own row: the
+       sentence on the first line, the "רק אם" on the second. Two lines rather
+       than one long one, because the condition is a separate clause and reads
+       as one — and the badge is what makes these findable at a glance. */
+    const condLine=x=>{
+      const cs=x.conditions||[]; if(!cs.length) return '';
+      const parts=cs.map(c=>esc(c.label).replace('…','<span class="ph">'+esc(c.value_label||'ערך')+'</span>'));
+      return `<div class="au-recipe-if"><span class="au-ccount">${cs.length} ${cs.length===1?'תנאי':'תנאים'}</span>
+        רק אם ${parts.join(' וגם ')}</div>`;
+    };
     const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc((this.trigLabels||{})[t]||t)}</div>`+
       byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
         esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
           const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
-      }</button>`).join('')).join('');
-    return `<div style="font-size:12.5px;color:var(--text-muted);margin:12px 0 2px">בחר תבנית מוכנה והשלם את השדות:</div>${blocks}`;
+      }${condLine(x)}</button>`).join('')).join('');
+    return `<div style="font-size:12.5px;color:var(--text-muted);margin:12px 0 2px">בחר תבנית מוכנה והשלם את השדות — ואחר כך אפשר להוסיף תנאים ("רק אם"):</div>${blocks}`;
   },
 
   /* Building from scratch is the catalog read the other way round: what starts
@@ -5135,10 +5161,14 @@ const Automations = {
       : '<div class="au-hint"><i class="fa-solid fa-arrow-up"></i> בחר קודם מה יפעיל את האוטומציה</div>';
     return `<div class="au-step"><span class="au-step-n">1</span> מה יפעיל את האוטומציה? <small>הטריגר</small></div>
       <div class="au-picks">${step1}</div>
-      <div class="au-step"><span class="au-step-n">2</span> ומה יקרה אז? <small>הפעולה</small></div>
+      <div class="au-step"><span class="au-step-n">2</span> ורק אם… <small>תנאים — לא חובה</small></div>
+      ${this.condsHTML({bare:true})}
+      <div class="au-step"><span class="au-step-n">3</span> ומה יקרה אז? <small>הפעולה</small></div>
       <div class="au-picks">${step2}</div>`;
   },
-  setTrigger(t){ this.scratch={trigger:t}; this.render(); },
+  /* A condition is about the item, not about the trigger, so changing what
+     starts the rule keeps the conditions already written on it. */
+  setTrigger(t){ this.scratch={trigger:t,conds:this.scratch.conds||[]}; this.render(); },
 
   /* ---- ניהול ---- every rule on the board, in the shape the question needs ----
      A rule is an operational object, not just a sentence: someone owns it, it
@@ -6032,8 +6062,15 @@ const Automations = {
      sentence is complete, so a half-built rule can never be saved. */
   cancelNew(){ this.building=null; this.render(); },
   pick(rid){
-    this.building={recipe:this.recipes.find(r=>r.id===rid)||null,values:{},
-                   meta:{name:'',description:''}};
+    const r=this.recipes.find(x=>x.id===rid)||null;
+    // the conditions chosen in step 2 belong to the rule the action completes
+    const carried=(this.mode==='scratch'&&(this.scratch.conds||[]).length)
+      ? this.scratch.conds.map(c=>({...c})) : [];
+    // a template that arrives with conditions seeds them, values still blank —
+    // the same fill-in-the-blanks the rest of the screen asks for
+    const seeded=((r&&r.conditions)||[]).map(c=>({kind:c.kind,v:null,label:''}));
+    this.building={recipe:r,values:{},meta:{name:'',description:''},
+                   conds:seeded.length?seeded:carried};
     this.tab='create'; this.render();
   },
 
@@ -6042,11 +6079,17 @@ const Automations = {
     if(!r) return this.catalogHTML();
     let sent=esc(r.sentence);
     r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.blankHTML(f)); });
-    const ready=r.fields.every(f=>this.building.values[f.key]!==undefined);
+    // a seeded condition still missing its value is as unfinished as a blank
+    const condsReady=(this.building.conds||[]).every(c=>{
+      const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
+      return !spec.type||(c.v!==null&&c.v!==undefined&&c.v!=='');
+    });
+    const ready=r.fields.every(f=>this.building.values[f.key]!==undefined)&&condsReady;
     const meta=this.building.meta||(this.building.meta={name:'',description:''});
     return `<div class="au-group-h">אוטומציה חדשה</div>
       <div class="au-build">${sent}</div>
       ${ready?'':'<div class="au-hint"><i class="fa-solid fa-circle-info"></i> לחץ על כל שדה מודגש כדי להשלים אותו</div>'}
+      ${this.condsHTML()}
       <div class="am-ed-g" style="margin-top:14px">
         <div class="am-f"><label for="au-nm">שם האוטומציה <small>(לא חובה)</small></label>
           <input id="au-nm" maxlength="120" value="${esc(meta.name)}" placeholder="ריק — ומשפט האוטומציה משמש כשם"
@@ -6060,6 +6103,98 @@ const Automations = {
         <button class="btn btn-ghost" onclick="Automations.save(true)" title="ניתן לשמור טיוטה גם בלי להשלים את כל השדות"><i class="fa-solid fa-pencil"></i> שמור כטיוטה</button>
         <button class="btn btn-ghost" onclick="Automations.cancelNew()">חזרה לבחירה</button>
       </div>`;
+  },
+
+  /* ---- "רק אם" ---- the second half of the if ----
+     The trigger says what happened; a condition says what also has to be true
+     of the item before the action runs. Several are ANDed, because a rule with
+     two conditions is the case this was asked for: "when the status changes to
+     done, AND only if the priority is urgent, then…". A rule with none behaves
+     exactly as it did before — the block is empty and the sentence unchanged. */
+  /* Where the conditions being edited live. In the scratch flow the rule has no
+     recipe yet — the trigger is chosen and the action is not — so they are held
+     on `scratch` and carried into `building` by pick(). */
+  _condHome(){ return this.building||this.scratch; },
+  condsHTML(opts){
+    const home=this._condHome(), list=(home.conds||[]);
+    // the blank sits INSIDE the phrase, exactly as it does in the rule's own
+    // sentence — so a condition reads as a sentence and not as a form row
+    const rows=list.map((c,i)=>{
+      const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
+      const txt=esc(spec.label||'');
+      const body=spec.type
+        ? txt.replace('…',`<button class="au-blank${c.label?' filled':''}"${
+            c.color?` style="background:${c.color};border-color:${c.color};color:#fff"`:''
+          } onclick="Automations.pickCondValue(event,${i})">${esc(c.label||spec.value_label||'ערך')}</button>`)
+        : txt;
+      return `<div class="au-cond">
+        <span class="au-cond-and">${i?'וגם':'רק אם'}</span>
+        <span class="au-cond-t">${body}</span>
+        <button class="au-cond-x" title="הסר תנאי" onclick="Automations.dropCond(${i})"><i class="fa-solid fa-xmark"></i></button>
+      </div>`;}).join('');
+    const room=list.length<(this.maxConds||3);
+    const head=(opts&&opts.bare)?''
+      :'<div class="au-conds-h"><i class="fa-solid fa-filter"></i> תנאים נוספים <small>(לא חובה — הכלל יפעל רק אם כולם מתקיימים)</small></div>';
+    return `<div class="au-conds">
+      ${head}
+      ${rows||'<div class="au-hint" style="margin:0">אין תנאים נוספים — הכלל יפעל בכל פעם שהגורם המפעיל מתרחש</div>'}
+      ${room?`<button class="btn btn-ghost" onclick="Automations.pickCond(event)"><i class="fa-solid fa-plus"></i> הוסף תנאי</button>`
+            :`<div class="au-hint" style="margin:0">הגעת למספר התנאים המקסימלי (${this.maxConds})</div>`}
+    </div>`;
+  },
+  /* A condition reads as one phrase with its value in place — the same wording
+     the server will store and show in the rule's sentence. */
+  condText(c){
+    const spec=(this.conds||[]).find(x=>x.kind===c.kind);
+    if(!spec) return '';
+    return spec.type?spec.label.replace('…',c.label?('«'+c.label+'»'):'…'):spec.label;
+  },
+  pickCond(e){
+    e.preventDefault(); e.stopPropagation();
+    const taken=(this._condHome().conds||[]).map(c=>c.kind);
+    const offer=(this.conds||[]).filter(x=>!x.type?!taken.includes(x.kind):true);
+    this._condOffer=offer;
+    const body=offer.length
+      ? offer.map((x,i)=>`<button class="rm-item" onclick="Automations.addCond(${i})">${esc(x.label)}</button>`).join('')
+      : '<div class="rm-note">אין תנאים זמינים</div>';
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  addCond(i){
+    const spec=(this._condOffer||[])[i]; if(!spec)return;
+    const home=this._condHome();
+    (home.conds=home.conds||[]).push({kind:spec.kind,v:null,label:''});
+    closeCellPops(); this.render();
+    // a condition that needs a value is useless without one, so it is asked for
+    // straight away rather than left as a blank somebody has to notice
+    if(spec.type){
+      const idx=this._condHome().conds.length-1;
+      setTimeout(()=>{const b=document.querySelectorAll('.au-cond')[idx];
+        const btn=b&&b.querySelector('.au-blank'); if(btn)btn.click();},20);
+    }
+  },
+  dropCond(i){ (this._condHome().conds||[]).splice(i,1); this.render(); },
+  pickCondValue(e,i){
+    e.preventDefault(); e.stopPropagation();
+    const c=(this._condHome().conds||[])[i]; if(!c)return;
+    const spec=(this.conds||[]).find(x=>x.kind===c.kind); if(!spec||!spec.type)return;
+    let items=[];
+    if(spec.type==='status')        items=boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    else if(spec.type==='priority') items=boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    else if(spec.type==='group')    items=(st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
+    else if(spec.type==='person')   items=this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
+    this._popItems=items;
+    const body=items.length
+      ? items.map((it,j)=>`<button class="rm-item" onclick="Automations.setCondValue(${i},${j})">${
+          it.person?`<span class="av av-xs">${avatarInner(it.person)}</span>`
+                   :`<span class="au-dot" style="background:${it.color||'var(--border)'}"></span>`
+        } ${esc(it.label)}</button>`).join('')
+      : '<div class="rm-note">אין אפשרויות זמינות</div>';
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  setCondValue(i,j){
+    const it=(this._popItems||[])[j], c=(this._condHome().conds||[])[i]; if(!it||!c)return;
+    c.v=it.v; c.label=it.label; c.color=it.color||'';
+    closeCellPops(); this.render();
   },
 
   blankHTML(f){
@@ -6164,6 +6299,19 @@ const Automations = {
       }
       config[f.key]=['person','group','item','board'].includes(f.type)?+cur.v:cur.v;
     }
+    // a condition still missing its value is refused here rather than sent: the
+    // server would reject it, and a draft must not silently save a condition
+    // that would widen the rule instead of narrowing it
+    const conds=[];
+    for(const c of (this.building.conds||[])){
+      const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
+      if(spec.type&&(c.v===null||c.v===undefined||c.v==='')){
+        toast('יש להשלים את הערך בתנאי'); return;
+      }
+      conds.push(spec.type?{kind:c.kind,value:['person','group'].includes(spec.type)?+c.v:c.v}
+                          :{kind:c.kind});
+    }
+    if(conds.length) config.conditions=conds;
     const meta=this.building.meta||{};
     try{
       await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
