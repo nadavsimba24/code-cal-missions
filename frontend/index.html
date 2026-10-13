@@ -12031,12 +12031,30 @@ const Chat = {
     this.insert((before===''||/\s$/.test(before)?'':' ')+'@');
     const ctx=ta&&this.mentionCtx(ta); if(ctx)this._openMention(ctx);
   },
-  // is the caret inside an "@…" token? (returns {query,start,pos} or null)
+  // is the caret inside an "@…" token that is still being written?
+  /* A name holds spaces ("@שלי פיינברג"), so the query has to allow them — and
+     that meant a tag never ended: once one was picked, every further word on the
+     line was still read as part of the query. The menu reopened on the finished
+     tag, its "no matching board members" note sat over the composer, and Enter
+     was taken by the menu instead of starting a line. Going down a line was the
+     only way out, because a query cannot cross a newline. A tag that already
+     spells a board member's name in full, with a space after it, is finished —
+     what follows it is the message. */
   mentionCtx(ta){
     const pos=ta.selectionStart||0;
     const m=ta.value.slice(0,pos).match(/(?:^|\s)@([^\n@]*)$/);
     if(!m)return null;
+    if(this.mentionSettled(m[1]))return null;
     return {query:m[1], start:pos-m[1].length-1, pos};
+  },
+  mentionSettled(q){
+    const low=q.toLowerCase(), people=boardPeople(this.mentions);
+    // still the beginning of somebody's name? keep offering the rest of it
+    if(people.some(u=>{const n=u.name||''; return n.length>q.length && n.toLowerCase().startsWith(low);}))return false;
+    return people.some(u=>{
+      const n=(u.name||'').trim();
+      return !!n && q.length>n.length && low.slice(0,n.length)===n.toLowerCase() && /\s/.test(q.charAt(n.length));
+    });
   },
   // called on every input: open/refresh/close the tag autocomplete
   onType(e){
@@ -12050,6 +12068,10 @@ const Chat = {
     // who cannot open the item they were tagged on. The server enforces the
     // same rule; this just stops offering a choice that would be rejected.
     const matches=boardPeople(this.mentions).filter(u=>!q||(u.name||'').toLowerCase().includes(q));
+    /* A query that has run past a space and matches nobody is a message being
+       written, not a name — the note helps only while the word is still one
+       word. Leaving it up is what made a finished tag look unfinished. */
+    if(!matches.length && /\s/.test(ctx.query)){ this._closeMention(); return; }
     this._mention={ctx, matches, idx:0};
     this._renderMentionMenu();
   },
