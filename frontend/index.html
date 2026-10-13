@@ -608,6 +608,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .notif-ic.board_add{background:var(--green,#00c875)}
 .notif-ic.mention{background:#a25ddc}
 .notif-ic.assign{background:#0073ea}
+.notif-ic.comment_like{background:#fdab3d}
 .notif-txt{flex:1;min-width:0}
 .notif-title{font-size:13.5px;font-weight:600;color:var(--text)}
 .notif-body{font-size:12.5px;color:var(--text-muted);margin-top:2px;line-height:1.4}
@@ -4729,7 +4730,7 @@ const Notif={
     el.innerHTML=head+`<div class="notif-list">${body}</div>`;
   },
   rowHTML(n){
-    const icon=n.type==='board_remove'?'fa-user-minus':n.type==='board_add'?'fa-user-plus':n.type==='mention'?'fa-at':n.type==='assign'?'fa-user-check':'fa-bell';
+    const icon=n.type==='board_remove'?'fa-user-minus':n.type==='board_add'?'fa-user-plus':n.type==='mention'?'fa-at':n.type==='assign'?'fa-user-check':n.type==='comment_like'?'fa-thumbs-up':'fa-bell';
     return `<div class="notif-row ${n.is_read?'':'unread'}" onclick="Notif.click(${n.id},${n.board_id==null?'null':n.board_id},${n.task_id==null?'null':n.task_id})">
       <span class="notif-ic ${esc(n.type||'')}"><i class="fa-solid ${icon}"></i></span>
       <div class="notif-txt"><div class="notif-title">${esc(n.title||'')}</div>${n.body?`<div class="notif-body">${esc(n.body)}</div>`:''}<div class="notif-time">${fdatetime(n.created_at)}</div></div>
@@ -4930,6 +4931,9 @@ const Live = {
     if(ev.type==='resync'){ this.refreshBoard(); return; }
     // something happened somewhere — my own notification list may have grown
     if(ev.actor_id!==meId()) this.bumpNotifications();
+    // ...and for a like that is the whole of it: no row, no column, no group of
+    // the board changed, so there is nothing to refetch
+    if(ev.type==='comment.liked')return;
     // I already see the result of my own edit; re-applying it only causes flicker
     if(ev.actor_id===meId())return;
     if(!st.board || ev.board_id!==st.board.id)return;
@@ -5045,9 +5049,14 @@ const Live = {
     return false;
   },
 
+  /* The bell, on an event from somebody else. This called `Notifications.load`
+     — an object that does not exist — inside a try/catch, so every bump since
+     the event stream was added has thrown and been swallowed: the badge only
+     ever moved on the 5-minute reconcile or when the list was opened. The
+     object is `Notif`. */
   bumpNotifications(){
     clearTimeout(this._notifT);
-    this._notifT=setTimeout(()=>{ try{ Notifications.load(); }catch(e){} },400);
+    this._notifT=setTimeout(()=>{ try{ Notif.load(); }catch(e){} },400);
   },
 };
 

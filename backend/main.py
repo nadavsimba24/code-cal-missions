@@ -9618,12 +9618,41 @@ def like_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id))
         if not user:
             raise HTTPException(403, "אין משתמש")
         likes = list(c.likes or [])
-        if user.id in likes:
-            likes.remove(user.id)
-        else:
+        liked_now = user.id not in likes
+        if liked_now:
             likes.append(user.id)
+        else:
+            likes.remove(user.id)
         c.likes = likes
+        # A like is the one thing in the conversation that said nothing to the
+        # person it was about. In-app only, deliberately: the mail this system
+        # sends is an invitation to a board or a workspace, and a thumbs-up is
+        # not that. _notify writes a row and nothing more — no mail leaves here.
+        if liked_now and c.user_id and c.user_id != user.id:
+            task = db.query(Task).filter(Task.id == c.task_id).first()
+            board = (db.query(Board).filter(Board.id == task.board_id).first()
+                     if task else None)
+            if task and _board_notify_on(board):
+                body = f"{user.name} סימן/ה לייק להערה שלך בפריט '{task.title}'."
+                # Liking, unliking and liking again is one person fidgeting, not
+                # three pieces of news. While the first one is still unread, it
+                # stands for all of them.
+                already = (db.query(Notification)
+                             .filter(Notification.user_id == c.user_id,
+                                     Notification.type == "comment_like",
+                                     Notification.task_id == c.task_id,
+                                     Notification.body == body,
+                                     Notification.is_read == False)   # noqa: E712
+                             .first())
+                if not already:
+                    _notify(db, c.user_id, "comment_like", "סימנו לייק להערה שלך",
+                            body, board_id=task.board_id, task_id=c.task_id)
+        _bid = (db.query(Task.board_id).filter(Task.id == c.task_id).scalar()
+                if c.task_id else None)
         db.commit()
+        # the recipient's bell is the only thing this changes, and it learns from
+        # the event stream rather than waiting out the reconcile interval
+        bus.publish("comment.liked", board_id=_bid, task_id=c.task_id, actor_id=actor_id)
         return {"id": cid, "likes": likes}
 
 @app.post("/api/tasks/{task_id}/comments/seen")
