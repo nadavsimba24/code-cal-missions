@@ -9260,6 +9260,25 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 # has a recipe waiting in the catalog for a board that wants it.
             except ValueError:
                 pass
+        elif "status" in data and data["status"] in (None, ""):
+            # Back to "טרם הוגדר" — the grey default every item starts on.
+            # The cell could always SHOW it and nothing could ever put an item
+            # back there, so a status picked by mistake was permanent: the seven
+            # engine values were the only things sayable. An explicit null is a
+            # different statement from all of them — nobody has chosen — and the
+            # engine value returns to the neutral todo, exactly where a new item
+            # sits, so the kanban and the charts read it as unstarted rather
+            # than as whatever it was before someone cleared it.
+            _cfu = dict(task.custom_fields or {})
+            for _k in ("status_key", "status_label", "status_color"):
+                _cfu.pop(_k, None)
+            _cfu["status_unset"] = True
+            task.custom_fields = _cfu
+            # Logged even where the engine value does not move: what changed is
+            # that the status is no longer anybody's choice. The empty new value
+            # is what both logs render as "—".
+            _audit(db, task_id, "update", "status", st_val(task.status), "", actor)
+            task.status = TaskStatus.TODO
         if "due_date" in data:
             due = data["due_date"]
             old_due = task.due_date.isoformat() if task.due_date else None

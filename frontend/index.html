@@ -9773,14 +9773,21 @@ async function setField(id,field,value){
   let _wholeView = false;   // set when more than this one row is affected
   // A board-defined status (one of the extra ones) is stored as its base value
   // so the engine keeps working, plus the label/colour the grid renders.
-  let extra=null;
+  let extra=null, unsetStatus=false;
   if(field==='status'){
-    const e=statusEntry(value);
-    if(e&&e.base&&e.base!==e.key){
-      extra={status_key:e.key,status_label:e.he,status_color:e.c,status_unset:null};
-      value=e.base;
+    if(value===STATUS_UNSET_KEY){
+      // back to "nobody has chosen": an explicit null is what the API reads as
+      // that, and the engine value goes back where a new item's sits
+      extra={status_key:null,status_label:null,status_color:null,status_unset:true};
+      value=null; unsetStatus=true;
     }else{
-      extra={status_key:null,status_label:null,status_color:null,status_unset:null};
+      const e=statusEntry(value);
+      if(e&&e.base&&e.base!==e.key){
+        extra={status_key:e.key,status_label:e.he,status_color:e.c,status_unset:null};
+        value=e.base;
+      }else{
+        extra={status_key:null,status_label:null,status_color:null,status_unset:null};
+      }
     }
     if(t){ t.custom_fields=t.custom_fields||{};
       for(const k of ['status_key','status_label','status_color','status_unset'])
@@ -9799,7 +9806,9 @@ async function setField(id,field,value){
       for(const k of ['priority_key','priority_label','priority_color','priority_unset'])
         if(extra[k]==null)delete t.custom_fields[k]; else t.custom_fields[k]=extra[k]; }
   }
-  if(t)t[field]=value;
+  // an unset status is stored as the neutral engine value, not as null: the
+  // kanban and every chart group by this field and a null would belong nowhere
+  if(t)t[field]=unsetStatus?'todo':value;
   // A status change leaves the item in its group. Filing an item by its status
   // is an automation the board can be given (status_changes_to → move_to_group),
   // listed with the rest and switchable; it is not something the cell does on
@@ -9828,6 +9837,13 @@ function fieldPicker(e,id,field,map){
   const cur=field==='status'?statusKeyOf(_t):field==='priority'?priorityKeyOf(_t):_t[field];
   const entries=Object.entries(map);
   let html=entries.map(([k,v])=>`<button class="cell-pop-opt" style="background:${v.c}" title="${esc(v.he)}" onclick="pickField(event,${id},'${field}','${k}')">${esc(v.he)}${cur===k?' <i class="fa-solid fa-check"></i>':''}</button>`).join('');
+  /* "טרם הוגדר" is a value too — the one every item starts on — so it belongs
+     in the list that can be picked from, not only in the cell that displays it.
+     Without it a status chosen by mistake was permanent: the board's own words
+     were the only things sayable, and none of them means "nobody has decided".
+     Last and full-width, like "נקה" in the custom status column's picker. */
+  if(field==='status')
+    html+=`<button class="cell-pop-opt pop-span" style="background:${STATUS_UNSET.color}" title="${esc(STATUS_UNSET.label)}" onclick="pickField(event,${id},'status','${STATUS_UNSET_KEY}')">${esc(STATUS_UNSET.label)}${cur==null?' <i class="fa-solid fa-check"></i>':''}</button>`;
   // board admin gets a shortcut to manage the vocabulary behind the column
   if(field==='status'&&isBoardAdmin())
     html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
@@ -9889,6 +9905,10 @@ function statusColOpts(col){
    it reads "טרם הוגדר" in grey. Choosing it again clears the stored value, so
    the default costs nothing in the data. */
 const STATUS_UNSET={label:'טרם הוגדר',color:'#c4c4c4'};
+/* Not one of the seven engine values and deliberately not a board vocabulary
+   entry either — it is the absence of a choice. It travels only between the
+   picker and setField, which turns it into the explicit null the API reads. */
+const STATUS_UNSET_KEY='__unset';
 /* What a status cell shows now. The column's vocabulary is the source: match
    the option the cell points at (by id, or by label for cells written before
    ids existed) and use its current label and colour, so renaming or
