@@ -2612,14 +2612,17 @@ const Auth = {
     /* Reached when Entra knows the person but CityOS does not (403). Offering
        "sign in" alone would loop them straight back to the same refusal, so the
        way out is to sign in as someone else — which needs the Entra session
-       ended first, hence the logout URL. */
+       ended first, hence the logout URL.
+       Sign-in keeps where they were trying to go: this screen is what an
+       invitation mail opens onto when the session is not ready yet, and
+       sending them to "/" afterwards threw the invited board away. */
     document.getElementById('login').classList.remove('open');
     document.getElementById('view').innerHTML='<div class="empty">'
       +'<i class="fa-solid fa-user-lock"></i>'
       +'<div>לא זוהית במערכת</div>'
       +'<div style="font-size:12px">התחבר עם חשבון הארגון, או פנה למנהל המערכת כדי שיוסיף אותך.</div>'
       +'<div style="margin-top:14px;display:flex;gap:8px;justify-content:center">'
-        +'<a class="btn primary" href="'+esc(loginUrl('/'))+'">התחברות</a>'
+        +'<a class="btn primary" href="'+esc(loginUrl())+'">התחברות</a>'
         +'<a class="btn" href="'+esc(logoutUrl())+'">התחבר עם חשבון אחר</a>'
       +'</div></div>';
   },

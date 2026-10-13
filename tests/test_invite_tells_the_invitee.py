@@ -36,9 +36,10 @@ def test_a_new_workspace_member_is_told(client, admin_id, guinea_id, monkeypatch
 
     assert len(sent) == 1, "a new workspace member got no mail"
     to, subject, html = sent[0]
-    assert "סביבת דואר" in subject
+    assert subject == 'צורפת לסביבת העבודה "סביבת דואר" במערכת missions'
     # the mail must not promise boards the workspace does not grant
     assert "סביבת דואר" in html and "לוח ציבורי" in html
+    assert "צירפ/ה אותך לסביבת העבודה" in html and "ממערכת missions" in html
     assert any("סביבת דואר" in n["title"] for n in _notifs(client, guinea_id))
 
 
@@ -71,4 +72,7 @@ def test_a_new_board_member_is_still_told(client, admin_id, guinea_id, monkeypat
                     json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
     assert r.status_code == 200, r.text
     assert len(sent) == 1, "a new board member got no mail"
-    assert "CityOS" in sent[0][1]
+    to, subject, html = sent[0]
+    assert subject.startswith("צורפת ללוח ") and "במערכת missions" in subject
+    # "כניסה ללוח" has to land on the board, not on the home screen
+    assert f"/#/board/{bid}" in html and "כניסה ללוח" in html

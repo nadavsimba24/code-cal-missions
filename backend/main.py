@@ -4288,47 +4288,77 @@ def _post_mail(provider, api_key, body, actual_to, subject):
         return False
 
 
-def _board_invite_html(invitee_name, board_name, inviter_name, role):
-    role_he = BROLE_HE.get(role, role)
-    base = os.environ.get("APP_BASE_URL", "https://code-cal-missions.vercel.app")
+def _app_base_url(request: Request = None):
+    """The origin the links in outgoing mail must point at.
+
+    Mail hardcoded the Vercel demo host, and nothing in either pipeline sets
+    APP_BASE_URL — so an invitation sent from QA or from production linked to a
+    different deployment altogether, one whose database is re-seeded per cold
+    start. The board named in the mail does not exist there, so "כניסה ללוח"
+    could only ever land somebody on an empty demo of somebody else's city.
+
+    In order: the explicit setting; the origin SSO is already configured with
+    (the production pipeline writes it from the Web App's own hostnames, so it
+    is by definition a host the invitee can sign in on); the host this very
+    request arrived on; and only then the old constant.
+    """
+    explicit = os.environ.get("APP_BASE_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    first = os.environ.get("ENTRA_REDIRECT_URI", "").split(",")[0].strip()
+    if first:
+        origin = first.rsplit("/auth/callback", 1)[0] if "/auth/callback" in first else first
+        if origin.strip():
+            return origin.rstrip("/")
+    if request is not None:
+        host = (request.headers.get("x-forwarded-host")
+                or request.headers.get("host")
+                or request.url.netloc or "")
+        host = host.split(",")[0].strip()
+        if host:
+            proto = (request.headers.get("x-forwarded-proto")
+                     or request.url.scheme or "https")
+            return f"{proto.split(',')[0].strip() or 'https'}://{host}"
+    return "https://code-cal-missions.vercel.app"
+
+
+def _board_invite_html(invitee_name, board_name, inviter_name, board_id=None, base=None):
+    """A board invitation in the wording the product asked for: who added you
+    and to which board, nothing else. The button lands on the board itself —
+    "כניסה ללוח" promises the board, so it links to the board's deep link and
+    not to the home screen."""
+    base = (base or _app_base_url()).rstrip("/")
+    href = f"{base}/#/board/{board_id}" if board_id else base
     return f"""<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#1a1a2e">
       <div style="background:#0073ea;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0">
-        <h2 style="margin:0;font-size:20px">הוזמנת ללוח ב-CityOS</h2>
+        <h2 style="margin:0;font-size:19px">צורפת ללוח "{board_name}" במערכת missions</h2>
       </div>
       <div style="border:1px solid #e6e9ef;border-top:none;border-radius:0 0 12px 12px;padding:22px">
         <p style="font-size:15px">שלום {invitee_name},</p>
-        <p style="font-size:15px"><b>{inviter_name}</b> הזמין/ה אותך ללוח <b>{board_name}</b> במערכת CityOS של עיריית הוד השרון.</p>
-        <table style="width:100%;font-size:14px;border-collapse:collapse;margin:16px 0">
-          <tr><td style="padding:8px 0;color:#676879">שם הלוח</td><td style="padding:8px 0;font-weight:600">{board_name}</td></tr>
-          <tr><td style="padding:8px 0;color:#676879">ההרשאה שלך</td><td style="padding:8px 0;font-weight:600">{role_he}</td></tr>
-          <tr><td style="padding:8px 0;color:#676879">הוזמנת על ידי</td><td style="padding:8px 0;font-weight:600">{inviter_name}</td></tr>
-        </table>
-        <a href="{base}" style="display:inline-block;background:#0073ea;color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:700;font-size:15px">כניסה למערכת</a>
-        <p style="color:#9699a6;font-size:12px;margin-top:22px">מייל זה נשלח אוטומטית ממערכת CityOS. אם לא ציפית לו, אפשר להתעלם ממנו.</p>
+        <p style="font-size:15px;margin-bottom:22px"><b>{inviter_name}</b> צירפ/ה אותך ללוח <b>"{board_name}"</b> במערכת missions.</p>
+        <a href="{href}" style="display:inline-block;background:#0073ea;color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:700;font-size:15px">כניסה ללוח</a>
+        <p style="color:#9699a6;font-size:12px;margin-top:22px">מייל זה נשלח באופן אוטומטי ממערכת missions.</p>
       </div>
     </div>"""
 
-def _env_invite_html(invitee_name, env_name, inviter_name, role):
-    """Being added to a workspace, said in the shape the board invite already
-    uses — same header, same table, same footer. A workspace is not a board: it
-    grants no board by itself, so the mail says what the person actually got."""
-    role_he = ENV_ROLE_HE.get(role, role)
-    base = os.environ.get("APP_BASE_URL", "https://code-cal-missions.vercel.app")
+def _env_invite_html(invitee_name, env_name, inviter_name, base=None):
+    """Being added to a workspace, in the wording the product asked for: who
+    added you, which workspace, and the one thing a workspace does not come
+    with — the boards inside it. No role line: the workspace role is not what
+    the invitee needs to read, and board access is granted a board at a time."""
+    base = (base or _app_base_url()).rstrip("/")
     return f"""<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#1a1a2e">
       <div style="background:#0073ea;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0">
-        <h2 style="margin:0;font-size:20px">נוספת לסביבה ב-CityOS</h2>
+        <h2 style="margin:0;font-size:19px">צורפת לסביבת העבודה "{env_name}" במערכת missions</h2>
       </div>
       <div style="border:1px solid #e6e9ef;border-top:none;border-radius:0 0 12px 12px;padding:22px">
         <p style="font-size:15px">שלום {invitee_name},</p>
-        <p style="font-size:15px"><b>{inviter_name}</b> הוסיף/ה אותך לסביבה <b>{env_name}</b> במערכת CityOS של עיריית הוד השרון.</p>
-        <table style="width:100%;font-size:14px;border-collapse:collapse;margin:16px 0">
-          <tr><td style="padding:8px 0;color:#676879">שם הסביבה</td><td style="padding:8px 0;font-weight:600">{env_name}</td></tr>
-          <tr><td style="padding:8px 0;color:#676879">התפקיד שלך</td><td style="padding:8px 0;font-weight:600">{role_he}</td></tr>
-          <tr><td style="padding:8px 0;color:#676879">נוספת על ידי</td><td style="padding:8px 0;font-weight:600">{inviter_name}</td></tr>
-        </table>
-        <p style="font-size:13.5px;color:#676879">הלוחות בתוך הסביבה נפתחים בנפרד — לוח ציבורי ייראה לך מיד, ולכל לוח אחר נדרשת הזמנה משלו.</p>
+        <p style="font-size:15px"><b>{inviter_name}</b> צירפ/ה אותך לסביבת העבודה <b>"{env_name}"</b> במערכת missions.</p>
+        <p style="font-size:13.5px;color:#676879;background:#f5f6f8;border-radius:8px;padding:12px 14px;margin:18px 0">
+          שימו לב: ההרשאות ללוחות בסביבת העבודה מוגדרות בנפרד – לוח ציבורי יופיע באופן מיידי, ולכל לוח אחר תידרש הזמנה נפרדת.
+        </p>
         <a href="{base}" style="display:inline-block;background:#0073ea;color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:700;font-size:15px">כניסה למערכת</a>
-        <p style="color:#9699a6;font-size:12px;margin-top:22px">מייל זה נשלח אוטומטית ממערכת CityOS. אם לא ציפית לו, אפשר להתעלם ממנו.</p>
+        <p style="color:#9699a6;font-size:12px;margin-top:22px">מייל זה נשלח באופן אוטומטי ממערכת missions.</p>
       </div>
     </div>"""
 
@@ -4347,7 +4377,8 @@ def list_board_members(board_id: int):
         return {"members": out, "available": available}
 
 @app.post("/api/boards/{board_id}/members")
-def add_board_member(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+def add_board_member(board_id: int, data: dict, request: Request = None,
+                     actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if not _is_board_admin(db, board_id, actor_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
@@ -4375,9 +4406,10 @@ def add_board_member(board_id: int, data: dict, actor_id: int = Depends(current_
             invitee = db.query(User).filter(User.id == uid).first()
             if invitee and invitee.email and board:
                 _send_email(invitee.email,
-                            f"הוזמנת ללוח '{board.name}' ב-CityOS",
+                            f'צורפת ללוח "{board.name}" במערכת missions',
                             _board_invite_html(invitee.name, board.name,
-                                               inviter.name if inviter else "מנהל הלוח", role))
+                                               inviter.name if inviter else "מנהל הלוח",
+                                               board.id, _app_base_url(request)))
         return {"status": "ok", "invited": is_new}
 
 @app.patch("/api/boards/{board_id}/members/{uid}")
@@ -4995,7 +5027,8 @@ def environment_members(env_id: int, actor_id: int = Depends(current_user_id)):
                 "can_set_manager": can_set_manager, "everyone": everyone}
 
 @app.post("/api/environments/{env_id}/members")
-def environment_add_member(env_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+def environment_add_member(env_id: int, data: dict, request: Request = None,
+                           actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         actor = actor_id
         if not _can_manage_env(db, env_id, actor):
@@ -5032,9 +5065,10 @@ def environment_add_member(env_id: int, data: dict, actor_id: int = Depends(curr
             invitee = db.query(User).filter(User.id == uid).first()
             if invitee and invitee.email and env:
                 _send_email(invitee.email,
-                            f"נוספת לסביבה '{env.name}' ב-CityOS",
+                            f'צורפת לסביבת העבודה "{env.name}" במערכת missions',
                             _env_invite_html(invitee.name, env.name,
-                                             inviter.name if inviter else "מנהל הסביבה", role))
+                                             inviter.name if inviter else "מנהל הסביבה",
+                                             _app_base_url(request)))
         return {"status": "ok", "invited": is_new}
 
 @app.patch("/api/environments/{env_id}/members/{uid}")
