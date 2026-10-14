@@ -9936,8 +9936,9 @@ function statusCellPill(v,colId){
   return `<span class="pill" style="background:${m.color}">${esc(m.label)}</span>`;
 }
 /* A short list reads best stacked; past six it gets too tall, so the options
-   move into a grid three to a row. "נקה" and the manage shortcut always span
-   the full width so they stay findable at the bottom. */
+   move into a grid three to a row. Only the manage shortcut spans the full
+   width — it is a way out of the picker, not one of the values. "טרם הוגדר" IS
+   a value, so it is sized like every status beside it. */
 const POP_GRID_FROM=6;
 function statusCellMenu(e,taskId,colId){
   e.stopPropagation();
@@ -9945,7 +9946,7 @@ function statusCellMenu(e,taskId,colId){
   const opts=statusColOpts(colId);
   const isCur=o=>!!cur&&((cur.id&&o.id)?cur.id===o.id:cur.label===o.label);
   let html=opts.map((o,i)=>`<button class="cell-pop-opt" style="background:${o.color}" title="${esc(o.label)}" onclick="pickStatusCell(event,${taskId},'${colId}',${i})">${esc(o.label)}${isCur(o)?' <i class="fa-solid fa-check"></i>':''}</button>`).join('')
-    +`<button class="cell-pop-opt pop-span" style="background:${STATUS_UNSET.color}" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">${esc(STATUS_UNSET.label)}${!cur||!cur.label?' <i class="fa-solid fa-check"></i>':''}</button>`;
+    +`<button class="cell-pop-opt" style="background:${STATUS_UNSET.color}" title="${esc(STATUS_UNSET.label)}" onclick="pickStatusCell(event,${taskId},'${colId}',-1)">${esc(STATUS_UNSET.label)}${!cur||!cur.label?' <i class="fa-solid fa-check"></i>':''}</button>`;
   // board admin gets the same shortcut the built-in status column has
   if(isBoardAdmin())
     html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;

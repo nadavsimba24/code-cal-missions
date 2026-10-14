@@ -19,6 +19,8 @@ const grab = name => {
 
 const MAP={done:{he:'בוצע',c:'#1AC877'},in_progress:{he:'בטיפול',c:'#FBAA47'}};
 const TASK={id:7,status:'done',custom_fields:{},parent_id:null,group_id:3};
+const COL_OPTS=[{id:'a',label:'ממתין',color:'#579BFC'},
+                {id:'b',label:'אושר',color:'#1AC877'}];
 let posted=null, popped='';
 const env={
   STATUS_UNSET:{label:'טרם הוגדר',color:'#c4c4c4'},
@@ -40,11 +42,13 @@ const env={
   refreshRow:()=>{},
   toast:()=>{},
   findParent:()=>null,
+  statusColOpts:()=>COL_OPTS,
 };
 const names=Object.keys(env);
 const make = code => new Function(...names, code).apply(null, names.map(n=>env[n]));
 const fieldPicker = make(grab('fieldPicker')+'; return fieldPicker;');
 const setField    = make(grab('setField')+'; return setField;');
+const statusCellMenu = make(grab('statusCellMenu')+'; return statusCellMenu;');
 
 let pass=0,fail=0; const ck=(n,c,x='')=>{c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+x:'')));};
 
@@ -92,6 +96,34 @@ await setField(7,'status','done');
 ck('choosing a status still sends the status', posted.status==='done', JSON.stringify(posted));
 ck('...and takes the undecided flag off', posted.custom_fields.status_unset===null);
 ck('...leaving nothing of it on the row', !('status_unset' in TASK.custom_fields));
+
+// ── the OTHER status picker: a status column the board defined itself ──
+// Same option, same question, a different function — and the row-wide version
+// of it lived on here for a release after the built-in one was sized down.
+TASK.custom_fields={};
+statusCellMenu({stopPropagation(){},currentTarget:{}},7,'status_mkt');
+ck('a board-defined status column offers the grey default too',
+   popped.includes('טרם הוגדר'), popped);
+ck('...sized like the column\'s own options, not spanning the row',
+   !/pop-span[^>]*#c4c4c4/.test(popped) && !/#c4c4c4[^>]*pop-span/.test(popped),
+   'the second picker kept the full-width button the first one dropped');
+ck('...carrying the label as a title, like every option beside it',
+   /title="טרם הוגדר"/.test(popped), popped);
+ck('...wired to clear the cell', popped.includes("pickStatusCell(event,7,'status_mkt',-1)"), popped);
+ck('...and ticked, because this cell is empty',
+   /טרם הוגדר <i class="fa-solid fa-check">/.test(popped), popped);
+
+TASK.custom_fields={status_mkt:{id:'b',label:'אושר',color:'#1AC877'}};
+statusCellMenu({stopPropagation(){},currentTarget:{}},7,'status_mkt');
+ck('a cell with a value ticks that value instead',
+   /אושר <i class="fa-solid fa-check">/.test(popped)&&
+   !/טרם הוגדר <i class="fa-solid fa-check">/.test(popped), popped);
+
+env.isBoardAdmin=()=>true;
+const adminMenu = make(grab('statusCellMenu')+'; return statusCellMenu;');
+adminMenu({stopPropagation(){},currentTarget:{}},7,'status_mkt');
+ck('the manage shortcut DOES still span — it is an exit, not a value',
+   /cell-pop-manage pop-span[^>]*>\s*<i[^>]*><\/i> ניהול סטטוסים/.test(popped), popped);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
