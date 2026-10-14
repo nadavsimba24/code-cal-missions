@@ -7876,12 +7876,13 @@ function learnRowHeight(el){
   const h=tr.getBoundingClientRect().height;
   if(h>8&&h<200)_rowH=Math.round(h);
 }
-function vTable(el){
-  const groups=groupsOf();
-  // filters are active but nothing matches → show the "no match" hint. An empty
-  // board still renders its groups + "add group" so the structure stays visible.
-  if((st.board.tasks||[]).length && !groups.reduce((n,g)=>n+g.tasks.length,0)){el.innerHTML=noMatchHTML();return;}
-  el.innerHTML = groups.map(g=>{
+/* The height a group will come to once it is drawn — its rows plus its own
+   furniture. Shared by the group itself (contain-intrinsic-size) and by the
+   spacer that holds the place of the groups not drawn yet. */
+function groupEst(g){
+  return groupCollapsed(g.id) ? 64 : (g.tasks.length*rowHeightEst()+GROUP_CHROME_EST);
+}
+function groupHTML(g){
     const col=g.color||'#0073ea';
     const rows=g.tasks.map(t=>itemRow(t,col)).join('');
     // Counted off the same tasks the group is drawing, so a filtered board says
@@ -7924,9 +7925,56 @@ function vTable(el){
       </div>
       <div class="grp-batt" style="margin-top:6px"${shut?' hidden':''}>${battery(g.tasks)}</div>
     </div>`;
-  }).join('') + (isBoardAdmin()
+}
+function addGroupBtnHTML(){
+  return isBoardAdmin()
     ? `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`
-    : '');
+    : '';
+}
+/* Which render is current. A board switched again while the deferred half was
+   still queued must not have the old board's groups appended into it. */
+let _vtToken=0;
+function vTable(el){
+  const groups=groupsOf();
+  // filters are active but nothing matches → show the "no match" hint. An empty
+  // board still renders its groups + "add group" so the structure stays visible.
+  if((st.board.tasks||[]).length && !groups.reduce((n,g)=>n+g.tasks.length,0)){el.innerHTML=noMatchHTML();return;}
+  /* Only the first group is on screen when a board opens, and the expensive
+     part of a row is the input fields in it — which stay editable in place, so
+     they cannot be made cheap. What is left is to stop building the ones she
+     is not looking at before showing her the one she is: the first group is
+     built now and the rest one painted frame later.
+
+     Nothing else had to change for this. A frame later the whole table is in
+     the document, so refreshRow, the drag handlers, find-in-page and every
+     selector that expects a full board still find what they look for. The
+     deferred groups' height is held by a spacer, so the scrollbar is the right
+     length from the first frame and does not grow under her hand. */
+  const rest=groups.slice(1);
+  const reserve=rest.reduce((n,g)=>n+groupEst(g),0);
+  el.innerHTML = groups.slice(0,1).map(groupHTML).join('')
+    + (rest.length ? `<div class="grp-reserve" style="height:${reserve}px"></div>`
+                   : addGroupBtnHTML());
+  wireTable(el);
+  if(!rest.length) return;
+  const tok=++_vtToken;
+  // rAF then a task: the frame in between is the one that paints the first
+  // group. Appending inside the rAF itself would block that very paint.
+  requestAnimationFrame(()=>setTimeout(()=>{
+    if(tok!==_vtToken)return;                       // a newer render overtook this one
+    const sp=el.querySelector('.grp-reserve');
+    if(!sp)return;                                  // the view was replaced under us
+    const tmp=document.createElement('div');
+    _colsMemo={};                                   // same column model for this half
+    try{ tmp.innerHTML=rest.map(groupHTML).join('')+addGroupBtnHTML(); }
+    finally{ _colsMemo=null; }
+    sp.replaceWith(...tmp.childNodes);
+    wireTable(el);
+    try{ fitLinkChips(el); }catch(e){}
+    try{ Chat.markOpenRow(); }catch(e){}            // the open row may be in a late group
+  },0));
+}
+function wireTable(el){
   syncGroupChecks();                 // indeterminate is a property, not an attribute
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
     if(!e.target.closest('.caret'))return;   // collapse/expand only from the arrow

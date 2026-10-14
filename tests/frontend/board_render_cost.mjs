@@ -108,5 +108,55 @@ api.open(); api.orderedColumns(); api.close();
 ck('...and the next render derives it again — a changed column is not stale',
    derived === 2, 'derived ' + derived + ' times across two renders');
 
+// ── 3. the board she is looking at is drawn before the rest of it ──
+// A board is three to seven groups; only the first is on screen when it opens.
+const GROUPS=[{id:1,tasks:new Array(100).fill(0)},
+              {id:2,tasks:new Array(223).fill(0)},
+              {id:3,tasks:new Array(223).fill(0)}];
+let wired=0, deferred=null;
+const env3={
+  st:{board:{tasks:new Array(546).fill(0)}},
+  groupsOf:()=>GROUPS,
+  noMatchHTML:()=>'NOMATCH',
+  groupHTML:g=>`<div class="group" data-g="${g.id}"></div>`,
+  groupEst:g=>g.tasks.length*47+160,
+  addGroupBtnHTML:()=>'<button class="add-group-btn"></button>',
+  wireTable:()=>{ wired++; },
+  fitLinkChips:()=>{},
+  Chat:{markOpenRow:()=>{}},
+  requestAnimationFrame:fn=>{ deferred=fn; },
+  setTimeout:fn=>{ deferred=fn; },
+};
+const names3=Object.keys(env3);
+const vTable=new Function(...names3,'let _colsMemo=null, _vtToken=0;\n'+grab('vTable')+'; return vTable;')
+               .apply(null,names3.map(n=>env3[n]));
+
+let painted='';
+const view={ set innerHTML(v){ painted=v; }, get innerHTML(){ return painted; },
+             querySelector:sel=>sel==='.grp-reserve'?null:null };
+vTable(view);
+const drawn=(painted.match(/data-g="(\d+)"/g)||[]).map(x=>x.replace(/\D/g,''));
+ck('the first frame draws the group on screen and no other',
+   drawn.length===1 && drawn[0]==='1', 'drew groups: '+drawn.join(','));
+ck('...and the rest is queued, not dropped', typeof deferred==='function');
+const res=/class="grp-reserve" style="height:(\d+)px"/.exec(painted);
+ck('...with a spacer holding exactly the height they will need',
+   !!res && +res[1]===(223*47+160)*2,
+   res?('reserved '+res[1]+'px, expected '+((223*47+160)*2)):painted);
+ck('...so the scrollbar is the right length from the first frame, not growing later',
+   !!res);
+ck('the wiring ran for what was drawn', wired===1, 'wired '+wired+' times');
+
+// a board of one group has nothing to defer and no spacer to leave behind
+const ONE=[{id:9,tasks:new Array(12).fill(0)}];
+env3.groupsOf=()=>ONE;
+const vTable1=new Function(...names3,'let _colsMemo=null, _vtToken=0;\n'+grab('vTable')+'; return vTable;')
+                .apply(null,names3.map(n=>env3[n]));
+deferred=null; painted='';
+vTable1(view);
+ck('a single-group board defers nothing', deferred===null, 'something was queued');
+ck('...and leaves no spacer behind', !painted.includes('grp-reserve'), painted);
+ck('...and still offers "add group"', painted.includes('add-group-btn'));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
