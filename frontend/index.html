@@ -3047,6 +3047,7 @@ function deleteBoardById(id){
       await api('/api/boards/'+id+'?user_id='+meId(),{method:'DELETE'});
       closeModals(); toast('הלוח הועבר לסל המחזור');
       Trash.load().catch(()=>{});
+      dropCachedBoard(id);                 // deleted — not something to show from memory
       if(st.board&&st.board.id===id) st.board=null;
       st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
       renderSidebar();
@@ -3057,7 +3058,51 @@ function deleteBoardById(id){
     }catch(e){ toast('רק מנהל הלוח או הסביבה יכול למחוק'); }
   },{title:'מחיקת לוח',confirmText:'העבר לסל המחזור',note:'הלוח יעבור לסל המחזור ל-60 יום. כל הקבוצות, הפריטים והשיחות יישמרו וניתן לשחזר אותו משם.',icon:'fa-trash-arrow-up'});
 }
+/* The boards she has already opened, kept as they came from the server.
+
+   Switching boards rebuilt everything from nothing every time — a request, all
+   the items, every cell — even going back to a board she had left ten seconds
+   earlier. Most of a working day is switching back and forth between the same
+   two or three boards, so most of that work was being done again for an answer
+   that had not changed.
+
+   A board she has seen is shown from here at once, and then checked against
+   the server in the background. If the server's answer is the same as what is
+   already on screen — which it usually is — nothing is redrawn at all. If it
+   differs, the board is redrawn, with her scroll position kept (renderView).
+
+   Deliberately in memory only, and small: this is about the next minute, not
+   the next session, and a stale board in localStorage would outlive its
+   usefulness and start being wrong. */
+const BOARD_CACHE_MAX=8;
+const _boardCache=new Map();
+function cacheBoard(b){
+  if(!b||!b.id)return;
+  _boardCache.delete(b.id); _boardCache.set(b.id,b);          // most recent last
+  while(_boardCache.size>BOARD_CACHE_MAX) _boardCache.delete(_boardCache.keys().next().value);
+}
+function dropCachedBoard(id){ _boardCache.delete(id); }
+/* Cheap enough to run on every switch, specific enough that a real change
+   shows: how many items and groups, the columns, and the newest change on the
+   board. A cell edited anywhere moves updated_at, which is what makes this
+   safe to compare instead of the whole payload. */
+function boardStamp(b){
+  if(!b)return '';
+  const t=b.tasks||[];
+  let last='';
+  for(const x of t){
+    if(x.updated_at&&x.updated_at>last)last=x.updated_at;
+    for(const sub of (x.subtasks||[])) if(sub.updated_at&&sub.updated_at>last)last=sub.updated_at;
+  }
+  return [t.length,(b.groups||[]).length,(b.columns||[]).length,
+          t.reduce((n,x)=>n+((x.subtasks||[]).length),0),last,b.name,b.my_role].join('|');
+}
 async function openBoard(id){
+  // Whatever she is leaving is what gets remembered — including a board the app
+  // refetched while she was on it, and every cell she changed. Caching here
+  // rather than at each of the nine places that refetch a board is what keeps
+  // those nine from having to know about the cache at all.
+  if(st.board && st.board.id!==id) cacheBoard(st.board);
   if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.collapsedGroups.clear(); st.colSort=null; st.subSort=null; }
   st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
@@ -3068,7 +3113,9 @@ async function openBoard(id){
      threw, it never closed at all. Nothing here reads the drawer's state, so
      closing first costs nothing. */
   closeSidebarMobile();
-  document.getElementById('view').innerHTML='<div class="spin"></div>';
+  const seen=_boardCache.get(id);
+  // nothing to wait for if it is already known — no spinner, straight to the board
+  if(!seen) document.getElementById('view').innerHTML='<div class="spin"></div>';
   // avatars are drawn from st.users, so refresh it alongside the board — a photo
   // someone changed elsewhere then shows on this board too. Fetched in parallel
   // so it never delays the board.
@@ -3079,29 +3126,64 @@ async function openBoard(id){
      numbers instead of another guess. Kept deliberately: this is cheap, and the
      next person to ask the same question should not have to add it again. */
   const _t0=performance.now(); let _tFetch=0, _tRender=0;
+  if(seen){
+    // on screen now, from what she has already been shown
+    st.board=seen;
+    paintBoard(id);
+    _tRender=performance.now()-_t0;
+    revalidateBoard(id,_t0);
+    return;
+  }
   try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); _tFetch=performance.now()-_t0; }
   catch(e){ document.getElementById('view').innerHTML=accessDeniedHTML('אין לך גישה ללוח הזה. ייתכן שלא הוזמנת אליו, או שההרשאה שונתה. אם לדעתך זו טעות — פנה למנהל המערכת.'); return; }
-  // "נצפה לאחרונה" counts a person opening the board, not the app refetching
-  // it — so it is recorded here and nowhere else. Fire-and-forget: a failed
-  // receipt must never be the reason a board does not open.
-  api('/api/boards/'+id+'/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}).catch(()=>{});
+  cacheBoard(st.board);
   await usersReady;
+  const _r0=performance.now();
+  paintBoard(id);
+  _tRender=performance.now()-_r0;
+  reportBoardOpen(id,_tFetch,_tRender,_t0,'from the server');
+}
+/* Everything that puts a board on screen, in one place — the cached path and
+   the fetched path must not be able to drift apart. */
+function paintBoard(id){
   try{ localStorage.setItem('cc_board', id); }catch(e){}   // remember the open board across refreshes
   renderSidebar();
   renderBoardHead();
   document.getElementById('bh-desc').textContent = '';
   renderTabs();
   refreshToolbar();
-  const _r0=performance.now();
   renderView();
-  _tRender=performance.now()-_r0;
   Router.set(id,null);   // reflect the open board in the URL
+  // "נצפה לאחרונה" counts a person opening the board, not the app refetching
+  // it — so it is recorded here and nowhere else. Fire-and-forget: a failed
+  // receipt must never be the reason a board does not open.
+  api('/api/boards/'+id+'/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}).catch(()=>{});
+}
+/* A board shown from memory is still checked. If the server says the same
+   thing, which it usually does, nothing is redrawn — the point is that she is
+   never left looking at something that has quietly gone out of date. */
+async function revalidateBoard(id,_t0){
+  let fresh;
+  const t=performance.now();
+  try{ fresh=await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); }
+  catch(e){ dropCachedBoard(id); return; }      // gone, or no longer hers to see
+  const wait=performance.now()-t;
+  if(st.board&&st.board.id!==id)return;         // she has moved on; the cache is updated below
+  const changed=boardStamp(fresh)!==boardStamp(st.board);
+  cacheBoard(fresh);
+  if(!changed){ reportBoardOpen(id,wait,0,_t0,'from memory, unchanged'); return; }
+  st.board=fresh;
+  const r=performance.now();
+  renderView();                                  // keeps her scroll position
+  reportBoardOpen(id,wait,performance.now()-r,_t0,'from memory, then updated');
+}
+function reportBoardOpen(id,fetchMs,renderMs,t0,how){
   const rows=(st.board.tasks||[]).length;
   const cols=(st.board.columns||[]).length;
   const subs=(st.board.tasks||[]).reduce((n,t)=>n+((t.subtasks||[]).length),0);
-  console.info(`[board ${id}] ${rows} items (+${subs} subs) × ${cols} columns  ·  `
-    +`request ${Math.round(_tFetch)}ms  ·  render ${Math.round(_tRender)}ms  ·  `
-    +`total ${Math.round(performance.now()-_t0)}ms`);
+  console.info(`[board ${id}] ${rows} items (+${subs} subs) × ${cols} columns  ·  ${how}  ·  `
+    +`request ${Math.round(fetchMs)}ms  ·  render ${Math.round(renderMs)}ms  ·  `
+    +`on screen after ${Math.round(performance.now()-t0)}ms`);
 }
 function renderBoardHead(){
   if(!st.board)return;

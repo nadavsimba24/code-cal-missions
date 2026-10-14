@@ -80,9 +80,17 @@ def test_the_estimate_is_corrected_from_the_screen():
 
 
 def test_a_board_switch_says_where_its_time_went():
-    """"Still slow" has to be answerable with numbers, from her machine."""
-    for part in ("request ${Math.round(_tFetch)}ms", "render ${Math.round(_tRender)}ms"):
+    """"Still slow" has to be answerable with numbers, from her machine.
+
+    And it has to say WHICH kind of open it was: a board fetched from the
+    server and one shown from memory are different numbers, and reading them
+    as the same would hide either win.
+    """
+    for part in ("request ${Math.round(fetchMs)}ms", "render ${Math.round(renderMs)}ms",
+                 "on screen after"):
         assert part in SRC, f"the board-open timing no longer reports: {part}"
+    for how in ("from the server", "from memory, unchanged", "from memory, then updated"):
+        assert f"'{how}'" in SRC, f"the timing line no longer distinguishes: {how}"
 
 
 @pytest.mark.parametrize("name,least", [("sp", 1.2)])
