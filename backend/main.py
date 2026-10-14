@@ -1778,12 +1778,15 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         # to keep in step. Anything stored under its id is stale and ignored.
         if c.get("type") == "mirror":
             cf[c["id"]] = _mirror_cells(db, t, c, user_id, columns or [])
-    col_perms = {}
+    # A column's permission depends on the column and on the viewer's role —
+    # never on the item. It used to ride on every item anyway, which on a board
+    # of 687 items and 29 columns was 20,000 repetitions of the same map and
+    # over half the response. The board now states it once (see get_board); what
+    # stays per item is the consequence: a value the viewer may not see is not
+    # in the item at all.
     if user_id is not None:
         for c in (columns or []):
-            cp = _col_perm(c, user_id, board_role)
-            col_perms[c["id"]] = cp
-            if cp == "none":         # view-restricted column → mask its value
+            if _col_perm(c, user_id, board_role) == "none":
                 cf.pop(c["id"], None)
     d = {
         "id": t.id, "board_id": t.board_id, "group_id": t.group_id,
@@ -1800,7 +1803,6 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         "custom_fields": cf,
         "permissions": t.permissions or {},
         "my_perm": my_perm,
-        "col_perms": col_perms,
         "is_archived": t.is_archived,
         "created_by": t.created_by,
         "created_at": t.created_at, "updated_at": t.updated_at,
@@ -1886,6 +1888,10 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "sub_cols": (b.settings or {}).get("sub_cols"),
             # custom columns that live ONLY on sub-items, never on the parent items
             "sub_only": (b.settings or {}).get("sub_only", []),
+            # one map for the whole board — a column's permission is the same on
+            # every item (see _serialize_task)
+            "col_perms": ({c["id"]: _col_perm(c, user_id, my_role) for c in columns}
+                          if user_id is not None else {}),
             "col_widths": (b.settings or {}).get("col_widths", {}),
             "col_labels": (b.settings or {}).get("col_labels", {}),
             "col_hidden": (b.settings or {}).get("col_hidden", []),

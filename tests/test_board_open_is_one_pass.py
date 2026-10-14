@@ -150,5 +150,54 @@ def test_the_batched_answers_are_the_same_answers(client, admin_id, member_id,
         assert [s["id"] for s in a["subtasks"]] == [s["id"] for s in b["subtasks"]]
         assert [s["assignees"] for s in a["subtasks"]] == [s["assignees"] for s in b["subtasks"]]
         assert a["custom_fields"] == b["custom_fields"]
-        assert a["col_perms"] == b["col_perms"]
+        # col_perms is no longer per item — the board states it once
+        assert "col_perms" not in a and "col_perms" not in b
         assert a["my_perm"] == b["my_perm"]
+
+
+def test_a_columns_permission_is_stated_once_for_the_board(client, admin_id, guinea_id):
+    """It depends on the column and the viewer's role, never on the item.
+
+    It used to ride on every item anyway — on a board of 687 items and 29
+    columns, twenty thousand copies of the same map, and over half the
+    response. The board states it once. What stays per item is the
+    consequence: a value the viewer may not see is simply not there.
+    """
+    bid, ids = _board_with(client, admin_id, "הרשאות עמודה", 3)
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    # give the board a column, write a value into it, then restrict it
+    cols = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"]
+    cid = "col_secret"
+    r = client.patch(f"/api/boards/{bid}",
+                     json={"actor_id": admin_id,
+                           "columns": cols + [{"id": cid, "type": "text", "title": "סודי"}]})
+    assert r.status_code == 200, r.text
+    assert any(c["id"] == cid for c in r.json()["columns"]), r.text
+    client.patch(f"/api/tasks/{ids[0]}",
+                 json={"actor_id": admin_id, "custom_fields": {cid: "לעיניי מנהל"}})
+
+    # the admin sees the column as editable, stated once on the board
+    seen = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
+    assert seen["col_perms"].get(cid) == "edit"
+    assert all("col_perms" not in t for t in seen["tasks"])
+
+    # restrict it for the other member: view only
+    client.post(f"/api/boards/{bid}/columns/{cid}/permissions",
+                json={"actor_id": admin_id, "user_id": guinea_id, "perm": "view"})
+    theirs = client.get(f"/api/boards/{bid}?user_id={guinea_id}").json()
+    assert theirs["col_perms"].get(cid) == "view"
+    row = next(t for t in theirs["tasks"] if t["id"] == ids[0])
+    assert row["custom_fields"].get(cid) == "לעיניי מנהל", "view means they can read it"
+
+    # now hide it from them entirely — the value must not be in the response
+    client.post(f"/api/boards/{bid}/columns/{cid}/permissions",
+                json={"actor_id": admin_id, "user_id": guinea_id, "perm": "none"})
+    theirs = client.get(f"/api/boards/{bid}?user_id={guinea_id}").json()
+    assert theirs["col_perms"].get(cid) == "none"
+    row = next(t for t in theirs["tasks"] if t["id"] == ids[0])
+    assert cid not in row["custom_fields"], "a column they may not see still carried its value"
+    # and the admin is unaffected
+    mine = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
+    assert next(t for t in mine["tasks"]
+                if t["id"] == ids[0])["custom_fields"].get(cid) == "לעיניי מנהל"

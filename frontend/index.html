@@ -4208,7 +4208,10 @@ function renderView(){
     const q=_oldImgs.get(im.src); if(q) q.push(im); else _oldImgs.set(im.src,[im]);
   });
   el.innerHTML='';
+  _colsMemo={};            // one column model for this whole render
+  try{
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,links:vLinks,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
+  } finally { _colsMemo=null; }
   if(_oldImgs.size) el.querySelectorAll('img[src]').forEach(im=>{
     const q=_oldImgs.get(im.src); if(!q||!q.length)return;
     const old=q.shift();                     // hand out one loaded node per slot
@@ -7925,33 +7928,37 @@ function vTable(el){
     });
     // reorder sub-items — each parent's panel is its own table, so the drag is
     // naturally bounded to that parent (no cross-parent moves possible)
-    el.querySelectorAll('.sub-body[data-parent]').forEach(sb=>{
-      sortableOn(sb,{draggable:'tr[data-sid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
-        forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
-        // the copy of the row that follows the cursor lives in this table too,
-        // and carries the same id — counting it would post a duplicate and make
-        // every drag look like a reorder
-        onStart:evt=>{ _subDragFrom=subOrder(evt.from).join(','); },
-        onEnd:async(evt)=>{
-          const pid=+evt.to.dataset.parent; const was=_subDragFrom; _subDragFrom=null;
-          if(!pid)return;
-          const ids=subOrder(evt.to);
-          if(was!==null&&ids.join(',')===was)return;   // same order → nothing moved
-          try{
-            await api('/api/tasks/'+pid+'/subitems/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
-            const parent=findAnyTask(pid);            // mirror the new order locally so a re-render keeps it
-            if(parent&&Array.isArray(parent.subtasks)){
-              const byId=new Map(parent.subtasks.map(s=>[s.id,s]));
-              parent.subtasks=ids.map(id=>byId.get(id)).filter(Boolean);
-            }
-            if(st.subSort){ st.subSort=null; renderView(); }   // manual order overrides a column sort
-            toast('סדר תת-הפריטים עודכן');
-          }catch(e){ toast('שגיאה בעדכון סדר תת-הפריטים'); renderView(); }
-        }});
-    });
+    el.querySelectorAll('.sub-body[data-parent]').forEach(subSortableOn);
   }
   if(isBoardAdmin()){initColResizers(el);initColReorder(el);}
   resolveLinks();   // fetch titles for any cross-board linked items, then re-render
+}
+/* One parent's sub-item table, made draggable. Its own function because a
+   panel is now built either by the render or by toggleSubs opening it for the
+   first time, and both have to end up with the same behaviour. */
+function subSortableOn(sb){
+  sortableOn(sb,{draggable:'tr[data-sid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
+    forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
+    // the copy of the row that follows the cursor lives in this table too,
+    // and carries the same id — counting it would post a duplicate and make
+    // every drag look like a reorder
+    onStart:evt=>{ _subDragFrom=subOrder(evt.from).join(','); },
+    onEnd:async(evt)=>{
+      const pid=+evt.to.dataset.parent; const was=_subDragFrom; _subDragFrom=null;
+      if(!pid)return;
+      const ids=subOrder(evt.to);
+      if(was!==null&&ids.join(',')===was)return;   // same order → nothing moved
+      try{
+        await api('/api/tasks/'+pid+'/subitems/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:ids,actor_id:meId()})});
+        const parent=findAnyTask(pid);            // mirror the new order locally so a re-render keeps it
+        if(parent&&Array.isArray(parent.subtasks)){
+          const byId=new Map(parent.subtasks.map(s=>[s.id,s]));
+          parent.subtasks=ids.map(id=>byId.get(id)).filter(Boolean);
+        }
+        if(st.subSort){ st.subSort=null; renderView(); }   // manual order overrides a column sort
+        toast('סדר תת-הפריטים עודכן');
+      }catch(e){ toast('שגיאה בעדכון סדר תת-הפריטים'); renderView(); }
+    }});
 }
 function battery(tasks){
   if(!tasks.length)return '';
@@ -7999,8 +8006,18 @@ function itemRow(t,col){
   // The sub-items live in their OWN table — a narrower, indented panel nested
   // under the parent (Monday-style). One wrapper row spans the full width and is
   // shown/hidden by toggling its display.
+  /* A closed panel used to be built anyway and hidden with display:none — a
+     whole table, its colgroup and a header cell per column, for every row on
+     the board, including the rows with no sub-items at all. On a board of 687
+     items and 29 columns that is some twenty thousand elements that nobody can
+     see, and it was most of the time it took to draw the board.
+
+     The row still carries its (empty) wrap so that nothing which looks the
+     panel up by data-parent has to care; toggleSubs fills it the first time it
+     is opened. A row that IS open renders eagerly, which keeps a re-render
+     (sorting, a status change) showing what was open before it. */
   const wrap=`<tr class="sub-wrap" data-parent="${t.id}" style="display:${open?'table-row':'none'}">
-      <td class="sub-wrap-cell" colspan="${totalCols()+1}">${subPanelHTML(t,subs,col)}</td></tr>`;
+      <td class="sub-wrap-cell" colspan="${totalCols()+1}">${open?subPanelHTML(t,subs,col):''}</td></tr>`;
   return parent+wrap;
 }
 /* One parent's sub-items as an independent, indented panel: a narrower table
@@ -8212,7 +8229,25 @@ function isBoardAdmin(){return !!(st.board&&st.board.my_role==='admin');}
    hid) interleaved with the custom columns, sorted by the persisted col_order.
    The "פריט" (item/name) column is always pinned first and never hidden. Each
    descriptor is {kind:'builtin',id,key,label} or {kind:'custom',id,col}. */
-function orderedColumns(){
+/* The column model is derived from the board's settings every single time it
+   is asked for: a Set of hidden ids, a Set of sub-only ids, a filter, a map, a
+   sort. itemRow asks for it three times per row — its cells, its colspan, its
+   sub-item panel — so drawing one screen of a 687-item board rebuilt it a
+   couple of thousand times. It cannot change in the middle of a render, so a
+   render computes it once.
+
+   The window is opened and closed by renderView around the synchronous build.
+   Outside it the memo is null and every caller computes exactly as before,
+   which is what the single-row paths (refreshRow) want. Nothing may mutate a
+   returned array in place — these are now shared within a render. */
+let _colsMemo=null;
+function _memoCols(key,fn){
+  if(!_colsMemo)return fn();
+  if(!(key in _colsMemo))_colsMemo[key]=fn();
+  return _colsMemo[key];
+}
+function orderedColumns(){ return _memoCols('ordered',_orderedColumns); }
+function _orderedColumns(){
   const hidden=new Set(((st.board&&st.board.col_hidden)||[]).map(String));
   const builtins=BUILTIN_COLS
     .filter(c=>c.key==='item'||!hidden.has(c.key))
@@ -8242,7 +8277,8 @@ function subOnlyColumns(){
    columns (mirror). A board admin may narrow that to a chosen subset
    (board.sub_cols); either way, any sub-item-only columns (board.sub_only) are
    always appended, since they exist nowhere else. */
-function subColumns(){
+function subColumns(){ return _memoCols('sub',_subColumns); }
+function _subColumns(){
   const all=orderedColumns();
   const subOnly=subOnlyColumns();
   const ids=st.board&&st.board.sub_cols;
@@ -8261,7 +8297,7 @@ function subColumns(){
   return base.concat(subOnly.filter(c=>!have.has(String(c.id))));
 }
 function subColLabel(c){return c.kind==='builtin'?c.label:(c.col&&c.col.title)||'';}
-function totalCols(){return orderedColumns().length+(isBoardAdmin()?1:0);}
+function totalCols(){ return _memoCols('total',()=>orderedColumns().length+(isBoardAdmin()?1:0)); }
 /* built-in (fixed) columns, in display order — keys drive drag-to-resize widths */
 const BUILTIN_COLS=[
   {key:'item',label:'פריט',w:280},{key:'assignees',label:'אחראים',w:120},
@@ -8270,7 +8306,8 @@ const BUILTIN_COLS=[
 ];
 /* only a board admin gets the drag handle; others just see the header */
 function resizerHTML(key){return isBoardAdmin()?`<span class="col-resizer" data-colkey="${key}" title="גרור לשינוי רוחב העמודה"></span>`:'';}
-function colWidthMap(){
+function colWidthMap(){ return _memoCols('widths',_colWidthMap); }
+function _colWidthMap(){
   const saved=(st.board&&st.board.col_widths)||{};
   const m={};
   BUILTIN_COLS.forEach(c=>m[c.key]=saved[c.key]||c.w);
@@ -9753,7 +9790,14 @@ function canEdit(){ return canComment(); }  // board members who aren't view-onl
 function itemPerm(t){ return (t&&t.my_perm)||'edit'; }
 function canEditItem(t){ const p=itemPerm(t); return p==='edit'||p==='delete'; }
 function canDeleteItem(t){ return itemPerm(t)==='delete'; }
-function canEditCol(t,colId){ if(!canEditItem(t))return false; const cp=(t&&t.col_perms||{})[colId]; return cp?cp==='edit':true; }
+/* A column's permission belongs to the column and the viewer's role, not to
+   the item, so the board states it once. t.col_perms is still read first: a
+   single-item response (and an older board payload) carries it there. */
+function canEditCol(t,colId){
+  if(!canEditItem(t))return false;
+  const cp=((t&&t.col_perms)||(st.board&&st.board.col_perms)||{})[colId];
+  return cp?cp==='edit':true;
+}
 /* Re-render only the row that changed.
    A local edit went through renderView(), which rebuilds every group on the
    board — and with it every avatar <img>. Recreating an <img> element makes the
@@ -10943,7 +10987,20 @@ function toggleSubs(e,id){
   if(badge)badge.classList.toggle('open',open);
   const table=(row||src).closest('table'); if(!table)return;
   const wrap=table.querySelector('.sub-wrap[data-parent="'+id+'"]');
-  if(wrap)wrap.style.display=open?'table-row':'none';
+  if(!wrap)return;
+  // first open — the panel was never built (see itemRow)
+  const cell=wrap.querySelector('.sub-wrap-cell');
+  if(open&&cell&&!cell.firstElementChild){
+    const t=findAnyTask(id);
+    if(t){
+      const g=((st.board&&st.board.groups)||[]).find(x=>x.id===t.group_id);
+      cell.innerHTML=subPanelHTML(t,sortedSubs(t.subtasks||[]),(g&&g.color)||'#0073ea');
+      const sb=cell.querySelector('.sub-body[data-parent]');
+      if(sb&&window.Sortable)subSortableOn(sb);
+      try{ fitLinkChips(cell); }catch(e){}
+    }
+  }
+  wrap.style.display=open?'table-row':'none';
 }
 function findSub(id){
   for(const t of (st.board.tasks||[])) for(const s of (t.subtasks||[])) if(s.id===id) return {sub:s,parent:t};
