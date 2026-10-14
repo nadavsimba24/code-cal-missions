@@ -113,5 +113,55 @@ ck('a switch that happens mid-check does not redraw the board she moved to',
 ck('both paths put the board on screen through the same function',
    (src.match(/paintBoard\(id\);/g) || []).length >= 2);
 
+// ── the quiet work: warming the boards she has not asked for yet ──
+// Prod is HTTP/1.1, so background work that is not polite becomes the problem
+// it was meant to solve.
+const pf = new Function('st','api','meId','whenIdle','cacheBoard','_boardCache','navigator','_boardFetches',
+  line(/const PREFETCH_MAX=\d+;/) + grab('prefetchBoards')
+  + '\nreturn {prefetchBoards, PREFETCH_MAX};');
+
+function runPrefetch(opts){
+  const asked=[]; let idleQueue=[];
+  const cache=new Map((opts.cached||[]).map(id=>[id,{id}]));
+  const api=(u)=>{ asked.push(u); return opts.reject?Promise.reject(new Error('403')):Promise.resolve({id:+(/\/(\d+)/.exec(u)||[])[1]}); };
+  const h=pf({boards:(opts.boards||[]).map(id=>({id})), board:{id:opts.open}},
+             api, ()=>1, (fn)=>idleQueue.push(fn), b=>cache.set(b.id,b), cache,
+             opts.navigator||{}, opts.inFlight||0);
+  h.prefetchBoards();
+  // drain the idle queue the way a quiet browser would
+  for(let i=0;i<40 && idleQueue.length;i++){ const q=idleQueue; idleQueue=[]; q.forEach(fn=>fn()); }
+  return {asked, cache, max:h.PREFETCH_MAX};
+}
+
+let r=runPrefetch({boards:[1,2,3,4,5,6,7,8,9], open:1});
+ck('it warms the boards she has not opened yet', r.asked.length>0, 'asked for nothing');
+ck('...a few at a time, not every board she has', r.asked.length<=r.max,
+   'asked for '+r.asked.length+', cap is '+r.max);
+ck('...never the one already on screen',
+   !r.asked.some(u=>/\/api\/boards\/1\?|\/api\/boards\/1$/.test(u)), r.asked.join(' '));
+
+r=runPrefetch({boards:[1,2,3], open:1, cached:[2,3]});
+ck('...and never one it already has', r.asked.length===0, r.asked.join(' '));
+
+r=runPrefetch({boards:[1,2,3,4], open:1, inFlight:1});
+ck('it stands aside while she is waiting for a board she asked for',
+   r.asked.length===0, 'it competed with the board she wanted');
+
+r=runPrefetch({boards:[1,2,3,4], open:1, navigator:{connection:{saveData:true}}});
+ck('it does nothing on a connection asking to be spared', r.asked.length===0);
+r=runPrefetch({boards:[1,2,3,4], open:1, navigator:{connection:{effectiveType:'2g'}}});
+ck('...nor on a 2g one', r.asked.length===0);
+
+r=runPrefetch({boards:[1,2,3,4], open:1, reject:true});
+ck('a board she may not see is not an error worth stopping for',
+   r.asked.length>0, 'it gave up on the first refusal');
+
+// ── the people list ──
+ck('the people list is not refetched on every switch',
+   /const USERS_TTL_MS=\d+;/.test(src) && /if\(!force && _usersAt/.test(src),
+   'it competed with the board for one of six connections, to re-learn names');
+ck('...but changing a photograph or adding a person still refetches at once',
+   (src.match(/refreshUsers\(true\)/g)||[]).length>=2);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -2427,7 +2427,23 @@ function avatarInner(u){
   return `<span class="av-ini" style="background:${avatarColor(name)}">${esc(initials(name)||'?')}</span>`;
 }
 /* Reload the users list — the single source every avatar renders from. */
-async function refreshUsers(){ try{ st.users=await api('/api/users'); }catch(e){} }
+/* The people list, refetched at most this often.
+
+   Every board switch asked for it again. Prod is HTTP/1.1 — six connections,
+   no multiplexing — so that request sat alongside the board's own and competed
+   with it, to re-learn a list of names and photographs that changes perhaps
+   once a week. The board payload already carries its own members, which is
+   what the pickers build from; st.users is for avatars, and an avatar that is
+   up to two minutes old is not a problem anybody has.
+
+   The places that change a photograph or add a person call refreshUsers(true)
+   and still get it immediately. */
+const USERS_TTL_MS=120000;
+let _usersAt=0;
+async function refreshUsers(force){
+  if(!force && _usersAt && (Date.now()-_usersAt)<USERS_TTL_MS && (st.users||[]).length) return;
+  try{ st.users=await api('/api/users'); _usersAt=Date.now(); }catch(e){}
+}
 const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);};
 const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set(), selected:new Set(), collapsedGroups:new Set()};
 
@@ -3134,8 +3150,10 @@ async function openBoard(id){
     whenIdle(()=>revalidateBoard(id,_t0));     // the board is up; now go and check it
     return;
   }
+  _boardFetches++;
   try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); _tFetch=performance.now()-_t0; }
   catch(e){ document.getElementById('view').innerHTML=accessDeniedHTML('אין לך גישה ללוח הזה. ייתכן שלא הוזמנת אליו, או שההרשאה שונתה. אם לדעתך זו טעות — פנה למנהל המערכת.'); return; }
+  finally{ _boardFetches--; }
   cacheBoard(st.board);
   await usersReady;
   const _r0=performance.now();
@@ -3171,6 +3189,7 @@ function paintBoard(id){
      for it, it must never be why a board does not open, and (see whenIdle) it
      must not be in the way of the board arriving either. */
   whenIdle(()=>api('/api/boards/'+id+'/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}).catch(()=>{}));
+  prefetchBoards();          // make the NEXT switch instant too, in the quiet
 }
 /* A board shown from memory is still checked. If the server says the same
    thing, which it usually does, nothing is redrawn — the point is that she is
@@ -3189,6 +3208,39 @@ async function revalidateBoard(id,_t0){
   const r=performance.now();
   renderView();                                  // keeps her scroll position
   reportBoardOpen(id,wait,performance.now()-r,_t0,'from memory, then updated');
+}
+/* The boards she has not opened yet, fetched quietly in the background.
+
+   The cache makes going BACK to a board instant, but the first visit to each
+   one still paid for everything. Most of a day is moving between the same
+   handful of boards, so the first visit is worth paying for before she asks
+   for it rather than while she waits.
+
+   On HTTP/1.1 this has to be polite or it becomes the problem it is solving:
+   one board at a time, never while a board she actually asked for is in
+   flight, only when the browser has nothing else to do, a few boards at most,
+   and not at all on a connection that would rather not. */
+const PREFETCH_MAX=4;
+let _boardFetches=0;
+function prefetchBoards(){
+  const c=navigator.connection||{};
+  if(c.saveData || /(^|-)2g$/.test(c.effectiveType||'')) return;
+  const next=(st.boards||[]).map(b=>b.id)
+    .filter(id=>id!==(st.board&&st.board.id) && !_boardCache.has(id));
+  if(!next.length)return;
+  let taken=0;
+  const step=()=>{
+    if(taken>=PREFETCH_MAX)return;
+    const id=next.shift();
+    if(id===undefined)return;
+    if(_boardFetches>0)return;                 // she is waiting for one; do not compete
+    taken++;
+    api('/api/boards/'+id+(meId()?'?user_id='+meId():''))
+      .then(b=>{ cacheBoard(b); })
+      .catch(()=>{})                           // a board she may not see is not an error here
+      .finally(()=>whenIdle(step,4000));
+  };
+  whenIdle(step,4000);
 }
 function reportBoardOpen(id,fetchMs,renderMs,t0,how){
   const rows=(st.board.tasks||[]).length;
@@ -4501,7 +4553,7 @@ const Profile = {
       const fd=new FormData(); fd.append('file',blob,fname);
       const up=await api('/api/upload',{method:'POST',body:fd});
       await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({avatar_url:up.url,actor_id:meId()})});
-      await refreshUsers();                       // the list every avatar renders from
+      await refreshUsers(true);                   // the list every avatar renders from
       const u=(st.users||[]).find(x=>x.id===userId); if(u)u.avatar_url=up.url;
       if(st.me&&st.me.id===userId)st.me.avatar_url=up.url;
       toast('התמונה עודכנה');
@@ -4519,7 +4571,7 @@ const Profile = {
       try{
         await api('/api/users/'+userId,{method:'PATCH',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({avatar_url:null})});
-        await refreshUsers();
+        await refreshUsers(true);
         const fresh=(st.users||[]).find(x=>x.id===userId); if(fresh)fresh.avatar_url=null;
         if(st.me&&st.me.id===userId)st.me.avatar_url=null;
         toast('התמונה הוסרה — חזרה לתצוגת ברירת המחדל');
