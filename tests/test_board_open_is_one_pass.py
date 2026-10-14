@@ -201,3 +201,64 @@ def test_a_columns_permission_is_stated_once_for_the_board(client, admin_id, gui
     mine = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
     assert next(t for t in mine["tasks"]
                 if t["id"] == ids[0])["custom_fields"].get(cid) == "לעיניי מנהל"
+
+
+def _connect_and_mirror(client, admin_id, src_board, dst_board):
+    """Give dst_board a connect column pointing at src_board, plus a mirror of
+    the linked item's title. The pair is what a mirror column needs to exist."""
+    cols = client.get(f"/api/boards/{dst_board}?user_id={admin_id}").json()["columns"]
+    conn = {"id": "col_conn", "type": "connect", "title": "מקושר",
+            "connect": {"boards": [src_board]}}
+    mirr = {"id": "col_mirror", "type": "mirror", "title": "שם המקושר",
+            "mirror_of": {"connect": "col_conn", "field": "title"}}
+    r = client.patch(f"/api/boards/{dst_board}",
+                     json={"actor_id": admin_id, "columns": cols + [conn, mirr]})
+    assert r.status_code == 200, r.text
+    got = {c["id"] for c in r.json()["columns"]}
+    assert {"col_conn", "col_mirror"} <= got, r.text
+    return "col_conn", "col_mirror"
+
+
+def test_a_mirror_column_does_not_query_per_item(client, admin_id, counted):
+    """The last N+1 on the board read, and the one that hid the longest.
+
+    A mirror column reads the linked items themselves, and it did that one
+    query per item per column — plus a query for the far item's board, plus a
+    lazy load of its assignees, inside each of those. A board of a few hundred
+    items with one mirror column paid thousands of queries, and none of it was
+    visible in the work done on the item rows.
+
+    Pinned as a difference rather than a bound: a bound loose enough to be
+    stable is also loose enough to pass with the N+1 still there. This test was
+    written as a bound first, and it passed with the batching switched off —
+    which is exactly the kind of test that is worse than none.
+    """
+    src, src_ids = _board_with(client, admin_id, "מראה — מקור", 8, n_subs=0)
+
+    def mirrored(name, n):
+        bid, ids = _board_with(client, admin_id, name, n, n_subs=0)
+        conn, _m = _connect_and_mirror(client, admin_id, src, bid)
+        for i, tid in enumerate(ids):
+            client.patch(f"/api/tasks/{tid}",
+                         json={"actor_id": admin_id,
+                               "custom_fields": {conn: [src_ids[i % len(src_ids)]]}})
+        got = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()     # warm
+        linked = [t for t in got["tasks"] if t["custom_fields"].get(conn)]
+        assert len(linked) == n, "the links did not take, so this proves nothing"
+        assert all(t["custom_fields"].get("col_mirror") for t in linked), \
+            "the mirror cells are empty, so this proves nothing"
+        return bid
+
+    small = mirrored("מראה — קטן", 10)
+    big = mirrored("מראה — גדול", 40)
+
+    counted.n = 0
+    client.get(f"/api/boards/{small}?user_id={admin_id}")
+    n_small = counted.n
+    counted.n = 0
+    client.get(f"/api/boards/{big}?user_id={admin_id}")
+    n_big = counted.n
+
+    assert n_big - n_small <= 8, (
+        f"10 mirrored items cost {n_small} queries and 40 cost {n_big} — the "
+        "mirror is reading the linked items, and their boards, one at a time")

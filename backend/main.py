@@ -16,7 +16,7 @@ import os
 from pydantic import BaseModel
 from sqlalchemy import and_, create_engine, event, func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, with_loader_criteria
+from sqlalchemy.orm import Session, selectinload, with_loader_criteria
 
 sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
@@ -5756,8 +5756,10 @@ def _mirror_one(db, t, field):
         return e(t.due_date.isoformat() if t.due_date else None)
     if field == "assignees":
         return [{"item_id": t.id, "text": u.name, "color": None} for u in (t.assignees or [])]
-    board = db.query(Board).filter(Board.id == t.board_id).execution_options(
-        include_deleted=True).first()
+    _bb = db.info.get("_board_by")
+    board = (_bb.get(t.board_id) if _bb is not None and t.board_id in _bb
+             else db.query(Board).filter(Board.id == t.board_id).execution_options(
+                 include_deleted=True).first())
     if field == "status":
         if (t.custom_fields or {}).get("status_unset"):
             return e("טרם הוגדר", "#c4c4c4")
@@ -5820,8 +5822,12 @@ def _mirror_cells(db, task, col, viewer, board_cols):
     ids = _visible_link_ids(db, ids, viewer)
     if not ids:
         return []
-    rows = {t.id: t for t in db.query(Task).filter(Task.id.in_(ids))
-            .execution_options(include_deleted=True).all()}
+    _tb = db.info.get("_task_by") or {}
+    rows = {i: _tb[i] for i in ids if i in _tb}
+    _miss = [i for i in ids if i not in rows]
+    if _miss:                                  # a path that never prefetched
+        rows.update({t.id: t for t in db.query(Task).filter(Task.id.in_(_miss))
+                     .execution_options(include_deleted=True).all()})
     out = []
     for i in ids:
         t = rows.get(i)
@@ -5903,6 +5909,27 @@ def _prefetch_links(db, tasks, columns, viewer):
                        if isinstance(i, int))
     if far:
         _link_states(db, sorted(far), viewer)      # warms the per-request cache
+        # A mirror column reads the linked items themselves — their title, who
+        # is on them, their status — and it did that one query per item per
+        # column, plus a query for the far item's board inside _mirror_one, plus
+        # a lazy load of its assignees. A board of five hundred items with one
+        # mirror column therefore paid about fifteen hundred queries, which no
+        # amount of work on the item rows themselves would have shown up in.
+        # All of it is loaded here instead, in three queries for the board.
+        tb = db.info.setdefault("_task_by", {})
+        need = [i for i in sorted(far) if i not in tb]
+        for part in [need[i:i + _PREFETCH_CHUNK] for i in range(0, len(need), _PREFETCH_CHUNK)]:
+            for ft in (db.query(Task).options(selectinload(Task.assignees))
+                         .filter(Task.id.in_(part))
+                         .execution_options(include_deleted=True).all()):
+                tb[ft.id] = ft
+        bb = db.info.setdefault("_board_by", {})
+        bneed = sorted({t.board_id for t in tb.values()
+                        if t.board_id is not None and t.board_id not in bb})
+        if bneed:
+            for fb in (db.query(Board).filter(Board.id.in_(bneed))
+                         .execution_options(include_deleted=True).all()):
+                bb[fb.id] = fb
 
 
 def _mirror_col_for(db, col, target_board_id):
