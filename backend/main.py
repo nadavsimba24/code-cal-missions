@@ -1674,10 +1674,91 @@ def _backfill_item_id_column():
 _safe_startup(_backfill_item_id_column)
 
 
+_PREFETCH_CHUNK = 400          # keep the IN (...) list inside every driver's limit
+
+
+def _prefetch_items(db, tasks):
+    """Answer, for a whole board at once, the four questions serializing an
+    item used to ask one item at a time.
+
+    _serialize_task needed an item's assignees, how many sub-items it has, how
+    many comments, and the sub-items themselves. Each was its own query, so a
+    board cost about ten statements per row — a board of four hundred items ran
+    four thousand of them. In-process against SQLite that is invisible; against
+    QA's Postgres every one is a network round trip, which is how opening a
+    board came to take twenty seconds.
+
+    Four grouped queries replace all of it. The answers go in the session's own
+    info dict, the same place _prefetch_links keeps its cache, and
+    _serialize_task reads them from there when they are present and falls back
+    to its own query when they are not — so the write paths that serialize a
+    single fresh item keep working untouched.
+
+    Returns the sub-items it loaded, because the caller needs them for
+    _prefetch_links and there is no reason to ask twice.
+    """
+    # `task_assignees` is an endpoint name in this module too, so the table is
+    # imported under its own name here — same reason as in _purge_rows' caller
+    from models import task_assignees as assignee_rows
+    ids = [t.id for t in tasks]
+    if not ids:
+        return []
+    info = db.info
+    kids = info.setdefault("_kids_by", {})
+    for tid in ids:
+        kids.setdefault(tid, [])
+    subs = []
+    for part in [ids[i:i + _PREFETCH_CHUNK] for i in range(0, len(ids), _PREFETCH_CHUNK)]:
+        for sub in (db.query(Task)
+                      .filter(Task.parent_id.in_(part), Task.is_archived == False)   # noqa: E712
+                      .order_by(Task.position).all()):
+            kids.setdefault(sub.parent_id, []).append(sub)
+            subs.append(sub)
+    # a sub-item is serialized too, so it needs the same three answers
+    every = ids + [s.id for s in subs]
+    ass = info.setdefault("_assignees_by", {})
+    nsub = info.setdefault("_nsub_by", {})
+    ncom = info.setdefault("_ncom_by", {})
+    for tid in every:
+        ass.setdefault(tid, [])
+        nsub.setdefault(tid, 0)
+        ncom.setdefault(tid, 0)
+    for part in [every[i:i + _PREFETCH_CHUNK] for i in range(0, len(every), _PREFETCH_CHUNK)]:
+        for tid, uid, uname, uav in (db.query(assignee_rows.c.task_id, User.id,
+                                              User.name, User.avatar_url)
+                                       .join(User, User.id == assignee_rows.c.user_id)
+                                       .filter(assignee_rows.c.task_id.in_(part))
+                                       .order_by(assignee_rows.c.task_id,
+                                                 assignee_rows.c.user_id).all()):
+            ass[tid].append({"id": uid, "name": uname, "avatar_url": uav})
+        # counts every child, archived ones included — which is what the badge
+        # has always shown
+        for pid, n in (db.query(Task.parent_id, func.count(Task.id))
+                         .filter(Task.parent_id.in_(part))
+                         .group_by(Task.parent_id).all()):
+            nsub[pid] = n
+        for tid, n in (db.query(Comment.task_id, func.count(Comment.id))
+                         .filter(Comment.task_id.in_(part))
+                         .group_by(Comment.task_id).all()):
+            ncom[tid] = n
+    return subs
+
+
 def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, columns=None):
-    assignees = [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in t.assignees] if t.assignees else []
-    subtask_count = db.query(Task).filter(Task.parent_id == t.id).count()
-    comment_count = db.query(Comment).filter(Comment.task_id == t.id).count()
+    # a board read warms these for every row at once (_prefetch_items); a write
+    # path serializing one fresh item has nothing warmed and asks for itself
+    _pre = db.info
+    _ass = _pre.get("_assignees_by")
+    if _ass is not None and t.id in _ass:
+        assignees = list(_ass[t.id])
+    else:
+        assignees = [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in t.assignees] if t.assignees else []
+    _ns = _pre.get("_nsub_by")
+    subtask_count = (_ns[t.id] if _ns is not None and t.id in _ns
+                     else db.query(Task).filter(Task.parent_id == t.id).count())
+    _nc = _pre.get("_ncom_by")
+    comment_count = (_nc[t.id] if _nc is not None and t.id in _nc
+                     else db.query(Comment).filter(Comment.task_id == t.id).count())
     my_perm = _item_perm(t, user_id, board_role) if user_id is not None else "delete"
     cf = dict(t.custom_fields or {})
     # A two-way connect cell is not stored on the item — it is the shared
@@ -1728,7 +1809,10 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         "comment_count": comment_count,
     }
     if with_subs:
-        subs = db.query(Task).filter(Task.parent_id == t.id, Task.is_archived == False).order_by(Task.position).all()
+        _kids = _pre.get("_kids_by")
+        subs = (_kids[t.id] if _kids is not None and t.id in _kids
+                else db.query(Task).filter(Task.parent_id == t.id, Task.is_archived == False)
+                        .order_by(Task.position).all())
         subs = [s for s in subs if user_id is None or _item_perm(s, user_id, board_role) != "none"]
         d["subtasks"] = [_serialize_task(s, db, with_subs=False, user_id=user_id, board_role=board_role, columns=columns) for s in subs]
     return d
@@ -1760,19 +1844,21 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # hide items the user has no view permission on
         if user_id is not None:
             tasks = [t for t in tasks if _item_perm(t, user_id, my_role) != "none"]
-        # one pass for the board's links, including its sub-items, before any
-        # item is serialized — see _prefetch_links
-        _subs = db.query(Task).filter(Task.parent_id.in_([t.id for t in tasks])).all() if tasks else []
+        # one pass for everything an item is about to be asked — its sub-items,
+        # assignees and counts (_prefetch_items), then its links (_prefetch_links)
+        _subs = _prefetch_items(db, tasks)
         _prefetch_links(db, list(tasks) + _subs, columns, user_id)
         tasks_out = [_serialize_task(t, db, user_id=user_id, board_role=my_role, columns=columns) for t in tasks]
 
         # board owners = members with the board-scoped admin role (creator + any
         # promoted admin). Exposed to every member so anyone can see who manages it.
-        owners = []
-        for m in db.query(BoardMember).filter(BoardMember.board_id == b.id, BoardMember.role == "admin").all():
-            ou = db.query(User).filter(User.id == m.user_id).first()
-            if ou:
-                owners.append({"id": ou.id, "name": ou.name, "avatar_url": ou.avatar_url})
+        # one join, not a query per owner
+        owners = [{"id": ou.id, "name": ou.name, "avatar_url": ou.avatar_url}
+                  for ou in (db.query(User)
+                               .join(BoardMember, BoardMember.user_id == User.id)
+                               .filter(BoardMember.board_id == b.id,
+                                       BoardMember.role == "admin")
+                               .order_by(User.id).all())]
 
         return {
             "id": b.id, "name": b.name, "description": b.description,
