@@ -54,8 +54,11 @@ ck('the picker still offers the board statuses', popped.includes('בוצע')&&po
 ck('...and now "טרם הוגדר" as well', popped.includes('טרם הוגדר'), popped);
 ck('...in its own grey, the colour the cell already shows it in',
    /#c4c4c4/.test(popped), popped);
-ck('...full width at the bottom, after the statuses',
-   popped.indexOf('pop-span')>popped.indexOf('בוצע') && /pop-span[^>]*#c4c4c4/.test(popped), popped);
+ck('...last, after the board\'s own statuses',
+   popped.indexOf('c4c4c4')>popped.indexOf('בוצע'), popped);
+ck('...and the SAME size as them — not spanning the row like the manage link',
+   !/pop-span[^>]*#c4c4c4/.test(popped) && !/#c4c4c4[^>]*pop-span/.test(popped),
+   'a grey button three times the width of every status reads as something else');
 ck('it is wired to the sentinel, not to a status key',
    popped.includes("pickField(event,7,'status','__unset')"), popped);
 ck('the item has a status, so the grey option is NOT ticked',

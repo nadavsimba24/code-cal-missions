@@ -9848,8 +9848,12 @@ function fieldPicker(e,id,field,map){
      Without it a status chosen by mistake was permanent: the board's own words
      were the only things sayable, and none of them means "nobody has decided".
      Last and full-width, like "נקה" in the custom status column's picker. */
+  // Sized like every other option, deliberately not spanning the row: it is one
+  // of the values, and a button three times the width of the statuses beside it
+  // read as something else entirely. (The manage shortcut below DOES span — it
+  // is a way out of the picker, not a value in it.)
   if(field==='status')
-    html+=`<button class="cell-pop-opt pop-span" style="background:${STATUS_UNSET.color}" title="${esc(STATUS_UNSET.label)}" onclick="pickField(event,${id},'status','${STATUS_UNSET_KEY}')">${esc(STATUS_UNSET.label)}${cur==null?' <i class="fa-solid fa-check"></i>':''}</button>`;
+    html+=`<button class="cell-pop-opt" style="background:${STATUS_UNSET.color}" title="${esc(STATUS_UNSET.label)}" onclick="pickField(event,${id},'status','${STATUS_UNSET_KEY}')">${esc(STATUS_UNSET.label)}${cur==null?' <i class="fa-solid fa-check"></i>':''}</button>`;
   // board admin gets a shortcut to manage the vocabulary behind the column
   if(field==='status'&&isBoardAdmin())
     html+=`<button class="cell-pop-opt cell-pop-manage pop-span" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`;
