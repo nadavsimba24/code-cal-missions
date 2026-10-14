@@ -3131,7 +3131,7 @@ async function openBoard(id){
     st.board=seen;
     paintBoard(id);
     _tRender=performance.now()-_t0;
-    revalidateBoard(id,_t0);
+    whenIdle(()=>revalidateBoard(id,_t0));     // the board is up; now go and check it
     return;
   }
   try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); _tFetch=performance.now()-_t0; }
@@ -3142,6 +3142,18 @@ async function openBoard(id){
   paintBoard(id);
   _tRender=performance.now()-_r0;
   reportBoardOpen(id,_tFetch,_tRender,_t0,'from the server');
+}
+/* Run it when the browser has nothing better to do — and in any case soon.
+
+   Prod is served over HTTP/1.1, where there is no multiplexing: six
+   connections per host and every request waits its turn on one of them. A
+   request fired at the same moment as the board's own means the two compete,
+   and on the next switch the leftover from the last one is still holding a
+   connection. Nothing below needs to happen before the board is on screen, so
+   none of it is allowed to start until it is. */
+function whenIdle(fn,ms){
+  if(window.requestIdleCallback)return requestIdleCallback(()=>fn(),{timeout:ms||1200});
+  return setTimeout(fn,ms?Math.min(ms,250):60);
 }
 /* Everything that puts a board on screen, in one place — the cached path and
    the fetched path must not be able to drift apart. */
@@ -3154,10 +3166,11 @@ function paintBoard(id){
   refreshToolbar();
   renderView();
   Router.set(id,null);   // reflect the open board in the URL
-  // "נצפה לאחרונה" counts a person opening the board, not the app refetching
-  // it — so it is recorded here and nowhere else. Fire-and-forget: a failed
-  // receipt must never be the reason a board does not open.
-  api('/api/boards/'+id+'/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}).catch(()=>{});
+  /* "נצפה לאחרונה" counts a person opening the board, not the app refetching
+     it — so it is recorded here and nowhere else. A receipt: nobody is waiting
+     for it, it must never be why a board does not open, and (see whenIdle) it
+     must not be in the way of the board arriving either. */
+  whenIdle(()=>api('/api/boards/'+id+'/seen',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}).catch(()=>{}));
 }
 /* A board shown from memory is still checked. If the server says the same
    thing, which it usually does, nothing is redrawn — the point is that she is

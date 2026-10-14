@@ -90,8 +90,18 @@ for (const [what, mutate] of checks) {
 
 // ── the shape of the open path ──
 ck('a board she has seen is painted BEFORE the server is consulted',
-   /st\.board=seen;\s*\n\s*paintBoard\(id\);[\s\S]{0,120}revalidateBoard\(id/.test(src),
+   /st\.board=seen;\s*\n\s*paintBoard\(id\);[\s\S]{0,200}revalidateBoard\(id/.test(src),
    'the cached path must not wait on the network');
+// On HTTP/1.1 — which is what prod serves — a request fired alongside the
+// board's own competes with it for one of six connections, and the leftover
+// from the last switch is still holding one during the next.
+ck('nothing is requested until the board is on screen: not the recheck',
+   /whenIdle\(\(\)=>revalidateBoard\(id/.test(src), 'the recheck races the board');
+ck('...and not the "נצפה לאחרונה" receipt',
+   /whenIdle\(\(\)=>api\('\/api\/boards\/'\+id\+'\/seen'/.test(src),
+   'the receipt races the board');
+ck('whenIdle falls back where requestIdleCallback is missing, and never waits forever',
+   /function whenIdle\(fn,ms\)\{[\s\S]*?requestIdleCallback[\s\S]*?timeout:ms\|\|\d+[\s\S]*?setTimeout\(fn/.test(src));
 ck('...and no spinner is put up for one', /if\(!seen\) document\.getElementById\('view'\)\.innerHTML='<div class="spin">/.test(src));
 ck('an unchanged board is not redrawn', /if\(!changed\)\{[^}]*return;/.test(src));
 ck('a changed one is, and keeps her scroll (renderView does)',
