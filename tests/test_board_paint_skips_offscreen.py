@@ -40,13 +40,49 @@ def test_every_group_states_the_height_it_will_turn_out_to_be():
     assert "contain-intrinsic-size:auto ${est}px" in SRC, (
         "vTable stopped writing a per-group estimate")
     # the estimate has to follow the row count, not be a constant
-    est = re.search(r"const est=shut\?\d+:\(g\.tasks\.length\*(\w+)\+(\w+)\)", SRC)
+    est = re.search(r"const est=shut\?\d+:\(g\.tasks\.length\*(\w+)\(\)\+(\w+)\)", SRC)
     assert est, "the estimate no longer scales with the number of rows"
-    for name in est.groups():
-        assert re.search(r"\b" + name + r"\s*=\s*\d+", SRC), f"{name} is not defined"
+    fn, const = est.groups()
+    assert f"function {fn}(" in SRC, f"{fn} is not defined"
+    assert re.search(r"\b" + const + r"\s*=\s*\d+", SRC), f"{const} is not defined"
     assert "auto " in SRC[SRC.index("contain-intrinsic-size:auto ${est}px"):][:40], (
         "the estimate must be `auto <length>`, so the browser replaces it with "
         "the real size once the group has been rendered once")
+
+
+def test_the_estimate_matches_the_height_a_row_really_is():
+    """The bug this catches, by example.
+
+    The estimate said 37px while `.tbl td` was 46px tall, so every group
+    claimed a fifth less room than it needed, grew as it was rendered, and the
+    content below it jumped. Note which declaration wins: there are two
+    `.tbl td{height:...}` rules and the LAST one in the sheet is the one the
+    browser uses.
+    """
+    heights = [int(h) for h in re.findall(r"\.tbl td\{[^}]*height:(\d+)px", SRC)]
+    assert heights, "the row height is no longer declared on .tbl td"
+    real = heights[-1] + 1          # + the bottom border
+    est = re.search(r"const ROW_H_EST=(\d+)", SRC)
+    assert est, "ROW_H_EST is gone"
+    got = int(est.group(1))
+    assert abs(got - real) <= 2, (
+        f"a row is {real}px on screen but the estimate says {got}px — every "
+        "group will claim the wrong amount of room and the board will jump as "
+        "it renders")
+
+
+def test_the_estimate_is_corrected_from_the_screen():
+    """A constant drifts; a measurement does not."""
+    assert "function learnRowHeight(" in SRC, "nothing measures a real row"
+    assert "learnRowHeight(el)" in SRC, "the measurement is never taken"
+    assert "function rowHeightEst(" in SRC and "rowHeightEst()" in SRC, (
+        "the estimate does not consult the measured height")
+
+
+def test_a_board_switch_says_where_its_time_went():
+    """"Still slow" has to be answerable with numbers, from her machine."""
+    for part in ("request ${Math.round(_tFetch)}ms", "render ${Math.round(_tRender)}ms"):
+        assert part in SRC, f"the board-open timing no longer reports: {part}"
 
 
 @pytest.mark.parametrize("name,least", [("sp", 1.2)])

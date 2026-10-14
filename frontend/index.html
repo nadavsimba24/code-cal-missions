@@ -3073,7 +3073,13 @@ async function openBoard(id){
   // someone changed elsewhere then shows on this board too. Fetched in parallel
   // so it never delays the board.
   const usersReady=refreshUsers();
-  try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); }
+  /* Switching boards is the slowest thing in the app and the only machine that
+     can say where the time goes is the one it feels slow on. Each phase is
+     timed and reported as one line, so "it is still slow" can be answered with
+     numbers instead of another guess. Kept deliberately: this is cheap, and the
+     next person to ask the same question should not have to add it again. */
+  const _t0=performance.now(); let _tFetch=0, _tRender=0;
+  try{ st.board = await api('/api/boards/'+id+(meId()?'?user_id='+meId():'')); _tFetch=performance.now()-_t0; }
   catch(e){ document.getElementById('view').innerHTML=accessDeniedHTML('אין לך גישה ללוח הזה. ייתכן שלא הוזמנת אליו, או שההרשאה שונתה. אם לדעתך זו טעות — פנה למנהל המערכת.'); return; }
   // "נצפה לאחרונה" counts a person opening the board, not the app refetching
   // it — so it is recorded here and nowhere else. Fire-and-forget: a failed
@@ -3086,8 +3092,16 @@ async function openBoard(id){
   document.getElementById('bh-desc').textContent = '';
   renderTabs();
   refreshToolbar();
+  const _r0=performance.now();
   renderView();
+  _tRender=performance.now()-_r0;
   Router.set(id,null);   // reflect the open board in the URL
+  const rows=(st.board.tasks||[]).length;
+  const cols=(st.board.columns||[]).length;
+  const subs=(st.board.tasks||[]).reduce((n,t)=>n+((t.subtasks||[]).length),0);
+  console.info(`[board ${id}] ${rows} items (+${subs} subs) × ${cols} columns  ·  `
+    +`request ${Math.round(_tFetch)}ms  ·  render ${Math.round(_tRender)}ms  ·  `
+    +`total ${Math.round(performance.now()-_t0)}ms`);
 }
 function renderBoardHead(){
   if(!st.board)return;
@@ -4224,6 +4238,7 @@ function renderView(){
   try{
   ({table:vTable,kanban:vKanban,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,links:vLinks,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
   } finally { _colsMemo=null; }
+  try{ learnRowHeight(el); }catch(e){}   // so the next render's estimates are measured, not guessed
   if(_oldImgs.size) el.querySelectorAll('img[src]').forEach(im=>{
     const q=_oldImgs.get(im.src); if(!q||!q.length)return;
     const old=q.shift();                     // hand out one loaded node per slot
@@ -4438,12 +4453,16 @@ const Profile = {
   }
 };
 /* compact assignee picker — a popover anchored right above the clicked circle */
-/* Who a people column may offer: the board's own members. Anyone already tagged
-   is appended even if they are not a member, so a tag made before this rule can
-   still be found and removed — the server allows removal for the same reason. */
+/* Who a people column may offer: the board's own members, minus anyone whose
+   account was deactivated — a blocked user is nobody to hand work to, so they
+   are not in the circles, the people cells or the @-menu. Anyone already tagged
+   is appended even if they are not a member (or no longer active), so a tag
+   made before this rule can still be found and removed — the server allows
+   removal for the same reason. */
 function boardPeople(alsoInclude){
   const mem=(st.board&&st.board.members)||[];
-  const out=mem.map(m=>(st.users||[]).find(u=>u.id===m.id)||m);
+  const out=mem.map(m=>(st.users||[]).find(u=>u.id===m.id)||m)
+               .filter(u=>u.is_active!==false);
   const have=new Set(out.map(u=>u.id));
   (alsoInclude||[]).forEach(id=>{
     if(have.has(id))return;
@@ -4842,7 +4861,7 @@ const Workspace = {
   listHTML(){
     return this.data.members.map(m=>`<div class="mem-row">
       <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
-      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}${m.is_active===false?' <span class="sa-badge off">לא פעיל</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
       ${this.isAdmin?`<select onchange="Workspace.setRole(${m.user_id},this.value)">${['admin','member','viewer'].map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${WSROLE_HE[r]}</option>`).join('')}</select>
       <button class="mem-del" title="הסר מהסביבה" onclick="Workspace.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>`:`<span class="perm-badge">${WSROLE_HE[m.role]}</span>`}
     </div>`).join('');
@@ -4852,7 +4871,7 @@ const Workspace = {
     const l=document.getElementById('ws-list'); if(l)l.innerHTML=this.listHTML();
     const s=document.getElementById('ws-user'); if(s)s.innerHTML=d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כולם בסביבה —</option>'; },
   async add(){ const uid=+document.getElementById('ws-user').value, role=document.getElementById('ws-role').value; if(!uid){toast('בחר משתמש');return;}
-    try{ await api('/api/workspace/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('הוזמן לסביבה'); this.refresh(); }catch(e){toast('רק מנהל סביבה יכול להזמין');} },
+    try{ await api('/api/workspace/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('הוזמן לסביבה'); this.refresh(); }catch(e){toast(e&&e.status===400&&e.detail?e.detail:'רק מנהל סביבה יכול להזמין');} },
   async setRole(uid,role){ try{ await api('/api/workspace/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('התפקיד עודכן'); this.refresh(); }catch(e){toast('שגיאה');this.refresh();} },
   remove(uid){ askConfirm('להסיר את המשתמש מהסביבה?',async()=>{ try{ await api('/api/workspace/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר'); this.refresh(); }catch(e){toast('לא ניתן להסיר');} },{title:'הסרה מהסביבה',confirmText:'הסר'}); },
 };
@@ -5122,8 +5141,11 @@ const Automations = {
         this.conds=d.conditions||[]; this.maxConds=d.max_conditions||3;
       }catch(e){ this.recipes=[]; this.blueprint=[]; }
     }
-    // the person picker offers the board's own members, matching who can be assigned
-    try{ this.members=(await api('/api/boards/'+bid+'/members')).members||[]; }catch(e){ this.members=[]; }
+    // the person picker offers the board's own members, matching who can be
+    // assigned — so a deactivated account is left out: the server refuses to
+    // store a rule naming one, and would skip it at run time anyway
+    try{ this.members=((await api('/api/boards/'+bid+'/members')).members||[])
+                        .filter(m=>m.is_active!==false); }catch(e){ this.members=[]; }
   },
 
   setTab(t){
@@ -6698,7 +6720,7 @@ const Env = {
   membersHTML(){ const canSet=this.membersData.can_set_manager;
     return this.membersData.members.map(m=>`<div class="mem-row">
       <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
-      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}${(m.role||'member')==='manager'?' <span class="perm-badge" style="background:var(--primary-soft);color:var(--primary)">מנהל סביבה</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}${(m.role||'member')==='manager'?' <span class="perm-badge" style="background:var(--primary-soft);color:var(--primary)">מנהל סביבה</span>':''}${m.is_active===false?' <span class="sa-badge off">לא פעיל</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
       ${canSet
         ? `<select onchange="Env.setMemberRole(${m.user_id},this.value)">${['manager','member'].map(r=>`<option value="${r}" ${(m.role||'member')===r?'selected':''}>${r==='manager'?'מנהל סביבה':'חבר'}</option>`).join('')}</select>`
         : `<span class="perm-badge">${esc(m.role_he||'חבר')}</span>`}
@@ -6712,7 +6734,7 @@ const Env = {
     this.load(); },
   async addMember(){ const uid=+document.getElementById('envm-user').value; if(!uid){toast('בחר משתמש');return;}
     const rs=document.getElementById('envm-role'); const role=rs?rs.value:'member';
-    try{ await api('/api/environments/'+this.membersFor+'/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('נוסף לסביבה'); this.refreshMembers(); }catch(e){toast('שגיאה');} },
+    try{ await api('/api/environments/'+this.membersFor+'/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('נוסף לסביבה'); this.refreshMembers(); }catch(e){toast(e&&e.status===400&&e.detail?e.detail:'שגיאה');} },
   setMemberRole(uid,role){ api('/api/environments/'+this.membersFor+'/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}).then(()=>{ toast('התפקיד עודכן'); this.refreshMembers(); }).catch(()=>{toast('שגיאה');this.refreshMembers();}); },
   removeMember(uid){ api('/api/environments/'+this.membersFor+'/members/'+uid+'?actor_id='+meId(),{method:'DELETE'})
     .then(()=>{ toast('הוסר'); this.refreshMembers(); })
@@ -7467,6 +7489,13 @@ const SysAdmin = {
   },
 };
 
+/* Who an override may be handed to: active users, plus anyone who already holds
+   one — a grant made before an account was deactivated still has to be clearable
+   by hand, and a row that vanished took its select with it. */
+function permUsers(perms){
+  return (st.users||[]).filter(u=>u.is_active!==false||(perms||{})[u.id]);
+}
+
 /* ===== item-level permissions (הרשאות פריט) ===== */
 const ItemPerms = {
   open(taskId){
@@ -7475,7 +7504,7 @@ const ItemPerms = {
     showModal(`<h2><i class="fa-solid fa-user-lock" style="color:var(--primary)"></i> הרשאות פריט — ${esc(t.title)}</h2>
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> הרשאה פר-משתמש שדורסת את תפקיד-הלוח <b>עבור פריט זה בלבד</b>. "ברירת מחדל" = לפי תפקיד הלוח.</div>
-        ${(st.users||[]).map(u=>`<div class="mem-row">
+        ${permUsers(perms).map(u=>`<div class="mem-row">
           <span class="av" style="background:var(--primary)">${avatarInner(u)}</span>
           <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
           <select onchange="ItemPerms.set(${u.id},this.value)">${Object.entries(IPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
@@ -7497,7 +7526,7 @@ const ColPerms = {
     showModal(`<h2><i class="fa-solid fa-user-lock" style="color:var(--primary)"></i> הרשאות עמודה — ${esc(c.title)}</h2>
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> הרשאה פר-משתמש על העמודה. "מוסתר" מסתיר את הערכים מהמשתמש.</div>
-        ${(st.users||[]).map(u=>`<div class="mem-row">
+        ${permUsers(perms).map(u=>`<div class="mem-row">
           <span class="av" style="background:var(--primary)">${avatarInner(u)}</span>
           <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(u.name)}</div><div style="font-size:11px;color:var(--text-light)">${ROLE_HE[u.role]||u.role}</div></div>
           <select onchange="ColPerms.set(${u.id},this.value)">${Object.entries(CPERM_HE).map(([k,he])=>`<option value="${k}" ${(perms[u.id]||'')===k?'selected':''}>${he}</option>`).join('')}</select>
@@ -7543,7 +7572,7 @@ const Members = {
   listHTML(){
     return this.data.members.map(m=>`<div class="mem-row">
       <span class="av" style="background:var(--primary)">${avatarInner(m)}</span>
-      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13.5px">${esc(m.name)}${m.user_id===meId()?' <span style="color:var(--text-light);font-weight:400">(אתה)</span>':''}${m.is_active===false?' <span class="sa-badge off">לא פעיל</span>':''}</div><div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div></div>
       <select onchange="Members.setRole(${m.user_id},this.value)">${['admin','editor','viewer'].map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${BROLE_HE[r]}</option>`).join('')}</select>
       <button class="mem-del" title="הסר מהלוח" onclick="Members.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>
     </div>`).join('');
@@ -7556,7 +7585,7 @@ const Members = {
     const uid=+document.getElementById('mem-user').value, role=document.getElementById('mem-role').value;
     if(!uid){toast('בחר משתמש');return;}
     try{ await api('/api/boards/'+st.board.id+'/members',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),user_id:uid,role})}); toast('נוסף ללוח'); this.refresh(); }
-    catch(e){ toast('רק מנהל לוח יכול להזמין'); }
+    catch(e){ toast(e&&e.status===400&&e.detail?e.detail:'רק מנהל לוח יכול להזמין'); }
   },
   async setRole(uid,role){
     try{ await api('/api/boards/'+st.board.id+'/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('ההרשאה עודכנה'); this.refresh(); }
@@ -7826,10 +7855,27 @@ function subOrder(tbody){ return [...tbody.querySelectorAll('tr[data-sid]:not(.s
 function groupOrder(el){ return [...el.querySelectorAll('.group:not(.sortable-drag) .group-head[data-gid]')].map(h=>+h.dataset.gid); }
 let _itemDragFrom=null, _subDragFrom=null, _groupDragFrom=null;
 
-/* Rough row height and per-group furniture (header, column headers, add-row,
-   battery), used only for the intrinsic-size estimate — being a little off
-   costs a scrollbar that settles, not a wrong layout. */
-const ROW_H_EST=37, GROUP_CHROME_EST=120;
+/* The height a row and a group's furniture (its name, the column headers, the
+   add-row, the battery) actually come to. Used for the intrinsic-size estimate
+   that holds a group's place before the browser has laid it out — see .group.
+
+   Getting this wrong is not harmless: at 37px against a real 47 every group
+   claimed 20% less room than it needed, so each one grew as it was rendered
+   and the content below it jumped. The number has to track `.tbl td{height}`,
+   which is what tests/test_board_paint_skips_offscreen.py checks.
+
+   _rowH corrects it from the screen after the first render, so a CSS change or
+   a zoom level does not quietly put the jumping back. */
+const ROW_H_EST=47, GROUP_CHROME_EST=160;
+let _rowH=0;
+function rowHeightEst(){ return _rowH||ROW_H_EST; }
+/* Measure one real row and keep it. Cheap: one element, read once per render. */
+function learnRowHeight(el){
+  const tr=el.querySelector('.tbl tbody tr[data-tid]');
+  if(!tr)return;
+  const h=tr.getBoundingClientRect().height;
+  if(h>8&&h<200)_rowH=Math.round(h);
+}
 function vTable(el){
   const groups=groupsOf();
   // filters are active but nothing matches → show the "no match" hint. An empty
@@ -7863,7 +7909,7 @@ function vTable(el){
     /* The height this group will turn out to be, so the scrollbar is honest
        before the browser has laid it out (see .group in the CSS). A collapsed
        group is a name and nothing else. */
-    const est=shut?64:(g.tasks.length*ROW_H_EST+GROUP_CHROME_EST);
+    const est=shut?64:(g.tasks.length*rowHeightEst()+GROUP_CHROME_EST);
     return `<div class="group" ${real?'':'data-orphan="1"'} style="contain-intrinsic-size:auto ${est}px">
       <div class="grp-stick">
       ${head}
