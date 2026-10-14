@@ -1171,6 +1171,23 @@ def _board_role(db, board_id, user_id):
 def _is_board_admin(db, board_id, user_id):
     return _board_role(db, board_id, user_id) == "admin"
 
+def _account_blocked(db, user_id):
+    """Is this a deactivated account?
+
+    A blocked user stays in the directory — their name is on everything they
+    ever did, and the history has to keep reading correctly — but they are not
+    a colleague any more: nobody may invite them, tag them, mention them or
+    name them in a rule. "Deactivated" is the end of participation, not a
+    cosmetic flag on a user who still turns up in every picker.
+
+    Only an explicit False blocks. The column was added to databases that
+    already had users, so NULL means "nobody ever deactivated this one".
+    """
+    if user_id is None:
+        return False
+    return bool(db.query(User.id)
+                  .filter(User.id == user_id, User.is_active.is_(False)).first())
+
 def _can_be_assigned(db, board_id, user_id):
     """May this user be tagged on this board's items? Only people INVITED to it.
 
@@ -1183,14 +1200,36 @@ def _can_be_assigned(db, board_id, user_id):
 
     Workspace admins stay taggable — they reach every board without an explicit
     invite, and excluding them would make it impossible to tag the very people
-    who administer the system."""
+    who administer the system. A *blocked* workspace admin is not an exception
+    to that: deactivation outranks every role.
+
+    This is the one gate for naming a person — people columns, the assignee
+    circles, @-mentions and the person field of an automation all come through
+    here — so a deactivated account answered here is refused everywhere at once.
+    """
     if user_id is None:
+        return False
+    if _account_blocked(db, user_id):
         return False
     m = db.query(BoardMember).filter(BoardMember.board_id == board_id,
                                      BoardMember.user_id == user_id).first()
     if m:
         return True
     return _ws_role(db, user_id) == "admin"
+
+def _not_taggable_reason(db, board_id, user_id):
+    """Why this person may not be named on this board, in words — "" if they may.
+
+    Two different refusals used to read as one: a deactivated member was told
+    they were "not a member of the board", which they are, which sent whoever
+    read it looking at the board's invitations for a problem that is on the
+    user's account.
+    """
+    if _account_blocked(db, user_id):
+        return "חשבונו מושבת"
+    if not _can_be_assigned(db, board_id, user_id):
+        return "אינו חבר בלוח"
+    return ""
 
 def _filter_people_values(db, board_id, cf, before):
     """Drop non-members from people-column values in `cf` (in place).
@@ -1944,11 +1983,15 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             # never sees it, and an editor only where the capability is granted
             "can_view_automations": _can_view_automations(db, b, user_id),
             "owners": owners,
-            # who may be tagged in a people column — the pickers build from this
+            # who may be tagged in a people column — the pickers build from this,
+            # so it holds exactly who _can_be_assigned would accept: a member
+            # whose account was deactivated is not offered. Anyone already
+            # tagged is re-added client-side, so an old tag stays removable.
             "members": [{"id": mu.id, "name": mu.name, "avatar_url": mu.avatar_url}
                         for mu in (db.query(User)
                                      .join(BoardMember, BoardMember.user_id == User.id)
-                                     .filter(BoardMember.board_id == b.id)
+                                     .filter(BoardMember.board_id == b.id,
+                                             User.is_active.isnot(False))
                                      .order_by(User.name).all())],
             "columns": (b.settings or {}).get("columns", []),
             # which columns sub-items show (ids, name column first). None = never
@@ -4531,9 +4574,13 @@ def list_board_members(board_id: int):
         for m in ms:
             u = db.query(User).filter(User.id == m.user_id).first()
             out.append({"user_id": m.user_id, "name": u.name if u else "—",
-                        "email": u.email if u else "", "role": m.role})
-        # users who could still be invited
-        available = [{"id": u.id, "name": u.name} for u in db.query(User).all() if u.id not in member_ids]
+                        "email": u.email if u else "", "role": m.role,
+                        # a member who was deactivated stays listed: somebody
+                        # has to be able to see them and take them off the board
+                        "is_active": (u.is_active is not False) if u else True})
+        # who could still be invited — never a deactivated account
+        available = [{"id": u.id, "name": u.name} for u in db.query(User).all()
+                     if u.id not in member_ids and u.is_active is not False]
         return {"members": out, "available": available}
 
 @app.post("/api/boards/{board_id}/members")
@@ -4543,6 +4590,11 @@ def add_board_member(board_id: int, data: dict, request: Request = None,
         if not _is_board_admin(db, board_id, actor_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לנהל הרשאות")
         uid = data.get("user_id")
+        # The picker no longer offers them, but the picker is not the rule: an
+        # invitation is a grant of access, and a deactivated account must not
+        # receive one however the request was made.
+        if _account_blocked(db, uid):
+            raise HTTPException(400, "לא ניתן להזמין ללוח משתמש מושבת")
         role = data.get("role", "editor")
         if role not in BOARD_ROLES:
             role = "editor"
@@ -4944,6 +4996,8 @@ def set_col_permissions(board_id: int, col_id: str, data: dict, actor_id: int = 
             if c["id"] == col_id:
                 perms = dict(c.get("perms") or {})
                 uid = str(data.get("user_id")); perm = data.get("perm")
+                if perm in ("view", "edit") and _account_blocked(db, data.get("user_id")):
+                    raise HTTPException(400, "לא ניתן להגדיר הרשאת עמודה למשתמש מושבת")
                 if perm in ("view", "edit", "none"):
                     perms[uid] = perm
                 else:
@@ -4966,8 +5020,10 @@ def workspace_members():
         for m in ms:
             u = db.query(User).filter(User.id == m.user_id).first()
             out.append({"user_id": m.user_id, "name": u.name if u else "—",
-                        "email": u.email if u else "", "role": m.role})
-        available = [{"id": u.id, "name": u.name} for u in db.query(User).all() if u.id not in member_ids]
+                        "email": u.email if u else "", "role": m.role,
+                        "is_active": (u.is_active is not False) if u else True})
+        available = [{"id": u.id, "name": u.name} for u in db.query(User).all()
+                     if u.id not in member_ids and u.is_active is not False]
         return {"members": out, "available": available}
 
 @app.post("/api/workspace/members")
@@ -4976,6 +5032,8 @@ def workspace_add(data: dict, actor_id: int = Depends(current_user_id)):
         if _ws_role(db, actor_id) != "admin":
             raise HTTPException(403, "רק מנהל סביבה יכול להזמין")
         uid = data.get("user_id"); role = data.get("role", "member")
+        if _account_blocked(db, uid):
+            raise HTTPException(400, "לא ניתן להזמין לסביבה משתמש מושבת")
         if role not in WS_ROLES:
             role = "member"
         m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == uid).first()
@@ -5176,11 +5234,14 @@ def environment_members(env_id: int, actor_id: int = Depends(current_user_id)):
                     "email": users[uid].email,
                     "avatar_url": users[uid].avatar_url,
                     "role": by_row.get(uid, "member"),
-                    "role_he": ENV_ROLE_HE.get(by_row.get(uid, "member"), "member")}
+                    "role_he": ENV_ROLE_HE.get(by_row.get(uid, "member"), "member"),
+                    "is_active": users[uid].is_active is not False}
                    for uid in shown if uid in users]
         members.sort(key=lambda x: (x["role"] != "manager", x["name"]))
         member_ids = {m["user_id"] for m in members}
-        available = [{"id": u.id, "name": u.name} for u in users.values() if u.id not in member_ids]
+        # never offer a deactivated account as somebody to add
+        available = [{"id": u.id, "name": u.name} for u in users.values()
+                     if u.id not in member_ids and u.is_active is not False]
         # only a system admin may hand out the manager role; a plain env manager can add members
         can_set_manager = _can_admin_envs(db, actor_id)
         return {"members": members, "available": available,
@@ -5196,6 +5257,8 @@ def environment_add_member(env_id: int, data: dict, request: Request = None,
         if not db.query(Environment).filter(Environment.id == env_id).first():
             raise HTTPException(404, "סביבה לא נמצאה")
         uid = data.get("user_id")
+        if _account_blocked(db, uid):
+            raise HTTPException(400, "לא ניתן להוסיף לסביבה משתמש מושבת")
         role = data.get("role") if data.get("role") in ENV_ROLES else "member"
         # only a system admin may grant the manager role
         if role == "manager" and not _can_admin_envs(db, actor):
@@ -6734,7 +6797,9 @@ def _run_action(db, a, task, actor_id, board):
     # the board on purpose.
     if act == "notify_person":
         if not _can_be_assigned(db, task.board_id, cfg.get("a_person")):
-            raise _Skipped("נמען ההתראה אינו חבר בלוח")
+            raise _Skipped("נמען ההתראה מושבת"
+                           if _account_blocked(db, cfg.get("a_person"))
+                           else "נמען ההתראה אינו חבר בלוח")
         _notify(db, cfg.get("a_person"), "automation", "אוטומציה הופעלה", body,
                 board_id=task.board_id, task_id=task.id)
     elif act == "notify_assignees":
@@ -6747,7 +6812,8 @@ def _run_action(db, a, task, actor_id, board):
     elif act == "assign_person":
         u = db.query(User).filter(User.id == cfg.get("a_person")).first()
         if not u or not _can_be_assigned(db, task.board_id, u.id):
-            raise _Skipped("האדם שהכלל משייך אינו חבר בלוח")
+            raise _Skipped("האדם שהכלל משייך מושבת" if u is not None and u.is_active is False
+                           else "האדם שהכלל משייך אינו חבר בלוח")
         if u in task.assignees:
             raise _Skipped("האדם משויך לפריט כבר")
         task.assignees.append(u)
@@ -7097,7 +7163,8 @@ def _automation_blockers(db, board, a):
         if f["type"] == "person":
             if not _can_be_assigned(db, a.board_id, v):
                 nm = db.query(User.name).filter(User.id == v).scalar() or v
-                out.append({"kind": "permission", "text": f"{nm} אינו חבר בלוח"})
+                why = _not_taggable_reason(db, a.board_id, v) or "אינו חבר בלוח"
+                out.append({"kind": "permission", "text": f"{nm} {why}"})
         elif f["type"] == "status":
             if not any(x["key"] == str(v) for x in _board_statuses(board)):
                 out.append({"kind": "dependency", "text": f"הסטטוס '{v}' אינו קיים בלוח"})
@@ -7653,7 +7720,8 @@ def _check_automation_person(db, board_id, cfg):
             continue
         if not _can_be_assigned(db, board_id, c.get("value")):
             nm = db.query(User.name).filter(User.id == c.get("value")).scalar() or "המשתמש"
-            raise HTTPException(400, f"{nm} אינו חבר בלוח, ולכן לא ניתן להתנות בו")
+            why = _not_taggable_reason(db, board_id, c.get("value")) or "אינו חבר בלוח"
+            raise HTTPException(400, f"{nm} {why}, ולכן לא ניתן להתנות בו")
     pid = (cfg or {}).get("a_person")
     if pid in (None, ""):
         return
@@ -7662,7 +7730,8 @@ def _check_automation_person(db, board_id, cfg):
     except (TypeError, ValueError):
         raise HTTPException(400, "נמען האוטומציה אינו תקין")
     if not _can_be_assigned(db, board_id, pid):
-        raise HTTPException(400, "אפשר לבחור רק משתמשים שהוזמנו ללוח")
+        raise HTTPException(400, "לא ניתן לבחור משתמש מושבת" if _account_blocked(db, pid)
+                            else "אפשר לבחור רק משתמשים שהוזמנו ללוח")
 
 
 def _automation_meta(db, board_id, data, a=None):
@@ -8832,7 +8901,8 @@ def _automation_health(db, board, a):
         v = cfg.get(f["key"])
         if f["type"] == "person" and not _can_be_assigned(db, a.board_id, v):
             nm = db.query(User.name).filter(User.id == v).scalar() or v
-            problems.append(f"{nm} אינו חבר בלוח")
+            why = _not_taggable_reason(db, a.board_id, v) or "אינו חבר בלוח"
+            problems.append(f"{nm} {why}")
         elif f["type"] == "status" and not any(
                 x["key"] == str(v) for x in _board_statuses(board)):
             problems.append(f"הסטטוס '{v}' אינו קיים בלוח")
@@ -9659,6 +9729,10 @@ def set_item_permissions(task_id: int, data: dict, actor_id: int = Depends(curre
         perms = dict(task.permissions or {})
         uid = str(data.get("user_id"))
         perm = data.get("perm")
+        # clearing an override stays open — that is how a blocked user's old
+        # grant gets cleaned up; handing out a new one does not
+        if perm in ("view", "edit", "delete") and _account_blocked(db, data.get("user_id")):
+            raise HTTPException(400, "לא ניתן להגדיר הרשאת פריט למשתמש מושבת")
         if perm in ("view", "edit", "delete", "none"):
             perms[uid] = perm
         else:
@@ -10415,7 +10489,8 @@ def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_use
         # removal stays open regardless, so an assignment made before this rule
         # existed can still be taken off the item
         if data.get("action") != "remove" and not was and not _can_be_assigned(db, task.board_id, user.id):
-            raise HTTPException(403, "אפשר לשייך רק משתמשים שהוזמנו ללוח")
+            raise HTTPException(403, "לא ניתן לשייך משתמש מושבת" if user.is_active is False
+                                else "אפשר לשייך רק משתמשים שהוזמנו ללוח")
         if data.get("action") == "remove":
             if was:
                 task.assignees.remove(user)
