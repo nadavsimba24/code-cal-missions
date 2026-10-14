@@ -3,7 +3,9 @@ CityOS — FastAPI Backend Server
 """
 import os, sys, json, uuid, csv, io, re, secrets, threading, urllib.parse, urllib.request
 import concurrent.futures
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
+from decimal import Decimal
+from enum import Enum
 from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1674,6 +1676,35 @@ def _backfill_item_id_column():
 _safe_startup(_backfill_item_id_column)
 
 
+def _col_plan(db, columns, user_id, board_role):
+    """The few columns that need work, worked out once for the whole board.
+
+    Serializing an item walked every column three times: is it two-way, is it a
+    connect, is it a mirror — and then again to find the ones this viewer may
+    not see. None of those answers depends on the item, so on a board of 639
+    items and 61 columns the same 39,000 questions were asked and answered per
+    render. Here they are asked once and kept with the other per-request caches.
+    """
+    key = ("_col_plan", id(columns), user_id, board_role)
+    plan = db.info.get(key)
+    if plan is not None:
+        return plan
+    cols = columns or []
+    plan = {
+        "two_way": [c["id"] for c in cols if _is_two_way(c)],
+        # EVERY connect column, two-way included: a two-way cell is filled from
+        # the relationship rows above and then filtered here, in that order.
+        # Excluding it from this list is how the first version of this leaked
+        # links the viewer may not see — see tests/test_connect_revoked_access.py
+        "connect": [c["id"] for c in cols if c.get("type") == "connect"],
+        "mirror": [c for c in cols if c.get("type") == "mirror"],
+        "hidden": ([c["id"] for c in cols if _col_perm(c, user_id, board_role) == "none"]
+                   if user_id is not None else []),
+    }
+    db.info[key] = plan
+    return plan
+
+
 _PREFETCH_CHUNK = 400          # keep the IN (...) list inside every driver's limit
 
 
@@ -1761,33 +1792,36 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
                      else db.query(Comment).filter(Comment.task_id == t.id).count())
     my_perm = _item_perm(t, user_id, board_role) if user_id is not None else "delete"
     cf = dict(t.custom_fields or {})
+    # Which columns need anything doing to them is a property of the board and
+    # the viewer, not of the item — so it is worked out once (_col_plan) rather
+    # than by walking every column on every row. On a board of 639 items and 61
+    # columns that walk ran 39,000 times to find, usually, nothing at all.
+    plan = _col_plan(db, columns, user_id, board_role)
     # A two-way connect cell is not stored on the item — it is the shared
     # relationship rows, read from whichever side wrote them. That is what makes
     # a link created on the other board appear here without anything copying it.
-    for c in (columns or []):
-        if _is_two_way(c):
-            cf[c["id"]] = _linked_ids(db, t.id, c["id"])
-        # A connect cell is the one place a board hands out ids from OTHER
-        # boards. Show the viewer only the links they could have opened anyway;
-        # the rest are not theirs to know about, and _merge_link_ids puts them
-        # back when this same viewer saves the cell.
-        if c.get("type") == "connect" and isinstance(cf.get(c["id"]), list):
-            cf[c["id"]] = _visible_link_ids(db, cf[c["id"]], user_id)
-        # A mirror field holds no data of its own — it is read through the
-        # connect column each time, so it follows the source item with nothing
-        # to keep in step. Anything stored under its id is stale and ignored.
-        if c.get("type") == "mirror":
-            cf[c["id"]] = _mirror_cells(db, t, c, user_id, columns or [])
+    for cid in plan["two_way"]:
+        cf[cid] = _linked_ids(db, t.id, cid)
+    # A connect cell is the one place a board hands out ids from OTHER
+    # boards. Show the viewer only the links they could have opened anyway;
+    # the rest are not theirs to know about, and _merge_link_ids puts them
+    # back when this same viewer saves the cell.
+    for cid in plan["connect"]:
+        if isinstance(cf.get(cid), list):
+            cf[cid] = _visible_link_ids(db, cf[cid], user_id)
+    # A mirror field holds no data of its own — it is read through the
+    # connect column each time, so it follows the source item with nothing
+    # to keep in step. Anything stored under its id is stale and ignored.
+    for c in plan["mirror"]:
+        cf[c["id"]] = _mirror_cells(db, t, c, user_id, columns or [])
     # A column's permission depends on the column and on the viewer's role —
     # never on the item. It used to ride on every item anyway, which on a board
     # of 687 items and 29 columns was 20,000 repetitions of the same map and
     # over half the response. The board now states it once (see get_board); what
     # stays per item is the consequence: a value the viewer may not see is not
-    # in the item at all.
-    if user_id is not None:
-        for c in (columns or []):
-            if _col_perm(c, user_id, board_role) == "none":
-                cf.pop(c["id"], None)
+    # in the item at all. Which columns those are is in the plan.
+    for cid in plan["hidden"]:
+        cf.pop(cid, None)
     d = {
         "id": t.id, "board_id": t.board_id, "group_id": t.group_id,
         "parent_id": t.parent_id,
@@ -1818,6 +1852,39 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         subs = [s for s in subs if user_id is None or _item_perm(s, user_id, board_role) != "none"]
         d["subtasks"] = [_serialize_task(s, db, with_subs=False, user_id=user_id, board_role=board_role, columns=columns) for s in subs]
     return d
+
+def _json_default(o):
+    """What json.dumps cannot do by itself, done the way FastAPI would.
+
+    Returning a plain dict hands it to FastAPI, which walks the whole structure
+    with jsonable_encoder and then dumps it. On a board of 639 items and 61
+    columns — 39,000 cells — that walk is ten times the cost of dumping the
+    same thing directly. It is a fixed multiple of the payload, so it is worst
+    exactly on the boards that are already slowest.
+
+    Bypassing it only helps if nothing on the wire changes, which is the one
+    thing that matters here: a date written "2026-10-14 09:00:00" instead of
+    "2026-10-14T09:00:00" would be a quiet break in every cell that parses one.
+    test_board_json_is_byte_identical compares the two, byte for byte.
+    """
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    if isinstance(o, Decimal):
+        return float(o)
+    if isinstance(o, Enum):
+        return o.value
+    if isinstance(o, (set, frozenset)):
+        return list(o)
+    if isinstance(o, bytes):
+        return o.decode("utf-8", "replace")
+    raise TypeError(f"not JSON-serializable: {type(o).__name__}")
+
+
+def _json(payload):
+    """A response built here rather than by FastAPI — see _json_default."""
+    return Response(json.dumps(payload, ensure_ascii=False, default=_json_default),
+                    media_type="application/json")
+
 
 @app.get("/api/boards/{board_id}")
 def get_board(board_id: int, user_id: int = Depends(current_user_id)):
@@ -1862,7 +1929,8 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
                                        BoardMember.role == "admin")
                                .order_by(User.id).all())]
 
-        return {
+        # built here rather than by FastAPI — see _json_default
+        return _json({
             "id": b.id, "name": b.name, "description": b.description,
             "board_type": b.board_type.value if hasattr(b.board_type, 'value') else b.board_type,
             "icon": b.icon, "color": b.color,
@@ -1902,7 +1970,7 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             "tasks": tasks_out,
-        }
+        })
 
 @app.post("/api/boards")
 def create_board(data: dict, actor_id: int = Depends(current_user_id)):

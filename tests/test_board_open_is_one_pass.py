@@ -262,3 +262,60 @@ def test_a_mirror_column_does_not_query_per_item(client, admin_id, counted):
     assert n_big - n_small <= 8, (
         f"10 mirrored items cost {n_small} queries and 40 cost {n_big} — the "
         "mirror is reading the linked items, and their boards, one at a time")
+
+
+def test_the_board_response_is_what_fastapi_would_have_sent(client, admin_id,
+                                                            member_id, monkeypatch):
+    """The board's JSON is now built here instead of by FastAPI, and the only
+    thing that justifies that is that nothing on the wire changed.
+
+    FastAPI walks the whole structure with jsonable_encoder before dumping it,
+    which on a board of 639 items and 61 columns is ten times the cost of
+    dumping it directly — a fixed multiple of the payload, so it is worst on
+    the boards that are already slowest. Worth having, and worth proving: a
+    date written "2026-10-14 09:00:00" instead of "2026-10-14T09:00:00" would
+    break every cell that parses one, quietly, on every board at once.
+    """
+    import json as _json_mod
+    from fastapi.encoders import jsonable_encoder
+
+    bid, ids = _board_with(client, admin_id, "זהות JSON", 4, people=(member_id,))
+    # something of every awkward kind: dates, a float, a None, Hebrew, a nested
+    # list, and a value only some columns carry
+    # estimated_hours is read but never written by any endpoint, so a float has
+    # to come through a column to be in the payload at all
+    cols = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"]
+    client.patch(f"/api/boards/{bid}",
+                 json={"actor_id": admin_id,
+                       "columns": cols + [{"id": "col_num", "type": "number", "title": "מספר"}]})
+    client.patch(f"/api/tasks/{ids[0]}",
+                 json={"actor_id": admin_id, "due_date": "2026-11-03",
+                       "start_date": "2026-11-01",
+                       "custom_fields": {"col_num": 2.5},
+                       "description": "תיאור עם \"גרשיים\" ושורה\nשנייה"})
+
+    seen = {}
+    real = cityos_main._json
+
+    def spy(payload):
+        seen["payload"] = payload
+        return real(payload)
+
+    monkeypatch.setattr(cityos_main, "_json", spy)
+    r = client.get(f"/api/boards/{bid}?user_id={admin_id}")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/json")
+    assert "payload" in seen, "the board response no longer goes through _json"
+
+    ours = _json_mod.loads(r.content)
+    theirs = _json_mod.loads(_json_mod.dumps(jsonable_encoder(seen["payload"]),
+                                             ensure_ascii=False))
+    assert ours == theirs, "the hand-built JSON differs from what FastAPI would send"
+
+    # and spelled out for the one that would hurt most
+    row = next(t for t in ours["tasks"] if t["id"] == ids[0])
+    assert row["due_date"].startswith("2026-11-03T") or row["due_date"] == "2026-11-03", \
+        f"due_date is written as {row['due_date']!r}"
+    assert "T" in row["created_at"], f"created_at is written as {row['created_at']!r}"
+    assert row["custom_fields"]["col_num"] == 2.5, "a float did not survive the round trip"
+    assert row["description"] == "תיאור עם \"גרשיים\" ושורה\nשנייה"
