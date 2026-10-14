@@ -5,8 +5,7 @@
 
 # Manual only. Every commit to main goes to QA automatically (see
 # azure-pipelines-qa.yml); production is a deliberate act, so this pipeline is
-# started by hand from the Run pipeline button. Until it was separated, a single
-# push ran both pipelines and there was no moment where anyone chose to release.
+# started by hand from the Run pipeline button.
 trigger: none
 
 resources:
@@ -21,41 +20,71 @@ variables:
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
 
-  # ── deploy target ────────────────────────────────────────────────────
-  # Production is the App Service Web App, not the Container App. The Container
-  # App is left standing but is no longer released to — deploying to both meant
-  # two things called "production" drifting apart, and no way to say from the
-  # outside which one a given build was serving.
-  #
-  # The Web App runs the image as a *site container*: one main container, pulled
-  # from the registry above, listening on targetPort. A release therefore has
-  # exactly two moving parts — point the site container at the new image, and
-  # make the site pick it up.
+  # Deploy target
   webAppName: 'Missions-Prd-Webapp'
   webAppResourceGroup: 'RG-Missions-PRD'
   siteContainerName: 'Missions'
   siteContainerPort: '8000'
   healthCheckPath: '/api/status'
-  azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'   # "Misssions"
-
-  # ARM service connection for the deploy stage. Reuses the SAME service
-  # principal that already backs the prod registry connection above, via
-  # workload identity federation — no new app registration, no client secret.
-  # It holds Contributor on the registry and on the Web App, and nothing else.
+  azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'
   azureServiceConnection: 'Missions-PROD-ARM'
 
-  # Agent VM image name
+  # Agent VM image
   vmImageName: 'ubuntu-latest'
 
 stages:
 - stage: Build
-  displayName: Build and push stage
+  displayName: Security scan, build and push
   jobs:
   - job: Build
-    displayName: Build
+    displayName: Scan source, then build image
     pool:
       vmImage: $(vmImageName)
     steps:
+    # Download the Linux Mend CLI into the checked-out repository directory.
+    - task: Bash@3
+      displayName: 'Download Mend CLI'
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          set -euo pipefail
+          curl -fsSL -o mend https://downloads.mend.io/cli/linux_amd64/mend
+          chmod +x mend
+          ./mend version
+
+    # These variables must be created in the pipeline/library; mark MEND_USER_KEY secret.
+    - task: Bash@3
+      displayName: 'Mend dependencies scan (SCA)'
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          set -euo pipefail
+          ./mend dep \
+            --scope "$(System.TeamProject)//$(Build.Repository.Name)" \
+            --update \
+            --reachability
+      env:
+        MEND_EMAIL: $(MENDEMAIL)
+        MEND_USER_KEY: $(MEND_USER_KEY)
+        MEND_URL: $(MENDURL)
+
+    - task: Bash@3
+      displayName: 'Mend code scan (SAST)'
+      inputs:
+        targetType: 'inline'
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          set -euo pipefail
+          ./mend code \
+            --scope "$(System.TeamProject)//$(Build.Repository.Name)"
+      env:
+        MEND_EMAIL: $(MENDEMAIL)
+        MEND_USER_KEY: $(MEND_USER_KEY)
+        MEND_URL: $(MENDURL)
+
+    # Docker build/push only starts if the preceding Mend tasks succeed.
     - task: Docker@2
       displayName: Build and push an image to container registry
       inputs:
@@ -99,9 +128,7 @@ stages:
 
           IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
 
-          # Say what is being replaced before replacing it. On production the
-          # previous image is the thing you need in your hand to roll back, and
-          # the run log is where someone will look for it at a bad moment.
+          # Record the currently configured image for troubleshooting/rollback.
           PREV=$(az webapp sitecontainers list "${COMMON[@]}" \
                    --query "[?name=='$CONTAINER'].image | [0]" -o tsv)
           if [ -z "$PREV" ]; then
@@ -110,19 +137,7 @@ stages:
             exit 1
           fi
 
-          # Ask the app for its own hostname rather than hardcoding one. A wrong
-          # constant here would verify some other environment and pass.
           HOST=$(az webapp show "${COMMON[@]}" --query defaultHostName -o tsv)
-
-          # ...and for *every* name it answers on, not just that one. The site
-          # also serves a custom domain, and a browser's cookie belongs to the
-          # host it typed: a login started on the custom domain that is sent
-          # back to the azurewebsites.net name lands where its state cookie is
-          # not, and dies as "פג תוקף בקשת ההתחברות" — which reads like a
-          # browser blocking cookies and is nothing of the sort. The app picks
-          # the entry matching the host in hand (backend/entra.py).
-          # Each of these must also be a registered Web redirect URI on the
-          # app registration (Mashcal-Missions), or that host gets AADSTS50011.
           HOSTS=$(az webapp show "${COMMON[@]}" --query "hostNames" -o tsv)
           REDIRECT_URIS=$(for h in $HOSTS; do printf 'https://%s/auth/callback,' "$h"; done | sed 's/,$//')
 
@@ -131,22 +146,12 @@ stages:
           echo "── host     : https://$HOST"
           echo "── redirects: $REDIRECT_URIS"
 
-          # The site container authenticates to the registry with the ACR admin
-          # user, and `sitecontainers update` writes the whole container back —
-          # so the credentials have to be resent or the next pull is anonymous
-          # and fails. Read them here instead of storing a copy in a pipeline
-          # variable, so rotating the registry password needs no pipeline edit.
+          # The site container currently uses ACR credentials; fetch them at deploy time.
           ACR_USER=$(az acr credential show -n "$(registryName)" \
                        --subscription "$(azureSubscriptionId)" --query username -o tsv)
           ACR_PASS=$(az acr credential show -n "$(registryName)" \
                        --subscription "$(azureSubscriptionId)" --query "passwords[0].value" -o tsv)
-          echo "##vso[task.setvariable variable=ACR_PASS;issecret=true]$ACR_PASS"
 
-          # Deliberately the build-id tag, never :latest. With :latest the image
-          # string never changes, so nothing downstream can tell a fresh deploy
-          # from a stale one — the run goes green while the old container keeps
-          # serving. A unique tag per run makes the running revision say exactly
-          # what code it is.
           az webapp sitecontainers update "${COMMON[@]}" \
             --container-name "$CONTAINER" \
             --image "$IMAGE" \
@@ -156,44 +161,6 @@ stages:
             --registry-password "$ACR_PASS" \
             --output none
 
-          # Only the three settings that must track the deployment. Secrets —
-          # ENTRA_CLIENT_SECRET, CITYOS_SESSION_SECRET, DATABASE_URL — are never
-          # written from here; `appsettings set` merges, so they survive.
-          #
-          #   MISSIONS_IMAGE_TAG  what /api/status reports, which is what the
-          #                       verification below actually checks.
-          #   CITYOS_AUTH_MODE    without it auth.py defaults to `easyauth`,
-          #                       which expects the platform to have terminated
-          #                       the login and injected a principal header. The
-          #                       Web App has no Easy Auth configured, so every
-          #                       /api/ request is refused and /auth/login does
-          #                       not even exist — the router is only mounted in
-          #                       `entra` mode. Failing closed is correct; being
-          #                       closed in production is not.
-          #   WEBSITES_CONTAINER_START_TIME_LIMIT
-          #                       how long App Service waits for the container to
-          #                       answer before deciding it is dead, killing it
-          #                       and starting it again. The default is 230
-          #                       seconds, and a cold pull of this image from the
-          #                       registry plus the app's own start does not fit
-          #                       in that — so the platform was killing a healthy
-          #                       container part-way up, repeatedly, and the site
-          #                       only came back once a retry happened to find
-          #                       the image already cached on the worker. That is
-          #                       what "never reported image_tag" meant on the
-          #                       last two releases: not a bad build, a start that
-          #                       was never allowed to finish. 1800 is the maximum
-          #                       the platform accepts.
-          #   ENTRA_REDIRECT_URI  derived from the Web App's own hostnames, so
-          #                       it cannot be left pointing at the host of some
-          #                       previous home, and so a domain added later is
-          #                       picked up by the next release rather than
-          #                       silently breaking sign-in from it. Entra
-          #                       matches it as a string; a stale one is
-          #                       AADSTS50011 and nobody gets in. Every host
-          #                       here must also be registered on the app
-          #                       registration (Mashcal-Missions) as a Web
-          #                       redirect URI.
           az webapp config appsettings set "${COMMON[@]}" --settings \
             MISSIONS_IMAGE_TAG="$(tag)" \
             CITYOS_AUTH_MODE="entra" \
@@ -201,30 +168,11 @@ stages:
             ENTRA_REDIRECT_URI="$REDIRECT_URIS" \
             --output none
 
-          # Idempotent, and here rather than only in the portal so that a Web App
-          # rebuilt from scratch comes back with it. App Service polls this path
-          # and takes an instance out of rotation when it stops answering 2xx;
-          # /api/status is public (PUBLIC_API_PATHS in backend/main.py), which it
-          # has to be, because the platform's probe carries no identity.
           az webapp config set "${COMMON[@]}" \
             --generic-configurations "{\"healthCheckPath\": \"$(healthCheckPath)\"}" \
             --output none
 
-          # ── let the agent through the front door, for this run only ───────
-          # The site sits behind an IP allow-list ending in "Deny all". The
-          # hosted agent's address is not on it, so its verification request
-          # comes back 403 — and `curl -fsS` turns that into the same empty
-          # string a container that has not finished starting gives. Three
-          # releases deployed correctly and were reported as failures, with all
-          # 120 attempts logged as "<still starting>" while the same URL
-          # answered instantly from an address that was on the list.
-          #
-          # The fix is to let the agent in, not to stop checking: a rule for
-          # this one address, at a priority above the deny, named after the run
-          # and removed by the trap on every exit — success, failure, or the
-          # agent being killed mid-run. A rule is only added when there is
-          # something to be let through; adding one to a site with no allow-list
-          # would *create* an allow-list and lock out everyone not named in it.
+          # If the site is deny-by-default, temporarily allow this hosted agent for verification.
           RULE=""
           cleanup() {
             [ -n "$RULE" ] || return 0
@@ -238,10 +186,6 @@ stages:
           DEFAULT_ACTION=$(az webapp config access-restriction show "${COMMON[@]}" \
                              --query ipSecurityRestrictionsDefaultAction -o tsv 2>/dev/null || true)
           if [ "$DEFAULT_ACTION" = "Deny" ]; then
-            # An agent killed outright never runs its trap, so a rule from a
-            # previous run can be left behind — an address that has since gone
-            # back to the pool, still allowed in. Sweep them first: the only
-            # rule by this name that should exist is the one about to be added.
             for stale in $(az webapp config access-restriction show "${COMMON[@]}" \
                              --query "ipSecurityRestrictions[?name != null] | [?starts_with(name, 'pipeline-verify-')].name" \
                              -o tsv 2>/dev/null || true); do
@@ -267,33 +211,11 @@ stages:
             fi
           fi
 
-          # Changing the image does not by itself stop the container that is
-          # already running — without this the site can keep serving the old
-          # build until something else happens to recycle it, which is the exact
-          # failure the unique tag was meant to rule out. Restarting makes the
-          # deployed version the running version now, and the check below proves
-          # it rather than assuming it.
           az webapp restart "${COMMON[@]}" --output none
           echo "── restarted, waiting for $(tag) to answer"
 
-          # The real test: not "is something up" — a container that never
-          # restarted answers 200 all day — but "is the build this run produced
-          # the one serving". /api/status echoes MISSIONS_IMAGE_TAG.
-          #
-          # The agent can reach the site (above), so the check stays strict —
-          # and every way it can fail now says which one it is. A refusal, an
-          # answer from the old image and a container still coming up are three
-          # different problems, and the log must not spell them the same way.
-          # Ten minutes was less than a cold start costs, so the gate went red
-          # on two releases that had in fact deployed — and a gate that cries
-          # wolf is worse than no gate, because the next genuine failure looks
-          # exactly like the last two false ones. Thirty minutes is past the
-          # worst start seen; with the start-time limit above it should rarely
-          # spend more than the first minute of it.
           refused=0
           for i in $(seq 1 120); do
-            # -f would collapse every HTTP error into the empty string that a
-            # container still starting also gives, so the code is read instead.
             resp=$(curl -sS --max-time 10 -w '\n%{http_code}' \
                      "https://$HOST/api/status" 2>/dev/null || true)
             code=${resp##*$'\n'}
@@ -301,10 +223,7 @@ stages:
             [ "$body" = "$code" ] && body=""
             running=$(printf '%s' "$body" | python3 -c \
               'import json,sys; print(json.load(sys.stdin).get("image_tag",""))' 2>/dev/null || true)
-            # Four different things, spelled four different ways: nothing
-            # answering is a container still coming up, a refusal is the
-            # allow-list, the OLD tag answering means the image never changed,
-            # and anything else is the site itself in trouble.
+
             case "${code:-000}:${running:-}" in
               "200:$(tag)") state="$running" ;;
               200:)         state="<200, but no image_tag — is this our app?>" ;;
@@ -320,16 +239,13 @@ stages:
                 'import json,sys; print(json.load(sys.stdin).get("auth_mode",""))' 2>/dev/null || true)
               echo "✅ https://$HOST is serving $IMAGE (auth_mode=$mode)"
               if [ "$mode" != "entra" ]; then
-                echo "##vso[task.logissue type=warning]auth_mode is '$mode', expected 'entra' — sign-in will refuse every request"
+                echo "##vso[task.logissue type=warning]auth_mode is '$mode', expected 'entra' — sign-in may fail"
               fi
               exit 0
             fi
             sleep 15
           done
 
-          # Say which of the two failures this is. "The deploy did not apply" and
-          # "the deploy applied and the app never came up" need different people
-          # and different fixes, and the old message covered both.
           CONFIGURED=$(az webapp sitecontainers list "${COMMON[@]}" \
                          --query "[?name=='$CONTAINER'].image | [0]" -o tsv)
           echo "##vso[task.logissue type=error]$HOST never reported image_tag=$(tag) within 30 minutes"
