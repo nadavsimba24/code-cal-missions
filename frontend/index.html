@@ -648,7 +648,19 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 #view>*:first-child{margin-top:18px}
 
 /* ===== Table / board view ===== */
-.group{margin-bottom:22px}
+/* A board is three to seven groups, and on opening it only the first one is
+   anywhere near the screen. content-visibility lets the browser skip layout
+   and paint for the rest until they are scrolled towards — on a board of 670
+   items in three groups that is two thirds of the work it used to do before
+   showing anything, and the 14,000 input fields inside those groups are two
+   thirds cheaper with them.
+
+   Nothing about the DOM changes: every row is still there, so refreshRow,
+   Chat.markOpenRow, the drag handlers and Ctrl+F all still find what they look
+   for. Each group carries an estimate of its own height inline (vTable), so
+   the scrollbar is right before anything is measured; `auto` means the browser
+   replaces the estimate with the real size once it has rendered it once. */
+.group{margin-bottom:22px;content-visibility:auto;contain-intrinsic-size:auto 600px}
 /* A collapsed group is a name and nothing else — some 28px tall, with the 22px
    gap under it belonging to no element at all. That gap is nearly half of the
    group's slot, and a pointer in it hit-tests to the board rather than to a
@@ -1534,7 +1546,7 @@ img.pf-av{object-fit:cover;background:#fff}
 .errpage h2{font-size:21px;font-weight:700;margin:0 0 10px;color:var(--text)}
 .errpage p{font-size:13.5px;color:var(--text-muted);line-height:1.65;margin:0 0 24px}
 .errpage .err-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
-.spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:sp 1s linear infinite;margin:50px auto}
+.spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:sp 1.4s linear infinite;margin:50px auto}
 @keyframes sp{to{transform:rotate(360deg)}}
 
 /* ── GIS Analysis ── */
@@ -7814,6 +7826,10 @@ function subOrder(tbody){ return [...tbody.querySelectorAll('tr[data-sid]:not(.s
 function groupOrder(el){ return [...el.querySelectorAll('.group:not(.sortable-drag) .group-head[data-gid]')].map(h=>+h.dataset.gid); }
 let _itemDragFrom=null, _subDragFrom=null, _groupDragFrom=null;
 
+/* Rough row height and per-group furniture (header, column headers, add-row,
+   battery), used only for the intrinsic-size estimate — being a little off
+   costs a scrollbar that settles, not a wrong layout. */
+const ROW_H_EST=37, GROUP_CHROME_EST=120;
 function vTable(el){
   const groups=groupsOf();
   // filters are active but nothing matches → show the "no match" hint. An empty
@@ -7844,7 +7860,11 @@ function vTable(el){
           <span class="g-nm"><span class="g-name" style="color:${col}">${esc(g.name)}</span>${sum}</span>
           <span class="g-count">${g.tasks.length}</span>
         </span></div>`;
-    return `<div class="group" ${real?'':'data-orphan="1"'}>
+    /* The height this group will turn out to be, so the scrollbar is honest
+       before the browser has laid it out (see .group in the CSS). A collapsed
+       group is a name and nothing else. */
+    const est=shut?64:(g.tasks.length*ROW_H_EST+GROUP_CHROME_EST);
+    return `<div class="group" ${real?'':'data-orphan="1"'} style="contain-intrinsic-size:auto ${est}px">
       <div class="grp-stick">
       ${head}
       <table class="tbl" ${shut?'style="display:none"':''}>
