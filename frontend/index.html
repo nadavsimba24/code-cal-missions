@@ -3433,7 +3433,16 @@ const BoardLog = {
       return `<span class="lg-link-act">הסיר קישור</span>${gone.map(x=>chip(x,'old')).join('')}`;
     return '';
   },
-  pill(field,v){ return esc(Chat.transVal(field,v)); },
+  /* The same two states, drawn. The green tick is the one the board itself
+     shows in the cell (.cc-check is accent-coloured green), so a row in the log
+     and the row on the board say the same thing in the same way — and the eye
+     lands on the side that is ticked without reading either word. */
+  pill(field,v){
+    const on=Chat._checkState(field,v);
+    if(on==='on') return '<i class="fa-solid fa-square-check" style="color:var(--green)"></i> מסומן';
+    if(on==='off') return '<i class="fa-regular fa-square" style="color:var(--text-light)"></i> לא מסומן';
+    return esc(Chat.transVal(field,v));
+  },
   pillStyle(field,v){
     const d=Chat._decode(v);
     if(d==null||typeof d==='object')return '';
@@ -12937,7 +12946,22 @@ const Chat = {
     if(/^\s*[\[{"]/.test(s)){ try{ return JSON.parse(s); }catch(e){} }
     return s;
   },
+  /* A checkbox has two states and no empty one. The log stored them as JSON
+     and printed them raw, so ticking a box read "— ← true": the English word
+     for a value, and an em-dash that elsewhere in this log means "nothing at
+     all" standing in for a box somebody deliberately cleared. Both states say
+     what they are now, and the pill version below puts the tick itself on
+     whichever side is ticked. */
+  _checkState(f,v){
+    if(!f||!f.startsWith('col:'))return null;
+    const c=customColumns().find(x=>x.id===f.slice(4));
+    if(!c||c.type!=='checkbox')return null;
+    const d=this._decode(v);
+    return (d===true||d===1||d==='true'||d==='1') ? 'on' : 'off';
+  },
   transVal(f,v){
+    const on=this._checkState(f,v);
+    if(on)return on==='on'?'מסומן':'לא מסומן';
     const d=this._decode(v);
     if(d==null||d==='')return '—';
     if(typeof d==='object'){
