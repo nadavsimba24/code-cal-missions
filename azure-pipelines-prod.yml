@@ -55,14 +55,14 @@ stages:
 
     # These variables must be created in the pipeline/library; mark MEND_USER_KEY secret.
     - task: Bash@3
-      displayName: 'Mend dependencies scan (SCA)'
+      displayName: 'Mend dependencies scan (SCA) - Production'
       inputs:
         targetType: 'inline'
         workingDirectory: '$(Build.SourcesDirectory)'
         script: |
           set -euo pipefail
           ./mend dep \
-            --scope "$(System.TeamProject)//$(Build.Repository.Name)" \
+            --scope "Missions//Missions-Prod" \
             --update \
             --reachability
       env:
@@ -71,14 +71,14 @@ stages:
         MEND_URL: $(MENDURL)
 
     - task: Bash@3
-      displayName: 'Mend code scan (SAST)'
+      displayName: 'Mend code scan (SAST)  - Production'
       inputs:
         targetType: 'inline'
         workingDirectory: '$(Build.SourcesDirectory)'
         script: |
           set -euo pipefail
           ./mend code \
-            --scope "$(System.TeamProject)//$(Build.Repository.Name)"
+            --scope "Missions//Missions-Prod"
       env:
         MEND_EMAIL: $(MENDEMAIL)
         MEND_USER_KEY: $(MEND_USER_KEY)
