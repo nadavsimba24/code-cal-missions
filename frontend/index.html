@@ -12730,6 +12730,13 @@ const Chat = {
   onDragLeave(e){ const comp=e.currentTarget; if(e.relatedTarget&&comp.contains(e.relatedTarget))return; // still inside
     const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show'); },
   async onDrop(e){ if(!this._isImport(e))return; e.preventDefault();
+    // The composer sits INSIDE #chat-panel, and bindDnd listens for a drop on
+    // the panel so a file can be dropped anywhere on it. Without this the event
+    // bubbled there after being handled here and the file was uploaded a second
+    // time — every file, twice, and for an Outlook drag the two copies did not
+    // even match, because that handler uploads the raw file while this one
+    // normalises the name first (_normDropped). Handled here means handled.
+    e.stopPropagation();
     const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show');
     const dt=e.dataTransfer; if(!dt)return;
     // 1) collect real file bytes (normal files + Outlook emails the browser exposes as .msg)
