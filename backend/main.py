@@ -9495,6 +9495,33 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                         cfd.setdefault(k, v)
             except ValueError:
                 pass
+        elif "priority" in data and data["priority"] in (None, ""):
+            # Back to "טרם הוגדר" — the same gap the status column had, in the
+            # column beside it. The five engine values were the only things
+            # sayable, and none of them means "nobody has chosen", so a priority
+            # set by mistake was permanent: changeable to another priority, never
+            # back to undecided.
+            #
+            # The engine value returns to `medium`, exactly where a new item's
+            # priority sits (see create_task) — sorting, the kanban and every
+            # chart read this field, so a cleared item has to read as
+            # unremarkable rather than as whatever it was before, and must never
+            # hold a null that belongs in no bucket at all.
+            #
+            # In the API and not only in the picker, for the reason the status
+            # branch below records: a priority set by an import or a script used
+            # to leave the cell reading "טרם הוגדר" while task.priority said
+            # otherwise. Clearing deserves the same treatment both ways.
+            _cfu = dict(task.custom_fields or {})
+            for _k in ("priority_key", "priority_label", "priority_color"):
+                _cfu.pop(_k, None)
+            _cfu["priority_unset"] = True
+            task.custom_fields = _cfu
+            # Logged even where the engine value does not move: what changed is
+            # that the priority is no longer anybody's choice. The empty new
+            # value is what both logs render as "—".
+            _audit(db, task_id, "update", "priority", st_val(task.priority), "", actor)
+            task.priority = Priority.MEDIUM
         if data.get("status"):
             try:
                 nv = TaskStatus(data["status"])
