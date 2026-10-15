@@ -30,14 +30,27 @@ def test_a_group_is_painted_only_when_it_is_needed():
     rule = m.group(1)
     assert "content-visibility:auto" in rule, (
         "off-screen groups are being laid out and painted again")
-    assert "contain-intrinsic-size" in rule, (
+    assert "contain-intrinsic-height" in rule, (
         "without a fallback size an unrendered group measures zero and the "
         "scrollbar is wrong before anything scrolls")
+    # the BLOCK axis by name, never the `contain-intrinsic-size` shorthand: that
+    # one sets both, and a group sized by its contents in the inline axis then
+    # claims its height estimate as a width too — measured at 9000px of empty
+    # horizontal scroll. See tests/test_board_scrolls_sideways.py.
+    assert "contain-intrinsic-size" not in rule, (
+        "the shorthand is back, and it leaks the height estimate into the width")
 
 
 def test_every_group_states_the_height_it_will_turn_out_to_be():
-    """A shared default cannot be right for a group of 2 and a group of 223."""
-    assert "contain-intrinsic-size:auto ${est}px" in SRC, (
+    """A shared default cannot be right for a group of 2 and a group of 223.
+
+    The BLOCK axis only, and spelled as the longhand on purpose: as the
+    `contain-intrinsic-size` shorthand the same number also claimed that many
+    pixels of WIDTH for a skipped group, which stretched the horizontal
+    scrollbar to a width nothing was drawn at. See
+    tests/test_board_scrolls_sideways.py.
+    """
+    assert "contain-intrinsic-height:auto ${est}px" in SRC, (
         "vTable stopped writing a per-group estimate")
     # the estimate has to follow the row count, not be a constant
     est = re.search(r"const est=shut\?\d+:\(g\.tasks\.length\*(\w+)\(\)\+(\w+)\)", SRC)
@@ -45,7 +58,7 @@ def test_every_group_states_the_height_it_will_turn_out_to_be():
     fn, const = est.groups()
     assert f"function {fn}(" in SRC, f"{fn} is not defined"
     assert re.search(r"\b" + const + r"\s*=\s*\d+", SRC), f"{const} is not defined"
-    assert "auto " in SRC[SRC.index("contain-intrinsic-size:auto ${est}px"):][:40], (
+    assert "auto " in SRC[SRC.index("contain-intrinsic-height:auto ${est}px"):][:42], (
         "the estimate must be `auto <length>`, so the browser replaces it with "
         "the real size once the group has been rendered once")
 

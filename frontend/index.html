@@ -660,7 +660,24 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    for. Each group carries an estimate of its own height inline (vTable), so
    the scrollbar is right before anything is measured; `auto` means the browser
    replaces the estimate with the real size once it has rendered it once. */
-.group{margin-bottom:22px;content-visibility:auto;contain-intrinsic-size:auto 600px}
+/* Two things this rule has to do at once, and they pull against each other.
+   content-visibility turns on PAINT containment as well — permanently, not
+   only while a group is skipped — and paint containment clips whatever leaves
+   the element's box. The table is `width:max-content` and a board is wider
+   than the window, so a plain full-width .group clipped every column past the
+   edge and, through layout containment, hid the overflow from #view as well:
+   the horizontal scrollbar disappeared and with it half the board.
+   `min-width:max-content` is what .grp-stick and .tbl inside it already carry —
+   the group's box grows to the content it holds, so there is nothing to clip
+   and #view scrolls again.
+   The estimate is then the BLOCK axis only. As the `contain-intrinsic-size`
+   shorthand it applied to both, and a skipped group — now sized from its
+   contents in the inline axis too — would have claimed `est` pixels of WIDTH:
+   a 223-row group would ask for some nine thousand, and the horizontal
+   scrollbar would stretch to fit a width nothing is drawn at. With the width
+   axis left at `none` a skipped group measures empty across, which is what it
+   is, and takes the container's width. */
+.group{margin-bottom:22px;min-width:max-content;content-visibility:auto;contain-intrinsic-width:none;contain-intrinsic-height:auto 600px}
 /* A collapsed group is a name and nothing else — some 28px tall, with the 22px
    gap under it belonging to no element at all. That gap is nearly half of the
    group's slot, and a pointer in it hit-tests to the board rather than to a
@@ -8058,7 +8075,10 @@ function groupHTML(g){
        before the browser has laid it out (see .group in the CSS). A collapsed
        group is a name and nothing else. */
     const est=shut?64:(g.tasks.length*rowHeightEst()+GROUP_CHROME_EST);
-    return `<div class="group" ${real?'':'data-orphan="1"'} style="contain-intrinsic-size:auto ${est}px">
+    // the block axis only — see .group in the CSS. As the shorthand this also
+    // claimed `est` pixels of width for a skipped group, and inline styles beat
+    // the sheet, so the width axis had to be named here rather than there.
+    return `<div class="group" ${real?'':'data-orphan="1"'} style="contain-intrinsic-height:auto ${est}px">
       <div class="grp-stick">
       ${head}
       <table class="tbl" ${shut?'style="display:none"':''}>
