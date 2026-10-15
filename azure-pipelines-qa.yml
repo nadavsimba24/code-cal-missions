@@ -49,22 +49,22 @@ stages:
           ./mend version
 
     - task: PowerShell@2
-      displayName: 'Mend dependencies scan (SCA)'
+      displayName: 'Mend dependencies scan (SCA) - QA' 
       inputs:
         targetType: 'inline'
         script: |
-          ./mend dep --scope $(System.TeamProject)//$(Build.Repository.Name) --update --reachability
+          ./mend dep --scope "Missions//Missions-QA" --update --reachability
       env:
         MEND_EMAIL: $(MENDEMAIL)
         MEND_USER_KEY: $(MEND_USER_KEY)
         MEND_URL: $(MENDURL)
 
     - task: PowerShell@2
-      displayName: 'Mend code scan (SAST)'
+      displayName: 'Mend code scan (SAST) - QA'
       inputs:
         targetType: 'inline'
         script: |
-          ./mend code --scope $(System.TeamProject)//$(Build.Repository.Name)
+          ./mend code --scope "Missions//Missions-QA"
       env:
         MEND_EMAIL: $(MENDEMAIL)
         MEND_USER_KEY: $(MEND_USER_KEY)
