@@ -6607,6 +6607,64 @@ def _task_priority_key(task):
     return (task.custom_fields or {}).get("priority_key") or pv
 
 
+def _logged_status(task):
+    """What a log row should say an item's status IS.
+
+    The vocabulary key the cell shows — deliberately not the TaskStatus enum.
+    Several board statuses can share one enum value: the default vocabulary has
+    "תקוע" and "הקפאה" both sitting on `on_hold`. A log written from the enum
+    therefore says *nothing at all* when an item moves between them, and names
+    the base rather than the status somebody actually picked whenever a
+    board-defined one is chosen — which is how a change could land in the column
+    and leave the log reading as though only the original status ever existed.
+
+    "" means nobody has chosen, which both logs already render as "—".
+    """
+    if (task.custom_fields or {}).get("status_unset"):
+        return ""
+    return _task_status_key(task)
+
+
+def _logged_priority(task):
+    """The same for the priority column, which has the same machinery."""
+    if (task.custom_fields or {}).get("priority_unset"):
+        return ""
+    return _task_priority_key(task)
+
+
+def _restore_choice(db, task, field, value):
+    """Put an item's status or priority back to `value` as the cell said it.
+
+    Undo reads a log row, and a row now holds the vocabulary key — so it cannot
+    go straight at the enum any more. Three things a row can hold: "" (nobody
+    had chosen), a board vocabulary key, or a bare engine value, which is what
+    rows written before the log recorded keys still carry.
+    """
+    unset_key = field + "_unset"
+    neutral = TaskStatus.TODO if field == "status" else Priority.MEDIUM
+    if value in (None, ""):
+        cf = dict(task.custom_fields or {})
+        for k in (field + "_key", field + "_label", field + "_color"):
+            cf.pop(k, None)
+        cf[unset_key] = True
+        task.custom_fields = cf
+        setattr(task, field, neutral)
+        return True
+    if (_apply_status_key if field == "status" else _apply_priority_key)(db, task, value):
+        return True
+    # Not in the board's vocabulary any more — a status the board has since
+    # deleted. Fall back to the engine value so undo still does something.
+    try:
+        setattr(task, field, (TaskStatus if field == "status" else Priority)(str(value)))
+    except ValueError:
+        return False
+    cf = dict(task.custom_fields or {})
+    for k in (field + "_key", field + "_label", field + "_color", unset_key):
+        cf.pop(k, None)
+    task.custom_fields = cf
+    return True
+
+
 def _automation_matches(a, event):
     r = recipes.recipe(a.recipe_id)
     if not r or r["trigger"] != event.get("type"):
@@ -6823,14 +6881,21 @@ def _run_action(db, a, task, actor_id, board):
     elif act == "set_status":
         if _task_status_key(task) == str(cfg.get("a_status")):
             raise _Skipped("הפריט נמצא בסטטוס הזה כבר")
+        _was = _logged_status(task)
         if not _apply_status_key(db, task, cfg.get("a_status")):
             raise _Skipped("הסטטוס שהכלל מבקש אינו קיים בלוח")
+        # In the log like anybody's change, with no user behind it — which both
+        # logs already render as "מערכת". Attributing it to whoever's edit
+        # tripped the rule would be a lie about who decided.
+        _audit(db, task.id, "update", "status", _was, _logged_status(task), None)
         out.append({"type": "status_changes_to", "status": str(cfg.get("a_status"))})
     elif act == "set_priority":
         if _task_priority_key(task) == str(cfg.get("a_priority")):
             raise _Skipped("לפריט יש את העדיפות הזו כבר")
+        _was = _logged_priority(task)
         if not _apply_priority_key(db, task, cfg.get("a_priority")):
             raise _Skipped("העדיפות שהכלל מבקש אינה קיימת בלוח")
+        _audit(db, task.id, "update", "priority", _was, _logged_priority(task), None)
         out.append({"type": "priority_changes_to", "priority": str(cfg.get("a_priority"))})
     elif act == "move_to_group":
         g = db.query(Group).filter(Group.id == cfg.get("a_group"),
@@ -9464,10 +9529,15 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         # the real change, whichever route set it (built-in or board-defined value)
         _before_status = _task_status_key(task)
         _before_priority = _task_priority_key(task)
+        # What the LOG compares — the same two columns read as the cell reads
+        # them, which is not the same question the automations above ask (an
+        # unset status still groups as `todo`; a log must say it is nobody's
+        # choice). See _logged_status.
+        _was_status = _logged_status(task)
+        _was_priority = _logged_priority(task)
         _before_assignees = {u.id for u in task.assignees}
         _link_delta = {}          # col id → (added, removed), for the link triggers
         _link_report = []         # ids that did not take, and why
-        st_val = lambda v: (v.value if hasattr(v, "value") else v)
         if data.get("title") is not None and data["title"] != task.title:
             _audit(db, task_id, "update", "title", task.title, data["title"], actor)
             task.title = data["title"]
@@ -9483,8 +9553,6 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 _cfu = dict(task.custom_fields or {})    # same reasoning as status, below
                 if _cfu.pop("priority_unset", None) is not None:
                     task.custom_fields = _cfu
-                if st_val(task.priority) != st_val(nv):
-                    _audit(db, task_id, "update", "priority", st_val(task.priority), st_val(nv), actor)
                 task.priority = nv
                 if pcf:
                     cfd = data.get("custom_fields")
@@ -9517,10 +9585,6 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 _cfu.pop(_k, None)
             _cfu["priority_unset"] = True
             task.custom_fields = _cfu
-            # Logged even where the engine value does not move: what changed is
-            # that the priority is no longer anybody's choice. The empty new
-            # value is what both logs render as "—".
-            _audit(db, task_id, "update", "priority", st_val(task.priority), "", actor)
             task.priority = Priority.MEDIUM
         if data.get("status"):
             try:
@@ -9534,8 +9598,6 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 _cfu = dict(task.custom_fields or {})
                 if _cfu.pop("status_unset", None) is not None:
                     task.custom_fields = _cfu
-                if st_val(task.status) != st_val(nv):
-                    _audit(db, task_id, "update", "status", st_val(task.status), st_val(nv), actor)
                 task.status = nv
                 # Nothing else follows from a status. It does not move the item
                 # between groups, and finishing the last sub-item does not finish
@@ -9558,10 +9620,6 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                 _cfu.pop(_k, None)
             _cfu["status_unset"] = True
             task.custom_fields = _cfu
-            # Logged even where the engine value does not move: what changed is
-            # that the status is no longer anybody's choice. The empty new value
-            # is what both logs render as "—".
-            _audit(db, task_id, "update", "status", st_val(task.status), "", actor)
             task.status = TaskStatus.TODO
         if "due_date" in data:
             due = data["due_date"]
@@ -9630,6 +9688,18 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                                     f"שויכת לעמודת '{col.get('title', 'אנשים')}' במשימה '{task.title}'.",
                                     board_id=task.board_id, task_id=task_id)
             task.custom_fields = cf
+        # One log row per column that changed, named the way the cell is named.
+        # Written here rather than inside each branch above: a board-defined
+        # status or priority is stored as its engine base in one part of the
+        # request and as a key in custom_fields in another, so nothing earlier
+        # than this knows what the cell ends up saying. Logged even where the
+        # engine value does not move — "תקוע" → "הקפאה" shares a base, and so
+        # does clearing `medium` back to undecided; what changed is what the
+        # board shows and who chose it.
+        for _f, _old, _new in (("status", _was_status, _logged_status(task)),
+                               ("priority", _was_priority, _logged_priority(task))):
+            if _old != _new:
+                _audit(db, task_id, "update", _f, _old, _new, actor)
         # ── automations ── fire on what actually changed, before the commit so a
         # rule's own writes land in the same transaction as the edit
         if _task_status_key(task) != _before_status:
@@ -10438,15 +10508,14 @@ def export_activity(task_id: int, actor_id: int = Depends(current_user_id)):
         return Response(content=buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=activity_task_{task_id}.csv"})
 
-def _revert_field(task, field, old):
+def _revert_field(db, task, field, old):
     if field == "title":
         task.title = old or ""; return True
-    if field == "status":
-        try: task.status = TaskStatus(old); return True
-        except ValueError: return False
-    if field == "priority":
-        try: task.priority = Priority(old); return True
-        except ValueError: return False
+    # These two rows hold the vocabulary key the cell showed, not the enum
+    # value — which is what makes "הקפאה → תקוע" legible in the first place —
+    # so putting one back goes through the board's vocabulary.
+    if field in ("status", "priority"):
+        return _restore_choice(db, task, field, old)
     if field == "due_date":
         task.due_date = datetime.fromisoformat(old) if old else None; return True
     if field and field.startswith("col:"):
@@ -10494,7 +10563,7 @@ def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_
                 _cf[_col["id"]] = _merge_link_ids(db, _old, _cf.get(_col["id"]) or [],
                                                   None, _is_multi(_col))
                 task.custom_fields = _cf
-        elif not _revert_field(task, log.field_name, log.old_value):
+        elif not _revert_field(db, task, log.field_name, log.old_value):
             raise HTTPException(400, "שדה לא נתמך לביטול")
         _audit(db, task.id, "undo", field=log.field_name, old=log.new_value, new=log.old_value, user_id=user.id)
         db.commit()
@@ -10654,7 +10723,30 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
         if task.group_id != src_group:
             _renumber_group(db, task.board_id, src_group)   # close the gap behind it
         if "status" in data:
-            task.status = data["status"]
+            # The kanban drag, the sub-item status cell and the console `move`
+            # command all set a status through here. This used to assign the raw
+            # string onto the enum column: nothing ever reached the log, and any
+            # board-defined label still riding in custom_fields was left behind,
+            # so the cell went on painting a status the item no longer had.
+            _was = _logged_status(task)
+            if not _apply_status_key(db, task, data["status"]):
+                # Not in the board's vocabulary. `todo` and `review` are real
+                # engine values the default vocabulary does not offer, and the
+                # sub-item cell cycles through exactly those, so they are taken
+                # here. Anything else is left alone, the way the PATCH endpoint
+                # leaves an unknown status alone.
+                try:
+                    task.status = TaskStatus(str(data["status"]))
+                except ValueError:
+                    pass
+                else:
+                    _cf = dict(task.custom_fields or {})
+                    for _k in ("status_key", "status_label", "status_color", "status_unset"):
+                        _cf.pop(_k, None)
+                    task.custom_fields = _cf
+            _now = _logged_status(task)
+            if _now != _was:
+                _audit(db, task_id, "update", "status", _was, _now, actor)
         db.commit()
         bus.publish("task.changed", board_id=_src_board, task_id=task_id, actor_id=actor)
         return {"status": "moved"}
