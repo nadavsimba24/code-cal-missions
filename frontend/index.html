@@ -10081,7 +10081,7 @@ async function setEmailCell(taskId,colId,el){
   const v=(el.value||'').trim();
   if(v && !EMAIL_RE.test(v)){ toast('כתובת דוא"ל לא תקינה'); el.focus(); return; }
   await setCell(taskId,colId,v||null);
-  refreshRow(taskId);   // the envelope appears or goes with the address
+  refreshRow(taskId,false,colId);   // the envelope appears or goes with the address
 }
 
 /* A formatted number cannot be typed into. On the way in the cell shows the
@@ -10135,9 +10135,19 @@ function canEditCol(t,colId){
    Falls back to a full render exactly where a single row cannot express the
    change: the item moved group, it no longer passes the active filter, or a
    column sort means its position may have changed. */
-function refreshRow(id, forceWhole){
+function refreshRow(id, forceWhole, changed){
   const t=findAnyTask(id);
-  if(!t || forceWhole || st.colSort){ renderView(); return; }
+  /* A sort forced a full re-render of every group on the board, for any change
+     at all. But a sort only moves a row when the value it sorts BY is the one
+     that changed: sorted by one column and editing another, the row stays
+     exactly where it is. Rebuilding anyway threw away every group and had them
+     re-measured from their height estimates — which is the flicker across the
+     whole board after each status change on a sorted board.
+     `changed` names the field or column id that moved. A caller that does not
+     know what changed passes nothing and still gets the old behaviour. */
+  const mayMove = st.colSort && st.colSort.key
+                  && (changed===undefined || st.colSort.key===changed);
+  if(!t || forceWhole || mayMove){ renderView(); return; }
   // `Live` is a const at script scope, so it is NOT on window — testing
   // window.Live is always false and would silently fall back to a full render,
   // which is the very thing this avoids.
@@ -10214,7 +10224,7 @@ async function setField(id,field,value){
     // back with the write — the grid follows where the server put it without
     // knowing a thing about which rules the board has.
     if(t && res && res.group_id!=null && res.group_id!==t.group_id){ t.group_id=res.group_id; _wholeView=true; }
-    refreshRow(id, _wholeView || !!(t && t.group_id!==_group0));
+    refreshRow(id, _wholeView || !!(t && t.group_id!==_group0), field);
   }catch(e){ toast('שגיאה בעדכון'); }
 }
 function fieldPicker(e,id,field,map){
@@ -10341,7 +10351,7 @@ function pickStatusCell(e,taskId,colId,optIdx){
   // the id is the reference; label and colour ride along only as a fallback for
   // an option that is later removed from the column
   setCell(taskId,colId,o?{id:o.id||null,label:o.label,color:o.color}:null);
-  refreshRow(taskId);
+  refreshRow(taskId,false,colId);
 }
 /* ===== board-admin editor for one status column's own vocabulary ===== */
 const STATUS_COL_MAX=30;
