@@ -10997,6 +10997,26 @@ def list_assets():
             })
         return {"type": "FeatureCollection", "features": features}
 
+def _utc_iso(dt):
+    """A stored timestamp as an ISO string that says which zone it is in.
+
+    These are written with datetime.now(timezone.utc), but the column is a plain
+    DateTime, so SQLAlchemy drops the offset and hands the value back naive. It
+    was then serialised naive too — "2026-10-15T08:22:02" with nothing to say
+    that is UTC — and ECMAScript reads a date-time with no offset as LOCAL time.
+    Every login therefore displayed three hours early in Israel: not a different
+    zone, a wrong time.
+
+    Naive means UTC here, because that is what wrote it. An aware value is left
+    alone, so a column later migrated to timezone=True needs no change.
+    """
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 # ── Users ────────────────────────────────────────────────────────────
 
 @app.get("/api/users")
@@ -11009,8 +11029,7 @@ def list_users():
         last_logins = dict(
             db.query(LoginEvent.user_id, _func.max(LoginEvent.logged_in_at)).group_by(LoginEvent.user_id).all()
         )
-        def _iso(dt):
-            return dt.isoformat() if dt else None
+        _iso = _utc_iso
         return [{
             "id": u.id, "name": u.name, "email": u.email,
             "role": u.role, "avatar_url": u.avatar_url,
@@ -11040,7 +11059,7 @@ async def record_login(request: Request, actor_id: int = Depends(current_user_id
         )
         db.add(ev)
         db.commit()
-        return {"status": "ok", "logged_in_at": ev.logged_in_at.isoformat()}
+        return {"status": "ok", "logged_in_at": _utc_iso(ev.logged_in_at)}
 
 @app.get("/api/auth/me")
 def whoami(request: Request):
@@ -11093,7 +11112,7 @@ def login_history(uid: int, actor_id: int = Depends(current_user_id), limit: int
         evs = (db.query(LoginEvent).filter(LoginEvent.user_id == uid)
                .order_by(LoginEvent.logged_in_at.desc()).limit(max(1, min(limit, 200))).all())
         return [{
-            "logged_in_at": e.logged_in_at.isoformat() if e.logged_in_at else None,
+            "logged_in_at": _utc_iso(e.logged_in_at),
             "ip": e.ip, "user_agent": e.user_agent,
         } for e in evs]
 
@@ -11110,7 +11129,7 @@ def all_login_history(actor_id: int = Depends(current_user_id), limit: int = 100
             "user_id": e.user_id,
             "user_name": names.get(e.user_id, ("—", None))[0],
             "avatar_url": names.get(e.user_id, ("—", None))[1],
-            "logged_in_at": e.logged_in_at.isoformat() if e.logged_in_at else None,
+            "logged_in_at": _utc_iso(e.logged_in_at),
             "ip": e.ip, "user_agent": e.user_agent,
         } for e in evs]
 

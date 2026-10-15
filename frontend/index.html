@@ -7554,7 +7554,30 @@ const SysAdmin = {
     },{title:'ביטול גישת אורח',confirmText:'בטל גישה',
        note:`האורח יוסר מהקבוצה ${group} והחשבון שלו כאן יושבת, כך שלא יוכל להתחבר. חשבון האורח עצמו ב-Entra ID נשאר — מחיקה משם נעשית בפורטל.`});
   },
-  fdt(iso){ if(!iso)return '<span style="color:var(--text-light)">— מעולם לא —</span>'; try{ return esc(new Date(iso).toLocaleString('he-IL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})); }catch(e){ return esc(iso); } },
+  /* A login time, read in Israel.
+
+     Two separate things had to be said. The server's timestamps are UTC, and
+     were sent with nothing marking them as such — and ECMAScript reads a
+     date-time with no offset as LOCAL time, so every login showed three hours
+     early. The API says +00:00 now; a bare one is still taken as UTC here,
+     because that is what it has always been and an old cached payload must not
+     read differently from a fresh one.
+
+     And the column is read by people in Israel, so it is shown in Israel's
+     time rather than in whatever zone the machine happens to be set to — a
+     laptop still on a holiday's clock would otherwise quietly report the wrong
+     hour to an admin checking who logged in when. */
+  TZ:'Asia/Jerusalem',
+  fdt(iso){
+    if(!iso)return '<span style="color:var(--text-light)">— מעולם לא —</span>';
+    try{
+      const s=String(iso);
+      const utc=/(Z|[+-]\d{2}:?\d{2})$/.test(s)?s:s+'Z';   // naive means UTC
+      const d=new Date(utc); if(isNaN(d))return esc(iso);
+      return esc(d.toLocaleString('he-IL',{timeZone:this.TZ,day:'2-digit',
+        month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}));
+    }catch(e){ return esc(iso); }
+  },
   rowsHTML(){
     if(!this.users||!this.users.length) return `<tr><td colspan="7"><div class="empty" style="padding:20px">אין משתמשים</div></td></tr>`;
     return this.users.map(u=>{
