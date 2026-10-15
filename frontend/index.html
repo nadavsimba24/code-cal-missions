@@ -3650,9 +3650,23 @@ function startBoardRename(){
   inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();inp.blur();}else if(e.key==='Escape'){inp.value=cur;inp.blur();}});
 }
 const VIEW_META=Object.fromEntries(VIEWS.map(v=>[v.id,v]));
-function boardViews(){
+/* TEMPORARY — views still being built, hidden until they are finished.
+   Listed here rather than taken out of VIEWS, and filtered only where the
+   screen OFFERS a view, never where a board's own setting is read or written:
+   a board that has קנבן turned on keeps it turned on in the database, and
+   deleting an id from this set brings it back exactly as its boards had it.
+   Removing the whole set (and the one filter below) is the way to finish. */
+const VIEWS_WIP=new Set(['kanban','dashboard','calendar','map','gis','links']);
+/* What this board has turned on — the setting as it stands, WIP included.
+   Anything that EDITS the setting has to start from here, or hiding a view
+   would quietly delete it from the board the next time a view was toggled. */
+function boardViewsRaw(){
   const v=(st.board&&st.board.views)||['table'];
   return v.filter(id=>VIEW_META[id]);
+}
+/* What the screen may offer right now. */
+function boardViews(){
+  return boardViewsRaw().filter(id=>!VIEWS_WIP.has(id));
 }
 function renderTabs(){
   const enabled=boardViews();
@@ -3716,7 +3730,7 @@ function toggleAddView(e){
 function renderAddViewPop(){
   const enabled=new Set(boardViews());
   const pop=document.getElementById('tab-pop'); if(!pop)return;
-  pop.innerHTML='<div class="pop-title">תצוגות בלוח</div>'+VIEWS.map(v=>{
+  pop.innerHTML='<div class="pop-title">תצוגות בלוח</div>'+VIEWS.filter(v=>!VIEWS_WIP.has(v.id)).map(v=>{
     const on=enabled.has(v.id), locked=v.id==='table';
     return `<label class="pop-row ${locked?'locked':''}">
       <input type="checkbox" ${on?'checked':''} ${locked?'disabled':''} onchange="toggleBoardView('${v.id}',this.checked)">
@@ -3731,7 +3745,7 @@ function renderAddViewPop(){
 document.addEventListener('click',e=>{if(!e.target.closest('#tab-add-wrap')){const w=document.getElementById('tab-add-wrap');if(w)w.classList.remove('open');}});
 async function toggleBoardView(id,on){
   if(id==='table')return;
-  let views=boardViews().slice();
+  let views=boardViewsRaw().slice();   // the setting, not the filtered view of it
   if(on){if(!views.includes(id))views.push(id);}
   else{views=views.filter(x=>x!==id);if(st.view===id)st.view='table';}
   try{

@@ -20,16 +20,22 @@ let tabsHTML='', popHTML='', formsOpened=0;
 global.document={ getElementById:()=>({ set innerHTML(v){ tabsHTML=v; }, get innerHTML(){ return tabsHTML; } }) };
 const st={view:'table',board:{views:['table','kanban','calendar','map'],form:null}};
 
-const ctx = new Function('document','st','esc','renderView','openForms','openCellPop','closeCellPops', `
+/* VIEWS_WIP is injected rather than read from the file. This harness is about
+   how the picker DRAWS a list, so it wants the board's four views in it; the
+   gate that hides unfinished ones is a separate question, asked at the bottom
+   with a set of its own. */
+const build = (wip, state) => new Function('document','st','esc','renderView','openForms','openCellPop','closeCellPops','VIEWS_WIP', `
   ${VIEWS}
   const VIEW_META=Object.fromEntries(VIEWS.map(v=>[v.id,v]));
+  ${grab('boardViewsRaw')}
   ${grab('boardViews')}
   ${grab('renderTabs')}
   ${grab('openViewPicker')}
   function setView(v){ st.view=v; renderTabs(); }
   return {renderTabs,openViewPicker,setView};
-`)(global.document, st, x=>String(x), ()=>{}, ()=>{formsOpened++;},
-   (a,h)=>{popHTML=h;}, ()=>{});
+`)(global.document, state, x=>String(x), ()=>{}, ()=>{formsOpened++;},
+   (a,h)=>{popHTML=h;}, ()=>{}, wip);
+const ctx = build(new Set(), st);
 
 const ev={stopPropagation(){},currentTarget:{}};
 // every row's visible label, as the user would read it
@@ -74,6 +80,18 @@ ck('...and it never becomes the button label', !/tab-dd-lbl">טפסים/.test(ta
 st.view='table'; st.board={views:['table'],form:null};
 ctx.renderTabs(); ctx.openViewPicker(ev);
 ck('a single-view board still gets a working list', rowLabels().join(',')==='טבלה ראשית');
+
+// ── and the gate that hides the views still being built ──
+// Same picker, same board, a set that holds everything but the table: what the
+// board has turned on is unchanged, what it OFFERS is one view.
+const st2={view:'kanban',board:{views:['table','kanban','calendar','map'],form:null}};
+const wip=build(new Set(['kanban','calendar','map','dashboard','gis','links']), st2);
+wip.renderTabs(); wip.openViewPicker(ev);
+ck('a view still in development is not offered', rowLabels().join(',')==='טבלה ראשית',
+   rowLabels().join(','));
+ck('...and the board it was turned on for keeps it',
+   st2.board.views.join(',')==='table,kanban,calendar,map', st2.board.views.join(','));
+ck('...and somebody left on a hidden view lands on the table', st2.view==='table', st2.view);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
