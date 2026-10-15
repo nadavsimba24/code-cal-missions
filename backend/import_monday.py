@@ -874,25 +874,37 @@ def parse(raw, max_cols):
     board_order = {str(c.get("id")): i for i, c in enumerate(board.get("columns") or [])
                    if isinstance(c, dict) and c.get("id")}
 
-    def survey(it):
+    def survey(it, into=None, note=True):
+        m, f, o = into or (meta, fill, order)
         for cv in it.get("column_values") or []:
             cid = cv.get("id")
             if not cid:
                 continue
-            if cid not in meta:
-                meta[cid] = {"title": ((cv.get("column") or {}).get("title") or "").strip(),
-                             "type": cv.get("type") or ""}
-                fill[cid] = 0
-                order.append(cid)
-            if "display_value" in cv:
-                asked.add(cid)
-            if str(cv.get("display_value") or "").strip().lower() in FORMULA_NOTHING:
-                nothing[cid] = nothing.get(cid, 0) + 1
+            if cid not in m:
+                m[cid] = {"title": ((cv.get("column") or {}).get("title") or "").strip(),
+                          "type": cv.get("type") or ""}
+                f[cid] = 0
+                o.append(cid)
+            # Only the items feed these two. A sub-item board has ids of its own
+            # and they can repeat the parent's, so counting its cells here would
+            # report a formula column of the items by what the sub-items hold.
+            if note:
+                if "display_value" in cv:
+                    asked.add(cid)
+                if str(cv.get("display_value") or "").strip().lower() in FORMULA_NOTHING:
+                    nothing[cid] = nothing.get(cid, 0) + 1
             if _has_content(cv):
-                fill[cid] += 1
+                f[cid] += 1
 
     for it in items:
         survey(it)
+    # The sub-items are a board of their own on monday, with a column set of
+    # their own. Surveyed separately, because which of those columns the parent
+    # also has is a question that can only be asked once both sets are known.
+    smeta, sfill, sorder = {}, {}, []
+    for it in items:
+        for s_it in it.get("subitems") or []:
+            survey(s_it, (smeta, sfill, sorder), note=False)
 
     skipped, keep, as_subitems = [], [], []
     for cid in order:
@@ -988,13 +1000,72 @@ def parse(raw, max_cols):
                          "missing": sorted(set(missing)),
                          "unsupported": unsupported, "computable": computable})
 
-    by_key = {c["key"]: c["type"] for c in columns}
     # sub-items are their own monday board with their own column ids, so they are
     # matched to the parent's columns by title — that is what shares a column on
-    # a board here. A sub-item column with no counterpart is not imported.
+    # a board here.
     by_title = {}
     for c in columns:
         by_title.setdefault((c["title"], c["type"]), c["key"])
+
+    # ── the columns only the sub-items have ──────────────────────────────
+    # A sub-item column the parent board has no counterpart for used to be
+    # dropped where it stood, and that is most of a monday sub-item board: its
+    # whole point is a column set of its own. The sub-items then arrived as a
+    # list of names with every cell empty — "לא יובאו עם מבנה הטבלה שמוגדר להם".
+    #
+    # They are board columns here too, marked `sub_only`: shown on the sub-item
+    # rows and never on the parent item, which is the structure monday has. The
+    # rules are the ones the item columns are held to — a type with nothing to
+    # carry is skipped and named, a column no sub-item filled is not a column of
+    # this board, and the board's ceiling covers both sets together.
+    sub_key, sub_only_titles = {}, []
+    sub_found = 0          # sub-item columns the parent board has no counterpart for
+    fresh = []
+    for cid in sorder:
+        m = smeta[cid]
+        title = m["title"] or cid
+        hit = by_title.get((title, TYPE_MAP.get(m["type"] or "")))
+        if hit:
+            sub_key[cid] = hit               # the parent has it; one column, shared
+            continue
+        sub_found += 1
+        if m["type"] == SUBITEMS_TYPE:
+            continue
+        if m["type"] in UNSUPPORTED:
+            skipped.append({"title": title, "type": m["type"], "sub_only": True,
+                            "reason": UNSUPPORTED[m["type"]] + " (עמודה של תתי-הפריטים)"})
+            continue
+        if m["type"] not in TYPE_MAP:
+            skipped.append({"title": title, "type": m["type"], "sub_only": True,
+                            "reason": "סוג עמודה שאינו נתמך (עמודה של תתי-הפריטים)"})
+            continue
+        if not sfill[cid]:
+            continue                          # empty on every sub-item
+        fresh.append(cid)
+    # the fullest win the room that is left, and the survivors go back into the
+    # sub-item board's own order — the same two steps the item columns take
+    room = max(max_cols - len(columns), 0)
+    fresh.sort(key=lambda c: (-sfill[c], sorder.index(c)))
+    for cid in fresh[room:]:
+        skipped.append({"title": smeta[cid]["title"] or cid, "type": smeta[cid]["type"],
+                        "sub_only": True,
+                        "reason": f"מעבר לתקרה של {max_cols} עמודות "
+                                  f"(עמודה של תתי-הפריטים, מלאה ב-{sfill[cid]} מהם)"})
+    fresh = sorted(fresh[:room], key=lambda c: sorder.index(c))
+    for cid in fresh:
+        m = smeta[cid]
+        # namespaced: a sub-item board numbers its columns on its own, and
+        # "status" there is not the "status" of the parent board
+        key = "sub:" + cid
+        sub_key[cid] = key
+        col = {"key": key, "title": m["title"] or cid, "type": TYPE_MAP[m["type"]],
+               "monday_type": m["type"], "fill": sfill[cid], "sub_only": True}
+        if m["type"] in RETYPED:
+            col["note"] = RETYPED[m["type"]]
+        columns.append(col)
+        sub_only_titles.append(col["title"])
+
+    by_key = {c["key"]: c["type"] for c in columns}
 
     def read(it, lookup_by_title=False):
         # a file's real name and link, when the item happens to carry them
@@ -1010,8 +1081,10 @@ def parse(raw, max_cols):
         vals = {}
         for cv in it.get("column_values") or []:
             if lookup_by_title:
-                t = ((cv.get("column") or {}).get("title") or "").strip()
-                key = by_title.get((t, TYPE_MAP.get(cv.get("type") or "")))
+                # resolved by the sub-item board's own column id, which is what
+                # the title match above was for: a shared column's key, or the
+                # sub-item-only column this one became
+                key = sub_key.get(cv.get("id"))
             else:
                 key = cv.get("id") if cv.get("id") in by_key else None
             if not key:
@@ -1105,9 +1178,13 @@ def parse(raw, max_cols):
             "items_ungrouped": ungrouped,
             "ungrouped_into": groups[0]["title"] if (ungrouped and groups) else "",
             "truncated": bool(cursor),
-            "columns_found": len(meta),
+            "columns_found": len(meta) + sub_found,
             "columns_imported": len(columns),
             "columns_empty": empty,
+            # the columns that exist on the sub-items and nowhere on the parent
+            # board — named, because they are the ones somebody will look for on
+            # the item row and not find
+            "columns_sub": sub_only_titles,
             # every formula column: the expression that came with it, and
             # whether this app could compute it if asked to
             "formulas": formulas,

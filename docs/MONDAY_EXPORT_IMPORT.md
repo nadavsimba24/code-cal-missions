@@ -140,6 +140,7 @@ change what you do next:
 | **N רשומות רשומות על מערכת** (N rows recorded as "system") | people the log identifies only by a number, and the user list in the file does not cover them | see section 5 |
 | **columns not imported / imported as another type** | every column with its reason | a business decision, not a failure |
 | **formula columns** | the computed value is imported as text, and the formula itself is kept on the column | it can be turned into a live formula from the column menu, one column at a time |
+| **תתי־פריטים** → *N עמודות קיימות בתתי־הפריטים ולא בפריטי האב* | on monday a sub-item belongs to a board of its own, with its own columns. Those are created here as the sub-items' columns alone — they show on the sub-item rows and never on the item | nothing; look for them on a sub-item row, not on the item. A column the parent board has too is one shared column, matched by title |
 
 ---
 

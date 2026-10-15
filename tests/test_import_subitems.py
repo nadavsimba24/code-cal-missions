@@ -97,6 +97,13 @@ def _cols(board_id):
 
 
 def test_sub_items_show_the_columns_the_file_gave_them(client, admin_id):
+    """And a column only THEY have stays theirs.
+
+    "קבלן" is named in the band and nowhere in the item header, which is how the
+    export writes a sub-item-only column (board.sub_only). Created as an
+    ordinary board column it stood on every item too, empty forever — the board
+    had a different shape from the one the file describes.
+    """
     raw = _sheet(
         [["פריט", "אחראי"],
          ["תיקון מדרכה", "דנה"],
@@ -107,10 +114,37 @@ def test_sub_items_show_the_columns_the_file_gave_them(client, admin_id):
     with Session(cityos_main.engine) as db:
         from models import Board
         b = db.query(Board).filter(Board.id == d["id"]).first()
-        sub_cols = (b.settings or {}).get("sub_cols")
+        s = b.settings or {}
+        sub_cols, sub_only = s.get("sub_cols"), s.get("sub_only")
     titles = {c["id"]: c["title"] for c in _cols(d["id"])}
     assert sub_cols and sub_cols[0] == "item"
-    assert [titles[c] for c in sub_cols[1:]] == ["קבלן"]
+    # it is the sub-items' own column, so it rides in sub_only rather than in
+    # the shared subset — the board appends it to the sub-item header itself
+    assert [titles[c] for c in (sub_only or [])] == ["קבלן"]
+    assert [titles[c] for c in sub_cols[1:]] == []
+    # and the value is on the sub-item
+    kid = _kids(d["id"], "תיקון מדרכה")[0]
+    assert (kid.custom_fields or {}).get(sub_only[0]) == "כהן"
+
+
+def test_a_column_only_the_sub_items_have_is_not_put_on_the_items(client, admin_id):
+    """The items keep the columns the items have. A band column with no item
+    counterpart is marked sub_only, which is what keeps it off their rows."""
+    raw = _sheet(
+        [["פריט", "אחראי"],
+         ["תיקון מדרכה", "דנה"],
+         ["", "פריט", "אחראי", "שלב"],
+         ["", "פירוק", "יואב", "הכנה"]],
+        bands={2}, levels={1: 1, 2: 2, 3: 2})
+    d = _imp(client, admin_id, raw).json()
+    with Session(cityos_main.engine) as db:
+        from models import Board
+        b = db.query(Board).filter(Board.id == d["id"]).first()
+        s = b.settings or {}
+    titles = {c["id"]: c["title"] for c in s.get("columns", [])}
+    # "אחראי" is on both, so it is one shared column; "שלב" is the sub-items' own
+    assert [titles[c] for c in (s.get("sub_only") or [])] == ["שלב"]
+    assert [titles[c] for c in (s.get("sub_cols") or [])[1:]] == ["אחראי"]
 
 
 def test_a_column_the_items_and_the_sub_items_share_is_one_column(client, admin_id):

@@ -3103,6 +3103,11 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             elif c["type"] == "dropdown":
                 col["options"] = [str(o)[:40] for o in (c.get("options") or [])]
             custom_cols.append(col)
+        # Columns that exist on monday's sub-item board and nowhere on the parent
+        # one. They are board columns here, shown on the sub-item rows and never
+        # on the item — which is the structure the file describes. Without this
+        # they stood on every item as well, empty forever.
+        sub_only_ids = [col_ids[c["key"]] for c in parsed["columns"] if c.get("sub_only")]
 
         settings = {
             "views": ["table"],
@@ -3117,6 +3122,8 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             # Hidden, not removed: a board admin turns any of them back on the
             # moment there is something to put in it.
             "col_hidden": ["assignees", "status", "priority", "due"],
+            # and the sub-item board's own columns stay on the sub-items
+            "sub_only": sub_only_ids,
         }
         base = os.path.splitext(os.path.basename(filename or ""))[0]
         board_name = (name or "").strip() or parsed["board_name"] or base or "לוח מיובא"
@@ -3310,10 +3317,15 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                         "author": (row.get("author") or "")[:120], "matched": bool(uid)}))
             logged += 1
 
-        if sub_used:
-            # sub-items show only the columns they actually carry, in board order
+        if sub_used or sub_only_ids:
+            # Sub-items show only the columns they actually carry, in board
+            # order. The sub-item-only ones are left out on purpose: the board
+            # appends those on its own (settings["sub_only"]), which is the same
+            # shape the column picker saves — see removeSubCol in the frontend.
             s2 = dict(b.settings)
-            s2["sub_cols"] = ["item"] + [c["id"] for c in custom_cols if c["id"] in sub_used]
+            only = set(sub_only_ids)
+            s2["sub_cols"] = ["item"] + [c["id"] for c in custom_cols
+                                         if c["id"] in sub_used and c["id"] not in only]
             b.settings = s2
         db.add(BoardMember(board_id=b.id, user_id=actor_id, role="admin"))
         db.commit()
@@ -3498,6 +3510,12 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     # a sub-item column maps to the board column of the same name, or becomes one
     sub_map = []          # (index in the sub row, column id)
     sub_col_ids = []
+    # A band column the items have no column for exists only on the sub-items —
+    # which is exactly what the export says by naming it in the band and not in
+    # the item header. Created as an ordinary board column it stood on every
+    # item as well, empty forever, and the structure the board gave its
+    # sub-items did not survive the trip.
+    sub_only_ids = []
     for i in range(2, len(sub_labels)):
         # a band cell with nothing written in it names no column; invented, it
         # arrives as an "עמודה 21" the sub-items show and nobody can fill
@@ -3514,9 +3532,17 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
             custom_cols.append({"id": cid, "type": ctype, "title": sub_labels[i], "options": None,
                                 "formula": None, "connect": None, "copy_mode": None, "perms": {}})
             by_label[sub_labels[i]] = (cid, None)
+            sub_only_ids.append(cid)
         sub_map.append((i, cid))
-        if cid not in sub_col_ids:
+        # the sub-item-only ones are appended by the board itself (sub_only), so
+        # they are deliberately not part of the shared subset
+        if cid not in sub_col_ids and cid not in sub_only_ids:
             sub_col_ids.append(cid)
+    # A column named in the header, empty on every item and filled by the
+    # sub-items is now a column of this board — so it is no longer one of the
+    # ones the report says were left out for being empty.
+    _made = {c["title"] for c in custom_cols}
+    empty_cols = [t for t in empty_cols if t not in _made]
 
     with Session(engine) as db:
         creator = actor_id
@@ -3554,9 +3580,10 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
             # moment there is something to put in it.
             "col_hidden": ["assignees", "status", "priority", "due"],
         }
-        if sub_col_ids:
+        if sub_col_ids or sub_only_ids:
             # sub-items show the columns the file gave them, in board order
             settings["sub_cols"] = ["item"] + sub_col_ids
+            settings["sub_only"] = sub_only_ids
         b = Board(name=board_name, description="", department_id=dept_id, environment_id=env_id,
                   folder_id=folder_id, position=(maxpos + 1) if maxpos is not None else 0,
                   board_type=BoardType.KANBAN, icon="\U0001F4CB", color="#0073ea", settings=settings)
@@ -3752,6 +3779,11 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                                          else ""),
                            # the columns that were the sub-items themselves
                            "as_subitems": ([labels[sub_col_at]] if sub_col_at is not None else []),
+                           # and the ones the sub-items have and the items do
+                           # not — named, because that is where somebody will
+                           # look for them on the item row and not find them
+                           "columns_sub": [c["title"] for c in custom_cols
+                                           if c["id"] in set(sub_only_ids)],
                            "parents_unmatched": sorted(set(orphans))[:20]}}
 
 

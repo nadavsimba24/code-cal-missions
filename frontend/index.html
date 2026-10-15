@@ -4010,11 +4010,21 @@ function importReport(b){
         <div class="imp-cols">${noItem.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
     </div>`:'';
   const asSub=r.as_subitems||[];
-  const subColHTML=asSub.length?`
+  /* Sub-items have a column structure of their own — on monday a board of their
+     own, here board.sub_only. Columns the sub-items have and the items do not
+     are created as theirs alone; named here, because the item row is where
+     somebody will look for them and not find them. */
+  const subOnly=r.columns_sub||[];
+  const subColHTML=(asSub.length||subOnly.length)?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-diagram-project"></i> תתי־פריטים</div>
-      <div class="imp-why">${asSub.map(t=>esc(t)).join(', ')} אינה עמודה כאן — מה שהיה בה יובא
-        כתתי־פריטים של הפריטים עצמם${b.subitems?` (${b.subitems})`:''}.</div>
+      ${asSub.length?`<div class="imp-why">${asSub.map(t=>esc(t)).join(', ')} אינה עמודה כאן — מה שהיה בה יובא
+        כתתי־פריטים של הפריטים עצמם${b.subitems?` (${b.subitems})`:''}.</div>`:''}
+      ${subOnly.length?`<div class="imp-why">${subOnly.length} עמודות קיימות בתתי־הפריטים ולא
+        בפריטי האב, ולכן הן נוצרו כאן כעמודות של תתי־הפריטים בלבד — הן מופיעות בשורות
+        תת־הפריט ולא על הפריט עצמו. זה המבנה שהקובץ מתאר; כעמודות רגילות הן היו עומדות גם
+        על כל פריט, ריקות.</div>
+        <div class="imp-cols">${subOnly.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
     </div>`:'';
   /* The files are the one part of an import with an expiry date on it: monday's
      links last about an hour. So the report says how many bytes actually crossed
@@ -8617,7 +8627,13 @@ function _subColumns(){
     const picked=ids.map(String).filter(id=>id!=='item'&&by.has(id)).map(id=>by.get(id));
     // An empty subset (only the name survives — a stale ["item"], or ids since
     // removed) falls back to inheriting all item columns, so columns never vanish.
-    base = picked.length ? [name].concat(picked) : all;
+    // Unless the board HAS sub-item-only columns: then the empty subset is a
+    // true answer — the sub-items share nothing with the item and show their
+    // name plus their own columns. That is a whole monday sub-item board, whose
+    // columns are its own by design, and inheriting the item's instead put a
+    // dozen empty cells in front of the ones that are actually filled.
+    base = picked.length ? [name].concat(picked)
+         : (subOnly.length ? [name] : all);
   }
   // sub-item-only columns always appear on sub-items (they exist nowhere else)
   const have=new Set(base.map(c=>String(c.id)));
