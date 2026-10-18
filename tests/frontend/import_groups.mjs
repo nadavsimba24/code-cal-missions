@@ -88,10 +88,37 @@ const sec = h => {
   ck('...as a warning, not a footnote', sec(h).includes('imp-warn'), sec(h));
   ck('...saying nothing was lost', h.includes('שום דבר לא נמחק'), h);
   ck('...naming the two fields to ask for',
-     h.includes('groups { id title }') && h.includes('group { id title }'), h);
+     h.includes('groups { id title color }') && h.includes('group { id title color }'), h);
   ck('...and the file to run it from', h.includes('monday_export.graphql'), h);
   ck('it does not also claim the file had no division to begin with',
      !h.includes('אינו מחלק את הלוח לקבוצות'), h);
+}
+
+// ── the colours the groups came in wearing ─────────────────────────────────
+{
+  const h = run({groups:3, groups_from:'file', group_names:['דחוף','בעבודה','הושלם'],
+                 group_hex:['#e2445c','#fdab3d','#00c875'], group_colors:3});
+  ck('the colours are said to have come from the file',
+     h.includes('צבעי הקבוצות יובאו מהקובץ'), h);
+  ck('...and each group is shown as the chip it is on the board',
+     h.includes('background:#e2445c') && h.includes('background:#00c875'), h);
+  ck('...without being called a default', !h.includes('ברירת מחדל'), h);
+}
+{
+  const h = run({groups:3, groups_from:'file', group_names:['דחוף','בעבודה','הושלם'],
+                 group_hex:['#1AC877','#FBAA47','#DB2D4C'], group_colors:0});
+  ck('a file carrying no colours says the colours are this app\'s',
+     h.includes('צבעי ברירת מחדל'), h);
+  ck('...and says how to bring the real ones over',
+     h.includes('groups { id title color }'), h);
+}
+{
+  const h = run({groups:3, groups_from:'sheet', group_names:['א','ב','ג'],
+                 group_hex:['#e2445c','#FBAA47','#DB2D4C'], group_colors:1});
+  ck('a file that coloured some of its groups says how many',
+     h.includes('1 מתוך 3'), h);
+  ck('...and does not tell a sheet to re-run a monday query',
+     !h.includes('groups { id title color }'), h);
 }
 
 // ── monday's own sub-item header ───────────────────────────────────────────

@@ -1,0 +1,316 @@
+"""תצוגות שמורות — חיתוך של לוח, שמור כטאב, אישי או ציבורי.
+
+"באגים דחופים פתוחים" is three filters somebody sets every morning. A view is
+that cut, named and kept.
+
+The permission model is two words, and the asymmetry in it is the thing worth
+testing, because getting it wrong is not a cosmetic failure:
+
+  private — only its owner sees it. Somebody's own way of reading a board is
+            not a statement about the board. A private view leaking into
+            somebody else's tab strip is a stranger's bookmark appearing on
+            your screen; a private view that another person can EDIT is worse.
+  public  — everyone who may open the board sees it. It is a tab on the board,
+            so creating one is an edit to the board and takes the rights of
+            one — while making a private one takes only the right to look.
+
+And a view is only as good as what it restores: the cut is stored whole, so a
+tab opens the board the way it was left rather than approximately.
+"""
+import pathlib
+import sys
+
+import pytest
+from sqlalchemy.orm import Session
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "backend"))
+
+import main as cityos_main  # noqa: E402
+from models import SavedView  # noqa: E402
+
+CUT = {"view": "table", "q": "באג", "people": [], "status": "", "priority": "high",
+       "sort": "", "links": {"col": "", "mode": "", "item": 0},
+       "adv": {"op": "and", "rules": [
+           {"field": "status", "op": "ne", "v": "done"},
+           {"field": "priority", "op": "eq", "v": "high"}]}}
+
+
+def _board(client, admin_id, invite=(), role="editor", name="לוח תצוגות"):
+    bid = client.post("/api/boards", json={"name": name, "user_id": admin_id}).json()["id"]
+    for uid in invite:
+        client.post(f"/api/boards/{bid}/members",
+                    json={"actor_id": admin_id, "user_id": uid, "role": role})
+    return bid
+
+
+def _mk(client, bid, uid, name, vis="private", filters=None):
+    return client.post(f"/api/boards/{bid}/views",
+                       json={"user_id": uid, "name": name, "visibility": vis,
+                             "filters": filters if filters is not None else CUT},
+                       headers={"X-CityOS-User": str(uid)})
+
+
+def _list(client, bid, uid):
+    r = client.get(f"/api/boards/{bid}/views?user_id={uid}",
+                   headers={"X-CityOS-User": str(uid)})
+    assert r.status_code == 200, r.text
+    return r.json()["views"]
+
+
+# ── saving a cut, and getting it back whole ───────────────────────────────
+def test_a_view_keeps_the_whole_cut_not_an_approximation_of_it(client, admin_id):
+    bid = _board(client, admin_id)
+    r = _mk(client, bid, admin_id, "באגים דחופים פתוחים")
+    assert r.status_code == 200, r.text
+    v = r.json()
+    assert v["name"] == "באגים דחופים פתוחים"
+    assert v["visibility"] == "private"
+    assert v["filters"] == CUT, "the cut came back changed"
+    assert v["filters"]["adv"]["rules"][1]["v"] == "high"
+
+
+def test_a_view_needs_a_name(client, admin_id):
+    bid = _board(client, admin_id)
+    assert _mk(client, bid, admin_id, "   ").status_code == 400
+
+
+def test_a_cut_the_server_would_refuse_is_not_saved(client, admin_id):
+    """A view holding a filter the query endpoint rejects is a tab that cannot
+    open — caught when it is saved, not when somebody clicks it."""
+    bid = _board(client, admin_id)
+    bad = dict(CUT, adv={"op": "and", "rules": [{"field": "status", "op": "DROP"}]})
+    r = _mk(client, bid, admin_id, "שבור", filters=bad)
+    assert r.status_code == 400 and "אופרטור" in r.json()["detail"]
+
+
+# ── private ───────────────────────────────────────────────────────────────
+def test_a_private_view_is_the_owners_alone(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, invite=[guinea_id])
+    _mk(client, bid, admin_id, "שלי בלבד")
+    assert [v["name"] for v in _list(client, bid, admin_id)] == ["שלי בלבד"]
+    assert _list(client, bid, guinea_id) == [], "a private view appeared on somebody else's board"
+
+
+def test_anybody_who_can_open_the_board_can_keep_a_private_view(client, admin_id, guinea_id):
+    """It takes only the right to look: a way of reading a board is not a
+    change to it."""
+    bid = _board(client, admin_id, invite=[guinea_id], role="viewer")
+    r = _mk(client, bid, guinea_id, "הקריאה שלי")
+    assert r.status_code == 200, r.text
+    assert [v["name"] for v in _list(client, bid, guinea_id)] == ["הקריאה שלי"]
+    assert _list(client, bid, admin_id) == [], "even an admin does not see a private view"
+
+
+# ── public ────────────────────────────────────────────────────────────────
+def test_a_public_view_is_everybodys(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, invite=[guinea_id])
+    _mk(client, bid, admin_id, "לכולם", vis="public")
+    assert [v["name"] for v in _list(client, bid, guinea_id)] == ["לכולם"]
+
+
+def test_publishing_a_tab_onto_the_board_takes_the_rights_of_an_edit(client, admin_id, guinea_id):
+    """A public view appears for everyone who opens the board. Making one is
+    therefore a change to the board — and a viewer may not make it, while the
+    same person may keep as many private views as they like."""
+    bid = _board(client, admin_id, invite=[guinea_id], role="viewer")
+    r = _mk(client, bid, guinea_id, "ציבורית", vis="public")
+    assert r.status_code == 403, r.text
+    assert "עורך" in r.json()["detail"]
+    assert _mk(client, bid, guinea_id, "פרטית").status_code == 200
+
+
+def test_a_private_view_cannot_be_published_by_somebody_without_the_rights(client, admin_id, guinea_id):
+    """The same rule at the other door: it is publishing that needs the
+    rights, not editing. A viewer who could flip their own view to public
+    would be putting a tab on everybody's board through the back."""
+    bid = _board(client, admin_id, invite=[guinea_id], role="viewer")
+    vid = _mk(client, bid, guinea_id, "שלי").json()["id"]
+    r = client.patch(f"/api/views/{vid}", json={"user_id": guinea_id, "visibility": "public"},
+                     headers={"X-CityOS-User": str(guinea_id)})
+    assert r.status_code == 403
+    r = client.patch(f"/api/views/{vid}", json={"user_id": guinea_id, "name": "שלי, בשם אחר"},
+                     headers={"X-CityOS-User": str(guinea_id)})
+    assert r.status_code == 200, "its owner cannot even rename it"
+
+
+# ── who may change one ────────────────────────────────────────────────────
+def test_a_view_is_edited_by_its_owner(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, invite=[guinea_id])
+    vid = _mk(client, bid, guinea_id, "של דנה", vis="public").json()["id"]
+    r = client.patch(f"/api/views/{vid}", json={"user_id": admin_id, "name": "חטוף"},
+                     headers={"X-CityOS-User": str(admin_id)})
+    assert r.status_code == 200, "a board admin must be able to tidy a public tab"
+    other = client.patch(f"/api/views/{vid}", json={"user_id": guinea_id, "name": "חזרה"},
+                         headers={"X-CityOS-User": str(guinea_id)})
+    assert other.status_code == 200, "its own author lost it"
+
+
+def test_somebody_elses_view_is_not_yours_to_change(client, admin_id, guinea_id, member_id):
+    bid = _board(client, admin_id, invite=[guinea_id, member_id])
+    vid = _mk(client, bid, guinea_id, "של דנה", vis="public").json()["id"]
+    for verb in ("patch", "delete"):
+        r = getattr(client, verb)(
+            f"/api/views/{vid}",
+            **({"json": {"user_id": member_id, "name": "לא שלי"}} if verb == "patch" else {}),
+            headers={"X-CityOS-User": str(member_id)})
+        assert r.status_code == 403, f"{verb}: {r.text}"
+
+
+def test_a_view_is_not_a_way_into_a_board_you_cannot_open(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, name="לוח סגור")
+    _mk(client, bid, admin_id, "ציבורית", vis="public")
+    r = client.get(f"/api/boards/{bid}/views?user_id={guinea_id}",
+                   headers={"X-CityOS-User": str(guinea_id)})
+    assert r.status_code == 403, r.text
+    r = _mk(client, bid, guinea_id, "שלי")
+    assert r.status_code == 403
+
+
+def test_deleting_takes_it_off_everybodys_board(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, invite=[guinea_id])
+    vid = _mk(client, bid, admin_id, "זמנית", vis="public").json()["id"]
+    assert len(_list(client, bid, guinea_id)) == 1
+    r = client.delete(f"/api/views/{vid}", headers={"X-CityOS-User": str(admin_id)})
+    assert r.status_code == 200
+    assert _list(client, bid, guinea_id) == []
+    with Session(cityos_main.engine) as db:
+        assert db.query(SavedView).filter(SavedView.id == vid).first() is None
+
+
+def test_the_tabs_come_back_in_the_order_they_were_made(client, admin_id):
+    bid = _board(client, admin_id)
+    for n in ("ראשונה", "שנייה", "שלישית"):
+        _mk(client, bid, admin_id, n)
+    assert [v["name"] for v in _list(client, bid, admin_id)] == ["ראשונה", "שנייה", "שלישית"]
+
+
+def test_a_tab_strip_is_not_a_list(client, admin_id):
+    bid = _board(client, admin_id)
+    for i in range(cityos_main.VIEW_MAX):
+        assert _mk(client, bid, admin_id, f"תצוגה {i}").status_code == 200
+    r = _mk(client, bid, admin_id, "אחת יותר מדי")
+    assert r.status_code == 400 and "יותר מדי" in r.json()["detail"]
+
+
+def test_a_view_says_whether_the_person_looking_may_change_it(client, admin_id, guinea_id):
+    """The tab strip draws a pencil or it does not, and it must not have to
+    work that out from the ownership rules a second time."""
+    bid = _board(client, admin_id, invite=[guinea_id])
+    _mk(client, bid, guinea_id, "של דנה", vis="public")
+    mine = _list(client, bid, guinea_id)[0]
+    theirs = _list(client, bid, admin_id)[0]
+    assert mine["can_edit"] is True
+    assert theirs["can_edit"] is True, "a board admin may tidy a public tab"
+    assert theirs["owner_name"], "the strip cannot say whose view it is"
+
+
+# ── the browser's half ─────────────────────────────────────────────────────
+def test_the_cut_a_tab_restores_is_the_cut_it_saved():
+    """Driven harness: tests/frontend/saved_views.mjs.
+
+    A view that comes back with the filters but not the base view, or with
+    the condition tree flattened, is worse than no view: it opens a board
+    that looks right and is answering a different question.
+    """
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    h = ROOT / "tests" / "frontend" / "saved_views.mjs"
+    r = subprocess.run([node, str(h)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, "\n" + r.stdout + r.stderr
+
+
+def test_the_strip_says_who_else_sees_each_tab():
+    """A lock or a group of people on every saved tab. "Who can see this" is
+    the one question a saved view raises, and it must never need asking."""
+    src = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    # Views' own tabsHTML — BoardLog has one too, and it comes first in the
+    # file. Anchoring on the name alone read the wrong method entirely.
+    at = src.index("const Views = {")
+    i = src.index("  tabsHTML(){", at)
+    j = src.index("\n  },", i)
+    body = src[i:j]
+    assert "fa-lock" in body and "fa-users" in body
+    assert "v.can_edit" in body, "the pencil is drawn without asking the server"
+
+
+# ── the lock, and who overrides it ─────────────────────────────────────────
+def test_the_owner_of_a_public_view_is_whoever_made_it(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, invite=[guinea_id])
+    v = _mk(client, bid, guinea_id, "של דנה", vis="public").json()
+    assert v["owner_id"] == guinea_id
+    mine = [x for x in _list(client, bid, guinea_id) if x["id"] == v["id"]][0]
+    assert mine["is_owner"] is True and mine["can_edit"] is True
+
+
+def test_a_reader_may_look_and_may_not_overwrite(client, admin_id, guinea_id, member_id):
+    """The whole of the rule: somebody adjusting what they are looking at must
+    not be able to rewrite a tab other people rely on. The damage is invisible
+    to everyone it affects until they next open the tab and find it answering
+    a different question."""
+    bid = _board(client, admin_id, invite=[guinea_id, member_id])
+    vid = _mk(client, bid, guinea_id, "של דנה", vis="public").json()["id"]
+    seen = [x for x in _list(client, bid, member_id) if x["id"] == vid][0]
+    assert seen["is_owner"] is False
+    assert seen["can_edit"] is False, "a reader is offered the overwrite"
+    r = client.patch(f"/api/views/{vid}",
+                     json={"user_id": member_id, "filters": {"q": "משהו אחר"}},
+                     headers={"X-CityOS-User": str(member_id)})
+    assert r.status_code == 403
+
+
+def test_a_reader_can_always_keep_a_copy_of_their_own(client, admin_id, guinea_id, member_id):
+    """"Save as new view" is what is offered instead, and it has to actually
+    work — otherwise the rule is just a dead end."""
+    bid = _board(client, admin_id, invite=[guinea_id, member_id])
+    _mk(client, bid, guinea_id, "של דנה", vis="public")
+    r = _mk(client, bid, member_id, "הגרסה שלי")
+    assert r.status_code == 200, r.text
+    assert r.json()["owner_id"] == member_id
+
+
+def test_a_system_administrator_may_overwrite_any_view(client, admin_id, guinea_id):
+    """Somebody has to be able to fix or remove a tab whose author has left."""
+    with Session(cityos_main.engine) as db:
+        from models import User
+        assert db.query(User).filter(User.id == admin_id).first().role == "admin", \
+            "this test needs the fixture admin to be a system admin"
+    bid = _board(client, admin_id, invite=[guinea_id])
+    vid = _mk(client, bid, guinea_id, "של דנה", vis="public").json()["id"]
+    r = client.patch(f"/api/views/{vid}", json={"user_id": admin_id, "name": "מסודר"},
+                     headers={"X-CityOS-User": str(admin_id)})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "מסודר"
+
+
+# ── the view in the URL ────────────────────────────────────────────────────
+def test_the_address_carries_the_open_view():
+    """A filtered board is a thing people send each other. Without the view in
+    the link, "look at this" opens the board unfiltered and the sentence
+    beside it stops making sense."""
+    src = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    i = src.index("const Router={")
+    j = src.index("\n};", i)
+    router = src[i:j]
+    assert "/view/" in router, "the view is not in the address"
+    assert "viewId" in router
+    # the default is what keeps a shared link intact: every existing caller
+    # passes two arguments and none of them is about the view
+    assert "if(viewId===undefined)" in router, \
+        "opening an item drops the view out of the address"
+    assert "openDeepLink(r.boardId, r.itemId, r.viewId)" in src, \
+        "a link carrying a view opens the board without it"
+
+
+def test_a_shared_link_to_a_view_that_is_not_yours_says_so():
+    """A private view, or one since deleted. The board opens unfiltered either
+    way — but silently, it looks exactly like the link having worked."""
+    src = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    i = src.index("async function openDeepLink(")
+    j = src.index("\n}", i)
+    body = src[i:j]
+    assert "Views.load(boardId)" in body, "the views are not waited for"
+    assert "התצוגה אינה זמינה" in body

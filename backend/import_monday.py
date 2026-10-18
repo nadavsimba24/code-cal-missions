@@ -108,6 +108,67 @@ RETYPED = {
 }
 
 
+# ── a group's colour ────────────────────────────────────────────────────────
+# The colour of a group's header is how the board is read at a glance, so it
+# travels with the group's name. monday answers `color` as a hex string, and
+# that is the whole of the usual case; the names below are the same palette by
+# the other spelling, which older responses and hand-made files use. A colour
+# that is neither is left out rather than guessed at — the importer then gives
+# the group a colour of its own, which is a visible default instead of a wrong
+# claim about the source board.
+MONDAY_COLORS = {
+    "grass_green":    "#037f4c",
+    "done_green":     "#00c875",
+    "bright_green":   "#9cd326",
+    "saladish":       "#cab641",
+    "egg_yolk":       "#ffcb00",
+    "working_orange": "#fdab3d",
+    "dark_orange":    "#ff642e",
+    "peach":          "#ffadad",
+    "sunset":         "#ff7575",
+    "stuck_red":      "#e2445c",
+    "dark_red":       "#bb3354",
+    "sofia_pink":     "#ff5ac4",
+    "lipstick":       "#ff158a",
+    "bubble":         "#faa1f1",
+    "purple":         "#a25ddc",
+    "dark_purple":    "#784bd1",
+    "dark_indigo":    "#401694",
+    "indigo":         "#5559df",
+    "navy":           "#225091",
+    "bright_blue":    "#579bfc",
+    "dark_blue":      "#0086c0",
+    "aquamarine":     "#4eccc6",
+    "chili_blue":     "#66ccff",
+    "river":          "#68a1bd",
+    "winter":         "#9aadbd",
+    "explosive":      "#c4c4c4",
+    "american_gray":  "#808080",
+    "blackish":       "#333333",
+    "brown":          "#7f5347",
+}
+
+
+def group_color(raw):
+    """monday's colour for a group, as the #rrggbb this app stores.
+
+    Takes the hex monday answers, the three-digit shorthand, and the colour's
+    name. Anything else — an empty field, a name this table does not hold — is
+    None, which the importer reads as "the file did not say".
+    """
+    c = str(raw or "").strip().lower()
+    if not c:
+        return None
+    if c.startswith("#"):
+        h = c[1:]
+        if len(h) == 3 and all(ch in "0123456789abcdef" for ch in h):
+            return "#" + "".join(ch * 2 for ch in h)
+        if len(h) == 6 and all(ch in "0123456789abcdef" for ch in h):
+            return "#" + h
+        return None
+    return MONDAY_COLORS.get(re.sub(r"[\s-]+", "_", c))
+
+
 # ── the board's activity log ────────────────────────────────────────────────
 # monday's `activity_logs` is the board's history: who changed what, when. The
 # events worth carrying across are the ones that describe an item this import is
@@ -1097,12 +1158,14 @@ def parse(raw, max_cols):
     # ── groups, in the order the board puts them ─────────────────────────────
     # Only present when the query asked for them. Without it every item lands in
     # one group, which is a true reading of the file rather than an invention.
+    # Their colour comes with them where the file carries it — see group_color.
     groups, seen_g = [], {}
     for g in board.get("groups") or []:
         gid = (g or {}).get("id")
         if gid and gid not in seen_g:
             seen_g[gid] = (g.get("title") or "").strip() or "קבוצה"
-            groups.append({"id": gid, "title": seen_g[gid]})
+            groups.append({"id": gid, "title": seen_g[gid],
+                           "color": group_color(g.get("color"))})
 
     rows, sub_total, talk_dropped = [], 0, [0]
     for it in items:
@@ -1110,7 +1173,8 @@ def parse(raw, max_cols):
         gid = g.get("id")
         if gid and gid not in seen_g:
             seen_g[gid] = (g.get("title") or "").strip() or "קבוצה"
-            groups.append({"id": gid, "title": seen_g[gid]})
+            groups.append({"id": gid, "title": seen_g[gid],
+                           "color": group_color(g.get("color"))})
         subs = []
         for s in it.get("subitems") or []:
             sups, sdrop = _updates_of(s)
@@ -1174,6 +1238,11 @@ def parse(raw, max_cols):
             # only place it can be said is in the report.
             "groups_need_reexport": not groups,
             "groups_from": "file" if groups else "",
+            # How many of them arrived wearing the colour monday gave them. A
+            # query that did not ask for `color` answers none, and the board
+            # comes across in this app's palette instead — which looks like a
+            # choice somebody made rather than a field nobody requested.
+            "group_colors": sum(1 for g in groups if g.get("color")),
             # how many of them, and the group they all ended up in
             "items_ungrouped": ungrouped,
             "ungrouped_into": groups[0]["title"] if (ungrouped and groups) else "",

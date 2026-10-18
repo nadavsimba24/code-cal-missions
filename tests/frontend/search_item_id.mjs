@@ -29,9 +29,13 @@ const ck=(n,c,extra='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console
 const IS_ITEM_ID=/^const IS_ITEM_ID=.*$/m.exec(src)[0];
 const st={filters:{q:'',people:[],status:'',priority:'',sort:'',links:{}},colSort:null,
           openSubs:new Set(), board:null};
-const applyFilters=new Function('st','linkNamesOf','linkIdsOf','statusKeyOf','priorityKeyOf',
+const applyFilters=new Function(// applyFilters now also runs the advanced condition tree; these cases
+// build none, so it counts nothing and matches everything
+  // Paged: on a large board the rows on screen are the server's answer.
+// These cases are a small board, so it is simply off.
+  'st','linkNamesOf','linkIdsOf','statusKeyOf','priorityKeyOf','advCount','advMatch','Paged',
   IS_ITEM_ID+'\n'+grab('applyFilters')+'\nreturn applyFilters;')(
-  st, t=>t.linkNames||[], ()=>[], t=>t.status, t=>t.priority);
+  st, t=>t.linkNames||[], ()=>[], t=>t.status, t=>t.priority, ()=>0, ()=>true, {on:false,rows:[]});
 
 const BOARD=[
   {id:1, title:'תיקון מדרכה', item_uid:'20250611473'},

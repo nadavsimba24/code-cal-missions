@@ -65,9 +65,9 @@ def test_the_collection_runs_exactly_the_query_the_importer_reads():
 def test_the_query_asks_for_everything_a_board_is():
     page1, history, pageN = _operations()
     # the division into groups: the board's own list, and each item's group
-    assert "groups { id title }" in page1
-    assert page1.count("group { id title }") >= 1
-    assert "group { id title }" in pageN, "the pages after the first lose the groups"
+    assert "groups { id title color }" in page1
+    assert page1.count("group { id title color }") >= 1
+    assert "group { id title color }" in pageN, "the pages after the first lose the groups"
     # the three types monday answers only in display_value
     for frag in ("FormulaValue", "MirrorValue", "BoardRelationValue"):
         assert frag in page1 and frag in pageN, frag
@@ -161,6 +161,23 @@ def test_every_request_says_how_much_came_back():
     assert "next_items_page" in nxt
     for name, script in (("1", items), ("3", nxt)):
         assert "cursor" in script, f"request {name} says nothing about there being more"
+
+
+def test_the_query_and_the_collection_both_ask_what_colour_a_group_is():
+    """A group's header colour is how a board is read before a word of it is,
+    and `color` is the one missing field a response does not look wrong without:
+    the groups still arrive, named and in order, wearing colours this app picked
+    — so a board whose "דחוף" was red comes across green and it reads as
+    somebody's decision rather than as a field nobody asked for. Postman is
+    where that is still cheap to catch, so the run says how many groups came
+    back with a colour."""
+    page1, _history, pageN = _operations()
+    assert "groups { id title color }" in page1
+    assert "group { id title color }" in page1 and "group { id title color }" in pageN
+    script = "\n".join(next(e["script"]["exec"] for e in _collection()["item"][0]["event"]
+                            if e["listen"] == "test"))
+    assert "g.color" in script and "קבוצות" in script, \
+        "the run does not say whether the groups came back with their colours"
 
 
 def test_the_collection_carries_the_cursor_so_nobody_retypes_it():

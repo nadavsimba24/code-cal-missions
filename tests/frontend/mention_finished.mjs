@@ -33,10 +33,14 @@ function grabMethod(name){
   throw new Error('unbalanced: '+name);
 }
 const METHODS = ['mentionCtx','mentionSettled','onType','_openMention','_closeMention',
-                 'pickMention','keydown','insert'].map(grabMethod).join('\n');
+                 'pickMention','keydown','insert','mentionPeople'].map(grabMethod).join('\n');
 
 // ── the world the composer runs in ──
 let PEOPLE = [];
+/* Who is typing. The tag menu leaves the writer out of it — see
+   tests/frontend/mention_self.mjs — so these cases name somebody who is not in
+   PEOPLE, and every one of them reads exactly as it did before that rule. */
+let ME = 0;
 let ta = null;                       // the one textarea, faked
 const mkTa = (value, pos) => ({
   value, selectionStart: pos==null?value.length:pos, selectionEnd: pos==null?value.length:pos,
@@ -47,7 +51,7 @@ const doc = {
   querySelector: () => null,
   querySelectorAll: () => [],
 };
-const build = () => new Function('boardPeople','closeCellPops','document',
+const build = () => new Function('boardPeople','meId','closeCellPops','document',
   `const Chat = {
      mentions: [], _mention: null, editing: null, _renders: 0,
      ${METHODS}
@@ -59,6 +63,7 @@ const build = () => new Function('boardPeople','closeCellPops','document',
     (also||[]).forEach(id => { if(!out.some(u=>u.id===id)) out.push({id, name:'חבר אחר'}); });
     return out;
   },
+  () => ME,
   () => {}, doc);
 
 let Chat = build();
@@ -159,6 +164,18 @@ reset([SHELLY]);
 type('@של');
 ck('Enter picks while the menu is open', pressEnter()===true);
 ck('and that pick is what lands in the box', ta.value==='@שלי פיינברג ', JSON.stringify(ta.value));
+
+// ── and the writer is never one of the names offered ───────────────────────
+{
+  reset([{id:1,name:'דנה לוי'},{id:2,name:'רינה כהן'}]);
+  ME = 2;                                   // "רינה כהן" is the one typing
+  type('@רינה');
+  ck('typing the start of your own name offers nobody', open() && names().length===0,
+     names().join());
+  type('@דנה');
+  ck('...while somebody else is offered as before', names().join()==='דנה לוי', names().join());
+  ME = 0;
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

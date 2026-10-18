@@ -14,6 +14,12 @@
 # none of the reasoning behind them. `text_body` is asked for beside `body`
 # because the body is HTML — the plain text is what a reader should get.
 #
+# `color` on a group is the colour of its header on the board — the thing people
+# recognise a group by before they have read its name. monday answers it as a
+# hex string, and without it the import has to invent one: the groups arrive in
+# a palette of this app's own, and a board whose "דחוף" was red comes across
+# green. It is one word in the query and it is the whole of that.
+#
 # `columns` is where a formula column's expression lives. Without it the computed
 # values still arrive (see FormulaValue below) but the formula itself does not,
 # and a migrated board has a column of frozen numbers nobody can adjust.
@@ -66,7 +72,7 @@ query ($boardId: [ID!]) {
     # is even read, and it is the number the pages are counted back against.
     items_count
 
-    groups { id title }
+    groups { id title color }
     # The board's own column definitions. A formula lives ONLY here — the copy of
     # a column that rides inside every item carries its title and type and
     # nothing else — and `settings_str` is the JSON holding the expression:
@@ -80,7 +86,7 @@ query ($boardId: [ID!]) {
       items {
         id
         name
-        group { id title }
+        group { id title color }
         column_values {
           id
           type
@@ -203,7 +209,7 @@ query ($cursor: String!) {
     items {
       id
       name
-      group { id title }
+      group { id title color }
       column_values {
         id
         type

@@ -24,7 +24,12 @@ const st={view:'table',board:{views:['table','kanban','calendar','map'],form:nul
    how the picker DRAWS a list, so it wants the board's four views in it; the
    gate that hides unfinished ones is a separate question, asked at the bottom
    with a set of its own. */
-const build = (wip, state) => new Function('document','st','esc','renderView','openForms','openCellPop','closeCellPops','VIEWS_WIP', `
+/* `Views` and `filtersActive`: renderTabs now also draws the board's saved
+   cuts after its own views, and the "save this cut" button when something is
+   filtered. These cases are about the base views and the picker, so the
+   strip is given no saved cuts and nothing filtered — which is the state the
+   assertions below were written against. */
+const build = (wip, state) => new Function('document','st','esc','renderView','openForms','openCellPop','closeCellPops','VIEWS_WIP','Views','filtersActive', `
   ${VIEWS}
   const VIEW_META=Object.fromEntries(VIEWS.map(v=>[v.id,v]));
   ${grab('boardViewsRaw')}
@@ -34,7 +39,7 @@ const build = (wip, state) => new Function('document','st','esc','renderView','o
   function setView(v){ st.view=v; renderTabs(); }
   return {renderTabs,openViewPicker,setView};
 `)(global.document, state, x=>String(x), ()=>{}, ()=>{formsOpened++;},
-   (a,h)=>{popHTML=h;}, ()=>{}, wip);
+   (a,h)=>{popHTML=h;}, ()=>{}, wip, {items:[], tabsHTML:()=>'', openView:()=>null, dirty:()=>false}, ()=>false);
 const ctx = build(new Set(), st);
 
 const ev={stopPropagation(){},currentTarget:{}};

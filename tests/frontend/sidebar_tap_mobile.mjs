@@ -179,9 +179,16 @@ ck('a board row carries its open-the-board tap wherever it is rendered',
   body._c.add('sb-open');
   const st2={env:null};
   const closed=[];
-  const select=new Function('st','closeSidebarMobile','renderSidebar',
+  // rememberEnv: picking a workspace is now written to localStorage so a
+  // reload comes back to it (tests/frontend/refresh_keeps_place.mjs). These
+  // cases are about the drawer, so it simply counts the calls.
+  const remembered=[];
+  const select=new Function('st','closeSidebarMobile','renderSidebar','rememberEnv',
+    'closeItemPanel',
     grabM('select')+'; return select;')(
-    st2, ()=>closed.push(1), ()=>{});
+    st2, ()=>closed.push(1), ()=>{}, ()=>remembered.push(st2.env&&st2.env.id),
+    // the open item's panel is closed on a workspace change; none is open here
+    ()=>{});
   // `this` is the Env object: items to choose from, and _set closes the dropdown
   const envObj={items:[{id:1,name:'סביבה ראשית'},{id:2,name:'בינוי'}],_setCalls:[],
                 _set(v){ this._setCalls.push(v); }};
@@ -190,6 +197,8 @@ ck('a board row carries its open-the-board tap wherever it is rendered',
      open() && closed.length===0, 'closes='+closed.length);
   ck('...the workspace itself did change', st2.env && st2.env.id===2, JSON.stringify(st2.env));
   ck('...and the dropdown over it closed', envObj._setCalls[0]===false, JSON.stringify(envObj._setCalls));
+  ck('...and it was written down, so a reload comes back to it',
+     remembered.join()==='2', remembered.join());
   ck('the source no longer closes the drawer when a workspace is chosen',
      !/closeSidebarMobile\(\)/.test(grabM('select')), grabM('select'));
 }

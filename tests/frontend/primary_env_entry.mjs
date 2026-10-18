@@ -37,16 +37,28 @@ async function enter({hash='', saved=null, boards, envs=[PRIMARY,OTHER], loaded=
     async load(){ this.items=envs.slice(); if(!st.env) st.env=this.items.find(e=>e.is_primary)||this.items[0]||null; },
     active(){ return st.env||this.items[0]||null; },
     render(){ this.renders++; }};
+  /* openDeepLink is grabbed too, not stubbed: a link in the URL is answered by
+     it alone now, and stubbing it would leave the thing these cases are about
+     untested. Its own dependencies join the list below. */
   const fn=new Function('st','Env','loadBoards','Router','localStorage','openBoard',
     'findAnyTask','Chat','document','Notif','setTimeout','showAgentHint','esc',
-    grab('followBoardEnv')+grab('entryEmptyHTML')+grab('enterApp')+'; return enterApp;')(
+    'accessDeniedHTML','refreshBoardItems','renderView','toast',
+    // rememberEnv/rememberedEnvId: where you were is kept across a reload now,
+    // and both enterApp and followBoardEnv call them. See
+    // tests/frontend/refresh_keeps_place.mjs — these cases are the OTHER half,
+    // the entry with nothing remembered, so localStorage below answers null.
+    grab('rememberEnv')+grab('rememberedEnvId')
+    +grab('followBoardEnv')+grab('entryEmptyHTML')+grab('openDeepLink')+grab('enterApp')
+    +'; return enterApp;')(
     st, Env, async()=>{}, {parse:()=>{
       const m=hash.match(/board\/(\d+)(?:\/item\/(\d+))?/);
       return m?{boardId:+m[1],itemId:m[2]?+m[2]:null}:{boardId:null,itemId:null};
     }},
-    {getItem:()=>saved===null?null:String(saved), setItem(){}},
-    async id=>{opened.push(id);}, ()=>null, {open(){}},
-    {getElementById:()=>view}, {start(){}}, ()=>{}, ()=>{}, x=>String(x==null?'':x));
+    {getItem:k=>(k==='cc_env'?null:(saved===null?null:String(saved))),
+     setItem(){}, removeItem(){}},
+    async id=>{opened.push(id); st.board={id, tasks:[]};}, ()=>null, {open(){}},
+    {getElementById:()=>view}, {start(){}}, ()=>{}, ()=>{}, x=>String(x==null?'':x),
+    msg=>'ACCESS-DENIED: '+msg, async()=>{}, ()=>{}, ()=>{});
   await fn();
   return {opened, env:st.env, Env, html:view.innerHTML};
 }

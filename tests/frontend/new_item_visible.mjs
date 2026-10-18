@@ -33,18 +33,22 @@ async function add({filters, group=7}){
   const fn=new Function('st','api','withMe','renderView','clearFilters','toast',
     'focusNewItemTitle','setTimeout','defaultGroupId','statusKeyOf','priorityKeyOf',
     'linkIdsOf','linkNamesOf','window','IS_ITEM_ID','setGroupCollapsed',
+    // applyFilters and filtersActive now also consult the advanced condition
+    // tree; these cases build none, so it counts nothing and matches all
+    'advCount','advMatch','Paged',
     grab('applyFilters')+grab('filtersActive')+grab('openNewItem')+'; return openNewItem;')(
     st,
     async(url,opt)=>{ log.posted=JSON.parse(opt.body); return made; },
     x=>JSON.stringify(x),
     ()=>{log.rendered++;},
-    ()=>{log.cleared++; st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};},
+    ()=>{log.cleared++; st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null};},
     m=>log.toasts.push(m),
     id=>log.focused.push(id),
     f=>f(),
     ()=>7,
     t=>t.status, t=>t.priority||'', ()=>[], ()=>[], {}, /^\d{3,}$/,
-    (gid,shut)=>log.unfolded.push([gid,shut]));
+    (gid,shut)=>log.unfolded.push([gid,shut]),
+    ()=>0, ()=>true, {on:false,rows:[]});
   await fn(group);
   return {log, st, visible:st.board.tasks.length};
 }

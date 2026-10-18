@@ -24,11 +24,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
                   init_auth, resolve_user)
 import entra_guests
+import filter_ast
 import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
     AutomationTestRun,
-    AutomationFreeze, ItemLink, BoardView,
+    AutomationFreeze, ItemLink, BoardView, SavedView,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -1925,6 +1926,395 @@ def _json(payload):
                     media_type="application/json")
 
 
+# ── saved views (תצוגות שמורות) ────────────────────────────────────────
+# A named cut of a board, shown as a tab at the top of it. "באגים דחופים
+# פתוחים" is three filters somebody sets every morning; a view is that cut,
+# kept.
+#
+# The permission model is two words, and the asymmetry in it is deliberate:
+#
+#   private — only its owner sees it. Somebody's own way of reading a board is
+#             not a statement about the board, so it takes only the right to
+#             look at the board to make one.
+#   public  — everyone who may open the board sees it. It is a tab ON the
+#             board, which makes creating one an edit to the board, and it
+#             takes the rights of one.
+#
+# Editing and deleting follow the same line: the owner always, and a board
+# admin for a public view — somebody has to be able to take down a tab whose
+# author has left.
+def _is_sys_admin(db, user_id):
+    """A system administrator, as opposed to an administrator of one board."""
+    if not user_id:
+        return False
+    u = db.query(User).filter(User.id == user_id).first()
+    return bool(u and u.role == "admin")
+
+
+# ── where a filter runs, and how much comes back at a time ─────────────
+# Below the threshold the browser filters what it already holds: the answer
+# is instant, no request is made, and on a board of a few hundred rows that
+# is simply better. Above it the question goes to the server, which is the
+# only side that can answer for rows the browser was never handed.
+#
+# The number is configuration, not a constant with an opinion: a board of
+# 1,000 rows on a laptop is not the same board on a five-year-old phone, and
+# whoever runs the deployment is the one who knows which they have.
+FILTER_CLIENT_MAX = max(0, int(os.environ.get("FILTER_CLIENT_MAX", "1000") or 1000))
+# What happens when a view filters by a column its reader may not see.
+#
+#   skip  (default) — the rule is not applied for them. They see MORE rows
+#                     than the view's author meant, and learn nothing about
+#                     the column. This is the safe direction, and the reason
+#                     is the opposite of the intuitive one: APPLYING the rule
+#                     is the leak. "Budget > 1,000,000", run for somebody who
+#                     cannot see budgets, hands them the answer as a row set —
+#                     they read the figures off which rows survived. Dropping
+#                     the rule hands them nothing.
+#   block           — the view refuses to open for them at all. No inference
+#                     of any kind, including from the view's name; the cost
+#                     is that a shared view stops working across permission
+#                     tiers, which for most boards is the worse trade.
+#
+# Configuration, because this is a security policy and the people who set it
+# are the ones who know what is on their boards.
+FILTER_COLUMN_POLICY = (os.environ.get("FILTER_COLUMN_POLICY") or "skip").strip().lower()
+if FILTER_COLUMN_POLICY not in ("skip", "block"):
+    FILTER_COLUMN_POLICY = "skip"
+# One page. A board of tens of thousands of rows must never arrive in one
+# response — not because the server cannot build it, but because the browser
+# cannot draw it, and the request blocks everything behind it while it tries.
+QUERY_PAGE = 50
+QUERY_PAGE_MAX = 200
+
+VIEW_VIS = ("private", "public")
+VIEW_MAX = 40            # per board, per person — a tab strip is not a list
+
+
+def _view_visible_to(v, user_id, role):
+    return v.visibility == "public" or v.owner_id == user_id
+
+
+def _may_edit_view(v, user_id, role, sys_admin=False):
+    """Who may overwrite a view.
+
+    Its owner, always — a public view has one, and it is whoever made it.
+    Anybody else reading it may look and may build on it, and the only thing
+    they are offered is "save as a new view": a tab other people rely on must
+    not be rewritten by somebody who was only adjusting what they were
+    looking at, and an accidental overwrite is invisible to everyone it
+    affects until they next open the tab and find it answering a different
+    question.
+
+    Administrators override that — a board admin for the boards they run, and
+    a system administrator anywhere. Somebody has to be able to fix or remove
+    a tab whose author has left the organisation.
+    """
+    return v.owner_id == user_id or role == "admin" or bool(sys_admin)
+
+
+def _view_json(v, db=None, names=None):
+    return {"id": v.id, "board_id": v.board_id, "name": v.name,
+            "visibility": v.visibility, "owner_id": v.owner_id,
+            "owner_name": (names or {}).get(v.owner_id, ""),
+            "filters": v.filters or {}, "position": v.position or 0}
+
+
+def _board_role_or_403(db, board_id, user_id):
+    b = db.query(Board).filter(Board.id == board_id).first()
+    if not b or b.deleted_at:
+        raise HTTPException(404, "board not found")
+    role = _board_role(db, board_id, user_id)
+    if user_id is not None and role is None:
+        raise HTTPException(403, "אין לך גישה ללוח זה")
+    return b, role
+
+
+@app.get("/api/boards/{board_id}/views")
+def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        _b, role = _board_role_or_403(db, board_id, user_id)
+        rows = (db.query(SavedView).filter(SavedView.board_id == board_id)
+                  .order_by(SavedView.position, SavedView.id).all())
+        rows = [v for v in rows if _view_visible_to(v, user_id, role)]
+        sysadm = _is_sys_admin(db, user_id)
+        names = {}
+        if rows:
+            ids = {v.owner_id for v in rows}
+            names = {u.id: u.name for u in db.query(User).filter(User.id.in_(ids)).all()}
+        return {"views": [dict(_view_json(v, db, names),
+                               can_edit=_may_edit_view(v, user_id, role, sysadm),
+                               # drawn as "yours" or "somebody's" — the strip
+                               # offers a different thing to save in each case
+                               is_owner=(v.owner_id == user_id))
+                          for v in rows]}
+
+
+@app.post("/api/boards/{board_id}/views")
+def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        _b, role = _board_role_or_403(db, board_id, user_id)
+        name = (data.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "לתצוגה צריך שם")
+        vis = data.get("visibility") if data.get("visibility") in VIEW_VIS else "private"
+        if vis == "public" and role not in ("admin", "editor"):
+            raise HTTPException(403, "תצוגה ציבורית היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
+        mine = (db.query(SavedView)
+                  .filter(SavedView.board_id == board_id, SavedView.owner_id == user_id).count())
+        if mine >= VIEW_MAX:
+            raise HTTPException(400, f"יותר מדי תצוגות שמורות בלוח (מקסימום {VIEW_MAX})")
+        # the cut is validated the way the query endpoint validates one: a view
+        # holding a filter the server would refuse is a tab that cannot open
+        filters = data.get("filters") if isinstance(data.get("filters"), dict) else {}
+        try:
+            filter_ast.parse(filters.get("adv"))
+        except filter_ast.BadFilter as e:
+            raise HTTPException(400, str(e))
+        maxpos = (db.query(func.max(SavedView.position))
+                    .filter(SavedView.board_id == board_id).scalar())
+        v = SavedView(board_id=board_id, owner_id=user_id, name=name[:80],
+                      visibility=vis, filters=filters,
+                      position=(maxpos + 1) if maxpos is not None else 0)
+        db.add(v)
+        db.commit()
+        db.refresh(v)
+        return dict(_view_json(v), can_edit=True)
+
+
+@app.patch("/api/views/{view_id}")
+def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        v = db.query(SavedView).filter(SavedView.id == view_id).first()
+        if not v:
+            raise HTTPException(404, "view not found")
+        _b, role = _board_role_or_403(db, v.board_id, user_id)
+        if not _may_edit_view(v, user_id, role, _is_sys_admin(db, user_id)):
+            raise HTTPException(403, "אפשר לערוך רק תצוגה שיצרת")
+        if data.get("name") is not None:
+            name = (data.get("name") or "").strip()
+            if not name:
+                raise HTTPException(400, "לתצוגה צריך שם")
+            v.name = name[:80]
+        if data.get("visibility") in VIEW_VIS:
+            # publishing is the edit that needs the rights, not editing itself:
+            # a private view becoming public puts a tab on everybody's board
+            if data["visibility"] == "public" and v.visibility != "public" \
+                    and role not in ("admin", "editor"):
+                raise HTTPException(403, "רק עורך או מנהל לוח יכול לפרסם תצוגה")
+            v.visibility = data["visibility"]
+        if isinstance(data.get("filters"), dict):
+            try:
+                filter_ast.parse(data["filters"].get("adv"))
+            except filter_ast.BadFilter as e:
+                raise HTTPException(400, str(e))
+            v.filters = data["filters"]
+        if isinstance(data.get("position"), int):
+            v.position = data["position"]
+        v.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(v)
+        return dict(_view_json(v), can_edit=True)
+
+
+@app.delete("/api/views/{view_id}")
+def delete_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        v = db.query(SavedView).filter(SavedView.id == view_id).first()
+        if not v:
+            raise HTTPException(404, "view not found")
+        _b, role = _board_role_or_403(db, v.board_id, user_id)
+        if not _may_edit_view(v, user_id, role, _is_sys_admin(db, user_id)):
+            raise HTTPException(403, "אפשר למחוק רק תצוגה שיצרת")
+        db.delete(v)
+        db.commit()
+        return {"status": "deleted"}
+
+
+# ── the advanced filter, evaluated here ────────────────────────────────
+# The client sends the condition tree as JSON — an AST, groups holding groups —
+# and gets back the ids that answer it. It filters locally too, for the
+# instant feedback a toolbar needs; this is the authority, and the only place
+# that can answer for a board bigger than what the browser was handed.
+#
+# Two things the client must send, and the reason is the same for both: the
+# only clock that can say what "היום" means is the one the person is reading.
+#   `today`      — the client's own local date (YYYY-MM-DD)
+#   `tz_offset`  — minutes east of UTC, so an instant stored in UTC can be
+#                  turned into the day the viewer is having
+# Without them the server's own date and UTC are used, which is right for a
+# script and wrong for a person — so the report says which was used.
+@app.post("/api/boards/{board_id}/items/query")
+def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        # the same gate the board's own fetch uses — a filter must never be a
+        # way to learn what is on a board you cannot open
+        my_role = _board_role(db, board_id, user_id)
+        if user_id is not None and my_role is None:
+            raise HTTPException(403, "אין לך גישה ללוח זה")
+        try:
+            tree = filter_ast.parse(data.get("filter"))
+        except filter_ast.BadFilter as e:
+            # Named, not swallowed: a filter the server refuses and the client
+            # keeps showing results for is the two disagreeing in silence.
+            raise HTTPException(400, str(e))
+
+        today = str(data.get("today") or "").strip()
+        if not filter_ast._ISO_DAY.match(today):
+            today = datetime.now(timezone.utc).date().isoformat()
+            client_clock = False
+        else:
+            client_clock = True
+        try:
+            off = int(data.get("tz_offset") or 0)
+        except (TypeError, ValueError):
+            off = 0
+        off = max(-14 * 60, min(14 * 60, off))
+
+        # What each field can be asked about — built-ins, then the board's own.
+        #
+        # Two maps, because "the column is gone" and "you may not see it" are
+        # different answers and the person deserves the right one. `fields` is
+        # what this reader may filter by; `known` is every column the board
+        # has, used only to tell the two apart in the report.
+        base = {"title": "text", "status": "status", "priority": "status",
+                "assignees": "people", "due": "date"}
+        fields, known = dict(base), dict(base)
+        for c in ((b.settings or {}).get("columns") or []):
+            kind = filter_ast.KINDS.get(c.get("type"))
+            if not kind:
+                continue
+            cid = str(c.get("id"))
+            known[cid] = kind
+            if user_id is None or _col_perm(c, user_id, my_role) != "none":
+                fields[cid] = kind
+
+        # A rule naming a column that was deleted comes OUT of the tree rather
+        # than being made to answer true — inside an "or" group the two are
+        # opposites, and the second quietly shows the whole board. The caller
+        # is told which, so it can say so.
+        #
+        # A rule naming a column this reader may not SEE comes out for the
+        # same reason and a different one: running it would answer a question
+        # about hidden data with a row set, and a row set is an answer. Which
+        # of the two happened is reported separately — "the column was
+        # deleted" and "you may not see it" are different facts about the
+        # board, and telling somebody the wrong one is its own small lie.
+        tree, gone = filter_ast.prune(tree, fields)
+        denied = [f for f in gone if f in known]
+        dropped = [f for f in gone if f not in known]
+        if denied and FILTER_COLUMN_POLICY == "block":
+            raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
+
+        # Ordered, and not by chance: pages are cut out of this list, and a
+        # list whose order is whatever the database felt like means page two
+        # can repeat a row from page one and skip another entirely.
+        rows = (db.query(Task)
+                  .filter(Task.board_id == board_id, Task.parent_id.is_(None),
+                          Task.is_archived == False, Task.deleted_at.is_(None))
+                  .order_by(Task.position, Task.id)
+                  .all())
+        # and an item this person may not see is not an item this answers for
+        if user_id is not None:
+            rows = [t for t in rows if _item_perm(t, user_id, my_role) != "none"]
+        # The toolbar's own filters, applied alongside the tree.
+        #
+        # They have to be here, and the reason is not completeness. On a
+        # large board the server's answer IS what the browser shows — the
+        # local pass is skipped, because re-filtering a page against the rows
+        # this browser happens to hold is the half the server was asked to
+        # replace. So a toolbar filter the server does not know about is a
+        # filter that silently stops working at exactly the board size where
+        # filtering matters most.
+        q = str(data.get("q") or "").strip().lower()
+        want_people = {int(x) for x in (data.get("people") or []) if str(x).isdigit()}
+        want_status = str(data.get("status") or "")
+        want_prio = str(data.get("priority") or "")
+
+        def _passes_toolbar(t):
+            if want_status and _task_status_key(t) != want_status:
+                return False
+            if want_prio and _task_priority_key(t) != want_prio:
+                return False
+            if want_people and not ({u.id for u in t.assignees} & want_people):
+                return False
+            if q:
+                hay = [(t.title or ""), (t.description or ""), str(t.item_uid or "")]
+                hay += [u.name or "" for u in t.assignees]
+                if not any(q in h.lower() for h in hay):
+                    return False
+            return True
+
+        total = len(rows)
+        hits = []
+        for t in rows:
+            item = {
+                "id": t.id, "title": t.title,
+                "status": _task_status_key(t), "priority": _task_priority_key(t),
+                "due_date": t.due_date.isoformat() if t.due_date else None,
+                "assignees": [{"id": u.id} for u in t.assignees],
+                "custom_fields": t.custom_fields or {},
+            }
+            if _passes_toolbar(t) and filter_ast.match(item, tree, fields, today, off, user_id):
+                hits.append(t)
+        matched = len(hits)
+
+        out = {"matched": matched, "total": total,
+               "conditions": filter_ast.count(tree),
+               # the rules that could not be run, so the caller can say why
+               # the answer is wider than the view promised — and which of
+               # the two reasons it was
+               "dropped_fields": dropped,
+               "denied_fields": denied,
+               "column_policy": FILTER_COLUMN_POLICY,
+               "client_max": FILTER_CLIENT_MAX,
+               # so a caller can see which clock answered "היום"
+               "today": today, "tz_offset": off, "client_clock": client_clock}
+
+        # Two ways to answer, and which one is right depends on the board.
+        #
+        # `ids_only` is the small-board answer: the browser already holds
+        # every row and only needs to know which of them survive. It is
+        # capped at the same threshold that decides the mode in the first
+        # place — past that the browser should not have been asking this way.
+        #
+        # Otherwise a PAGE of rows, serialised. A board of tens of thousands
+        # must never arrive in one response: not because this cannot build
+        # it, but because the browser cannot draw it, and the request blocks
+        # everything behind it while it tries. Only the page is serialised —
+        # the rows that did not make it onto it cost a comparison each and
+        # nothing more.
+        if data.get("ids_only"):
+            out["item_ids"] = [t.id for t in hits[:FILTER_CLIENT_MAX]]
+            out["truncated"] = matched > FILTER_CLIENT_MAX
+            return out
+
+        try:
+            limit = int(data.get("limit") or QUERY_PAGE)
+        except (TypeError, ValueError):
+            limit = QUERY_PAGE
+        limit = max(1, min(QUERY_PAGE_MAX, limit))
+        try:
+            offset = max(0, int(data.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        page = hits[offset:offset + limit]
+        _subs = _prefetch_items(db, page)
+        _prefetch_links(db, list(page) + _subs, (b.settings or {}).get("columns", []), user_id)
+        cols = (b.settings or {}).get("columns", [])
+        out["items"] = [_serialize_task(t, db, user_id=user_id, board_role=my_role,
+                                        columns=cols) for t in page]
+        out["item_ids"] = [t.id for t in page]
+        out["offset"] = offset
+        out["limit"] = limit
+        out["has_more"] = (offset + len(page)) < matched
+        out["next_offset"] = offset + len(page)
+        return out
+
+
 @app.get("/api/boards/{board_id}")
 def get_board(board_id: int, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -2008,6 +2398,12 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "col_hidden": (b.settings or {}).get("col_hidden", []),
             "col_order": (b.settings or {}).get("col_order", []),
             "notifications_enabled": bool((b.settings or {}).get("notifications_enabled", True)),
+            # Where this board's filtering runs. The browser has to know
+            # before it asks anything — it is the number that decides whether
+            # to ask at all — so it travels with the board rather than with
+            # the first answer.
+            "filter_client_max": FILTER_CLIENT_MAX,
+            "filter_column_policy": FILTER_COLUMN_POLICY,
             "statuses": _board_statuses(b),
             "priorities": _board_priorities(b),
             "form": (b.settings or {}).get("form"),
@@ -2190,16 +2586,60 @@ def _imp_coerce(v, ctype):
 IMPORT_SUBHEAD_FILL = "FFEDEFF5"
 
 
+def _imp_cell_paint(cell):
+    """The colour a sheet painted a cell with, as #rrggbb — or None.
+
+    A group's row is coloured in every file that has groups at all: monday
+    fills it, and this app's own export writes the colour on the text. Either
+    is the group's colour, and reading it is what lets a board come back the
+    colour it left. Read for the group rows only, so a fill anywhere else is
+    nobody's business.
+
+    White and black are not read as colours: they are what a sheet looks like
+    when nothing was painted, and a group headed "ללא צבע" white-on-white is
+    worse than one wearing a default.
+    """
+    def hexof(c):
+        rgb = getattr(c, "rgb", None)
+        # openpyxl answers a theme or indexed colour with no usable rgb at all,
+        # and the themed palette is not in the file to resolve it against.
+        if not isinstance(rgb, str) or len(rgb) != 8:
+            return None
+        if rgb[:2] == "00":              # fully transparent: nothing was painted
+            return None
+        h = "#" + rgb[2:].lower()
+        return None if h in ("#ffffff", "#000000") else (h if _valid_hex(h) else None)
+
+    try:
+        fill = getattr(cell, "fill", None)
+        if fill is not None and getattr(fill, "patternType", None) == "solid":
+            c = hexof(fill.fgColor)
+            # the grey sub-item band is this app's own furniture, not a colour
+            # anybody chose for a group
+            if c and c != "#" + IMPORT_SUBHEAD_FILL[2:].lower():
+                return c
+        font = getattr(cell, "font", None)
+        if font is not None and font.color is not None:
+            return hexof(font.color)
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return None
+
+
 def _imp_parse_tabular(raw, filename, with_shape=False):
     """Rows (each a list of cell values) from CSV or XLSX bytes.
 
     With `with_shape`, each row is paired with what the sheet says it is:
-    `(level, is_band, values)`. A board exported from here indents the first cell
-    by two per level — a group at 0, an item at 1, a sub-item at 2 — and paints
-    the sub-item column band grey. Both survive a read-back (the outline levels
-    do not, in the streaming reader), so they are what the hierarchy is read
-    from. A file with no indentation reads as level 0 throughout, which is what a
-    flat CSV is.
+    `(level, is_band, paint, values)`. A board exported from here indents the
+    first cell by two per level — a group at 0, an item at 1, a sub-item at 2 —
+    and paints the sub-item column band grey. Both survive a read-back (the
+    outline levels do not, in the streaming reader), so they are what the
+    hierarchy is read from. A file with no indentation reads as level 0
+    throughout, which is what a flat CSV is.
+
+    `paint` is the colour the sheet gave the row's first cell, which on a group
+    row is the group's own colour — the thing a board is recognised by before
+    any of it is read. A CSV carries no colour, and says None.
     """
     name = (filename or "").lower()
     if name.endswith((".xlsx", ".xlsm")):
@@ -2223,7 +2663,8 @@ def _imp_parse_tabular(raw, filename, with_shape=False):
                             and str(fill.fgColor.rgb or "").upper() == IMPORT_SUBHEAD_FILL)
             except (AttributeError, TypeError, ValueError):
                 pass
-            shaped.append((indent // 2, band, [c.value for c in cells]))
+            paint = _imp_cell_paint(first) if first is not None else None
+            shaped.append((indent // 2, band, paint, [c.value for c in cells]))
         wb.close()
         return shaped
     # CSV / TSV / plain text
@@ -2246,7 +2687,7 @@ def _imp_parse_tabular(raw, filename, with_shape=False):
     rows = [list(r) for r in _csv.reader(_io.StringIO(text), delimiter=delim)]
     # a CSV carries no indentation, so every row is flat — a parent column is the
     # only way such a file can name a hierarchy
-    return [(0, False, r) for r in rows] if with_shape else rows
+    return [(0, False, None, r) for r in rows] if with_shape else rows
 
 
 def _imp_formula_text(raw, filename, shaped):
@@ -2289,7 +2730,7 @@ def _imp_formula_text(raw, filename, shaped):
     finally:
         wb.close()
     filled = 0
-    for i, (_lvl, _band, vals) in enumerate(shaped):
+    for i, (*_shape, vals) in enumerate(shaped):
         if i >= len(src):
             break
         for j, v in enumerate(vals):
@@ -2876,7 +3317,7 @@ def _imp_monday_layout(shaped):
     lines.
 
     Returns `(title, header, body, summaries)`, the body in the same `(level,
-    is_band, values)` shape a board exported from here is already read in — a
+    is_band, paint, values)` shape a board exported from here is already read in — a
     group at 0, an item at 1, a sub-item at 2 — so everything downstream of here
     is unchanged. A sheet that is not this layout returns None and is read
     exactly as before: the first row its header, every row under it an item.
@@ -2884,7 +3325,7 @@ def _imp_monday_layout(shaped):
     def txt(vals):
         return [("" if c is None else str(c).strip()) for c in vals]
 
-    rows = [txt(v) for _, _, v in shaped]
+    rows = [txt(v) for *_, v in shaped]
     if len(rows) < 3:
         return None
     filled = [sum(1 for c in r if c) for r in rows]
@@ -2913,25 +3354,25 @@ def _imp_monday_layout(shaped):
 
     body, in_band, i, summaries = [], False, head + 1, 0
     if head == 2:
-        body.append((0, False, shaped[1][2]))        # the group this header is for
+        body.append((0, False, shaped[1][2], shaped[1][3]))  # the group this header is for
     while i < len(shaped):
-        r, vals = rows[i], shaped[i][2]
+        r, vals, paint = rows[i], shaped[i][3], shaped[i][2]
         # A name on a line of its own, with the header repeated beneath it, is
         # how monday says "a new group starts here". The header-beneath is what
         # tells it apart from an item nobody filled anything in for.
         if lone[i] and i + 1 < len(rows) and is_header(rows[i + 1]):
-            body.append((0, False, vals))
+            body.append((0, False, paint, vals))
             in_band, i = False, i + 2                # the repeat is not a row of the board
             continue
         if is_header(r):
             i += 1
             continue
         if is_band(r):
-            body.append((2, True, vals))
+            body.append((2, True, None, vals))
             in_band, i = True, i + 1
             continue
         if in_band and not r[0]:
-            body.append((2, False, vals))            # a sub-item: its name is in the second cell
+            body.append((2, False, None, vals))      # a sub-item: its name is in the second cell
             i += 1
             continue
         if not r[0] and not (len(r) > 1 and r[1]):
@@ -2946,9 +3387,9 @@ def _imp_monday_layout(shaped):
             i += 1
             continue
         in_band = False
-        body.append((1, False, vals))
+        body.append((1, False, None, vals))
         i += 1
-    return rows[0][0], shaped[head][2], body, summaries
+    return rows[0][0], shaped[head][3], body, summaries
 
 
 # Colours handed to imported status/dropdown options. Same list the status
@@ -3145,10 +3586,16 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         # one group, and that group is left unnamed — a name would be a heading
         # over a division that does not exist. It is renamed or split the moment
         # there is something true to call it.
+        #
+        # A group's colour is monday's where the file carries it. The header
+        # colour is how a board is read before a single name is: a "דחוף" that
+        # was red on monday arriving green here is the board saying something
+        # it never said. Only a file that did not state one falls back to this
+        # app's palette.
         gmap, groups = {}, []
         for i, g in enumerate(parsed["groups"]):
             grp = Group(board_id=b.id, name=g["title"][:200], position=i,
-                        color=IMPORT_PALETTE[i % len(IMPORT_PALETTE)],
+                        color=g.get("color") or IMPORT_PALETTE[i % len(IMPORT_PALETTE)],
                         task_status=TaskStatus.BACKLOG)
             db.add(grp)
             groups.append(grp)
@@ -3337,6 +3784,12 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 "messages": talked,
                 "files": files["stats"].get("imported", 0),
                 "report": {**parsed["report"],
+                           # the colour each group actually ended up with, beside
+                           # the names in `group_names`. The report shows the
+                           # groups as the chips they are on the board, which is
+                           # the one way "the colours came across" can be checked
+                           # at a glance instead of taken on trust.
+                           "group_hex": [g.color for g in groups][:40],
                            # the board's name, and which of the three places it
                            # came from — see _board_name_from
                            "board_name": board_name[:200],
@@ -3397,11 +3850,11 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     # Before anything is dropped, so the rows still line up with the sheet's own.
     shaped, formula_cells = _imp_formula_text(raw, filename, shaped)
     # drop fully-empty rows
-    shaped = [(lvl, band, r) for (lvl, band, r) in shaped
-              if any(c is not None and str(c).strip() != "" for c in r)]
+    shaped = [row for row in shaped
+              if any(c is not None and str(c).strip() != "" for c in row[3])]
     if not shaped:
         raise HTTPException(400, "הקובץ ריק")
-    rows = [r for _, _, r in shaped]
+    rows = [r for *_, r in shaped]
     ncols = min(max(len(r) for r in rows), IMPORT_MAX_COLS)
     if ncols < 1:
         raise HTTPException(400, "לא נמצאו עמודות בקובץ")
@@ -3430,7 +3883,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     # the indentation a board exported from here writes — where the structure IS
     # the sheet — and failing that a column naming the parent by its title, which
     # is how a CSV or a hand-made sheet says the same thing.
-    hier = any(lvl >= 1 for lvl, _, _ in body)
+    hier = any(lvl >= 1 for lvl, *_ in body)
     parent_at = next((i for i in range(1, ncols)
                       if labels[i].strip().lower() in IMPORT_PARENT_HEADERS), None)
     # and the same for the group: a sheet with a "קבוצה" column is dividing its
@@ -3442,11 +3895,18 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     # `band` is the grey header this app writes over a sub-item block, naming the
     # columns those sub-items have. It is a header, not an item, and its labels
     # are what a sub-item's cells are read against.
-    plan, band_vals, sub_labels = [], None, []
-    for lvl, is_band, r in body:
+    #
+    # `group_paint` is the colour each group row was painted — monday fills that
+    # row with the group's colour and this app's own export writes it on the
+    # text, so it is the source board saying what colour the group is. Kept by
+    # name, which is how every step after this one refers to a group.
+    plan, band_vals, sub_labels, group_paint = [], None, [], {}
+    for lvl, is_band, paint, r in body:
         vals = [_cell(r, i) for i in range(ncols)]
         if hier and lvl == 0:
             plan.append(("group", vals))
+            if paint and vals[0]:
+                group_paint.setdefault(vals[0], paint)
             continue
         if hier and lvl >= 2:
             if is_band or (band_vals is not None and vals[1:] == band_vals[1:]):
@@ -3616,9 +4076,14 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         from_file = named or col_groups
         groups = []
         if from_file:
+            # The colour the sheet gave the group, where it gave one. A board
+            # exported with its groups coloured comes back coloured; a sheet
+            # that says nothing about colour gets this app's palette, which is a
+            # default rather than a claim about the file.
             for i, gname in enumerate(list(from_file) + (["ללא קבוצה"] if col_blank else [])):
                 groups.append(Group(board_id=b.id, name=gname[:200], position=i,
-                                    color=IMPORT_PALETTE[i % len(IMPORT_PALETTE)],
+                                    color=(group_paint.get(gname)
+                                           or IMPORT_PALETTE[i % len(IMPORT_PALETTE)]),
                                     task_status=TaskStatus.BACKLOG))
         else:
             groups = [Group(board_id=b.id, name="בתכנון", position=0, color="#579bfc",
@@ -3755,6 +4220,10 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                            # reporting three groups nobody asked for
                            "groups": len(from_file),
                            "group_names": [g.name for g in groups][:40],
+                           # the colour each one ended up with, and how many of
+                           # those the sheet itself painted — see group_paint
+                           "group_hex": [g.color for g in groups][:40],
+                           "group_colors": sum(1 for g in groups if g.name in group_paint),
                            # and where it came from, because "3 קבוצות" over an
                            # undivided board reads exactly like a division
                            "board_name": board_name[:200],
@@ -4597,6 +5066,109 @@ def _env_invite_html(invitee_name, env_name, inviter_name, base=None):
       </div>
     </div>"""
 
+# ── mail about one item ─────────────────────────────────────────────────
+# Two things that happen TO a person on somebody else's keystroke: being put on
+# a record, and being tagged in its conversation. Both already left an in-app
+# notification, which only reaches somebody who is already in the app — and the
+# whole point of these two events is that they are addressed to someone who is
+# not looking.
+#
+# Every message is built BEFORE the commit, while the item, the board and the
+# people are loaded, and sent AFTER it. Nothing is mailed about a change that
+# rolled back, and the send — an HTTPS call to the provider — happens outside
+# the transaction rather than holding it open.
+
+
+def _mail_esc(v):
+    """Text going into an email's HTML. An item called "קרקע <הרצל 12> & חניה"
+    is an ordinary title and must not be able to close a tag."""
+    import html as _h
+    return _h.escape("" if v is None else str(v), quote=True)
+
+
+def _item_link(board_id, task_id, base=None):
+    """The deep link both mails point at: the item, opened on its conversation.
+    #/board/{b}/item/{t} is the route the app already reads — see Router."""
+    base = (base or _app_base_url()).rstrip("/")
+    return f"{base}/#/board/{board_id}/item/{task_id}"
+
+
+def _item_mail_html(heading, to_name, sentence, cta, href):
+    """The shell both item mails share, in the house style of the invitations:
+    a coloured heading, who you are, what happened, one button to the place it
+    happened. `sentence` arrives as HTML — its <b> marks the names."""
+    return f"""<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#1a1a2e">
+      <div style="background:#0073ea;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0">
+        <h2 style="margin:0;font-size:19px">{heading}</h2>
+      </div>
+      <div style="border:1px solid #e6e9ef;border-top:none;border-radius:0 0 12px 12px;padding:22px">
+        <p style="font-size:15px">שלום {_mail_esc(to_name)},</p>
+        <p style="font-size:15px;margin-bottom:22px">{sentence}</p>
+        <a href="{href}" style="display:inline-block;background:#0073ea;color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:700;font-size:15px">{cta}</a>
+        <p style="color:#9699a6;font-size:12px;margin-top:22px">מייל זה נשלח באופן אוטומטי ממערכת missions ואין להגיב לו.</p>
+      </div>
+    </div>"""
+
+
+def _item_assigned_mail(to_name, actor_name, item_title, board_name, board_id, task_id, base=None):
+    """"שוייכת לרשומה" — the wording the product asked for, word for word."""
+    return (f'שוייכת לרשומה בלוח {board_name} במערכת missions',
+            _item_mail_html(
+                f'שוייכת לרשומה בלוח "{_mail_esc(board_name)}" במערכת missions',
+                to_name,
+                f'שויכת ע"י <b>{_mail_esc(actor_name)}</b> לרשומה '
+                f'<b>"{_mail_esc(item_title)}"</b> בלוח <b>{_mail_esc(board_name)}</b> '
+                f'במערכת missions.',
+                "כניסה לרשומה", _item_link(board_id, task_id, base)))
+
+
+def _item_mention_mail(to_name, actor_name, item_title, board_name, board_id, task_id, base=None):
+    """"תוייגת בשיחה". The button says כניסה לשיחה and lands on the item's
+    conversation, which is the same deep link — the item opens on its chat."""
+    return (f'תוייגת ברשומה בלוח {board_name} במערכת missions',
+            _item_mail_html(
+                f'תוייגת ברשומה בלוח "{_mail_esc(board_name)}" במערכת missions',
+                to_name,
+                f'תוייגת ע"י <b>{_mail_esc(actor_name)}</b> בשיחה ברשומה '
+                f'<b>"{_mail_esc(item_title)}"</b> בלוח <b>{_mail_esc(board_name)}</b> '
+                f'במערכת missions.',
+                "כניסה לשיחה", _item_link(board_id, task_id, base)))
+
+
+# What each kind of event is called, and which builder writes it.
+ITEM_MAILS = {"assign": _item_assigned_mail, "mention": _item_mention_mail}
+
+
+def _item_mail(db, uid, task, board, actor_id, kind, base=None):
+    """One person, one event → (to, subject, html), or None if it must not go.
+
+    Every reason not to send lives here rather than at the five call sites: the
+    board's notification switch, a recipient who is not a real reachable user,
+    a deactivated account, and the person who did it — nobody is told by mail
+    about their own keystroke.
+    """
+    if not uid or task is None or kind not in ITEM_MAILS:
+        return None
+    if uid == actor_id or not _board_notify_on(board):
+        return None
+    to = db.query(User).filter(User.id == uid).first()
+    if not to or not to.email or to.is_active is False:
+        return None
+    actor = db.query(User).filter(User.id == actor_id).first()
+    subject, html = ITEM_MAILS[kind](
+        to.name, actor.name if actor else "משתמש במערכת", task.title,
+        board.name if board else "", task.board_id, task.id, base)
+    return (to.email, subject, html)
+
+
+def _send_item_mails(msgs):
+    """Send what was built, after the commit. A message that could not be built
+    is a None in the list — the call sites stay one line that way."""
+    for m in msgs:
+        if m:
+            _send_email(*m)
+
+
 @app.get("/api/boards/{board_id}/members")
 def list_board_members(board_id: int):
     with Session(engine) as db:
@@ -4931,7 +5503,13 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
         for i, spec in enumerate(cells, start=1):
             cell = _xlsx_cell(ws, r, i, spec)
             if row.get("group"):
-                cell.font = Font(color=_xlsx_argb(board_color))   # colour, not weight
+                # The group's own colour, not the board's: it is what the group
+                # is headed with here, and writing it is also what lets the file
+                # be imported back as the same board — the importer reads a
+                # group row's colour as the group's. A row that did not bring
+                # one falls back to the board's, which is how this read before.
+                gc = row.get("gcolor")
+                cell.font = Font(color=_xlsx_argb(gc if _valid_hex(gc) else board_color))
             # A sub-item block names its own columns, because they are not the
             # item's: a board can give its sub-items columns that exist nowhere
             # else, and under the item's header those values had no heading to
@@ -5521,7 +6099,8 @@ def move_board_to_environment(board_id: int, data: dict, actor_id: int = Depends
                 "environment_id": target.id, "environment_name": target.name}
 
 @app.post("/api/tasks")
-def create_task(data: dict, actor_id: int = Depends(current_user_id)):
+def create_task(data: dict, request: Request = None,
+                actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         parent_id = data.get("parent_id")
         board_id = data.get("board_id")
@@ -5656,6 +6235,7 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
         for _c, _v in _pending_links:
             _set_links(db, task, _c, _v, actor_id)
         # notify anyone assigned at creation time (skip the creator), honoring the switch
+        _mail = []
         if ids:
             board = db.query(Board).filter(Board.id == board_id).first()
             if _board_notify_on(board):
@@ -5664,10 +6244,15 @@ def create_task(data: dict, actor_id: int = Depends(current_user_id)):
                     if aid != actor:
                         _notify(db, aid, "assign", "שויכת למשימה",
                                 f"שויכת למשימה '{task.title}'.", board_id=board_id, task_id=task.id)
+                        # and by mail, which is the half that reaches somebody
+                        # who is not in the app — built now, sent after commit
+                        _mail.append(_item_mail(db, aid, task, board, actor, "assign",
+                                                _app_base_url(request)))
         # ── automations ── a new item can trigger rules (assign, set status, notify)
         _run_automations(db, task, {"type": "item_created"}, actor_id)
         _bid, _tid = task.board_id, task.id
         db.commit()
+        _send_item_mails(_mail)
         bus.publish("task.created", board_id=_bid, task_id=_tid, actor_id=actor_id)
         db.refresh(task)
         # return the fully-serialized task so the client can insert the new row
@@ -9504,7 +10089,8 @@ async def events_stream(request: Request, user_id: int = Depends(current_user_id
 
 
 @app.patch("/api/tasks/{task_id}")
-def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+def update_task(task_id: int, data: dict, request: Request = None,
+                actor_id: int = Depends(current_user_id)):
     """Generic item update — title, priority, status, due_date, and custom column
     values (merged into custom_fields). Used by the editable board columns."""
     with Session(engine) as db:
@@ -9512,6 +10098,8 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         if not task:
             raise HTTPException(404, "task not found")
         actor = actor_id
+        # mail built as the edit goes, sent once the edit is committed
+        _mail = []
         # ── permission enforcement (item level, and column level for custom_fields) ──
         # Previously the whole block was skipped when the caller omitted user_id,
         # so an anonymous PATCH could edit any item on any board.
@@ -9719,6 +10307,11 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
                             _notify(db, uid2, "assign", "שויכת לפריט",
                                     f"שויכת לעמודת '{col.get('title', 'אנשים')}' במשימה '{task.title}'.",
                                     board_id=task.board_id, task_id=task_id)
+                            # being named in a people column IS being put on the
+                            # record; the mail says so in the same words the
+                            # אחראי column's does
+                            _mail.append(_item_mail(db, uid2, task, board, actor,
+                                                    "assign", _app_base_url(request)))
             task.custom_fields = cf
         # One log row per column that changed, named the way the cell is named.
         # Written here rather than inside each branch above: a board-defined
@@ -9756,6 +10349,7 @@ def update_task(task_id: int, data: dict, actor_id: int = Depends(current_user_i
             _fan_out_linked_status(db, task, _task_status_key(task), actor)
         _bid, _tid = task.board_id, task.id
         db.commit()
+        _send_item_mails(_mail)
         # the write landed — only now is it safe to tell anyone, or a listener
         # could refetch and read the pre-commit row
         bus.publish("task.changed", board_id=_bid, task_id=_tid, actor_id=actor)
@@ -9968,7 +10562,8 @@ def list_comments(task_id: int, actor_id: int = Depends(current_user_id)):
         return {"comments": roots, "count": len(items)}
 
 @app.post("/api/tasks/{task_id}/comments")
-def add_comment(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+def add_comment(task_id: int, data: dict, request: Request = None,
+                actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
@@ -10007,13 +10602,19 @@ def add_comment(task_id: int, data: dict, actor_id: int = Depends(current_user_i
         db.add(c)
         _audit(db, task_id, "comment", field="reply" if data.get("parent_id") else "comment",
                new=(content[:120] or "(קובץ)"), user_id=user.id)
+        _mail = []
         if mentioned and _board_notify_on(board):
             for mid in mentioned:
                 _notify(db, mid, "mention", "תויגת בשיחה",
                         f"{user.name} תייג/ה אותך במשימה '{task.title}'.",
                         board_id=task.board_id, task_id=task_id)
+                # a tag is addressed at somebody who is not reading the board
+                # right now — that is the whole of what tagging is for
+                _mail.append(_item_mail(db, mid, task, board, user.id, "mention",
+                                        _app_base_url(request)))
         _bid = task.board_id if task else None
         db.commit(); db.refresh(c)
+        _send_item_mails(_mail)
         bus.publish("comment.added", board_id=_bid, task_id=task_id, actor_id=actor_id)
         return _serialize_comment(c, db)
 
@@ -10086,7 +10687,8 @@ def mark_comments_seen(task_id: int, data: dict, actor_id: int = Depends(current
         return {"ok": True}
 
 @app.patch("/api/comments/{cid}")
-def update_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id)):
+def update_comment(cid: int, data: dict, request: Request = None,
+                   actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         c = db.query(Comment).filter(Comment.id == cid).first()
         if not c:
@@ -10137,6 +10739,7 @@ def update_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id
         # notify anyone newly tagged in this edit (not the editor, honoring the switch)
         newly = _mentioned(c.content, c.mentions) - before
         newly.discard(user.id)
+        _mail = []
         if newly:
             task = db.query(Task).filter(Task.id == c.task_id).first()
             board = db.query(Board).filter(Board.id == task.board_id).first() if task else None
@@ -10145,7 +10748,10 @@ def update_comment(cid: int, data: dict, actor_id: int = Depends(current_user_id
                     _notify(db, mid, "mention", "תויגת בשיחה",
                             f"{user.name} תייג/ה אותך במשימה '{task.title}'.",
                             board_id=task.board_id, task_id=task.id)
+                    _mail.append(_item_mail(db, mid, task, board, user.id, "mention",
+                                            _app_base_url(request)))
         db.commit()
+        _send_item_mails(_mail)
         return _serialize_comment(c, db)
 
 @app.delete("/api/comments/{cid}")
@@ -10602,7 +11208,8 @@ def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_
         return {"status": "reverted", "field": log.field_name}
 
 @app.post("/api/tasks/{task_id}/assignees")
-def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+def task_assignees(task_id: int, data: dict, request: Request = None,
+                   actor_id: int = Depends(current_user_id)):
     """Add or remove a user from a task (monday-style people column)."""
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
@@ -10614,6 +11221,7 @@ def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_use
         actor = actor_id
         _require_board_edit(db, task.board_id, actor)   # only board editors may (un)assign
         was = user in task.assignees
+        _mail = []
         # removal stays open regardless, so an assignment made before this rule
         # existed can still be taken off the item
         if data.get("action") != "remove" and not was and not _can_be_assigned(db, task.board_id, user.id):
@@ -10633,10 +11241,13 @@ def task_assignees(task_id: int, data: dict, actor_id: int = Depends(current_use
                         _notify(db, user.id, "assign", "שויכת למשימה",
                                 f"{(actor_u.name + ' ') if actor_u else ''}שייך/ה אותך למשימה '{task.title}'.",
                                 board_id=task.board_id, task_id=task_id)
+                        _mail.append(_item_mail(db, user.id, task, board, actor, "assign",
+                                                _app_base_url(request)))
                 _run_automations(db, task, {"type": "person_assigned",
                                             "user_id": user.id}, actor)
         _bid = task.board_id
         db.commit()
+        _send_item_mails(_mail)
         bus.publish("task.changed", board_id=_bid, task_id=task_id, actor_id=actor)
         return {"assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
                               for u in task.assignees]}

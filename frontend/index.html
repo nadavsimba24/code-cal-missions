@@ -1780,6 +1780,74 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .comp-drop.show{display:flex}
 .comp-drop i{font-size:22px}
 .comp-drop small{font-weight:500;font-size:11px;color:var(--text-muted)}
+/* ===== סינון מתקדם ===== a condition tree. Nesting is shown by the border
+   and the indent alone: a group inside a group is the one thing a reader has
+   to see at a glance, and a second colour per level competes with the data. */
+.adv-grp{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface)}
+.adv-grp .adv-grp{margin:2px 0;background:var(--bg)}
+.adv-root{border-style:dashed}
+.adv-grp-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.adv-join-wrap{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.adv-join{border:0;background:var(--surface);color:var(--text-light);font-size:12.5px;font-weight:700;
+  padding:4px 12px;cursor:pointer}
+.adv-join.on{background:var(--primary);color:#fff}
+.adv-grp-note{font-size:11.5px;color:var(--text-light)}
+.adv-grp-name{font-size:12px;font-weight:700;color:var(--primary);background:var(--primary-soft);
+  border-radius:6px;padding:3px 9px;letter-spacing:.3px}
+/* ===== תצוגות שמורות ===== tabs on the same strip as the board's own views,
+   marked by a lock or a group of people so "who else sees this" never has to
+   be asked. */
+.tab-view{gap:6px}
+.tab-view .tab-view-edit{opacity:0;font-size:10.5px;padding:2px 3px;border-radius:4px;transition:opacity .12s}
+.tab-view:hover .tab-view-edit{opacity:.65}
+.tab-view .tab-view-edit:hover{opacity:1;background:var(--primary-soft);color:var(--primary)}
+.tab-save{border:1px dashed var(--border);background:none;color:var(--text-light);cursor:pointer;
+  font:inherit;font-size:12.5px;border-radius:8px;padding:5px 11px;margin-inline-start:6px;
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.tab-save:hover{color:var(--primary);border-color:var(--primary)}
+.tab-save-on{border-style:solid;border-color:var(--primary);color:var(--primary)}
+.tab-view-dot{display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--primary);margin-inline-start:5px;vertical-align:middle}
+.tab-locked{color:var(--text-light);font-size:11px;padding:0 4px;align-self:center}
+.vw-opt{display:flex;gap:9px;align-items:flex-start;padding:9px 11px;border:1px solid var(--border);
+  border-radius:9px;margin-bottom:7px;cursor:pointer;font-size:13.5px}
+.vw-opt:hover{border-color:var(--primary)}
+.vw-opt input{margin-top:3px}
+.vw-opt small{color:var(--text-light);font-size:11.5px;font-weight:400}
+.vw-opt-off{opacity:.6;cursor:default}
+.vw-opt-off:hover{border-color:var(--border)}
+.vw-note{font-size:12px;color:var(--text-light);background:var(--bg);border-radius:8px;padding:9px 11px}
+.adv-row{display:flex;align-items:flex-start;gap:8px;margin:4px 0}
+.adv-joiner{min-width:30px;text-align:center;font-size:11.5px;color:var(--text-light);
+  font-weight:700;padding-top:9px}
+.adv-rule{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1;
+  background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px 8px}
+.adv-row > .adv-grp{flex:1}
+.adv-in{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);
+  border-radius:6px;background:var(--surface);color:var(--text);min-width:110px}
+.adv-in-sm{min-width:0;flex:1}
+.adv-field{min-width:140px;font-weight:600}
+.adv-op{min-width:110px}
+.adv-date{display:inline-flex;gap:4px;align-items:center;flex:1;min-width:210px}
+.adv-noval{color:var(--text-light);font-size:12px}
+/* a value the board no longer offers — a person who left, an option deleted.
+   Marked, not hidden: the rule still filters, and it says what it is. */
+.adv-in-gone{border-color:#fdab3d;background:color-mix(in srgb,#fdab3d 9%,var(--surface))}
+.adv-and{font-size:12px;color:var(--text-light)}
+.adv-x{border:0;background:none;color:var(--text-light);cursor:pointer;padding:4px 6px;border-radius:6px}
+.adv-x:hover{background:var(--primary-soft);color:var(--danger,#e2445c)}
+.adv-blank{font-size:12.5px;color:var(--text-light);padding:6px 2px}
+.adv-foot-note{margin-top:10px;font-size:12.5px;color:var(--text-light);display:flex;gap:6px;align-items:center}
+@media (max-width:620px){
+  .adv-rule{gap:5px}
+  .adv-in,.adv-field,.adv-op{min-width:0;flex:1 1 100%}
+}
+/* macOS only: the one route that works for a mail attachment, said quietly and
+   permanently rather than as an error after a drag that never arrives */
+.comp-mac-hint{margin-inline-start:auto;display:inline-flex;align-items:center;gap:5px;
+  font-size:11.5px;color:var(--text-light);cursor:default;white-space:nowrap;padding-inline-end:4px}
+.comp-mac-hint i{font-size:12px}
+@media (max-width:620px){.comp-mac-hint{display:none}}
 .reply-ctx{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:6px;padding:5px 9px;margin-bottom:7px;display:flex;align-items:center;gap:7px}
 .comp-tools{display:flex;gap:2px;margin-bottom:6px}
 .comp-tools button{width:30px;height:30px;border-radius:6px;color:var(--text-muted);position:relative}
@@ -2177,6 +2245,9 @@ body, body *{ font-weight:400!important; }
         <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון ומיון <span class="tb-badge" id="badge-arrange"></span></button>
         <div class="tb-pop tb-pop-wide" id="pop-arrange"></div>
       </div>
+      <div class="tb-ctl" id="ctl-adv">
+        <button class="tb-btn" onclick="Adv.open()"><i class="fa-solid fa-filter-circle-check"></i> סינון מתקדם <span class="tb-badge" id="badge-adv"></span></button>
+      </div>
       <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
       <div style="flex:1"></div>
       <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
@@ -2465,29 +2536,193 @@ const toast = m=>{const t=document.getElementById('toast');t.textContent=m;t.cla
 const st = {boards:[], board:null, view:'table', users:[], filters:{q:'',people:[],status:'',priority:'',sort:''}, colSort:null, subSort:null, openSubs:new Set(), selected:new Set(), collapsedGroups:new Set()};
 
 /* ============ URL routing (hash-based deep links) ============
-   #/board/{id}            — a board is open
-   #/board/{id}/item/{id}  — an item (chat) is open inside that board
+   #/board/{id}                    — a board is open
+   #/board/{id}/view/{id}          — …read through a saved view
+   #/board/{id}/item/{id}          — …with an item (chat) open
+   #/board/{id}/view/{id}/item/{id} — both; they are independent of each other
+
+   The view is in the address because a filtered board is a thing people send
+   each other: "look at this" is a link, and without the view in it the link
+   opens the board unfiltered and the sentence beside it stops making sense.
+
    Uses replaceState so the address bar reflects state & links are shareable,
    without polluting history; a hashchange listener handles manual/back nav. */
 const Router={
   parse(){
-    const m=(location.hash||'').match(/board\/(\d+)(?:\/item\/(\d+))?/);
-    return m?{boardId:+m[1],itemId:m[2]?+m[2]:null}:{boardId:null,itemId:null};
+    const h=location.hash||'';
+    const m=h.match(/board\/(\d+)/);
+    if(!m)return {boardId:null,viewId:null,itemId:null};
+    const v=h.match(/\/view\/(\d+)/), i=h.match(/\/item\/(\d+)/);
+    return {boardId:+m[1], viewId:v?+v[1]:null, itemId:i?+i[1]:null};
   },
-  set(boardId,itemId){
-    const h=boardId?('#/board/'+boardId+(itemId?('/item/'+itemId):'')):'#/';
+  /* `viewId` defaults to the view actually open. Every existing caller passes
+     two arguments — paintBoard, Chat.open, Chat.close — and none of them is
+     about the view; without the default, opening an item would drop the view
+     out of the address and the link would stop being the one that was
+     shared. */
+  set(boardId,itemId,viewId){
+    if(viewId===undefined) viewId=(typeof Views!=='undefined')?Views.active:null;
+    const h=boardId
+      ? '#/board/'+boardId+(viewId?('/view/'+viewId):'')+(itemId?('/item/'+itemId):'')
+      : '#/';
     if(location.hash!==h){ try{history.replaceState(null,'',h);}catch(e){location.hash=h;} }
   },
   async apply(){   // react to manual URL edits / back-forward
     const r=this.parse();
-    if(r.boardId && (st.boards||[]).some(b=>b.id===r.boardId)){
-      if(!st.board||st.board.id!==r.boardId) await openBoard(r.boardId);
-      if(r.itemId){ if(Chat.taskId!==r.itemId && findAnyTask(r.itemId)) Chat.open(r.itemId,{center:true}); }
-      else if(Chat.taskId) Chat.close();
+    if(!r.boardId) return;
+    if(r.itemId===null && r.viewId===(typeof Views!=='undefined'?Views.active:null)
+       && st.board && st.board.id===r.boardId){
+      if(Chat.taskId) Chat.close();
+      return;
     }
+    await openDeepLink(r.boardId, r.itemId, r.viewId);
   }
 };
+
+/* A link to one record, followed from outside the app — the button in the mail
+   that says somebody put you on a record or tagged you in its conversation.
+
+   It has to land on the record's own conversation, and the three ways it can
+   fail are three ways of landing somewhere else without saying so:
+
+     * the board is not one this person can see — the entry used to fall through
+       to whichever board they had open last, so the link opened SOME board and
+       nothing said it was the wrong one;
+     * the item is not in what the board just handed us. A board shown from the
+       in-memory cache can predate the record the mail is about by minutes, and
+       the chat then simply did not open;
+     * the item is gone. Silence reads exactly like the first two.
+
+   So: say it is not yours, or go and look again, or say it is not there. */
+async function openDeepLink(boardId, itemId, viewId){
+  if(!(st.boards||[]).some(b=>b.id===boardId)){
+    document.getElementById('view').innerHTML=accessDeniedHTML(
+      'הקישור מוביל ללוח שאינו פתוח לך. ייתכן שלא הוזמנת אליו, או שההרשאה שונתה מאז שנשלחה ההודעה. אם לדעתך זו טעות — פנה למנהל הלוח.');
+    return;
+  }
+  if(!st.board || st.board.id!==boardId){
+    followBoardEnv(boardId);
+    await openBoard(boardId);
+  }
+  if(!st.board || st.board.id!==boardId) return;    // the board itself refused
+  /* A link to a saved view: the board has to be read through it before
+     anything else happens, and the views are fetched beside the board rather
+     than before it — so this is the one place that waits for them. A view
+     that is not in the answer is somebody's private one, or one since
+     deleted; the board opens unfiltered and says so, rather than opening
+     unfiltered in silence and looking like the link worked. */
+  if(viewId!=null && Views.active!==viewId){
+    await Views.load(boardId);
+    const v=(Views.items||[]).find(x=>x.id===viewId);
+    if(v) Views.apply(v);
+    else toast('התצוגה אינה זמינה לך — ייתכן שהיא אישית או שנמחקה. הלוח נפתח ללא סינון.');
+  }
+  if(itemId==null){ if(Chat.taskId) Chat.close(); return; }
+  if(Chat.taskId===itemId) return;
+  /* Not found is not yet an answer: the board on screen may have come from the
+     cache, and a record created after that cache was filled is exactly the
+     record a link like this points at. Ask the server once before giving up. */
+  if(!findAnyTask(itemId)){
+    await refreshBoardItems();
+    renderView();
+  }
+  if(findAnyTask(itemId)) Chat.open(itemId,{center:true});
+  else toast('הרשומה לא נמצאה בלוח — ייתכן שהיא נמחקה או הועברה');
+}
 window.addEventListener('hashchange',()=>{ try{Router.apply();}catch(e){} });
+
+/* ===== drag diagnostics =====
+   One line per drag, as early as a drag can be seen: on the window, before any
+   element has had a say.
+
+   It is here because "I drag from the mail and nothing happens, and the
+   console is empty" has two completely different causes and they cannot be
+   told apart from the outside:
+
+     * the page refused the drag — something this code can fix;
+     * the browser never delivered one. macOS hands over a PROMISE of a file
+       rather than the file, and for a promise it cannot interpret Chrome does
+       not raise dragenter/dragover on the page at all. No JavaScript runs,
+       whatever the page is willing to accept. Nothing written here can change
+       that, and the way round it is to copy the attachment (⌘C) and paste.
+
+   If a drag prints nothing below, it is the second one — and that is an answer
+   rather than another guess. Kept deliberately: the next person to ask the
+   same question should not have to add it again.
+
+   The line at the bottom prints once at startup, and it is there to settle the
+   other half of the ambiguity: an empty console can also mean the page itself
+   is the one the browser cached yesterday. If that line is missing, nothing
+   below it is running either. */
+(function(){
+  /* Throttled by TIME, never by a latch.
+
+     The first version used an "already logged this drag" flag reset on
+     drop/dragend. A drag abandoned outside the window — exactly what happens
+     when the browser refuses one and you let go — fires neither, so the flag
+     stayed set and every drag afterwards printed nothing. An empty console
+     then reads as "the browser delivered no events" when it may only mean
+     "the diagnostic latched shut". It was read as evidence. A time window
+     cannot stick.
+
+     And the console is not the only thing that can be empty for the wrong
+     reason: a filter, the wrong tab's console, a page served from cache. So
+     with ?dragdebug=1 the same lines are painted ON THE PAGE, where nothing
+     between the event and the eye can swallow them. The panel says what it is
+     running on, so one screenshot answers the whole question. */
+  const DBG=(function(){
+    try{
+      const on=/[?&]dragdebug=([^&]*)/.exec(location.search);
+      if(on) localStorage.setItem('dragdebug', on[1]==='0'?'':'1');
+      return !!localStorage.getItem('dragdebug');
+    }catch(_){ return false; }
+  })();
+  let box=null, n=0;
+  const paint=line=>{
+    if(!DBG)return;
+    if(!box){
+      box=document.createElement('div');
+      box.dir='ltr';
+      box.style.cssText='position:fixed;inset-inline-start:8px;bottom:8px;z-index:99999;'
+        +'max-width:min(560px,92vw);max-height:42vh;overflow:auto;background:#101828ee;color:#d1fadf;'
+        +'font:11px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;border-radius:8px;'
+        +'border:1px solid #344054;white-space:pre-wrap;box-shadow:0 8px 24px #0006';
+      box.textContent='[drag-debug] '+navigator.userAgent+'\n'
+        +'platform: '+(navigator.platform||'?')+'\n'
+        +'— גררו או הדביקו. כל אירוע יופיע כאן. לכיבוי: ?dragdebug=0\n';
+      (document.body||document.documentElement).appendChild(box);
+    }
+    box.textContent+=(++n)+'. '+line+'\n';
+    box.scrollTop=box.scrollHeight;
+  };
+  let last=0;
+  const say=(what,dt)=>{
+    const now=Date.now();
+    if(what!=='drop' && what!=='paste' && now-last<500)return;
+    last=now;
+    let line;
+    if(!dt) line=`${what} · no dataTransfer`;
+    else{
+      let types='',items='',names='';
+      try{ types=Array.from(dt.types||[]).join(', ')||'(none)'; }catch(_){ types='(unreadable)'; }
+      try{ items=Array.from(dt.items||[]).map(i=>i.kind+':'+(i.type||'?')).join(', ')||'(none)'; }catch(_){}
+      try{ names=Array.from(dt.files||[]).map(f=>`${f.name}(${f.size}B)`).join(', '); }catch(_){}
+      line=`${what} · types: ${types} · items: ${items} · files: ${(dt.files||[]).length}${names?' = '+names:''}`;
+    }
+    console.info('[drag] '+line);
+    paint(line);
+  };
+  // dragenter AND dragover: a platform that skips one still shows up in the other
+  window.addEventListener('dragenter',e=>say('enter',e.dataTransfer),true);
+  window.addEventListener('dragover', e=>say('over', e.dataTransfer),true);
+  window.addEventListener('drop',     e=>say('drop', e.dataTransfer),true);
+  /* Paste is diagnosed too, because it is the route offered when a drag
+     cannot work — and "use paste instead" is worth nothing if the clipboard
+     turns out to carry no file either. Same question, different doorway. */
+  window.addEventListener('paste',e=>say('paste',e.clipboardData),true);
+  console.info('[missions] אבחון גרירה והדבקה פעיל (v3) · להצגה על המסך: הוסיפו ?dragdebug=1 לכתובת');
+  if(DBG) try{ paint('ready'); }catch(_){}
+})();
 
 /* Gate client-side so oversized files get a clear message instead of a silent
    server 413 (which left broken, 404-on-open links). Note: on Vercel the edge
@@ -2583,6 +2818,41 @@ function followBoardEnv(boardId){
   const b=(st.boards||[]).find(x=>x.id===boardId); if(!b)return;
   const env=(Env.items||[]).find(e=>e.id===b.environment_id);
   if(env && (!st.env || st.env.id!==env.id)){ st.env=env; Env.render(); }
+  rememberEnv();
+}
+/* Where you are is two things, and only one of them was being kept.
+
+   The open board has always been written to localStorage; the workspace never
+   was. It lived in st.env and nowhere else, so a refresh started from nothing
+   and Env.load defaulted to the primary one. With a board open that was
+   invisible — the URL carries #/board/N, and opening the board pulls its
+   workspace along behind it. With no board open, or with a board that belongs
+   to another workspace and a URL that had been cleared, the refresh landed in
+   the primary workspace on somebody else's board.
+
+   Kept beside cc_board, and read back in enterApp. An old session that never
+   wrote one is not overridden into anything: no remembered workspace means
+   the entry behaves exactly as it did, which is what keeps a NEW user — one
+   invited to a single board in somebody else's department — opening in the
+   workspace everybody shares rather than in that department. */
+/* The open item's panel — conversation, files, log — shut.
+
+   One function because two places need it and they must not drift: changing
+   board, and changing workspace. Chat.close saves the draft first and clears
+   the item from the URL, so nothing typed is lost and the address matches
+   what is on screen. A no-op when nothing is open. */
+function closeItemPanel(){
+  try{ if(typeof Chat!=='undefined' && Chat.taskId!=null) Chat.close(); }catch(e){}
+}
+function rememberEnv(){
+  try{
+    if(st.env && st.env.id!=null) localStorage.setItem('cc_env', String(st.env.id));
+    else localStorage.removeItem('cc_env');
+  }catch(e){}
+}
+function rememberedEnvId(){
+  try{ const v=parseInt(localStorage.getItem('cc_env')||'',10); return isNaN(v)?null:v; }
+  catch(e){ return null; }
 }
 /* The entry screen when the workspace that opened has no board this person is
    allowed to see — by design, since a board in the shared workspace is private
@@ -2614,18 +2884,36 @@ async function enterApp(){
      Env.load is what settles which that is, so it is awaited here rather than
      left to the render that happens to fire it. */
   try{ if(!(Env.items||[]).length) await Env.load(); }catch(e){}
-  // a deep link in the URL wins — a link to a board opens that board, wherever
-  // it lives; otherwise the board you were on, as long as it is in the
-  // workspace that just opened
+  /* A deep link in the URL wins — a link to a board opens that board wherever
+     it lives, and openDeepLink answers it alone. Including the case where the
+     board is not this person's to see: that has to say so, rather than quietly
+     open whichever board they happened to be on last. */
   const r=Router.parse();
-  let target=null, wantItem=null;
-  if(r.boardId && st.boards.some(b=>b.id===r.boardId)){ target=r.boardId; wantItem=r.itemId; }
-  else {
-    const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
-    const active=Env.active();
-    const here=active?st.boards.filter(b=>b.environment_id===active.id):st.boards.slice();
-    target=here.some(b=>b.id===savedBoard)?savedBoard:(here.length?here[0].id:null);
+  if(r.boardId){
+    await openDeepLink(r.boardId, r.itemId, r.viewId);
+    Notif.start();
+    setTimeout(showAgentHint,3500);
+    return;
   }
+  /* No link in the URL: back to where she was — the workspace she was in,
+     and then the board she had open inside it.
+
+     The workspace is restored FIRST, because the board is chosen out of it:
+     reading cc_board against the primary workspace is what used to drop a
+     board belonging to anywhere else and open a stranger's instead. Only a
+     workspace this person still has is restored; one they were removed from
+     falls through to the default, which is the same as never having had one. */
+  const savedEnv=rememberedEnvId();
+  if(savedEnv!=null){
+    const back=(Env.items||[]).find(e=>e.id===savedEnv);
+    if(back) st.env=back;
+    else try{ localStorage.removeItem('cc_env'); }catch(e){}
+    Env.render();
+  }
+  const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
+  const active=Env.active();
+  const here=active?st.boards.filter(b=>b.environment_id===active.id):st.boards.slice();
+  const target=here.some(b=>b.id===savedBoard)?savedBoard:(here.length?here[0].id:null);
   /* Nothing of theirs in the primary workspace does NOT send them somewhere
      else any more. The entry used to fall back to a board in another workspace
      — better a board than an empty screen — and the switcher followed it, so a
@@ -2639,7 +2927,6 @@ async function enterApp(){
   if(target!=null){
     followBoardEnv(target);
     await openBoard(target);
-    if(wantItem && findAnyTask(wantItem)) Chat.open(wantItem,{center:true});   // deep link to a specific item
   }
   else document.getElementById('view').innerHTML=entryEmptyHTML();
   Notif.start();
@@ -3136,8 +3423,20 @@ async function openBoard(id){
   // rather than at each of the nine places that refetch a board is what keeps
   // those nine from having to know about the cache at all.
   if(st.board && st.board.id!==id) cacheBoard(st.board);
+  /* The item panel belongs to the board it was opened from.
+
+     Switching board left it open — the conversation, the files and the log of
+     an item that is no longer anywhere on screen, over a board it has nothing
+     to do with. paintBoard then rewrites the URL to #/board/<the new one>, so
+     the address said one thing and the panel showed another, and a reload
+     closed it without being asked to.
+
+     Closed where the board changes and nowhere else: reopening the same board
+     — a revalidate, a deep link that lands on the board already open — must
+     leave an open conversation exactly as it is. */
+  if(st.board && st.board.id!==id){ closeItemPanel(); Paged.reset(); }
   if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.collapsedGroups.clear(); st.colSort=null; st.subSort=null; }
-  st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};
+  st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
   /* The drawer closes on the tap, not when the board has finished arriving.
@@ -3200,6 +3499,10 @@ function paintBoard(id){
   renderTabs();
   refreshToolbar();
   renderView();
+  // the board's saved cuts, fetched beside it — a tab strip that fills in a
+  // moment later is better than a board that waits for one
+  Views.load(id);
+  Paged.bind();          // infinite scroll, bound once to #view
   Router.set(id,null);   // reflect the open board in the URL
   /* "נצפה לאחרונה" counts a person opening the board, not the app refetching
      it — so it is recorded here and nowhere else. A receipt: nobody is waiting
@@ -3668,6 +3971,278 @@ function boardViewsRaw(){
 function boardViews(){
   return boardViewsRaw().filter(id=>!VIEWS_WIP.has(id));
 }
+/* ===== where the filtering runs, and how much arrives at a time =====
+
+   Below the threshold the browser filters what it already holds: the answer
+   is instant, no request is made, and on a board of a few hundred rows that
+   is simply better than a round trip. Above it the question goes to the
+   server, which is the only side that can answer for rows this browser was
+   never handed — and the answer comes back fifty at a time, because a board
+   of tens of thousands cannot be drawn in one go however fast it arrives.
+
+   The threshold is the server's (`filter_client_max`, configurable per
+   deployment): a board of 1,000 rows on a laptop is not the same board on a
+   five-year-old phone, and whoever runs the deployment knows which they have.
+
+   `rows` is what the board handed over, which on a large board is itself a
+   page — so the comparison is against the board's own count where it says
+   one, and against what arrived otherwise. */
+const FILTER_CLIENT_MAX_FALLBACK = 1000;
+function filterClientMax(){
+  const n=st.board&&st.board.filter_client_max;
+  return (typeof n==='number'&&n>=0)?n:FILTER_CLIENT_MAX_FALLBACK;
+}
+function boardRowCount(){
+  const b=st.board; if(!b)return 0;
+  return (typeof b.item_count==='number')?b.item_count:((b.tasks||[]).length);
+}
+function filterMode(){ return boardRowCount()>filterClientMax()?'server':'client'; }
+
+/* The server-side page. Holds the rows that arrived, where the next page
+   starts, and whether there is one — and nothing else: it is a cache of one
+   answer, thrown away the moment the question changes. */
+const Paged = {
+  on:false, rows:[], offset:0, more:false, matched:0, total:0, loading:false, seq:0,
+  reset(){ this.on=false; this.rows=[]; this.offset=0; this.more=false;
+           this.matched=0; this.total=0; this.loading=false; this.seq++; },
+  query(){
+    const f=st.filters||{};
+    return Object.assign(advQuery(f.adv||null), {
+      // the toolbar's own filters travel too, or the server would answer a
+      // different question from the one on screen
+      q:f.q||'', people:(f.people||[]).slice(), status:f.status||'',
+      priority:f.priority||'', links:f.links||null,
+    });
+  },
+  /* Ask for the next page under the filters as they are now. `fresh` throws
+     away what is held — a filter changed, so every row of the old answer is
+     an answer to a question nobody is asking any more. */
+  async load(fresh){
+    if(this.loading)return;
+    if(fresh){ this.rows=[]; this.offset=0; this.more=false; }
+    else if(!this.more) return;
+    this.loading=true;
+    const mine=++this.seq;                 // a slower answer must not overwrite a newer one
+    try{
+      const r=await api('/api/boards/'+st.board.id+'/items/query',
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:withMe(Object.assign(this.query(),{limit:50,offset:this.offset}))});
+      if(mine!==this.seq)return;           // the question changed while this was in flight
+      this.on=true;
+      this.rows=this.rows.concat(r.items||[]);
+      this.offset=r.next_offset||this.rows.length;
+      this.more=!!r.has_more;
+      this.matched=r.matched||0; this.total=r.total||0;
+      renderView(); refreshToolbar();
+    }catch(e){
+      if(mine===this.seq){ this.on=false; toast((e&&e.detail)||'הסינון בשרת נכשל'); }
+    }finally{ if(mine===this.seq)this.loading=false; }
+  },
+  /* Infinite scroll. Bound once to #view, and deliberately generous about
+     "near the bottom": waiting for the very end means the person waits too,
+     and a page that arrives before the scroll reaches it reads as a board
+     that simply goes on. */
+  bind(){
+    const el=document.getElementById('view'); if(!el||this._bound)return;
+    this._bound=true;
+    el.addEventListener('scroll',()=>{
+      if(!this.on||!this.more||this.loading)return;
+      if(el.scrollTop+el.clientHeight >= el.scrollHeight-400) this.load(false);
+    },{passive:true});
+  },
+};
+
+/* ===== תצוגות שמורות — a named cut of the board, kept as a tab =====
+
+   "באגים דחופים פתוחים" is three filters somebody sets every morning. A view
+   is that cut, saved: the advanced condition tree together with the toolbar's
+   own filters and the base view it was looking at, so opening the tab
+   restores the board the way it was left rather than approximately.
+
+   Two kinds, and the asymmetry between them is the point:
+     private — only its owner sees it. A way of reading a board is not a
+               statement about the board, so it takes only the right to look.
+     public  — a tab on the board for everyone who can open it, which makes
+               creating one an edit to the board and takes the rights of one.
+   The server decides both; this draws what it is told. */
+const Views = {
+  items:[], active:null,
+  async load(boardId){
+    this.items=[]; this.active=null;
+    if(!boardId)return;
+    try{ const d=await api('/api/boards/'+boardId+'/views'+(meId()?'?user_id='+meId():''));
+         this.items=d.views||[]; }
+    catch(e){ this.items=[]; }
+    renderTabs();
+  },
+  /* The cut, as it is right now. The base view travels with the filters
+     because "באגים דחופים" on a kanban is a different thing to look at from
+     the same cut on a table, and a tab that restores one without the other
+     restores half of what was saved. */
+  current(){
+    const f=st.filters||{};
+    return {view:st.view||'table', q:f.q||'', people:(f.people||[]).slice(),
+            status:f.status||'', priority:f.priority||'', sort:f.sort||'',
+            links:Object.assign({col:'',mode:'',item:0}, f.links||{}),
+            adv:f.adv||null};
+  },
+  /* Takes the view, or its id. The tab strip can only hand over an id — it
+     is HTML, and an onclick carries a number — so a method that took the
+     object alone read `.filters` off an integer, got undefined, and cleared
+     every filter on the board instead of restoring one. The tab looked like
+     it worked and emptied the cut. */
+  apply(v){
+    if(typeof v==='number'||typeof v==='string') v=this.items.find(x=>x.id==v);
+    if(!v)return;
+    const c=v.filters||{};
+    /* A view outlives the columns it was built on. Rules whose column is
+       gone come out of the tree before anything is filtered — see advPrune
+       for why removing beats answering true — and the person opening the
+       view is told, because a filter that quietly means less than it says is
+       worse than one that is missing. */
+    const pruned=advPrune(c.adv||null);
+    if((st.board&&st.board.filter_column_policy)==='block' && pruned.denied.length){
+      // the stricter policy: no inference at all, not even from what the
+      // view is called
+      toast('התצוגה מסננת לפי עמודה שאינך מורשה לראות');
+      return;
+    }
+    if(pruned.removed.length)
+      toast('חלק מחוקי הסינון הוסרו כיוון שהעמודות שלהם נמחקו');
+    if(pruned.denied.length)
+      toast('חלק מחוקי הסינון אינם חלים עליך — אין לך הרשאת צפייה לעמודות שלהם');
+    st.filters={q:c.q||'', people:(c.people||[]).slice(), status:c.status||'',
+                priority:c.priority||'', sort:c.sort||'',
+                links:Object.assign({col:'',mode:'',item:0}, c.links||{}),
+                adv:pruned.tree, advIds:null};
+    const qi=document.getElementById('tb-q'); if(qi)qi.value=st.filters.q;
+    if(c.view&&boardViews().includes(c.view)) st.view=c.view;
+    this.active=v.id;
+    // the cut as it was opened, to tell "she changed it" from "she opened it"
+    this.base=JSON.stringify(this.current());
+    Router.set(st.board&&st.board.id, Chat.taskId, v.id);
+    refreshToolbar(); renderTabs(); renderView();
+    // the server is the authority on which items answer — see Adv.apply
+    if(st.filters.adv) this.ask();
+  },
+  async ask(){
+    if(filterMode()==='server'){ Paged.load(true); return; }
+    try{
+      const r=await api('/api/boards/'+st.board.id+'/items/query',
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:withMe(advQuery(st.filters.adv))});
+      st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
+      renderView();
+    }catch(e){ st.filters.advIds=null; }
+  },
+  /* Leaving a view is not clearing the board: the filters stay exactly as
+     they are and only the tab stops being lit, because somebody who edits a
+     view's cut and then clicks away has not asked for their work to vanish. */
+  leave(){ if(this.active==null)return; this.active=null; this.base=null;
+    Router.set(st.board&&st.board.id, Chat.taskId, null); renderTabs(); },
+
+  /* Has the person changed what the open view shows?
+
+     This is the whole of the locking rule. A view that has not been touched
+     offers nothing to save; one that has offers either an update or a copy,
+     and WHICH of the two depends on whose view it is. Compared as the saved
+     JSON against the current cut, because that is exactly what an update
+     would write — anything subtler would call a view dirty that would save
+     back identical. */
+  dirty(){
+    if(this.active==null||!this.base)return false;
+    return JSON.stringify(this.current())!==this.base;
+  },
+  openView(){ return this.items.find(v=>v.id===this.active)||null; },
+
+  // ── saving ──
+  saveNew(){
+    if(!st.board){ toast('פתחו לוח'); return; }
+    if(!filtersActive()){ toast('אין מה לשמור — הלוח לא מסונן'); return; }
+    this._dialog(null);
+  },
+  edit(id){ const v=this.items.find(x=>x.id===id); if(v)this._dialog(v); },
+  /* Write the cut on screen back onto the open view. Only reachable when the
+     server said can_edit, and refused again there — the button is a
+     convenience, not the rule. */
+  async update(){
+    const v=this.openView(); if(!v)return;
+    if(!v.can_edit){ toast('התצוגה אינה שלך — אפשר לשמור עותק'); return; }
+    try{
+      await api('/api/views/'+v.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
+        body:withMe({filters:this.current()})});
+      await this.load(st.board.id);
+      this.active=v.id; this.base=JSON.stringify(this.current());
+      renderTabs(); toast('התצוגה עודכנה');
+    }catch(e){ toast((e&&e.detail)||'עדכון התצוגה נכשל'); }
+  },
+  _dialog(v){
+    const editing=!!v;
+    const mayPublish=st.board&&(st.board.my_role==='admin'||st.board.my_role==='editor');
+    const vis=editing?v.visibility:'private';
+    showModal(`<h2><i class="fa-solid fa-bookmark" style="color:var(--primary)"></i> ${editing?'עריכת תצוגה':'שמירת תצוגה'}</h2>
+      <div class="mbody">
+        <div class="field"><label>שם התצוגה</label>
+          <input id="vw-name" maxlength="80" placeholder="לדוגמה: באגים דחופים פתוחים"
+                 value="${esc(editing?v.name:'')}"
+                 onkeydown="if(event.key==='Enter')Views.save(${editing?v.id:'null'})"></div>
+        <div class="field"><label>מי רואה אותה</label>
+          <label class="vw-opt"><input type="radio" name="vw-vis" value="private" ${vis==='private'?'checked':''}>
+            <span><b>אישית</b> — רק אני רואה אותה</span></label>
+          <label class="vw-opt ${mayPublish?'':'vw-opt-off'}">
+            <input type="radio" name="vw-vis" value="public" ${vis==='public'?'checked':''} ${mayPublish?'':'disabled'}>
+            <span><b>ציבורית</b> — טאב על הלוח לכל מי שיכול לפתוח אותו
+            ${mayPublish?'':'<br><small>תצוגה ציבורית היא שינוי בלוח — נדרשת הרשאת עורך</small>'}</span></label>
+        </div>
+        ${editing?`<div class="vw-note"><i class="fa-solid fa-circle-info"></i> שמירה תעדכן גם את החיתוך לזה שעל המסך עכשיו.</div>`:''}
+      </div>
+      <div class="mfoot">
+        <button class="btn btn-primary" onclick="Views.save(${editing?v.id:'null'})"><i class="fa-solid fa-check"></i> שמור</button>
+        ${editing?`<button class="btn btn-ghost" onclick="Views.del(${v.id})"><i class="fa-solid fa-trash"></i> מחק</button>`:''}
+        <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+      </div>`);
+    setTimeout(()=>{const n=document.getElementById('vw-name'); if(n){n.focus();n.select&&n.select();}},40);
+  },
+  async save(id){
+    const name=(document.getElementById('vw-name').value||'').trim();
+    if(!name){ toast('לתצוגה צריך שם'); return; }
+    const pick=document.querySelector('input[name="vw-vis"]:checked');
+    const body={name, visibility:pick?pick.value:'private', filters:this.current()};
+    try{
+      const v=id
+        ? await api('/api/views/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)})
+        : await api('/api/boards/'+st.board.id+'/views',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)});
+      closeModals();
+      await this.load(st.board.id);
+      this.active=v.id; this.base=JSON.stringify(this.current());
+      Router.set(st.board&&st.board.id, Chat.taskId, v.id);
+      renderTabs();
+      toast(id?'התצוגה עודכנה':'התצוגה נשמרה');
+    }catch(e){ toast((e&&e.detail)||'שמירת התצוגה נכשלה'); }
+  },
+  del(id){
+    const v=this.items.find(x=>x.id===id);
+    askConfirm(`למחוק את התצוגה "${v?v.name:''}"?`, async()=>{
+      try{
+        await api('/api/views/'+id,{method:'DELETE',headers:{'Content-Type':'application/json'},body:withMe({})});
+        if(this.active===id)this.active=null;
+        await this.load(st.board.id);
+        toast('התצוגה נמחקה');
+      }catch(e){ toast((e&&e.detail)||'מחיקת התצוגה נכשלה'); }
+    },{title:'מחיקת תצוגה', note:v&&v.visibility==='public'?'התצוגה תיעלם מהלוח של כל מי שרואה אותה.':''});
+  },
+  tabsHTML(){
+    if(!this.items.length)return '';
+    return this.items.map(v=>{
+      const on=this.active===v.id, moved=on&&this.dirty();
+      return `<div class="tab tab-view ${on?'active':''}" onclick="Views.apply(${v.id})" title="${esc(v.name)}${v.owner_name?' · '+esc(v.owner_name):''}${moved?' · שונתה ולא נשמרה':''}">
+        <i class="fa-solid ${v.visibility==='public'?'fa-users':'fa-lock'}"></i> ${esc(v.name)}${moved?'<span class="tab-view-dot" aria-label="שונתה"></span>':''}
+        ${v.can_edit?`<i class="fa-solid fa-pen tab-view-edit" title="עריכה" onclick="event.stopPropagation();Views.edit(${v.id})"></i>`:''}
+      </div>`;
+    }).join('');
+  },
+};
+
 function renderTabs(){
   const enabled=boardViews();
   if(!enabled.includes(st.view))st.view='table';
@@ -3690,7 +4265,34 @@ function renderTabs(){
       <span class="tab-dd-lbl">${esc(cv.he)}</span>
       <i class="fa-solid fa-chevron-down tab-dd-caret"></i>
     </button>`;
-  document.getElementById('tabs').innerHTML = dd + tabs + formTab +
+  /* The saved cuts sit after the board's own views and before the + : they
+     are tabs on the same strip, because that is what they are — but they are
+     the board read a particular way rather than a way of drawing it, so they
+     come second and carry a lock or a group of people to say which. */
+  const saved=Views.tabsHTML();
+  /* What can be saved, and by whom.
+
+     With no view open it is simply "save this cut". With one open and
+     changed, the offer depends on who owns it: its owner — and an
+     administrator — may write over it, and anybody else is offered only a
+     copy of their own. That asymmetry is the point of the rule: a tab other
+     people rely on must not be rewritten by somebody who was adjusting what
+     they were looking at, and the damage is invisible to everyone it affects
+     until they next open the tab and find it answering another question. */
+  const openV=Views.openView(), changed=Views.dirty();
+  let saveBtn='';
+  if(st.board&&openV&&changed){
+    saveBtn=(openV.can_edit
+      ? `<button class="tab-save tab-save-on" title="עדכון התצוגה הפתוחה" onclick="Views.update()">
+           <i class="fa-solid fa-floppy-disk"></i> עדכן תצוגה</button>` : '')
+      + `<button class="tab-save" title="שמירת החיתוך הנוכחי כתצוגה חדשה" onclick="Views.saveNew()">
+           <i class="fa-regular fa-bookmark"></i> שמור כתצוגה חדשה</button>`
+      + (openV.can_edit?'':`<span class="tab-locked" title="התצוגה שייכת ל${esc(openV.owner_name||'משתמש אחר')} — אפשר לשמור עותק משלך"><i class="fa-solid fa-lock"></i></span>`);
+  } else if(st.board&&filtersActive()){
+    saveBtn=`<button class="tab-save" title="שמירת החיתוך הנוכחי כתצוגה" onclick="Views.saveNew()">
+         <i class="fa-regular fa-bookmark"></i> שמור תצוגה</button>`;
+  }
+  document.getElementById('tabs').innerHTML = dd + tabs + formTab + saved + saveBtn +
     `
      <div class="tab-add-wrap" id="tab-add-wrap">
        <button class="tab-add" title="הוסף/הסר תצוגה" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>
@@ -4206,6 +4808,19 @@ function importReport(b){
      below ("כל פריט נכנס לקבוצה שהקובץ נותן לו") would be stating the opposite
      of what happened. Said as its own warning, with the count. */
   const ung=r.items_ungrouped||0, ungAll=!!(ung&&r.items&&ung>=r.items);
+  /* The colours of the group headers. They came from the file where the file
+     carried them; where it did not, the groups wear this app's palette and the
+     board looks recoloured — which is worth saying, because a board whose
+     "דחוף" was red and is now green reads as somebody's decision. */
+  const gHex=r.group_hex||[], gColored=r.group_colors||0;
+  const colorHTML=!r.groups?'':(gColored>=r.groups
+    ?`<div class="imp-why">צבעי הקבוצות יובאו מהקובץ — כל קבוצה בצבע שהיה לה שם.</div>`
+    :(gColored
+      ?`<div class="imp-why">${gColored} מתוך ${r.groups} הקבוצות הגיעו עם הצבע שהיה להן בקובץ; לשאר
+        לא היה צבע בקובץ והן קיבלו צבע ברירת מחדל. אפשר לשנות כל צבע כאן.</div>`
+      :`<div class="imp-why">הקובץ אינו נושא את צבעי הקבוצות, ולכן הן קיבלו צבעי ברירת מחדל${
+        r.groups_from==='file'?` — להבאת הצבעים מריצים מחדש את השאילתה עם <b dir="ltr">groups { id title color }</b> ומייבאים שוב`:''}.
+        אפשר גם לשנות כל צבע כאן.</div>`));
   const groupHTML=r.groups_need_reexport?`
     <div class="imp-sec imp-warn"><div class="imp-sec-t">
       <i class="fa-solid fa-layer-group"></i> הלוח לא חולק לקבוצות — <b>הקובץ אינו אומר איך הלוח מחולק</b></div>
@@ -4214,7 +4829,7 @@ function importReport(b){
         שיוך לקבוצה, ולכן נכנסו כולם לקבוצה אחת — והיא נשארה בלי שם, כי שם היה כותרת מעל חלוקה
         שהקובץ לא מכיל. שום דבר לא נמחק.</div>
       <div class="imp-why"><b>מה עושים:</b> ${REEXPORT_RUN} — היא מבקשת
-        <b dir="ltr">groups { id title }</b> ברמת הלוח ו-<b dir="ltr">group { id title }</b> בכל
+        <b dir="ltr">groups { id title color }</b> ברמת הלוח ו-<b dir="ltr">group { id title color }</b> בכל
         פריט — ומייבאים את הקובץ החדש. אז כל פריט ייכנס לקבוצה שלו, ובסדר שהלוח מסדר אותן.</div>
       <div class="imp-why">${REEXPORT_ONE_OP}</div>
     </div>`:(r.groups?`
@@ -4229,13 +4844,19 @@ function importReport(b){
         r.ungrouped_into?`, "${esc(r.ungrouped_into)}"`:''}.${
         (ungAll&&r.groups>1)?' שאר הקבוצות נוצרו ריקות.':''} שום דבר לא נמחק.</div>
       <div class="imp-why"><b>מה עושים:</b> ${REEXPORT_RUN} — היא מבקשת
-        <b dir="ltr">group { id title }</b> בכל פריט, ולא רק <b dir="ltr">groups { id title }</b>
+        <b dir="ltr">group { id title color }</b> בכל פריט, ולא רק <b dir="ltr">groups { id title color }</b>
         ברמת הלוח — ומייבאים את הקובץ החדש. אז כל פריט ייכנס לקבוצה שלו. עד אז אפשר גם לגרור
         פריטים בין הקבוצות כאן.</div>
       <div class="imp-why">${REEXPORT_ONE_OP}</div>`
       :(GROUPS_HE[r.groups_from]?`<div class="imp-why">${esc(GROUPS_HE[r.groups_from])}${
         r.groups_column?` ("${esc(r.groups_column)}")`:''} — כל פריט נכנס לקבוצה שהקובץ נותן לו.</div>`:'')}
-      <div class="imp-cols">${gNames.map(n=>`<span class="tag">${esc(n||'ללא שם')}</span>`).join('')}</div>
+      ${colorHTML}
+      <div class="imp-cols">${gNames.map((n,i)=>{
+        /* each group as the chip it is on the board: the colour is the only
+           part of "the colours came across" that can be checked by looking */
+        const c=gHex[i]||'';
+        return `<span class="tag"${c?` style="background:${esc(c)};color:#fff;border-color:${esc(c)}"`:''}>${esc(n||'ללא שם')}</span>`;
+      }).join('')}</div>
       ${r.summary_rows?`<div class="imp-why">${r.summary_rows} שורות הסיכום שמאנדיי כותב בתחתית כל קבוצה — תאריך מגולל בלי שם — לא יובאו כפריטים.</div>`:''}
     </div>`:(r.groups_from==='default'?`
     <div class="imp-sec"><div class="imp-sec-t">
@@ -4730,9 +5351,428 @@ function linkNamesOf(t,colId){
    a 5 somewhere in it — and bury the item whose title actually says 5. Three
    digits is the point where a query stops being a number in a sentence and
    starts being an id somebody copied. */
+/* ===== סינון מתקדם — a tree of conditions over the board's own columns =====
+
+   The toolbar's filters answer one question each: this person, that status.
+   An advanced filter answers a question made of several — "mine, overdue, and
+   not done" — and the shape that expresses it is a tree, because "A and (B or
+   C)" is not the same question as "(A and B) or C" and a flat list cannot
+   tell them apart.
+
+       node  = {op:'and'|'or', rules:[ node | rule ]}
+       rule  = {field, op, v, v2}
+
+   `field` names a built-in column by key or a custom column by id; everything
+   else follows from the column's TYPE, because what you can ask of a column
+   is a property of the column and not of the person asking. One table below
+   says which operators each kind offers, one function says what a cell of
+   that kind holds, and one says whether it answers — so adding a column type
+   is three small additions and never a new branch inside the evaluator.
+
+   Two kinds of value are not literals and must not be stored as if they were.
+   A people rule can mean "me", and a date rule can mean "this week": stored as
+   the id or the dates they happen to resolve to today, a saved filter would
+   quietly become somebody else's filter, or last week's. They are kept as the
+   tokens they are and resolved at the moment the filter runs. */
+
+const ADV_KINDS = {
+  // what the column holds -> how it can be asked about
+  text:'text', email:'text', long_text:'text',
+  status:'status', dropdown:'status', priority:'status',
+  number:'number', rating:'number', formula:'number',
+  people:'people', created_by:'people', assignees:'people',
+  date:'date', created_at:'date', timeline:'date', due:'date',
+  checkbox:'check', files:'check',
+};
+
+/* The operators each kind offers, in the order they are shown. `n` is how many
+   value inputs it takes — 0 for ריק/אינו ריק, 2 for בטווח. */
+const ADV_OPS = {
+  text:   [['eq','שווה ל',1],['ne','לא שווה ל',1],['has','מכיל',1],
+           ['nhas','לא מכיל',1],['empty','ריק',0],['filled','אינו ריק',0]],
+  status: [['eq','שווה ל',1],['ne','לא שווה ל',1],['empty','ריק',0],['filled','אינו ריק',0]],
+  number: [['eq','שווה ל',1],['ne','לא שווה ל',1],['gt','גדול מ',1],['lt','קטן מ',1],
+           ['between','בטווח',2],['empty','ריק',0],['filled','אינו ריק',0]],
+  people: [['has','מוקצה ל',1],['nhas','לא מוקצה ל',1],['empty','ריק',0],['filled','אינו ריק',0]],
+  date:   [['on','ביום',1],['before','לפני',1],['after','אחרי',1],
+           ['between','בטווח',2],['empty','ריק',0],['filled','אינו ריק',0]],
+  check:  [['yes','מסומן',0],['no','לא מסומן',0]],
+};
+const advOps = kind => ADV_OPS[kind] || ADV_OPS.text;
+const advOpArity = (kind,op) => { const r=(advOps(kind).find(x=>x[0]===op)); return r?r[2]:1; };
+const advOpLabel = (kind,op) => { const r=(advOps(kind).find(x=>x[0]===op)); return r?r[1]:op; };
+
+/* The dynamic dates, each a span of whole days. Kept as tokens in the rule and
+   resolved here, so a filter saved on Sunday still means "this week" on
+   Thursday. Weeks start on Sunday, as they do in Israel. */
+const ADV_DATES = [
+  ['today','היום'],['yesterday','אתמול'],['tomorrow','מחר'],
+  ['this_week','השבוע'],['next_week','שבוע הבא'],['last_week','שבוע שעבר'],
+  ['this_month','החודש'],['next_month','חודש הבא'],['last_month','חודש שעבר'],
+  ['last_7','7 הימים האחרונים'],['last_30','30 הימים האחרונים'],
+];
+const advDateLabel = tok => (ADV_DATES.find(d=>d[0]===tok)||[null,tok])[1];
+function advIso(d){ // a Date -> YYYY-MM-DD in local time, never UTC
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+/* A stored value as the calendar day the person looking at it is having.
+
+   A date column holds "2026-10-18" and means that day everywhere. A column
+   holding an INSTANT does not: created_at is written in UTC, and
+   2026-10-18T22:30:00Z is already the 19th in Israel. Cutting the first ten
+   characters off the string answers with the UTC day, so an item created
+   this evening would not be found by "נוצר היום" — and would be found by it
+   tomorrow, which is worse, because the filter looks like it works.
+
+   A bare date is returned untouched: it names a day, not a moment, and
+   putting it through a Date would hand it UTC midnight and shift it back one
+   day for everybody west of Greenwich. */
+function advDay(v){
+  if(v==null||v==='')return null;
+  const str=String(v);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(str))return str;          // a day is a day
+  if(!/[T ]\d{2}:/.test(str))return str.slice(0,10);        // nothing time-like in it
+  const d=new Date(str.includes('T')?str:str.replace(' ','T'));
+  return isNaN(d.getTime())?str.slice(0,10):advIso(d);      // ← the viewer's day
+}
+/* A token, or a plain YYYY-MM-DD, as the inclusive span [from,to] it covers.
+   A fixed date is the one day it names — which is what makes "ביום" work the
+   same whether it was typed or chosen from the list. */
+function advSpan(v){
+  if(!v) return null;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return {from:v,to:v};
+  const now=new Date(); now.setHours(0,0,0,0);
+  const day=n=>{ const d=new Date(now); d.setDate(d.getDate()+n); return d; };
+  const weekStart=n=>{ const d=new Date(now); d.setDate(d.getDate()-d.getDay()+7*n); return d; };
+  const monthStart=n=>new Date(now.getFullYear(), now.getMonth()+n, 1);
+  const monthEnd=n=>new Date(now.getFullYear(), now.getMonth()+n+1, 0);
+  switch(v){
+    case 'today':      return {from:advIso(now), to:advIso(now)};
+    case 'yesterday':  return {from:advIso(day(-1)), to:advIso(day(-1))};
+    case 'tomorrow':   return {from:advIso(day(1)),  to:advIso(day(1))};
+    case 'this_week':  return {from:advIso(weekStart(0)), to:advIso(new Date(weekStart(0).getTime()+6*864e5))};
+    case 'next_week':  return {from:advIso(weekStart(1)), to:advIso(new Date(weekStart(1).getTime()+6*864e5))};
+    case 'last_week':  return {from:advIso(weekStart(-1)),to:advIso(new Date(weekStart(-1).getTime()+6*864e5))};
+    case 'this_month': return {from:advIso(monthStart(0)), to:advIso(monthEnd(0))};
+    case 'next_month': return {from:advIso(monthStart(1)), to:advIso(monthEnd(1))};
+    case 'last_month': return {from:advIso(monthStart(-1)),to:advIso(monthEnd(-1))};
+    case 'last_7':     return {from:advIso(day(-6)), to:advIso(now)};
+    case 'last_30':    return {from:advIso(day(-29)),to:advIso(now)};
+  }
+  return null;
+}
+
+/* Every column the board can be asked about, built-in and custom alike, each
+   with the kind that decides its operators. */
+function advFields(){
+  const out=[
+    {id:'title',    label:'שם הפריט', kind:'text'},
+    {id:'status',   label:'סטטוס',    kind:'status'},
+    {id:'priority', label:'עדיפות',   kind:'status'},
+    {id:'assignees',label:'אחראים',   kind:'people'},
+    {id:'due',      label:'תאריך יעד',kind:'date'},
+  ];
+  (customColumns()||[]).forEach(c=>{
+    const kind=ADV_KINDS[c.type];
+    if(!kind) return;                       // connect, mirror… nothing to ask yet
+    // A column this person may not see is not one they may filter by. Not a
+    // tidiness rule: a filter is a question, and the row set that answers it
+    // is the answer. "תקציב גדול מ-מיליון", run for somebody who cannot see
+    // budgets, hands them the figures through which rows survived.
+    if(advColHidden(c.id)) return;
+    out.push({id:String(c.id), label:c.title||'עמודה', kind, col:c});
+  });
+  return out;
+}
+/* Is this column closed to the person looking? The board states each
+   column's permission once, for every item — see col_perms. */
+function advColHidden(colId){
+  const m=(st.board&&st.board.col_perms)||{};
+  return m[String(colId)]==='none';
+}
+/* Every column the BOARD has, whether or not this person may see it. Used
+   only to tell "the column was deleted" from "you may not see it" — two
+   different facts, and telling somebody the wrong one is its own small lie. */
+function advKnownField(id){
+  if(['title','status','priority','assignees','due'].includes(id))return true;
+  return (customColumns()||[]).some(c=>String(c.id)===String(id)&&ADV_KINDS[c.type]);
+}
+const advField = id => advFields().find(f=>f.id===id)||null;
+
+/* ── somebody who has left ───────────────────────────────────────────────
+   A rule naming a person outlives that person's account. They are
+   deactivated, or taken off the board, and boardPeople stops listing them —
+   which is right for the picker, since nobody should be newly assigned to
+   them.
+
+   It is NOT right for a rule that already names them. Their id stays in the
+   rule, and the filter keeps answering: the items they were assigned to are
+   still assigned to them, and "what was אורית working on before she left" is
+   a question somebody asks precisely BECAUSE she left. What changes is only
+   the label.
+
+   The alternative is what happens with no code at all, and it is the reason
+   this exists: a <select> rendered without an option for its own value shows
+   the placeholder, and the next redraw writes that placeholder back into the
+   rule. The person would not be dropped from the filter by anybody's
+   decision — the filter would simply forget them. */
+function advPersonLabel(id){
+  const u=(st.users||[]).find(x=>String(x.id)===String(id));
+  if(!u) return 'משתמש לא פעיל (#'+id+')';
+  const gone=(u.is_active===false) || !boardPeople().some(p=>String(p.id)===String(id));
+  return (u.name||('#'+id)) + (gone?' · משתמש לא פעיל':'');
+}
+
+/* The choices a rule offers for its value, when the value is a choice.
+   `cur` is what the rule already holds: an option is added for it when the
+   list no longer has one, so a value cannot be lost by being redrawn. */
+function advChoices(f,cur){
+  if(!f) return [];
+  if(f.kind==='people'){
+    const out=[{v:'me',label:'[אני]'}]
+      .concat(boardPeople().map(u=>({v:String(u.id),label:u.name||''})));
+    if(cur!=null && cur!=='' && !out.some(o=>o.v===String(cur)))
+      out.push({v:String(cur), label:advPersonLabel(cur), gone:true});
+    return out;
+  }
+  if(f.id==='status')   return boardStatusList().map(s=>({v:s.key,label:s.he}));
+  if(f.id==='priority') return boardPriorityList().map(s=>({v:s.key,label:s.he}));
+  if(f.kind==='status'){
+    const out=statusColOpts(f.col).map(o=>({v:o.label,label:o.label}));
+    // a status whose option was deleted: same rule, same reason — the value
+    // must survive a redraw, and it says plainly that it is no longer offered
+    if(cur!=null && cur!=='' && !out.some(o=>o.v===String(cur)))
+      out.push({v:String(cur), label:String(cur)+' · ערך שאינו קיים עוד', gone:true});
+    return out;
+  }
+  return [];
+}
+
+/* What a cell of this field holds, normalised to what the operators expect:
+   a string for text, a key/label for status, a number, a list of user ids for
+   people, a YYYY-MM-DD for a date. null means "nothing in the cell", which is
+   what ריק asks about and what every other operator has to answer false to. */
+function advCell(t,f){
+  const cf=(t&&t.custom_fields)||{};
+  if(f.id==='title')     return (t.title||'').trim()||null;
+  if(f.id==='status')    return statusKeyOf(t)||null;
+  if(f.id==='priority')  return priorityKeyOf(t)||null;
+  if(f.id==='assignees') return ((t.assignees||[]).map(a=>a&&a.id).filter(x=>x!=null));
+  if(f.id==='due')       return advDay(t.due_date);
+  const v=cf[f.id];
+  switch(f.kind){
+    case 'people': {
+      const arr=Array.isArray(v)?v:(v==null||v===''?[]:[v]);
+      return arr.map(x=>(x&&typeof x==='object')?x.id:x).map(Number).filter(x=>!isNaN(x));
+    }
+    case 'status': {
+      if(v==null||v==='')return null;
+      return (typeof v==='object')?(v.label||null):String(v);
+    }
+    case 'number': {
+      if(v==null||v==='')return null;
+      const n=Number(typeof v==='object'?v.value:v);
+      return isNaN(n)?null:n;
+    }
+    case 'date': {
+      if(v==null||v==='')return null;
+      const d=(typeof v==='object')?(v.from||v.date||null):v;   // a timeline answers by its start
+      return advDay(d);
+    }
+    case 'check':  return !!(Array.isArray(v)?v.length:v);
+    default: {
+      if(v==null||v==='')return null;
+      return (typeof v==='object')?JSON.stringify(v):String(v);
+    }
+  }
+}
+
+/* What "ריק" catches. The spec asks for a NULL in the database and for an
+   empty string, and those are the same emptiness to the person looking at the
+   cell — a column that was never filled and a column somebody cleared by
+   deleting its text both show nothing. Whitespace joins them for the same
+   reason: a cell holding one space is a cell holding nothing.
+
+   What it must NOT catch is 0 and false. A budget of 0 is a budget, and an
+   unticked checkbox is an answer — both are falsy in JavaScript, and a test
+   written as `if(!c)` would quietly file them under "empty" and hide every
+   zero on the board from anyone filtering for a value. */
+const advEmpty = c => c==null || (typeof c==='string' && c.trim()==='')
+                   || (Array.isArray(c) && !c.length);
+
+/* One rule against one item. Everything a rule can be is here, and the
+   evaluator below knows nothing about column types at all. */
+function advRuleMatch(t,r){
+  const f=advField(r&&r.field); if(!f) return true;      // a column since deleted stops filtering
+  const c=advCell(t,f), op=r.op;
+  if(op==='empty')  return advEmpty(c);
+  if(op==='filled') return !advEmpty(c);
+  if(op==='yes')    return c===true;
+  if(op==='no')     return c!==true;
+  if(f.kind==='people'){
+    const want=(r.v==='me')?meId():Number(r.v);
+    if(want==null||isNaN(want))return true;              // nothing chosen yet
+    const has=(c||[]).includes(want);
+    return op==='nhas'?!has:has;
+  }
+  if(f.kind==='date'){
+    const span=advSpan(r.v);
+    if(op==='between'){
+      const a=advSpan(r.v), b=advSpan(r.v2);
+      if(!a||!b)return true;
+      if(advEmpty(c))return false;
+      const lo=a.from<b.from?a.from:b.from, hi=a.to>b.to?a.to:b.to;
+      return c>=lo && c<=hi;
+    }
+    if(!span)return true;
+    if(advEmpty(c))return false;
+    if(op==='on')     return c>=span.from && c<=span.to;
+    if(op==='before') return c<span.from;
+    if(op==='after')  return c>span.to;
+    return true;
+  }
+  if(f.kind==='number'){
+    if(op==='between'){
+      const a=Number(r.v), b=Number(r.v2);
+      if(isNaN(a)||isNaN(b))return true;
+      if(advEmpty(c))return false;
+      return c>=Math.min(a,b) && c<=Math.max(a,b);
+    }
+    const n=Number(r.v);
+    if(r.v===''||r.v==null||isNaN(n))return true;
+    if(advEmpty(c))return false;
+    if(op==='eq')return c===n;
+    if(op==='ne')return c!==n;
+    if(op==='gt')return c>n;
+    if(op==='lt')return c<n;
+    return true;
+  }
+  // text and status, both compared as text — a status by the label the board
+  // shows, which is the only thing the person building the filter can see
+  const want=String(r.v==null?'':r.v);
+  if(want==='')return true;
+  let got=c;
+  if(f.id==='status'||f.id==='priority'){
+    // the rule holds the key; compare keys, not the Hebrew beside them
+    if(op==='ne')return String(got||'')!==want;
+    return String(got||'')===want;
+  }
+  if(advEmpty(got))return op==='ne'||op==='nhas';
+  got=String(got);
+  const a=got.toLowerCase(), b=want.toLowerCase();
+  if(op==='eq')  return a===b;
+  if(op==='ne')  return a!==b;
+  if(op==='has') return a.includes(b);
+  if(op==='nhas')return !a.includes(b);
+  return true;
+}
+
+/* The tree. An empty group matches everything — a filter nobody has finished
+   building must not hide the board. */
+function advMatch(t,node){
+  if(!node||!node.rules||!node.rules.length)return true;
+  const kids=node.rules.filter(Boolean);
+  if(!kids.length)return true;
+  const one=k=>(k.rules!==undefined)?advMatch(t,k):advRuleMatch(t,k);
+  return node.op==='or' ? kids.some(one) : kids.every(one);
+}
+
+/* ── a column that is no longer there ────────────────────────────────────
+   A saved view outlives the board it was saved on. Somebody deletes the
+   "עדיפות" column and every view that mentioned it is now a question about
+   a column that does not exist.
+
+   The rule is REMOVED rather than made to answer true, and the difference is
+   not cosmetic. Inside an "וגם" group the two are the same. Inside an "או"
+   group they are opposites: a rule that answers true makes the whole group
+   true, so one deleted column would quietly show the entire board — the
+   filter still lit, the badge still counting, and nothing filtered. Removing
+   it leaves the remaining alternatives to decide, which is what the person
+   who wrote them meant.
+
+   A group left empty by the pruning is removed too, for the same reason: an
+   empty group matches everything, and inside an "או" that is the same bug one
+   level up.
+
+   The tree is pruned in memory and the person is told. It is NOT written
+   back: a view belongs to whoever made it, and rewriting somebody's saved
+   filter because they opened it is the overwrite the locking rules exist to
+   prevent. Saving the repaired version is theirs to decide. */
+function advPrune(node){
+  const removed=[], denied=[];
+  const mine=new Set(advFields().map(f=>f.id));
+  const walk=n=>{
+    if(!n)return null;
+    if(n.rules!==undefined){
+      const kids=(n.rules||[]).map(walk).filter(Boolean);
+      return kids.length?{op:n.op,rules:kids}:null;
+    }
+    if(mine.has(n.field))return n;
+    // which of the two it was: a column that is gone, or one that is simply
+    // not this person's to see
+    (advKnownField(n.field)?denied:removed).push(n.field);
+    return null;
+  };
+  const tree=walk(node);
+  return {tree:tree||(node&&node.rules!==undefined?{op:node.op,rules:[]}:null),
+          removed, denied};
+}
+
+/* ── the wire format ──────────────────────────────────────────────────────
+   The tree goes to the server as an AST: groups holding groups, each naming
+   its own logical operator. Same shape as the one held in memory, written
+   out in full — `type`, `operator`, `rules` — because a payload read by
+   something that is not this file should not have to know that a missing
+   `type` means "group" or that `op` is short for `operator`.
+
+   The two dynamic kinds travel as the TOKENS they are, never as what they
+   resolve to. 'me' stays 'me' and 'this_week' stays 'this_week', so the same
+   query asked by somebody else, or tomorrow, is the same query. What rides
+   alongside instead is the clock to resolve them against — see advQuery. */
+function advToAst(node){
+  if(!node)return null;
+  if(node.rules!==undefined)
+    return {type:'group', operator:node.op==='or'?'or':'and',
+            rules:(node.rules||[]).filter(Boolean).map(advToAst)};
+  return {type:'rule', field:node.field, operator:node.op,
+          value:node.v===''?null:node.v, value2:node.v2===''?null:node.v2};
+}
+/* The request body. `today` and `tz_offset` are the whole of the timezone
+   requirement: the only clock that can say what "היום" means is the one the
+   person is reading, and the server has no way to guess it. Sent as the
+   client's own local date, and its offset east of UTC so an instant stored
+   in UTC can be turned into the day the viewer is having. */
+function advQuery(node){
+  const now=new Date();
+  return {filter:advToAst(node), today:advIso(now),
+          // getTimezoneOffset is minutes WEST; east-positive is the readable way
+          tz_offset:-now.getTimezoneOffset()};
+}
+
+/* How many conditions are in it — the number on the toolbar badge, and the
+   answer to "is anything filtering?". */
+function advCount(node){
+  if(!node||!node.rules)return 0;
+  return node.rules.reduce((n,k)=>n+((k&&k.rules!==undefined)?advCount(k):(k?1:0)),0);
+}
+
 const IS_ITEM_ID=/^\d{3,}$/;
 function applyFilters(tasks){
-  const f=st.filters; let out=(tasks||[]).slice();
+  const f=st.filters;
+  /* On a large board the rows on screen are the server's answer, already
+     filtered and already paged — running the local engine over them again
+     would narrow a second time against whatever this browser happens to
+     hold, which is the half the server was asked to replace. Sorting still
+     belongs here, because sorting one page is a question about the page. */
+  let out=(Paged.on?Paged.rows:(tasks||[])).slice();
+  if(Paged.on){
+    if(st.colSort&&st.colSort.key){
+      const {key,dir}=st.colSort, s2=dir==='desc'?-1:1;
+      out.sort((a,b)=>colCompare(a,b,key)*s2);
+    }
+    return out;
+  }
   if(f.q){const q=f.q.trim().toLowerCase();
     const byId=IS_ITEM_ID.test(q), hasId=x=>byId&&String(x.item_uid||'').includes(q);
     out=out.filter(t=>(t.title||'').toLowerCase().includes(q)
@@ -4751,6 +5791,18 @@ function applyFilters(tasks){
   if(f.people.length)out=out.filter(t=>(t.assignees||[]).some(a=>f.people.includes(a.id)));
   if(f.status)out=out.filter(t=>statusKeyOf(t)===f.status);
   if(f.priority)out=out.filter(t=>priorityKeyOf(t)===f.priority);
+  /* The advanced tree, alongside the toolbar's own — the two narrow
+     together, which is what somebody building both at once means by them.
+
+     The local engine answers first, so the board narrows on the keystroke.
+     When the server's answer has arrived it is used instead: it is the same
+     rules over every item on the board rather than over the ones this
+     browser happens to hold. */
+  if(advCount(f.adv)){
+    out=(f.advIds instanceof Set)
+      ? out.filter(t=>f.advIds.has(t.id))
+      : out.filter(t=>advMatch(t,f.adv));
+  }
   if(st.colSort&&st.colSort.key){
     const {key,dir}=st.colSort, s=dir==='desc'?-1:1;
     out.sort((a,b)=>colCompare(a,b,key)*s);
@@ -4895,7 +5947,8 @@ function sortBtn(key){
   return `<button class="col-sort${on?' on':''}" title="${tip}" onclick="columnSort(event,'${key}')"><i class="fa-solid ${ic}"></i></button>`;
 }
 function filtersActive(){const f=st.filters;
-  return !!(f.q||f.people.length||f.status||f.priority||f.sort||(f.links&&f.links.mode));}
+  return !!(f.q||f.people.length||f.status||f.priority||f.sort||(f.links&&f.links.mode)
+            ||advCount(f.adv));}
 function noMatchHTML(){
   return `<div class="errpage">
     <div class="err-badge"><i class="fa-solid fa-magnifying-glass"></i></div>
@@ -4936,7 +5989,10 @@ function setSearch(v){
   });
   refreshToolbar(); renderView();
 }
-function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0}};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();refreshToolbar();renderView();}
+function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();
+  // nothing is filtered any more, so no saved cut is what is on screen
+  if(typeof Views!=='undefined')Views.leave();
+  refreshToolbar();renderTabs();renderView();}
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
 document.addEventListener('click',e=>{if(!e.target.closest('.tb-ctl'))closePops();});
@@ -6845,7 +7901,11 @@ const Env = {
      the dropdown closes (_set(false)) and the list behind it is now the new
      workspace's — and the drawer closes a moment later, on the board, because
      openBoard is what closes it. */
-  select(id){ st.env=this.items.find(x=>x.id===id)||st.env; this._set(false); renderSidebar(); },
+  select(id){ st.env=this.items.find(x=>x.id===id)||st.env; rememberEnv();
+    // an item's panel belongs to where it was opened from; leaving the
+    // workspace leaves it behind
+    closeItemPanel();
+    this._set(false); renderSidebar(); },
   /* One field, one question. editPrompt is the app's own styled stand-in for
      the browser's prompt() — the same confirm/alert modal, with a text field —
      and it was sitting in this file unused while two different places still
@@ -7960,14 +9020,215 @@ function toggleFilterPerson(id,on){const p=st.filters.people,i=p.indexOf(id);if(
 function setStatusFilter(s){st.filters.status=st.filters.status===s?'':s;refreshToolbar();reArrange();renderView();}
 function setPriorityFilter(s){st.filters.priority=st.filters.priority===s?'':s;refreshToolbar();reArrange();renderView();}
 function setSort(s){st.filters.sort=s||'';refreshToolbar();reArrange();renderView();}
+/* ===== סינון מתקדם — the builder =====
+
+   One modal that edits st.filters.adv in place and redraws itself. It is
+   rebuilt whole on every change rather than patched: a condition tree is
+   small, and a patched tree is where an index drifts and somebody's rule is
+   edited in the wrong row.
+
+   Paths address a node: '' is the root, '2' is its third child, '2.0' the
+   first child of that group. Strings rather than object references, so a
+   redraw cannot leave a handler pointing at a node that no longer exists. */
+const Adv = {
+  draft:null,
+  open(){
+    if(!st.board){ toast('פתחו לוח'); return; }
+    // edited on a copy: closing with ✕ leaves the board filtered as it was
+    this.draft=JSON.parse(JSON.stringify(st.filters.adv||{op:'and',rules:[]}));
+    showModal(this.html());
+    document.getElementById('modal').classList.add('modal-wide');
+  },
+  node(path){
+    let n=this.draft;
+    if(path==='')return n;
+    for(const i of String(path).split('.')) n=n.rules[+i];
+    return n;
+  },
+  parent(path){
+    const parts=String(path).split('.');
+    const last=+parts.pop();
+    return {node:this.node(parts.join('.')), i:last};
+  },
+  redraw(){ const b=document.getElementById('adv-body'); if(b)b.innerHTML=this.bodyHTML(); },
+
+  // ── editing ──
+  setOp(path,op){ this.node(path).op=op; this.redraw(); },
+  addRule(path){
+    const f=advFields()[0];
+    this.node(path).rules.push({field:f?f.id:'title', op:advOps(f?f.kind:'text')[0][0], v:'', v2:''});
+    this.redraw();
+  },
+  addGroup(path){ this.node(path).rules.push({op:'or',rules:[]}); this.redraw(); },
+  del(path){ const {node,i}=this.parent(path); node.rules.splice(i,1); this.redraw(); },
+  setField(path,id){
+    const r=this.node(path), f=advField(id);
+    r.field=id;
+    // the operator belongs to the kind: keep it only if the new column offers
+    // it, or a text rule carried "מכיל" onto a date column and matched nothing
+    const ops=advOps(f?f.kind:'text').map(o=>o[0]);
+    if(!ops.includes(r.op)) r.op=ops[0];
+    r.v=''; r.v2='';
+    this.redraw();
+  },
+  setRuleOp(path,op){ const r=this.node(path); r.op=op; if(advOpArity(advField(r.field)?advField(r.field).kind:'text',op)<2)r.v2=''; this.redraw(); },
+  setV(path,which,v){ this.node(path)[which]=v; const n=document.getElementById('adv-count'); if(n)n.textContent=this.preview(); },
+
+  // ── drawing ──
+  ruleHTML(r,path){
+    const f=advField(r.field), kind=f?f.kind:'text';
+    const n=advOpArity(kind,r.op);
+    const fields=advFields().map(x=>`<option value="${esc(x.id)}" ${x.id===r.field?'selected':''}>${esc(x.label)}</option>`).join('');
+    const ops=advOps(kind).map(o=>`<option value="${o[0]}" ${o[0]===r.op?'selected':''}>${esc(o[1])}</option>`).join('');
+    const val=(which,v)=>{
+      // built per input, because the option kept for a value no longer
+      // offered depends on what that input holds
+      const choices=advChoices(f,v);
+      if(choices.length)
+        return `<select class="adv-in${choices.some(c=>c.gone&&String(c.v)===String(v))?' adv-in-gone':''}" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
+          <option value="">— בחרו —</option>
+          ${choices.map(c=>`<option value="${esc(c.v)}" ${String(v)===String(c.v)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`;
+      if(kind==='date')
+        return `<span class="adv-date">
+          <select class="adv-in adv-in-sm" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
+            <option value="">תאריך מדויק</option>
+            ${ADV_DATES.map(d=>`<option value="${d[0]}" ${v===d[0]?'selected':''}>${esc(d[1])}</option>`).join('')}
+          </select>
+          <input type="date" class="adv-in adv-in-sm" value="${/^\d{4}-\d{2}-\d{2}$/.test(v||'')?esc(v):''}"
+                 onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
+        </span>`;
+      return `<input class="adv-in" type="${kind==='number'?'number':'text'}" value="${esc(v==null?'':v)}"
+                placeholder="${kind==='number'?'מספר':'ערך'}" oninput="Adv.setV('${path}','${which}',this.value)">`;
+    };
+    return `<div class="adv-rule">
+      <select class="adv-in adv-field" onchange="Adv.setField('${path}',this.value)">${fields}</select>
+      <select class="adv-in adv-op" onchange="Adv.setRuleOp('${path}',this.value)">${ops}</select>
+      ${n>=1?val('v',r.v):'<span class="adv-noval">—</span>'}
+      ${n>=2?`<span class="adv-and">עד</span>${val('v2',r.v2)}`:''}
+      <button class="adv-x" title="הסרת תנאי" onclick="Adv.del('${path}')"><i class="fa-solid fa-xmark"></i></button>
+    </div>`;
+  },
+  /* A group's name, the way the specification names them: Group A, Group B.
+     A tree of unnamed boxes is readable while it has two of them and stops
+     being readable at four, and "the second condition in the third group" is
+     not something anybody should have to count out on screen. Nested groups
+     carry their parent's letter — A, then A1 and A2 inside it — so a name
+     says where it sits as well as what it is. The root has no name: it is
+     the filter, not a group within it. */
+  label(path){
+    if(path==='')return '';
+    let node=this.draft, name='';
+    for(const p of String(path).split('.')){
+      // lettered among its parent's GROUPS, not among all its rules — the
+      // letters would otherwise jump every time a plain condition is added
+      // beside them, and a name that moves is worse than none
+      const groups=(node.rules||[]).filter(k=>k&&k.rules!==undefined);
+      const at=groups.indexOf(node.rules[+p]);
+      name += String.fromCharCode(65+Math.max(0,at));
+      node=node.rules[+p];
+    }
+    return name;
+  },
+  groupHTML(g,path){
+    const join=o=>`<button class="adv-join ${g.op===o?'on':''}" onclick="Adv.setOp('${path}','${o}')">${o==='and'?'וגם':'או'}</button>`;
+    const kids=(g.rules||[]).map((k,i)=>{
+      const kp=path===''?String(i):path+'.'+i;
+      return `<div class="adv-row">
+        <span class="adv-joiner">${i===0?'':(g.op==='and'?'וגם':'או')}</span>
+        ${(k&&k.rules!==undefined)?this.groupHTML(k,kp):this.ruleHTML(k,kp)}
+      </div>`;
+    }).join('');
+    const name=this.label(path);
+    return `<div class="adv-grp ${path===''?'adv-root':''}">
+      <div class="adv-grp-head">
+        ${name?`<span class="adv-grp-name">קבוצה ${name}</span>`:''}
+        <span class="adv-join-wrap">${join('and')}${join('or')}</span>
+        <span class="adv-grp-note">${g.op==='and'?'כל התנאים חייבים להתקיים':'מספיק שאחד מהתנאים יתקיים'}</span>
+        <span style="flex:1"></span>
+        <button class="btn btn-ghost btn-sm" onclick="Adv.addRule('${path}')"><i class="fa-solid fa-plus"></i> תנאי</button>
+        <button class="btn btn-ghost btn-sm" onclick="Adv.addGroup('${path}')"><i class="fa-solid fa-code-branch"></i> קבוצה</button>
+        ${path===''?'':`<button class="adv-x" title="הסרת קבוצה" onclick="Adv.del('${path}')"><i class="fa-solid fa-xmark"></i></button>`}
+      </div>
+      ${kids||'<div class="adv-blank">אין תנאים — הלוח יוצג במלואו</div>'}
+    </div>`;
+  },
+  preview(){
+    const all=((st.board&&st.board.tasks)||[]);
+    const n=all.filter(t=>advMatch(t,this.draft)).length;
+    return `${n} מתוך ${all.length} פריטים`;
+  },
+  bodyHTML(){ return this.groupHTML(this.draft,'')
+    +`<div class="adv-foot-note"><i class="fa-solid fa-eye"></i> <span id="adv-count">${this.preview()}</span></div>`; },
+  html(){
+    return `<h2><i class="fa-solid fa-filter-circle-check" style="color:var(--primary)"></i> סינון מתקדם</h2>
+      <div class="mbody"><div id="adv-body">${this.bodyHTML()}</div></div>
+      <div class="mfoot">
+        <button class="btn btn-primary" onclick="Adv.apply()"><i class="fa-solid fa-check"></i> החל סינון</button>
+        <button class="btn btn-ghost" onclick="Adv.clear()"><i class="fa-solid fa-eraser"></i> נקה הכל</button>
+        <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+      </div>`;
+  },
+  async apply(){
+    st.filters.adv=advCount(this.draft)?this.draft:null;
+    closeModals(); refreshToolbar(); renderView();
+    /* The board is already filtered — the local engine answered instantly,
+       which is what a filter has to do. This asks the server the same
+       question, and it is the authority: it sees every item on the board,
+       including any the browser was not handed, and it is where a filter
+       would be refused if it were malformed. A failure is not fatal; the
+       local answer stands, and the only thing lost is the check. */
+    const node=st.filters.adv;
+    if(!node)return;
+    // a large board is answered by pages of rows, not by a list of ids
+    if(filterMode()==='server'){ Paged.load(true); return; }
+    try{
+      const r=await api('/api/boards/'+st.board.id+'/items/query',
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:withMe(advQuery(node))});
+      st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
+      renderView();
+    }catch(e){
+      st.filters.advIds=null;          // the local answer is the answer
+      if(e&&e.detail) toast(e.detail); // a filter the server refused, said out loud
+    }
+  },
+  clear(){ st.filters.adv=null; st.filters.advIds=null; this.draft={op:'and',rules:[]};
+    closeModals(); refreshToolbar(); renderView(); },
+};
+
+let _pagedTimer=null;
 function refreshToolbar(){
   const f=st.filters;
   const total=(f.people.length||0)+(f.status?1:0)+(f.priority?1:0)+(f.sort?1:0)
              +((f.links&&f.links.mode)?1:0);
+  const adv=advCount(f.adv);
+  const ac=document.getElementById('ctl-adv');
+  if(ac){ac.classList.toggle('on',!!adv);const ab=document.getElementById('badge-adv');if(ab)ab.textContent=adv||'';}
   const c=document.getElementById('ctl-arrange');
   if(c){c.classList.toggle('on',!!total);const b=document.getElementById('badge-arrange');if(b)b.textContent=total||'';}
   const qc=document.getElementById('tb-q-clear'); if(qc)qc.classList.toggle('show',!!f.q);
   const cl=document.getElementById('tb-clear'); if(cl)cl.classList.toggle('show',filtersActive());
+  /* A large board re-asks the server. Every filter in the app ends here,
+     which is why the re-ask lives here and not at each of the dozen places
+     that change one — a dozen copies of this would drift, and the one that
+     drifted would leave the board showing an answer to the previous
+     question. Debounced, because this also runs on every keystroke in the
+     search box. */
+  if(st.board && filterMode()==='server'){
+    if(filtersActive()){
+      clearTimeout(_pagedTimer);
+      _pagedTimer=setTimeout(()=>Paged.load(true),250);
+    } else if(Paged.on){
+      Paged.reset(); renderView();
+    }
+  }
+  /* The tab strip answers to the filters too: a saved view that has been
+     changed shows a dot and offers something to save, and "has been changed"
+     is only knowable after a filter moves. Every filter in the app already
+     ends here, which is why the strip is redrawn here and not at each of
+     them — there are a dozen, and a dozen copies of this would drift. */
+  if(typeof Views!=='undefined' && Views.active!=null && document.getElementById('tabs'))
+    renderTabs();
 }
 
 /* Collapsed groups, kept in state rather than only in the DOM so a re-render
@@ -9195,7 +10456,9 @@ function exportGrid(){
   const rows=[];
   groupsOf().forEach(g=>{
     if(g.id!==null||g.tasks.length)
-      rows.push({group:true,level:0,cells:pad([g.name])});
+      /* the group's colour rides along: the server writes it on the row, and
+         re-importing the file reads it back as the group's colour */
+      rows.push({group:true,gcolor:g.color||'',level:0,cells:pad([g.name])});
     g.tasks.forEach(t=>{
       rows.push({level:1,cells:pad(cols.map(c=>exportCell(c,t)))});
       const kids=sortedSubs(t.subtasks||[]);
@@ -12380,19 +13643,53 @@ const Chat = {
     this.revealOpenRow(!!(opts && opts.center));
     Router.set(st.board&&st.board.id, id);   // reflect the open item in the URL
   },
-  // drag & drop files/screenshots anywhere onto the chat panel (bound once).
-  // Without preventDefault the browser would just open the dropped image in a new tab.
+  /* Drag & drop anywhere on the conversation panel (bound once).
+     Without preventDefault on dragover the browser refuses the drop outright —
+     no drop event, no feedback, nothing to explain itself.
+
+     This used to accept only a drag whose types included "Files", while the
+     composer a few lines below accepted far more. On Windows that difference
+     is invisible: Outlook puts an attachment on the clipboard as CF_HDROP, the
+     browser reports "Files", and both handlers agree. macOS Outlook hands over
+     a PROMISED file — the bytes are not on the drag at all — so types carries
+     no "Files", the panel refused the drag before the drop could happen, and
+     dropping a mail attachment onto the conversation did nothing whatsoever.
+     Only the composer strip at the very bottom worked, which is a target a few
+     dozen pixels high and reads as "it does not work".
+
+     One rule now, and one handler: whatever the composer accepts, the panel
+     accepts, and both end in onDrop — which already knows how to rebuild a
+     macOS Outlook mail from the drag when the bytes never came. */
   bindDnd(){
     const panel=document.getElementById('chat-panel'); if(!panel||this._dndBound)return;
     this._dndBound=true;
-    const hasFiles=e=>{const dt=e.dataTransfer; return dt&&Array.from(dt.types||[]).includes('Files');};
-    panel.addEventListener('dragover',e=>{ if(!hasFiles(e))return; e.preventDefault(); if(canComment())panel.classList.add('dnd-over'); });
+    panel.addEventListener('dragover',e=>{ if(!this._isImport(e))return; e.preventDefault();
+      try{e.dataTransfer.dropEffect='copy';}catch(_){}
+      if(canComment())panel.classList.add('dnd-over'); });
     panel.addEventListener('dragleave',e=>{ if(e.target===panel||!panel.contains(e.relatedTarget))panel.classList.remove('dnd-over'); });
-    panel.addEventListener('drop',e=>{
-      if(!hasFiles(e))return; e.preventDefault(); panel.classList.remove('dnd-over');
-      if(!canComment()){ toast('אין לך הרשאת תגובה בלוח זה'); return; }
-      const files=Array.from((e.dataTransfer&&e.dataTransfer.files)||[]);
-      files.forEach(f=>this._upload(f));
+    panel.addEventListener('drop',e=>{ panel.classList.remove('dnd-over'); this.onDrop(e); });
+    /* Paste belongs to the conversation, not to the text box — and it has to
+       be listened for on the DOCUMENT, not on the panel.
+
+       Two mistakes, one after the other. It was bound on the textarea alone
+       (onpaste=…), so ⌘V did nothing unless the caret was inside it — and
+       after dragging a file around, or clicking anywhere else, it is not.
+       Moving it to the panel did not fix that: a paste event is dispatched to
+       the FOCUSED element and bubbles up from there, and when focus is on
+       <body> — which is where it sits unless something took it — body is not
+       inside #chat-panel, so the event never passes the panel at all. The
+       listener was in a place the event does not travel through.
+
+       document is the one node every paste passes. The gate is the panel
+       being open, which is the actual condition: a paste while the
+       conversation is open belongs to the conversation.
+
+       It matters most on a Mac, where a file dragged out of Outlook never
+       reaches the page at all and paste is the only route left. Advising it
+       while it silently did nothing was the worse half of this bug. */
+    document.addEventListener('paste',e=>{
+      if(!panel.classList.contains('open'))return;
+      this.onPaste(e);
     });
   },
   close(){
@@ -12515,13 +13812,28 @@ const Chat = {
     pop.style.left=Math.max(8,Math.min(window.innerWidth-pop.offsetWidth-8,r.left))+'px';
   },
   seenPopClose(){ const p=document.getElementById('seen-pop'); if(p)p.remove(); },
+  /* macOS, and whether a file can be dragged in from a mail client at all.
+
+     It cannot, and no amount of code here changes that. Outlook on a Mac hands
+     the system a PROMISE of a file rather than the file, and for a promise it
+     cannot interpret Chrome raises no drag event on the page whatsoever — not
+     dragenter, not dragover, nothing. Measured, not assumed: a window-level
+     listener bound before any element (see the drag diagnostics) printed
+     nothing at all for a drag out of Outlook, while a drag out of Finder
+     printed and attached normally. Windows has no such problem, which is why
+     the same drag works there and this reads as a bug in the app.
+
+     So the composer says what does work, on a Mac, before anybody has tried
+     and failed. One muted line, and only where it is true. */
+  _isMac(){ try{ return /Mac|iPhone|iPad/.test((navigator.platform||'')+' '+(navigator.userAgent||'')); }
+            catch(_){ return false; } },
   composerHTML(mode,cid){
     const edit=mode==='edit';
     const foot=edit
       ? `<button class="btn btn-primary" title="שמור (Ctrl+S)" onclick="Chat.saveEdit(${cid})"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="Chat.cancelEdit()">ביטול</button>`
       : `<button class="btn btn-primary" title="שלח (Ctrl+S)" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button>`;
     return `<div class="composer${edit?' composer-edit':''}" ondragenter="Chat.onDragOver(event)" ondragover="Chat.onDragOver(event)" ondragleave="Chat.onDragLeave(event)" ondrop="Chat.onDrop(event)">
-      <div class="comp-drop" id="comp-drop"><i class="fa-solid fa-envelope-open-text"></i> שחררו כאן לצירוף<small>קובץ או מייל מ‑Outlook</small></div>
+      <div class="comp-drop" id="comp-drop"><i class="fa-solid fa-envelope-open-text"></i> שחררו כאן לצירוף<small>קובץ מהמחשב או מייל מ‑Outlook</small></div>
       ${(!edit&&this.replyTo)?`<div class="reply-ctx"><i class="fa-solid fa-reply"></i> בתגובה ל${esc(this.replyToName)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.cancelReply()"></i></div>`:''}
       <div class="comp-tools">
         <button title="בולט" onclick="Chat.insert('• ')"><i class="fa-solid fa-list-ul"></i></button>
@@ -12529,12 +13841,15 @@ const Chat = {
         <button id="mention-btn" title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
         <button title="אימוג'י" onclick="Chat.emojiMenu(event)"><i class="fa-regular fa-face-smile"></i></button>
         <button title="צרף קובץ מהמחשב" onclick="Chat.attach()"><i class="fa-solid fa-paperclip"></i></button>
+        <button title="צרף קובץ שהועתק ללוח (למשל קובץ מ-Outlook ב-Mac)" onclick="Chat.pasteFromClipboard()"><i class="fa-regular fa-clipboard"></i></button>
+        ${this._isMac()?`<span class="comp-mac-hint" title="נמדד: גרירה מ-Finder מגיעה לדף, גרירה מ-Outlook אינה מייצרת שום אירוע גרירה — macOS מוסר לדפדפן הבטחה לקובץ ולא את הקובץ, וכרום אינו מציג את הדף כיעד שחרור. אלה שתי הדרכים שכן עובדות.">
+          קובץ מ‑Outlook: ⌘C ואז ⌘V כאן · או שמירה לשולחן העבודה וגרירה משם</span>`:''}
       </div>
       <div class="composer-input">
         <div class="comp-check" id="comp-check"></div>
         <div class="comp-hl-wrap">
           <div class="comp-hl" id="comp-hl" aria-hidden="true"></div>
-          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…  (Ctrl+S לשמירה)':'כתוב הודעה…  (Ctrl+S לשליחה · Enter לשורה חדשה · ניתן להדביק או לגרור צילום מסך)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL();Chat.saveDraft()" onscroll="Chat.syncHL()" onpaste="Chat.onPaste(event)"></textarea>
+          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…  (Ctrl+S לשמירה)':'כתוב הודעה…  (Ctrl+S לשליחה · Enter לשורה חדשה · ניתן להדביק או לגרור קובץ)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL();Chat.saveDraft()" onscroll="Chat.syncHL()"></textarea>
         </div>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
@@ -12731,8 +14046,22 @@ const Chat = {
     if(this.mentionSettled(m[1]))return null;
     return {query:m[1], start:pos-m[1].length-1, pos};
   },
+  /* Who the tag menu offers: the board, minus the person writing.
+
+     Tagging yourself does nothing — the server drops a self-tag before it
+     notifies anybody, so the option could only ever produce a tag that goes
+     nowhere. Taken out of the menu rather than refused on the way out: an
+     option that quietly does nothing is worse than no option.
+
+     boardPeople itself is left alone. It also feeds the אחראי picker and the
+     people columns, and putting yourself on a record is an ordinary thing to
+     do. */
+  mentionPeople(){
+    const me=meId();
+    return boardPeople(this.mentions).filter(u=>u.id!==me);
+  },
   mentionSettled(q){
-    const low=q.toLowerCase(), people=boardPeople(this.mentions);
+    const low=q.toLowerCase(), people=this.mentionPeople();
     // still the beginning of somebody's name? keep offering the rest of it
     if(people.some(u=>{const n=u.name||''; return n.length>q.length && n.toLowerCase().startsWith(low);}))return false;
     return people.some(u=>{
@@ -12751,7 +14080,7 @@ const Chat = {
     // only people invited to this board — tagging anyone else notifies someone
     // who cannot open the item they were tagged on. The server enforces the
     // same rule; this just stops offering a choice that would be rejected.
-    const matches=boardPeople(this.mentions).filter(u=>!q||(u.name||'').toLowerCase().includes(q));
+    const matches=this.mentionPeople().filter(u=>!q||(u.name||'').toLowerCase().includes(q));
     /* A query that has run past a space and matches nobody is a message being
        written, not a name — the note helps only while the word is still one
        word. Leaving it up is what made a finished tag look unfinished. */
@@ -12762,15 +14091,22 @@ const Chat = {
   _renderMentionMenu(){
     const anchor=document.getElementById('mention-btn'); if(!anchor||!this._mention)return;
     const {matches,idx}=this._mention;
+    /* Typing your OWN name matches nobody now, and "אפשר לתייג רק מי שהוזמן
+       ללוח" over your own name says something false — you are on the board.
+       Which of the two it is, is worth one line. */
+    const q=((this._mention.ctx&&this._mention.ctx.query)||'').trim().toLowerCase();
+    const me=(st.users||[]).find(u=>u.id===meId());
+    const isSelf=!!(q && me && (me.name||'').toLowerCase().includes(q));
     const html=matches.length
       ? matches.map((u,i)=>`<button class="mention-opt${i===idx?' active':''}" onmousedown="event.preventDefault();Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')
-      : '<div style="padding:9px;color:var(--text-light);font-size:12.5px">אין חברי לוח תואמים — אפשר לתייג רק מי שהוזמן ללוח</div>';
+      : `<div style="padding:9px;color:var(--text-light);font-size:12.5px">${
+          isSelf ? 'אי אפשר לתייג את עצמך' : 'אין חברי לוח תואמים — אפשר לתייג רק מי שהוזמן ללוח'}</div>`;
     this._float(anchor, html);
     const a=document.querySelector('.chat-float .active'); if(a)a.scrollIntoView({block:'nearest'});
   },
   _closeMention(){ if(this._mention){ this._mention=null; closeCellPops(); } },
   pickMention(id){
-    const u=boardPeople(this.mentions).find(x=>x.id===id); if(!u)return;
+    const u=this.mentionPeople().find(x=>x.id===id); if(!u)return;
     if(!this.mentions.includes(id))this.mentions.push(id);
     const ta=document.getElementById('comp-text'), ctx=this._mention&&this._mention.ctx;
     if(ta&&ctx){ const ins='@'+u.name+' '; ta.value=ta.value.slice(0,ctx.start)+ins+ta.value.slice(ctx.pos); const np=ctx.start+ins.length; ta.focus(); ta.setSelectionRange(np,np); this.syncHL(); }
@@ -12792,16 +14128,100 @@ const Chat = {
     }
   },
   attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=()=>{ this._upload(inp.files[0]); }; inp.click(); },
+  /* Read the clipboard outright, on a click.
+
+     The third route, and the only one that depends on nothing: not on the
+     browser delivering a drag event (macOS Outlook never does), and not on
+     where the caret happens to be (a paste event goes to the focused element,
+     and ⌘V with focus on the page body reaches nobody). A click is a user
+     gesture, which is exactly what navigator.clipboard.read() requires, and
+     it asks the system for the clipboard directly.
+
+     Everything it can hit is reported rather than swallowed: a browser too
+     old for the API, a refused permission, and the case that matters most on
+     a Mac — a clipboard holding the NAME of a file and not the file. The last
+     one is indistinguishable from "nothing happened" unless it is said. */
+  async pasteFromClipboard(){
+    if(!canComment()){ toast('אין לך הרשאת תגובה בלוח זה'); return; }
+    /* Two things this cannot do, and both were being reported as something
+       else — which is the failure mode this whole investigation was about.
+
+       1. navigator.clipboard exists only in a SECURE CONTEXT: https, or
+          localhost. Opened over plain http on a machine's IP address, it is
+          undefined, and the honest reason is the address — not the browser.
+       2. Chrome's clipboard.read() returns a narrow set of types: text,
+          html, png. A .docx or a .pdf copied in Finder or in Outlook is NOT
+          among them. The PASTE EVENT is the one that carries those, in
+          clipboardData.files — which is why ⌘V, and not this button, is the
+          route for a mail attachment.
+
+       So this button is for an image and for text, it says so when it finds
+       nothing, and it points at ⌘V rather than leaving a dead end. */
+    if(!window.isSecureContext || !navigator.clipboard || !navigator.clipboard.read){
+      toast(!window.isSecureContext
+        ? 'קריאת הלוח דורשת כתובת מאובטחת (https או localhost) · השתמשו ב-⌘V'
+        : 'הדפדפן הזה לא תומך בקריאת הלוח · השתמשו ב-⌘V');
+      return;
+    }
+    let items;
+    try{ items=await navigator.clipboard.read(); }
+    catch(e){
+      toast(String((e&&e.name)||'')==='NotAllowedError'
+        ? 'הדפדפן חסם גישה ללוח · אשרו את הבקשה, או השתמשו ב-⌘V'
+        : 'לא ניתן לקרוא את הלוח · השתמשו ב-⌘V');
+      return;
+    }
+    let got=0;
+    for(const it of items||[]){
+      const type=(it.types||[]).find(t=>!/^text\//.test(t));
+      if(!type)continue;
+      try{
+        const blob=await it.getType(type);
+        const ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+        const ext=((type.split('/')[1]||'bin')).replace('jpeg','jpg').split('+')[0];
+        let f=blob; try{ f=new File([blob],`screenshot-${ts}.${ext}`,{type}); }catch(_){}
+        await this._upload(f); got++;
+      }catch(_){}
+    }
+    if(!got) toast('בלוח אין תמונה · לקובץ מ-Outlook: לחצו בשיחה ואז ⌘V');
+  },
   // ---- drag & drop import (files + Outlook emails) ----
-  _isImport(e){ const dt=e.dataTransfer; if(!dt||!dt.types)return false;
-    return Array.from(dt.types).some(t=>{ t=(t||'').toLowerCase();
-      return t==='files'||t==='application/x-moz-file'||t.includes('filegroupdescriptor')||t.includes('filecontents')
-        ||t.includes('outlook')||t==='text/html'||t==='text/plain'||t==='text/uri-list'||t==='message/rfc822'; }); },
+  /* Is this drag something we should take? Anything that did not start inside
+     this app.
+
+     It used to be a list of the types a file drag announces — "Files",
+     FileGroupDescriptor, text/html, and later the macOS promise identifiers —
+     and the list was the bug. A drag is judged at `dragover`, and at dragover
+     the browser deliberately tells you almost nothing: the bytes are hidden,
+     and for a drag it cannot interpret it can report NO types at all. macOS
+     Outlook is exactly that case. The list then answered "no", the dragover
+     did not preventDefault, and the browser cancelled the drop before it
+     happened — no drop zone, no cursor, no drop event, nothing on screen to
+     say anything had been refused. Which is precisely what "I drag from the
+     mail and nothing changes" is.
+
+     Answering "yes" costs nothing. A drag that turns out to carry nothing we
+     can read is answered by onDrop, in words, with the way round it. A drag
+     refused here cannot be answered at all.
+
+     The one thing not taken is a drag of our own — a row or a group being
+     reordered. Sortable marks those on the element it is dragging, which is
+     the only signal available while a drag is in flight. */
+  _isImport(e){
+    if(!e||!e.dataTransfer)return false;
+    try{ if(document.querySelector('.sortable-drag,.sortable-ghost,.sortable-chosen'))return false; }
+    catch(_){}
+    return true;
+  },
   onDragOver(e){ if(!this._isImport(e))return; e.preventDefault(); try{e.dataTransfer.dropEffect='copy';}catch(_){}
     const d=document.getElementById('comp-drop'); if(d)d.classList.add('show'); },
   onDragLeave(e){ const comp=e.currentTarget; if(e.relatedTarget&&comp.contains(e.relatedTarget))return; // still inside
     const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show'); },
   async onDrop(e){ if(!this._isImport(e))return; e.preventDefault();
+    // Checked here rather than at each caller: the composer is only rendered
+    // for someone who may comment, but the panel around it is there for
+    // everybody, and it is now a drop target too.
+    if(!canComment()){ toast('אין לך הרשאת תגובה בלוח זה'); return; }
     // The composer sits INSIDE #chat-panel, and bindDnd listens for a drop on
     // the panel so a file can be dropped anywhere on it. Without this the event
     // bubbled there after being handled here and the file was uploaded a second
@@ -12812,19 +14232,41 @@ const Chat = {
     const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show');
     const dt=e.dataTransfer; if(!dt)return;
     // 1) collect real file bytes (normal files + Outlook emails the browser exposes as .msg)
-    let files=[];
+    let files=[], promised='';
     if(dt.items&&dt.items.length){ for(const it of dt.items){ if(it.kind==='file'){ const f=it.getAsFile(); if(f)files.push(f); } } }
     if(!files.length && dt.files&&dt.files.length) files=Array.from(dt.files);
+    /* A promised file arrives with its NAME and none of its bytes — macOS
+       hands a browser the promise, not the file, and Chrome turns that into a
+       File of size 0. Taken at face value that is a file: the loop below
+       uploaded an empty attachment and returned, so the mail itself — which
+       the drag DOES carry, as HTML — was never looked at. From the outside
+       that is "dragging from the mail does nothing", while dragging the same
+       file out of Finder works, because Finder gives bytes.
+
+       So a candidate with no bytes is not a file. Its name is kept, because
+       the promise usually names it correctly and that is the best name the
+       .eml fallback can be given. */
+    const empty=files.filter(f=>!f.size);
+    if(empty.length) promised=(empty[0].name||'').trim();
+    files=files.filter(f=>f.size>0);
     if(files.length){ for(const f of files){ await this._upload(this._normDropped(f)); } return; }
     // 2) no file bytes (typical on macOS Outlook) → rebuild the email from the drag content
     let html='',txt=''; try{ html=dt.getData('text/html')||''; }catch(_){} try{ txt=dt.getData('text/plain')||''; }catch(_){}
-    if(html.trim()){ await this._upload(this._emlFromDrag(html,txt)); return; }   // attach as a reopenable .eml
+    if(html.trim()){ await this._upload(this._emlFromDrag(html,txt,promised)); return; }   // attach as a reopenable .eml
     if(txt.trim()){ this.insert(txt.trim()+' ');                                  // plain text drag → just insert it
       toast('התוכן הוכנס כטקסט'); return; }
-    toast('הדפדפן לא סיפק תוכן לגרירה · שמרו/גררו את המייל לשולחן העבודה ואז לכאן'); },
+    /* macOS hands a browser a PROMISE of a file, not the file, and there is
+       nothing this code can do about that. What it can do is name the way
+       round it instead of failing quietly: copying the attachment in Outlook
+       puts the real bytes on the clipboard, and paste here takes them. */
+    toast((promised?`"${promised}" הגיע בלי תוכן · `:'הדפדפן לא קיבל את הקובץ בגרירה · ')
+          +'העתיקו אותו ב‑Outlook (⌘C) והדביקו כאן (⌘V), או שמרו אותו לשולחן העבודה וגררו משם'); },
   // build an .eml attachment from an Outlook email dragged as HTML
-  _emlFromDrag(html,txt){
-    const subject=((txt||'').trim().split('\n')[0]||'מייל').slice(0,120).replace(/[\r\n]+/g,' ').trim()||'מייל';
+  _emlFromDrag(html,txt,promised){
+    // `promised` is the name a bytes-less macOS drag still carried. It names
+    // the thing better than the first line of the mail body does.
+    const named=(promised||'').replace(/\.[a-z0-9]{1,6}$/i,'').trim();
+    const subject=named||((txt||'').trim().split('\n')[0]||'מייל').slice(0,120).replace(/[\r\n]+/g,' ').trim()||'מייל';
     const eml='Subject: '+subject+'\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n'+html;
     const safe=(subject.replace(/[^\p{L}\p{N} _\-]/gu,'').trim()||'email').slice(0,60);
     try{ return new File([eml],safe+'.eml',{type:'message/rfc822'}); }
@@ -12836,16 +14278,42 @@ const Chat = {
       if(!/\.(msg|eml)$/i.test(name)) name=(name||'email')+'.'+ext;
       try{ return new File([f],name,{type:f.type||'application/octet-stream'}); }catch(_){ } }
     return f; },
-  onPaste(e){ // paste a screenshot / image straight from the clipboard into the chat
-    const items=(e.clipboardData||{}).items||[]; let img=null;
-    for(const it of items){ if(it.kind==='file' && (it.type||'').startsWith('image/')){ img=it; break; } }
-    if(!img)return;                                            // no image → let normal text paste happen
+  /* Paste a file straight into the message — a screenshot, and any other
+     file on the clipboard.
+
+     It took images only, and on a Mac that was the wrong half. A promised
+     file cannot be dragged out of Outlook into a browser, but ⌘C on the
+     attachment and ⌘V here puts the real bytes on the clipboard — a PDF, a
+     spreadsheet, a .msg — and every one of them was being dropped on the
+     floor for not being an image. A screenshot still gets a screenshot's
+     name; anything else keeps its own. */
+  onPaste(e){
+    const items=(e.clipboardData||{}).items||[];
+    let pick=null, hasText=false;
+    for(const it of items){
+      if(it.kind!=='file'){ hasText=true; continue; }
+      pick=it; if((it.type||'').startsWith('image/'))break; }   // an image wins over a stray entry
+    if(!pick){
+      /* No file on the clipboard. Text pastes as text and says nothing —
+         that is an ordinary paste. But a clipboard holding NEITHER a file nor
+         text, right after somebody was told "copy it in Outlook and press
+         ⌘V", is the silence this whole investigation was about: it looks
+         exactly like the shortcut not being wired up. Say which it is. */
+      if(!hasText) toast('אין קובץ בלוח ההעתקה · ב-Outlook בחרו את הקובץ עצמו ואז ⌘C');
+      return;
+    }
+    const blob=pick.getAsFile(); if(!blob)return;
     e.preventDefault();
-    const blob=img.getAsFile(); if(!blob)return;
-    const ext=(blob.type.split('/')[1]||'png').replace('jpeg','jpg');
     const ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-    const file=new File([blob],`screenshot-${ts}.${ext}`,{type:blob.type});
-    this._upload(file);
+    let file=blob;
+    if(!blob.name || blob.name==='image.png' || !blob.name.includes('.')){
+      // the clipboard rarely carries a name; an image gets the screenshot name
+      // it always had, anything else gets one that at least keeps its type
+      const ext=((blob.type||'').split('/')[1]||'bin').replace('jpeg','jpg').split('+')[0];
+      const base=(blob.type||'').startsWith('image/')?`screenshot-${ts}`:`קובץ-${ts}`;
+      try{ file=new File([blob],`${base}.${ext}`,{type:blob.type}); }catch(_){ }
+    }
+    this._upload(this._normDropped(file));
   },
   isImg(name,type){ return /^image\//i.test(type||'') || /\.(png|jpe?g|gif|webp|svg|bmp|avif|heic|heif)$/i.test(name||''); },
   // real file extension — from the name, or derived from the server's MIME type when the name has none

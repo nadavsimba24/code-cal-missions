@@ -157,7 +157,11 @@ ck('duplicating a column carries how it is shown',
    /duplicateColumn[\s\S]{0,600}?number:c\.number/.test(src));
 
 // ── what the presentation must not touch ───────────────────────────────────
-const exp = src.slice(src.indexOf("case 'number':"), src.indexOf("case 'number':")+120);
+/* exportCell's own case, named by what follows it. A bare search for
+   "case 'number':" found the advanced filter's cell reader instead, which was
+   added above this and answers a different question entirely. */
+const _expAt = src.indexOf("case 'number':   return");
+const exp = src.slice(_expAt, _expAt+120);
 ck('the export writes the number itself, so Excel sees a figure',
    /Number\(v\)/.test(exp) && !/fnum/.test(exp), exp.slice(0,90));
 ck('the cell reads left-to-right, so the digits and the symbol keep their order',

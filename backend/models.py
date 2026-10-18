@@ -239,6 +239,40 @@ class Board(Base):
     groups = relationship("Group", back_populates="board", order_by="Group.position")
     tasks = relationship("Task", back_populates="board")
 
+class SavedView(Base):
+    """A saved cut of a board, shown as a tab at the top of it.
+
+    "באגים דחופים פתוחים" is three filters somebody set once and then has to
+    set again every morning. A view is that cut, named and kept — the
+    advanced condition tree together with the toolbar's own filters and the
+    base view it was looking at, so opening the tab restores the board the
+    way it was left rather than approximately.
+
+    `visibility` is the whole of the permission model and it has two values:
+
+      private — only its owner sees it. Somebody's own way of reading a board
+                is not a statement about the board, and it must not appear in
+                anybody else's tab strip.
+      public  — everyone who may open the board sees it. It is a tab on the
+                board, so creating one is an edit to the board and needs the
+                rights of one; a private view needs only the right to look.
+
+    The cut is kept as JSON rather than as columns because what a cut IS keeps
+    growing — the condition tree arrived after the toolbar filters did — and a
+    view saved before a filter existed must keep working after it arrives.
+    """
+    __tablename__ = "saved_views"
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String(80), nullable=False)
+    visibility = Column(String(10), default="private")     # private | public
+    # {view, q, people, status, priority, sort, links, adv}
+    filters = Column(JSON, default=dict)
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
 class Group(Base):
     __tablename__ = "groups"
     id = Column(Integer, primary_key=True)

@@ -376,8 +376,8 @@ def test_the_report_says_where_the_name_came_from():
 def test_the_query_shipped_with_the_app_asks_for_the_division():
     q = (pathlib.Path(__file__).resolve().parent.parent
          / "backend" / "monday_export.graphql").read_text(encoding="utf-8")
-    assert q.count("groups { id title }") >= 1
-    assert q.count("group { id title }") >= 2, "the second page has to ask for it too"
+    assert q.count("groups { id title color }") >= 1
+    assert q.count("group { id title color }") >= 2, "the second page has to ask for it too"
 
 
 # ── what the report says ───────────────────────────────────────────────────
@@ -385,7 +385,10 @@ def test_the_report_states_the_division_and_where_it_came_from():
     for marker in ("groups_need_reexport", "group_names", "groups_from", "summary_rows",
                    "fa-layer-group", "הקובץ אינו אומר איך הלוח מחולק",
                    "אינו מחלק את הלוח לקבוצות", "שורות הקבוצה שבין הפריטים",
-                   "עמודת הקבוצה שבקובץ"):
+                   "עמודת הקבוצה שבקובץ",
+                   # and what colour the groups came in wearing — see
+                   # tests/test_import_group_colors.py
+                   "group_hex", "group_colors", "צבעי הקבוצות יובאו מהקובץ"):
         assert marker in SRC, f"the import report says nothing about {marker}"
 
 

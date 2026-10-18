@@ -106,17 +106,25 @@ the one board they describe:
 ```
 
 ```bash
-python -c "
-import json
-out=[json.load(open(f)) for f in ['board.json','log.json']]
-json.dump(out, open('merged.json','w'), ensure_ascii=False)
-print('merged.json:', len(out), 'responses')
-"
+python scripts/merge_monday_export.py board.json log.json -o merged.json
+```
+
+The script is the wrapper and the checks before the upload, in one run: how many items, history rows
+and users each response brought, which board each one is about, and then — the things that otherwise
+surface only after the import — whether a cursor was left open mid-board, whether the history belongs
+to other boards (section 2), whether a history page came back at its 10,000 ceiling, and whether the
+file links have already expired. It refuses to write when the import would hit a wall, and refuses to
+overwrite an existing target without `--force`.
+
+Checking a merged file you already have, writing nothing:
+
+```bash
+python scripts/merge_monday_export.py merged.json --check
 ```
 
 > The merge is the wrapper and nothing else — `[`, a comma, `]`. It does not repair a response that came
-> back wrong, and a stale response mixed in with a fresh one produces a file that looks perfectly fine.
-> Run the `boards: 1` check from section 2 on the merged file.
+> back wrong, and a stale response mixed in with a fresh one produces a file that looks perfectly fine:
+> nothing in the file says when it was fetched, so that is the one thing the checks cannot see for you.
 
 ### Step 4 — the upload
 
@@ -138,6 +146,7 @@ change what you do next:
 | **בקובץ היו עוד N לוחות** (the file held N more boards) | a request ran without `boardId`; those boards' history was left behind | run the history request again with the id |
 | **היסטוריית הלוח לא יובאה** (no history imported) | either the query never asked for `activity_logs`, or the history in the file belongs to other boards — the report distinguishes the two | whichever the report says |
 | **N רשומות רשומות על מערכת** (N rows recorded as "system") | people the log identifies only by a number, and the user list in the file does not cover them | see section 5 |
+| **צבעי הקבוצות** (the group colours) | the board's groups arrive in the colours they had on monday — the query asks for `groups { id title color }`. A report saying *צבעי ברירת מחדל* means the file was produced by an older query that did not ask for `color` | re-run request 1 and import again, or set the colours here by hand |
 | **columns not imported / imported as another type** | every column with its reason | a business decision, not a failure |
 | **formula columns** | the computed value is imported as text, and the formula itself is kept on the column | it can be turned into a live formula from the column menu, one column at a time |
 | **תתי־פריטים** → *N עמודות קיימות בתתי־הפריטים ולא בפריטי האב* | on monday a sub-item belongs to a board of its own, with its own columns. Those are created here as the sub-items' columns alone — they show on the sub-item rows and never on the item | nothing; look for them on a sub-item row, not on the item. A column the parent board has too is one shared column, matched by title |
@@ -166,6 +175,19 @@ left:
 hour, and the time is written inside the link itself. An export that sits on disk for a day arrives with
 the file names and without the bytes — so export and import in one go, within the same hour. The report
 says how many files came as links and how many had expired.
+
+A signature cannot be extended, but the asset can be asked for again — and that does not need the board
+exported a second time. [scripts/refresh_monday_links.py](../scripts/refresh_monday_links.py) reads the
+asset ids the file already carries, fetches a freshly signed link for each, and writes a copy with the
+links replaced and nothing else touched:
+
+```bash
+export MONDAY_TOKEN=...
+python scripts/refresh_monday_links.py merged.json -o merged-fresh.json
+python scripts/refresh_monday_links.py merged.json --check   # what's in the file, no token, no calls
+```
+
+An asset deleted in monday since the export has no new link; those are counted and keep their name.
 
 **Five formula columns per request.** A board with more gets an error or empty strings back — export it
 twice, each run naming a different set of column `ids`.
@@ -196,5 +218,7 @@ rather than dropping them silently.
 |---|---|
 | [backend/monday_export.graphql](../backend/monday_export.graphql) | the three queries, with why each field is in them |
 | [backend/monday_export.postman_collection.json](../backend/monday_export.postman_collection.json) | the same queries as ready-made requests, with the `boardId` checks |
+| [scripts/merge_monday_export.py](../scripts/merge_monday_export.py) | the merge, with the checks of section 2 built in |
+| [scripts/refresh_monday_links.py](../scripts/refresh_monday_links.py) | re-signs the attachment links when the export has gone stale |
 | [backend/import_monday.py](../backend/import_monday.py) | the reader: what becomes what, and what goes into the report |
 | [tests/test_import_query.py](../tests/test_import_query.py) | keeps the collection and the query from drifting apart |
