@@ -84,20 +84,31 @@ def test_an_eml_and_a_msg_can_actually_be_uploaded(client, admin_id):
         assert r.status_code == 200, f"{name} → {r.status_code} {r.text}"
 
 
-def test_a_mac_is_told_the_route_that_works_without_having_to_fail_first():
-    """Measured, not assumed: a window-level listener bound before any element
-    printed nothing at all for a drag out of Outlook on macOS, while a drag out
-    of Finder printed and attached. The browser raises no drag event for a
-    promised file, so the composer's "drop here" overlay can never appear and
-    the after-the-fact message can never be reached. The one thing left is to
-    say it up front, where somebody will read it before trying."""
-    assert "_isMac()" in SRC, "nothing distinguishes the platform the drag fails on"
-    m = re.search(r"  composerHTML\(mode,cid\)\{(.*?)\n  \},", SRC, re.S)
-    assert m, "composerHTML moved"
-    body = m.group(1)
-    assert "this._isMac()" in body, "the hint is shown to everybody, or to nobody"
-    assert "⌘C" in body and "⌘V" in body
-    assert "comp-mac-hint" in SRC and ".comp-mac-hint{" in SRC
+def test_the_composer_toolbar_is_the_five_buttons_and_nothing_else():
+    """The row is icons. Nothing else goes in it.
+
+    A muted macOS line ("קובץ מ-Outlook: ⌘C ואז ⌘V כאן") and a clipboard button
+    were added to this row while the drag was being chased, and both were taken
+    back out: the line is a sentence sitting in a strip of 30px icons, and the
+    button could not do the thing it was added for — Chrome's
+    navigator.clipboard.read() returns text, html and png, never the .msg or
+    .pdf off a mail. ⌘V is what carries those, it is bound on `document`
+    (test_paste_is_listened_for_where_a_paste_actually_travels), and a drag
+    that arrives as a promise still says so in a toast. Nothing that works was
+    removed with them.
+
+    Pinned because the row is where a new affordance is cheapest to drop in."""
+    m = re.search(r'<div class="comp-tools">(.*?)</div>', SRC, re.S)
+    assert m, "the composer toolbar moved"
+    row = m.group(1)
+    assert row.count("<button") == 5, row
+    for handler in ("Chat.insert('• ')", "Chat.checkFromLine()", "Chat.mentionMenu(event)",
+                    "Chat.emojiMenu(event)", "Chat.attach()"):
+        assert handler in row, f"{handler} is no longer in the toolbar"
+    assert "<span" not in row, "there is prose in the icon row again"
+    assert "comp-mac-hint" not in SRC and "_isMac" not in SRC, \
+        "the macOS hint is back in the composer"
+    assert "pasteFromClipboard" not in SRC, "the clipboard button is back"
 
 
 def test_the_drag_diagnostic_stays():
@@ -126,25 +137,6 @@ def test_paste_is_listened_for_where_a_paste_actually_travels():
     assert "panel.addEventListener('paste'" not in body
     assert "classList.contains('open')" in body, \
         "a paste is taken even when no conversation is open"
-
-
-def test_there_is_a_route_that_depends_on_neither_a_drag_nor_the_caret():
-    """A drag can be refused by the browser before any code runs, and ⌘V goes
-    to whatever is focused. A click is neither: it is a user gesture, which is
-    exactly what reading the clipboard requires."""
-    m = re.search(r"  async pasteFromClipboard\(\)\{(.*?)\n  \},", SRC, re.S)
-    assert m, "the clipboard button is gone"
-    body = m.group(1)
-    assert "navigator.clipboard.read" in body
-    assert "canComment()" in body, "it attaches for someone who may only read"
-    # Every way it can fail has to be said, and said CORRECTLY — a wrong
-    # reason is worse than none. navigator.clipboard is undefined outside a
-    # secure context, and blaming the browser for the address is exactly the
-    # misdiagnosis this whole investigation kept producing.
-    assert "isSecureContext" in body, "an http origin is reported as an old browser"
-    assert "NotAllowedError" in body, "a blocked permission fails silently"
-    assert "⌘V" in body, "the dead end does not point anywhere"
-    assert 'onclick="Chat.pasteFromClipboard()"' in SRC, "nothing calls it"
 
 
 def test_a_paste_that_carried_nothing_at_all_says_so():

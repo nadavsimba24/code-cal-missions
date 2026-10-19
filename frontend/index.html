@@ -1842,12 +1842,6 @@ tr.chat-open>td{background:var(--primary-soft)!important}
   .adv-rule{gap:5px}
   .adv-in,.adv-field,.adv-op{min-width:0;flex:1 1 100%}
 }
-/* macOS only: the one route that works for a mail attachment, said quietly and
-   permanently rather than as an error after a drag that never arrives */
-.comp-mac-hint{margin-inline-start:auto;display:inline-flex;align-items:center;gap:5px;
-  font-size:11.5px;color:var(--text-light);cursor:default;white-space:nowrap;padding-inline-end:4px}
-.comp-mac-hint i{font-size:12px}
-@media (max-width:620px){.comp-mac-hint{display:none}}
 .reply-ctx{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:6px;padding:5px 9px;margin-bottom:7px;display:flex;align-items:center;gap:7px}
 .comp-tools{display:flex;gap:2px;margin-bottom:6px}
 .comp-tools button{width:30px;height:30px;border-radius:6px;color:var(--text-muted);position:relative}
@@ -13812,21 +13806,6 @@ const Chat = {
     pop.style.left=Math.max(8,Math.min(window.innerWidth-pop.offsetWidth-8,r.left))+'px';
   },
   seenPopClose(){ const p=document.getElementById('seen-pop'); if(p)p.remove(); },
-  /* macOS, and whether a file can be dragged in from a mail client at all.
-
-     It cannot, and no amount of code here changes that. Outlook on a Mac hands
-     the system a PROMISE of a file rather than the file, and for a promise it
-     cannot interpret Chrome raises no drag event on the page whatsoever — not
-     dragenter, not dragover, nothing. Measured, not assumed: a window-level
-     listener bound before any element (see the drag diagnostics) printed
-     nothing at all for a drag out of Outlook, while a drag out of Finder
-     printed and attached normally. Windows has no such problem, which is why
-     the same drag works there and this reads as a bug in the app.
-
-     So the composer says what does work, on a Mac, before anybody has tried
-     and failed. One muted line, and only where it is true. */
-  _isMac(){ try{ return /Mac|iPhone|iPad/.test((navigator.platform||'')+' '+(navigator.userAgent||'')); }
-            catch(_){ return false; } },
   composerHTML(mode,cid){
     const edit=mode==='edit';
     const foot=edit
@@ -13841,9 +13820,6 @@ const Chat = {
         <button id="mention-btn" title="תיוג משתמש" onclick="Chat.mentionMenu(event)"><i class="fa-solid fa-at"></i></button>
         <button title="אימוג'י" onclick="Chat.emojiMenu(event)"><i class="fa-regular fa-face-smile"></i></button>
         <button title="צרף קובץ מהמחשב" onclick="Chat.attach()"><i class="fa-solid fa-paperclip"></i></button>
-        <button title="צרף קובץ שהועתק ללוח (למשל קובץ מ-Outlook ב-Mac)" onclick="Chat.pasteFromClipboard()"><i class="fa-regular fa-clipboard"></i></button>
-        ${this._isMac()?`<span class="comp-mac-hint" title="נמדד: גרירה מ-Finder מגיעה לדף, גרירה מ-Outlook אינה מייצרת שום אירוע גרירה — macOS מוסר לדפדפן הבטחה לקובץ ולא את הקובץ, וכרום אינו מציג את הדף כיעד שחרור. אלה שתי הדרכים שכן עובדות.">
-          קובץ מ‑Outlook: ⌘C ואז ⌘V כאן · או שמירה לשולחן העבודה וגרירה משם</span>`:''}
       </div>
       <div class="composer-input">
         <div class="comp-check" id="comp-check"></div>
@@ -14128,63 +14104,6 @@ const Chat = {
     }
   },
   attach(){ const inp=document.createElement('input'); inp.type='file'; inp.onchange=()=>{ this._upload(inp.files[0]); }; inp.click(); },
-  /* Read the clipboard outright, on a click.
-
-     The third route, and the only one that depends on nothing: not on the
-     browser delivering a drag event (macOS Outlook never does), and not on
-     where the caret happens to be (a paste event goes to the focused element,
-     and ⌘V with focus on the page body reaches nobody). A click is a user
-     gesture, which is exactly what navigator.clipboard.read() requires, and
-     it asks the system for the clipboard directly.
-
-     Everything it can hit is reported rather than swallowed: a browser too
-     old for the API, a refused permission, and the case that matters most on
-     a Mac — a clipboard holding the NAME of a file and not the file. The last
-     one is indistinguishable from "nothing happened" unless it is said. */
-  async pasteFromClipboard(){
-    if(!canComment()){ toast('אין לך הרשאת תגובה בלוח זה'); return; }
-    /* Two things this cannot do, and both were being reported as something
-       else — which is the failure mode this whole investigation was about.
-
-       1. navigator.clipboard exists only in a SECURE CONTEXT: https, or
-          localhost. Opened over plain http on a machine's IP address, it is
-          undefined, and the honest reason is the address — not the browser.
-       2. Chrome's clipboard.read() returns a narrow set of types: text,
-          html, png. A .docx or a .pdf copied in Finder or in Outlook is NOT
-          among them. The PASTE EVENT is the one that carries those, in
-          clipboardData.files — which is why ⌘V, and not this button, is the
-          route for a mail attachment.
-
-       So this button is for an image and for text, it says so when it finds
-       nothing, and it points at ⌘V rather than leaving a dead end. */
-    if(!window.isSecureContext || !navigator.clipboard || !navigator.clipboard.read){
-      toast(!window.isSecureContext
-        ? 'קריאת הלוח דורשת כתובת מאובטחת (https או localhost) · השתמשו ב-⌘V'
-        : 'הדפדפן הזה לא תומך בקריאת הלוח · השתמשו ב-⌘V');
-      return;
-    }
-    let items;
-    try{ items=await navigator.clipboard.read(); }
-    catch(e){
-      toast(String((e&&e.name)||'')==='NotAllowedError'
-        ? 'הדפדפן חסם גישה ללוח · אשרו את הבקשה, או השתמשו ב-⌘V'
-        : 'לא ניתן לקרוא את הלוח · השתמשו ב-⌘V');
-      return;
-    }
-    let got=0;
-    for(const it of items||[]){
-      const type=(it.types||[]).find(t=>!/^text\//.test(t));
-      if(!type)continue;
-      try{
-        const blob=await it.getType(type);
-        const ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-        const ext=((type.split('/')[1]||'bin')).replace('jpeg','jpg').split('+')[0];
-        let f=blob; try{ f=new File([blob],`screenshot-${ts}.${ext}`,{type}); }catch(_){}
-        await this._upload(f); got++;
-      }catch(_){}
-    }
-    if(!got) toast('בלוח אין תמונה · לקובץ מ-Outlook: לחצו בשיחה ואז ⌘V');
-  },
   // ---- drag & drop import (files + Outlook emails) ----
   /* Is this drag something we should take? Anything that did not start inside
      this app.
