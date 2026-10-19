@@ -36,6 +36,14 @@ stages:
   jobs:
   - job: Build
     displayName: Build
+    # The Mend SAST scan took 22-24 minutes for months and then 57, and the
+    # job was cancelled at the 60-minute default before the image was ever
+    # built. The cause is frontend/index.html: it is the whole application in
+    # one file, it just crossed a megabyte, and a single-file scan does not
+    # get cheaper with size. Raising the ceiling is the honest fix for a scan
+    # that legitimately takes longer than it used to — not a way of ignoring
+    # a hang.
+    timeoutInMinutes: 120
     pool:
       vmImage: $(vmImageName)
     steps:
