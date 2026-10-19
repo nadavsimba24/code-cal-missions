@@ -1,6 +1,7 @@
-# Docker
-# Build and push an image to Azure Container Registry
-# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+# QA CI/CD Pipeline
+# Build and push Docker image to Azure Container Registry,
+# run Mend SCA and SAST scans, then deploy to Azure Container Apps.
 
 trigger:
   branches:
@@ -11,75 +12,49 @@ trigger:
       - azure-pipelines-prod.yml
 
 resources:
-- repo: self
+  - repo: self
 
 variables:
-  # Container registry service connection established during pipeline creation
+  # Azure Container Registry
   dockerRegistryServiceConnection: '828744d5-4e9f-4fdc-947b-9801173b58cf'
   imageRepository: 'missions'
   containerRegistry: 'missionspoccontainer.azurecr.io'
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
 
-  # ── deploy target ────────────────────────────────────────────────────
+  # QA deployment target
   containerAppName: 'missionspoccontainer'
   containerAppResourceGroup: 'rg-missions-qa'
-  azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'   # "Misssions"
+  azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'
+  azureServiceConnection: 'Missions-QA-ARM'
   healthUrl: 'https://missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io/api/status'
 
-  azureServiceConnection: 'Missions-QA-ARM'
-  vmImageName: 'ubuntu-latest'
+  # Pin the agent OS instead of following ubuntu-latest.
+  vmImageName: 'ubuntu-24.04'
 
 stages:
+
+# ============================================================
+# STAGE 1: BUILD AND PUSH
+# Build the image before security scans so that a slow scan
+# does not prevent the image from being published to ACR.
+# ============================================================
 - stage: Build
-  displayName: Build and push stage
+  displayName: 'Build and push QA image'
+
   jobs:
-  - job: Build
-    displayName: Build
-    # The Mend SAST scan took 22-24 minutes for months and then 57, and the
-    # job was cancelled at the 60-minute default before the image was ever
-    # built. The cause is frontend/index.html: it is the whole application in
-    # one file, it just crossed a megabyte, and a single-file scan does not
-    # get cheaper with size. Raising the ceiling is the honest fix for a scan
-    # that legitimately takes longer than it used to — not a way of ignoring
-    # a hang.
-    timeoutInMinutes: 120
+  - job: BuildAndPush
+    displayName: 'Build and push Docker image'
+    timeoutInMinutes: 60
+
     pool:
       vmImage: $(vmImageName)
+
     steps:
-    - task: PowerShell@2
-      displayName: 'Download Mend CLI'
-      inputs:
-        targetType: 'inline'
-        script: |
-          curl -L -o mend "https://downloads.mend.io/cli/linux_amd64/mend"
-          chmod +x mend
-          ./mend version
-
-    - task: PowerShell@2
-      displayName: 'Mend dependencies scan (SCA) - QA' 
-      inputs:
-        targetType: 'inline'
-        script: |
-          ./mend dep --scope "Missions//Missions-QA" --update --reachability
-      env:
-        MEND_EMAIL: $(MENDEMAIL)
-        MEND_USER_KEY: $(MEND_USER_KEY)
-        MEND_URL: $(MENDURL)
-
-    - task: PowerShell@2
-      displayName: 'Mend code scan (SAST) - QA'
-      inputs:
-        targetType: 'inline'
-        script: |
-          ./mend code --scope "Missions//Missions-QA"
-      env:
-        MEND_EMAIL: $(MENDEMAIL)
-        MEND_USER_KEY: $(MEND_USER_KEY)
-        MEND_URL: $(MENDURL)
+    - checkout: self
 
     - task: Docker@2
-      displayName: Build and push an image to container registry
+      displayName: 'Build and push image to ACR'
       inputs:
         command: buildAndPush
         repository: $(imageRepository)
@@ -88,67 +63,259 @@ stages:
         tags: |
           $(tag)
 
-- stage: Deploy
-  displayName: Deploy to the QA Container App
+# ============================================================
+# STAGE 2: SECURITY
+# SCA and SAST run as separate jobs and can run concurrently
+# when Azure DevOps parallel-job capacity is available.
+# Both scans must succeed before deployment is permitted.
+# ============================================================
+- stage: Security
+  displayName: 'Mend security scans'
   dependsOn: Build
   condition: succeeded()
+
   jobs:
-  - job: Deploy
-    displayName: Roll the Container App onto the image this run built
+
+  # ----------------------------------------------------------
+  # Mend SCA: dependency and reachability scan
+  # ----------------------------------------------------------
+  - job: MendSCA
+    displayName: 'Mend SCA - QA'
+    timeoutInMinutes: 60
+
     pool:
       vmImage: $(vmImageName)
+
+    steps:
+    - checkout: self
+
+    - task: PowerShell@2
+      displayName: 'Download Mend CLI'
+      inputs:
+        targetType: inline
+        script: |
+          $ErrorActionPreference = 'Stop'
+
+          curl -fL --retry 3 --retry-delay 2 `
+            -o mend `
+            "https://downloads.mend.io/cli/linux_amd64/mend"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download Mend CLI."
+          }
+
+          chmod +x ./mend
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to make Mend CLI executable."
+          }
+
+          ./mend version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Mend CLI version check failed."
+          }
+
+    - task: PowerShell@2
+      displayName: 'Mend dependencies scan (SCA) - QA'
+      inputs:
+        targetType: inline
+        script: |
+          ./mend dep --scope "Missions//Missions-QA" --update --reachability
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Mend SCA scan failed."
+          }
+      env:
+        MEND_EMAIL: $(MENDEMAIL)
+        MEND_USER_KEY: $(MEND_USER_KEY)
+        MEND_URL: $(MENDURL)
+
+  # ----------------------------------------------------------
+  # Mend SAST: source code scan
+  # The longer timeout accommodates the observed scan duration,
+  # subject to the Azure DevOps hosted-job execution limit.
+  # ----------------------------------------------------------
+  - job: MendSAST
+    displayName: 'Mend SAST - QA'
+    timeoutInMinutes: 90
+
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - checkout: self
+
+    - task: PowerShell@2
+      displayName: 'Download Mend CLI'
+      inputs:
+        targetType: inline
+        script: |
+          $ErrorActionPreference = 'Stop'
+
+          curl -fL --retry 3 --retry-delay 2 `
+            -o mend `
+            "https://downloads.mend.io/cli/linux_amd64/mend"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download Mend CLI."
+          }
+
+          chmod +x ./mend
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to make Mend CLI executable."
+          }
+
+          ./mend version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Mend CLI version check failed."
+          }
+
+    - task: PowerShell@2
+      displayName: 'Mend code scan (SAST) - QA'
+      inputs:
+        targetType: inline
+        script: |
+          ./mend code --scope "Missions//Missions-QA"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Mend SAST scan failed."
+          }
+      env:
+        MEND_EMAIL: $(MENDEMAIL)
+        MEND_USER_KEY: $(MEND_USER_KEY)
+        MEND_URL: $(MENDURL)
+
+# ============================================================
+# STAGE 3: DEPLOY
+# Deployment only proceeds if both Build and Security succeed.
+# Existing revision and health-check behavior is preserved.
+# ============================================================
+- stage: Deploy
+  displayName: 'Deploy to QA Container App'
+
+  dependsOn:
+    - Build
+    - Security
+
+  condition: succeeded()
+
+  jobs:
+  - job: DeployQA
+    displayName: 'Deploy image and verify revision'
+    timeoutInMinutes: 30
+
+    pool:
+      vmImage: $(vmImageName)
+
     steps:
     - task: AzureCLI@2
-      displayName: az containerapp update + wait for the revision to serve
+      displayName: 'Deploy and verify Container App revision'
       inputs:
         azureSubscription: $(azureServiceConnection)
         scriptType: bash
         scriptLocation: inlineScript
         inlineScript: |
           set -euo pipefail
+
           az config set extension.use_dynamic_install=yes_without_prompt
 
           IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
-          echo "── deploying $IMAGE ──"
 
-          COMMON=(--subscription "$(azureSubscriptionId)"
-                  --resource-group "$(containerAppResourceGroup)"
-                  --name "$(containerAppName)")
-          az containerapp update "${COMMON[@]}" --image "$IMAGE" --output none
+          echo "Deploying image: $IMAGE"
+
+          COMMON=(
+            --subscription "$(azureSubscriptionId)"
+            --resource-group "$(containerAppResourceGroup)"
+            --name "$(containerAppName)"
+          )
+
+          az containerapp update "${COMMON[@]}" \
+            --image "$IMAGE" \
+            --output none
 
           REV=$(az containerapp show "${COMMON[@]}" \
-                  --query "properties.latestRevisionName" -o tsv)
-          echo "── new revision: $REV ──"
+            --query "properties.latestRevisionName" \
+            -o tsv)
+
+          if [[ -z "$REV" || "$REV" == "None" ]]; then
+            echo "##vso[task.logissue type=error]Could not determine the new revision."
+            exit 1
+          fi
+
+          echo "New revision: $REV"
+
+          # Wait up to 10 minutes for the revision to start.
+          RUNNING=""
 
           for i in $(seq 1 60); do
-            read -r RUNNING HEALTH < <(az containerapp revision show "${COMMON[@]}" \
-              --revision "$REV" \
-              --query "[properties.runningState, properties.healthState]" -o tsv)
-            echo "  [$i] running=$RUNNING health=$HEALTH"
+            read -r RUNNING HEALTH < <(
+              az containerapp revision show "${COMMON[@]}" \
+                --revision "$REV" \
+                --query "[properties.runningState, properties.healthState]" \
+                -o tsv
+            )
+
+            echo "[$i/60] running=$RUNNING health=$HEALTH"
+
             case "$RUNNING" in
-              Running)  break ;;
+              Running)
+                break
+                ;;
               Failed|Degraded)
-                echo "##vso[task.logissue type=error]revision $REV came up $RUNNING"
-                az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
-                exit 1 ;;
+                echo "##vso[task.logissue type=error]Revision $REV entered state $RUNNING."
+                az containerapp logs show "${COMMON[@]}" \
+                  --revision "$REV" \
+                  --tail 60 || true
+                exit 1
+                ;;
             esac
+
             sleep 10
           done
 
+          if [[ "$RUNNING" != "Running" ]]; then
+            echo "##vso[task.logissue type=error]Revision $REV did not reach Running state within 10 minutes."
+            az containerapp logs show "${COMMON[@]}" \
+              --revision "$REV" \
+              --tail 60 || true
+            exit 1
+          fi
+
+          # Verify the application health endpoint.
+          # HTTP 403 is accepted as in the original pipeline because
+          # the build agent may be blocked by the ingress allow-list.
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$(healthUrl)" || echo 000)
-            echo "  health attempt $i → HTTP $code"
+            code=$(curl -sS -o /dev/null \
+              -w '%{http_code}' \
+              --max-time 10 \
+              "$(healthUrl)" || true)
+
+            echo "Health attempt $i/30: HTTP ${code:-000}"
+
             case "$code" in
               200)
-                echo "✅ $REV is serving $IMAGE"
-                exit 0 ;;
+                echo "Revision $REV is serving $IMAGE."
+                exit 0
+                ;;
               403)
-                echo "✅ $REV is up and routing $IMAGE"
-                echo "   (403 = ingress IP allow-list refusing this build agent, not an app fault)"
-                exit 0 ;;
+                echo "Revision $REV is running; HTTP 403 may indicate the build agent is blocked by the ingress allow-list."
+                echo "Application health has not been confirmed."
+                exit 0
+                ;;
             esac
+
             sleep 10
           done
-          echo "##vso[task.logissue type=error]$REV answered neither 200 nor 403 — the app is not serving"
-          az containerapp logs show "${COMMON[@]}" --revision "$REV" --tail 60 || true
+
+          echo "##vso[task.logissue type=error]Revision $REV did not return HTTP 200 or 403 within the health-check window."
+
+          az containerapp logs show "${COMMON[@]}" \
+            --revision "$REV" \
+            --tail 60 || true
+
           exit 1
+      env:
+        AZURE_CONFIG_DIR: $(Agent.TempDirectory)/.azure
