@@ -2184,23 +2184,39 @@ def _view_blocked_for(b, v, user_id, role):
     return any(str(f) in unseen for f in gone)
 
 
-def _strip_search(filters):
-    """A saved view never holds the search box's text.
+# What a saved configuration is made of, and nothing else.
+#
+# The spec gives this as a table of components: visible columns and their
+# order, column widths, filters, sort. Everything else a person does to a
+# board while looking at it — the search box, a collapsed group, the scroll
+# position, which sub-items they opened — is theirs for as long as they are
+# there and is not part of what anybody else opens.
+#
+# Written as what is KEPT rather than what is dropped, because the two fail in
+# opposite directions. A list of things to strip lets anything new the client
+# starts sending ride along into everybody's tab, silently, and the first
+# anybody knows of it is a view that behaves differently for its author. A
+# list of what is kept makes that a decision somebody has to make on purpose.
+VIEW_CONFIG_KEYS = (
+    "view",        # which base view the cut was taken of — table, for now
+    "cols",        # visible columns, their order, their widths
+    "adv",         # the condition tree
+    "people", "status", "priority", "links",   # the toolbar's own filters
+    "sort",
+)
 
-    "שמירה כתצוגה חדשה מעתיקה את תצורת העבודה הנוכחית ... אך ללא טקסט
-    החיפוש", and a view created from the main table starts "ללא חיפוש או
-    התאמות זמניות". Both say the same thing, and the glossary says why: a
-    search is a שינוי זמני, which "מתאפסת ביציאה מהתצוגה". A stored one would
-    be the opposite of temporary — a tab that silently narrows the board for
-    everybody who opens it, with a search box that looks empty.
 
-    Applied wherever a view's configuration is WRITTEN, not only on the two
-    create paths: saving over a view would otherwise store what creating one
-    is forbidden to.
+def _view_config(filters):
+    """The shared part of what somebody is looking at.
+
+    `q` is the one dropped by name in the spec — "טקסט חיפוש: לעולם אינו
+    נשמר" — and it is also the clearest case of the rule above: a stored
+    search is a tab that silently narrows the board for everybody who opens
+    it, above a search box that looks empty.
     """
-    if not isinstance(filters, dict) or "q" not in filters:
+    if not isinstance(filters, dict):
         return filters
-    return {k: val for k, val in filters.items() if k != "q"}
+    return {k: v for k, v in filters.items() if k in VIEW_CONFIG_KEYS}
 
 
 def _view_cut_allowed(b, filters, user_id, role):
@@ -2457,7 +2473,7 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
             raise HTTPException(400, str(e))
         if not _view_cut_allowed(_b, filters, user_id, role):
             raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
-        filters = _strip_search(filters)
+        filters = _view_config(filters)
         maxpos = (db.query(func.max(SavedView.position))
                     .filter(SavedView.board_id == board_id).scalar())
         v = SavedView(board_id=board_id, owner_id=user_id, name=name,
@@ -2516,7 +2532,7 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
                 raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
             if not _view_cut_allowed(b, data["filters"], user_id, role):
                 raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
-            v.filters = _strip_search(
+            v.filters = _view_config(
                 _merge_view_cols(data["filters"], v.filters,
                                  _unseen_col_ids(b, user_id, role)))
         if isinstance(data.get("position"), int):
@@ -2683,7 +2699,7 @@ def duplicate_saved_view(view_id: int, data: dict = None,
         # unpinned, a new id, and nothing but the configuration: no items, and
         # no permission anybody did not already have.
         c = SavedView(board_id=v.board_id, owner_id=user_id, name=name,
-                      visibility="public", filters=_strip_search(dict(v.filters or {})),
+                      visibility="public", filters=_view_config(dict(v.filters or {})),
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(c)
         db.commit()
