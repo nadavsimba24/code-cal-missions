@@ -2019,12 +2019,27 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 /* A view this reader cannot open is dimmed and still legible — hiding it
    would leave somebody who knows the tab exists wondering where it went. */
 .tab-view-off{opacity:.55}
+/* Hidden until hover is a desktop affordance and nothing else: a touch screen
+   has no hover, so the menu would be reachable only by opening the view
+   first — which is the one thing somebody renaming or deleting a tab has not
+   asked to do. Below the pointer breakpoint it is simply always there.
+   The tap target is 44x44 on touch (WCAG 2.5.5), achieved with padding rather
+   than a larger glyph so the strip does not grow. */
 .tab-view-menu{border:none;background:none;color:var(--text-light);cursor:pointer;
-  width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px;
+  width:28px;height:28px;border-radius:5px;display:grid;place-items:center;font-size:12px;
   opacity:0;transition:opacity .12s,background .12s}
 .tab-view:hover .tab-view-menu,.tab-view.active .tab-view-menu,
 .tab-view-menu:focus-visible{opacity:1}
 .tab-view-menu:hover{background:var(--row-hover);color:var(--text)}
+@media (hover:none),(pointer:coarse){
+  .tab-view-menu{opacity:1;width:44px;height:44px;margin-inline-end:-6px}
+  .tab-all{height:44px;padding:0 14px}
+  .vp-row{min-height:44px}
+}
+/* A focus ring that is actually visible, on every control added here. The
+   board is operable from the keyboard only if the caret can be seen. */
+.tab-view-menu:focus-visible,.tab-all:focus-visible,.vp-row:focus-visible,
+.vp-search input:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .tab-all{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);
   background:var(--surface);color:var(--text-muted);border-radius:8px;height:30px;padding:0 9px;
   cursor:pointer;font:inherit;font-size:12.5px}
@@ -2047,6 +2062,19 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .vp-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vp-chk{color:var(--primary);font-size:11px}
 .vp-empty{padding:14px 8px;color:var(--text-light);font-size:12.5px;text-align:center}
+/* "חיווי ברור, שמירת התאמות במסך וניסיון חוזר" — a banner rather than a
+   toast, because four seconds is the wrong lifetime for "not saved yet". */
+.save-failed{display:inline-flex;align-items:center;gap:9px;margin-inline-start:8px;
+  background:color-mix(in srgb,var(--red,#d83a52) 10%,var(--surface));
+  border:1px solid color-mix(in srgb,var(--red,#d83a52) 35%,transparent);
+  color:var(--text);border-radius:9px;padding:5px 8px;font-size:12.5px;max-width:min(560px,70vw)}
+.save-failed>i{color:var(--red,#d83a52)}
+.sf-msg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sf-x{border:none;background:none;color:var(--text-light);cursor:pointer;
+  width:28px;height:28px;border-radius:6px;display:grid;place-items:center}
+.sf-x:hover{background:var(--row-hover);color:var(--text)}
+.sf-x:focus-visible,.save-failed .btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+@media (hover:none),(pointer:coarse){ .sf-x{width:44px;height:44px} }
 
 /* ===== board screen — design polish (ui-ux-pro-max: clean · high-contrast · corporate) ===== */
 /* board header — calmer rhythm, more elegant title */
@@ -4238,6 +4266,18 @@ const Views = {
   /* Leaving a view is not clearing the board: the filters stay exactly as
      they are and only the tab stops being lit, because somebody who edits a
      view's cut and then clicks away has not asked for their work to vanish. */
+  /* "פעולה מפורשת של איפוס שינויים זמניים תחזיר לתצורה המשותפת העדכנית."
+     The CURRENT one — re-read rather than replayed from what was opened,
+     because somebody else may have saved over it since and the point of
+     resetting is to land on what the view says now. */
+  async reset(){
+    const id=this.active; if(id==null)return clearFilters();
+    await this.load(st.board&&st.board.id);
+    const v=this.items.find(x=>x.id===id);
+    if(!v){ this.leave(); return toast('התצוגה כבר אינה קיימת'); }
+    this.apply(id);
+    toast('השינויים הזמניים אופסו');
+  },
   leave(){ if(this.active==null)return; this.active=null; this.base=null;
     Router.set(st.board&&st.board.id, Chat.taskId, null); renderTabs(); },
 
@@ -4265,16 +4305,52 @@ const Views = {
   /* Write the cut on screen back onto the open view. Only reachable when the
      server said can_edit, and refused again there — the button is a
      convenience, not the rule. */
+  /* Saving the cut for everybody.
+
+     "בכישלון, התצורה המשותפת לא תשתנה וההתאמות הזמניות יישמרו במסך לצורך
+     ניסיון חוזר; אין הצגת הצלחה כוזבת."
+
+     Three things follow, and the third is the one that is easy to lose.
+     `base` — what "unsaved" is measured against — is advanced ONLY after the
+     server has said yes. Advancing it first, or in a finally, would clear the
+     unsaved marker over a save that never happened: the screen would look
+     saved, the next person would open the tab and find the old cut, and the
+     adjustments would be gone from the one place they still existed.
+
+     And the failure is not a toast. A toast is gone in four seconds, which is
+     the wrong lifetime for "your work is not saved yet" — it stays until it
+     succeeds or she abandons it, and it carries the retry. */
   async update(){
     const v=this.openView(); if(!v)return;
     if(!v.can_edit){ toast('התצוגה אינה שלך — אפשר לשמור עותק'); return; }
+    this.saving=true; this.failed=null; renderTabs();
     try{
       await api('/api/views/'+v.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
         body:withMe({filters:this.current()})});
       await this.load(st.board.id);
-      this.active=v.id; this.base=JSON.stringify(this.current());
-      renderTabs(); toast('התצוגה עודכנה');
-    }catch(e){ toast((e&&e.detail)||'עדכון התצוגה נכשל'); }
+      this.active=v.id;
+      // only now — see above
+      this.base=JSON.stringify(this.current());
+      this.saving=false; this.failed=null;
+      renderTabs(); toast('ההגדרות נשמרו לכולם');
+    }catch(e){
+      this.saving=false;
+      this.failed=(e&&e.detail)||'השמירה נכשלה — ייתכן שאין חיבור לשרת';
+      renderTabs();                       // the banner, with the retry in it
+    }
+  },
+  /* The banner. Drawn by renderTabs while `failed` is set, and cleared only
+     by a save that worked or by her saying so. */
+  failedHTML(){
+    if(!this.failed)return '';
+    return `<div class="save-failed" role="alert">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <span class="sf-msg">${esc(this.failed)} — השינויים נשמרו במסך.</span>
+      <button class="btn btn-primary btn-sm" onclick="Views.update()">
+        <i class="fa-solid fa-rotate-right"></i> ניסיון חוזר</button>
+      <button class="sf-x" aria-label="סגירת ההודעה"
+              onclick="Views.failed=null;renderTabs()"><i class="fa-solid fa-xmark"></i></button>
+    </div>`;
   },
   _dialog(v){
     const editing=!!v;
@@ -4551,6 +4627,7 @@ function renderTabs(){
          <i class="fa-regular fa-bookmark"></i> שמור תצוגה</button>`;
   }
   document.getElementById('tabs').innerHTML = dd + tabs + formTab + saved + picker + saveBtn +
+    (typeof Views!=='undefined'&&Views.failedHTML?Views.failedHTML():'') +
     `
      <div class="tab-add-wrap" id="tab-add-wrap">
        <button class="tab-add" title="הוסף/הסר תצוגה" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>
@@ -6207,15 +6284,86 @@ function sortBtn(key){
 function filtersActive(){const f=st.filters;
   return !!(f.q||f.people.length||f.status||f.priority||f.sort||(f.links&&f.links.mode)
             ||advCount(f.adv));}
-function noMatchHTML(){
-  return `<div class="errpage">
-    <div class="err-badge"><i class="fa-solid fa-magnifying-glass"></i></div>
-    <h2>לא נמצאו תוצאות</h2>
-    <p>נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.</p>
-    <div class="err-actions">
-      <button class="btn btn-primary" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> ניקוי חיפוש וסינון</button>
-    </div>
+/* ===== the states a board can be in, and what each one offers =====
+
+   Four of them look alike and are not, and offering the wrong action in any
+   of them is worse than offering none: it is a button that cannot fix what
+   the screen is complaining about.
+
+     no results      — the cut is fine, it just matches nothing. The way out
+                       is to undo what was changed, and WHICH undo depends on
+                       whether a saved view is open: inside one, "reset" means
+                       back to the view's own configuration, not back to an
+                       empty board. Clearing everything there would throw away
+                       the view as well as the adjustment.
+     empty board     — nothing to filter in the first place. The way out is to
+                       add an item, offered only to somebody who may.
+     restricted view — the cut asks about a column this reader may not see.
+                       There is no way out from here except the main table,
+                       and the message cannot say which column.
+     broken view     — a column the cut needs is gone from the board. Fixable,
+                       but only by somebody who may edit the view; everybody
+                       else is offered the main table.
+
+   Each returns the same shape so the caller does not have to care which. */
+function stateHTML(badge, title, body, actions, icon){
+  return `<div class="errpage" role="status">
+    <div class="err-badge"><i class="fa-solid ${icon}"></i></div>
+    <h2>${title}</h2>
+    <p>${body}</p>
+    ${actions?`<div class="err-actions">${actions}</div>`:''}
   </div>`;
+}
+function noMatchHTML(){
+  /* Inside a view, the offer is to drop the temporary adjustments and go back
+     to what the view says. Outside one, there is nothing to go back TO, so
+     the offer is to clear the cut. Same button, two different promises, and
+     labelling both "ניקוי" would make one of them a lie. */
+  const inView=typeof Views!=='undefined'&&Views.active!=null;
+  const act=inView
+    ? `<button class="btn btn-primary" onclick="Views.reset()">
+         <i class="fa-solid fa-rotate-left"></i> איפוס השינויים הזמניים</button>`
+    : `<button class="btn btn-primary" onclick="clearFilters()">
+         <i class="fa-solid fa-xmark"></i> ניקוי חיפוש וסינון</button>`;
+  return stateHTML('', 'אין תוצאות לסינון הנוכחי',
+    inView ? 'הסינון שבתצוגה הזאת, יחד עם השינויים שביצעת, אינו מתאים לאף פריט.'
+           : 'נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.',
+    act, 'fa-magnifying-glass');
+}
+/* An empty board is not a failed filter, and saying "לא נמצאו תוצאות" over
+   one sends somebody looking for a filter to clear that was never on. */
+function emptyBoardHTML(){
+  const may=typeof canEditItem==='function'?isBoardAdmin()||(st.board&&st.board.my_role==='editor'):false;
+  return stateHTML('', 'אין עדיין פריטים בלוח',
+    may ? 'אפשר להוסיף את הפריט הראשון ולהתחיל.'
+        : 'כשיתווספו פריטים הם יופיעו כאן.',
+    may ? `<button class="btn btn-primary" onclick="openNewItem(null)">
+             <i class="fa-solid fa-plus"></i> הוספת פריט</button>` : '',
+    'fa-table-list');
+}
+/* "אין הרשאה לפתיחת התצוגה; הפניה לטבלה הראשית." Deliberately without the
+   column, the condition, or anything that narrows what is being kept from
+   them — that is the disclosure the block exists to prevent. */
+function restrictedViewHTML(){
+  return stateHTML('', 'אין לך הרשאה לפתוח את התצוגה הזאת',
+    'התצוגה מסננת לפי נתון שאינך מורשה לראות. אפשר להמשיך לעבוד בטבלה הראשית.',
+    `<button class="btn btn-primary" onclick="Views.leave()">
+       <i class="fa-solid fa-table-list"></i> מעבר לטבלה הראשית</button>`,
+    'fa-lock');
+}
+/* "הגדרות התצוגה דורשות תיקון; תיקון למורשה או מעבר לראשית." Unlike the one
+   above this is not a secret — the column is gone for everybody — but the
+   offer still depends on whether this person may do anything about it. */
+function brokenViewHTML(v){
+  const may=!!(v&&v.can_edit);
+  return stateHTML('', 'הגדרות התצוגה דורשות תיקון',
+    'התצוגה מסננת או ממיינת לפי עמודה שנמחקה מהלוח. עד שתתוקן היא לא תציג תוצאות, '
+    +'כדי לא להציג תוצאות חלקיות שנראות מלאות.',
+    (may?`<button class="btn btn-primary" onclick="Views.edit(${v.id})">
+            <i class="fa-solid fa-wrench"></i> תיקון התצוגה</button> `:'')
+    +`<button class="btn btn-ghost" onclick="Views.leave()">
+        <i class="fa-solid fa-table-list"></i> מעבר לטבלה הראשית</button>`,
+    'fa-triangle-exclamation');
 }
 /* Access-denied page — shown when the user reached something they may not
    view (e.g. a board they are not a member of). Styled like a 404 page. */
@@ -10001,7 +10149,16 @@ function vTable(el){
   const groups=groupsOf();
   // filters are active but nothing matches → show the "no match" hint. An empty
   // board still renders its groups + "add group" so the structure stays visible.
-  if((st.board.tasks||[]).length && !groups.reduce((n,g)=>n+g.tasks.length,0)){el.innerHTML=noMatchHTML();return;}
+  /* Four states that look alike on screen and are not. The order matters:
+     a view that cannot open is not "no results", and an empty board is not a
+     filter that matched nothing. Offering the wrong way out is worse than
+     offering none — it is a button that cannot fix what is being complained
+     about. */
+  const openV=(typeof Views!=='undefined')?Views.openView():null;
+  if(openV&&openV.blocked){ el.innerHTML=restrictedViewHTML(); return; }
+  if(openV&&(openV.needs_fix||[]).length){ el.innerHTML=brokenViewHTML(openV); return; }
+  if(!(st.board.tasks||[]).length){ el.innerHTML=emptyBoardHTML(); return; }
+  if(!groups.reduce((n,g)=>n+g.tasks.length,0)){ el.innerHTML=noMatchHTML(); return; }
   /* Only the first group is on screen when a board opens, and the expensive
      part of a row is the input fields in it — which stay editable in place, so
      they cannot be made cheap. What is left is to stop building the ones she

@@ -183,7 +183,11 @@ function world(){
   st.filters.q='אחר';
   w.toasts.length=0;
   await V.update();
-  ck('a view you own can be written over', /עודכנה/.test(w.toasts.join()), w.toasts);
+  /* The wording is the spec's, not ours: "לאחר הצלחת שמירה תוצג הודעה
+     ההגדרות נשמרו לכולם" — which is also the honest sentence, because that
+     is what the button did. */
+  ck('a view you own can be written over',
+     /ההגדרות נשמרו לכולם/.test(w.toasts.join()), w.toasts);
   ck('...and it stops being "changed" afterwards', V.dirty()===false);
 }
 {
