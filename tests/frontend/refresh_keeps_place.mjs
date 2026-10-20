@@ -63,17 +63,21 @@ function session(store){
   };
 }
 
-async function load({hash='', ls, envs=[PRIMARY,OTHER,THIRD], boards=BOARDS}){
+async function load({hash='', ls, envs=[PRIMARY,OTHER,THIRD], boards=BOARDS, renderFirst=false}){
   const opened=[]; const view={innerHTML:''};
   /* Every sidebar paint, and the workspace it was drawn for. The restore must
      not be performed in front of her: a paint for a workspace that is not
      where she ends up is one she can see and read. */
   const paints=[];
   const st={boards:boards.slice(), env:null, me:{id:1}, board:null};
-  const Env={items:[], renders:0,
-    async load(){ this.items=envs.slice();
+  /* `loads` counts the requests the entry actually issues. `loaded` is the real
+     Env's own flag — the stub stands in for the network, so it is the stub that
+     reports the answer arrived, exactly as the real load does on a 200. */
+  const Env={items:[], renders:0, loads:0, loaded:false, _inflight:null,
+    async load(){ this.loads++; this.items=envs.slice();
       const mine=st.env&&this.items.find(e=>e.id===st.env.id);
-      st.env = mine || this.items.find(e=>e.is_primary) || this.items[0] || null; },
+      st.env = mine || this.items.find(e=>e.is_primary) || this.items[0] || null;
+      this.loaded=true; },
     active(){ return st.env||this.items[0]||null; },
     render(){ this.renders++; },
     _set(){}, };
@@ -86,7 +90,9 @@ async function load({hash='', ls, envs=[PRIMARY,OTHER,THIRD], boards=BOARDS}){
     +grab('entryEmptyHTML')+grab('openDeepLink')+grab('enterApp')
     // the real one, bound onto the fake Env below
     +'\nconst _select = {'+grabMethod('  select(id){')+'}.select;'
-    +'; return {enterApp, rememberEnv, followBoardEnv, _select};')(
+    // the real ensure too — what it guarantees is what these cases are about
+    +'\nconst _ensure = {'+grabMethod('  ensure(){')+'}.ensure;'
+    +'; return {enterApp, rememberEnv, followBoardEnv, _select, _ensure};')(
     st, Env, async()=>{},
     {parse:()=>{ const m=hash.match(/board\/(\d+)(?:\/item\/(\d+))?/);
       return m?{boardId:+m[1],itemId:m[2]?+m[2]:null}:{boardId:null,itemId:null}; }, set(){}},
@@ -99,9 +105,14 @@ async function load({hash='', ls, envs=[PRIMARY,OTHER,THIRD], boards=BOARDS}){
     // leaving a workspace closes the open item's panel; these cases open none
     ()=>{});
   Env.select=made._select;                       // the page's own, not a stand-in
+  Env.ensure=made._ensure;
+  /* What the page does before enterApp: renderMe draws the sidebar's buttons
+     and updateNewBoardBtn asks, from inside that render, whether the
+     workspaces are known. Not awaited there and not awaited here. */
+  if(renderFirst) Env.ensure();
   await made.enterApp();
   return {board:opened[0]??null, env:st.env&&st.env.id, html:view.innerHTML,
-          paints, Env, st, made};
+          paints, loads:Env.loads, Env, st, made};
 }
 
 let pass=0,fail=0;
@@ -196,6 +207,28 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
   const ls=session({});
   const r=await load({ls});
   ck('a first-ever visit paints once as well', r.paints.length===1 && r.paints[0]===1, r.paints);
+}
+
+// ── and it is asked for once, not once per caller ──────────────────────────
+/* updateNewBoardBtn asks from inside a render — on the sidebar's first paint,
+   and again when wsMembers lands — and enterApp asks too. Both asked the same
+   question: /api/environments is filtered by user_id, which is known before
+   either call. So the entry issued the request twice and painted the switcher
+   twice, at two moments nobody chose.
+
+   One request, one paint, whoever asks first. */
+{
+  const ls=session({cc_board:'30', cc_env:'2'});
+  const r=await load({ls, renderFirst:true});
+  ck('a render and the entry asking together make one request', r.loads===1, r.loads);
+  ck('...and the entry still paints once, of where she was',
+     r.paints.length===1 && r.paints[0]===2, r.paints);
+}
+{
+  // nobody asked before the entry: it is still one request
+  const ls=session({cc_board:'30', cc_env:'2'});
+  const r=await load({ls});
+  ck('and the entry alone asks once', r.loads===1, r.loads);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

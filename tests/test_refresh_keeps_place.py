@@ -78,7 +78,11 @@ def test_the_restore_is_not_performed_in_front_of_her():
         "the boards paint the sidebar themselves again, before there is a workspace"
     assert body.count("renderSidebar()") == 1, \
         "the entry paints the sidebar more than once"
-    assert body.index("Env.load()") < body.index("renderSidebar()"), \
+    # Env.ensure, not Env.load: a render asks for the workspaces too, and the
+    # two callers share one request rather than issuing one each.
+    assert "Env.load()" not in body, \
+        "the entry loads the workspaces itself, past the one-request guarantee"
+    assert body.index("Env.ensure()") < body.index("renderSidebar()"), \
         "the sidebar is painted before the workspaces are known"
     # the workspace a link leads to is resolved before that paint, not by
     # openDeepLink afterwards

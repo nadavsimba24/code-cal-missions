@@ -2931,7 +2931,7 @@ async function enterApp(){
   if(savedEnv!=null) st.env={id:savedEnv};
   await Promise.all([
     loadBoards({render:false}),
-    (Env.items||[]).length?Promise.resolve():Env.load().catch(()=>{}),
+    Env.ensure(),                      // one request, even though a render asked too
   ]);
   /* A workspace she was removed from is not restored — Env.load has already
      fallen back to the primary one — and stops being remembered. Only on an
@@ -8179,10 +8179,41 @@ const ENV_COLORS=['#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#
 
 const Env = {
   items:[], open:false, membersFor:null, membersData:{members:[],available:[]},
+  // whether the list below is an answer or just the empty value it starts as —
+  // "no workspaces" and "not asked yet" are different things, and ensure()
+  // below is the one place that has to tell them apart
+  loaded:false, _inflight:null,
+  /* One load, however many renders ask for it.
+
+     updateNewBoardBtn asks for the workspaces from inside a render — it runs
+     when the sidebar is drawn, and again when wsMembers lands — and enterApp
+     asks for them too. So an ordinary entry issued /api/environments twice and
+     painted the switcher twice, at two moments nobody chose.
+
+     Both asked the same question. The request is filtered by user_id, which is
+     known before either call, and nothing in the answer depends on what the
+     second caller had just learned. So the first caller loads, every other one
+     joins that same promise, and once it has landed a render asks for nothing
+     at all.
+
+     A load that FAILED is not an answer: `loaded` stays false, and the next
+     render tries again rather than leaving the sidebar empty until something
+     else happens to reload it.
+
+     The explicit refreshes keep calling load() and still get a real reload —
+     a board moved between workspaces, a board restored from the bin, the admin
+     screen's own list. Those run because the data actually changed; this one
+     runs because something was drawn. */
+  ensure(){
+    if(this.loaded) return Promise.resolve();
+    if(!this._inflight) this._inflight=this.load().then(()=>{ this._inflight=null; },
+                                                         ()=>{ this._inflight=null; });
+    return this._inflight;
+  },
   async load(){
     // the API returns every environment for a system admin, or only the granted ones for others
-    if(meId()){ try{ const d=await api('/api/environments?user_id='+meId()); this.items=d.environments||[]; }catch(e){ this.items=[]; } }
-    else this.items=[];
+    if(meId()){ try{ const d=await api('/api/environments?user_id='+meId()); this.items=d.environments||[]; this.loaded=true; }catch(e){ this.items=[]; } }
+    else { this.items=[]; this.loaded=true; }   // signed out: an empty list IS the answer
     const mine=st.env && this.items.find(e=>e.id===st.env.id);
     // Re-point at the row just loaded, not merely "one with the same id is
     // still there". st.env held the object from the previous load, and the
@@ -9290,7 +9321,9 @@ function updateNewBoardBtn(){
           tb.style.display=(isSysAdmin()||(a&&a.can_manage))?'':'none'; }
   const nav=document.getElementById('nav-sysadmin');
   if(nav)nav.style.display=hasCap('manage_system')?'':'none';
-  Env.load();
+  // a render asks whether the workspaces are known, not for them to be fetched
+  // again — see Env.ensure
+  Env.ensure();
 }
 function renderMe(){
   const u=st.me; if(!u)return;

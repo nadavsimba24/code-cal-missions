@@ -21,6 +21,17 @@ function grab(name){
   for(let j=i;j<src.length;j++){ if(src[j]==='{')d++; else if(src[j]==='}'){d--; if(!d) return src.slice(m.index,j+1);} }
 }
 
+/* A method off the Env object literal, lifted out whole — the page's own, not
+   a stand-in that would only prove this file agrees with itself. */
+function grabMethod(header){
+  const i=src.indexOf(header);
+  if(i<0) throw new Error('not found: '+header);
+  let d=0;
+  for(let k=src.indexOf('{', i);k<src.length;k++){
+    if(src[k]==='{')d++; else if(src[k]==='}'){ d--; if(!d) return src.slice(i,k+1); } }
+  throw new Error('unbalanced: '+header);
+}
+
 const PRIMARY={id:1,name:'סביבה ראשית',is_primary:true};
 const OTHER={id:2,name:'בינוי'};
 
@@ -33,10 +44,14 @@ async function enter({hash='', saved=null, boards, envs=[PRIMARY,OTHER], loaded=
      board happened to set it on the way through. */
   const st={boards:boards.slice(), env:null, me:{id:1}};
   if(loaded) st.env=envs.find(e=>e.is_primary)||envs[0]||null;
-  const Env={items:loaded?envs.slice():[], renders:0,
-    async load(){ this.items=envs.slice(); if(!st.env) st.env=this.items.find(e=>e.is_primary)||this.items[0]||null; },
+  /* `loaded` is the real Env's own flag as well as this harness's option: the
+     stub stands in for the network, so it reports the answer arrived exactly
+     as the real load does on a 200, and ensure() below is the page's own. */
+  const Env={items:loaded?envs.slice():[], renders:0, loads:0, loaded, _inflight:null,
+    async load(){ this.loads++; this.items=envs.slice(); if(!st.env) st.env=this.items.find(e=>e.is_primary)||this.items[0]||null; this.loaded=true; },
     active(){ return st.env||this.items[0]||null; },
     render(){ this.renders++; }};
+  Env.ensure=new Function('return {'+grabMethod('  ensure(){')+'}.ensure')();
   /* openDeepLink is grabbed too, not stubbed: a link in the URL is answered by
      it alone now, and stubbing it would leave the thing these cases are about
      untested. Its own dependencies join the list below. */
@@ -121,9 +136,12 @@ const BOARDS=[{id:30,environment_id:2},{id:10,environment_id:1},{id:11,environme
      r.opened[0]===10 && r.env===PRIMARY, JSON.stringify(r.opened));
 }
 const enterSrc=grab('enterApp');
-ck('enterApp waits for Env.load before it chooses',
-   /await Promise\.all\(/.test(enterSrc) && /Env\.load\(\)/.test(enterSrc)
-   && enterSrc.indexOf('Env.load()') < enterSrc.indexOf("localStorage.getItem('cc_board')"));
+/* Env.ensure, not Env.load: a render asks for the workspaces too, and the two
+   callers are meant to share one request. See Env.ensure in index.html. */
+ck('enterApp waits for the workspaces before it chooses',
+   /await Promise\.all\(/.test(enterSrc) && /Env\.ensure\(\)/.test(enterSrc)
+   && !/Env\.load\(\)/.test(enterSrc)
+   && enterSrc.indexOf('Env.ensure()') < enterSrc.indexOf("localStorage.getItem('cc_board')"));
 /* The two requests are issued together — making the workspaces arrive before
    the boards must not have cost a round trip — and the sidebar is painted once,
    after both. See tests/frontend/refresh_keeps_place.mjs for what that paint is
@@ -131,7 +149,7 @@ ck('enterApp waits for Env.load before it chooses',
 ck('...and the boards travel with them, for one paint when both are in',
    /loadBoards\(\{render:false\}\)/.test(enterSrc)
    && (enterSrc.match(/renderSidebar\(\)/g)||[]).length===1
-   && enterSrc.indexOf('renderSidebar()') > enterSrc.indexOf('Env.load()'));
+   && enterSrc.indexOf('renderSidebar()') > enterSrc.indexOf('Env.ensure()'));
 ck('a workspace with nothing open still defaults to the primary one',
    /this\.items\.find\(e=>e\.is_primary\)/.test(src));
 
