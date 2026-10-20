@@ -2951,6 +2951,25 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         # and an item this person may not see is not an item this answers for
         if user_id is not None:
             rows = [t for t in rows if _item_perm(t, user_id, my_role) != "none"]
+
+        # "אם עדכון גורם לפריט להפסיק להתאים למסנן, הוא יוסתר לאחר השמירה
+        # ותוצג הודעה עם קישור לפריט."
+        #
+        # Somebody edits a cell and the row they were working on may no longer
+        # belong in the cut. Answering that from a PAGE of ids cannot be done:
+        # the page holds the first fifty matches, and an item absent from it
+        # has either stopped matching or simply sits further down. `ids_only`
+        # is no better past its cap, where the honest answer is "truncated".
+        #
+        # So the question can be asked about named items instead, and then it
+        # is exact whatever the board's size: these ids, which of them still
+        # match. Everything else about the request is unchanged — the same
+        # filter, the same toolbar, the same permissions — because the point
+        # is to ask the SAME question about one row.
+        only = data.get("only")
+        if isinstance(only, list):
+            want = {int(x) for x in only if str(x).lstrip("-").isdigit()}
+            rows = [t for t in rows if t.id in want]
         # The toolbar's own filters, applied alongside the tree.
         #
         # They have to be here, and the reason is not completeness. On a
@@ -3018,6 +3037,13 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         # everything behind it while it tries. Only the page is serialised —
         # the rows that did not make it onto it cost a comparison each and
         # nothing more.
+        if isinstance(only, list):
+            # the ids asked about that survive, and nothing else: a caller
+            # asking about one row must not be handed a page of others
+            out["item_ids"] = [t.id for t in hits]
+            out["asked"] = sorted(want)
+            return out
+
         if data.get("ids_only"):
             out["item_ids"] = [t.id for t in hits[:FILTER_CLIENT_MAX]]
             out["truncated"] = matched > FILTER_CLIENT_MAX
