@@ -4,17 +4,23 @@
    the start of the viewport — `.tbl td.c-item` is sticky, with a background of
    its own so the cells sliding beneath it do not show through.
 
-   That holds for a row that HAS such a cell. Two rows did not: "+ הוסף פריט"
-   and the sub-item panel's wrapper each spanned the whole table in one cell,
-   so nothing in them was pinned — the panel began 46px from the table's start,
-   inside the pinned column's strip, and slid sideways across it in full view
-   behind the item names. Covering the strip would have hidden the start of the
-   panel at rest too (and the sub-item NAMES are the first thing in it), so the
-   panel starts after the column instead and scrolls under it and out of sight.
+   "+ הוסף פריט" spanned the whole table in one cell and now has a cell in that
+   column, so the label stays where the item names are. It is a label and
+   nothing else, so pinning it moved nothing.
 
-   The invariant is the point, not the two rows: every row the board draws
-   begins with a cell in the pinned column. Driven by
-   tests/test_pinned_column.py. */
+   The sub-item wrapper was given one too and has had it taken back out. A
+   row's content begins after the cell before it, so a pinned cell as wide as
+   the פריט column pushed the whole panel out by that column's width — 280px by
+   default — and the sub-items sat a third of the way across the board. The
+   light 46px indent was asked for back.
+
+   Both cannot be had: 46px is INSIDE the pinned column's 280px, so the panel
+   either begins there and shows in that strip on a sideways scroll, or begins
+   after the column and is pushed out by it. What shows in the strip is this
+   panel in its own band of rows — never an item's name, because every item row
+   carries its own opaque pinned cell.
+
+   Driven by tests/test_pinned_column.py. */
 import fs from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
@@ -62,18 +68,18 @@ const pinned = first => /class="[^"]*\bc-item\b/.test(first) || /\bdata-fixed\b/
 {
   const all = rows(html);
   ck('the item row and its sub-item wrapper are both drawn', all.length === 2, all.length + ' rows');
-  all.forEach(r => ck('a row the board draws starts in the pinned column',
-                      pinned(r.first), r.row));
+  ck('the item row itself starts in the pinned column', pinned(all[0].first), all[0].row);
 }
 {
   const wrap = /<tr class="sub-wrap"[\s\S]*?<\/tr>/.exec(html)[0];
-  ck('the sub-item panel sits AFTER that cell, not inside the strip',
-     wrap.indexOf('c-item') < wrap.indexOf('sub-wrap-cell'), wrap);
-  ck('...and the row still spans the whole table, as it did',
-     /sub-wrap-cell" colspan="29"/.test(wrap), wrap);
-  ck('...with the panel itself untouched', wrap.includes('sub-panel'), wrap);
-  ck('the pinned cell of that row holds nothing — there is no item here',
-     /<td class="c-item sub-pin" aria-hidden="true"><\/td>/.test(wrap), wrap);
+  /* The one that is deliberately NOT pinned. A cell in that column here is as
+     wide as the פריט column and pushes the panel out by its whole width — the
+     280px of indent this row was changed back to get rid of. Pinned again by
+     someone reading only the rule above, the indent comes straight back. */
+  ck('the sub-item wrapper spans the table in one cell, as it always did',
+     !/c-item/.test(wrap) && /sub-wrap-cell" colspan="30"/.test(wrap), wrap);
+  ck('...so the panel keeps its light indent and is not pushed out by a column',
+     wrap.includes('sub-panel'), wrap);
 }
 
 // ── "+ הוסף פריט" ──────────────────────────────────────────────────────────
@@ -124,7 +130,7 @@ const pinned = first => /class="[^"]*\bc-item\b/.test(first) || /\bdata-fixed\b/
      /\.tbl td\.c-item\{background:var\(--surface\)\}/.test(src));
   ck('...in every state the row can be in',
      ['tr:hover td.c-item', 'tr.row-sel td.c-item', 'tr.chat-open td.c-item',
-      'tr.sub-wrap td.c-item', '.add-row td.c-item']
+      '.add-row td.c-item']
        .every(sel => src.includes(sel)),
      'a row state with no background on the pinned cell shows the board through it');
 }

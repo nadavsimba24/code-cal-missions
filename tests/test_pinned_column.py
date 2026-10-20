@@ -6,20 +6,27 @@ the start of the viewport so a row never becomes an anonymous line of values.
 every state the row can be in, so the cells sliding beneath it do not show
 through.
 
-Two rows had no such cell. "+ הוסף פריט" and the sub-item panel's wrapper each
-spanned the whole table in a single cell, so nothing in them was pinned: the
-panel began 46px from the table's start — inside the pinned column's strip —
-and slid sideways across it in plain view behind the item names, which is the
-one thing a pinned column must never show.
+"+ הוסף פריט" had no such cell — it spanned the whole table in one — and now
+has one: the label belongs where the item names are, and putting it there
+costs nothing, because the label is all that row holds.
 
-Covering the strip was the wrong fix: the cover would hide the start of the
-panel at rest as well, and the start of the panel is the sub-item names. So
-each of those rows gets the column's own cell, and the panel begins after it —
-the strip holds item names and nothing else, and the panel scrolls under it and
-out of sight.
+The sub-item wrapper got one too, and it has been taken back out. A row's
+content starts after whatever cell precedes it, so a pinned cell as wide as
+the פריט column pushed the whole sub-item panel out by that column's width —
+280px by default, more where an admin has widened it. The sub-items ended up
+indented a third of the way across the board, and that was asked to be undone.
 
-What is pinned here is the invariant rather than the two rows: every row the
-board draws begins with a cell in the pinned column.
+The two cannot both be had. The panel's nesting indent is 46px, which is
+INSIDE the pinned column's own 280px: it either begins there and is visible in
+that strip while the board is scrolled sideways, or begins after the column
+and is pushed out by its full width. The light indent is the one that was
+asked for, and what shows in the strip is the panel in its own band of rows —
+no item's name, since every item row has its own opaque pinned cell and goes
+on covering whatever slides beneath it.
+
+So the invariant here is NOT "every row begins in the pinned column". It is
+narrower and still worth holding: every row that has something of its own to
+show at the start edge keeps it pinned there.
 """
 import pathlib
 import re
@@ -32,25 +39,37 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
 
 
-def test_no_row_in_the_board_table_spans_the_pinned_column():
-    """The source side of the invariant: a row written as one full-width cell
-    is a row with nothing pinned, and that is how this bug was introduced
-    twice. `totalCols()+1` is the whole colgroup — in a row that starts in the
-    pinned column it has to be one less."""
-    for row in re.findall(r"<tr class=\"(?:add-row|sub-wrap)\"[^>]*>\s*<td[^>]*>", SRC):
-        assert "c-item" in row, row
-    assert 'colspan="${totalCols()+1}"' not in SRC, \
-        "a row spans the whole table again, which leaves the pinned column empty in it"
+def test_the_add_item_row_keeps_its_cell_in_the_pinned_column():
+    """"+ הוסף פריט" is a label and nothing else, so pinning it costs no
+    layout: it stays where the item names are instead of sliding out of the
+    board with the rest of the row."""
+    row = re.search(r"<tr class=\"add-row\"[^>]*>\s*<td[^>]*>", SRC)
+    assert row and "c-item" in row.group(0), row and row.group(0)
 
 
-def test_the_panel_is_indented_from_the_column_and_not_over_it():
-    """46px of nesting indent, measured from where the pinned column ends — the
-    panel used to be indented from the table's start, which put most of it
-    inside the strip."""
+def test_the_sub_item_wrapper_spans_the_table_and_is_meant_to():
+    """Deliberately NOT pinned, and reverted to deliberately — see the module
+    docstring. A pinned cell here is as wide as the פריט column and pushes the
+    whole panel out by it, which is the 280px of indent this row got rid of.
+
+    Pinned again by someone reading only the rule above, the indent comes
+    straight back; that is what this case is here to stop."""
+    row = re.search(r"<tr class=\"sub-wrap\"[^>]*>\s*<td[^>]*>", SRC)
+    assert row, "the sub-item wrapper moved"
+    assert "c-item" not in row.group(0), \
+        "the sub-item panel is pinned again, which indents it by the item column's width"
+    assert 'colspan="${totalCols()+1}"' in SRC, \
+        "the wrapper no longer spans the whole table"
+
+
+def test_the_panel_keeps_its_light_nesting_indent():
+    """46px from the table's start, which is what it has always been and what
+    was asked for back. Read as the number, so a change to it is a change this
+    case notices."""
     m = re.search(r"\.sub-panel\{([^}]*)\}", SRC)
     assert m, ".sub-panel moved"
     assert "margin-inline-start:46px" in m.group(1), m.group(1)
-    assert "sub-wrap-cell" in SRC and 'colspan="${totalCols()}"' in SRC
+    assert "sub-wrap-cell" in SRC
 
 
 def test_the_pinned_column_reaches_the_edge_the_board_is_cut_off_at():

@@ -863,9 +863,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    .c-item brings the pinning and the background; the group's colour bar is not
    wanted on a row that is not an item. */
 .tbl .add-row td.c-item{padding:8px 12px;font-weight:500;border-inline-start-color:transparent}
-/* the sub-item panel's own cell in that column: empty, and never tinted by the
-   hover of the panel beside it — there is no item here to point at */
-.tbl tr.sub-wrap td.c-item,.tbl tr.sub-wrap:hover td.c-item{background:var(--bg);border-inline-start-color:transparent}
 /* sub-items (תת-פריטים) */
 .tbl .c-item .ci-flex{display:flex;align-items:center;gap:5px;min-height:28px}
 .row-grip{color:var(--text-light);font-size:12px;cursor:grab;opacity:0;transition:.12s;margin-inline-end:-3px}
@@ -9997,19 +9994,27 @@ function itemRow(t,col){
      panel up by data-parent has to care; toggleSubs fills it the first time it
      is opened. A row that IS open renders eagerly, which keeps a re-render
      (sorting, a status change) showing what was open before it. */
-  /* The pinned column's own cell, empty, in front of the panel.
+  /* This row spans the whole table in one cell, and so has no cell in the
+     pinned column — deliberately, and reverted TO deliberately.
 
-     A row that spanned the whole table had no cell in the pinned column, so
-     nothing in it was pinned: the sub-item panel began 46px from the table's
-     start — inside the pinned column's strip — and slid sideways across it in
-     plain view behind the item names, which is not something a pinned column
-     is ever supposed to show. Covering the strip with something opaque would
-     hide the start of the panel at rest too, so the panel starts after the
-     column instead: the strip then holds item names and nothing else, and the
-     panel scrolls under it and out of sight. */
+     It did get one for a while, to stop the panel sliding sideways through the
+     strip the pinned column occupies. It worked, and it cost 280px of indent:
+     the panel starts after whatever cell comes before it, so a pinned cell as
+     wide as the פריט column pushed the whole panel out by that column's width
+     (280px by default, and whatever an admin has resized it to otherwise).
+     The sub-items ended up indented a third of the way across the board.
+
+     The two cannot both be had. The panel is indented 46px — inside the
+     pinned column's own 280px — so it either starts there and is visible in
+     that strip while the board is scrolled, or starts after the column and is
+     pushed out by it. Asked for directly, the light indent wins: what shows in
+     the strip is this panel in its own band of rows, not any item's name —
+     every item row has its own opaque pinned cell and goes on covering what
+     slides under it.
+
+     So: one cell, spanning, and the 46px indent that was always there. */
   const wrap=`<tr class="sub-wrap" data-parent="${t.id}" style="display:${open?'table-row':'none'}">
-      <td class="c-item sub-pin" aria-hidden="true"></td>
-      <td class="sub-wrap-cell" colspan="${totalCols()}">${open?subPanelHTML(t,subs,col):''}</td></tr>`;
+      <td class="sub-wrap-cell" colspan="${totalCols()+1}">${open?subPanelHTML(t,subs,col):''}</td></tr>`;
   return parent+wrap;
 }
 /* One parent's sub-items as an independent, indented panel: a narrower table
