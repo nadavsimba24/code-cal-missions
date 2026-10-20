@@ -192,3 +192,128 @@ def test_a_hidden_sub_item_is_not_listed_under_a_parent_that_matched(client, adm
                 headers=_h(admin_id))
     row = _row(_query(client, bid, guinea_id, filter=_on("סימן")), "הורה סימן")
     assert row is not None and row["subtasks"] == []
+
+
+# ── a sub-item whose parent is not this reader's to see ────────────────────
+@pytest.fixture
+def behind_a_closed_parent(client, admin_id, guinea_id):
+    """The permission model allows it: a sub-item carries its own overrides,
+    so somebody can be let into a line of a work plan without being let into
+    the plan."""
+    bid = _board(client, admin_id, invite=[guinea_id])
+    parent = _item(client, bid, admin_id, "תוכנית חסויה")
+    kid = _item(client, bid, admin_id, "שורה סימן", parent=parent)
+    other = _item(client, bid, admin_id, "שורה רגילה", parent=parent)
+    r = client.post(f"/api/tasks/{parent}/permissions",
+                    json={"actor_id": admin_id, "user_id": guinea_id, "perm": "none"},
+                    headers=_h(admin_id))
+    assert r.status_code == 200, r.text
+    return {"bid": bid, "parent": parent, "kid": kid, "other": other,
+            "owner": admin_id, "reader": guinea_id}
+
+
+def test_the_match_is_not_lost_with_the_parent(client, behind_a_closed_parent):
+    """Dropping the parent used to drop the sub-item with it — the row hangs
+    under its parent — so a match this person is entitled to simply vanished."""
+    b = behind_a_closed_parent
+    r = _query(client, b["bid"], b["reader"], filter=_on("סימן"))
+    rows = [i for i in r["items"] if i["id"] == b["parent"]]
+    assert rows, "a sub-item they may read disappeared with its parent"
+    assert [s["title"] for s in rows[0]["subtasks"]] == ["שורה סימן"]
+
+
+def test_the_wrapper_discloses_nothing_about_the_parent(client, behind_a_closed_parent):
+    """"ולא לחשוף את פרטי האב." The title above all — it is usually the whole
+    of what a row discloses."""
+    b = behind_a_closed_parent
+    r = _query(client, b["bid"], b["reader"], filter=_on("סימן"))
+    shell = next(i for i in r["items"] if i["id"] == b["parent"])
+    assert shell["title"] == ""
+    assert shell["status"] is None and shell["priority"] is None
+    assert shell["custom_fields"] == {} and shell["assignees"] == []
+    assert shell["due_date"] is None and shell["created_by"] is None
+    blob = str(shell)
+    assert "תוכנית חסויה" not in blob
+    assert "שורה רגילה" not in blob, "a sub-item they cannot read came along"
+
+
+def test_the_wrapper_says_what_it_is(client, behind_a_closed_parent):
+    """Two different facts for the screen: "did not match" and "nothing here
+    to show you" are drawn differently."""
+    b = behind_a_closed_parent
+    r = _query(client, b["bid"], b["reader"], filter=_on("סימן"))
+    shell = next(i for i in r["items"] if i["id"] == b["parent"])
+    assert shell["context_only"] is True and shell["restricted"] is True
+
+
+def test_the_owner_sees_the_real_row_instead(client, behind_a_closed_parent):
+    b = behind_a_closed_parent
+    r = _query(client, b["bid"], b["owner"], filter=_on("סימן"))
+    row = next(i for i in r["items"] if i["id"] == b["parent"])
+    assert row["title"] == "תוכנית חסויה"
+    assert row["restricted"] is False and row["context_only"] is True
+
+
+def test_a_closed_parent_with_no_matching_child_stays_closed(client, behind_a_closed_parent):
+    """The wrapper exists to carry matches. With none, there is nothing to
+    carry and nothing to say."""
+    b = behind_a_closed_parent
+    r = _query(client, b["bid"], b["reader"], filter=_on("לא-קיים"))
+    assert [i for i in r["items"] if i["id"] == b["parent"]] == []
+
+
+# ── conditions are asked of the row itself ─────────────────────────────────
+def test_a_sub_item_does_not_inherit_its_parents_values(client, admin_id):
+    """"אין ירושה אוטומטית של ערך מהאב." A sub-item with nothing in the field
+    does not answer for what its parent has in it."""
+    bid = _board(client, admin_id)
+    parent = _item(client, bid, admin_id, "הורה", priority="high")
+    _item(client, bid, admin_id, "ילד", parent=parent)
+
+    r = _query(client, bid, admin_id,
+               filter={"op": "and", "rules": [{"field": "priority", "op": "eq", "v": "high"}]})
+    row = next((i for i in r["items"] if i["id"] == parent), None)
+    assert row is not None and row["context_only"] is False
+    assert row["subtasks"] == [], "the child answered with its parent's priority"
+
+
+def test_an_empty_value_means_on_a_sub_item_what_it_means_anywhere(client, admin_id):
+    """"משמעות ערך ריק ואופרטורים מולו תישאר לפי מנגנון הסינון הקיים" — so
+    the same operator, unchanged, decides it."""
+    bid = _board(client, admin_id)
+    parent = _item(client, bid, admin_id, "הורה", due_date="2026-03-03")
+    _item(client, bid, admin_id, "ילד בלי תאריך", parent=parent)
+
+    empty = _query(client, bid, admin_id,
+                   filter={"op": "and", "rules": [{"field": "due", "op": "empty"}]})
+    row = next((i for i in empty["items"] if i["id"] == parent), None)
+    assert row is not None, "the child with no date did not bring its parent as context"
+    assert [s["title"] for s in row["subtasks"]] == ["ילד בלי תאריך"]
+    assert row["context_only"] is True, "the parent HAS a date and should not have matched"
+
+
+def test_a_column_is_matched_by_id_and_not_by_its_title(client, admin_id):
+    """"אין להתאים עמודות רק לפי שם תצוגה." Two columns can wear one title;
+    a filter naming one of them must not answer for the other."""
+    bid = _board(client, admin_id)
+    r = client.patch(f"/api/boards/{bid}",
+                     json={"user_id": admin_id,
+                           "columns": [{"type": "text", "title": "הערה"},
+                                       {"type": "text", "title": "הערה"}]},
+                     headers=_h(admin_id))
+    assert r.status_code == 200, r.text
+    first, second = [c["id"] for c in r.json()["columns"]][:2]
+    assert first != second
+
+    tid = _item(client, bid, admin_id, "פריט")
+    client.patch(f"/api/tasks/{tid}",
+                 json={"user_id": admin_id, "custom_fields": {first: "סימן"}},
+                 headers=_h(admin_id))
+
+    hit = _query(client, bid, admin_id,
+                 filter={"op": "and", "rules": [{"field": first, "op": "has", "v": "סימן"}]})
+    miss = _query(client, bid, admin_id,
+                  filter={"op": "and", "rules": [{"field": second, "op": "has", "v": "סימן"}]})
+    assert any(i["id"] == tid for i in hit["items"])
+    assert not any(i["id"] == tid for i in miss["items"]), \
+        "the other column with the same title answered"

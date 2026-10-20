@@ -1938,6 +1938,39 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         d["subtasks"] = [_serialize_task(s, db, with_subs=False, user_id=user_id, board_role=board_role, columns=columns) for s in subs]
     return d
 
+def _context_shell(parent, kids, db, user_id=None, board_role=None, columns=None):
+    """A parent this reader may not see, holding sub-items they may.
+
+    Everything readable about the parent is left out on purpose — the title
+    above all, which is usually the whole of what a row discloses. What remains
+    is an id to hang the children on and the two flags that say what this row
+    is, so the screen can draw a neutral wrapper instead of a work item.
+
+    The children are serialised normally: they are theirs to read, and nothing
+    about them implies anything about the parent beyond its existence, which
+    the sub-item's own parent_id already states.
+    """
+    return {
+        "id": parent.id, "board_id": parent.board_id, "group_id": parent.group_id,
+        "parent_id": None,
+        "title": "", "description": None,
+        "status": None, "priority": None,
+        "due_date": None, "start_date": None,
+        "assignees": [], "custom_fields": {}, "permissions": {},
+        "my_perm": "none", "is_archived": False,
+        "created_by": None, "created_at": None, "updated_at": None,
+        "item_uid": None, "comment_count": 0,
+        "subtask_count": len(kids),
+        "subtasks": [_serialize_task(k, db, with_subs=False, user_id=user_id,
+                                     board_role=board_role, columns=columns)
+                     for k in kids],
+        # not a row that failed the filter, and not a row with values withheld:
+        # a row that is only here to hold the ones below it
+        "context_only": True,
+        "restricted": True,
+    }
+
+
 def _json_default(o):
     """What json.dumps cannot do by itself, done the way FastAPI would.
 
@@ -3049,7 +3082,28 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         hits = [t for t in rows if t.id in own or t.id in kids_hit]
         # present only to say where the children are — see the rules above
         context_only = {t.id for t in hits if t.id not in own}
-        matched = len(hits)
+
+        # ── a matching sub-item whose PARENT is not this person's to see ──
+        # The permission model allows it: a sub-item carries its own overrides,
+        # so somebody can be let into a line of a work plan without being let
+        # into the plan. Dropping the parent used to drop the sub-item with
+        # it — the row hangs under its parent — so a match they are entitled
+        # to simply vanished.
+        #
+        # Instead the parent comes back as a neutral wrapper: a place to hang
+        # the children, carrying no title, no values, no people, no dates.
+        # "ולא לחשוף את פרטי האב" is the whole of its content. It is marked
+        # both as context and as restricted, because the two mean different
+        # things to the screen — one is "this row did not match", the other is
+        # "there is nothing here to show you".
+        seen_parents = {t.id for t in rows}
+        shell_ids = [pid for pid in kids_hit if pid not in seen_parents]
+        shells = []
+        if shell_ids:
+            shells = (db.query(Task)
+                        .filter(Task.id.in_(shell_ids), Task.board_id == board_id)
+                        .order_by(Task.position, Task.id).all())
+        matched = len(hits) + len(shells)
 
         # ── then sort, over everything that matched ──────────────────────
         # "סינון ומיון חלים על כלל נתוני הלוח המורשים, גם בטעינה מדורגת."
@@ -3132,7 +3186,10 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             offset = max(0, int(data.get("offset") or 0))
         except (TypeError, ValueError):
             offset = 0
-        page = hits[offset:offset + limit]
+        # The wrappers sit at the end of the board's own order, which is where
+        # a row with nothing to read belongs: it is scaffolding, not a result.
+        ordered = hits + shells
+        page = ordered[offset:offset + limit]
         _subs = _prefetch_items(db, page)
         # _prefetch_items has just filled _kids_by with EVERY child of every
         # row on the page. Narrow it to the ones that matched, which is what
@@ -3142,10 +3199,17 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         _subs = [s for t in page for s in kids_hit.get(t.id, [])]
         _prefetch_links(db, list(page) + _subs, (b.settings or {}).get("columns", []), user_id)
         cols = (b.settings or {}).get("columns", [])
-        out["items"] = [dict(_serialize_task(t, db, user_id=user_id, board_role=my_role,
-                                             columns=cols),
-                             context_only=(t.id in context_only))
-                        for t in page]
+        shell_set = {t.id for t in shells}
+
+        def _row_json(t):
+            if t.id in shell_set:
+                return _context_shell(t, kids_hit.get(t.id, []), db,
+                                      user_id=user_id, board_role=my_role, columns=cols)
+            return dict(_serialize_task(t, db, user_id=user_id, board_role=my_role,
+                                        columns=cols),
+                        context_only=(t.id in context_only), restricted=False)
+
+        out["items"] = [_row_json(t) for t in page]
         out["item_ids"] = [t.id for t in page]
         out["offset"] = offset
         out["limit"] = limit
