@@ -125,14 +125,35 @@ def test_a_name_freed_by_deleting_a_view_can_be_used_again(client, admin_id):
     assert _mk(client, bid, admin_id, "דחופים").status_code == 200
 
 
-def test_restoring_onto_a_name_that_was_taken_meanwhile_is_refused(client, admin_id):
-    """The other side of that: the bin cannot be a way around the rule."""
+def test_restoring_onto_a_name_taken_meanwhile_gets_a_suffix(client, admin_id):
+    """"בשחזור עם שם תפוס תתווסף סיומת ייחודית."
+
+    The bin is not a way around the uniqueness rule — but a restore is not
+    refused over it either. Somebody asking for their view back gets their
+    view back, under a name of its own.
+
+    Renamed here and refused in _check_view_name, and the difference is who
+    chose the name: silently renaming what a person just typed would be a lie,
+    while a view returning from the bin has nobody standing over it."""
     bid = _board(client, admin_id)
     vid = _mk(client, bid, admin_id, "דחופים").json()["id"]
     client.delete(f"/api/views/{vid}", headers=_h(admin_id))
     assert _mk(client, bid, admin_id, "דחופים").status_code == 200
+
     r = client.post(f"/api/views/{vid}/restore", json={"user_id": admin_id}, headers=_h(admin_id))
-    assert r.status_code == 400, "two tabs called דחופים are now on the strip"
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "דחופים — משוחזרת"
+    names = sorted(v["name"] for v in _list(client, bid, admin_id))
+    assert names == ["דחופים", "דחופים — משוחזרת"], names
+
+
+def test_a_restore_onto_a_free_name_keeps_the_name_it_had(client, admin_id):
+    """The suffix is for a collision, not for every restore."""
+    bid = _board(client, admin_id)
+    vid = _mk(client, bid, admin_id, "דחופים").json()["id"]
+    client.delete(f"/api/views/{vid}", headers=_h(admin_id))
+    r = client.post(f"/api/views/{vid}/restore", json={"user_id": admin_id}, headers=_h(admin_id))
+    assert r.json()["name"] == "דחופים"
 
 
 # ── the length ceiling ─────────────────────────────────────────────────────

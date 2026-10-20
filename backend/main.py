@@ -2044,6 +2044,10 @@ VIEW_MAX = max(2, int(os.environ.get("VIEW_MAX_PER_BOARD", "100") or 100))
 # occupies a name on the strip, and a saved view answering to the same name
 # would make the strip ambiguous in the one place a reader cannot afford it.
 MAIN_VIEW_NAME = (os.environ.get("MAIN_VIEW_NAME") or "טבלה ראשית").strip()
+# How long a deleted view can still be brought back. After it, the row stays
+# where it is — this is a window on RESTORING, not a promise to erase — but the
+# board log stops offering it, because an offer that fails is worse than none.
+VIEW_RESTORE_DAYS = max(1, int(os.environ.get("VIEW_RESTORE_DAYS", "30") or 30))
 
 
 def _view_name_key(name):
@@ -2217,6 +2221,37 @@ def _view_cut_allowed(b, filters, user_id, role):
     return not any(str(f) in unseen for f in gone)
 
 
+def _view_needs_fix(b, v):
+    """Does this cut ask about a column that no longer exists on the board?
+
+    "אם עמודה נדרשת נמחקה, התצוגה תשוחזר במצב הדורש תיקון ולא תציג תוצאות
+    חלקיות מטעות."
+
+    The misleading part is specific, not vague. Dropping the dead rule and
+    running the rest is identical to the author's intent inside an "and" group
+    and its exact opposite inside an "or": a rule that is gone cannot make the
+    group true, so one deleted column shows the WHOLE board — filter on, badge
+    counting, nothing filtered. A reader has no way to tell that from a cut
+    that genuinely matches everything.
+
+    So the view says it needs fixing, and whoever can edit it decides what the
+    rule should have been. Unlike a column somebody may not SEE, this is not a
+    secret: the column is gone for everyone, so the state is reported to
+    everyone and the name of the missing field may be shown.
+    """
+    adv = (v.filters or {}).get("adv")
+    if not adv:
+        return []
+    base = {"title": "text", "status": "status", "priority": "status",
+            "assignees": "people", "due": "date"}
+    known, _f = _filter_columns(b, None, None, dict(base), dict(base))
+    try:
+        _tree, gone = filter_ast.prune(filter_ast.parse(adv), known)
+    except filter_ast.BadFilter:
+        return []
+    return sorted({str(f) for f in gone})
+
+
 def _redact_view_cols(filters, unseen):
     """The view's table layout, minus the columns this reader may not see.
 
@@ -2361,8 +2396,11 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
             # message is deliberately general: naming the column, or showing
             # the condition, is the disclosure the block exists to prevent.
             if _view_blocked_for(_b, v, user_id, role):
-                return dict(vj, filters={}, blocked=True)
-            return dict(vj, filters=_redact_view_cols(vj["filters"], unseen), blocked=False)
+                return dict(vj, filters={}, blocked=True, needs_fix=[])
+            # A column the cut names and the board no longer has. Reported to
+            # everyone, unlike `blocked`: the column is gone for all of them.
+            return dict(vj, filters=_redact_view_cols(vj["filters"], unseen),
+                        blocked=False, needs_fix=_view_needs_fix(_b, v))
         return {"views": [dict(one(v),
                                # may write to it — the rights, and the lock,
                                # which only the board's owner writes through
@@ -2469,6 +2507,21 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         return dict(_view_json(v), can_edit=True)
 
 
+def _within_restore_window(v):
+    """Is this deleted view still inside the window it can be brought back in?
+
+    The row is not erased when the window closes — nothing here deletes data on
+    a timer — but the log stops offering the restore, because an offer that
+    fails when pressed is worse than no offer at all.
+    """
+    if v.deleted_at is None:
+        return True
+    gone = v.deleted_at
+    if gone.tzinfo is None:                 # SQLite hands back naive datetimes
+        gone = gone.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - gone) <= timedelta(days=VIEW_RESTORE_DAYS)
+
+
 def _view_or_404(db, view_id, user_id, *, live=True):
     """The view, the board role, and whether this person may manage it."""
     q = db.query(SavedView).filter(SavedView.id == view_id)
@@ -2500,6 +2553,13 @@ def delete_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
             raise HTTPException(403, "התצוגה נעולה — רק בעל הלוח יכול למחוק אותה")
         v.deleted_at = datetime.now(timezone.utc)
         v.deleted_by = user_id
+        # Into the board's log, because that is where the restore is offered
+        # from — "בעל הלוח יוכל לשחזר דרך לוג הלוח". The view's name is the
+        # whole of the record: it is what the person reading the log is looking
+        # for, and the cut itself is still on the row if it comes back.
+        db.add(AuditLog(entity_type="saved_view", entity_id=v.id, action="delete",
+                        field_name="name", old_value=v.name, new_value=None,
+                        changed_by=user_id))
         db.commit()
         return {"status": "deleted", "id": v.id}
 
@@ -2513,7 +2573,8 @@ def list_deleted_views(board_id: int, user_id: int = Depends(current_user_id)):
                   .filter(SavedView.board_id == board_id,
                           SavedView.deleted_at.isnot(None))
                   .order_by(SavedView.deleted_at.desc(), SavedView.id.desc()).all())
-        rows = [v for v in rows if _view_visible_to(v, user_id, role)]
+        rows = [v for v in rows if _view_visible_to(v, user_id, role)
+                and _within_restore_window(v)]
         names = {}
         if rows:
             ids = {v.owner_id for v in rows} | {v.deleted_by for v in rows if v.deleted_by}
@@ -2537,22 +2598,38 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         # already agreed to be rid of. The board owner's.
         if not _may_write_locked(role):
             raise HTTPException(403, "רק בעל הלוח יכול לשחזר תצוגה שנמחקה")
+        if not _within_restore_window(v):
+            raise HTTPException(400,
+                                f"חלון השחזור הוא {VIEW_RESTORE_DAYS} יום ממועד המחיקה, והוא חלף")
         # Putting a tab back on the strip is subject to what the strip allows
-        # now, not to what it allowed when the tab left it: the name may have
-        # been taken since, and the board may have filled up. Otherwise the bin
-        # is a way around both — two tabs answering to one name is precisely
-        # the failure the name rule exists to prevent.
-        _check_view_name(db, v.board_id, v.name, exclude_id=v.id)
+        # NOW, not to what it allowed when the tab left it. The board may have
+        # filled up since — that is a refusal, because there is nowhere to put
+        # it — while a name taken since is not: "בשחזור עם שם תפוס תתווסף
+        # סיומת ייחודית", so the view comes back under a name of its own
+        # rather than not at all.
         _check_view_room(db, v.board_id)
+        v.name = _free_name(db, v.board_id, v.name, " — משוחזרת", exclude_id=v.id)
+        # "ההצמדה לא תשוחזר אוטומטית, כדי לא לשנות את סדר הניווט הקיים."
+        # A pin puts the tab first for everybody; people have arranged
+        # themselves around the strip as it is since. Coming back is the view's
+        # to ask for, the front of the strip is not — the board owner can pin
+        # it again in one click if that is still what they want.
+        v.pinned = False
         v.deleted_at = None
         v.deleted_by = None
         v.updated_at = datetime.now(timezone.utc)
+        db.add(AuditLog(entity_type="saved_view", entity_id=v.id, action="restore",
+                        field_name="name", old_value=None, new_value=v.name,
+                        changed_by=user_id))
         db.commit()
         db.refresh(v)
+        b = db.query(Board).filter(Board.id == v.board_id).first()
         return dict(_view_json(v),
-                    can_edit=may and (not v.locked
-                                      or _may_write_locked(role)),
-                    can_manage=may)
+                    can_edit=may and (not v.locked or _may_write_locked(role)),
+                    can_manage=may,
+                    # restored, and possibly into a board that has changed
+                    # under it — see _view_needs_fix
+                    needs_fix=_view_needs_fix(b, v))
 
 
 @app.post("/api/views/{view_id}/duplicate")
@@ -2592,6 +2669,35 @@ def duplicate_saved_view(view_id: int, data: dict = None,
         db.commit()
         db.refresh(c)
         return dict(_view_json(c), can_edit=True, can_manage=True, is_owner=True)
+
+
+def _free_name(db, board_id, name, suffix, exclude_id=None):
+    """`name` if it is free, else the same with a distinguishing suffix.
+
+    Used where a name MUST come out usable rather than refused: restoring a
+    view, and suggesting one for a copy. Where somebody typed the name, it is
+    refused instead — see _check_view_name — because silently renaming what a
+    person wrote is its own small lie.
+    """
+    q = db.query(SavedView.name).filter(SavedView.board_id == board_id,
+                                        SavedView.deleted_at.is_(None))
+    if exclude_id is not None:
+        q = q.filter(SavedView.id != exclude_id)
+    taken = {_view_name_key(n) for (n,) in q.all()}
+    taken.add(_view_name_key(MAIN_VIEW_NAME))
+
+    def fit(tail):
+        room = VIEW_NAME_MAX - len(tail)
+        return ((name or "")[:room].strip() + tail) if room > 0 else tail.strip()
+
+    if _view_name_key(name) not in taken and len(name or "") <= VIEW_NAME_MAX:
+        return name
+    n = 1
+    while True:
+        cand = fit(suffix if n == 1 else f"{suffix} {n}")
+        if _view_name_key(cand) not in taken:
+            return cand
+        n += 1
 
 
 def _copy_name(db, v):
@@ -2735,6 +2841,17 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         dropped = [f for f in gone if f not in known]
         if denied and FILTER_COLUMN_POLICY == "block":
             raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
+        # A SAVED view naming a column the board no longer has does not run at
+        # all — "לא תציג תוצאות חלקיות מטעות". Dropping the dead rule and
+        # answering anyway is the misleading part: inside an "or" group it
+        # shows the whole board with the filter apparently on.
+        #
+        # Only when the request says which view it came from. A filter somebody
+        # is building by hand cannot name a column that is not on the board —
+        # the picker offers what exists — so this is about a cut that was saved
+        # while the column was still there.
+        if dropped and data.get("view_id"):
+            raise HTTPException(409, "התצוגה מסננת לפי עמודה שנמחקה מהלוח — יש לתקן אותה")
 
         # Ordered, and not by chance: pages are cut out of this list, and a
         # list whose order is whatever the database felt like means page two

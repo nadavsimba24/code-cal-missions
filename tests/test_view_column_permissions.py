@@ -244,12 +244,15 @@ def test_a_lock_does_not_stop_a_temporary_filter(client, board):
     vid = _mk(client, bid, owner, "נעולה").json()["id"]
     client.patch(f"/api/views/{vid}", json={"user_id": owner, "locked": True}, headers=_h(owner))
 
+    # `filter`, which is the key the endpoint reads; `adv` is the name the
+    # saved view stores it under and sends nothing at all here
     r = client.post(f"/api/boards/{bid}/items/query",
-                    json={"user_id": blind, "adv": {"op": "and", "rules": [
+                    json={"user_id": blind, "filter": {"op": "and", "rules": [
                         {"field": "status", "op": "ne", "v": "done"}]},
                         "today": "2026-10-20", "tz_offset": 180},
                     headers=_h(blind))
     assert r.status_code == 200, r.text
+    assert r.json()["conditions"] == 1, "the temporary filter never reached the server"
 
 
 # ── creating, copying, and the escape hatch from a locked view ─────────────
