@@ -69,8 +69,14 @@ def test_the_height_estimate_does_not_claim_a_width_as_well():
 
 
 def test_the_group_name_stays_pinned_while_the_columns_slide():
-    """What the sideways scroll is for: the frozen name and first column."""
-    assert re.search(r"\n\.gh-in\{[^}]*position:sticky[^}]*inset-inline-start:0", SRC), (
+    """What the sideways scroll is for: the frozen name and first column.
+
+    Both come to rest against the edge the board is CLIPPED at rather than the
+    one its content box ends at — they are pulled out by #view's own inline
+    padding, which is the strip the columns behind them used to peek through.
+    See tests/test_pinned_column.py."""
+    assert re.search(r"\n\.gh-in\{[^}]*position:sticky[^}]*"
+                     r"inset-inline-start:calc\(-1 \* var\(--view-pad", SRC), (
         "the group name no longer sticks")
     assert "#view.scrolled-x" in SRC, (
         "the frozen-column shadow is driven by horizontal scroll on #view")

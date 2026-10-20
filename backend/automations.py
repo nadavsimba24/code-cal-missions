@@ -9,6 +9,8 @@ admin fills in. A stored Automation keeps only `recipe_id` + the filled values,
 so a recipe's wording can be improved later without rewriting saved rules.
 """
 
+import filter_ast          # pure, like this module: no app imports, no database
+
 # ── field types the UI knows how to render ──────────────────────────
 # status/priority → the board's own vocabulary; person → a board member;
 # group → a group on the board; text → free text.
@@ -32,6 +34,46 @@ FIELD_TYPES = ("status", "priority", "person", "group", "text",
 CONDITION_KEY = "conditions"
 MAX_CONDITIONS = 3
 
+# ── a condition about one of the board's own columns ────────────────────────
+# The conditions below ask about the handful of things every board has: the
+# status, the priority, the people on the item, its group, its due date. Most
+# of what a board actually MEANS lives in its own columns — "רק אם התקציב מעל
+# X", "רק אם סוג הפנייה הוא Y" — and none of that could be asked about at all.
+#
+# A column condition is three answers, because asking about a column takes
+# three: which column, what kind of column it is, and the value. So the stored
+# value is {"col": <column id>, "type": <the column's own type>, "value": …}
+# rather than a scalar like every other condition's.
+#
+# The column's TYPE is kept with it rather than looked up when the rule runs,
+# for the case where it cannot be looked up: a column that was deleted, or
+# changed type. A rule that cannot run has to stay legible enough to fix, and
+# "העמודה «תקציב» היא «1000»" over a missing column says what to do where a
+# bare column id does not.
+#
+# filter_ast owns the table of which column types can be asked about and how —
+# the advanced filter asks the same question of the same columns, and a second
+# copy of that table here is how the two would come to disagree.
+COLUMN_CONDITIONS = ("column_is", "column_is_not")
+# Columns whose cell holds several values at once. "is" on one of these means
+# "is among them", so two of them on one column are not a contradiction.
+MULTI_COLUMN_TYPES = ("dropdown", "people", "files")
+
+
+def column_kind(col_type):
+    """How a column of this type can be asked about — None if it cannot be.
+    connect, mirror and the like have no value to compare yet."""
+    return filter_ast.KINDS.get(str(col_type or ""))
+
+
+def column_types():
+    """Every column type a condition can be written against, grouped by the
+    kind that decides what its value looks like."""
+    out = {}
+    for t, kind in filter_ast.KINDS.items():
+        out.setdefault(kind, []).append(t)
+    return out
+
 # `type` is the value the condition takes — None for one that asks about the
 # item itself and needs nothing filled in.
 CONDITIONS = {
@@ -49,6 +91,12 @@ CONDITIONS = {
     "no_due_date":     {"text": "לפריט אין תאריך יעד", "type": None},
     "overdue":         {"text": "תאריך היעד עבר", "type": None},
     "not_overdue":     {"text": "תאריך היעד לא עבר", "type": None},
+    # the board's own columns — "type": "column" is the one condition whose
+    # value is three answers and not one (see COLUMN_CONDITIONS above)
+    "column_is":       {"text": "העמודה {column} היא {value}", "type": "column",
+                        "label": "ערך"},
+    "column_is_not":   {"text": "העמודה {column} אינה {value}", "type": "column",
+                        "label": "ערך"},
 }
 
 # Pairs that cannot both hold, and kinds that take one value at a time — two of
@@ -69,12 +117,24 @@ def condition(kind):
 
 def condition_text(kind, shown=None):
     """One condition as a phrase. `shown` is the value already rendered the way
-    the board shows it; without one the blank stays a blank."""
+    the board shows it; without one the blank stays a blank.
+
+    A column condition reads with two blanks — which column, and what value —
+    so for one of those `shown` is a {"column": …, "value": …} dict. Either
+    blank may be missing, which is what a half-built condition looks like while
+    somebody is still choosing.
+    """
     spec = CONDITIONS.get(kind)
     if not spec:
         return ""
     if spec["type"] is None:
         return spec["text"]
+    if spec["type"] == "column":
+        parts = shown if isinstance(shown, dict) else {}
+        text = spec["text"]
+        for slot in ("column", "value"):
+            text = text.replace("{" + slot + "}", parts.get(slot) or "…")
+        return text
     return spec["text"].replace("{" + spec["type"] + "}",
                                 shown if shown is not None else "…")
 
@@ -91,6 +151,49 @@ def conditions_catalog():
     """What the "רק אם" picker offers, in the order a person reads them."""
     return [{"kind": k, "label": condition_text(k), "type": c["type"],
              "value_label": c.get("label", "")} for k, c in CONDITIONS.items()]
+
+
+def column_condition_value(raw):
+    """(clean, error) for the value of a column condition.
+
+    Held to the same line as every other condition's value: a column condition
+    with nothing chosen is refused even in a draft, because "רק אם העמודה …
+    היא …" with no column and no value is not a narrower rule — it is the rule
+    without the condition.
+    """
+    if not isinstance(raw, dict):
+        return None, "תנאי על עמודה אינו תקין"
+    col = str(raw.get("col") or "").strip()
+    col_type = str(raw.get("type") or "").strip()
+    if not col:
+        return None, "חסרה עמודה בתנאי"
+    kind = column_kind(col_type)
+    if not kind:
+        return None, "לא ניתן להתנות בעמודה מסוג הזה"
+    v = raw.get("value")
+    if kind == "check":
+        v = bool(v)
+    elif kind == "people":
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            return None, "חסר ערך בתנאי על העמודה"
+    elif kind == "number":
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None, "הערך בתנאי על העמודה אינו מספר"
+        if v == int(v):
+            v = int(v)                 # 1000, not 1000.0, in the sentence
+    elif kind == "date":
+        v = str(v or "").strip()
+        if not (filter_ast._ISO_DAY.match(v) or v in filter_ast.DATE_TOKENS):
+            return None, "חסר תאריך בתנאי על העמודה"
+    else:
+        v = str(v if v is not None else "").strip()[:200]
+        if not v:
+            return None, "חסר ערך בתנאי על העמודה"
+    return {"col": col, "type": col_type, "value": v}, None
 
 
 def validate_conditions(raw):
@@ -119,6 +222,10 @@ def validate_conditions(raw):
         t, v = spec["type"], c.get("value")
         if t is None:
             v = None
+        elif t == "column":
+            v, cerr = column_condition_value(v)
+            if cerr:
+                return None, cerr
         elif t in ("person", "group"):
             try:
                 v = int(v)
@@ -128,7 +235,7 @@ def validate_conditions(raw):
             v = str(v or "").strip()
             if not v:
                 return None, f"חסר ערך בתנאי '{condition_text(kind)}'"
-        sig = (kind, v)
+        sig = (kind, _sig(v) if isinstance(v, dict) else v)
         if sig in seen:
             continue                    # the same condition twice narrows nothing
         seen.add(sig)
@@ -155,6 +262,23 @@ def _impossible(conds):
                {str(c["value"]) for c in conds if c["kind"] == neg}
         if same:
             return f"תנאי '{condition_text(pos)}' סותר את ההיפוך שלו באותו ערך"
+    # ── the same column, asked two things that cannot both hold ──
+    # Per column, not per condition kind: two columns each with their own value
+    # is an ordinary two-condition rule. A multi-select column is deliberately
+    # left out of the single-value rule — a dropdown cell holds several options
+    # at once, so "is A" and "is B" on one are both true of the same item.
+    for col in {c["value"]["col"] for c in conds if c["kind"] in COLUMN_CONDITIONS}:
+        vals = {str(c["value"]["value"]) for c in conds
+                if c["kind"] == "column_is" and c["value"]["col"] == col}
+        multi = any(c["value"]["type"] in MULTI_COLUMN_TYPES
+                    for c in conds if c["kind"] in COLUMN_CONDITIONS
+                    and c["value"]["col"] == col)
+        if len(vals) > 1 and not multi:
+            return "לא ניתן להתנות בשני ערכים שונים באותה עמודה"
+        refused = {str(c["value"]["value"]) for c in conds
+                   if c["kind"] == "column_is_not" and c["value"]["col"] == col}
+        if vals & refused:
+            return "תנאי על עמודה סותר את ההיפוך שלו באותו ערך"
     return None
 
 
@@ -185,6 +309,180 @@ ACTIONS = {
 
 def _f(key, type_, label):
     return {"key": key, "type": type_, "label": label}
+
+
+# ── more than one action ("אז… וגם…") ───────────────────────────────────────
+# A recipe pairs one trigger with one action, and that single action was the
+# whole "then". Four things that have to happen together on one event were four
+# rules listening to the same trigger: four rows to write, four to keep in step
+# when the status they all watch is renamed, four lines in the history for one
+# event, and no order between them beyond run_order.
+#
+# So a rule may carry up to MAX_ACTIONS actions, which run in order under the
+# rule's own conditions — the conditions are the rule's, not each action's.
+#
+# Stored like the conditions are: the recipe's own action stays exactly where it
+# was (the `a_*` keys in `config`, action #1, nothing migrated), and the extra
+# ones go in `config` under this reserved key as
+# `[{"key": <action>, "values": {<field>: <value>}}]`. The values are keyed by
+# the bare field name because an action's fields are the action's — two
+# `notify_person` actions in one rule each need their own person, and a flat
+# `a_person` has room for one. Everything that already carries `config` —
+# drafts, versions, publishing, comparing, the export — carries these with it
+# and learns nothing new.
+ACTIONS_KEY = "actions"
+MAX_ACTIONS = 4
+
+# What each action needs filled in. Keyed by the bare field name; the recipe's
+# own action declares the same fields prefixed `a_` (see RECIPES), and
+# action_list below reads the two into one shape.
+ACTION_FIELDS = {
+    "notify_person":    [_f("person", "person", "נמען")],
+    "notify_assignees": [],
+    "assign_person":    [_f("person", "person", "אחראי")],
+    "set_status":       [_f("status", "status", "סטטוס")],
+    "set_priority":     [_f("priority", "priority", "עדיפות")],
+    "move_to_group":    [_f("group", "group", "קבוצה")],
+    "create_subitem":   [_f("text", "text", "שם תת־הפריט")],
+    "link_to_item":     [_f("connect", "connect", "עמודת הקישור"),
+                         _f("item", "item", "הפריט לקישור")],
+    "create_and_link":  [_f("connect", "connect", "עמודת הקישור"),
+                         _f("board", "board", "לוח היעד"),
+                         _f("text", "text", "שם הפריט החדש")],
+}
+
+# Actions that write one field of the item, so two of them in one rule means the
+# second overwrites the first and the first was never worth running. Refused
+# when the rule is written, for the same reason a contradictory condition is:
+# nobody finds out from the history that half their rule was pointless.
+_ONE_PER_RULE = ("set_status", "set_priority", "move_to_group")
+
+
+def action_fields(key):
+    return ACTION_FIELDS.get(key, [])
+
+
+def actions_catalog():
+    """Every action a rule can be given, for the "פעולה נוספת" picker."""
+    # `text` carries the blanks ("{person}") so the builder can put a chip in
+    # each one, the way the rule's own sentence does; `label` is the same line
+    # with the blanks shown as "…", for the picker that offers it.
+    return [{"key": k, "label": plain(text), "text": text,
+             "fields": action_fields(k)} for k, text in ACTIONS.items()]
+
+
+def action_text(key, shown=None):
+    """One action as a phrase. `shown` maps a field key to the value already
+    rendered the way the board shows it; a blank stays a blank."""
+    text = ACTIONS.get(key, "")
+    for f in action_fields(key):
+        v = (shown or {}).get(f["key"])
+        text = text.replace("{" + f["key"] + "}",
+                            v if v not in (None, "") else "…")
+    return text
+
+
+def action_list(recipe_id, config):
+    """Every action the rule performs, in the order it performs them.
+
+    One shape for both halves — the recipe's own action first, then the extras
+    — so the engine, the blockers, the impact screen and the test all ask the
+    same question once instead of each knowing where an action can hide.
+    """
+    r = recipe(recipe_id) or {}
+    cfg = config or {}
+    out = []
+    if r.get("action"):
+        out.append({"key": r["action"],
+                    "values": {f["key"][2:]: cfg.get(f["key"])
+                               for f in r.get("fields", []) if f["key"].startswith("a_")},
+                    "index": 0})
+    for i, extra in enumerate((cfg.get(ACTIONS_KEY) or []), start=1):
+        key = str((extra or {}).get("key") or "")
+        if key not in ACTIONS:
+            continue                      # an action from a version we no longer have
+        out.append({"key": key, "values": dict((extra or {}).get("values") or {}),
+                    "index": i})
+    return out
+
+
+def _coerce_field(f, v, require):
+    """(value, error) for one action field — the same coercion validate() does
+    for a recipe placeholder, so an extra action is held to the rule its
+    neighbour is held to."""
+    if f["type"] == "text":
+        v = str(v or "").strip()[:200]
+    elif f["type"] == "connect":
+        v = str(v or "").strip()          # a column id, not a number
+    elif f["type"] in ("person", "group", "item", "board"):
+        try:
+            return int(v), None
+        except (TypeError, ValueError):
+            v = ""
+    else:                                 # status / priority — a vocabulary key
+        v = str(v or "").strip()
+    if v == "":
+        return None, (f"חסר ערך בשדה '{f['label']}'" if require else None)
+    return v, None
+
+
+def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
+    """(clean, error) for a rule's EXTRA actions.
+
+    `require_values` is the difference between a draft and a rule being switched
+    on, exactly as it is for the recipe's own placeholders: a draft may hold a
+    blank somebody comes back to, an active rule may not.
+    """
+    if raw in (None, "", []):
+        return [], None
+    if not isinstance(raw, list):
+        return None, "פעולות לא תקינות"
+    if len(raw) > MAX_ACTIONS - 1:
+        return None, f"אפשר להגדיר עד {MAX_ACTIONS} פעולות בכלל אחד"
+    primary = (recipe(recipe_id) or {}).get("action")
+    singles = {primary} & set(_ONE_PER_RULE)
+    seen = set()
+    if primary:
+        seen.add((primary, _sig(primary_values or {})))
+    clean = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None, "פעולות לא תקינות"
+        key = str(item.get("key") or "").strip()
+        if key not in ACTIONS:
+            return None, "פעולה לא מוכרת"
+        given = item.get("values")
+        if given is not None and not isinstance(given, dict):
+            return None, "פעולות לא תקינות"
+        values = {}
+        for f in action_fields(key):
+            v, err = _coerce_field(f, (given or {}).get(f["key"]), require_values)
+            if err:
+                return None, f"{err} בפעולה «{plain(ACTIONS[key])}»"
+            if v is not None:
+                values[f["key"]] = v
+        if key in _ONE_PER_RULE:
+            if key in singles:
+                return None, (f"«{plain(ACTIONS[key])}» יכולה להופיע פעם אחת "
+                              f"בלבד בכלל")
+            singles.add(key)
+        sig = (key, _sig(values))
+        if sig in seen:
+            continue                      # the same action twice does it once
+        seen.add(sig)
+        clean.append({"key": key, "values": values})
+    return clean, None
+
+
+def _sig(values):
+    return tuple(sorted((str(k), str(v)) for k, v in (values or {}).items()))
+
+
+def _primary_values(recipe_id, config):
+    r = recipe(recipe_id) or {}
+    cfg = config or {}
+    return {f["key"][2:]: cfg.get(f["key"])
+            for f in r.get("fields", []) if f["key"].startswith("a_")}
 
 
 # Placeholder keys are namespaced by side (t_ = trigger, a_ = action) so a recipe
@@ -310,13 +608,18 @@ def recipe(recipe_id):
     return RECIPES_BY_ID.get(recipe_id)
 
 
-def sentence(recipe_id, cond_phrases=None):
+def sentence(recipe_id, cond_phrases=None, action_phrases=None):
     """The recipe as one '{placeholder}'-carrying sentence, for the UI to fill.
 
     `cond_phrases` are a stored rule's extra conditions, already rendered — they
     go between the trigger and the action, which is where they belong in the
     reading: what happened, what else had to be true, and only then what is
     done about it.
+
+    `action_phrases` are the rule's extra actions, already rendered. They read
+    on after the first with "וגם", in the order they run — one sentence for the
+    whole rule, because a rule that does four things is still one rule and the
+    list has to be legible as one line in the history.
     """
     r = recipe(recipe_id)
     if not r:
@@ -326,6 +629,9 @@ def sentence(recipe_id, cond_phrases=None):
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
     clause = conditions_clause(cond_phrases)
+    more = [p for p in (action_phrases or []) if p]
+    if more:
+        act = act + " וגם " + " וגם ".join(more)
     return f"{trig}, {clause + ', ' if clause else ''}{act}"
 
 
@@ -425,17 +731,35 @@ def validate_partial(recipe_id, config):
         return None, cerr
     if conds:
         clean[CONDITION_KEY] = conds
+    acts, aerr = validate_actions(config.get(ACTIONS_KEY), recipe_id,
+                                  _primary_values(recipe_id, clean))
+    if aerr:
+        return None, aerr
+    if acts:
+        clean[ACTIONS_KEY] = acts
     return clean, None
 
 
 def missing_fields(recipe_id, config):
-    """The placeholders a draft still has to fill before it can be switched on."""
+    """The placeholders a draft still has to fill before it can be switched on.
+
+    An extra action's blank is named with the action it belongs to — four
+    actions can want four different people, and "נמען" on its own would not say
+    which one is still empty.
+    """
     r = recipe(recipe_id)
     if not r:
         return ["מתכון לא מוכר"]
     cfg = config or {}
-    return [f["label"] for f in r["fields"]
-            if cfg.get(f["key"]) in (None, "", [])]
+    out = [f["label"] for f in r["fields"]
+           if cfg.get(f["key"]) in (None, "", [])]
+    for i, extra in enumerate((cfg.get(ACTIONS_KEY) or []), start=2):
+        key = str((extra or {}).get("key") or "")
+        values = (extra or {}).get("values") or {}
+        for f in action_fields(key):
+            if values.get(f["key"]) in (None, "", []):
+                out.append(f"{f['label']} (פעולה {i})")
+    return out
 
 
 def validate(recipe_id, config):
@@ -472,4 +796,11 @@ def validate(recipe_id, config):
         return None, cerr
     if conds:
         clean[CONDITION_KEY] = conds
+    acts, aerr = validate_actions(config.get(ACTIONS_KEY), recipe_id,
+                                  _primary_values(recipe_id, clean),
+                                  require_values=True)
+    if aerr:
+        return None, aerr
+    if acts:
+        clean[ACTIONS_KEY] = acts
     return clean, None

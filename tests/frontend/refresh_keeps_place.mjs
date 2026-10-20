@@ -65,6 +65,10 @@ function session(store){
 
 async function load({hash='', ls, envs=[PRIMARY,OTHER,THIRD], boards=BOARDS}){
   const opened=[]; const view={innerHTML:''};
+  /* Every sidebar paint, and the workspace it was drawn for. The restore must
+     not be performed in front of her: a paint for a workspace that is not
+     where she ends up is one she can see and read. */
+  const paints=[];
   const st={boards:boards.slice(), env:null, me:{id:1}, board:null};
   const Env={items:[], renders:0,
     async load(){ this.items=envs.slice();
@@ -90,12 +94,14 @@ async function load({hash='', ls, envs=[PRIMARY,OTHER,THIRD], boards=BOARDS}){
     async id=>{ opened.push(id); st.board={id,tasks:[]}; ls.setItem('cc_board', id); },
     ()=>null, {open(){},taskId:null,close(){}},
     {getElementById:()=>view}, {start(){}}, ()=>{}, ()=>{}, x=>String(x==null?'':x),
-    m=>'DENIED '+m, async()=>{}, ()=>{}, ()=>{}, ()=>{},
+    m=>'DENIED '+m, async()=>{}, ()=>{}, ()=>{},
+    ()=>{ paints.push(Env.active()&&Env.active().id); },
     // leaving a workspace closes the open item's panel; these cases open none
     ()=>{});
   Env.select=made._select;                       // the page's own, not a stand-in
   await made.enterApp();
-  return {board:opened[0]??null, env:st.env&&st.env.id, html:view.innerHTML, Env, st, made};
+  return {board:opened[0]??null, env:st.env&&st.env.id, html:view.innerHTML,
+          paints, Env, st, made};
 }
 
 let pass=0,fail=0;
@@ -159,6 +165,37 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
   const r=await load({ls, envs:[PRIMARY,OTHER], boards:[]});
   ck('no boards at all is still the empty screen, not a crash',
      r.board===null && r.html.includes('אין לוחות'), r.html.slice(0,120));
+}
+
+// ── and it is not done where she can watch it ──────────────────────────────
+/* The restore was correct and visible: loadBoards painted the sidebar first,
+   with no workspace known — Env.active() null, so the list read "אין לוחות
+   שהוזמנת אליהם" — then Env.load drew the primary workspace's name, and only
+   then did the remembered one replace it and the boards appear. Three paints,
+   two of them of somewhere she is not.
+
+   openBoard is stubbed here, so these counts are the ENTRY's paints alone; the
+   board's own paint (paintBoard → renderSidebar, to mark the open row) follows
+   and draws the same workspace. */
+{
+  const ls=session({cc_board:'30', cc_env:'2'});
+  const r=await load({ls});
+  ck('the entry paints the sidebar once, not three times', r.paints.length===1, r.paints);
+  ck('...and that one paint is of the workspace she comes back to',
+     r.paints.every(p=>p===2), r.paints);
+}
+{
+  // a link to a board in a third workspace: the paint waits for the link too
+  const ls=session({cc_board:'11', cc_env:'1'});
+  const r=await load({hash:'#/board/40', ls});
+  ck('a link decides the workspace before the first paint, not after it',
+     r.paints.length===1 && r.paints[0]===3, r.paints);
+}
+{
+  // nothing remembered: the entry still draws once, on the shared workspace
+  const ls=session({});
+  const r=await load({ls});
+  ck('a first-ever visit paints once as well', r.paints.length===1 && r.paints[0]===1, r.paints);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

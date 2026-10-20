@@ -53,12 +53,22 @@ ck('and is listed once, not twice',
 // ── the automation person picker filters the same way ──────────────────────
 const autoLoad = /this\.members\s*=\s*\(\(await api\('\/api\/boards\/'\+bid\+'\/members'\)\)\.members\|\|\[\]\)\s*\n?\s*\.filter\(m=>m\.is_active!==false\)/.test(src);
 ck('Automations loads its person picker without deactivated members', autoLoad);
-/* both person pickers read this.members — if one grew its own source it would
-   go round the filter above */
-const personPickers = (src.match(/items=this\.members\.map\(/g)||[]).length;
+/* Every person list in the page reads this.members — one grown from its own
+   source would go round the filter above. There are two readers: the "רק אם"
+   condition picker, and _optionsFor, which the rule's own blanks and the extra
+   actions' blanks (up to MAX_ACTIONS of them) now share. The sharing is the
+   point: a second person list written for the extra actions is exactly the
+   drift this case exists to catch. */
+const anyPersonList = (src.match(/\.map\(m=>\(\{v:m\.user_id/g)||[]).length;
+const fromMembers = (src.match(/this\.members\.map\(m=>\(\{v:m\.user_id/g)||[]).length;
 const otherSource = /items=\(st\.users\|\|\[\]\)\.map\(u=>\(\{v:u\.id/.test(src);
-ck('and both person pickers read that one list', personPickers===2 && !otherSource,
-   personPickers+' pickers');
+/* Counted as "all of them", not as a number: pickers get added — the rule's
+   own blanks, the conditions, the extra actions, a people COLUMN in a
+   condition — and a list built from anywhere else is the drift this catches,
+   whether there are two of them or five. */
+ck('and every person picker reads that one list',
+   anyPersonList>0 && fromMembers===anyPersonList && !otherSource,
+   fromMembers+' of '+anyPersonList+' lists come from this.members');
 
 // ── per-user overrides ─────────────────────────────────────────────────────
 const permUsers = new Function('st', grab('permUsers')+'; return permUsers;')(st);

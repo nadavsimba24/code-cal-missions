@@ -42,7 +42,7 @@ async function enter({hash='', saved=null, boards, envs=[PRIMARY,OTHER], loaded=
      untested. Its own dependencies join the list below. */
   const fn=new Function('st','Env','loadBoards','Router','localStorage','openBoard',
     'findAnyTask','Chat','document','Notif','setTimeout','showAgentHint','esc',
-    'accessDeniedHTML','refreshBoardItems','renderView','toast',
+    'accessDeniedHTML','refreshBoardItems','renderView','toast','renderSidebar',
     // rememberEnv/rememberedEnvId: where you were is kept across a reload now,
     // and both enterApp and followBoardEnv call them. See
     // tests/frontend/refresh_keeps_place.mjs — these cases are the OTHER half,
@@ -58,7 +58,9 @@ async function enter({hash='', saved=null, boards, envs=[PRIMARY,OTHER], loaded=
      setItem(){}, removeItem(){}},
     async id=>{opened.push(id); st.board={id, tasks:[]};}, ()=>null, {open(){}},
     {getElementById:()=>view}, {start(){}}, ()=>{}, ()=>{}, x=>String(x==null?'':x),
-    msg=>'ACCESS-DENIED: '+msg, async()=>{}, ()=>{}, ()=>{});
+    msg=>'ACCESS-DENIED: '+msg, async()=>{}, ()=>{}, ()=>{},
+    // the entry paints the sidebar itself now, once, when it knows where it is
+    ()=>{});
   await fn();
   return {opened, env:st.env, Env, html:view.innerHTML};
 }
@@ -118,8 +120,18 @@ const BOARDS=[{id:30,environment_id:2},{id:10,environment_id:1},{id:11,environme
   ck('the workspaces are awaited, not left to whichever render fires first',
      r.opened[0]===10 && r.env===PRIMARY, JSON.stringify(r.opened));
 }
+const enterSrc=grab('enterApp');
 ck('enterApp waits for Env.load before it chooses',
-   /if\(!\(Env\.items\|\|\[\]\)\.length\) await Env\.load\(\);/.test(src));
+   /await Promise\.all\(/.test(enterSrc) && /Env\.load\(\)/.test(enterSrc)
+   && enterSrc.indexOf('Env.load()') < enterSrc.indexOf("localStorage.getItem('cc_board')"));
+/* The two requests are issued together — making the workspaces arrive before
+   the boards must not have cost a round trip — and the sidebar is painted once,
+   after both. See tests/frontend/refresh_keeps_place.mjs for what that paint is
+   not allowed to show. */
+ck('...and the boards travel with them, for one paint when both are in',
+   /loadBoards\(\{render:false\}\)/.test(enterSrc)
+   && (enterSrc.match(/renderSidebar\(\)/g)||[]).length===1
+   && enterSrc.indexOf('renderSidebar()') > enterSrc.indexOf('Env.load()'));
 ck('a workspace with nothing open still defaults to the primary one',
    /this\.items\.find\(e=>e\.is_primary\)/.test(src));
 

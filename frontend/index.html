@@ -100,8 +100,16 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 /* the item column stays at the start of the viewport, on both axes.
    .tbl th is already sticky vertically (top:32px); adding the inline offset
    makes the corner cell stick in both directions at once. */
-.tbl th[data-fixed]{inset-inline-start:0;z-index:6}
-.tbl td.c-item{position:sticky;inset-inline-start:0;z-index:2}
+/* Negative by the view's own padding, and that is the whole of it: sticky
+   comes to rest against the scroll container's content edge, while the
+   container clips at its padding edge. Between the two is a strip as wide as
+   the padding — 26px on a desktop board — which the pinned column did not
+   reach and the scrolling columns did: the column behind it peeked out at the
+   start edge, a sliver of a row that had been scrolled away. Pulling the rest
+   position out by the padding puts the pinned column's edge exactly where the
+   board is cut off, so what slides under it is not shown anywhere. */
+.tbl th[data-fixed]{inset-inline-start:calc(-1 * var(--view-pad,22px));z-index:6}
+.tbl td.c-item{position:sticky;inset-inline-start:calc(-1 * var(--view-pad,22px));z-index:2}
 /* Sub-item rows are deliberately NOT pinned. Their table sits inside
    .sub-panel, which carries overflow:hidden for its rounded clip, and a sticky
    element inside an overflow:hidden ancestor anchors to a box that never
@@ -134,7 +142,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
    out after one screen and left with it. Matching the wrapper to the table
    gives the name the full width to stay pinned across. */
 .grp-stick{width:max-content;min-width:100%}
-.gh-in{position:sticky;inset-inline-start:0;display:inline-flex;align-items:center;gap:9px}
+.gh-in{position:sticky;inset-inline-start:calc(-1 * var(--view-pad,22px));display:inline-flex;align-items:center;gap:9px}
 /* the log filters were written for the narrow chat panel, where the user select
    filling the row is right. In the wide board dialog it stretches across the
    whole width and pushes the export button to the edge. */
@@ -468,6 +476,18 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-cond-t{flex:1;min-width:0}
 .au-cond-x{border:none;background:none;color:var(--text-light);cursor:pointer;font-size:12px;padding:3px 5px;border-radius:6px;flex-shrink:0}
 .au-cond-x:hover{color:var(--danger,#e2445c);background:var(--bg)}
+/* The "ואז גם" block: the extra actions a rule carries, two to a row — four
+   actions read as a short list, and a column of four single-item rows reads as
+   a form. Same frame as the conditions above, because they are the same kind of
+   thing: part of the rule, under the sentence it belongs to. */
+.au-acts{border:1px dashed var(--border);border-radius:10px;padding:11px 13px;margin-top:10px;background:var(--surface)}
+.au-acts-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin-bottom:8px}
+.au-acts-h small{font-weight:400;color:var(--text-light)}
+.au-acts-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 16px}
+@media (max-width:760px){.au-acts-grid{grid-template-columns:1fr}}
+.au-act{display:flex;align-items:center;gap:7px;font-size:13px;line-height:2;padding:3px 0;min-width:0}
+.au-act-n{font-size:11px;font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:10px;padding:1px 8px;flex-shrink:0}
+.au-act-t{flex:1;min-width:0}
 /* ── the automations page: three tabs (יצירה · ניהול · היסטוריית הפעלות) ── */
 .au-count{background:rgba(255,255,255,.25);border-radius:9px;padding:0 6px;font-size:11px;font-weight:700}
 .lg-tab:not(.on) .au-count{background:var(--border);color:var(--text-muted)}
@@ -643,7 +663,13 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tb-clear.show{display:inline-flex}
 .tb-clear:hover{background:#fdebed;color:var(--red-d)}
 
-#view{flex:1;overflow:auto;overscroll-behavior-y:contain;padding:0 22px 18px;position:relative}
+/* --view-pad is the inline padding, and it is a variable because the pinned
+   column has to know it: a sticky cell inside a scroll container comes to rest
+   at the container's CONTENT edge, not at the edge it clips at. The difference
+   is exactly this padding — a strip at the start edge, outside the pinned
+   column and inside the clip, where the columns sliding under it were in plain
+   view. See .tbl td.c-item. */
+#view{--view-pad:22px;flex:1;overflow:auto;overscroll-behavior-y:contain;padding:0 var(--view-pad) 18px;position:relative}
 /* top breathing space as a margin on the first block — it scrolls away, so no strip is left above the sticky header for rows to peek through */
 #view>*:first-child{margin-top:18px}
 
@@ -832,6 +858,14 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   box-shadow:inset 0 0 0 1px var(--border-strong);cursor:help}
 .add-row td{padding:8px 12px;color:var(--text-muted);font-size:13px;cursor:pointer;border-inline-start:4px solid transparent}
 .add-row:hover td{color:var(--primary)}
+/* "+ הוסף פריט" sits in the pinned column's own cell, so it stays where the
+   item names are instead of sliding out of the board with everything else.
+   .c-item brings the pinning and the background; the group's colour bar is not
+   wanted on a row that is not an item. */
+.tbl .add-row td.c-item{padding:8px 12px;font-weight:500;border-inline-start-color:transparent}
+/* the sub-item panel's own cell in that column: empty, and never tinted by the
+   hover of the panel beside it — there is no item here to point at */
+.tbl tr.sub-wrap td.c-item,.tbl tr.sub-wrap:hover td.c-item{background:var(--bg);border-inline-start-color:transparent}
 /* sub-items (תת-פריטים) */
 .tbl .c-item .ci-flex{display:flex;align-items:center;gap:5px;min-height:28px}
 .row-grip{color:var(--text-light);font-size:12px;cursor:grab;opacity:0;transition:.12s;margin-inline-end:-3px}
@@ -1982,7 +2016,7 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .tab.active{font-weight:700}
 /* toolbar — a touch more air */
 #toolbar{padding:11px 26px;gap:8px}
-#view{padding:0 26px 22px}
+#view{--view-pad:26px;padding:0 var(--view-pad) 22px}
 /* table — premium data grid: hairline frame, soft depth, refined header */
 .tbl{border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(29,42,68,.04), 0 8px 24px rgba(29,42,68,.055)}
 .tbl th{background:var(--surface);color:var(--text-muted);font-weight:600;font-size:13px;letter-spacing:.02em;padding:11px 12px;border-bottom:1px solid var(--border-strong)}
@@ -2075,7 +2109,7 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   #toolbar>*{flex-shrink:0}
   .tb-search{width:150px}
   .tb-search:focus-within{width:160px}
-  #view{padding:0 12px 12px}
+  #view{--view-pad:12px;padding:0 var(--view-pad) 12px}
   /* modals go near-full-screen for reachability */
   .modal{width:96vw!important;max-width:96vw!important;max-height:92vh}
   .modal.modal-80{width:96vw!important;max-width:96vw!important;height:92vh!important;max-height:92vh!important}
@@ -2873,37 +2907,62 @@ function entryEmptyHTML(){
     <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:4px">${chips}</div></div>`;
 }
 async function enterApp(){
-  await loadBoards();
-  /* The app opens in the primary workspace — the one every user is in — and
-     Env.load is what settles which that is, so it is awaited here rather than
-     left to the render that happens to fire it. */
-  try{ if(!(Env.items||[]).length) await Env.load(); }catch(e){}
+  /* Where we were is settled BEFORE any of it is drawn.
+
+     A refresh has always come back to the same place; it used to do it in
+     front of the user. loadBoards painted the sidebar first, while no
+     workspace was known yet — Env.active() was null, so the board list said
+     "אין לוחות שהוזמנת אליהם" over a full account — then Env.load defaulted
+     to the primary workspace and wrote ITS name into the switcher, and only
+     then did the remembered workspace (or the one the open board belongs to)
+     take its place and the list fill with its boards. Three paints on every
+     refresh, the first two of them wrong, and on a cold server slow enough to
+     read: the app looked like it was moving you somewhere and then moving you
+     back.
+
+     So the remembered workspace goes into st.env first, as an id and nothing
+     else: Env.load re-points it at the real row — and still falls back to the
+     primary workspace if that one is gone, or if there was never anything
+     remembered — and the sidebar is drawn once, when both answers are in. The
+     two requests still travel together, so nothing here costs a round trip.
+     Until that single paint the shell keeps the spinners it loads with, which
+     is the honest thing to show while the answer is on its way. */
+  const savedEnv=rememberedEnvId();
+  if(savedEnv!=null) st.env={id:savedEnv};
+  await Promise.all([
+    loadBoards({render:false}),
+    (Env.items||[]).length?Promise.resolve():Env.load().catch(()=>{}),
+  ]);
+  /* A workspace she was removed from is not restored — Env.load has already
+     fallen back to the primary one — and stops being remembered. Only on an
+     answer that actually listed her workspaces, though: an environments
+     request that failed must not erase where she was. */
+  if(savedEnv!=null && (Env.items||[]).length && !Env.items.some(e=>e.id===savedEnv))
+    try{ localStorage.removeItem('cc_env'); }catch(e){}
   /* A deep link in the URL wins — a link to a board opens that board wherever
      it lives, and openDeepLink answers it alone. Including the case where the
      board is not this person's to see: that has to say so, rather than quietly
-     open whichever board they happened to be on last. */
+     open whichever board they happened to be on last.
+
+     Which workspace that board belongs to is therefore settled here, before
+     the paint, and not inside openDeepLink afterwards: a link to a board in
+     another workspace would otherwise draw the remembered workspace and its
+     boards first and replace them a moment later. followBoardEnv is a no-op
+     when the link leads where we already are, which on an ordinary refresh —
+     the URL and the remembered workspace agreeing — is every time. */
   const r=Router.parse();
+  if(r.boardId && (st.boards||[]).some(b=>b.id===r.boardId)) followBoardEnv(r.boardId);
+  renderSidebar();
   if(r.boardId){
     await openDeepLink(r.boardId, r.itemId, r.viewId);
     Notif.start();
     setTimeout(showAgentHint,3500);
     return;
   }
-  /* No link in the URL: back to where she was — the workspace she was in,
-     and then the board she had open inside it.
-
-     The workspace is restored FIRST, because the board is chosen out of it:
-     reading cc_board against the primary workspace is what used to drop a
-     board belonging to anywhere else and open a stranger's instead. Only a
-     workspace this person still has is restored; one they were removed from
-     falls through to the default, which is the same as never having had one. */
-  const savedEnv=rememberedEnvId();
-  if(savedEnv!=null){
-    const back=(Env.items||[]).find(e=>e.id===savedEnv);
-    if(back) st.env=back;
-    else try{ localStorage.removeItem('cc_env'); }catch(e){}
-    Env.render();
-  }
+  /* No link in the URL: the board she had open, chosen out of the workspace
+     restored above — reading cc_board against the primary workspace is what
+     used to drop a board belonging to anywhere else and open a stranger's
+     instead. */
   const savedBoard=parseInt(localStorage.getItem('cc_board')||'',10);
   const active=Env.active();
   const here=active?st.boards.filter(b=>b.environment_id===active.id):st.boards.slice();
@@ -3018,7 +3077,11 @@ const Auth = {
     },{title:'התנתקות',confirmText:'התנתק',icon:'fa-right-from-bracket',danger:false});
   },
 };
-async function loadBoards(){
+/* opts.render===false: load, draw nothing. For the one caller that cannot draw
+   yet — the entry, which does not know which workspace it is in until the
+   environments have arrived too, and whose sidebar must not be painted twice
+   (see enterApp). Every other caller already knows, and draws. */
+async function loadBoards(opts){
   // independent of each other — one round trip, not two
   const q=meId()?'?user_id='+meId():'';
   const [boards,folders]=await Promise.all([
@@ -3026,7 +3089,7 @@ async function loadBoards(){
     api('/api/folders'+q).catch(()=>({})),
   ]);
   st.boards=boards||[]; st.folders=(folders||{}).folders||[];
-  renderSidebar();
+  if(!(opts&&opts.render===false)) renderSidebar();
 }
 /* One definition of "narrow screen", matching the CSS breakpoint below.
    Mobile is for working the board — reading it, changing values — not for
@@ -6352,7 +6415,8 @@ const Live = {
    would have given, so there is one stored shape and one validation. */
 const Automations = {
   data:{automations:[],can_manage:false}, recipes:[], blueprint:[], members:[],
-  trigLabels:{}, actLabels:{}, conds:[], maxConds:3,
+  trigLabels:{}, actLabels:{}, conds:[], maxConds:3, acts:[], maxActs:4,
+  colKinds:{}, multiCols:[],
   building:null, editing:null, viewing:null, testing:null, cmp:null, imp:null, tlog:null,
   tab:'manage', mode:'templates', scratch:{trigger:'',conds:[]},
   f:{q:'',status:'',owner:0,creator:0,importance:'',trigger:'',action:'',last:''},
@@ -6386,6 +6450,8 @@ const Automations = {
         this.recipes=d.recipes||[]; this.blueprint=d.blueprint||[];
         this.trigLabels=d.triggers||{}; this.actLabels=d.actions||{};
         this.conds=d.conditions||[]; this.maxConds=d.max_conditions||3;
+        this.acts=d.action_catalog||[]; this.maxActs=d.max_actions||4;
+        this.colKinds=d.column_kinds||{}; this.multiCols=d.multi_column_types||[];
       }catch(e){ this.recipes=[]; this.blueprint=[]; }
     }
     // the person picker offers the board's own members, matching who can be
@@ -7373,7 +7439,7 @@ const Automations = {
     // the same fill-in-the-blanks the rest of the screen asks for
     const seeded=((r&&r.conditions)||[]).map(c=>({kind:c.kind,v:null,label:''}));
     this.building={recipe:r,values:{},meta:{name:'',description:''},
-                   conds:seeded.length?seeded:carried};
+                   conds:seeded.length?seeded:carried,acts:[]};
     this.tab='create'; this.render();
   },
 
@@ -7385,14 +7451,19 @@ const Automations = {
     // a seeded condition still missing its value is as unfinished as a blank
     const condsReady=(this.building.conds||[]).every(c=>{
       const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
+      if(spec.type==='column') return !!c.col&&c.v!==null&&c.v!==undefined&&c.v!=='';
       return !spec.type||(c.v!==null&&c.v!==undefined&&c.v!=='');
     });
-    const ready=r.fields.every(f=>this.building.values[f.key]!==undefined)&&condsReady;
+    // an extra action with an empty blank is as unfinished as the sentence's own
+    const actsReady=(this.building.acts||[]).every(a=>
+      (this._actSpec(a.key)||{fields:[]}).fields.every(f=>(a.values||{})[f.key]!==undefined));
+    const ready=r.fields.every(f=>this.building.values[f.key]!==undefined)&&condsReady&&actsReady;
     const meta=this.building.meta||(this.building.meta={name:'',description:''});
     return `<div class="au-group-h">אוטומציה חדשה</div>
       <div class="au-build">${sent}</div>
       ${ready?'':'<div class="au-hint"><i class="fa-solid fa-circle-info"></i> לחץ על כל שדה מודגש כדי להשלים אותו</div>'}
       ${this.condsHTML()}
+      ${this.moreActsHTML()}
       <div class="am-ed-g" style="margin-top:14px">
         <div class="am-f"><label for="au-nm">שם האוטומציה <small>(לא חובה)</small></label>
           <input id="au-nm" maxlength="120" value="${esc(meta.name)}" placeholder="ריק — ומשפט האוטומציה משמש כשם"
@@ -7406,6 +7477,122 @@ const Automations = {
         <button class="btn btn-ghost" onclick="Automations.save(true)" title="ניתן לשמור טיוטה גם בלי להשלים את כל השדות"><i class="fa-solid fa-pencil"></i> שמור כטיוטה</button>
         <button class="btn btn-ghost" onclick="Automations.cancelNew()">חזרה לבחירה</button>
       </div>`;
+  },
+
+  /* ---- "ואז גם" ---- the rest of the then ----
+     A recipe pairs one trigger with ONE action, and a rule that had to do four
+     things on one event was four rules listening to the same trigger: four rows
+     to keep in step, four lines in the history for one event, and no order
+     between them. A rule now carries up to maxActs actions — the sentence's own
+     is the first, these are the rest — and they run in order, under the rule's
+     conditions. The conditions are the rule's: a condition here would be a
+     different feature and a different sentence.
+
+     Two to a row, which is what four of them read as; one per row reads as a
+     form. Each is the action's own phrase with its blanks in place, exactly as
+     a condition is — the same chips, the same pickers, the same wording the
+     server will store and show in the sentence. */
+  _actSpec(key){ return (this.acts||[]).find(x=>x.key===key)||null; },
+  moreActsHTML(){
+    const list=(this.building&&this.building.acts)||[];
+    const rows=list.map((a,i)=>{
+      const spec=this._actSpec(a.key)||{text:'',fields:[]};
+      let body=esc(spec.text||spec.label||'');
+      (spec.fields||[]).forEach(f=>{
+        const cur=(a.values||{})[f.key];
+        const style=(cur&&cur.color)?` style="background:${cur.color};border-color:${cur.color};color:#fff"`:'';
+        body=body.replace('{'+f.key+'}',
+          `<button class="au-blank${cur?' filled':''}"${style} title="${esc(f.label)}"
+             onclick="Automations.pickActValue(event,${i},'${f.key}')">${esc(cur?cur.label:f.label)}</button>`);
+      });
+      return `<div class="au-act">
+        <span class="au-act-n">${i+2}</span>
+        <span class="au-act-t">${body}</span>
+        <button class="au-cond-x" title="הסר פעולה" onclick="Automations.dropAct(${i})"><i class="fa-solid fa-xmark"></i></button>
+      </div>`;}).join('');
+    const room=list.length<((this.maxActs||4)-1);
+    return `<div class="au-acts">
+      <div class="au-acts-h"><i class="fa-solid fa-bolt"></i> פעולות נוספות
+        <small>(לא חובה — עד ${this.maxActs||4} פעולות בכלל אחד, רצות לפי הסדר אחרי הראשונה)</small></div>
+      ${rows?`<div class="au-acts-grid">${rows}</div>`
+            :'<div class="au-hint" style="margin:0">אין פעולות נוספות — הכלל יבצע רק את הפעולה שבמשפט</div>'}
+      ${room?`<button class="btn btn-ghost" onclick="Automations.pickAct(event)"><i class="fa-solid fa-plus"></i> הוסף פעולה</button>`
+            :`<div class="au-hint" style="margin:0">הגעת למספר הפעולות המקסימלי (${this.maxActs||4})</div>`}
+    </div>`;
+  },
+  /* What may be added: anything except an action that writes a field the rule
+     already writes — a second "שנה סטטוס" would overwrite the first, and the
+     server refuses it. Two notifications to two people are not that, so the
+     limit is per field and not per action. */
+  pickAct(e){
+    e.preventDefault(); e.stopPropagation();
+    const ONE_PER_RULE=['set_status','set_priority','move_to_group'];
+    const taken=[(this.building.recipe||{}).action]
+      .concat((this.building.acts||[]).map(a=>a.key))
+      .filter(k=>ONE_PER_RULE.includes(k));
+    const offer=(this.acts||[]).filter(x=>!taken.includes(x.key));
+    this._actOffer=offer;
+    const body=offer.length
+      ? offer.map((x,i)=>`<button class="rm-item" onclick="Automations.addAct(${i})">${esc(x.label)}</button>`).join('')
+      : '<div class="rm-note">אין פעולות זמינות להוספה</div>';
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  addAct(i){
+    const spec=(this._actOffer||[])[i]; if(!spec)return;
+    (this.building.acts=this.building.acts||[]).push({key:spec.key,values:{}});
+    closeCellPops(); this.render();
+    // an action that needs a value is useless without one, so the first blank
+    // is asked for straight away — the conditions do the same
+    const f=(spec.fields||[])[0];
+    if(f){
+      const idx=this.building.acts.length-1;
+      setTimeout(()=>{const row=document.querySelectorAll('.au-act')[idx];
+        const btn=row&&row.querySelector('.au-blank'); if(btn)btn.click();},20);
+    }
+  },
+  dropAct(i){ (this.building.acts||[]).splice(i,1); this.render(); },
+  async pickActValue(e,i,key){
+    e.preventDefault(); e.stopPropagation();
+    const anchor=e.currentTarget;
+    const a=(this.building.acts||[])[i]; if(!a)return;
+    const f=((this._actSpec(a.key)||{}).fields||[]).find(x=>x.key===key); if(!f)return;
+    if(f.type==='text'){
+      const cur=(a.values||{})[key];
+      openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
+        <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setActText(${i},'${key}');}">
+        <button class="rm-item" onclick="Automations.setActText(${i},'${key}')"><i class="fa-solid fa-check"></i> אישור</button>
+      </div>`,'row-menu-pop');
+      setTimeout(()=>{const el=document.getElementById('au-txt'); if(el){el.focus();el.select();}},30);
+      return;
+    }
+    // a link action names an item on another board, and which boards those are
+    // depends on the connect column chosen in THIS action — not in the sentence
+    const connect=((a.values||{}).connect||{}).v||null;
+    if(f.type==='item'){
+      await this.pickLinkedItem(anchor,null,{actIdx:i,key,connect}); return;
+    }
+    const items=this._optionsFor(f.type,connect);
+    this._popItems=items;
+    const body=items.length
+      ? items.map((it,j)=>`<button class="rm-item" onclick="Automations.setActValue(${i},'${key}',${j})">${
+          it.person?`<span class="av av-xs">${avatarInner(it.person)}</span>`
+                   :`<span class="au-dot" style="background:${it.color||'var(--border)'}"></span>`
+        } ${esc(it.label)}</button>`).join('')
+      : '<div class="rm-note">אין אפשרויות זמינות</div>';
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  setActValue(i,key,idx){
+    const it=(this._popItems||[])[idx], a=(this.building.acts||[])[i]; if(!it||!a)return;
+    (a.values=a.values||{})[key]={v:it.v,label:it.label,color:it.color||''};
+    closeCellPops(); this.render();
+  },
+  setActText(i,key){
+    const el=document.getElementById('au-txt'); const v=(el?el.value:'').trim();
+    if(!v){ toast('יש להזין טקסט'); return; }
+    const a=(this.building.acts||[])[i]; if(!a)return;
+    (a.values=a.values||{})[key]={v:v,label:v,color:''};
+    closeCellPops(); this.render();
   },
 
   /* ---- "רק אם" ---- the second half of the if ----
@@ -7425,11 +7612,21 @@ const Automations = {
     const rows=list.map((c,i)=>{
       const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
       const txt=esc(spec.label||'');
-      const body=spec.type
-        ? txt.replace('…',`<button class="au-blank${c.label?' filled':''}"${
+      const valBtn=`<button class="au-blank${c.label?' filled':''}"${
             c.color?` style="background:${c.color};border-color:${c.color};color:#fff"`:''
-          } onclick="Automations.pickCondValue(event,${i})">${esc(c.label||spec.value_label||'ערך')}</button>`)
-        : txt;
+          } onclick="Automations.pickCondValue(event,${i})">${esc(c.label||spec.value_label||'ערך')}</button>`;
+      /* A condition about one of the board's columns reads with two blanks, and
+         they are answered in that order: which column, and then what value —
+         the value cannot be offered before the column is known, because the
+         column is what decides whether the value is a status, a number, a
+         person or a date. The column chip asks for the TYPE first and the
+         column second; on a board with thirty columns a flat list of all of
+         them is not a question anybody wants to read. */
+      const body=spec.type==='column'
+        ? txt.replace('…',`<button class="au-blank${c.col?' filled':''}" title="עמודה בלוח"
+              onclick="Automations.pickCondCol(event,${i})">${esc(c.colLabel||'עמודה')}</button>`)
+             .replace('…',valBtn)
+        : spec.type ? txt.replace('…',valBtn) : txt;
       return `<div class="au-cond">
         <span class="au-cond-and">${i?'וגם':'רק אם'}</span>
         <span class="au-cond-t">${body}</span>
@@ -7468,18 +7665,78 @@ const Automations = {
     (home.conds=home.conds||[]).push({kind:spec.kind,v:null,label:''});
     closeCellPops(); this.render();
     // a condition that needs a value is useless without one, so it is asked for
-    // straight away rather than left as a blank somebody has to notice
+    // straight away rather than left as a blank somebody has to notice. For a
+    // column condition the first blank is the column, which is also the one
+    // that decides what the value picker can even offer.
     if(spec.type){
       const idx=this._condHome().conds.length-1;
       setTimeout(()=>{const b=document.querySelectorAll('.au-cond')[idx];
         const btn=b&&b.querySelector('.au-blank'); if(btn)btn.click();},20);
     }
   },
+  /* ---- a condition about one of the board's columns ----
+     Three questions in the order they can be answered: the kind of column, the
+     column itself, and the value. The type menu lists only kinds this board
+     actually has a column of — offering "תאריך" on a board with no date column
+     is a dead end two clicks deep. */
+  _condCols(){
+    return (customColumns()||[]).filter(c=>ADV_KINDS[c.type]&&!advColHidden(c.id));
+  },
+  pickCondCol(e,i){
+    e.preventDefault(); e.stopPropagation();
+    const cols=this._condCols();
+    const types=[];
+    COLUMN_TYPES.forEach(t=>{
+      const n=cols.filter(c=>c.type===t.type).length;
+      if(n) types.push({type:t.type,he:t.he,ic:t.ic,n});
+    });
+    const body=types.length
+      ? types.map(t=>`<button class="rm-item" onclick="Automations.pickCondColOf(event,${i},'${t.type}')">
+          <i class="fa-solid ${t.ic}" style="font-size:11px;color:var(--primary)"></i> ${esc(t.he)}
+          <small style="margin-inline-start:auto;color:var(--text-light)">${t.n}</small></button>`).join('')
+      : '<div class="rm-note">אין בלוח עמודות שניתן להתנות בהן</div>';
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  pickCondColOf(e,i,type){
+    e.preventDefault(); e.stopPropagation();
+    const anchor=document.querySelectorAll('.au-cond')[i];
+    const cols=this._condCols().filter(c=>c.type===type);
+    this._condColOffer=cols;
+    const body=cols.map((c,j)=>`<button class="rm-item" onclick="Automations.setCondCol(${i},${j})">${esc(c.title||c.id)}</button>`).join('')
+      ||'<div class="rm-note">אין עמודות מסוג זה</div>';
+    openCellPop(anchor&&anchor.querySelector('.au-blank')||e.currentTarget,
+      `<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  setCondCol(i,j){
+    const col=(this._condColOffer||[])[j], c=(this._condHome().conds||[])[i];
+    if(!col||!c)return;
+    // changing the column drops a value chosen for the previous one: a status
+    // label from another column is not an answer to this one
+    if(c.col!==col.id){ c.v=null; c.label=''; c.color=''; }
+    c.col=col.id; c.colType=col.type; c.colLabel=col.title||col.id;
+    closeCellPops(); this.render();
+    const idx=i;
+    setTimeout(()=>{const row=document.querySelectorAll('.au-cond')[idx];
+      const btns=row?row.querySelectorAll('.au-blank'):[];
+      if(btns[1])btns[1].click();},20);
+  },
+  /* The options the chosen column's own value picker offers. A status column
+     has its own vocabulary, a dropdown its own list — read off the column, not
+     off the board's built-in statuses. */
+  _condColOptions(col){
+    if(!col) return [];
+    if(col.type==='status') return statusColOpts(col).map(o=>({v:o.label,label:o.label,color:o.color}));
+    return (col.options||[]).map(o=>{
+      const label=(o&&typeof o==='object')?o.label:o;
+      return {v:label,label:label,color:(o&&o.color)||''};
+    }).filter(o=>o.label);
+  },
   dropCond(i){ (this._condHome().conds||[]).splice(i,1); this.render(); },
   pickCondValue(e,i){
     e.preventDefault(); e.stopPropagation();
     const c=(this._condHome().conds||[])[i]; if(!c)return;
     const spec=(this.conds||[]).find(x=>x.kind===c.kind); if(!spec||!spec.type)return;
+    if(spec.type==='column'){ this.pickColCondValue(e,i,c); return; }
     let items=[];
     if(spec.type==='status')        items=boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
     else if(spec.type==='priority') items=boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
@@ -7497,6 +7754,57 @@ const Automations = {
   setCondValue(i,j){
     const it=(this._popItems||[])[j], c=(this._condHome().conds||[])[i]; if(!it||!c)return;
     c.v=it.v; c.label=it.label; c.color=it.color||'';
+    closeCellPops(); this.render();
+  },
+  /* The value, once the column is known — and the column is what decides the
+     question. A status column offers its own labels, a people column the
+     board's members, a date column the same dynamic tokens the advanced filter
+     offers (so "היום" stays "היום" and is resolved when the rule runs, not
+     when it was written), a checkbox the two answers it has, and a number or a
+     text column a box to type in. */
+  pickColCondValue(e,i,c){
+    const anchor=e.currentTarget;
+    if(!c.col){ this.pickCondCol(e,i); return; }
+    const kind=ADV_KINDS[c.colType]||'text';
+    const col=this._condCols().find(x=>x.id===c.col);
+    if(kind==='number'||kind==='text'){
+      openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
+        <input id="au-cv" class="au-in" style="max-width:210px" type="${kind==='number'?'number':'text'}"
+               placeholder="${esc(kind==='number'?'ערך מספרי':'טקסט')}" value="${esc(c.label||'')}"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setColCondText(${i});}">
+        <button class="rm-item" onclick="Automations.setColCondText(${i})"><i class="fa-solid fa-check"></i> אישור</button>
+      </div>`,'row-menu-pop');
+      setTimeout(()=>{const el=document.getElementById('au-cv'); if(el){el.focus();el.select();}},30);
+      return;
+    }
+    let items=[];
+    if(kind==='status')      items=this._condColOptions(col);
+    else if(kind==='people') items=this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
+    else if(kind==='check')  items=[{v:true,label:'מסומן'},{v:false,label:'לא מסומן'}];
+    else if(kind==='date')   items=ADV_DATES.map(d=>({v:d[0],label:d[1]}));
+    this._popItems=items;
+    let body=items.length
+      ? items.map((it,j)=>`<button class="rm-item" onclick="Automations.setCondValue(${i},${j})">${
+          it.person?`<span class="av av-xs">${avatarInner(it.person)}</span>`
+                   :`<span class="au-dot" style="background:${it.color||'var(--border)'}"></span>`
+        } ${esc(it.label)}</button>`).join('')
+      : '<div class="rm-note">אין אפשרויות זמינות בעמודה הזאת</div>';
+    // a date may also be one specific day, typed — the tokens above it are the
+    // common case, not the only one
+    if(kind==='date')
+      body+=`<div class="rm-note" style="padding-top:6px">או תאריך מסוים:</div>
+        <input id="au-cv" class="au-in" type="date" style="max-width:210px"
+               onchange="Automations.setColCondText(${i})">`;
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  setColCondText(i){
+    const el=document.getElementById('au-cv');
+    const v=(el?el.value:'').trim();
+    const c=(this._condHome().conds||[])[i]; if(!c)return;
+    if(v===''){ toast('יש להזין ערך'); return; }
+    const kind=ADV_KINDS[c.colType]||'text';
+    c.v=kind==='number'?Number(v):v;
+    c.label=kind==='date'?fdate(v):String(v); c.color='';
     closeCellPops(); this.render();
   },
 
@@ -7528,14 +7836,7 @@ const Automations = {
     // search the picker uses, so a rule can only ever name something the person
     // writing it is allowed to see.
     if(f.type==='item'){ await this.pickLinkedItem(anchor,key,f); return; }
-    let items=[];
-    if(f.type==='status')        items=boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
-    else if(f.type==='priority') items=boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
-    else if(f.type==='group')    items=(st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
-    else if(f.type==='person')   items=this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
-    else if(f.type==='connect')  items=customColumns().filter(c=>c.type==='connect')
-                                        .map(c=>({v:c.id,label:c.title||c.id,color:''}));
-    else if(f.type==='board')    items=this._linkBoards().map(b=>({v:b.id,label:b.name,color:''}));
+    const items=this._optionsFor(f.type,(this.building.values['a_connect']||{}).v);
     // referenced by index so a name with quotes can never break out of the handler
     this._popItems=items;
     const body=items.length
@@ -7547,19 +7848,41 @@ const Automations = {
     openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
 
+  /* The options a field of each type offers. One list, because the sentence's
+     own blanks and an extra action's blanks are the same question asked twice —
+     and a second answer that drifted from the first would be a picker offering
+     a person the rule cannot name. */
+  _optionsFor(type,connectId){
+    if(type==='status')   return boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    if(type==='priority') return boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    if(type==='group')    return (st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
+    if(type==='person')   return this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
+    if(type==='connect')  return customColumns().filter(c=>c.type==='connect')
+                                 .map(c=>({v:c.id,label:c.title||c.id,color:''}));
+    if(type==='board')    return this._linkBoards(connectId).map(b=>({v:b.id,label:b.name,color:''}));
+    return [];
+  },
+  /* The connect column a link action is written against: the one it names
+     itself, or the board's only one. An extra action carries its own, which is
+     why this takes it rather than reading the sentence's. */
+  _connectCol(connectId){
+    const cols=customColumns().filter(c=>c.type==='connect');
+    return connectId?cols.find(c=>c.id===connectId):(cols.length===1?cols[0]:null);
+  },
   /* The boards the chosen connect column points at — a rule cannot create an
      item somewhere the column could not link to it anyway. */
-  _linkBoards(){
-    const chosen=(this.building&&this.building.values['a_connect'])||null;
-    const cols=customColumns().filter(c=>c.type==='connect');
-    const col=chosen?cols.find(c=>c.id===chosen.v):(cols.length===1?cols[0]:null);
+  _linkBoards(connectId){
+    const col=this._connectCol(connectId!==undefined?connectId
+                               :((this.building&&this.building.values['a_connect'])||{}).v);
     const ids=(col&&col.connect&&col.connect.board_ids)||[];
     return (st.boards||[]).filter(b=>ids.includes(b.id));
   },
-  async pickLinkedItem(anchor,key,f){
-    const chosen=(this.building&&this.building.values['a_connect'])||null;
-    const cols=customColumns().filter(c=>c.type==='connect');
-    const col=chosen?cols.find(c=>c.id===chosen.v):(cols.length===1?cols[0]:null);
+  /* `key` is the sentence's blank to fill; `into` is an extra action's
+     ({actIdx,key,connect}) — the picker is the same, only the place the answer
+     lands differs. */
+  async pickLinkedItem(anchor,key,into){
+    const col=this._connectCol(into&&into.connect!==undefined?into.connect
+                               :((this.building&&this.building.values['a_connect'])||{}).v);
     if(!col){ toast('בחר תחילה את עמודת הקישור'); return; }
     const bids=(col.connect&&col.connect.board_ids)||[];
     if(!bids.length){ toast('לעמודת הקישור אין לוחות יעד'); return; }
@@ -7569,8 +7892,10 @@ const Automations = {
       items=(d.items||[]).map(x=>({v:x.id,label:x.title,color:'',sub:x.board_name}));
     }catch(err){}
     this._popItems=items;
+    const call=into?`Automations.setActValue(${into.actIdx},'${into.key}',`
+                   :`Automations.setField('${key}',`;
     const body=items.length
-      ? items.map((it,i)=>`<button class="rm-item" onclick="Automations.setField('${key}',${i})">
+      ? items.map((it,i)=>`<button class="rm-item" onclick="${call}${i})">
           <i class="fa-solid fa-arrow-up-right-from-square" style="font-size:10px;color:var(--primary)"></i>
           ${esc(it.label)}<small style="margin-inline-start:auto;color:var(--text-light)">${esc(it.sub||'')}</small></button>`).join('')
       : '<div class="rm-note">אין פריטים זמינים בלוחות היעד</div>';
@@ -7608,6 +7933,14 @@ const Automations = {
     const conds=[];
     for(const c of (this.building.conds||[])){
       const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
+      if(spec.type==='column'){
+        if(!c.col){ toast('יש לבחור עמודה בתנאי'); return; }
+        if(c.v===null||c.v===undefined||c.v===''){ toast('יש להשלים את הערך בתנאי'); return; }
+        const kind=ADV_KINDS[c.colType]||'text';
+        conds.push({kind:c.kind,value:{col:c.col,type:c.colType,
+          value:kind==='people'?+c.v:(kind==='number'?Number(c.v):c.v)}});
+        continue;
+      }
       if(spec.type&&(c.v===null||c.v===undefined||c.v==='')){
         toast('יש להשלים את הערך בתנאי'); return;
       }
@@ -7615,6 +7948,24 @@ const Automations = {
                           :{kind:c.kind});
     }
     if(conds.length) config.conditions=conds;
+    // an extra action missing a value is refused here rather than sent: a draft
+    // may hold the blank, an active rule may not — the same line the sentence's
+    // own blanks are held to, and the server holds it again
+    const acts=[];
+    for(const a of (this.building.acts||[])){
+      const spec=this._actSpec(a.key)||{fields:[]};
+      const values={};
+      for(const f of (spec.fields||[])){
+        const cur=(a.values||{})[f.key];
+        if(cur===undefined){
+          if(asDraft) continue;
+          toast('יש להשלים את הערכים בפעולות הנוספות'); return;
+        }
+        values[f.key]=['person','group','item','board'].includes(f.type)?+cur.v:cur.v;
+      }
+      acts.push({key:a.key,values});
+    }
+    if(acts.length) config.actions=acts;
     const meta=this.building.meta||{};
     try{
       await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
@@ -9396,7 +9747,7 @@ function groupHTML(g){
         ${colgroupHTML()}
         <thead><tr class="col-head-row">${columnHeadersHTML(col,g)}<th class="th-spacer"></th></tr></thead>
         <tbody data-gid="${g.id===null?'':g.id}" style="--gcolor:${col}">${rows}
-          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td colspan="${totalCols()+1}">+ הוסף פריט</td></tr>
+          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td class="c-item">+ הוסף פריט</td><td colspan="${totalCols()}"></td></tr>
         </tbody>
         ${groupSumRowHTML(g.tasks)}
       </table>
@@ -9608,8 +9959,19 @@ function itemRow(t,col){
      panel up by data-parent has to care; toggleSubs fills it the first time it
      is opened. A row that IS open renders eagerly, which keeps a re-render
      (sorting, a status change) showing what was open before it. */
+  /* The pinned column's own cell, empty, in front of the panel.
+
+     A row that spanned the whole table had no cell in the pinned column, so
+     nothing in it was pinned: the sub-item panel began 46px from the table's
+     start — inside the pinned column's strip — and slid sideways across it in
+     plain view behind the item names, which is not something a pinned column
+     is ever supposed to show. Covering the strip with something opaque would
+     hide the start of the panel at rest too, so the panel starts after the
+     column instead: the strip then holds item names and nothing else, and the
+     panel scrolls under it and out of sight. */
   const wrap=`<tr class="sub-wrap" data-parent="${t.id}" style="display:${open?'table-row':'none'}">
-      <td class="sub-wrap-cell" colspan="${totalCols()+1}">${open?subPanelHTML(t,subs,col):''}</td></tr>`;
+      <td class="c-item sub-pin" aria-hidden="true"></td>
+      <td class="sub-wrap-cell" colspan="${totalCols()}">${open?subPanelHTML(t,subs,col):''}</td></tr>`;
   return parent+wrap;
 }
 /* One parent's sub-items as an independent, indented panel: a narrower table

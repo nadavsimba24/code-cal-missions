@@ -57,6 +57,37 @@ def test_the_workspace_is_restored_before_the_board_is_chosen():
         "the board is chosen before the workspace is restored"
 
 
+def test_the_restore_is_not_performed_in_front_of_her():
+    """Coming back to the same place is not enough — it must not be watchable.
+
+    The restore was correct and visible: loadBoards painted the sidebar first,
+    while no workspace was known yet (Env.active() null, so the board list read
+    "אין לוחות שהוזמנת אליהם" over a full account), then Env.load drew the
+    primary workspace's name into the switcher, and only then did the
+    remembered workspace — or the one the board in the URL belongs to — replace
+    it and the boards appear. Three paints on every refresh, two of them of
+    somewhere she is not, and on a cold server slow enough to read.
+
+    So the entry settles where it is first and draws once. The counting is in
+    tests/frontend/refresh_keeps_place.mjs; what is pinned here is the shape
+    that makes it possible."""
+    m = re.search(r"async function enterApp\(\)\{(.*?)\n\}", SRC, re.S)
+    assert m, "enterApp moved"
+    body = m.group(1)
+    assert "loadBoards({render:false})" in body, \
+        "the boards paint the sidebar themselves again, before there is a workspace"
+    assert body.count("renderSidebar()") == 1, \
+        "the entry paints the sidebar more than once"
+    assert body.index("Env.load()") < body.index("renderSidebar()"), \
+        "the sidebar is painted before the workspaces are known"
+    # the workspace a link leads to is resolved before that paint, not by
+    # openDeepLink afterwards
+    assert body.index("followBoardEnv(r.boardId)") < body.index("renderSidebar()"), \
+        "a link to a board elsewhere draws the remembered workspace first"
+    # and the two requests still travel together — this cost no round trip
+    assert "await Promise.all([" in body
+
+
 def test_a_refresh_comes_back_to_the_same_place():
     """Driven harness: tests/frontend/refresh_keeps_place.mjs.
 
