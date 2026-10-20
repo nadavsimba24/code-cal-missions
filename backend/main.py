@@ -2347,7 +2347,12 @@ def _view_json(v, db=None, names=None):
             "visibility": v.visibility, "owner_id": v.owner_id,
             "owner_name": (names or {}).get(v.owner_id, ""),
             "filters": v.filters or {}, "position": v.position or 0,
-            "locked": bool(v.locked), "pinned": bool(v.pinned)}
+            "locked": bool(v.locked), "pinned": bool(v.pinned),
+            # When the shared configuration last changed. A reader holding
+            # temporary adjustments compares this with what they opened and
+            # says "התצורה המשותפת השתנתה" rather than silently discarding
+            # what they were in the middle of.
+            "updated_at": v.updated_at.isoformat() if v.updated_at else None}
 
 
 def _view_order_for(db, board_id, user_id):
@@ -2540,6 +2545,11 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         v.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(v)
+        # "משתמש ללא שינויים מקומיים יקבל את התצורה החדשה בלי לטעון מחדש את
+        # הלוח." The doorbell, not the configuration: the client fetches the
+        # strip and decides what to do with it, which is where it knows
+        # whether this reader has temporary adjustments to protect.
+        bus.publish("view.changed", board_id=v.board_id, actor_id=user_id, view_id=v.id)
         return dict(_view_json(v), can_edit=True)
 
 
