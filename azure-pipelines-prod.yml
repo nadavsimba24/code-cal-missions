@@ -198,10 +198,21 @@ stages:
             if [ -n "$AGENT_IP" ]; then
               RULE="pipeline-verify-$(tag)"
               echo "── allow-list is deny-by-default; letting the agent ($AGENT_IP) in as $RULE"
+              # ⚠ A rule's description may not contain a comma or a semicolon.
+              # That was the whole of a six-week run of releases reported
+              # failed: the description read "temporary, added and removed by
+              # build <id>", App Service refused it saying only "Bad Request"
+              # with no field named, the rule was never added, and the check
+              # below then spent thirty minutes being turned away by the
+              # allow-list this step had just failed to put the agent on. Every
+              # one of those releases had deployed correctly. Fixed once in
+              # f4bdd87, lost when this file was rewritten in the web editor
+              # (ba0bbc4), fixed again on the release branch in a4e9e9a and
+              # lost again the same way (d8e72a1). Do not reintroduce the comma.
               az webapp config access-restriction add "${COMMON[@]}" \
                 --rule-name "$RULE" --priority 100 --action Allow \
                 --ip-address "$AGENT_IP/32" \
-                --description "temporary, added and removed by build $(tag)" \
+                --description "temporary - added and removed by build $(tag)" \
                 --output none || {
                   RULE=""
                   echo "##vso[task.logissue type=warning]could not add the allow rule — the check below will see 403"
