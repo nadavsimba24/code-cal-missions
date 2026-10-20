@@ -2030,7 +2030,61 @@ QUERY_PAGE = 50
 QUERY_PAGE_MAX = 200
 
 VIEW_VIS = ("private", "public")
-VIEW_MAX = 40            # per board, per person — a tab strip is not a list
+
+# ── names and limits ────────────────────────────────────────────────────
+# Technical ceilings, not product rules — hence the environment variables.
+# They are here so a board cannot be made unusable, not to express anything
+# about how many cuts a department ought to keep.
+VIEW_NAME_MAX = max(1, int(os.environ.get("VIEW_NAME_MAX", "80") or 80))
+# Active views per BOARD, the main table counted as one of them. Per board and
+# not per person: the strip is shared now, so one person filling it fills
+# everybody's, and a limit counted per owner would not be a limit on the strip.
+VIEW_MAX = max(2, int(os.environ.get("VIEW_MAX_PER_BOARD", "100") or 100))
+# The fixed main table. It has no row of its own — it is the board — but it
+# occupies a name on the strip, and a saved view answering to the same name
+# would make the strip ambiguous in the one place a reader cannot afford it.
+MAIN_VIEW_NAME = (os.environ.get("MAIN_VIEW_NAME") or "טבלה ראשית").strip()
+
+
+def _view_name_key(name):
+    """What makes two view names "the same".
+
+    Ends trimmed, then casefolded: "Budget" and "budget " are one name. Hebrew
+    has no case, so casefold leaves it exactly as typed and the rule costs it
+    nothing — it is there for the English a municipality's boards are full of.
+    casefold rather than lower because it folds the pairs lower() misses.
+    """
+    return (name or "").strip().casefold()
+
+
+def _check_view_name(db, board_id, name, exclude_id=None):
+    """The trimmed name, or an HTTPException saying why there isn't one."""
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "לתצוגה צריך שם")
+    if len(name) > VIEW_NAME_MAX:
+        # refused rather than trimmed: a silently shortened name is not the one
+        # somebody typed, and it can collide with a view that already exists
+        raise HTTPException(400, f"שם תצוגה עד {VIEW_NAME_MAX} תווים")
+    key = _view_name_key(name)
+    if key == _view_name_key(MAIN_VIEW_NAME):
+        raise HTTPException(400, "השם הזה שייך לטבלה הראשית")
+    q = (db.query(SavedView)
+           .filter(SavedView.board_id == board_id, SavedView.deleted_at.is_(None)))
+    if exclude_id is not None:
+        q = q.filter(SavedView.id != exclude_id)
+    if any(_view_name_key(v.name) == key for v in q.all()):
+        raise HTTPException(400, "כבר יש תצוגה בשם הזה בלוח")
+    return name
+
+
+def _check_view_room(db, board_id):
+    """One more active view, main table included — or a refusal."""
+    live = (db.query(SavedView)
+              .filter(SavedView.board_id == board_id,
+                      SavedView.deleted_at.is_(None)).count())
+    if live + 1 >= VIEW_MAX:            # +1: the main table is one of them
+        raise HTTPException(400, f"יותר מדי תצוגות פעילות בלוח (מקסימום {VIEW_MAX})")
 
 
 def _view_visible_to(v, user_id, role):
@@ -2327,9 +2381,7 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
 def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         _b, role = _board_role_or_403(db, board_id, user_id)
-        name = (data.get("name") or "").strip()
-        if not name:
-            raise HTTPException(400, "לתצוגה צריך שם")
+        name = _check_view_name(db, board_id, data.get("name"))
         # No private views in this version: a saved table view IS a tab on the
         # board, so making one is an edit to the board and needs the rights of
         # one. The parameter is not read — a client asking for "private" gets a
@@ -2337,11 +2389,7 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
         vis = "public"
         if role not in ("admin", "editor"):
             raise HTTPException(403, "תצוגה שמורה היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
-        mine = (db.query(SavedView)
-                  .filter(SavedView.board_id == board_id, SavedView.owner_id == user_id,
-                          SavedView.deleted_at.is_(None)).count())
-        if mine >= VIEW_MAX:
-            raise HTTPException(400, f"יותר מדי תצוגות שמורות בלוח (מקסימום {VIEW_MAX})")
+        _check_view_room(db, board_id)
         # the cut is validated the way the query endpoint validates one: a view
         # holding a filter the server would refuse is a tab that cannot open
         filters = data.get("filters") if isinstance(data.get("filters"), dict) else {}
@@ -2354,7 +2402,7 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
         filters = _strip_search(filters)
         maxpos = (db.query(func.max(SavedView.position))
                     .filter(SavedView.board_id == board_id).scalar())
-        v = SavedView(board_id=board_id, owner_id=user_id, name=name[:80],
+        v = SavedView(board_id=board_id, owner_id=user_id, name=name,
                       visibility=vis, filters=filters,
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(v)
@@ -2390,10 +2438,7 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         if rest and v.locked and not _may_write_locked(role):
             raise HTTPException(403, "התצוגה נעולה — רק בעל הלוח יכול לשנות אותה")
         if data.get("name") is not None:
-            name = (data.get("name") or "").strip()
-            if not name:
-                raise HTTPException(400, "לתצוגה צריך שם")
-            v.name = name[:80]
+            v.name = _check_view_name(db, v.board_id, data.get("name"), exclude_id=v.id)
         if data.get("visibility") in VIEW_VIS:
             # publishing is the edit that needs the rights, not editing itself:
             # a private view becoming public puts a tab on everybody's board
@@ -2492,6 +2537,13 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         # already agreed to be rid of. The board owner's.
         if not _may_write_locked(role):
             raise HTTPException(403, "רק בעל הלוח יכול לשחזר תצוגה שנמחקה")
+        # Putting a tab back on the strip is subject to what the strip allows
+        # now, not to what it allowed when the tab left it: the name may have
+        # been taken since, and the board may have filled up. Otherwise the bin
+        # is a way around both — two tabs answering to one name is precisely
+        # the failure the name rule exists to prevent.
+        _check_view_name(db, v.board_id, v.name, exclude_id=v.id)
+        _check_view_room(db, v.board_id)
         v.deleted_at = None
         v.deleted_by = None
         v.updated_at = datetime.now(timezone.utc)
@@ -2521,19 +2573,19 @@ def duplicate_saved_view(view_id: int, data: dict = None,
         # yours, and the rule naming the column you cannot see comes with it.
         if _view_blocked_for(b, v, user_id, role):
             raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
-        live = (db.query(SavedView)
-                  .filter(SavedView.board_id == v.board_id, SavedView.owner_id == user_id,
-                          SavedView.deleted_at.is_(None)).count())
-        if live >= VIEW_MAX:
-            raise HTTPException(400, f"יותר מדי תצוגות שמורות בלוח (מקסימום {VIEW_MAX})")
-        name = ((data or {}).get("name") or "").strip() or _copy_name(db, v)
+        _check_view_room(db, v.board_id)
+        # A name may arrive with the copy — the dialog offers the suggestion
+        # below and lets it be changed before saving — and whichever one comes
+        # is held to the same rule as any other name.
+        name = _check_view_name(db, v.board_id,
+                                ((data or {}).get("name") or "").strip() or _copy_name(db, v))
         maxpos = (db.query(func.max(SavedView.position))
                     .filter(SavedView.board_id == v.board_id).scalar())
         # The SAVED shared configuration, not whatever the copier is looking
         # at — that is what "שמירה כתצוגה חדשה" is for. Shared, unlocked,
         # unpinned, a new id, and nothing but the configuration: no items, and
         # no permission anybody did not already have.
-        c = SavedView(board_id=v.board_id, owner_id=user_id, name=name[:80],
+        c = SavedView(board_id=v.board_id, owner_id=user_id, name=name,
                       visibility="public", filters=_strip_search(dict(v.filters or {})),
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(c)
@@ -2543,17 +2595,30 @@ def duplicate_saved_view(view_id: int, data: dict = None,
 
 
 def _copy_name(db, v):
-    """"<שם> — עותק", and "עותק 2" after that, so copying twice says so."""
-    base = f"{v.name} — עותק"
-    taken = {n for (n,) in db.query(SavedView.name)
-                             .filter(SavedView.board_id == v.board_id,
-                                     SavedView.deleted_at.is_(None)).all()}
-    if base not in taken:
-        return base
-    n = 2
-    while f"{base} {n}" in taken:
+    """A free name for a copy: "<שם> — עותק", then "עותק 2", and so on.
+
+    Compared the way every other name on the strip is compared — trimmed and
+    casefolded, with the main table's name among the taken ones — so the
+    suggestion can never come back refused by the rule that produced it.
+
+    Shortened to fit when the original is already near the ceiling. A
+    suggestion is ours to trim; a name somebody typed is not.
+    """
+    taken = {_view_name_key(n) for (n,) in
+             db.query(SavedView.name).filter(SavedView.board_id == v.board_id,
+                                             SavedView.deleted_at.is_(None)).all()}
+    taken.add(_view_name_key(MAIN_VIEW_NAME))
+
+    def fit(suffix):
+        room = VIEW_NAME_MAX - len(suffix)
+        return ((v.name or "")[:room].strip() + suffix) if room > 0 else suffix.strip()
+
+    n = 1
+    while True:
+        cand = fit(" — עותק" if n == 1 else f" — עותק {n}")
+        if _view_name_key(cand) not in taken:
+            return cand
         n += 1
-    return f"{base} {n}"
 
 
 @app.put("/api/boards/{board_id}/views/order")
