@@ -1584,6 +1584,38 @@ def _col_perm(col, user_id, board_role):
     caps = _board_caps(board_role)
     return "edit" if "edit" in caps else ("view" if "view" in caps else "none")
 
+def _filter_columns(b, user_id, role, known=None, fields=None):
+    """(known, fields) — every filterable column on the board, and the subset
+    this reader may ask about.
+
+    One place, because two of them disagreeing is a leak rather than a bug: the
+    query endpoint decides what a filter is allowed to run, and the view layer
+    decides whether a SAVED filter may be opened at all. If the second were
+    more generous than the first, a view would open and then answer nothing;
+    if it were stricter, a cut somebody can run by hand would be refused as a
+    tab. They are the same question and this is the one answer.
+    """
+    known = {} if known is None else known
+    fields = {} if fields is None else fields
+    for c in ((b.settings or {}).get("columns") or []):
+        kind = filter_ast.KINDS.get(c.get("type"))
+        if not kind:
+            continue
+        cid = str(c.get("id"))
+        known[cid] = kind
+        if user_id is None or _col_perm(c, user_id, role) != "none":
+            fields[cid] = kind
+    return known, fields
+
+
+def _unseen_col_ids(b, user_id, role):
+    """Column ids on this board that this reader may not see at all."""
+    if user_id is None:
+        return set()
+    return {str(c.get("id")) for c in ((b.settings or {}).get("columns") or [])
+            if _col_perm(c, user_id, role) == "none"}
+
+
 @app.get("/api/boards")
 def list_boards(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -2060,6 +2092,108 @@ def _may_edit_view(v, user_id, role):
     return v.visibility != "public" and v.owner_id == user_id
 
 
+def _view_blocked_for(b, v, user_id, role):
+    """Does this saved cut ask about a column this reader may not see?
+
+    If it does, the view is not opened for them and not copied by them. Not
+    "run without that rule": a rule silently dropped from an "or" group shows
+    the whole board, and a tab that answers a different question for different
+    people is worse than one that opens for neither.
+
+    Always blocking, whatever FILTER_COLUMN_POLICY says. That setting is about
+    a filter somebody is building by hand, where the column picker never
+    offered the column in the first place; this is a cut that was SAVED while
+    somebody could see the column and is being opened by somebody who cannot.
+    """
+    if user_id is None:
+        return False
+    adv = (v.filters or {}).get("adv")
+    if not adv:
+        return False
+    # The same two maps the query endpoint builds, from the same helper and
+    # the same built-in base — see _filter_columns.
+    base = {"title": "text", "status": "status", "priority": "status",
+            "assignees": "people", "due": "date"}
+    _known, fields = _filter_columns(b, user_id, role, dict(base), dict(base))
+    try:
+        _tree, gone = filter_ast.prune(filter_ast.parse(adv), fields)
+    except filter_ast.BadFilter:
+        return False          # a cut the server already refuses is its own error
+    unseen = _unseen_col_ids(b, user_id, role)
+    return any(str(f) in unseen for f in gone)
+
+
+def _redact_view_cols(filters, unseen):
+    """The view's table layout, minus the columns this reader may not see.
+
+    "הגדרות שאינן ניתנות לצפייה לא יישלחו לדפדפן" — so a width, a position in
+    the order or a place on the hidden list is removed before the view leaves
+    the server. Each of those is a fact about a column, and the column itself
+    is not this reader's to know about.
+    """
+    if not unseen or not isinstance(filters, dict):
+        return filters
+    cols = filters.get("cols")
+    if not isinstance(cols, dict):
+        return filters
+    out = dict(cols)
+    if isinstance(cols.get("order"), list):
+        out["order"] = [c for c in cols["order"] if str(c) not in unseen]
+    if isinstance(cols.get("hidden"), list):
+        out["hidden"] = [c for c in cols["hidden"] if str(c) not in unseen]
+    if isinstance(cols.get("widths"), dict):
+        out["widths"] = {k: w for k, w in cols["widths"].items() if str(k) not in unseen}
+    return dict(filters, cols=out)
+
+
+def _merge_view_cols(incoming, stored, unseen):
+    """What to store when somebody who sees only part of the table saves it.
+
+    They were sent a layout with the columns they may not see taken out of it,
+    so what comes back has no opinion about those columns — and writing it as
+    given would delete their width, their place in the order and their entry on
+    the hidden list. The reader did not ask for that and could not have known
+    they were doing it.
+
+    So the stored settings for unseen columns are put back: the order keeps
+    them where they were relative to the columns around them, and the two maps
+    simply keep their entries.
+    """
+    if not unseen:
+        return incoming
+    if not isinstance(incoming, dict):
+        return incoming
+    inc = incoming.get("cols")
+    old = (stored or {}).get("cols")
+    if not isinstance(inc, dict) or not isinstance(old, dict):
+        return incoming
+    out = dict(inc)
+    if isinstance(inc.get("order"), list) and isinstance(old.get("order"), list):
+        # walk the stored order, keeping unseen ids pinned to the neighbour they
+        # followed; everything else takes the incoming order
+        kept = [c for c in inc["order"] if str(c) not in unseen]
+        rebuilt, at = [], 0
+        for c in old["order"]:
+            if str(c) in unseen:
+                rebuilt.append(c)
+            elif at < len(kept):
+                rebuilt.append(kept[at]); at += 1
+        rebuilt += kept[at:]
+        for c in kept:
+            if c not in rebuilt:
+                rebuilt.append(c)
+        out["order"] = rebuilt
+    if isinstance(inc.get("hidden"), list) and isinstance(old.get("hidden"), list):
+        out["hidden"] = list(inc["hidden"]) + [c for c in old["hidden"] if str(c) in unseen]
+    if isinstance(inc.get("widths"), dict) and isinstance(old.get("widths"), dict):
+        w = dict(inc["widths"])
+        for k, val in old["widths"].items():
+            if str(k) in unseen:
+                w[k] = val
+        out["widths"] = w
+    return dict(incoming, cols=out)
+
+
 def _view_json(v, db=None, names=None):
     return {"id": v.id, "board_id": v.board_id, "name": v.name,
             "visibility": v.visibility, "owner_id": v.owner_id,
@@ -2125,7 +2259,17 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
         if rows:
             ids = {v.owner_id for v in rows}
             names = {u.id: u.name for u in db.query(User).filter(User.id.in_(ids)).all()}
-        return {"views": [dict(_view_json(v, db, names),
+        unseen = _unseen_col_ids(_b, user_id, role)
+        def one(v):
+            vj = _view_json(v, db, names)
+            # A cut that asks about a column this reader may not see is not
+            # opened by them — and its filters do not travel either. The
+            # message is deliberately general: naming the column, or showing
+            # the condition, is the disclosure the block exists to prevent.
+            if _view_blocked_for(_b, v, user_id, role):
+                return dict(vj, filters={}, blocked=True)
+            return dict(vj, filters=_redact_view_cols(vj["filters"], unseen), blocked=False)
+        return {"views": [dict(one(v),
                                # may write to it — the rights, and the lock,
                                # which only the board's owner writes through
                                can_edit=(_may_edit_view(v, user_id, role)
@@ -2219,7 +2363,13 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
                 filter_ast.parse(data["filters"].get("adv"))
             except filter_ast.BadFilter as e:
                 raise HTTPException(400, str(e))
-            v.filters = data["filters"]
+            b = db.query(Board).filter(Board.id == v.board_id).first()
+            # Saving over a cut you may not open would overwrite the rule you
+            # cannot see — the same disclosure from the other side.
+            if _view_blocked_for(b, v, user_id, role):
+                raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
+            v.filters = _merge_view_cols(data["filters"], v.filters,
+                                         _unseen_col_ids(b, user_id, role))
         if isinstance(data.get("position"), int):
             v.position = data["position"]
         v.updated_at = datetime.now(timezone.utc)
@@ -2320,6 +2470,11 @@ def duplicate_saved_view(view_id: int, data: dict = None,
         v, role, _may = _view_or_404(db, view_id, user_id)
         if role not in ("admin", "editor"):
             raise HTTPException(403, "תצוגה שמורה היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
+        b = db.query(Board).filter(Board.id == v.board_id).first()
+        # Copying a cut you may not open would hand you the cut: the copy is
+        # yours, and the rule naming the column you cannot see comes with it.
+        if _view_blocked_for(b, v, user_id, role):
+            raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
         live = (db.query(SavedView)
                   .filter(SavedView.board_id == v.board_id, SavedView.owner_id == user_id,
                           SavedView.deleted_at.is_(None)).count())
@@ -2447,14 +2602,7 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         base = {"title": "text", "status": "status", "priority": "status",
                 "assignees": "people", "due": "date"}
         fields, known = dict(base), dict(base)
-        for c in ((b.settings or {}).get("columns") or []):
-            kind = filter_ast.KINDS.get(c.get("type"))
-            if not kind:
-                continue
-            cid = str(c.get("id"))
-            known[cid] = kind
-            if user_id is None or _col_perm(c, user_id, my_role) != "none":
-                fields[cid] = kind
+        known, fields = _filter_columns(b, user_id, my_role, known, fields)
 
         # A rule naming a column that was deleted comes OUT of the tree rather
         # than being made to answer true — inside an "or" group the two are
