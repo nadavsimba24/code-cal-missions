@@ -58,12 +58,16 @@ def test_being_assigned_to_a_record_is_mailed(client, admin_id, guinea_id, monke
     assert len(sent) == 1, sent
     to, subject, html = sent[0]
     assert to == _email(guinea_id)
-    assert subject == "שוייכת לרשומה בלוח תשתיות במערכת missions"
+    # The wording, word for word as the product wrote it: the board's name in
+    # quotes, MISSIONS in capitals in the subject and lower case in the
+    # sentence. Spelled out here rather than built from a helper, so a change
+    # to any of it is a change somebody has to make on purpose.
+    assert subject == 'שוייכת לרשומה בלוח "תשתיות" במערכת MISSIONS'
     assert f"שלום {_name(guinea_id)}," in html
-    assert 'שויכת ע"י' in html and _name(admin_id) in html
-    assert "מדרכה שבורה" in html and "תשתיות" in html
+    assert (f'שויכת ע"י <b>{_name(admin_id)}</b> לרשומה '
+            f'<b>"מדרכה שבורה"</b> בלוח <b>תשתיות</b> במערכת missions.') in html
     assert "כניסה לרשומה" in html
-    assert "ואין להגיב לו" in html
+    assert "מייל זה נשלח באופן אוטומטי ממערכת missions ואין להגיב לו." in html
 
 
 def test_the_button_lands_on_the_record_itself(client, admin_id, guinea_id, monkeypatch):
@@ -136,13 +140,15 @@ def test_being_tagged_in_a_conversation_is_mailed(client, admin_id, guinea_id, m
     assert len(sent) == 1, sent
     to, subject, html = sent[0]
     assert to == _email(guinea_id)
-    assert subject == "תוייגת ברשומה בלוח פניות במערכת missions"
+    # בשיחה, not ברשומה: what happened is that somebody was named in the
+    # conversation. Same quoting and capitalisation as the mail above.
+    assert subject == 'תוייגת בשיחה בלוח "פניות" במערכת MISSIONS'
     assert f"שלום {_name(guinea_id)}," in html
-    assert 'תוייגת ע"י' in html and "בשיחה ברשומה" in html
-    assert "עץ שנפל" in html and "פניות" in html
+    assert (f'תוייגת ע"י <b>{_name(admin_id)}</b> בשיחה ברשומה '
+            f'<b>"עץ שנפל"</b> בלוח <b>פניות</b> במערכת missions.') in html
     assert "כניסה לשיחה" in html
     assert f"#/board/{bid}/item/{tid}" in html
-    assert "ואין להגיב לו" in html
+    assert "מייל זה נשלח באופן אוטומטי ממערכת missions ואין להגיב לו." in html
 
 
 def test_a_tag_typed_as_at_name_mails_too(client, admin_id, guinea_id, monkeypatch):

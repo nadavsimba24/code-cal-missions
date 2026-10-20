@@ -5112,10 +5112,15 @@ def _item_mail_html(heading, to_name, sentence, cta, href):
 
 
 def _item_assigned_mail(to_name, actor_name, item_title, board_name, board_id, task_id, base=None):
-    """"שוייכת לרשומה" — the wording the product asked for, word for word."""
-    return (f'שוייכת לרשומה בלוח {board_name} במערכת missions',
+    """"שוייכת לרשומה" — the wording the product asked for, word for word.
+
+    The subject quotes the board's name and spells MISSIONS in capitals; the
+    sentence below spells it in lower case. That is not an inconsistency to be
+    tidied away — it is how the wording was given, and the heading repeats the
+    subject rather than the sentence, so the two stay in step."""
+    return (f'שוייכת לרשומה בלוח "{board_name}" במערכת MISSIONS',
             _item_mail_html(
-                f'שוייכת לרשומה בלוח "{_mail_esc(board_name)}" במערכת missions',
+                f'שוייכת לרשומה בלוח "{_mail_esc(board_name)}" במערכת MISSIONS',
                 to_name,
                 f'שויכת ע"י <b>{_mail_esc(actor_name)}</b> לרשומה '
                 f'<b>"{_mail_esc(item_title)}"</b> בלוח <b>{_mail_esc(board_name)}</b> '
@@ -5125,10 +5130,14 @@ def _item_assigned_mail(to_name, actor_name, item_title, board_name, board_id, t
 
 def _item_mention_mail(to_name, actor_name, item_title, board_name, board_id, task_id, base=None):
     """"תוייגת בשיחה". The button says כניסה לשיחה and lands on the item's
-    conversation, which is the same deep link — the item opens on its chat."""
-    return (f'תוייגת ברשומה בלוח {board_name} במערכת missions',
+    conversation, which is the same deep link — the item opens on its chat.
+
+    The subject says בשיחה, not ברשומה: what happened is that somebody was
+    named in the conversation, and the record is where that conversation is.
+    Same capitalisation rule as the mail above."""
+    return (f'תוייגת בשיחה בלוח "{board_name}" במערכת MISSIONS',
             _item_mail_html(
-                f'תוייגת ברשומה בלוח "{_mail_esc(board_name)}" במערכת missions',
+                f'תוייגת בשיחה בלוח "{_mail_esc(board_name)}" במערכת MISSIONS',
                 to_name,
                 f'תוייגת ע"י <b>{_mail_esc(actor_name)}</b> בשיחה ברשומה '
                 f'<b>"{_mail_esc(item_title)}"</b> בלוח <b>{_mail_esc(board_name)}</b> '
