@@ -3012,7 +3012,37 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
                 hits.append(t)
         matched = len(hits)
 
+        # ── then sort, over everything that matched ──────────────────────
+        # "סינון ומיון חלים על כלל נתוני הלוח המורשים, גם בטעינה מדורגת."
+        #
+        # Sorting used to be the browser's alone, over the rows it happened to
+        # hold. Below the client threshold that is every row and the two are
+        # the same thing; past it the server answers with a PAGE, and sorting
+        # a page is not sorting the board — it orders fifty rows that were
+        # chosen by position and calls the result sorted. Page two then
+        # repeats and skips, because each page is ordered against itself.
+        #
+        # So the order is applied here, after the filter and before the page
+        # is cut, which is also the order the spec gives: permissions, then
+        # the conditions and the search, then sort, then the hierarchy.
+        #
+        # The same three keys the toolbar offers and a view stores. Per-COLUMN
+        # sorting (the arrows on a header) is still the browser's own and is
+        # still wrong past the threshold — it is not part of a saved view's
+        # configuration, and giving it the same treatment is its own change.
+        prio_rank = {p["key"]: i for i, p in enumerate(_board_priorities(b))}
+        _SORTS = {
+            # a missing date sorts last, exactly as the browser does it
+            "due": lambda t: (t.due_date is None, t.due_date or date.min),
+            "priority": lambda t: prio_rank.get(_task_priority_key(t), 998),
+            "title": lambda t: (t.title or ""),
+        }
+        want_sort = str(data.get("sort") or "")
+        if want_sort in _SORTS:
+            hits.sort(key=_SORTS[want_sort])
+
         out = {"matched": matched, "total": total,
+               "sort": want_sort if want_sort in _SORTS else "",
                "conditions": filter_ast.count(tree),
                # the rules that could not be run, so the caller can say why
                # the answer is wider than the view promised — and which of
