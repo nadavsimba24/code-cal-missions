@@ -66,8 +66,31 @@ def test_a_view_keeps_the_whole_cut_not_an_approximation_of_it(client, admin_id)
     v = r.json()
     assert v["name"] == "באגים דחופים פתוחים"
     assert v["visibility"] == "public", "every saved view is shared in this version"
-    assert v["filters"] == CUT, "the cut came back changed"
+    # everything except the search box — see test_a_saved_view_never_holds_a_search
+    assert v["filters"] == {k: val for k, val in CUT.items() if k != "q"}, \
+        "the cut came back changed"
     assert v["filters"]["adv"]["rules"][1]["v"] == "high"
+
+
+def test_a_saved_view_never_holds_a_search(client, admin_id):
+    """A search is a שינוי זמני — "מתאפסת ביציאה מהתצוגה". Stored, it would be
+    the opposite of temporary: a tab that silently narrows the board for
+    everybody who opens it, above a search box that looks empty.
+
+    Dropped wherever a configuration is WRITTEN, not only where one is
+    created: saving over a view would otherwise store what creating one is
+    forbidden to."""
+    bid = _board(client, admin_id)
+    v = _mk(client, bid, admin_id, "בלי חיפוש").json()
+    assert CUT["q"], "the fixture cut has to carry a search for this to mean anything"
+    assert "q" not in v["filters"]
+    assert v["filters"]["priority"] == CUT["priority"], "the rest of the cut went with it"
+
+    r = client.patch(f"/api/views/{v['id']}",
+                     json={"user_id": admin_id, "filters": dict(CUT, q="שוב")},
+                     headers={"X-CityOS-User": str(admin_id)})
+    assert r.status_code == 200, r.text
+    assert "q" not in _list(client, bid, admin_id)[0]["filters"], "a save stored one"
 
 
 def test_a_view_needs_a_name(client, admin_id):

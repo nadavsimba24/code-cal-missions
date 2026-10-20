@@ -2123,6 +2123,46 @@ def _view_blocked_for(b, v, user_id, role):
     return any(str(f) in unseen for f in gone)
 
 
+def _strip_search(filters):
+    """A saved view never holds the search box's text.
+
+    "שמירה כתצוגה חדשה מעתיקה את תצורת העבודה הנוכחית ... אך ללא טקסט
+    החיפוש", and a view created from the main table starts "ללא חיפוש או
+    התאמות זמניות". Both say the same thing, and the glossary says why: a
+    search is a שינוי זמני, which "מתאפסת ביציאה מהתצוגה". A stored one would
+    be the opposite of temporary — a tab that silently narrows the board for
+    everybody who opens it, with a search box that looks empty.
+
+    Applied wherever a view's configuration is WRITTEN, not only on the two
+    create paths: saving over a view would otherwise store what creating one
+    is forbidden to.
+    """
+    if not isinstance(filters, dict) or "q" not in filters:
+        return filters
+    return {k: val for k, val in filters.items() if k != "q"}
+
+
+def _view_cut_allowed(b, filters, user_id, role):
+    """Is this cut one the person saving it may ask for?
+
+    The same validation duplicate does — "תנאי גישה והאימות זהים לאלה של
+    שכפול" — and for the same reason: a filter naming a column somebody may
+    not see is one they must not be able to run, and saving it as their own
+    view would be exactly that with an extra step.
+    """
+    if user_id is None or not (filters or {}).get("adv"):
+        return True
+    base = {"title": "text", "status": "status", "priority": "status",
+            "assignees": "people", "due": "date"}
+    _known, fields = _filter_columns(b, user_id, role, dict(base), dict(base))
+    try:
+        _tree, gone = filter_ast.prune(filter_ast.parse(filters["adv"]), fields)
+    except filter_ast.BadFilter:
+        return True            # the parse error is reported on its own
+    unseen = _unseen_col_ids(b, user_id, role)
+    return not any(str(f) in unseen for f in gone)
+
+
 def _redact_view_cols(filters, unseen):
     """The view's table layout, minus the columns this reader may not see.
 
@@ -2309,6 +2349,9 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
             filter_ast.parse(filters.get("adv"))
         except filter_ast.BadFilter as e:
             raise HTTPException(400, str(e))
+        if not _view_cut_allowed(_b, filters, user_id, role):
+            raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
+        filters = _strip_search(filters)
         maxpos = (db.query(func.max(SavedView.position))
                     .filter(SavedView.board_id == board_id).scalar())
         v = SavedView(board_id=board_id, owner_id=user_id, name=name[:80],
@@ -2368,8 +2411,11 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
             # cannot see — the same disclosure from the other side.
             if _view_blocked_for(b, v, user_id, role):
                 raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
-            v.filters = _merge_view_cols(data["filters"], v.filters,
-                                         _unseen_col_ids(b, user_id, role))
+            if not _view_cut_allowed(b, data["filters"], user_id, role):
+                raise HTTPException(403, "התצוגה מסננת לפי עמודה שאינך מורשה לראות")
+            v.filters = _strip_search(
+                _merge_view_cols(data["filters"], v.filters,
+                                 _unseen_col_ids(b, user_id, role)))
         if isinstance(data.get("position"), int):
             v.position = data["position"]
         v.updated_at = datetime.now(timezone.utc)
@@ -2483,8 +2529,12 @@ def duplicate_saved_view(view_id: int, data: dict = None,
         name = ((data or {}).get("name") or "").strip() or _copy_name(db, v)
         maxpos = (db.query(func.max(SavedView.position))
                     .filter(SavedView.board_id == v.board_id).scalar())
+        # The SAVED shared configuration, not whatever the copier is looking
+        # at — that is what "שמירה כתצוגה חדשה" is for. Shared, unlocked,
+        # unpinned, a new id, and nothing but the configuration: no items, and
+        # no permission anybody did not already have.
         c = SavedView(board_id=v.board_id, owner_id=user_id, name=name[:80],
-                      visibility="public", filters=dict(v.filters or {}),
+                      visibility="public", filters=_strip_search(dict(v.filters or {})),
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(c)
         db.commit()

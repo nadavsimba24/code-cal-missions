@@ -250,3 +250,75 @@ def test_a_lock_does_not_stop_a_temporary_filter(client, board):
                         "today": "2026-10-20", "tz_offset": 180},
                     headers=_h(blind))
     assert r.status_code == 200, r.text
+
+
+# ── creating, copying, and the escape hatch from a locked view ─────────────
+def test_creating_a_view_is_validated_the_way_copying_one_is(client, board):
+    """"תנאי גישה והאימות זהים לאלה של שכפול."
+
+    Duplicating a view whose filter names a forbidden column is refused. Were
+    creation not held to the same rule, an editor could post that same filter
+    as a new view of their own and run it — the block with one extra step."""
+    r = _mk(client, board["bid"], board["blind"], "משלי",
+            filters=_cut_on(board["col"]))
+    assert r.status_code == 403, r.text
+    assert "תקציב" not in r.text and board["col"] not in r.text
+
+    with Session(cityos_main.engine) as db:
+        assert db.query(SavedView).filter(SavedView.board_id == board["bid"],
+                                          SavedView.name == "משלי").count() == 0
+
+
+def test_the_board_owner_may_still_create_that_cut(client, board):
+    """The validation is about the person, not about the filter."""
+    assert _mk(client, board["bid"], board["owner"], "שלי",
+               filters=_cut_on(board["col"])).status_code == 200
+
+
+def test_save_as_new_is_how_an_editor_works_from_a_locked_view(client, board):
+    """"בתצוגה נעולה, עורך יוכל להשתמש בשמירה כתצוגה חדשה במקום לשנות את
+    המקור." The original is refused to them; their own copy is not."""
+    bid, blind, owner = board["bid"], board["blind"], board["owner"]
+    vid = _mk(client, bid, owner, "נעולה").json()["id"]
+    client.patch(f"/api/views/{vid}", json={"user_id": owner, "locked": True},
+                 headers=_h(owner))
+
+    assert client.patch(f"/api/views/{vid}", json={"user_id": blind, "name": "לא"},
+                        headers=_h(blind)).status_code == 403
+    mine = _mk(client, bid, blind, "הגרסה שלי")
+    assert mine.status_code == 200, mine.text
+    assert mine.json()["locked"] is False, "the copy arrived locked"
+
+    # and duplicate — the other route off a locked view — is open to them too
+    assert client.post(f"/api/views/{vid}/duplicate", json={"user_id": blind},
+                       headers=_h(blind)).status_code == 200
+
+
+def test_a_copy_is_a_new_tab_and_grants_nothing(client, board):
+    """"אין להעתיק נתונים או להקנות הרשאות חדשות." The copy carries the
+    configuration and only that: a new id, a new owner, shared, unlocked,
+    unpinned — and no column the copier could not already see."""
+    bid, blind, owner = board["bid"], board["blind"], board["owner"]
+    other = _column(client, bid, owner, title="מחלקה", type_="text")
+    cols = {"order": ["item", board["col"], other], "hidden": [],
+            "widths": {board["col"]: 190, other: 140}}
+    vid = _mk(client, bid, owner, "המקור", filters=dict(CUT, cols=cols)).json()["id"]
+    client.patch(f"/api/views/{vid}", json={"user_id": owner, "pinned": True},
+                 headers=_h(owner))
+
+    c = client.post(f"/api/views/{vid}/duplicate", json={"user_id": blind},
+                    headers=_h(blind)).json()
+    assert c["id"] != vid
+    assert c["owner_id"] == blind
+    assert c["visibility"] == "public" and c["locked"] is False and c["pinned"] is False
+
+    # the stored copy keeps the full configuration — copying must not be a way
+    # to STRIP the settings of a column the copier cannot see
+    with Session(cityos_main.engine) as db:
+        stored = db.query(SavedView).filter(SavedView.id == c["id"]).first().filters
+    assert stored["cols"]["widths"][board["col"]] == 190
+
+    # ...and the copier is still not shown them
+    theirs = [v for v in _list(client, bid, blind) if v["id"] == c["id"]][0]
+    assert board["col"] not in theirs["filters"]["cols"]["widths"]
+    assert board["col"] not in theirs["filters"]["cols"]["order"]

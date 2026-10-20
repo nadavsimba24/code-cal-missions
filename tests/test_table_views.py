@@ -222,7 +222,9 @@ def test_duplicating_keeps_the_cut_and_the_table(client, admin_id):
     c = r.json()
     assert c["id"] != vid
     assert c["name"] == "המקור — עותק"
-    assert c["filters"]["cols"] == cols and c["filters"]["q"] == CUT["q"]
+    assert c["filters"]["cols"] == cols
+    assert c["filters"]["priority"] == CUT["priority"]
+    assert "q" not in c["filters"], "a copy carried the original's search box"
 
 
 def test_a_copy_carries_no_lock_and_no_pin(client, admin_id):
@@ -286,7 +288,8 @@ def test_restoring_brings_the_cut_back_whole(client, admin_id, guinea_id):
     r = client.post(f"/api/views/{vid}/restore", json={"user_id": admin_id}, headers=_h(admin_id))
     assert r.status_code == 200, r.text
     back = _one(client, bid, guinea_id, "חזרה")
-    assert back["filters"]["cols"] == cols and back["filters"]["q"] == CUT["q"]
+    assert back["filters"]["cols"] == cols
+    assert back["filters"]["priority"] == CUT["priority"]
 
 
 def test_a_view_in_the_bin_is_not_on_the_strip_and_not_in_the_count(client, admin_id):
