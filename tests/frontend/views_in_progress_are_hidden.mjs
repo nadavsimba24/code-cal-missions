@@ -48,9 +48,17 @@ ck('the tab strip is built from the filtered list',
    /const enabled=boardViews\(\)/.test(grab('renderTabs')));
 ck('...and lands on the table when the view it held is hidden',
    /if\(!enabled\.includes\(st\.view\)\)st\.view='table'/.test(grab('renderTabs')));
+/* The popover's list grew a second exclusion — the main table, which is not
+   something to switch on and off — so this asks for the WIP filter being
+   APPLIED rather than for one exact expression. Pinning the spelling meant a
+   case that failed the first time the line was edited for an unrelated
+   reason, which is noise rather than protection. */
 ck('the "+" popover does not offer a view that would have no tab',
-   /VIEWS\.filter\(v=>!VIEWS_WIP\.has\(v\.id\)\)/.test(grab('renderAddViewPop')),
+   /VIEWS\.filter\(v=>[^)]*!VIEWS_WIP\.has\(v\.id\)/.test(grab('renderAddViewPop')),
    'an admin could turn on a view and see nothing appear');
+ck('...and the "+" offers the one thing this version can add',
+   /Views\.createTable\(\)/.test(grab('renderAddViewPop')),
+   'the + opened a menu with nothing in it anybody could press');
 ck('the mobile picker is built from the same filtered list',
    /boardViews\(\)\.map/.test(grab('openViewPicker')));
 

@@ -2062,6 +2062,18 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .vp-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vp-chk{color:var(--primary);font-size:11px}
 .vp-empty{padding:14px 8px;color:var(--text-light);font-size:12.5px;text-align:center}
+/* the "+" menu's own action row — a button, not a checkbox like the rest */
+.pop-row-act{display:flex;align-items:center;gap:8px;width:100%;border:none;background:none;
+  font:inherit;font-size:13px;color:var(--text);text-align:start;padding:9px 8px;
+  border-radius:7px;cursor:pointer;font-weight:600}
+.pop-row-act:hover{background:var(--row-hover)}
+.pop-row-act:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+@media (hover:none),(pointer:coarse){ .pop-row-act{min-height:44px} }
+/* a validation error beside the field it is about, not four seconds of text
+   somewhere else while the thing it refers to is under the caret */
+.field-err{color:var(--red,#d83a52);font-size:12px;margin-top:5px}
+input.has-err{border-color:var(--red,#d83a52)!important}
+input.has-err:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--red,#d83a52) 25%,transparent)}
 /* "חיווי ברור, שמירת התאמות במסך וניסיון חוזר" — a banner rather than a
    toast, because four seconds is the wrong lifetime for "not saved yet". */
 .save-failed{display:inline-flex;align-items:center;gap:9px;margin-inline-start:8px;
@@ -4367,49 +4379,91 @@ const Views = {
               onclick="Views.failed=null;renderTabs()"><i class="fa-solid fa-xmark"></i></button>
     </div>`;
   },
-  _dialog(v){
-    const editing=!!v;
-    const mayPublish=st.board&&(st.board.my_role==='admin'||st.board.my_role==='editor');
-    const vis=editing?v.visibility:'private';
-    showModal(`<h2><i class="fa-solid fa-bookmark" style="color:var(--primary)"></i> ${editing?'עריכת תצוגה':'שמירת תצוגה'}</h2>
+  /* The one dialog, for creating and for renaming.
+
+     No "who sees it" any more: every saved view is a tab on the board, so the
+     question has one answer and asking it was offering a choice that does not
+     exist.
+
+     The validation error sits BESIDE the field rather than in a toast. A
+     toast about a name is four seconds of text somewhere else on the screen
+     while the thing it is about is under the caret — and the two most common
+     errors here, an empty name and a taken one, are both fixed by typing. */
+  _dialog(v, opts){
+    const editing=!!v, o=opts||{};
+    const title=editing?'שינוי שם לתצוגה':(o.title||'תצוגת טבלה חדשה');
+    showModal(`<h2><i class="fa-solid fa-table-list" style="color:var(--primary)"></i> ${title}</h2>
       <div class="mbody">
-        <div class="field"><label>שם התצוגה</label>
-          <input id="vw-name" maxlength="80" placeholder="לדוגמה: באגים דחופים פתוחים"
-                 value="${esc(editing?v.name:'')}"
-                 onkeydown="if(event.key==='Enter')Views.save(${editing?v.id:'null'})"></div>
-        <div class="field"><label>מי רואה אותה</label>
-          <label class="vw-opt"><input type="radio" name="vw-vis" value="private" ${vis==='private'?'checked':''}>
-            <span><b>אישית</b> — רק אני רואה אותה</span></label>
-          <label class="vw-opt ${mayPublish?'':'vw-opt-off'}">
-            <input type="radio" name="vw-vis" value="public" ${vis==='public'?'checked':''} ${mayPublish?'':'disabled'}>
-            <span><b>ציבורית</b> — טאב על הלוח לכל מי שיכול לפתוח אותו
-            ${mayPublish?'':'<br><small>תצוגה ציבורית היא שינוי בלוח — נדרשת הרשאת עורך</small>'}</span></label>
-        </div>
-        ${editing?`<div class="vw-note"><i class="fa-solid fa-circle-info"></i> שמירה תעדכן גם את החיתוך לזה שעל המסך עכשיו.</div>`:''}
+        <div class="field"><label for="vw-name">שם התצוגה</label>
+          <input id="vw-name" maxlength="80" autocomplete="off"
+                 aria-describedby="vw-err" placeholder="לדוגמה: באגים דחופים פתוחים"
+                 value="${esc(editing?v.name:(o.name||''))}"
+                 oninput="Views._clearErr()"
+                 onkeydown="if(event.key==='Enter')Views.save(${editing?v.id:'null'})">
+          <div class="field-err" id="vw-err" role="alert" hidden></div></div>
+        ${o.note?`<div class="vw-note"><i class="fa-solid fa-circle-info"></i> ${o.note}</div>`:''}
       </div>
       <div class="mfoot">
         <button class="btn btn-primary" onclick="Views.save(${editing?v.id:'null'})"><i class="fa-solid fa-check"></i> שמור</button>
-        ${editing?`<button class="btn btn-ghost" onclick="Views.del(${v.id})"><i class="fa-solid fa-trash"></i> מחק</button>`:''}
         <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
       </div>`);
+    // what a new view will hold, if it is not simply the cut on screen
+    this._pending=editing?null:(o.filters||null);
     setTimeout(()=>{const n=document.getElementById('vw-name'); if(n){n.focus();n.select&&n.select();}},40);
   },
+  _err(msg){
+    const e=document.getElementById('vw-err'), n=document.getElementById('vw-name');
+    if(!e) return toast(msg);
+    e.textContent=msg; e.hidden=false;
+    if(n){ n.classList.add('has-err'); n.setAttribute('aria-invalid','true'); n.focus(); }
+  },
+  _clearErr(){
+    const e=document.getElementById('vw-err'), n=document.getElementById('vw-name');
+    if(e){ e.hidden=true; e.textContent=''; }
+    if(n){ n.classList.remove('has-err'); n.removeAttribute('aria-invalid'); }
+  },
+
   async save(id){
-    const name=(document.getElementById('vw-name').value||'').trim();
-    if(!name){ toast('לתצוגה צריך שם'); return; }
-    const pick=document.querySelector('input[name="vw-vis"]:checked');
-    const body={name, visibility:pick?pick.value:'private', filters:this.current()};
+    const el=document.getElementById('vw-name');
+    const name=((el&&el.value)||'').trim();
+    if(!name) return this._err('לתצוגה צריך שם');
+    /* A rename sends the name alone. It is not a configuration change, the
+       version does not move for it, and sending the cut on screen with it
+       would turn "fix a typo" into "save my adjustments for everybody". */
+    const body=id ? {name}
+                  : {name, filters:(this._pending||this.current())};
     try{
       const v=id
         ? await api('/api/views/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)})
         : await api('/api/boards/'+st.board.id+'/views',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)});
       closeModals();
+      this._pending=null;
       await this.load(st.board.id);
-      this.active=v.id; this.base=JSON.stringify(this.current());
-      Router.set(st.board&&st.board.id, Chat.taskId, v.id);
+      if(!id){ this.apply(v.id); }
       renderTabs();
-      toast(id?'התצוגה עודכנה':'התצוגה נשמרה');
-    }catch(e){ toast((e&&e.detail)||'שמירת התצוגה נכשלה'); }
+      toast(id?'השם עודכן':'התצוגה נוצרה');
+    }catch(e){
+      const msg=(e&&(e.detail&&e.detail.detail||e.detail))||'שמירת התצוגה נכשלה';
+      this._err(msg);                     // beside the field, not in a toast
+    }
+  },
+  /* "+" — a new table view.
+     "בגרסה זו סוג התצוגה היחיד הוא טבלה שמורה, ולכן אין צורך בקטלוג סוגים",
+     so there is no type to pick: the button makes the one kind there is.
+
+     "יצירה חדשה תתבסס על הגדרות הטבלה הראשית שנשמרו, ללא חיפוש או התאמות
+     זמניות" — the MAIN table's stored configuration, not whatever is on
+     screen. Somebody who adjusted the board and then pressed + was not asking
+     to freeze those adjustments into a new tab; "שמור כתצוגה חדשה" is the
+     button that means that, and it is a different button. */
+  createTable(){
+    if(!st.board){ toast('פתחו לוח'); return; }
+    const main=(this.items||[]).find(v=>v.kind==='main');
+    const base=Object.assign({}, (main&&main.filters)||{}, {view:'table'});
+    delete base.q;                        // a search is never part of a view
+    this._dialog(null, {title:'תצוגת טבלה חדשה', filters:base,
+                        note:'התצוגה תיווצר מהגדרות הטבלה הראשית. '
+                            +'אפשר להתאים אותה אחר כך ולשמור לכולם.'});
   },
   del(id){
     const v=this.items.find(x=>x.id===id);
@@ -4645,7 +4699,8 @@ function renderTabs(){
     (typeof Views!=='undefined'&&Views.failedHTML?Views.failedHTML():'') +
     `
      <div class="tab-add-wrap" id="tab-add-wrap">
-       <button class="tab-add" title="הוסף/הסר תצוגה" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>
+       <button class="tab-add" title="תצוגה חדשה" aria-label="הוספת תצוגה"
+               aria-haspopup="menu" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>
        <div class="tab-pop" id="tab-pop"></div>
      </div>`;
 }
@@ -4682,19 +4737,34 @@ function toggleAddView(e){
 function renderAddViewPop(){
   const enabled=new Set(boardViews());
   const pop=document.getElementById('tab-pop'); if(!pop)return;
-  pop.innerHTML='<div class="pop-title">תצוגות בלוח</div>'+VIEWS.filter(v=>!VIEWS_WIP.has(v.id)).map(v=>{
-    const on=enabled.has(v.id), locked=v.id==='table';
-    return `<label class="pop-row ${locked?'locked':''}">
-      <input type="checkbox" ${on?'checked':''} ${locked?'disabled':''} onchange="toggleBoardView('${v.id}',this.checked)">
+  /* The "+" makes a new TABLE VIEW. That is what this version has to add —
+     "בגרסה זו סוג התצוגה היחיד הוא טבלה שמורה" — and the list below is the
+     board's view TYPES, which is a different thing wearing the same button.
+     While the other six are held back by VIEWS_WIP that list is one disabled
+     row, so the "+" opened a menu with nothing in it anybody could press.
+
+     Offered to whoever may put a tab on the board, and to nobody else: an
+     action that is going to be refused is not drawn (see Views.actionsFor
+     for the same rule on the per-view menu). */
+  const mayAdd=st.board&&(st.board.my_role==='admin'||st.board.my_role==='editor');
+  const types=VIEWS.filter(v=>!VIEWS_WIP.has(v.id)&&v.id!=='table');
+  pop.innerHTML = (mayAdd?`<button class="pop-row pop-row-act" onclick="closeAddView();Views.createTable()">
+      <i class="fa-solid fa-table-list" style="width:16px;color:var(--primary)"></i>
+      <span>תצוגת טבלה חדשה</span></button>`:'')
+    + (types.length?'<div class="pop-title">תצוגות בלוח</div>':'')
+    + types.map(v=>{
+    const on=enabled.has(v.id);
+    return `<label class="pop-row">
+      <input type="checkbox" ${on?'checked':''} onchange="toggleBoardView('${v.id}',this.checked)">
       <i class="fa-solid ${v.ic}" style="width:16px;color:var(--text-light)"></i><span>${v.he}</span>
-      ${locked?'<i class="fa-solid fa-lock" style="margin-inline-start:auto;color:var(--text-light);font-size:11px"></i>':''}
     </label>`;}).join('');
   pop.innerHTML += `<label class="pop-row">
       <input type="checkbox" ${st.board&&st.board.form?'checked':''} onchange="toggleBoardForms(this.checked)">
       <i class="fa-solid fa-file-lines" style="width:16px;color:var(--text-light)"></i><span>טפסים</span>
     </label>`;
 }
-document.addEventListener('click',e=>{if(!e.target.closest('#tab-add-wrap')){const w=document.getElementById('tab-add-wrap');if(w)w.classList.remove('open');}});
+function closeAddView(){const w=document.getElementById('tab-add-wrap');if(w)w.classList.remove('open');}
+document.addEventListener('click',e=>{if(!e.target.closest('#tab-add-wrap'))closeAddView();});
 async function toggleBoardView(id,on){
   if(id==='table')return;
   let views=boardViewsRaw().slice();   // the setting, not the filtered view of it
