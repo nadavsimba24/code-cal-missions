@@ -239,6 +239,19 @@ def _migrate():
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_saved_views_board_id "
                                   "ON saved_views (board_id)"))
                 print("[views] saved_views rebuilt — owner_id now accepts NULL")
+            # ── the uniqueness rule, at the only place it can be a RULE ──
+            # _check_view_name reads and then the insert writes, and between
+            # those two the answer can change: two people naming a view the
+            # same thing at the same moment both pass the check and both land.
+            # A partial unique index is what makes "one name per board" true
+            # rather than usually true. Live rows only — a name in the bin
+            # holds nothing, which is the behaviour the restore relies on.
+            # lower() here and casefold() in the application: the index is the
+            # backstop, the check is the precise answer and the message.
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_saved_views_board_name "
+                "ON saved_views (board_id, lower(trim(name))) "
+                "WHERE deleted_at IS NULL"))
         pcols = {r[1] for r in conn.execute(text("PRAGMA table_info(board_view_prefs)"))}
         if pcols and "last_view_id" not in pcols:
             conn.execute(text("ALTER TABLE board_view_prefs ADD COLUMN last_view_id INTEGER"))
@@ -356,6 +369,9 @@ else:
         "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS schema_version INTEGER DEFAULT 1",
         "ALTER TABLE saved_views ALTER COLUMN owner_id DROP NOT NULL",
         "ALTER TABLE board_view_prefs ADD COLUMN IF NOT EXISTS last_view_id INTEGER",
+        # see the SQLite side for why this is an index and not only a check
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_saved_views_board_name "
+        "ON saved_views (board_id, lower(trim(name))) WHERE deleted_at IS NULL",
         "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER",
@@ -2166,6 +2182,35 @@ def _check_view_name(db, board_id, name, exclude_id=None):
     return name
 
 
+def _commit_view(db, board_id, *, adding=True):
+    """Commit a view write, with the two board-wide rules enforced for real.
+
+    Both are read-then-write races on their own. Two people naming a view the
+    same thing at the same moment both pass _check_view_name; two people
+    creating the hundredth both pass _check_view_room. The checks stay — they
+    are what produces a sentence somebody can act on — and this is what makes
+    them true rather than usually true.
+
+    The name is a partial unique index, so the database refuses the second
+    write and the refusal is translated back into the same 400 the check would
+    have given. The ceiling cannot be an index, so it is re-counted INSIDE the
+    transaction and rolled back if the row that just landed put the board over.
+    """
+    try:
+        if adding:
+            db.flush()
+            live = (db.query(SavedView)
+                      .filter(SavedView.board_id == board_id,
+                              SavedView.deleted_at.is_(None)).count())
+            if live > VIEW_MAX:
+                db.rollback()
+                raise HTTPException(400, f"יותר מדי תצוגות פעילות בלוח (מקסימום {VIEW_MAX})")
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(400, "כבר יש תצוגה בשם הזה בלוח")
+
+
 def _check_view_room(db, board_id):
     """One more active view, main table included — or a refusal."""
     # The main table is one of these rows now, so it counts itself — the +1
@@ -2598,7 +2643,7 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
                       visibility=vis, filters=filters,
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(v)
-        db.commit()
+        _commit_view(db, board_id)
         db.refresh(v)
         return dict(_view_json(v), can_edit=True)
 
@@ -2658,7 +2703,7 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         if isinstance(data.get("position"), int):
             v.position = data["position"]
         v.updated_at = datetime.now(timezone.utc)
-        db.commit()
+        _commit_view(db, v.board_id, adding=False)
         db.refresh(v)
         # "משתמש ללא שינויים מקומיים יקבל את התצורה החדשה בלי לטעון מחדש את
         # הלוח." The doorbell, not the configuration: the client fetches the
@@ -2832,7 +2877,8 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         db.add(AuditLog(entity_type="saved_view", entity_id=v.id, action="restore",
                         field_name="name", old_value=None, new_value=v.name,
                         changed_by=user_id))
-        db.commit()
+        # a restore puts a live row back, so it faces both rules again
+        _commit_view(db, v.board_id)
         db.refresh(v)
         b = db.query(Board).filter(Board.id == v.board_id).first()
         return dict(_view_json(v),
@@ -2877,7 +2923,7 @@ def duplicate_saved_view(view_id: int, data: dict = None,
                       visibility="public", filters=_view_config(dict(v.filters or {})),
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(c)
-        db.commit()
+        _commit_view(db, v.board_id)
         db.refresh(c)
         return dict(_view_json(c), can_edit=True, can_manage=True, is_owner=True)
 
@@ -3545,14 +3591,23 @@ def create_board(data: dict, actor_id: int = Depends(current_user_id)):
                         created_by=creator, custom_fields=cf))
         # creator becomes the board admin; the board is private until they invite others
         db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
+        db.commit()
         # and the board's own table, which every board has exactly one of.
         # Created here as well as backfilled at startup: the backfill is for
         # the boards that already existed, and a board made a minute from now
         # must not have to wait for the next restart to have one.
-        db.add(SavedView(board_id=b.id, owner_id=None, kind="main",
-                         name=MAIN_VIEW_NAME, visibility="public",
-                         filters={"view": "table"}, position=-1))
-        db.commit()
+        #
+        # After the board's own commit, and never able to fail it. A board
+        # that could not be created because its main table collided with
+        # something would be a board lost to bookkeeping — and the row is
+        # recoverable by the backfill, while the board is not.
+        try:
+            db.add(SavedView(board_id=b.id, owner_id=None, kind="main",
+                             name=MAIN_VIEW_NAME, visibility="public",
+                             filters={"view": "table"}, position=-1))
+            db.commit()
+        except IntegrityError:
+            db.rollback()
         db.refresh(b)
         return {"id": b.id, "name": b.name, "icon": b.icon, "views": _board_views(b), "my_role": "admin"}
 
