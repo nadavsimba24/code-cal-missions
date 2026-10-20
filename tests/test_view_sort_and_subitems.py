@@ -54,11 +54,22 @@ def _query(client, bid, uid, **body):
 def board(client, admin_id):
     """Four items whose due dates are deliberately not in position order."""
     bid = _board(client, admin_id)
-    _item(client, bid, admin_id, "ד", due_date="2026-01-04")
-    _item(client, bid, admin_id, "ב", due_date="2026-01-02")
-    _item(client, bid, admin_id, "א", due_date="2026-01-01")
-    _item(client, bid, admin_id, "ג", due_date="2026-01-03")
+    # A new board comes with items and groups of its own, and the sort runs
+    # INSIDE each group — so every case here narrows to these four first, and
+    # they all land in the same group because they were created the same way.
+    _item(client, bid, admin_id, "מיון ד", due_date="2026-01-04")
+    _item(client, bid, admin_id, "מיון ב", due_date="2026-01-02")
+    _item(client, bid, admin_id, "מיון א", due_date="2026-01-01")
+    _item(client, bid, admin_id, "מיון ג", due_date="2026-01-03")
     return bid
+
+
+MINE = {"op": "and", "rules": [{"field": "title", "op": "has", "v": "מיון"}]}
+
+
+def _mine(resp):
+    """Just the letters, in the order they came back."""
+    return [t.split()[-1] for t in _titles(resp) if t.startswith("מיון")]
 
 
 def _titles(resp):
@@ -67,12 +78,12 @@ def _titles(resp):
 
 # ── the sort reaches the server ────────────────────────────────────────────
 def test_the_server_sorts_by_due_date(client, board, admin_id):
-    got = [t for t in _titles(_query(client, board, admin_id, sort="due")) if t in "אבגד"]
+    got = _mine(_query(client, board, admin_id, sort="due", filter=MINE))
     assert got == ["א", "ב", "ג", "ד"], got
 
 
 def test_and_by_title(client, board, admin_id):
-    got = [t for t in _titles(_query(client, board, admin_id, sort="title")) if t in "אבגד"]
+    got = _mine(_query(client, board, admin_id, sort="title", filter=MINE))
     assert got == ["א", "ב", "ג", "ד"], got
 
 
@@ -82,7 +93,7 @@ def test_an_unknown_sort_is_not_an_error_and_is_reported_as_none(client, board, 
 
 
 def test_no_sort_leaves_the_boards_own_order(client, board, admin_id):
-    got = [t for t in _titles(_query(client, board, admin_id)) if t in "אבגד"]
+    got = _mine(_query(client, board, admin_id, filter=MINE))
     assert got == ["ד", "ב", "א", "ג"], got
 
 
@@ -90,18 +101,16 @@ def test_no_sort_leaves_the_boards_own_order(client, board, admin_id):
 def test_the_order_spans_the_pages_rather_than_each_one(client, board, admin_id):
     """The failure this prevents: each page ordered against itself, so page
     two repeats a row from page one and skips another entirely."""
-    first = _titles(_query(client, board, admin_id, sort="due", limit=2, offset=0))
-    second = _titles(_query(client, board, admin_id, sort="due", limit=2, offset=2))
-    both = [t for t in first + second if t in "אבגד"]
-    assert both == sorted(both), both
-    assert len(set(first) & set(second)) == 0, "a row landed on two pages"
+    first = _mine(_query(client, board, admin_id, sort="due", filter=MINE, limit=2, offset=0))
+    second = _mine(_query(client, board, admin_id, sort="due", filter=MINE, limit=2, offset=2))
+    assert first == ["א", "ב"] and second == ["ג", "ד"], (first, second)
+    assert not set(first) & set(second), "a row landed on two pages"
 
 
 def test_a_sorted_page_is_cut_from_everything_that_matched(client, board, admin_id):
     """Sorting after paging would make the first page the four lowest
     POSITIONS, sorted. Sorting before it makes them the four earliest dates."""
-    page = [t for t in _titles(_query(client, board, admin_id, sort="due", limit=1))
-            if t in "אבגד"]
+    page = _mine(_query(client, board, admin_id, sort="due", filter=MINE, limit=1))
     assert page == ["א"], page
 
 
@@ -110,13 +119,12 @@ def test_the_sort_runs_after_the_filter_not_before(client, board, admin_id):
     are about to be thrown away and leave the survivors in position order."""
     r = _query(client, board, admin_id, sort="due",
                filter={"op": "and", "rules": [
-                   {"field": "title", "op": "has", "v": "ג"}]})
-    assert [t for t in _titles(r) if t in "אבגד"] == ["ג"]
+                   {"field": "title", "op": "has", "v": "מיון ג"}]})
+    assert _mine(r) == ["ג"]
 
 
 def test_the_search_narrows_before_the_sort_too(client, board, admin_id):
-    got = [t for t in _titles(_query(client, board, admin_id, sort="due", q="ב"))
-           if t in "אבגד"]
+    got = _mine(_query(client, board, admin_id, sort="due", filter=MINE, q="מיון ב"))
     assert got == ["ב"], got
 
 
@@ -126,6 +134,4 @@ def test_deleted_and_archived_items_are_not_in_the_answer(client, board, admin_i
     stays true when the query grows."""
     tid = _item(client, board, admin_id, "ייעלם")
     client.delete(f"/api/tasks/{tid}?user_id={admin_id}", headers=_h(admin_id))
-    got = _query(client, board, admin_id).json()
-    assert tid not in got["item_ids"] if "item_ids" in got else True
     assert "ייעלם" not in _titles(_query(client, board, admin_id))

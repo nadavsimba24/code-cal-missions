@@ -2291,17 +2291,34 @@ def _view_needs_fix(b, v):
     secret: the column is gone for everyone, so the state is reported to
     everyone and the name of the missing field may be shown.
     """
-    adv = (v.filters or {}).get("adv")
-    if not adv:
-        return []
+    f = v.filters or {}
     base = {"title": "text", "status": "status", "priority": "status",
             "assignees": "people", "due": "date"}
     known, _f = _filter_columns(b, None, None, dict(base), dict(base))
-    try:
-        _tree, gone = filter_ast.prune(filter_ast.parse(adv), known)
-    except filter_ast.BadFilter:
-        return []
-    return sorted({str(f) for f in gone})
+    missing = set()
+
+    adv = f.get("adv")
+    if adv:
+        try:
+            _tree, gone = filter_ast.prune(filter_ast.parse(adv), known)
+            missing |= {str(x) for x in gone}
+        except filter_ast.BadFilter:
+            pass
+
+    # A SORT naming a column that is gone is the same failure wearing different
+    # clothes: the view opens, the rows come back in some order, and nothing on
+    # the screen says the order it promised is not the order it gave. Falling
+    # back to the board's own order silently is the "quietly wider results" of
+    # the filter case — a wrong answer that looks like an answer.
+    #
+    # A plain DISPLAY column that was deleted is NOT here. Removing it from the
+    # table is the whole of the right behaviour: nothing was promised about it
+    # beyond being shown, and a view does not need fixing because a column it
+    # used to show no longer exists.
+    sort = str(f.get("sort") or "")
+    if sort and sort not in ("due", "priority", "title") and sort not in known:
+        missing.add(sort)
+    return sorted(missing)
 
 
 def _redact_view_cols(filters, unseen):
@@ -3132,14 +3149,41 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         }
         want_sort = str(data.get("sort") or "")
         if want_sort in _SORTS:
-            hits.sort(key=_SORTS[want_sort])
+            # ── inside the groups, never across them ─────────────────────
+            # "סדר הקבוצות נשאר לפי מבנה הלוח. המיון חל בתוך קבוצות ... ואינו
+            # מפרק את ההיררכיה."
+            #
+            # A flat sort reorders the whole board and the groups dissolve:
+            # rows from three of them interleave by due date and the board
+            # stops being the thing it was arranged into. Groups are
+            # structure, not a result — they keep the order the board gives
+            # them, and the sort decides who sits where INSIDE each one.
+            gpos = {g.id: (g.position or 0, g.id) for g in
+                    db.query(Group).filter(Group.board_id == board_id).all()}
+            inner = _SORTS[want_sort]
+            # a row with no group sorts after the groups, not before them
+            hits.sort(key=lambda t: (gpos.get(t.group_id, (10 ** 9, 0)), inner(t),
+                                     t.position or 0, t.id))
+            # and the same order under each parent, for the same reason: a
+            # sort that reordered items but left their children in position
+            # order would be two orders on one screen
+            for pid in kids_hit:
+                kids_hit[pid] = sorted(kids_hit[pid],
+                                       key=lambda t: (inner(t), t.position or 0, t.id))
 
         out = {"matched": matched, "total": total,
                # how many of the rows answered the cut themselves, and how many
                # sub-items did — "3 items" over a list where one of them is
                # only context would be a lie the screen cannot correct
+               # Three different numbers, and conflating any two of them
+               # misstates the answer: how many top-level items matched, how
+               # many sub-items did, and how many rows are on screen only to
+               # say where those sub-items are. A context row is not a result.
+               # All three count what MATCHED, not what the page happened to
+               # load.
                "matched_own": len(own),
                "matched_subs": sum(len(v) for v in kids_hit.values()),
+               "matched_context": len(context_only) + len(shells),
                "sort": want_sort if want_sort in _SORTS else "",
                "conditions": filter_ast.count(tree),
                # the rules that could not be run, so the caller can say why
