@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 import main as cityos_main  # noqa: E402
 from models import SavedView  # noqa: E402
 
-from test_saved_views import CUT, _board, _mk, _list  # noqa: E402
+from test_saved_views import CUT, _board, _mk, _list, _cfg  # noqa: E402
 
 
 def _h(uid):
@@ -125,9 +125,7 @@ def test_a_blocked_view_is_not_saved_over_either(client, board):
     cannot see would tell you it was there."""
     vid = _mk(client, board["bid"], board["owner"], "לפי תקציב",
               filters=_cut_on(board["col"])).json()["id"]
-    r = client.patch(f"/api/views/{vid}",
-                     json={"user_id": board["blind"], "filters": dict(CUT)},
-                     headers=_h(board["blind"]))
+    r = _cfg(client, vid, board["blind"], dict(CUT))
     assert r.status_code == 403
 
 
@@ -166,8 +164,7 @@ def test_saving_a_partial_table_keeps_the_settings_that_were_withheld(client, bo
     theirs = [v for v in _list(client, board["bid"], board["blind"]) if v["id"] == vid][0]
     sent = dict(theirs["filters"])
     sent["cols"] = dict(sent["cols"], widths=dict(sent["cols"]["widths"], item=360))
-    r = client.patch(f"/api/views/{vid}", json={"user_id": board["blind"], "filters": sent},
-                     headers=_h(board["blind"]))
+    r = _cfg(client, vid, board["blind"], sent)
     assert r.status_code == 200, r.text
 
     with Session(cityos_main.engine) as db:
@@ -188,9 +185,7 @@ def test_the_withheld_column_keeps_its_place_in_the_order(client, board):
 
     theirs = [v for v in _list(client, board["bid"], board["blind"]) if v["id"] == vid][0]
     assert theirs["filters"]["cols"]["order"] == ["item", other, "status"]
-    r = client.patch(f"/api/views/{vid}",
-                     json={"user_id": board["blind"], "filters": theirs["filters"]},
-                     headers=_h(board["blind"]))
+    r = _cfg(client, vid, board["blind"], theirs["filters"])
     assert r.status_code == 200, r.text
 
     with Session(cityos_main.engine) as db:
@@ -208,8 +203,7 @@ def test_a_reorder_by_somebody_who_sees_part_of_the_table_still_takes_effect(cli
     theirs = [v for v in _list(client, board["bid"], board["blind"]) if v["id"] == vid][0]
     moved = dict(theirs["filters"])
     moved["cols"] = dict(moved["cols"], order=["item", "status", other])
-    client.patch(f"/api/views/{vid}", json={"user_id": board["blind"], "filters": moved},
-                 headers=_h(board["blind"]))
+    _cfg(client, vid, board["blind"], moved)
 
     with Session(cityos_main.engine) as db:
         stored = db.query(SavedView).filter(SavedView.id == vid).first().filters["cols"]

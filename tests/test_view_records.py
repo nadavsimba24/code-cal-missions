@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 import main as cityos_main  # noqa: E402
 from models import Board, BoardViewPrefs, SavedView  # noqa: E402
 
-from test_saved_views import CUT, _board, _mk, _list  # noqa: E402
+from test_saved_views import CUT, _board, _mk, _list, _cfg  # noqa: E402
 
 
 def _h(uid):
@@ -138,9 +138,7 @@ def test_saving_the_configuration_moves_the_version(client, admin_id):
     bid = _board(client, admin_id)
     vid = _mk(client, bid, admin_id, "חדשה").json()["id"]
     for n in (2, 3):
-        client.patch(f"/api/views/{vid}",
-                     json={"user_id": admin_id, "filters": dict(CUT, sort="due")},
-                     headers=_h(admin_id))
+        _cfg(client, vid, admin_id, dict(CUT, sort="due"))
         assert _row(bid, vid).config_version == n
 
 
@@ -169,9 +167,7 @@ def test_locking_and_pinning_do_not_move_it_either(client, admin_id):
 def test_the_version_travels_to_the_client(client, admin_id):
     bid = _board(client, admin_id)
     vid = _mk(client, bid, admin_id, "חדשה").json()["id"]
-    client.patch(f"/api/views/{vid}",
-                 json={"user_id": admin_id, "filters": dict(CUT, sort="due")},
-                 headers=_h(admin_id))
+    _cfg(client, vid, admin_id, dict(CUT, sort="due"))
     v = [x for x in _list(client, bid, admin_id) if x["id"] == vid][0]
     assert v["config_version"] == 2
 

@@ -4323,19 +4323,31 @@ const Views = {
   async update(){
     const v=this.openView(); if(!v)return;
     if(!v.can_edit){ toast('התצוגה אינה שלך — אפשר לשמור עותק'); return; }
-    this.saving=true; this.failed=null; renderTabs();
+    this.saving=true; this.failed=null; this.stale=false; renderTabs();
     try{
+      /* The version this save is based on travels with it. Without it the
+         server cannot tell an overwrite from an update, and the save it
+         cannot check is exactly the one that quietly discards somebody
+         else's work. */
       await api('/api/views/'+v.id,{method:'PATCH',headers:{'Content-Type':'application/json'},
-        body:withMe({filters:this.current()})});
+        body:withMe({filters:this.current(), config_version:v.config_version})});
       await this.load(st.board.id);
       this.active=v.id;
       // only now — see above
       this.base=JSON.stringify(this.current());
-      this.saving=false; this.failed=null;
+      this.saving=false; this.failed=null; this.stale=false;
       renderTabs(); toast('ההגדרות נשמרו לכולם');
     }catch(e){
       this.saving=false;
-      this.failed=(e&&e.detail)||'השמירה נכשלה — ייתכן שאין חיבור לשרת';
+      /* Somebody else saved over this view while she was working on it.
+         Different from a failure in one way that matters: a retry would
+         overwrite them, so what is offered is to LOAD what they saved. Her
+         adjustments stay on screen either way — see the banner. */
+      const stale=(e&&(e.status===409||(e.detail&&e.detail.error==='stale_config')));
+      this.failed = stale
+        ? 'ההגדרות השתנו על ידי משתמש אחר'
+        : ((e&&(e.detail&&e.detail.detail||e.detail))||'השמירה נכשלה — ייתכן שאין חיבור לשרת');
+      this.stale=!!stale;
       renderTabs();                       // the banner, with the retry in it
     }
   },
@@ -4346,8 +4358,11 @@ const Views = {
     return `<div class="save-failed" role="alert">
       <i class="fa-solid fa-triangle-exclamation"></i>
       <span class="sf-msg">${esc(this.failed)} — השינויים נשמרו במסך.</span>
-      <button class="btn btn-primary btn-sm" onclick="Views.update()">
-        <i class="fa-solid fa-rotate-right"></i> ניסיון חוזר</button>
+      ${this.stale
+        ? `<button class="btn btn-primary btn-sm" onclick="Views.reset()">
+             <i class="fa-solid fa-rotate-left"></i> טעינת ההגדרות החדשות</button>`
+        : `<button class="btn btn-primary btn-sm" onclick="Views.update()">
+             <i class="fa-solid fa-rotate-right"></i> ניסיון חוזר</button>`}
       <button class="sf-x" aria-label="סגירת ההודעה"
               onclick="Views.failed=null;renderTabs()"><i class="fa-solid fa-xmark"></i></button>
     </div>`;

@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 import main as cityos_main  # noqa: E402
 from models import SavedView, Task  # noqa: E402
 
-from test_saved_views import CUT, _board, _mk, _list  # noqa: E402
+from test_saved_views import CUT, _board, _mk, _list, _cfg  # noqa: E402
 
 
 def _h(uid):
@@ -63,11 +63,7 @@ def test_saving_a_view_for_everyone_changes_no_item(client, admin_id):
     vid = _mk(client, bid, admin_id, "תצוגה").json()["id"]
     before = _snapshot(bid)
 
-    r = client.patch(f"/api/views/{vid}",
-                     json={"user_id": admin_id,
-                           "filters": dict(CUT, cols={"widths": {"item": 400}},
-                                           sort="due:asc")},
-                     headers=_h(admin_id))
+    r = _cfg(client, vid, admin_id, dict(CUT, cols={"widths": {"item": 400}}, sort="due:asc"))
     assert r.status_code == 200, r.text
     assert _snapshot(bid) == before, "a view save wrote item data"
 

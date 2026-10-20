@@ -2182,7 +2182,27 @@ def _check_view_name(db, board_id, name, exclude_id=None):
     return name
 
 
-def _commit_view(db, board_id, *, adding=True):
+def _log_view(db, v, action, field=None, old=None, new=None, actor=None):
+    """One line in the board's log for a change to a view.
+
+    "לוג הלוח יתעד יצירה, עדכון משותף, שינוי שם, מחיקה, שחזור, נעילה והצמדה,
+    עם מבצע וזמן ופרטי השינוי המורשים."
+
+    Management events only. A temporary adjustment is explicitly NOT one —
+    "התאמות זמניות אינן אירוע ניהול משותף" — and it could not be logged here
+    anyway, because it never reaches the server. What distinguishes the two
+    is exactly whether anybody else is affected.
+
+    The details are deliberately small: what changed and from what to what,
+    never the configuration itself. A cut can name a column somebody reading
+    the log may not see, and a log is read by more people than a board.
+    """
+    db.add(AuditLog(entity_type="saved_view", entity_id=v.id, action=action,
+                    field_name=field, old_value=old, new_value=new,
+                    changed_by=actor))
+
+
+def _commit_view(db, board_id, *, adding=True, log=None):
     """Commit a view write, with the two board-wide rules enforced for real.
 
     Both are read-then-write races on their own. Two people naming a view the
@@ -2198,6 +2218,9 @@ def _commit_view(db, board_id, *, adding=True):
     """
     try:
         if adding:
+            # Inside the try, because this is where a duplicate name is
+            # refused — a flush outside it raises past the translation and
+            # the caller gets a 500 instead of the sentence.
             db.flush()
             live = (db.query(SavedView)
                       .filter(SavedView.board_id == board_id,
@@ -2205,6 +2228,11 @@ def _commit_view(db, board_id, *, adding=True):
             if live > VIEW_MAX:
                 db.rollback()
                 raise HTTPException(400, f"יותר מדי תצוגות פעילות בלוח (מקסימום {VIEW_MAX})")
+        # The log line is written only once the row it describes is real, and
+        # in the same transaction as it: a log entry for a save that was
+        # refused is worse than no entry at all.
+        if log:
+            log()
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -2643,7 +2671,9 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
                       visibility=vis, filters=filters,
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(v)
-        _commit_view(db, board_id)
+        _commit_view(db, board_id,
+                     log=lambda: _log_view(db, v, "create", field="name",
+                                           new=v.name, actor=user_id))
         db.refresh(v)
         return dict(_view_json(v), can_edit=True)
 
@@ -2651,23 +2681,28 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
 @app.patch("/api/views/{view_id}")
 def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
-        v = db.query(SavedView).filter(SavedView.id == view_id).first()
-        if not v:
-            raise HTTPException(404, "view not found")
-        _b, role = _board_role_or_403(db, v.board_id, user_id)
-        if not _may_edit_view(v, user_id, role):
+        # Through _view_or_404, which also refuses a view that is in the bin.
+        # Reading the row directly let a deleted view be saved over: the menu
+        # was drawn while it was still there, and "מחיקה תיבדק שוב בזמן
+        # הביצוע" is exactly about the gap between those two moments.
+        v, role, may = _view_or_404(db, view_id, user_id)
+        if not may:
             raise HTTPException(403, "אפשר לערוך רק תצוגה שיצרת")
         # The lock, at both ends of the switch, is the board owner's alone.
         if data.get("locked") is not None and bool(data["locked"]) != bool(v.locked):
             if not _may_write_locked(role):
                 raise HTTPException(403, "רק בעל הלוח יכול לנעול תצוגה או לבטל את נעילתה")
             v.locked = bool(data["locked"])
+            _log_view(db, v, "lock" if v.locked else "unlock", field="locked",
+                      old=str(not v.locked), new=str(v.locked), actor=user_id)
         # הצמדה — and the order the pinned ones sit in — says which cut matters
         # on this board. That is the board owner's statement to make.
         if data.get("pinned") is not None and bool(data["pinned"]) != bool(v.pinned):
             if not _may_write_locked(role):
                 raise HTTPException(403, "רק בעל הלוח יכול להצמיד תצוגה")
             v.pinned = bool(data["pinned"])
+            _log_view(db, v, "pin" if v.pinned else "unpin", field="pinned",
+                      old=str(not v.pinned), new=str(v.pinned), actor=user_id)
         if data.get("position") is not None and not _may_write_locked(role):
             raise HTTPException(403, "רק בעל הלוח יכול לסדר תצוגות מוצמדות")
         # And while it is locked, so is everything the view says.
@@ -2675,7 +2710,10 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         if rest and v.locked and not _may_write_locked(role):
             raise HTTPException(403, "התצוגה נעולה — רק בעל הלוח יכול לשנות אותה")
         if data.get("name") is not None:
+            _was = v.name
             v.name = _check_view_name(db, v.board_id, data.get("name"), exclude_id=v.id)
+            if v.name != _was:
+                _log_view(db, v, "rename", field="name", old=_was, new=v.name, actor=user_id)
         if data.get("visibility") in VIEW_VIS:
             # publishing is the edit that needs the rights, not editing itself:
             # a private view becoming public puts a tab on everybody's board
@@ -2684,6 +2722,32 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
                 raise HTTPException(403, "רק עורך או מנהל לוח יכול לפרסם תצוגה")
             v.visibility = data["visibility"]
         if isinstance(data.get("filters"), dict):
+            # ── the version the caller was looking at ────────────────────
+            # "עדכון תצורה יכלול גרסה נוכחית ... אם בוצע בינתיים עדכון משותף,
+            # השרת ידחה דריסה."
+            #
+            # Required, not optional, and that is the whole protection: a save
+            # that arrives without a version is a save that cannot be checked,
+            # and accepting it is exactly the silent overwrite this is here to
+            # stop. "אין שמירה אוטומטית של גרסה מיושנת" — nor of an unstated
+            # one, which is a stale version nobody bothered to name.
+            #
+            # 409, so the client can tell "you may not" from "you are behind":
+            # the first is a refusal and the second is an invitation to look
+            # again. The current version travels back with it, because the
+            # next thing that client does is reload and retry.
+            want = data.get("config_version")
+            have = v.config_version or 1
+            if want is None:
+                raise HTTPException(400, "שמירת תצורה חייבת לכלול את גרסת התצורה הנוכחית")
+            try:
+                want = int(want)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "גרסת תצורה לא תקינה")
+            if want != have:
+                raise HTTPException(409, {"error": "stale_config",
+                                          "detail": "ההגדרות השתנו על ידי משתמש אחר",
+                                          "config_version": have})
             try:
                 filter_ast.parse(data["filters"].get("adv"))
             except filter_ast.BadFilter as e:
@@ -2700,6 +2764,11 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
                                  _unseen_col_ids(b, user_id, role)))
             # the configuration moved, so the version does — and only here
             v.config_version = (v.config_version or 1) + 1
+            # "עדכון משותף" — the event, and the version it produced. Never
+            # the cut itself: it can name a column the reader may not see.
+            _log_view(db, v, "config", field="config_version",
+                      old=str(v.config_version - 1), new=str(v.config_version),
+                      actor=user_id)
         if isinstance(data.get("position"), int):
             v.position = data["position"]
         v.updated_at = datetime.now(timezone.utc)
@@ -2813,9 +2882,7 @@ def delete_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         # from — "בעל הלוח יוכל לשחזר דרך לוג הלוח". The view's name is the
         # whole of the record: it is what the person reading the log is looking
         # for, and the cut itself is still on the row if it comes back.
-        db.add(AuditLog(entity_type="saved_view", entity_id=v.id, action="delete",
-                        field_name="name", old_value=v.name, new_value=None,
-                        changed_by=user_id))
+        _log_view(db, v, "delete", field="name", old=v.name, actor=user_id)
         db.commit()
         return {"status": "deleted", "id": v.id}
 
@@ -2874,9 +2941,7 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         v.deleted_at = None
         v.deleted_by = None
         v.updated_at = datetime.now(timezone.utc)
-        db.add(AuditLog(entity_type="saved_view", entity_id=v.id, action="restore",
-                        field_name="name", old_value=None, new_value=v.name,
-                        changed_by=user_id))
+        _log_view(db, v, "restore", field="name", new=v.name, actor=user_id)
         # a restore puts a live row back, so it faces both rules again
         _commit_view(db, v.board_id)
         db.refresh(v)
@@ -2923,7 +2988,9 @@ def duplicate_saved_view(view_id: int, data: dict = None,
                       visibility="public", filters=_view_config(dict(v.filters or {})),
                       position=(maxpos + 1) if maxpos is not None else 0)
         db.add(c)
-        _commit_view(db, v.board_id)
+        _commit_view(db, v.board_id,
+                     log=lambda: _log_view(db, c, "create", field="name",
+                                           old=v.name, new=c.name, actor=user_id))
         db.refresh(c)
         return dict(_view_json(c), can_edit=True, can_manage=True, is_owner=True)
 

@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 import main as cityos_main  # noqa: E402
 from models import SavedView  # noqa: E402
 
-from test_saved_views import CUT, _board, _mk, _list  # noqa: E402
+from test_saved_views import CUT, _board, _mk, _list, _cfg  # noqa: E402
 from test_view_column_permissions import _column, _cut_on, _deny  # noqa: E402
 
 
@@ -42,6 +42,17 @@ def _h(uid):
 
 
 def _save(client, vid, uid, **body):
+    """A save, carrying the configuration version it is based on.
+
+    Filled in here when the caller did not name one, because every case in
+    this file means "save over what is there now". A stale version is its own
+    subject — see tests/test_view_concurrency.py.
+    """
+    if "filters" in body and "config_version" not in body:
+        with Session(cityos_main.engine) as db:
+            body["config_version"] = (db.query(SavedView)
+                                        .filter(SavedView.id == vid)
+                                        .one().config_version or 1)
     return client.patch(f"/api/views/{vid}", json=dict(body, user_id=uid), headers=_h(uid))
 
 

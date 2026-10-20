@@ -51,6 +51,23 @@ def _mk(client, bid, uid, name, vis="private", filters=None):
                        headers={"X-CityOS-User": str(uid)})
 
 
+def _cfg(client, vid, uid, filters, **extra):
+    """Save a view's configuration, carrying the version it is based on.
+
+    A config save must name the version it is overwriting — that is what lets
+    the server refuse a stale one instead of silently accepting it. Read here
+    rather than passed in, because every caller of this helper means "save
+    over what is there now"; a case that is ABOUT the stale version sends its
+    own (see tests/test_view_concurrency.py).
+    """
+    with Session(cityos_main.engine) as db:
+        have = db.query(SavedView).filter(SavedView.id == vid).one().config_version or 1
+    return client.patch(f"/api/views/{vid}",
+                        json=dict({"user_id": uid, "filters": filters,
+                                   "config_version": have}, **extra),
+                        headers={"X-CityOS-User": str(uid)})
+
+
 def _list(client, bid, uid, main=False):
     """The board's SAVED views.
 
@@ -94,9 +111,7 @@ def test_a_saved_view_never_holds_a_search(client, admin_id):
     assert "q" not in v["filters"]
     assert v["filters"]["priority"] == CUT["priority"], "the rest of the cut went with it"
 
-    r = client.patch(f"/api/views/{v['id']}",
-                     json={"user_id": admin_id, "filters": dict(CUT, q="שוב")},
-                     headers={"X-CityOS-User": str(admin_id)})
+    r = _cfg(client, v["id"], admin_id, dict(CUT, q="שוב"))
     assert r.status_code == 200, r.text
     assert "q" not in _list(client, bid, admin_id)[0]["filters"], "a save stored one"
 
@@ -308,9 +323,7 @@ def test_a_viewer_may_look_and_may_not_overwrite(client, admin_id, guinea_id, me
     seen = [x for x in _list(client, bid, member_id) if x["id"] == vid][0]
     assert seen["is_owner"] is False
     assert seen["can_edit"] is False, "a viewer is offered the overwrite"
-    r = client.patch(f"/api/views/{vid}",
-                     json={"user_id": member_id, "filters": {"q": "משהו אחר"}},
-                     headers={"X-CityOS-User": str(member_id)})
+    r = _cfg(client, vid, member_id, {"q": "משהו אחר"})
     assert r.status_code == 403
     assert client.delete(f"/api/views/{vid}",
                          headers={"X-CityOS-User": str(member_id)}).status_code == 403

@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 import main as cityos_main  # noqa: E402
 from models import SavedView  # noqa: E402
 
-from test_saved_views import CUT, _board, _mk, _list  # noqa: E402
+from test_saved_views import CUT, _board, _mk, _list, _cfg  # noqa: E402
 
 
 def _h(uid):
@@ -96,10 +96,7 @@ def test_nor_by_saving_over_one(client, admin_id, key):
     """The create path and the save path are two doors into the same row."""
     bid = _board(client, admin_id)
     vid = _mk(client, bid, admin_id, f"זמני {key}", filters=dict(SHARED)).json()["id"]
-    r = client.patch(f"/api/views/{vid}",
-                     json={"user_id": admin_id,
-                           "filters": dict(SHARED, **{key: TEMPORARY[key]})},
-                     headers=_h(admin_id))
+    r = _cfg(client, vid, admin_id, dict(SHARED, **{key: TEMPORARY[key]}))
     assert r.status_code == 200, r.text
     assert key not in _stored(vid)
 

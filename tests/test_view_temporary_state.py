@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 import main as cityos_main  # noqa: E402
 from models import BoardViewPrefs, Task  # noqa: E402
 
-from test_saved_views import CUT, _board, _mk  # noqa: E402
+from test_saved_views import CUT, _board, _mk, _cfg  # noqa: E402
 from test_view_column_permissions import _column, _deny  # noqa: E402
 
 
@@ -164,10 +164,7 @@ def test_an_explicit_reset_gets_the_current_shared_configuration(client, admin_i
     bid = _board(client, admin_id)
     vid = _mk(client, bid, admin_id, "תצוגה",
               filters=dict(CUT, cols={"widths": {"item": 200}})).json()["id"]
-    client.patch(f"/api/views/{vid}",
-                 json={"user_id": admin_id,
-                       "filters": dict(CUT, cols={"widths": {"item": 400}})},
-                 headers=_h(admin_id))
+    _cfg(client, vid, admin_id, dict(CUT, cols={"widths": {"item": 400}}))
     r = client.get(f"/api/boards/{bid}/views?user_id={admin_id}", headers=_h(admin_id))
     fresh = [v for v in r.json()["views"] if v["id"] == vid][0]
     assert fresh["filters"]["cols"]["widths"]["item"] == 400
