@@ -2014,7 +2014,7 @@ def _view_visible_to(v, user_id, role):
     return v.visibility == "public" or v.owner_id == user_id
 
 
-def _may_write_locked(role, sys_admin=False):
+def _may_write_locked(role):
     """נעילה: "רק בעל הלוח רשאי לשנות את הגדרותיה, לפתוח את נעילתה או למחוק אותה."
 
     So a lock does not freeze a view — it narrows who may touch it to the
@@ -2025,12 +2025,14 @@ def _may_write_locked(role, sys_admin=False):
 
     Locking is the owner's too, not only unlocking. A lock an editor could
     apply and then not undo would be a trap, and "רק בעל הלוח" reads the same
-    at both ends of the switch.
+    at both ends of the switch. "בעל הלוח" is the board role and nothing else —
+    see _may_edit_view on why this layer does not re-answer who an
+    administrator is.
     """
-    return role == "admin" or bool(sys_admin)
+    return role == "admin"
 
 
-def _may_edit_view(v, user_id, role, sys_admin=False):
+def _may_edit_view(v, user_id, role):
     """Who may rename or rewrite an UNLOCKED view. The lock is asked separately.
 
     The board's own roles answer it, not authorship: an editor may change any
@@ -2038,13 +2040,21 @@ def _may_edit_view(v, user_id, role, sys_admin=False):
     a tab on the board — part of how the board is set up — so the question is
     what somebody may do to this board, not who happened to press save first.
 
+    `role` is the whole of the answer, deliberately. A system administrator
+    reaches a board through _board_role like everybody else — it already
+    returns "admin" for a workspace admin on every board — so there is nothing
+    for this layer to add. An override of its own here would be a SECOND path
+    to admin, reading a different row (User.role rather than the workspace
+    membership _board_role goes through), and the two have drifted apart
+    before: see _ws_role_for. Views are not the place to re-answer who an
+    administrator is.
+
     The one place authorship still counts is the private views written before
     this version decided there were none. Their owner keeps them: a row only
-    one person can see, which that person cannot delete, is a dead end.
+    one person can see, which that person cannot delete, is a dead end. It buys
+    nothing once the view is locked — a lock is the board owner's either way.
     """
-    if role == "admin" or sys_admin:
-        return True
-    if role == "editor":
+    if role in ("admin", "editor"):
         return True
     # legacy private rows — see _view_visible_to
     return v.visibility != "public" and v.owner_id == user_id
@@ -2111,7 +2121,6 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
                   .order_by(SavedView.position, SavedView.id).all())
         rows = [v for v in rows if _view_visible_to(v, user_id, role)]
         rows = _arrange_views(rows, _view_order_for(db, board_id, user_id))
-        sysadm = _is_sys_admin(db, user_id)
         names = {}
         if rows:
             ids = {v.owner_id for v in rows}
@@ -2119,11 +2128,11 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
         return {"views": [dict(_view_json(v, db, names),
                                # may write to it — the rights, and the lock,
                                # which only the board's owner writes through
-                               can_edit=(_may_edit_view(v, user_id, role, sysadm)
+                               can_edit=(_may_edit_view(v, user_id, role)
                                          and (not v.locked
-                                              or _may_write_locked(role, sysadm))),
+                                              or _may_write_locked(role))),
                                # may turn the lock itself: the board's owner
-                               can_lock=_may_write_locked(role, sysadm),
+                               can_lock=_may_write_locked(role),
                                # drawn as "yours" or "somebody's" — the strip
                                # offers a different thing to save in each case
                                is_owner=(v.owner_id == user_id))
@@ -2174,25 +2183,24 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         if not v:
             raise HTTPException(404, "view not found")
         _b, role = _board_role_or_403(db, v.board_id, user_id)
-        sysadm = _is_sys_admin(db, user_id)
-        if not _may_edit_view(v, user_id, role, sysadm):
+        if not _may_edit_view(v, user_id, role):
             raise HTTPException(403, "אפשר לערוך רק תצוגה שיצרת")
         # The lock, at both ends of the switch, is the board owner's alone.
         if data.get("locked") is not None and bool(data["locked"]) != bool(v.locked):
-            if not _may_write_locked(role, sysadm):
+            if not _may_write_locked(role):
                 raise HTTPException(403, "רק בעל הלוח יכול לנעול תצוגה או לבטל את נעילתה")
             v.locked = bool(data["locked"])
         # הצמדה — and the order the pinned ones sit in — says which cut matters
         # on this board. That is the board owner's statement to make.
         if data.get("pinned") is not None and bool(data["pinned"]) != bool(v.pinned):
-            if not _may_write_locked(role, sysadm):
+            if not _may_write_locked(role):
                 raise HTTPException(403, "רק בעל הלוח יכול להצמיד תצוגה")
             v.pinned = bool(data["pinned"])
-        if data.get("position") is not None and not _may_write_locked(role, sysadm):
+        if data.get("position") is not None and not _may_write_locked(role):
             raise HTTPException(403, "רק בעל הלוח יכול לסדר תצוגות מוצמדות")
         # And while it is locked, so is everything the view says.
         rest = [k for k in ("name", "visibility", "filters", "position") if k in data]
-        if rest and v.locked and not _may_write_locked(role, sysadm):
+        if rest and v.locked and not _may_write_locked(role):
             raise HTTPException(403, "התצוגה נעולה — רק בעל הלוח יכול לשנות אותה")
         if data.get("name") is not None:
             name = (data.get("name") or "").strip()
@@ -2227,7 +2235,7 @@ def _view_or_404(db, view_id, user_id, *, live=True):
     if not v or (live and v.deleted_at is not None):
         raise HTTPException(404, "view not found")
     _b, role = _board_role_or_403(db, v.board_id, user_id)
-    return v, role, _may_edit_view(v, user_id, role, _is_sys_admin(db, user_id))
+    return v, role, _may_edit_view(v, user_id, role)
 
 
 @app.delete("/api/views/{view_id}")
@@ -2247,7 +2255,7 @@ def delete_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         v, role, may = _view_or_404(db, view_id, user_id)
         if not may:
             raise HTTPException(403, "אפשר למחוק רק תצוגה שיצרת")
-        if v.locked and not _may_write_locked(role, _is_sys_admin(db, user_id)):
+        if v.locked and not _may_write_locked(role):
             raise HTTPException(403, "התצוגה נעולה — רק בעל הלוח יכול למחוק אותה")
         v.deleted_at = datetime.now(timezone.utc)
         v.deleted_by = user_id
@@ -2260,7 +2268,6 @@ def list_deleted_views(board_id: int, user_id: int = Depends(current_user_id)):
     """What can still be brought back, newest first."""
     with Session(engine) as db:
         _b, role = _board_role_or_403(db, board_id, user_id)
-        sysadm = _is_sys_admin(db, user_id)
         rows = (db.query(SavedView)
                   .filter(SavedView.board_id == board_id,
                           SavedView.deleted_at.isnot(None))
@@ -2273,7 +2280,7 @@ def list_deleted_views(board_id: int, user_id: int = Depends(current_user_id)):
         return {"views": [dict(_view_json(v, db, names),
                                deleted_at=v.deleted_at.isoformat() if v.deleted_at else None,
                                deleted_by_name=names.get(v.deleted_by, ""),
-                               can_manage=_may_edit_view(v, user_id, role, sysadm))
+                               can_manage=_may_edit_view(v, user_id, role))
                           for v in rows]}
 
 
@@ -2287,7 +2294,7 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         # Bringing a tab back puts it on everybody's board again, which is the
         # same act as creating one and then some — it may be a tab people had
         # already agreed to be rid of. The board owner's.
-        if not _may_write_locked(role, _is_sys_admin(db, user_id)):
+        if not _may_write_locked(role):
             raise HTTPException(403, "רק בעל הלוח יכול לשחזר תצוגה שנמחקה")
         v.deleted_at = None
         v.deleted_by = None
@@ -2296,7 +2303,7 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         db.refresh(v)
         return dict(_view_json(v),
                     can_edit=may and (not v.locked
-                                      or _may_write_locked(role, _is_sys_admin(db, user_id))),
+                                      or _may_write_locked(role)),
                     can_manage=may)
 
 

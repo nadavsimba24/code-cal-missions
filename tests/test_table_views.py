@@ -409,3 +409,65 @@ def test_the_permission_matrix_is_what_the_server_answers(client, cast, action, 
         assert code == 200, f"{action} / {who} was refused ({code})"
     else:
         assert code == 403, f"{action} / {who} was allowed ({code})"
+
+
+# ── one path to administrator, not two ─────────────────────────────────────
+def test_the_views_layer_does_not_re_answer_who_an_administrator_is():
+    """"מנהל מערכת פועל לפי סמכויות הגישה שהוגדרו לו במערכת; אין להוסיף כאן
+    עקיפת הרשאות חדשה."
+
+    _board_role already returns "admin" to a workspace administrator on every
+    board, so a system administrator arrives here as a board owner through the
+    ordinary access model and this layer has nothing to add. An override of its
+    own would be a SECOND path, reading a different row — _is_sys_admin reads
+    User.role, _board_role goes through the workspace membership — and those
+    two have drifted apart before (see _ws_role_for, which exists because of
+    it). Two answers to "is this person an admin" is how one of them becomes
+    wrong quietly.
+
+    Pinned as source, because the failure it prevents is a line somebody adds
+    in good faith while fixing something else; no runtime case can see the
+    difference while the two rows agree.
+    """
+    src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+    # From the first of the view permission helpers to the last of the view
+    # endpoints — the whole layer, not one function of it. Anchored on the
+    # first helper in file order rather than on _may_edit_view, which is what
+    # let a reintroduced override in _may_write_locked sit outside the scan.
+    start = src.index("def _view_visible_to(")
+    end = src.index("# ── the advanced filter, evaluated here")
+    layer = src[start:end]
+    assert "_is_sys_admin" not in layer, \
+        "a view permission is reading User.role directly instead of the board role"
+    # and the helpers really are inside the window being scanned
+    for fn in ("_may_write_locked", "_may_edit_view", "_view_or_404",
+               "def delete_saved_view", "def restore_saved_view",
+               "def update_saved_view", "def create_saved_view"):
+        assert fn in layer, f"{fn} moved out of the scanned window"
+
+
+def test_a_system_administrator_still_reaches_a_locked_view(client, admin_id, guinea_id):
+    """And the access they DO have is untouched: it arrives as role == admin,
+    which is what the lock asks for. Removing the override took nothing away."""
+    from models import User, WorkspaceMember
+    with Session(cityos_main.engine) as db:
+        assert db.query(User).filter(User.id == admin_id).first().role == "admin"
+        ws = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == admin_id).first()
+        assert ws and ws.role == "admin", "the fixture is not a system administrator"
+
+    # A board they are not a MEMBER of, with a locked view made by somebody
+    # else: the membership row is removed after setup, which is the state a
+    # system administrator is normally in on somebody else's board.
+    bid = _board(client, admin_id, invite=[guinea_id], name="לוח של מישהו אחר")
+    vid = _mk(client, bid, guinea_id, "נעולה").json()["id"]
+    _patch(client, vid, admin_id, locked=True)
+    with Session(cityos_main.engine) as db:
+        from models import BoardMember
+        db.query(BoardMember).filter(BoardMember.board_id == bid,
+                                     BoardMember.user_id == admin_id).delete()
+        db.commit()
+
+    assert _patch(client, vid, admin_id, name="תוקן").status_code == 200, \
+        "a system administrator lost a board they reach through the workspace"
+    assert _patch(client, vid, guinea_id, name="ולא אני").status_code == 403, \
+        "the lock stopped applying to everybody else"
