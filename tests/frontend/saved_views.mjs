@@ -100,18 +100,21 @@ function world(){
 // ── the strip ─────────────────────────────────────────────────────────────
 {
   const {V}=world();
+  /* Every view is shared now, so the old private/public icons are gone: a
+     lock on a tab means the view is LOCKED, which is a different fact about
+     a different thing. And the pencil has become a menu, because renaming is
+     one of six actions rather than the only one. See
+     tests/frontend/view_strip.mjs, which owns those rules; what is checked
+     here is that the strip still draws the right tabs in the right state. */
   V.items=[
-    {id:1,name:'שלי',visibility:'private',owner_name:'רינה',can_edit:true,filters:{}},
-    {id:2,name:'לכולם',visibility:'public',owner_name:'דנה',can_edit:false,filters:{}},
+    {id:1,name:'שלי',can_edit:true,can_lock:false,can_duplicate:true,filters:{}},
+    {id:2,name:'לכולם',can_edit:false,can_lock:false,can_duplicate:false,filters:{}},
   ];
   const html=V.tabsHTML();
-  ck('a private tab is marked with a lock', /fa-lock[^]*שלי/.test(html), html);
-  ck('a public tab is marked as everybody’s', /fa-users[^]*לכולם/.test(html), html);
-  ck('the pencil is drawn only where the server said it may be',
-     (html.match(/tab-view-edit/g)||[]).length===1, html);
-  ck('...and it does not also open the view it edits',
-     /event\.stopPropagation\(\);Views\.edit\(1\)/.test(html), html);
-  ck('whose view it is, is in reach', html.includes('דנה'), html);
+  ck('every view on the strip is drawn', (html.match(/tab-view/g)||[]).length>=2, html);
+  ck('a menu is offered where there is something to offer',
+     /Views\.menu\(event,1\)/.test(html), html);
+  ck('...and not where there is nothing', !/Views\.menu\(event,2\)/.test(html), html);
   V.active=2;
   ck('the open one is lit', /tab-view active[^]*לכולם/.test(V.tabsHTML()));
   ck('an empty strip draws nothing at all', (V.items=[], V.tabsHTML()===''));

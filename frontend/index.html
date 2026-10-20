@@ -2007,6 +2007,47 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .set-label{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
 .set-label i{color:var(--primary)}
 
+/* ===== saved-view tabs: what a tab says before it is opened ===== */
+/* The icons carry real labels (role="img" + aria-label) rather than a title,
+   which is invisible to a screen reader on a touch device and to anybody not
+   holding a mouse still. */
+.tab-view{display:inline-flex;align-items:center;gap:6px;max-width:220px}
+.tab-view-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab-view-ic{font-size:11px;color:var(--text-light);flex:none}
+.tab-view-ic-warn{color:var(--orange,#d98b00)}
+.tab-view-ic-off{color:var(--text-light)}
+/* A view this reader cannot open is dimmed and still legible — hiding it
+   would leave somebody who knows the tab exists wondering where it went. */
+.tab-view-off{opacity:.55}
+.tab-view-menu{border:none;background:none;color:var(--text-light);cursor:pointer;
+  width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px;
+  opacity:0;transition:opacity .12s,background .12s}
+.tab-view:hover .tab-view-menu,.tab-view.active .tab-view-menu,
+.tab-view-menu:focus-visible{opacity:1}
+.tab-view-menu:hover{background:var(--row-hover);color:var(--text)}
+.tab-all{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);
+  background:var(--surface);color:var(--text-muted);border-radius:8px;height:30px;padding:0 9px;
+  cursor:pointer;font:inherit;font-size:12.5px}
+.tab-all:hover{border-color:var(--border-strong);color:var(--text)}
+.tab-all-n{font-weight:700;font-size:11.5px}
+/* the picker itself — a search over the names, and the list under it */
+.view-picker{width:280px;max-width:min(92vw,320px);display:flex;flex-direction:column;gap:6px}
+.vp-search{display:flex;align-items:center;gap:7px;padding:2px 2px 6px;border-bottom:1px solid var(--border)}
+.vp-search i{color:var(--text-light);font-size:12px}
+.vp-search input{flex:1;min-width:0;border:none;background:none;font:inherit;font-size:13px;
+  color:var(--text);outline:none}
+.vp-list{max-height:min(52vh,340px);overflow-y:auto;display:flex;flex-direction:column;gap:1px}
+.vp-row{display:flex;align-items:center;gap:8px;width:100%;border:none;background:none;
+  font:inherit;font-size:13px;color:var(--text);text-align:start;padding:8px 8px;border-radius:7px;
+  cursor:pointer}
+.vp-row:hover{background:var(--row-hover)}
+.vp-row.on{background:var(--primary-soft);font-weight:600}
+.vp-row.off{opacity:.6}
+.vp-ic{flex:none;display:inline-flex;gap:4px;color:var(--text-light);font-size:11px}
+.vp-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vp-chk{color:var(--primary);font-size:11px}
+.vp-empty{padding:14px 8px;color:var(--text-light);font-size:12.5px;text-align:center}
+
 /* ===== board screen — design polish (ui-ux-pro-max: clean · high-contrast · corporate) ===== */
 /* board header — calmer rhythm, more elegant title */
 #boardhead{padding:18px 26px 0}
@@ -4288,17 +4329,163 @@ const Views = {
         await this.load(st.board.id);
         toast('התצוגה נמחקה');
       }catch(e){ toast((e&&e.detail)||'מחיקת התצוגה נכשלה'); }
-    },{title:'מחיקת תצוגה', note:v&&v.visibility==='public'?'התצוגה תיעלם מהלוח של כל מי שרואה אותה.':''});
+    /* The name, and the one thing somebody about to press this needs to be
+       sure of. "למחוק את התצוגה? פריטי הלוח לא יימחקו" — a view is a way of
+       reading the board, and the word "מחיקה" beside a board full of work is
+       frightening in a way the action does not deserve. The note says what is
+       NOT happening, because that is the question being asked silently. */
+    },{title:'מחיקת תצוגה',
+       note:'פריטי הלוח לא יימחקו — רק התצוגה הזאת, והיא תיעלם מהלוח של כל מי שרואה אותה. '
+            +'בעל הלוח יוכל לשחזר אותה דרך לוג הלוח.'});
+  },
+  /* One tab, and what it has to say about itself before it is opened.
+
+     The icons are not decoration. A locked view and a pinned one behave
+     differently from the tab beside them — one cannot be saved over, the
+     other sits first for everybody — and somebody deciding which tab to open
+     is entitled to know that without opening it. Each carries a real label
+     rather than a title attribute, because a title is invisible to a screen
+     reader on a touch device and to anybody not holding a mouse still.
+
+     Two states are about this reader rather than the view: `blocked`, which
+     is a cut filtering on a column they may not see, and `needs_fix`, which
+     is a column the board no longer has. The first says nothing about which
+     column — that is the whole point of the block. */
+  tabIcons(v){
+    const bits=[];
+    if(v.pinned) bits.push(`<i class="fa-solid fa-thumbtack tab-view-ic" role="img" aria-label="תצוגה מוצמדת"></i>`);
+    if(v.locked) bits.push(`<i class="fa-solid fa-lock tab-view-ic" role="img" aria-label="תצוגה נעולה"></i>`);
+    if(v.blocked) bits.push(`<i class="fa-solid fa-ban tab-view-ic tab-view-ic-off" role="img" aria-label="התצוגה אינה זמינה לך"></i>`);
+    else if((v.needs_fix||[]).length) bits.push(`<i class="fa-solid fa-triangle-exclamation tab-view-ic tab-view-ic-warn" role="img" aria-label="התצוגה דורשת תיקון"></i>`);
+    return bits.join('');
+  },
+  /* Which of the per-view actions this person may actually perform.
+
+     Read off the flags the server sent and nothing else — "כל פעולה נבדקת
+     בשרת", so the menu must offer exactly what the server would accept.
+     Deriving it here from a role would be a second copy of the permission
+     matrix, and the two would disagree the first time either moved. */
+  actionsFor(v){
+    const out=[];
+    if(v.can_edit) out.push(['rename','שינוי שם','fa-pen']);
+    if(v.can_duplicate) out.push(['duplicate','שכפול','fa-copy']);
+    if(v.can_lock) out.push([v.locked?'unlock':'lock',
+                             v.locked?'ביטול נעילה':'נעילה','fa-lock']);
+    if(v.can_lock) out.push([v.pinned?'unpin':'pin',
+                             v.pinned?'ביטול הצמדה':'הצמדה','fa-thumbtack']);
+    if(v.can_edit) out.push(['delete','מחיקה','fa-trash']);
+    return out;
   },
   tabsHTML(){
     if(!this.items.length)return '';
     return this.items.map(v=>{
       const on=this.active===v.id, moved=on&&this.dirty();
-      return `<div class="tab tab-view ${on?'active':''}" onclick="Views.apply(${v.id})" title="${esc(v.name)}${v.owner_name?' · '+esc(v.owner_name):''}${moved?' · שונתה ולא נשמרה':''}">
-        <i class="fa-solid ${v.visibility==='public'?'fa-users':'fa-lock'}"></i> ${esc(v.name)}${moved?'<span class="tab-view-dot" aria-label="שונתה"></span>':''}
-        ${v.can_edit?`<i class="fa-solid fa-pen tab-view-edit" title="עריכה" onclick="event.stopPropagation();Views.edit(${v.id})"></i>`:''}
+      /* An action nobody may perform is not drawn greyed out — it is not
+         drawn. "אין להציג פעולה שאינה אפשרית כאילו היא פעילה", and a menu
+         button opening an empty menu is exactly that mistake one level up. */
+      const acts=this.actionsFor(v);
+      return `<div class="tab tab-view ${on?'active':''}${v.blocked?' tab-view-off':''}"
+           onclick="Views.apply(${v.id})" ${on?'aria-current="page"':''}
+           title="${esc(v.name)}${moved?' · שונתה ולא נשמרה':''}">
+        ${this.tabIcons(v)}<span class="tab-view-nm">${esc(v.name)}</span>${moved?'<span class="tab-view-dot" role="img" aria-label="יש שינויים זמניים שלא נשמרו"></span>':''}
+        ${acts.length?`<button class="tab-view-menu" aria-haspopup="menu" aria-label="פעולות לתצוגה ${esc(v.name)}"
+             onclick="event.stopPropagation();Views.menu(event,${v.id})"><i class="fa-solid fa-ellipsis"></i></button>`:''}
       </div>`;
     }).join('');
+  },
+  /* The per-view actions menu. Built from actionsFor, so it can never offer
+     something the server will refuse. */
+  menu(ev, id){
+    ev&&ev.stopPropagation();
+    const v=this.items.find(x=>x.id==id); if(!v)return;
+    // the app's own row menu — openCellPop/closeCellPops, the same pair every
+    // other context menu here uses, rather than a second popover of our own
+    const rows=this.actionsFor(v).map(([act,he,ic])=>
+      `<button class="rm-item${act==='delete'?' danger':''}" onclick="closeCellPops();Views.act('${act}',${v.id})">
+         <i class="fa-solid ${ic}"></i> ${he}</button>`).join('');
+    if(!rows)return;
+    openCellPop(ev.currentTarget||ev.target,
+                `<div class="row-menu" onclick="event.stopPropagation()">${rows}</div>`,
+                'row-menu-pop');
+  },
+  async act(what, id){
+    const v=this.items.find(x=>x.id==id); if(!v)return;
+    if(what==='rename')   return this.edit(id);
+    if(what==='delete')   return this.del(id);
+    if(what==='duplicate')return this.duplicate(id);
+    if(what==='lock'||what==='unlock') return this.setFlag(id,{locked:what==='lock'});
+    if(what==='pin'||what==='unpin')   return this.setFlag(id,{pinned:what==='pin'});
+  },
+  async setFlag(id, body){
+    try{
+      await api('/api/views/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},
+                                  body:withMe(body)});
+      await this.load(st.board&&st.board.id);
+    }catch(e){ toast((e&&e.detail)||'הפעולה נכשלה'); }
+  },
+  /* All of them, when the strip has run out of room.
+
+     A tab strip that scrolls sideways hides the thing somebody is looking
+     for behind the thing they are not, and on a board with twenty cuts that
+     is most of them. The picker lists every view with a search on the NAMES
+     — which is why names are unique, and the search matches the way the
+     uniqueness rule does: trimmed, and without case for the English.
+
+     Pinned first, exactly as the strip orders them, so the two never
+     disagree about what is important here. */
+  pickerHTML(q){
+    const key=x=>String(x||'').trim().toLowerCase();
+    const needle=key(q);
+    const rows=this.items.filter(v=>!needle||key(v.name).includes(needle));
+    if(!rows.length) return `<div class="vp-empty">אין תצוגה בשם הזה</div>`;
+    return rows.map(v=>`
+      <button class="vp-row${this.active===v.id?' on':''}${v.blocked?' off':''}"
+              onclick="Views.pick(${v.id})" ${this.active===v.id?'aria-current="true"':''}>
+        <span class="vp-ic">${this.tabIcons(v)||'<i class="fa-regular fa-rectangle-list"></i>'}</span>
+        <span class="vp-nm">${esc(v.name)}</span>
+        ${this.active===v.id?'<i class="fa-solid fa-check vp-chk" role="img" aria-label="התצוגה הפעילה"></i>':''}
+      </button>`).join('');
+  },
+  /* Rebuilt as she types rather than filtered in place: the rows carry their
+     own state (active, pinned, blocked) and rebuilding is the only way those
+     cannot drift from the list behind them. */
+  pickerFilter(q){
+    const box=document.getElementById('vp-list');
+    if(box) box.innerHTML=this.pickerHTML(q);
+  },
+  pick(id){
+    closeCellPops();
+    const v=this.items.find(x=>x.id==id);
+    /* A blocked view is listed and marked rather than hidden — somebody who
+       knows the tab exists must not be left wondering where it went — and
+       choosing it says so and goes to the main table. Without naming the
+       column: that is the disclosure the block exists to prevent. */
+    if(v&&v.blocked){
+      toast('התצוגה אינה זמינה לך — מוצגת הטבלה הראשית');
+      return this.leave();
+    }
+    this.apply(id);
+  },
+  openPicker(ev){
+    ev&&ev.stopPropagation();
+    const html=`<div class="view-picker" onclick="event.stopPropagation()">
+      <div class="vp-search">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input id="vp-q" type="search" placeholder="חיפוש תצוגה לפי שם" aria-label="חיפוש תצוגה לפי שם"
+               oninput="Views.pickerFilter(this.value)">
+      </div>
+      <div class="vp-list" id="vp-list" role="menu">${this.pickerHTML('')}</div>
+    </div>`;
+    openCellPop(ev.currentTarget||ev.target, html, 'view-picker-pop');
+    setTimeout(()=>{const i=document.getElementById('vp-q'); if(i&&!isMobile())i.focus();},0);
+  },
+  async duplicate(id){
+    try{
+      const c=await api('/api/views/'+id+'/duplicate',{method:'POST',
+        headers:{'Content-Type':'application/json'}, body:withMe({})});
+      await this.load(st.board&&st.board.id);
+      toast('נוצרה תצוגה: '+(c&&c.name||''));
+    }catch(e){ toast((e&&e.detail)||'השכפול נכשל'); }
   },
 };
 
@@ -4329,6 +4516,18 @@ function renderTabs(){
      the board read a particular way rather than a way of drawing it, so they
      come second and carry a lock or a group of people to say which. */
   const saved=Views.tabsHTML();
+  /* "כשאין מקום יוצג בורר כל התצוגות עם חיפוש בשמות." The button is always
+     drawn once there is more than one saved view — a strip that only reveals
+     its escape hatch after it has already overflowed is one nobody finds,
+     because by then the thing they are looking for is off-screen and so is
+     this. The CSS decides when the strip itself scrolls; the button is how
+     you stop needing it to. */
+  const picker=Views.items.length>1
+    ? `<button class="tab-all" onclick="Views.openPicker(event)" aria-haspopup="menu"
+               aria-label="כל התצוגות — חיפוש לפי שם" title="כל התצוגות">
+         <i class="fa-solid fa-list-ul"></i><span class="tab-all-n">${Views.items.length}</span>
+       </button>`
+    : '';
   /* What can be saved, and by whom.
 
      With no view open it is simply "save this cut". With one open and
@@ -4351,7 +4550,7 @@ function renderTabs(){
     saveBtn=`<button class="tab-save" title="שמירת החיתוך הנוכחי כתצוגה" onclick="Views.saveNew()">
          <i class="fa-regular fa-bookmark"></i> שמור תצוגה</button>`;
   }
-  document.getElementById('tabs').innerHTML = dd + tabs + formTab + saved + saveBtn +
+  document.getElementById('tabs').innerHTML = dd + tabs + formTab + saved + picker + saveBtn +
     `
      <div class="tab-add-wrap" id="tab-add-wrap">
        <button class="tab-add" title="הוסף/הסר תצוגה" onclick="toggleAddView(event)"><i class="fa-solid fa-plus"></i></button>

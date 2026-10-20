@@ -2500,6 +2500,11 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
                                               or _may_write_locked(role))),
                                # may turn the lock itself: the board's owner
                                can_lock=_may_write_locked(role),
+                               # may make a tab on this board — the same right
+                               # creating one takes. Sent rather than derived,
+                               # so the menu offers exactly what the server
+                               # would accept and never draws a dead action.
+                               can_duplicate=(role in ("admin", "editor")),
                                # drawn as "yours" or "somebody's" — the strip
                                # offers a different thing to save in each case
                                is_owner=(v.owner_id == user_id))

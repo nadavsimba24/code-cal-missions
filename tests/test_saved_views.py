@@ -258,9 +258,15 @@ def test_the_cut_a_tab_restores_is_the_cut_it_saved():
     assert r.returncode == 0, "\n" + r.stdout + r.stderr
 
 
-def test_the_strip_says_who_else_sees_each_tab():
-    """A lock or a group of people on every saved tab. "Who can see this" is
-    the one question a saved view raises, and it must never need asking."""
+def test_the_strip_says_what_each_tab_is_before_it_is_opened():
+    """"Who can see this" used to be the one question a saved view raised, and
+    the strip answered it with a lock or a group of people. Every view is
+    shared now, so that question is gone — and two others took its place: is
+    this one locked, and is it pinned. Both change how the tab behaves, so
+    both are on it.
+
+    The icons live in tabIcons and the menu in actionsFor; this pins that the
+    strip actually draws them. tests/frontend/view_strip.mjs runs them."""
     src = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     # Views' own tabsHTML — BoardLog has one too, and it comes first in the
     # file. Anchoring on the name alone read the wrong method entirely.
@@ -268,8 +274,9 @@ def test_the_strip_says_who_else_sees_each_tab():
     i = src.index("  tabsHTML(){", at)
     j = src.index("\n  },", i)
     body = src[i:j]
-    assert "fa-lock" in body and "fa-users" in body
-    assert "v.can_edit" in body, "the pencil is drawn without asking the server"
+    assert "this.tabIcons(v)" in body, "a tab no longer says whether it is locked or pinned"
+    assert "this.actionsFor(v)" in body, "the menu is drawn without asking the server"
+    assert "visibility" not in body, "the strip still draws a permission model that is gone"
 
 
 # ── the lock, and who overrides it ─────────────────────────────────────────
