@@ -889,7 +889,12 @@ tr:hover .row-grip{opacity:.55}
 .sub-panel{position:relative;margin-block:3px 12px;margin-inline-start:46px;margin-inline-end:10px;
   width:max-content;border:1px solid var(--border-strong);border-radius:10px;
   overflow:hidden;background:var(--surface);box-shadow:0 1px 3px rgba(29,42,68,.05)}
-.sub-panel::before{content:'';position:absolute;inset-inline-start:0;top:0;bottom:0;width:4px;background:var(--gcolor,var(--primary));z-index:2}
+/* The accent bar is BELOW the pinned column (which is z-index:2), not level
+   with it. A tie is broken by document order, and the panel comes after the
+   pinned cell in its row — so at z-index:2 the bar slid across the item names
+   on a sideways scroll, the one thing the pinned column must never show. It
+   only has to clear the panel's own background and table, so 1 is enough. */
+.sub-panel::before{content:'';position:absolute;inset-inline-start:0;top:0;bottom:0;width:4px;background:var(--gcolor,var(--primary));z-index:1}
 /* the nested table reuses .tbl cell styling but is NOT sticky and sizes to its columns */
 .subtbl{width:max-content;min-width:0;table-layout:fixed;border-radius:0;box-shadow:none;background:transparent}
 .subtbl th{position:static;top:auto;z-index:auto;background:var(--bg);padding:7px 12px;text-align:center;border-bottom:1px solid var(--border-strong)}

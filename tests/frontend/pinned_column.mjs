@@ -129,5 +129,34 @@ const pinned = first => /class="[^"]*\bc-item\b/.test(first) || /\bdata-fixed\b/
      'a row state with no background on the pinned cell shows the board through it');
 }
 
+// ── and nothing that scrolls under it paints over it ───────────────────────
+/* Opacity is only half of it. The pinned cell is a sticky element with a
+   z-index, so what slides beneath it must have a LOWER one — a tie is broken
+   by document order, and everything in a row comes after the pinned cell.
+
+   The sub-item panel's accent bar was declared level with it, at 2, and
+   therefore slid across the item names on a sideways scroll: an opaque cell
+   does not help when the thing is painted on top of it.
+
+   Read as numbers rather than matched as text, so the case still means this
+   when either value is changed. */
+{
+  const zOf = sel => {
+    const re = new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\{[^}]*?z-index:(\\d+)');
+    const m = re.exec(src);
+    return m ? +m[1] : null;
+  };
+  const pin = zOf('.tbl td.c-item');
+  const bar = zOf('.sub-panel::before');
+  ck('the pinned column declares a z-index at all', pin !== null, pin);
+  ck('the sub-item panel\'s accent bar passes UNDER it, not over',
+     bar !== null && pin !== null && bar < pin, 'bar '+bar+' vs column '+pin);
+  /* The header cells are the one thing allowed above: they are the pinned
+     column's own row, and the corner cell above them again. */
+  ck('...while the sticky header still sits above the rows it heads',
+     zOf('.tbl th') > pin && zOf('.tbl th[data-fixed]') > zOf('.tbl th'),
+     zOf('.tbl th') + ' / ' + zOf('.tbl th[data-fixed]'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
