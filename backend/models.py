@@ -311,6 +311,15 @@ class BoardViewPrefs(Base):
     board_id = Column(Integer, ForeignKey("boards.id"), index=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
     order = Column(JSON, default=list)
+    # Which view this person was last on, on this board. Beside the order and
+    # for the same reason: both are "where I am on this board", and both are
+    # the kind of thing somebody expects to find waiting on the next machine
+    # they sign in from. NULL — never opened one — means the main table.
+    #
+    # It is a preference and not a right: the view it names may have been
+    # deleted since, or may hold a filter this person is no longer allowed to
+    # run. Resolved on the way out, never trusted on the way in.
+    last_view_id = Column(Integer, ForeignKey("saved_views.id"), nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Group(Base):

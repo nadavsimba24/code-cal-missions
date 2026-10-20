@@ -202,6 +202,9 @@ def _migrate():
                               ("deleted_by", "INTEGER")]:
                 if name not in vcols:
                     conn.execute(text(f"ALTER TABLE saved_views ADD COLUMN {name} {ddl}"))
+        pcols = {r[1] for r in conn.execute(text("PRAGMA table_info(board_view_prefs)"))}
+        if pcols and "last_view_id" not in pcols:
+            conn.execute(text("ALTER TABLE board_view_prefs ADD COLUMN last_view_id INTEGER"))
         # boards: recycle bin (soft delete) — NULL deleted_at means a live board
         if "deleted_at" not in bcols:
             conn.execute(text("ALTER TABLE boards ADD COLUMN deleted_at DATETIME"))
@@ -2401,7 +2404,24 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
             # everyone, unlike `blocked`: the column is gone for all of them.
             return dict(vj, filters=_redact_view_cols(vj["filters"], unseen),
                         blocked=False, needs_fix=_view_needs_fix(_b, v))
-        return {"views": [dict(one(v),
+        # Where a normal entry lands. Resolved here and not by the client,
+        # because the two reasons it can be wrong are both the server's to
+        # know: the view may have been deleted since, and it may hold a filter
+        # this reader is not allowed to run. Either way the answer is null,
+        # which the client reads as the main table.
+        #
+        # Pinning is deliberately not consulted. "הצמדה אינה קובעת תצוגת
+        # ברירת מחדל" — a pin is about the ORDER of the strip, and a board
+        # owner pinning a cut must not silently move everybody's landing place.
+        prefs = (db.query(BoardViewPrefs)
+                   .filter(BoardViewPrefs.board_id == board_id,
+                           BoardViewPrefs.user_id == user_id).first()) if user_id else None
+        last = prefs.last_view_id if prefs else None
+        if last is not None and not any(
+                v.id == last and not _view_blocked_for(_b, v, user_id, role) for v in rows):
+            last = None
+        return {"last_view_id": last,
+                "views": [dict(one(v),
                                # may write to it — the rights, and the lock,
                                # which only the board's owner writes through
                                can_edit=(_may_edit_view(v, user_id, role)
@@ -2725,6 +2745,47 @@ def _copy_name(db, v):
         if _view_name_key(cand) not in taken:
             return cand
         n += 1
+
+
+@app.put("/api/boards/{board_id}/views/last")
+def set_last_view(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Remember which view this person is on, so the next entry opens it.
+
+    Anyone who may open the board may record it — it says nothing about the
+    board, only about them — which is the same reason their order needs no
+    rights either.
+
+    `view_id` null means the main table. A view id that is not a live view of
+    this board is stored as null rather than refused: the board changes under
+    people, and the honest answer to "open the one I was on" when it is gone
+    is the main table, not an error on the way in.
+    """
+    with Session(engine) as db:
+        _b, role = _board_role_or_403(db, board_id, user_id)
+        want = data.get("view_id")
+        keep = None
+        if want is not None:
+            try:
+                want = int(want)
+            except (TypeError, ValueError):
+                want = None
+            if want is not None:
+                v = (db.query(SavedView)
+                       .filter(SavedView.id == want, SavedView.board_id == board_id,
+                               SavedView.deleted_at.is_(None)).first())
+                # not a view they could open is not a view they were on
+                if v is not None and not _view_blocked_for(_b, v, user_id, role):
+                    keep = v.id
+        row = (db.query(BoardViewPrefs)
+                 .filter(BoardViewPrefs.board_id == board_id,
+                         BoardViewPrefs.user_id == user_id).first())
+        if not row:
+            row = BoardViewPrefs(board_id=board_id, user_id=user_id)
+            db.add(row)
+        row.last_view_id = keep
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"last_view_id": keep}
 
 
 @app.put("/api/boards/{board_id}/views/order")
