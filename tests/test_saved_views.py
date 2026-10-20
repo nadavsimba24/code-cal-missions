@@ -65,7 +65,7 @@ def test_a_view_keeps_the_whole_cut_not_an_approximation_of_it(client, admin_id)
     assert r.status_code == 200, r.text
     v = r.json()
     assert v["name"] == "באגים דחופים פתוחים"
-    assert v["visibility"] == "private"
+    assert v["visibility"] == "public", "every saved view is shared in this version"
     assert v["filters"] == CUT, "the cut came back changed"
     assert v["filters"]["adv"]["rules"][1]["v"] == "high"
 
@@ -84,22 +84,27 @@ def test_a_cut_the_server_would_refuse_is_not_saved(client, admin_id):
     assert r.status_code == 400 and "אופרטור" in r.json()["detail"]
 
 
-# ── private ───────────────────────────────────────────────────────────────
-def test_a_private_view_is_the_owners_alone(client, admin_id, guinea_id):
+# ── shared, and only shared ───────────────────────────────────────────────
+def test_every_saved_view_is_a_tab_everybody_sees(client, admin_id, guinea_id):
+    """There are no private views in this version. A saved table view IS a tab
+    on the board, so it appears for everyone who may open the board — and a
+    client that asks for a private one gets a shared one, because that is the
+    only kind there is."""
     bid = _board(client, admin_id, invite=[guinea_id])
-    _mk(client, bid, admin_id, "שלי בלבד")
-    assert [v["name"] for v in _list(client, bid, admin_id)] == ["שלי בלבד"]
-    assert _list(client, bid, guinea_id) == [], "a private view appeared on somebody else's board"
+    v = _mk(client, bid, admin_id, "שלי בלבד").json()
+    assert v["visibility"] == "public"
+    assert [x["name"] for x in _list(client, bid, guinea_id)] == ["שלי בלבד"]
 
 
-def test_anybody_who_can_open_the_board_can_keep_a_private_view(client, admin_id, guinea_id):
-    """It takes only the right to look: a way of reading a board is not a
-    change to it."""
+def test_keeping_a_view_takes_the_rights_of_an_edit_to_the_board(client, admin_id, guinea_id):
+    """It used to take only the right to look, because a private view changed
+    nothing for anybody else. Now every view is a tab on everybody's board, so
+    making one is a change to the board and a viewer may not make it."""
     bid = _board(client, admin_id, invite=[guinea_id], role="viewer")
     r = _mk(client, bid, guinea_id, "הקריאה שלי")
-    assert r.status_code == 200, r.text
-    assert [v["name"] for v in _list(client, bid, guinea_id)] == ["הקריאה שלי"]
-    assert _list(client, bid, admin_id) == [], "even an admin does not see a private view"
+    assert r.status_code == 403, r.text
+    assert "עורך" in r.json()["detail"]
+    assert _list(client, bid, guinea_id) == []
 
 
 # ── public ────────────────────────────────────────────────────────────────
@@ -109,29 +114,13 @@ def test_a_public_view_is_everybodys(client, admin_id, guinea_id):
     assert [v["name"] for v in _list(client, bid, guinea_id)] == ["לכולם"]
 
 
-def test_publishing_a_tab_onto_the_board_takes_the_rights_of_an_edit(client, admin_id, guinea_id):
-    """A public view appears for everyone who opens the board. Making one is
-    therefore a change to the board — and a viewer may not make it, while the
-    same person may keep as many private views as they like."""
+def test_a_viewer_cannot_put_a_tab_on_the_board_by_any_door(client, admin_id, guinea_id):
+    """Asking for public is refused, and so is asking for private — because
+    private is written as public. Neither spelling is a way round the rights."""
     bid = _board(client, admin_id, invite=[guinea_id], role="viewer")
-    r = _mk(client, bid, guinea_id, "ציבורית", vis="public")
-    assert r.status_code == 403, r.text
-    assert "עורך" in r.json()["detail"]
-    assert _mk(client, bid, guinea_id, "פרטית").status_code == 200
-
-
-def test_a_private_view_cannot_be_published_by_somebody_without_the_rights(client, admin_id, guinea_id):
-    """The same rule at the other door: it is publishing that needs the
-    rights, not editing. A viewer who could flip their own view to public
-    would be putting a tab on everybody's board through the back."""
-    bid = _board(client, admin_id, invite=[guinea_id], role="viewer")
-    vid = _mk(client, bid, guinea_id, "שלי").json()["id"]
-    r = client.patch(f"/api/views/{vid}", json={"user_id": guinea_id, "visibility": "public"},
-                     headers={"X-CityOS-User": str(guinea_id)})
-    assert r.status_code == 403
-    r = client.patch(f"/api/views/{vid}", json={"user_id": guinea_id, "name": "שלי, בשם אחר"},
-                     headers={"X-CityOS-User": str(guinea_id)})
-    assert r.status_code == 200, "its owner cannot even rename it"
+    assert _mk(client, bid, guinea_id, "ציבורית", vis="public").status_code == 403
+    assert _mk(client, bid, guinea_id, "פרטית", vis="private").status_code == 403
+    assert _list(client, bid, guinea_id) == []
 
 
 # ── who may change one ────────────────────────────────────────────────────
@@ -167,7 +156,12 @@ def test_a_view_is_not_a_way_into_a_board_you_cannot_open(client, admin_id, guin
     assert r.status_code == 403
 
 
-def test_deleting_takes_it_off_everybodys_board(client, admin_id, guinea_id):
+def test_deleting_takes_it_off_everybodys_board_and_keeps_it(client, admin_id, guinea_id):
+    """Off the strip for everyone, and still there to put back.
+
+    A view is a tab other people work off; deleting one by mistake is noticed
+    the next morning, by which time a hard delete has left nothing to restore.
+    Same shape as a deleted board or item — deleted_at, and a bin beside it."""
     bid = _board(client, admin_id, invite=[guinea_id])
     vid = _mk(client, bid, admin_id, "זמנית", vis="public").json()["id"]
     assert len(_list(client, bid, guinea_id)) == 1
@@ -175,7 +169,9 @@ def test_deleting_takes_it_off_everybodys_board(client, admin_id, guinea_id):
     assert r.status_code == 200
     assert _list(client, bid, guinea_id) == []
     with Session(cityos_main.engine) as db:
-        assert db.query(SavedView).filter(SavedView.id == vid).first() is None
+        row = db.query(SavedView).filter(SavedView.id == vid).first()
+        assert row is not None and row.deleted_at is not None, "the cut was destroyed"
+        assert row.deleted_by == admin_id
 
 
 def test_the_tabs_come_back_in_the_order_they_were_made(client, admin_id):

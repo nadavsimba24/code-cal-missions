@@ -30,7 +30,7 @@ import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
     AutomationTestRun,
-    AutomationFreeze, ItemLink, BoardView, SavedView,
+    AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -193,6 +193,15 @@ def _migrate():
             conn.execute(text("ALTER TABLE boards ADD COLUMN folder_id INTEGER"))
         if "position" not in bcols:
             conn.execute(text("ALTER TABLE boards ADD COLUMN position INTEGER DEFAULT 0"))
+        # saved views: lock, pin, and a recycle bin of their own
+        vcols = {r[1] for r in conn.execute(text("PRAGMA table_info(saved_views)"))}
+        if vcols:                      # absent on a database being created fresh
+            for name, ddl in [("locked", "BOOLEAN DEFAULT 0"),
+                              ("pinned", "BOOLEAN DEFAULT 0"),
+                              ("deleted_at", "DATETIME"),
+                              ("deleted_by", "INTEGER")]:
+                if name not in vcols:
+                    conn.execute(text(f"ALTER TABLE saved_views ADD COLUMN {name} {ddl}"))
         # boards: recycle bin (soft delete) — NULL deleted_at means a live board
         if "deleted_at" not in bcols:
             conn.execute(text("ALTER TABLE boards ADD COLUMN deleted_at DATETIME"))
@@ -1993,7 +2002,26 @@ VIEW_MAX = 40            # per board, per person — a tab strip is not a list
 
 
 def _view_visible_to(v, user_id, role):
+    """Who sees a view in the strip.
+
+    This version has no private views: a saved table view is a tab on the
+    board, and everyone who may open the board sees every one of them. What is
+    still honoured is the rows written BEFORE that was decided — somebody's
+    private cut is not republished to their colleagues by a deploy, so it stays
+    theirs until they share it themselves. Nothing new is ever written private
+    (see create_saved_view), so this clause empties out on its own.
+    """
     return v.visibility == "public" or v.owner_id == user_id
+
+
+def _view_locked_against(v, user_id, role, sys_admin=False):
+    """נעילה. A locked view may be read, copied and built on — never written.
+
+    Not even by its owner: that is what distinguishes a lock from permission.
+    Unlocking is the deliberate act, and it is offered to whoever could edit
+    the view in the first place.
+    """
+    return bool(v.locked)
 
 
 def _may_edit_view(v, user_id, role, sys_admin=False):
@@ -2018,7 +2046,33 @@ def _view_json(v, db=None, names=None):
     return {"id": v.id, "board_id": v.board_id, "name": v.name,
             "visibility": v.visibility, "owner_id": v.owner_id,
             "owner_name": (names or {}).get(v.owner_id, ""),
-            "filters": v.filters or {}, "position": v.position or 0}
+            "filters": v.filters or {}, "position": v.position or 0,
+            "locked": bool(v.locked), "pinned": bool(v.pinned)}
+
+
+def _view_order_for(db, board_id, user_id):
+    """One person's arrangement of this board's strip — a list of view ids."""
+    if user_id is None:
+        return []
+    row = (db.query(BoardViewPrefs)
+             .filter(BoardViewPrefs.board_id == board_id,
+                     BoardViewPrefs.user_id == user_id).first())
+    return [int(i) for i in (row.order or [])] if row else []
+
+
+def _arrange_views(rows, personal):
+    """The order the strip is drawn in, and it is three rules in sequence.
+
+    Pinned first — that is what pinning is for, and it is the board's
+    statement rather than the reader's. Then the reader's own arrangement, for
+    the views they have arranged. Then everything else in the board's order,
+    which is where a view created since somebody last arranged their strip
+    lands: at the end, disturbing nothing.
+    """
+    rank = {vid: i for i, vid in enumerate(personal)}
+    return sorted(rows, key=lambda v: (not bool(v.pinned),
+                                       rank.get(v.id, len(rank)),
+                                       v.position or 0, v.id))
 
 
 def _board_role_or_403(db, board_id, user_id):
@@ -2035,16 +2089,25 @@ def _board_role_or_403(db, board_id, user_id):
 def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         _b, role = _board_role_or_403(db, board_id, user_id)
-        rows = (db.query(SavedView).filter(SavedView.board_id == board_id)
+        rows = (db.query(SavedView)
+                  .filter(SavedView.board_id == board_id,
+                          SavedView.deleted_at.is_(None))      # the bin is its own endpoint
                   .order_by(SavedView.position, SavedView.id).all())
         rows = [v for v in rows if _view_visible_to(v, user_id, role)]
+        rows = _arrange_views(rows, _view_order_for(db, board_id, user_id))
         sysadm = _is_sys_admin(db, user_id)
         names = {}
         if rows:
             ids = {v.owner_id for v in rows}
             names = {u.id: u.name for u in db.query(User).filter(User.id.in_(ids)).all()}
         return {"views": [dict(_view_json(v, db, names),
-                               can_edit=_may_edit_view(v, user_id, role, sysadm),
+                               # may write to it AND it is not locked — the
+                               # strip offers "שמור" only when both hold
+                               can_edit=(_may_edit_view(v, user_id, role, sysadm)
+                                         and not v.locked),
+                               # may lock, unlock, pin or delete it: the rights
+                               # question alone, which a lock does not answer
+                               can_manage=_may_edit_view(v, user_id, role, sysadm),
                                # drawn as "yours" or "somebody's" — the strip
                                # offers a different thing to save in each case
                                is_owner=(v.owner_id == user_id))
@@ -2058,11 +2121,16 @@ def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_
         name = (data.get("name") or "").strip()
         if not name:
             raise HTTPException(400, "לתצוגה צריך שם")
-        vis = data.get("visibility") if data.get("visibility") in VIEW_VIS else "private"
-        if vis == "public" and role not in ("admin", "editor"):
-            raise HTTPException(403, "תצוגה ציבורית היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
+        # No private views in this version: a saved table view IS a tab on the
+        # board, so making one is an edit to the board and needs the rights of
+        # one. The parameter is not read — a client asking for "private" gets a
+        # shared view, because that is the only kind there is.
+        vis = "public"
+        if role not in ("admin", "editor"):
+            raise HTTPException(403, "תצוגה שמורה היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
         mine = (db.query(SavedView)
-                  .filter(SavedView.board_id == board_id, SavedView.owner_id == user_id).count())
+                  .filter(SavedView.board_id == board_id, SavedView.owner_id == user_id,
+                          SavedView.deleted_at.is_(None)).count())
         if mine >= VIEW_MAX:
             raise HTTPException(400, f"יותר מדי תצוגות שמורות בלוח (מקסימום {VIEW_MAX})")
         # the cut is validated the way the query endpoint validates one: a view
@@ -2090,8 +2158,19 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         if not v:
             raise HTTPException(404, "view not found")
         _b, role = _board_role_or_403(db, v.board_id, user_id)
-        if not _may_edit_view(v, user_id, role, _is_sys_admin(db, user_id)):
+        sysadm = _is_sys_admin(db, user_id)
+        if not _may_edit_view(v, user_id, role, sysadm):
             raise HTTPException(403, "אפשר לערוך רק תצוגה שיצרת")
+        # נעילה is its own switch, and it is the one thing a locked view still
+        # accepts — otherwise a lock could never be undone. Everything else
+        # about a locked view is refused before it is read.
+        if data.get("locked") is not None:
+            v.locked = bool(data["locked"])
+        if data.get("pinned") is not None:
+            v.pinned = bool(data["pinned"])
+        rest = [k for k in ("name", "visibility", "filters", "position") if k in data]
+        if rest and _view_locked_against(v, user_id, role, sysadm):
+            raise HTTPException(403, "התצוגה נעולה — יש לבטל את הנעילה כדי לשנות אותה")
         if data.get("name") is not None:
             name = (data.get("name") or "").strip()
             if not name:
@@ -2118,18 +2197,161 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         return dict(_view_json(v), can_edit=True)
 
 
+def _view_or_404(db, view_id, user_id, *, live=True):
+    """The view, the board role, and whether this person may manage it."""
+    q = db.query(SavedView).filter(SavedView.id == view_id)
+    v = q.first()
+    if not v or (live and v.deleted_at is not None):
+        raise HTTPException(404, "view not found")
+    _b, role = _board_role_or_403(db, v.board_id, user_id)
+    return v, role, _may_edit_view(v, user_id, role, _is_sys_admin(db, user_id))
+
+
 @app.delete("/api/views/{view_id}")
 def delete_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
+    """To the bin, not out of existence.
+
+    A view is a tab other people work off. Deleting one by mistake is the kind
+    of thing nobody notices until the morning somebody opens the board and
+    their cut is gone — and a hard delete leaves nothing to put back. Same
+    shape as a deleted board or item: deleted_at, and a restore beside it.
+
+    A locked view is refused here too. A lock that stopped edits but not
+    deletion would protect nothing worth protecting.
+    """
     with Session(engine) as db:
-        v = db.query(SavedView).filter(SavedView.id == view_id).first()
-        if not v:
-            raise HTTPException(404, "view not found")
-        _b, role = _board_role_or_403(db, v.board_id, user_id)
-        if not _may_edit_view(v, user_id, role, _is_sys_admin(db, user_id)):
+        v, role, may = _view_or_404(db, view_id, user_id)
+        if not may:
             raise HTTPException(403, "אפשר למחוק רק תצוגה שיצרת")
-        db.delete(v)
+        if v.locked:
+            raise HTTPException(403, "התצוגה נעולה — יש לבטל את הנעילה כדי למחוק אותה")
+        v.deleted_at = datetime.now(timezone.utc)
+        v.deleted_by = user_id
         db.commit()
-        return {"status": "deleted"}
+        return {"status": "deleted", "id": v.id}
+
+
+@app.get("/api/boards/{board_id}/views/trash")
+def list_deleted_views(board_id: int, user_id: int = Depends(current_user_id)):
+    """What can still be brought back, newest first."""
+    with Session(engine) as db:
+        _b, role = _board_role_or_403(db, board_id, user_id)
+        sysadm = _is_sys_admin(db, user_id)
+        rows = (db.query(SavedView)
+                  .filter(SavedView.board_id == board_id,
+                          SavedView.deleted_at.isnot(None))
+                  .order_by(SavedView.deleted_at.desc(), SavedView.id.desc()).all())
+        rows = [v for v in rows if _view_visible_to(v, user_id, role)]
+        names = {}
+        if rows:
+            ids = {v.owner_id for v in rows} | {v.deleted_by for v in rows if v.deleted_by}
+            names = {u.id: u.name for u in db.query(User).filter(User.id.in_(ids)).all()}
+        return {"views": [dict(_view_json(v, db, names),
+                               deleted_at=v.deleted_at.isoformat() if v.deleted_at else None,
+                               deleted_by_name=names.get(v.deleted_by, ""),
+                               can_manage=_may_edit_view(v, user_id, role, sysadm))
+                          for v in rows]}
+
+
+@app.post("/api/views/{view_id}/restore")
+def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
+    """Back onto the strip, with its cut and its name intact."""
+    with Session(engine) as db:
+        v, role, may = _view_or_404(db, view_id, user_id, live=False)
+        if v.deleted_at is None:
+            return dict(_view_json(v), can_edit=may)
+        if not may:
+            raise HTTPException(403, "אפשר לשחזר רק תצוגה שיצרת")
+        v.deleted_at = None
+        v.deleted_by = None
+        v.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(v)
+        return dict(_view_json(v), can_edit=may and not v.locked, can_manage=may)
+
+
+@app.post("/api/views/{view_id}/duplicate")
+def duplicate_saved_view(view_id: int, data: dict = None,
+                         user_id: int = Depends(current_user_id)):
+    """שכפול — the same cut under a new name, owned by whoever copied it.
+
+    Not locked and not pinned, whatever the original was: a lock and a pin are
+    statements about THAT tab, and a copy is a new tab that nobody has decided
+    anything about yet.
+    """
+    with Session(engine) as db:
+        v, role, _may = _view_or_404(db, view_id, user_id)
+        if role not in ("admin", "editor"):
+            raise HTTPException(403, "תצוגה שמורה היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
+        live = (db.query(SavedView)
+                  .filter(SavedView.board_id == v.board_id, SavedView.owner_id == user_id,
+                          SavedView.deleted_at.is_(None)).count())
+        if live >= VIEW_MAX:
+            raise HTTPException(400, f"יותר מדי תצוגות שמורות בלוח (מקסימום {VIEW_MAX})")
+        name = ((data or {}).get("name") or "").strip() or _copy_name(db, v)
+        maxpos = (db.query(func.max(SavedView.position))
+                    .filter(SavedView.board_id == v.board_id).scalar())
+        c = SavedView(board_id=v.board_id, owner_id=user_id, name=name[:80],
+                      visibility="public", filters=dict(v.filters or {}),
+                      position=(maxpos + 1) if maxpos is not None else 0)
+        db.add(c)
+        db.commit()
+        db.refresh(c)
+        return dict(_view_json(c), can_edit=True, can_manage=True, is_owner=True)
+
+
+def _copy_name(db, v):
+    """"<שם> — עותק", and "עותק 2" after that, so copying twice says so."""
+    base = f"{v.name} — עותק"
+    taken = {n for (n,) in db.query(SavedView.name)
+                             .filter(SavedView.board_id == v.board_id,
+                                     SavedView.deleted_at.is_(None)).all()}
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base} {n}" in taken:
+        n += 1
+    return f"{base} {n}"
+
+
+@app.put("/api/boards/{board_id}/views/order")
+def set_personal_view_order(board_id: int, data: dict,
+                            user_id: int = Depends(current_user_id)):
+    """סדר תצוגות אישי — this reader's arrangement, nobody else's.
+
+    Anyone who may open the board may arrange their own strip; it changes
+    nothing about the board, which is exactly why it needs no rights beyond
+    looking. Ids of views that are not on this board are dropped rather than
+    refused: a strip arranged and then re-arranged on a stale list must not
+    fail, it must simply settle.
+    """
+    with Session(engine) as db:
+        _b, role = _board_role_or_403(db, board_id, user_id)
+        want = data.get("order")
+        if not isinstance(want, list):
+            raise HTTPException(400, "order must be a list of view ids")
+        mine = {v.id for v in db.query(SavedView.id)
+                                .filter(SavedView.board_id == board_id,
+                                        SavedView.deleted_at.is_(None)).all()}
+        seen, clean = set(), []
+        for i in want:
+            try:
+                i = int(i)
+            except (TypeError, ValueError):
+                continue
+            if i in mine and i not in seen:
+                seen.add(i)
+                clean.append(i)
+        row = (db.query(BoardViewPrefs)
+                 .filter(BoardViewPrefs.board_id == board_id,
+                         BoardViewPrefs.user_id == user_id).first())
+        if not row:
+            row = BoardViewPrefs(board_id=board_id, user_id=user_id)
+            db.add(row)
+        row.order = clean
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"order": clean}
 
 
 # ── the advanced filter, evaluated here ────────────────────────────────

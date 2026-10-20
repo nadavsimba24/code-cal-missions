@@ -267,10 +267,50 @@ class SavedView(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     name = Column(String(80), nullable=False)
     visibility = Column(String(10), default="private")     # private | public
-    # {view, q, people, status, priority, sort, links, adv}
+    # What the cut IS, and it keeps growing:
+    #   {view, q, people, status, priority, sort, links, adv, cols}
+    # `cols` is the table's own layout — {order, hidden, widths} — and it is
+    # here rather than in the board's settings because that is the difference
+    # between a view and a filter. A board's settings are one arrangement for
+    # everybody; a view is "these columns, this width, this order, this cut",
+    # and two views of one board are meant to disagree about all four.
     filters = Column(JSON, default=dict)
     position = Column(Integer, default=0)
+    # ── נעילה ──
+    # A locked view may be read and built on, never overwritten — not even by
+    # the person who made it, until they unlock it. The tab strip is shared, so
+    # the cut a department works off is not a thing to lose to a stray "שמור".
+    locked = Column(Boolean, default=False)
+    # ── הצמדה ──
+    # Pinned views come first in the strip, for everyone. Belongs to the board
+    # rather than to the reader: it says this cut is the important one here.
+    pinned = Column(Boolean, default=False)
+    # ── מחיקה ושחזור ──
+    # A view is a tab other people rely on, so deleting one is reversible the
+    # way deleting a board or an item is: NULL deleted_at means a live view.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class BoardViewPrefs(Base):
+    """One person's own arrangement of one board's view tabs.
+
+    Order is the one thing about a shared strip that is nobody else's business:
+    which cut somebody reaches for first is a habit, not a statement about the
+    board. Pinning IS a statement about the board and lives on the view itself.
+
+    A list of view ids, most-wanted first. Ids missing from it keep the board's
+    own order, after the ones named here — so a view created after somebody
+    arranged their strip simply appears at the end instead of disturbing it.
+    """
+    __tablename__ = "board_view_prefs"
+    __table_args__ = (UniqueConstraint("board_id", "user_id", name="uq_board_view_prefs"),)
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    order = Column(JSON, default=list)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class Group(Base):
