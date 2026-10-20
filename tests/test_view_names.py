@@ -40,9 +40,14 @@ def _rename(client, vid, uid, name):
 
 
 # ── required, and unique ───────────────────────────────────────────────────
-def test_a_name_is_required(client, admin_id):
+def test_a_name_is_required_only_where_somebody_is_giving_one(client, admin_id):
+    """On the way in, no name means "name it for me" — see
+    tests/test_view_create.py. On a RENAME it means "take its name away",
+    which is the one reading that has to be refused."""
     bid = _board(client, admin_id)
-    assert _mk(client, bid, admin_id, "   ").status_code == 400
+    vid = _mk(client, bid, admin_id, "דחופים").json()["id"]
+    assert _rename(client, vid, admin_id, "   ").status_code == 400
+    assert _rename(client, vid, admin_id, "").status_code == 400
 
 
 def test_two_views_on_one_board_cannot_share_a_name(client, admin_id):

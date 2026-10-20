@@ -53,20 +53,27 @@ function views(over = {}) {
 
 // ── what a new view is made of ─────────────────────────────────────────────
 {
-  const V = views();
+  let sent = null;
+  const V = views({api: async (_u, o) => { sent = o.body; return {id: 9, name: 'טבלה'}; }});
   V.items = [{id: 1, kind: 'main', name: 'טבלה ראשית',
               filters: {view: 'table', sort: 'title', cols: {widths: {item: 300}}, q: 'ישן'}}];
-  V.createTable();
+  V.load = async () => {};
+  V.apply = id => V.calls.push(['apply', id]);
+  await V.createTable();
 
-  ck('the + opens the creation dialog', V.calls.some(c => c[0] === 'modal'), V.calls);
-  const made = V._pending;
+  ck('the + asks nothing — no dialog', !V.calls.some(c => c[0] === 'modal'), V.calls);
+  ck('...and does not name the view either, the server does',
+     sent && !('name' in sent), sent);
   ck('a new view starts from the MAIN table, not from the screen',
-     made.sort === 'title', made);
-  ck('...carrying its stored column layout', made.cols.widths.item === 300, made);
+     sent.filters.sort === 'title', sent.filters);
+  ck('...carrying its stored column layout',
+     sent.filters.cols.widths.item === 300, sent.filters);
   ck('...and never a search, not even the main table’s own',
-     !('q' in made), made);
-  ck('the dialog says where the settings came from',
-     /מהגדרות הטבלה הראשית/.test(V.calls.find(c => c[0] === 'modal')[1]));
+     !('q' in sent.filters), sent.filters);
+  ck('the view it made is the view it opens',
+     V.calls.some(c => c[0] === 'apply' && c[1] === 9), V.calls);
+  ck('...and it says which one was made',
+     V.calls.some(c => c[0] === 'toast' && /טבלה/.test(c[1])), V.calls);
 }
 {
   /* The other direction: save-as-new is explicitly the screen, adjustments

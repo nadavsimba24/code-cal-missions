@@ -4456,14 +4456,35 @@ const Views = {
      screen. Somebody who adjusted the board and then pressed + was not asking
      to freeze those adjustments into a new tab; "שמור כתצוגה חדשה" is the
      button that means that, and it is a different button. */
-  createTable(){
+  /* "+" — a new table view, opened.
+
+     No dialog and no name asked for. There is no type to choose in this
+     version — "סוג התצוגה היחיד הוא טבלה שמורה" — so there is nothing to
+     answer, and a form with one field in it is a question standing between
+     somebody and the thing they already asked for by pressing the button.
+     It is called טבלה, numbered if that is taken, and renaming it is one item
+     in its own menu.
+
+     The name comes from the server rather than from here: the uniqueness
+     rule lives there, and a client guessing at it would guess differently
+     the first time either moved.
+
+     "יצירה חדשה תתבסס על הגדרות הטבלה הראשית שנשמרו, ללא חיפוש או התאמות
+     זמניות" — the main table's stored configuration, not whatever is on
+     screen. "שמור כתצוגה חדשה" is the button that means the screen. */
+  async createTable(){
     if(!st.board){ toast('פתחו לוח'); return; }
     const main=(this.items||[]).find(v=>v.kind==='main');
     const base=Object.assign({}, (main&&main.filters)||{}, {view:'table'});
     delete base.q;                        // a search is never part of a view
-    this._dialog(null, {title:'תצוגת טבלה חדשה', filters:base,
-                        note:'התצוגה תיווצר מהגדרות הטבלה הראשית. '
-                            +'אפשר להתאים אותה אחר כך ולשמור לכולם.'});
+    try{
+      const v=await api('/api/boards/'+st.board.id+'/views',
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:withMe({filters:base})});
+      await this.load(st.board.id);
+      this.apply(v.id);                   // created means opened
+      toast('נוצרה תצוגה: '+(v&&v.name||''));
+    }catch(e){ toast((e&&(e.detail&&e.detail.detail||e.detail))||'יצירת התצוגה נכשלה'); }
   },
   del(id){
     const v=this.items.find(x=>x.id===id);

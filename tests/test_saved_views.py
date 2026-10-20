@@ -116,9 +116,21 @@ def test_a_saved_view_never_holds_a_search(client, admin_id):
     assert "q" not in _list(client, bid, admin_id)[0]["filters"], "a save stored one"
 
 
-def test_a_view_needs_a_name(client, admin_id):
+def test_a_view_with_no_name_is_named_by_the_server(client, admin_id):
+    """Creating a table view is one click — there is no type to choose and no
+    question to answer — so the name cannot be a question either. Sending no
+    name means "call it something free", and the server does, because the
+    uniqueness rule is the server's.
+
+    A name that IS given is still checked; and renaming to nothing is still
+    refused, because there "" means "take its name away"."""
     bid = _board(client, admin_id)
-    assert _mk(client, bid, admin_id, "   ").status_code == 400
+    v = _mk(client, bid, admin_id, "   ").json()
+    assert v["name"] == cityos_main.NEW_VIEW_NAME
+
+    r = client.patch(f"/api/views/{v['id']}", json={"user_id": admin_id, "name": "   "},
+                     headers={"X-CityOS-User": str(admin_id)})
+    assert r.status_code == 400, "a view was left with no name at all"
 
 
 def test_a_cut_the_server_would_refuse_is_not_saved(client, admin_id):

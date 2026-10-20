@@ -2144,6 +2144,11 @@ VIEW_MAX = max(2, int(os.environ.get("VIEW_MAX_PER_BOARD", "100") or 100))
 # occupies a name on the strip, and a saved view answering to the same name
 # would make the strip ambiguous in the one place a reader cannot afford it.
 MAIN_VIEW_NAME = (os.environ.get("MAIN_VIEW_NAME") or "טבלה ראשית").strip()
+# What a view is called when nobody named it. Adding a table view is one
+# click — there is no type to choose and no question to answer — so the name
+# cannot be a question either. It is numbered if it is taken, and renaming it
+# afterwards is one item in the view's own menu.
+NEW_VIEW_NAME = (os.environ.get("NEW_VIEW_NAME") or "טבלה").strip()
 # How long a deleted view can still be brought back. After it, the row stays
 # where it is — this is a window on RESTORING, not a promise to erase — but the
 # board log stops offering it, because an offer that fails is worse than none.
@@ -2646,7 +2651,13 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
 def create_saved_view(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         _b, role = _board_role_or_403(db, board_id, user_id)
-        name = _check_view_name(db, board_id, data.get("name"))
+        # A name is optional on the way in. Omitted, the server picks a free
+        # one — here rather than in the browser, because the uniqueness rule
+        # lives here and a client guessing at it would guess differently.
+        if (data.get("name") or "").strip():
+            name = _check_view_name(db, board_id, data.get("name"))
+        else:
+            name = _free_name(db, board_id, NEW_VIEW_NAME, "")
         # No private views in this version: a saved table view IS a tab on the
         # board, so making one is an edit to the board and needs the rights of
         # one. The parameter is not read — a client asking for "private" gets a

@@ -42,12 +42,24 @@ def test_the_creation_starts_from_the_main_table():
     """"יצירה חדשה תתבסס על הגדרות הטבלה הראשית שנשמרו, ללא חיפוש או התאמות
     זמניות." Somebody who adjusted the board and then pressed + was not asking
     to freeze those adjustments into a new tab."""
-    m = re.search(r"\n  createTable\(\)\{(.*?)\n  \},", SRC, re.S)
+    m = re.search(r"\n  async createTable\(\)\{(.*?)\n  \},", SRC, re.S)
     assert m, "createTable moved"
     body = m.group(1)
     assert "kind==='main'" in body.replace(" ", ""), body
     assert "delete base.q" in body, "a new view could carry a search"
     assert "this.current()" not in body, "it starts from the screen, not the main table"
+
+
+def test_adding_a_table_asks_nothing(client=None):
+    """"אני לא רוצה שם לטבלה, רק שתיפתח התצוגה" — there is no type to choose
+    in this version, so there is nothing to answer. A form with one field in
+    it is a question standing between somebody and the thing they already
+    asked for by pressing the button."""
+    m = re.search(r"\n  async createTable\(\)\{(.*?)\n  \},", SRC, re.S)
+    body = m.group(1)
+    assert "_dialog" not in body, "the + still opens a form"
+    assert "name:" not in body, "the browser is still naming the view"
+    assert "this.apply(" in body, "created but not opened"
 
 
 def test_save_as_new_still_starts_from_the_screen():
@@ -92,3 +104,44 @@ def test_the_create_harness():
                        capture_output=True, text=True)
     print(r.stdout)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ── the server names it, and numbers it when the name is taken ─────────────
+def test_an_unnamed_view_is_called_tavla(client, admin_id):
+    """Pressing + is not a question, so the answer cannot be a form. The name
+    is the server's because the uniqueness rule is the server's."""
+    from test_saved_views import _board          # noqa: E402
+    bid = _board(client, admin_id)
+    r = client.post(f"/api/boards/{bid}/views",
+                    json={"user_id": admin_id, "filters": {"view": "table"}},
+                    headers={"X-CityOS-User": str(admin_id)})
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "טבלה"
+
+
+def test_and_numbered_when_that_is_taken(client, admin_id):
+    from test_saved_views import _board          # noqa: E402
+    bid = _board(client, admin_id)
+    names = []
+    for _ in range(3):
+        r = client.post(f"/api/boards/{bid}/views",
+                        json={"user_id": admin_id, "filters": {"view": "table"}},
+                        headers={"X-CityOS-User": str(admin_id)})
+        assert r.status_code == 200, r.text
+        names.append(r.json()["name"])
+    assert names == ["טבלה", "טבלה 2", "טבלה 3"], names
+
+
+def test_a_name_that_is_given_is_still_honoured(client, admin_id):
+    """The dialog is gone from the + but renaming still goes through the same
+    endpoint, and so does anything else that names a view."""
+    from test_saved_views import _board, _mk     # noqa: E402
+    bid = _board(client, admin_id)
+    assert _mk(client, bid, admin_id, "שם משלי").json()["name"] == "שם משלי"
+
+
+def test_the_default_name_is_configurable():
+    import main as cityos_main                   # noqa: E402
+    src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("NEW_VIEW_NAME"' in src
+    assert cityos_main.NEW_VIEW_NAME == "טבלה"
