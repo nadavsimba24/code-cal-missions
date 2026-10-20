@@ -2014,14 +2014,20 @@ def _view_visible_to(v, user_id, role):
     return v.visibility == "public" or v.owner_id == user_id
 
 
-def _view_locked_against(v, user_id, role, sys_admin=False):
-    """נעילה. A locked view may be read, copied and built on — never written.
+def _may_write_locked(role, sys_admin=False):
+    """נעילה: "רק בעל הלוח רשאי לשנות את הגדרותיה, לפתוח את נעילתה או למחוק אותה."
 
-    Not even by its owner: that is what distinguishes a lock from permission.
-    Unlocking is the deliberate act, and it is offered to whoever could edit
-    the view in the first place.
+    So a lock does not freeze a view — it narrows who may touch it to the
+    board's owner. Everyone else, the person who MADE the view included, may
+    read it and copy it and may not write it: a cut a department works off is
+    not a stray "שמור" away from being somebody else's cut, and whoever runs
+    the board is the one who answers for what its tabs say.
+
+    Locking is the owner's too, not only unlocking. A lock an editor could
+    apply and then not undo would be a trap, and "רק בעל הלוח" reads the same
+    at both ends of the switch.
     """
-    return bool(v.locked)
+    return role == "admin" or bool(sys_admin)
 
 
 def _may_edit_view(v, user_id, role, sys_admin=False):
@@ -2101,13 +2107,13 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
             ids = {v.owner_id for v in rows}
             names = {u.id: u.name for u in db.query(User).filter(User.id.in_(ids)).all()}
         return {"views": [dict(_view_json(v, db, names),
-                               # may write to it AND it is not locked — the
-                               # strip offers "שמור" only when both hold
+                               # may write to it — the rights, and the lock,
+                               # which only the board's owner writes through
                                can_edit=(_may_edit_view(v, user_id, role, sysadm)
-                                         and not v.locked),
-                               # may lock, unlock, pin or delete it: the rights
-                               # question alone, which a lock does not answer
-                               can_manage=_may_edit_view(v, user_id, role, sysadm),
+                                         and (not v.locked
+                                              or _may_write_locked(role, sysadm))),
+                               # may turn the lock itself: the board's owner
+                               can_lock=_may_write_locked(role, sysadm),
                                # drawn as "yours" or "somebody's" — the strip
                                # offers a different thing to save in each case
                                is_owner=(v.owner_id == user_id))
@@ -2161,16 +2167,17 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         sysadm = _is_sys_admin(db, user_id)
         if not _may_edit_view(v, user_id, role, sysadm):
             raise HTTPException(403, "אפשר לערוך רק תצוגה שיצרת")
-        # נעילה is its own switch, and it is the one thing a locked view still
-        # accepts — otherwise a lock could never be undone. Everything else
-        # about a locked view is refused before it is read.
-        if data.get("locked") is not None:
+        # The lock, at both ends of the switch, is the board owner's alone.
+        if data.get("locked") is not None and bool(data["locked"]) != bool(v.locked):
+            if not _may_write_locked(role, sysadm):
+                raise HTTPException(403, "רק בעל הלוח יכול לנעול תצוגה או לבטל את נעילתה")
             v.locked = bool(data["locked"])
         if data.get("pinned") is not None:
             v.pinned = bool(data["pinned"])
+        # And while it is locked, so is everything the view says.
         rest = [k for k in ("name", "visibility", "filters", "position") if k in data]
-        if rest and _view_locked_against(v, user_id, role, sysadm):
-            raise HTTPException(403, "התצוגה נעולה — יש לבטל את הנעילה כדי לשנות אותה")
+        if rest and v.locked and not _may_write_locked(role, sysadm):
+            raise HTTPException(403, "התצוגה נעולה — רק בעל הלוח יכול לשנות אותה")
         if data.get("name") is not None:
             name = (data.get("name") or "").strip()
             if not name:
@@ -2216,15 +2223,16 @@ def delete_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
     their cut is gone — and a hard delete leaves nothing to put back. Same
     shape as a deleted board or item: deleted_at, and a restore beside it.
 
-    A locked view is refused here too. A lock that stopped edits but not
-    deletion would protect nothing worth protecting.
+    Deleting a locked view is the board owner's too — the definition names
+    deletion alongside changing and unlocking, and a lock that stopped edits
+    but not deletion would protect nothing worth protecting.
     """
     with Session(engine) as db:
         v, role, may = _view_or_404(db, view_id, user_id)
         if not may:
             raise HTTPException(403, "אפשר למחוק רק תצוגה שיצרת")
-        if v.locked:
-            raise HTTPException(403, "התצוגה נעולה — יש לבטל את הנעילה כדי למחוק אותה")
+        if v.locked and not _may_write_locked(role, _is_sys_admin(db, user_id)):
+            raise HTTPException(403, "התצוגה נעולה — רק בעל הלוח יכול למחוק אותה")
         v.deleted_at = datetime.now(timezone.utc)
         v.deleted_by = user_id
         db.commit()
@@ -2267,7 +2275,10 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         v.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(v)
-        return dict(_view_json(v), can_edit=may and not v.locked, can_manage=may)
+        return dict(_view_json(v),
+                    can_edit=may and (not v.locked
+                                      or _may_write_locked(role, _is_sys_admin(db, user_id))),
+                    can_manage=may)
 
 
 @app.post("/api/views/{view_id}/duplicate")

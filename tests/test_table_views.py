@@ -77,46 +77,65 @@ def test_two_views_of_one_board_disagree_about_the_table(client, admin_id):
 
 
 # ── נעילה ──────────────────────────────────────────────────────────────────
-def test_a_locked_view_is_read_and_not_written(client, admin_id):
-    bid = _board(client, admin_id)
-    vid = _mk(client, bid, admin_id, "מאושרת").json()["id"]
+# "תצוגה שרק בעל הלוח רשאי לשנות את הגדרותיה, לפתוח את נעילתה או למחוק אותה."
+# So a lock does not freeze a view — it narrows who may touch it to the board's
+# owner. The person who MADE it is on the outside of that narrowing like
+# everybody else, unless they happen to run the board.
+def test_a_locked_view_is_not_its_makers_to_change_any_more(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, invite=[guinea_id])          # guinea is an editor
+    vid = _mk(client, bid, guinea_id, "מאושרת").json()["id"]
+    assert _patch(client, vid, guinea_id, name="לפני הנעילה").status_code == 200
+
     assert _patch(client, vid, admin_id, locked=True).status_code == 200
-
-    r = _patch(client, vid, admin_id, name="משהו אחר")
-    assert r.status_code == 403, "its own owner overwrote a locked view"
-    assert "נעולה" in r.json()["detail"]
-    assert _patch(client, vid, admin_id, filters=dict(CUT, q="אחר")).status_code == 403
-    assert _one(client, bid, admin_id, "מאושרת")["locked"] is True
+    r = _patch(client, vid, guinea_id, name="אחרי הנעילה")
+    assert r.status_code == 403, "the view's own maker wrote through the lock"
+    assert "בעל הלוח" in r.json()["detail"]
+    assert _patch(client, vid, guinea_id, filters=dict(CUT, q="אחר")).status_code == 403
 
 
-def test_a_lock_is_not_a_permission_and_can_always_be_undone(client, admin_id):
-    """The one thing a locked view still accepts is being unlocked — otherwise
-    a lock would be a one-way door."""
-    bid = _board(client, admin_id)
-    vid = _mk(client, bid, admin_id, "מאושרת").json()["id"]
+def test_the_board_owner_writes_through_the_lock(client, admin_id, guinea_id):
+    """The whole point of the narrowing: somebody can still fix the tab."""
+    bid = _board(client, admin_id, invite=[guinea_id])
+    vid = _mk(client, bid, guinea_id, "מאושרת").json()["id"]
     _patch(client, vid, admin_id, locked=True)
+    assert _patch(client, vid, admin_id, name="תוקן").status_code == 200
+    assert _one(client, bid, admin_id, "תוקן")["locked"] is True, "the fix unlocked it"
+
+
+def test_only_the_board_owner_turns_the_lock_either_way(client, admin_id, guinea_id):
+    """Locking as well as unlocking. A lock an editor could apply and then not
+    undo would be a trap, and "רק בעל הלוח" reads the same at both ends."""
+    bid = _board(client, admin_id, invite=[guinea_id])
+    vid = _mk(client, bid, guinea_id, "מאושרת").json()["id"]
+    assert _patch(client, vid, guinea_id, locked=True).status_code == 403
+    _patch(client, vid, admin_id, locked=True)
+    assert _patch(client, vid, guinea_id, locked=False).status_code == 403
     assert _patch(client, vid, admin_id, locked=False).status_code == 200
-    assert _patch(client, vid, admin_id, name="עכשיו כן").status_code == 200
+    assert _patch(client, vid, guinea_id, name="עכשיו כן").status_code == 200
 
 
-def test_a_locked_view_is_not_deleted_either(client, admin_id):
-    """A lock that stopped edits but not deletion would protect nothing."""
-    bid = _board(client, admin_id)
-    vid = _mk(client, bid, admin_id, "מאושרת").json()["id"]
+def test_deleting_a_locked_view_is_the_board_owners_too(client, admin_id, guinea_id):
+    """The definition names deletion beside changing and unlocking, and a lock
+    that stopped edits but not deletion would protect nothing."""
+    bid = _board(client, admin_id, invite=[guinea_id])
+    vid = _mk(client, bid, guinea_id, "מאושרת").json()["id"]
     _patch(client, vid, admin_id, locked=True)
-    r = client.delete(f"/api/views/{vid}", headers=_h(admin_id))
-    assert r.status_code == 403 and "נעולה" in r.json()["detail"]
+    r = client.delete(f"/api/views/{vid}", headers=_h(guinea_id))
+    assert r.status_code == 403 and "בעל הלוח" in r.json()["detail"]
+    assert client.delete(f"/api/views/{vid}", headers=_h(admin_id)).status_code == 200
 
 
-def test_the_strip_says_a_locked_view_cannot_be_saved_over(client, admin_id):
-    """can_edit answers the question the strip actually asks — may I press
-    שמור — which is the rights AND the lock. can_manage is the rights alone,
-    because unlocking is still offered."""
-    bid = _board(client, admin_id)
-    vid = _mk(client, bid, admin_id, "מאושרת").json()["id"]
+def test_the_strip_says_who_may_press_save_on_a_locked_view(client, admin_id, guinea_id):
+    """can_edit is the question the strip actually asks — may I press שמור —
+    which is the rights AND the lock. can_lock is the switch itself."""
+    bid = _board(client, admin_id, invite=[guinea_id])
+    vid = _mk(client, bid, guinea_id, "מאושרת").json()["id"]
     _patch(client, vid, admin_id, locked=True)
-    v = _one(client, bid, admin_id, "מאושרת")
-    assert v["can_edit"] is False and v["can_manage"] is True
+
+    mine = _one(client, bid, guinea_id, "מאושרת")
+    assert mine["can_edit"] is False and mine["can_lock"] is False
+    theirs = _one(client, bid, admin_id, "מאושרת")
+    assert theirs["can_edit"] is True and theirs["can_lock"] is True
 
 
 # ── הצמדה ──────────────────────────────────────────────────────────────────
