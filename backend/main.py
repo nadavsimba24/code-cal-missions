@@ -2998,9 +2998,37 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
                     return False
             return True
 
+        # ── the hierarchy rules ──────────────────────────────────────────
+        # A condition is asked of sub-items as well, and the four combinations
+        # have four different answers:
+        #
+        #   parent matches, a sub matches  → the parent and the matching subs
+        #   parent matches, none does      → the parent alone, no subs under it
+        #   parent does not, a sub does    → the parent AS CONTEXT, matching subs
+        #   neither                        → not shown
+        #
+        # Two things fall out of that and are easy to get wrong. A parent that
+        # matches still shows only the sub-items that match — a cut is a cut
+        # all the way down, and showing the rest under a matching parent would
+        # answer a different question on every row. And a parent present only
+        # because of its children is marked, because it is there to say WHERE
+        # they are: unmarked, it reads as a row that answered the filter.
+        subs_all = (db.query(Task)
+                      .filter(Task.board_id == board_id, Task.parent_id.isnot(None),
+                              Task.is_archived == False, Task.deleted_at.is_(None))
+                      .order_by(Task.position, Task.id)
+                      .all())
+        if user_id is not None:
+            # the same gate the parents went through — a sub-item somebody may
+            # not see cannot pull its parent into the answer either
+            subs_all = [t for t in subs_all if _item_perm(t, user_id, my_role) != "none"]
+        if isinstance(only, list):
+            subs_all = []          # a question about named rows is about those rows
+
         total = len(rows)
-        hits = []
-        for t in rows:
+
+        def _asked(t):
+            """Does this row answer the cut — the conditions and the search."""
             item = {
                 "id": t.id, "title": t.title,
                 "status": _task_status_key(t), "priority": _task_priority_key(t),
@@ -3008,8 +3036,19 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
                 "assignees": [{"id": u.id} for u in t.assignees],
                 "custom_fields": t.custom_fields or {},
             }
-            if _passes_toolbar(t) and filter_ast.match(item, tree, fields, today, off, user_id):
-                hits.append(t)
+            return (_passes_toolbar(t)
+                    and filter_ast.match(item, tree, fields, today, off, user_id))
+
+        own = {t.id for t in rows if _asked(t)}
+        # matching sub-items, kept in the board's own order under their parent
+        kids_hit = {}
+        for sub in subs_all:
+            if _asked(sub):
+                kids_hit.setdefault(sub.parent_id, []).append(sub)
+        # a parent appears if it answered, or if one of its children did
+        hits = [t for t in rows if t.id in own or t.id in kids_hit]
+        # present only to say where the children are — see the rules above
+        context_only = {t.id for t in hits if t.id not in own}
         matched = len(hits)
 
         # ── then sort, over everything that matched ──────────────────────
@@ -3042,6 +3081,11 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             hits.sort(key=_SORTS[want_sort])
 
         out = {"matched": matched, "total": total,
+               # how many of the rows answered the cut themselves, and how many
+               # sub-items did — "3 items" over a list where one of them is
+               # only context would be a lie the screen cannot correct
+               "matched_own": len(own),
+               "matched_subs": sum(len(v) for v in kids_hit.values()),
                "sort": want_sort if want_sort in _SORTS else "",
                "conditions": filter_ast.count(tree),
                # the rules that could not be run, so the caller can say why
@@ -3090,10 +3134,18 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             offset = 0
         page = hits[offset:offset + limit]
         _subs = _prefetch_items(db, page)
+        # _prefetch_items has just filled _kids_by with EVERY child of every
+        # row on the page. Narrow it to the ones that matched, which is what
+        # _serialize_task reads: a parent that answered the cut still shows
+        # only the children that did, and one that answered nothing shows none.
+        db.info["_kids_by"] = {t.id: kids_hit.get(t.id, []) for t in page}
+        _subs = [s for t in page for s in kids_hit.get(t.id, [])]
         _prefetch_links(db, list(page) + _subs, (b.settings or {}).get("columns", []), user_id)
         cols = (b.settings or {}).get("columns", [])
-        out["items"] = [_serialize_task(t, db, user_id=user_id, board_role=my_role,
-                                        columns=cols) for t in page]
+        out["items"] = [dict(_serialize_task(t, db, user_id=user_id, board_role=my_role,
+                                             columns=cols),
+                             context_only=(t.id in context_only))
+                        for t in page]
         out["item_ids"] = [t.id for t in page]
         out["offset"] = offset
         out["limit"] = limit

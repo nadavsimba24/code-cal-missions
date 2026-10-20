@@ -14,13 +14,9 @@ because each page is ordered against itself. Fixed here: the order is applied
 after the filter and before the page is cut, which is also the sequence the
 chapter gives — permissions, conditions and search, sort, hierarchy.
 
-SUB-ITEMS are not reached by the mechanism at all: the query evaluates rows
-with no parent and nothing else. That gap is NOT closed here. The chapter says
-to complete it "כחלק מדרישת תתי הפריטים שנבחרה", and which requirement was
-chosen decides the behaviour — whether a parent appears because a sub-item
-matches, whether sub-items are themselves narrowed inside a parent that
-matches, or both. Guessing would be a filter syntax decision made by accident.
-The case at the bottom records the gap so it cannot be mistaken for working.
+SUB-ITEMS were not reached by the mechanism at all — the query evaluated rows
+with no parent and nothing else. That gap is closed, and the rules it is
+closed by live in tests/test_view_hierarchy.py.
 """
 import pathlib
 import sys
@@ -125,27 +121,6 @@ def test_the_search_narrows_before_the_sort_too(client, board, admin_id):
 
 
 # ── what the verification found, recorded ──────────────────────────────────
-def test_conditions_do_not_reach_sub_items_yet(client, board, admin_id):
-    """The verification the chapter asked for, as a case rather than a note.
-
-    A sub-item matching the condition does not bring its parent into the
-    answer, and is not returned itself: the query evaluates rows with no
-    parent. This FAILS the day somebody implements sub-item conditions, which
-    is the point — the gap is recorded so that closing it is deliberate and
-    the decision about which requirement was chosen gets made out loud."""
-    parent = _item(client, board, admin_id, "הורה")
-    r = client.post("/api/tasks", json={"board_id": board, "title": "תת־פריט ייחודי",
-                                        "parent_id": parent, "user_id": admin_id},
-                    headers=_h(admin_id))
-    assert r.status_code == 200, r.text
-
-    got = _query(client, board, admin_id,
-                 filter={"op": "and", "rules": [
-                     {"field": "title", "op": "has", "v": "ייחודי"}]}).json()
-    assert got["matched"] == 0, \
-        "sub-item conditions now work — close the gap in the docstring above"
-
-
 def test_deleted_and_archived_items_are_not_in_the_answer(client, board, admin_id):
     """"פריטים מחוקים או בארכיון אינם נכללים." Already true; pinned so it
     stays true when the query grows."""
