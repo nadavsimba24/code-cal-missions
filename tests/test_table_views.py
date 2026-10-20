@@ -319,3 +319,93 @@ def test_the_bin_is_not_a_way_into_a_board_you_cannot_open(client, admin_id, gui
                       headers=_h(guinea_id)).status_code == 403
     assert client.post(f"/api/views/{vid}/restore", json={"user_id": guinea_id},
                        headers=_h(guinea_id)).status_code == 403
+
+
+# ── the permission matrix, walked row by row ───────────────────────────────
+# "כל פעולה נבדקת בשרת." So every row is asked of the server, for all three
+# roles, rather than trusted to the flags the strip is drawn from. A table of
+# expectations beats fifteen more test functions: when a row changes, the
+# change is one word here and the case that moves is named in the failure.
+#
+# Not here: the three "זמני" rows and the table adjustments, which never reach
+# the server by definition (see "שינוי זמני"), and עריכת נתוני פריט, which is
+# the board's existing item permissions and is tested where those are.
+MATRIX = {
+    #  action                         owner  editor viewer
+    "see":                            (True,  True,  True),
+    "create":                         (True,  True,  False),
+    "rename_unlocked":                (True,  True,  False),
+    "delete_unlocked":                (True,  True,  False),
+    "main_table_config_for_everyone": (True,  False, False),
+    "lock":                           (True,  False, False),
+    "rename_locked":                  (True,  False, False),
+    "delete_locked":                  (True,  False, False),
+    "duplicate":                      (True,  True,  False),
+    "pin":                            (True,  False, False),
+    "order_pinned":                   (True,  False, False),
+    "restore":                        (True,  False, False),
+    "personal_order":                 (True,  True,  True),
+}
+
+
+@pytest.fixture
+def cast(client, admin_id, guinea_id, member_id):
+    """One board, and a person in each of the three roles on it."""
+    bid = _board(client, admin_id, invite=[guinea_id], role="editor")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": member_id, "role": "viewer"})
+    return {"bid": bid, "owner": admin_id, "editor": guinea_id, "viewer": member_id}
+
+
+def _attempt(client, cast, action, uid):
+    """Perform one row of the matrix as `uid`, and return the status code."""
+    bid, owner = cast["bid"], cast["owner"]
+    if action == "see":
+        return client.get(f"/api/boards/{bid}/views?user_id={uid}", headers=_h(uid)).status_code
+    if action == "create":
+        return _mk(client, bid, uid, f"חדשה {uid}").status_code
+    if action == "main_table_config_for_everyone":
+        return client.patch(f"/api/boards/{bid}", json={"actor_id": uid,
+                                                        "col_widths": {"item": 321}},
+                            headers=_h(uid)).status_code
+    if action == "personal_order":
+        v = _mk(client, bid, owner, f"לסידור {uid}").json()["id"]
+        return client.put(f"/api/boards/{bid}/views/order",
+                          json={"user_id": uid, "order": [v]}, headers=_h(uid)).status_code
+
+    # the rest act on a view the OWNER made, so authorship never explains a pass
+    vid = _mk(client, bid, owner, f"יעד {action} {uid}").json()["id"]
+    if action in ("rename_locked", "delete_locked"):
+        _patch(client, vid, owner, locked=True)
+    if action == "restore":
+        client.delete(f"/api/views/{vid}", headers=_h(owner))
+
+    if action in ("rename_unlocked", "rename_locked"):
+        return _patch(client, vid, uid, name=f"שונה {uid}").status_code
+    if action in ("delete_unlocked", "delete_locked"):
+        return client.delete(f"/api/views/{vid}", headers=_h(uid)).status_code
+    if action == "duplicate":
+        _patch(client, vid, owner, locked=True)        # "לרבות נעולה"
+        return client.post(f"/api/views/{vid}/duplicate",
+                           json={"user_id": uid}, headers=_h(uid)).status_code
+    if action == "lock":
+        return _patch(client, vid, uid, locked=True).status_code
+    if action == "pin":
+        return _patch(client, vid, uid, pinned=True).status_code
+    if action == "order_pinned":
+        return _patch(client, vid, uid, position=3).status_code
+    if action == "restore":
+        return client.post(f"/api/views/{vid}/restore",
+                           json={"user_id": uid}, headers=_h(uid)).status_code
+    raise AssertionError("unknown row: " + action)
+
+
+@pytest.mark.parametrize("action", sorted(MATRIX))
+@pytest.mark.parametrize("who", ("owner", "editor", "viewer"))
+def test_the_permission_matrix_is_what_the_server_answers(client, cast, action, who):
+    allowed = MATRIX[action][("owner", "editor", "viewer").index(who)]
+    code = _attempt(client, cast, action, cast[who])
+    if allowed:
+        assert code == 200, f"{action} / {who} was refused ({code})"
+    else:
+        assert code == 403, f"{action} / {who} was allowed ({code})"

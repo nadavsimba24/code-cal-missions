@@ -135,15 +135,20 @@ def test_a_view_is_edited_by_its_owner(client, admin_id, guinea_id):
     assert other.status_code == 200, "its own author lost it"
 
 
-def test_somebody_elses_view_is_not_yours_to_change(client, admin_id, guinea_id, member_id):
-    bid = _board(client, admin_id, invite=[guinea_id, member_id])
+def test_an_editor_may_change_any_unlocked_view_on_the_board(client, admin_id, guinea_id, member_id):
+    """Authorship is not the boundary; the board's roles are.
+
+    A saved view is a tab on the board — part of how the board is set up — so
+    the question is what somebody may do to THIS BOARD, not who happened to
+    press save first. An editor edits the board, so an editor edits its tabs.
+    What protects a cut people rely on is the lock, not its author's name."""
+    bid = _board(client, admin_id, invite=[guinea_id, member_id])     # both editors
     vid = _mk(client, bid, guinea_id, "של דנה", vis="public").json()["id"]
-    for verb in ("patch", "delete"):
-        r = getattr(client, verb)(
-            f"/api/views/{vid}",
-            **({"json": {"user_id": member_id, "name": "לא שלי"}} if verb == "patch" else {}),
-            headers={"X-CityOS-User": str(member_id)})
-        assert r.status_code == 403, f"{verb}: {r.text}"
+    r = client.patch(f"/api/views/{vid}", json={"user_id": member_id, "name": "בשם אחר"},
+                     headers={"X-CityOS-User": str(member_id)})
+    assert r.status_code == 200, r.text
+    assert client.delete(f"/api/views/{vid}",
+                         headers={"X-CityOS-User": str(member_id)}).status_code == 200
 
 
 def test_a_view_is_not_a_way_into_a_board_you_cannot_open(client, admin_id, guinea_id):
@@ -242,20 +247,24 @@ def test_the_owner_of_a_public_view_is_whoever_made_it(client, admin_id, guinea_
     assert mine["is_owner"] is True and mine["can_edit"] is True
 
 
-def test_a_reader_may_look_and_may_not_overwrite(client, admin_id, guinea_id, member_id):
-    """The whole of the rule: somebody adjusting what they are looking at must
-    not be able to rewrite a tab other people rely on. The damage is invisible
-    to everyone it affects until they next open the tab and find it answering
-    a different question."""
-    bid = _board(client, admin_id, invite=[guinea_id, member_id])
+def test_a_viewer_may_look_and_may_not_overwrite(client, admin_id, guinea_id, member_id):
+    """A viewer is where the line now sits. Somebody adjusting what they are
+    looking at must not be able to rewrite a tab other people rely on, and the
+    damage is invisible to everyone it affects until they next open the tab and
+    find it answering a different question."""
+    bid = _board(client, admin_id, invite=[guinea_id])
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": member_id, "role": "viewer"})
     vid = _mk(client, bid, guinea_id, "של דנה", vis="public").json()["id"]
     seen = [x for x in _list(client, bid, member_id) if x["id"] == vid][0]
     assert seen["is_owner"] is False
-    assert seen["can_edit"] is False, "a reader is offered the overwrite"
+    assert seen["can_edit"] is False, "a viewer is offered the overwrite"
     r = client.patch(f"/api/views/{vid}",
                      json={"user_id": member_id, "filters": {"q": "משהו אחר"}},
                      headers={"X-CityOS-User": str(member_id)})
     assert r.status_code == 403
+    assert client.delete(f"/api/views/{vid}",
+                         headers={"X-CityOS-User": str(member_id)}).status_code == 403
 
 
 def test_a_reader_can_always_keep_a_copy_of_their_own(client, admin_id, guinea_id, member_id):

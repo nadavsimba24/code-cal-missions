@@ -2031,21 +2031,23 @@ def _may_write_locked(role, sys_admin=False):
 
 
 def _may_edit_view(v, user_id, role, sys_admin=False):
-    """Who may overwrite a view.
+    """Who may rename or rewrite an UNLOCKED view. The lock is asked separately.
 
-    Its owner, always — a public view has one, and it is whoever made it.
-    Anybody else reading it may look and may build on it, and the only thing
-    they are offered is "save as a new view": a tab other people rely on must
-    not be rewritten by somebody who was only adjusting what they were
-    looking at, and an accidental overwrite is invisible to everyone it
-    affects until they next open the tab and find it answering a different
-    question.
+    The board's own roles answer it, not authorship: an editor may change any
+    view on a board they edit, and a viewer may change none. A saved view is
+    a tab on the board — part of how the board is set up — so the question is
+    what somebody may do to this board, not who happened to press save first.
 
-    Administrators override that — a board admin for the boards they run, and
-    a system administrator anywhere. Somebody has to be able to fix or remove
-    a tab whose author has left the organisation.
+    The one place authorship still counts is the private views written before
+    this version decided there were none. Their owner keeps them: a row only
+    one person can see, which that person cannot delete, is a dead end.
     """
-    return v.owner_id == user_id or role == "admin" or bool(sys_admin)
+    if role == "admin" or sys_admin:
+        return True
+    if role == "editor":
+        return True
+    # legacy private rows — see _view_visible_to
+    return v.visibility != "public" and v.owner_id == user_id
 
 
 def _view_json(v, db=None, names=None):
@@ -2067,18 +2069,26 @@ def _view_order_for(db, board_id, user_id):
 
 
 def _arrange_views(rows, personal):
-    """The order the strip is drawn in, and it is three rules in sequence.
+    """The order the strip is drawn in — two blocks, arranged by two people.
 
-    Pinned first — that is what pinning is for, and it is the board's
-    statement rather than the reader's. Then the reader's own arrangement, for
-    the views they have arranged. Then everything else in the board's order,
-    which is where a view created since somebody last arranged their strip
-    lands: at the end, disturbing nothing.
+    Pinned views come first, in the order the BOARD puts them in. Both halves
+    of that are the board owner's: which views are pinned, and how the pinned
+    ones sit relative to each other. A reader's own arrangement does not reach
+    into them — "סדר אישי לתצוגות שאינן מוצמדות" is exactly that boundary, and
+    a pinned view that could be shuffled personally would make pinning mean
+    nothing on the screen it was meant to control.
+
+    Everything else follows, in the reader's own order. Views they have not
+    arranged keep the board's order after the ones they have, which is where a
+    view created since they last arranged their strip lands: at the end,
+    disturbing nothing.
     """
     rank = {vid: i for i, vid in enumerate(personal)}
-    return sorted(rows, key=lambda v: (not bool(v.pinned),
-                                       rank.get(v.id, len(rank)),
-                                       v.position or 0, v.id))
+    def key(v):
+        if v.pinned:
+            return (0, 0, v.position or 0, v.id)
+        return (1, rank.get(v.id, len(rank)), v.position or 0, v.id)
+    return sorted(rows, key=key)
 
 
 def _board_role_or_403(db, board_id, user_id):
@@ -2172,8 +2182,14 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
             if not _may_write_locked(role, sysadm):
                 raise HTTPException(403, "רק בעל הלוח יכול לנעול תצוגה או לבטל את נעילתה")
             v.locked = bool(data["locked"])
-        if data.get("pinned") is not None:
+        # הצמדה — and the order the pinned ones sit in — says which cut matters
+        # on this board. That is the board owner's statement to make.
+        if data.get("pinned") is not None and bool(data["pinned"]) != bool(v.pinned):
+            if not _may_write_locked(role, sysadm):
+                raise HTTPException(403, "רק בעל הלוח יכול להצמיד תצוגה")
             v.pinned = bool(data["pinned"])
+        if data.get("position") is not None and not _may_write_locked(role, sysadm):
+            raise HTTPException(403, "רק בעל הלוח יכול לסדר תצוגות מוצמדות")
         # And while it is locked, so is everything the view says.
         rest = [k for k in ("name", "visibility", "filters", "position") if k in data]
         if rest and v.locked and not _may_write_locked(role, sysadm):
@@ -2268,8 +2284,11 @@ def restore_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
         v, role, may = _view_or_404(db, view_id, user_id, live=False)
         if v.deleted_at is None:
             return dict(_view_json(v), can_edit=may)
-        if not may:
-            raise HTTPException(403, "אפשר לשחזר רק תצוגה שיצרת")
+        # Bringing a tab back puts it on everybody's board again, which is the
+        # same act as creating one and then some — it may be a tab people had
+        # already agreed to be rid of. The board owner's.
+        if not _may_write_locked(role, _is_sys_admin(db, user_id)):
+            raise HTTPException(403, "רק בעל הלוח יכול לשחזר תצוגה שנמחקה")
         v.deleted_at = None
         v.deleted_by = None
         v.updated_at = datetime.now(timezone.utc)
@@ -2341,9 +2360,13 @@ def set_personal_view_order(board_id: int, data: dict,
         want = data.get("order")
         if not isinstance(want, list):
             raise HTTPException(400, "order must be a list of view ids")
+        # Pinned views are not this reader's to order — see _arrange_views.
+        # Dropped rather than refused, like a stale id: a strip dragged while
+        # somebody else pinned a tab must settle, not fail.
         mine = {v.id for v in db.query(SavedView.id)
                                 .filter(SavedView.board_id == board_id,
-                                        SavedView.deleted_at.is_(None)).all()}
+                                        SavedView.deleted_at.is_(None),
+                                        SavedView.pinned.isnot(True)).all()}
         seen, clean = set(), []
         for i in want:
             try:
