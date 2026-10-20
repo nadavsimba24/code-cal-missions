@@ -264,8 +264,19 @@ class SavedView(Base):
     __tablename__ = "saved_views"
     id = Column(Integer, primary_key=True)
     board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # Who made it, for the record and for nothing else: "היוצר משמש לתיעוד
+    # ואינו מכתיב הרשאות ניהול". Nullable because the main table has no
+    # author — it is the board, and it existed before anybody saved anything.
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     name = Column(String(80), nullable=False)
+    # ── main | saved ──
+    # The board's one fixed table is a row like any other now. It used to be
+    # nothing at all — the board itself, with its layout in board.settings and
+    # no record to point at — which meant it could not be named in a link,
+    # could not carry a configuration version, and had to be special-cased in
+    # every place that listed views. One guaranteed per board, including the
+    # boards that existed before this existed: see _ensure_main_views.
+    kind = Column(String(10), default="saved")
     visibility = Column(String(10), default="private")     # private | public
     # What the cut IS, and it keeps growing:
     #   {view, q, people, status, priority, sort, links, adv, cols}
@@ -290,6 +301,18 @@ class SavedView(Base):
     # way deleting a board or an item is: NULL deleted_at means a live view.
     deleted_at = Column(DateTime, nullable=True)
     deleted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # ── גרסת תצורה ──
+    # Bumped every time the shared configuration changes, and never otherwise.
+    # A timestamp nearly does this job and fails at the edges: two saves in the
+    # same clock tick compare equal, and a client that has to decide whether
+    # what it is holding is stale cannot afford "nearly". A counter also says
+    # HOW MANY times it moved, which a timestamp cannot.
+    config_version = Column(Integer, default=1)
+    # ── גרסת מבנה ──
+    # What shape `filters` is in. Nothing reads it yet, which is the point:
+    # it is here so that the day the shape changes, the rows written before
+    # that day can say so instead of being guessed at by their contents.
+    schema_version = Column(Integer, default=1)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

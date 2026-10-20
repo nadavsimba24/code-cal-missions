@@ -39,9 +39,18 @@ def _patch(client, vid, uid, **data):
 
 
 def _strip(client, bid, uid):
+    """The strip, with the board's own table taken out of it.
+
+    The main table is a row now and sits first, ahead of the pinned block —
+    it is the board, not a cut, and it is not somebody's to pin or arrange.
+    Every case here is about the ORDER of the saved views, so it is removed;
+    its own place is pinned in tests/test_view_records.py.
+    """
     r = client.get(f"/api/boards/{bid}/views?user_id={uid}", headers=_h(uid))
     assert r.status_code == 200, r.text
-    return r.json()
+    d = r.json()
+    d["views"] = [v for v in d["views"] if v.get("kind") != "main"]
+    return d
 
 
 def _order(client, bid, uid, ids):

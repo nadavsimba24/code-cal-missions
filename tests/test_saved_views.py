@@ -51,11 +51,19 @@ def _mk(client, bid, uid, name, vis="private", filters=None):
                        headers={"X-CityOS-User": str(uid)})
 
 
-def _list(client, bid, uid):
+def _list(client, bid, uid, main=False):
+    """The board's SAVED views.
+
+    The main table is a row like any other now, and it is on the strip — so
+    it comes back from this endpoint too. Every case that was written before
+    that means "the saved cuts", so it is filtered out here and asked for
+    explicitly by the cases that are about it (tests/test_view_records.py).
+    """
     r = client.get(f"/api/boards/{bid}/views?user_id={uid}",
                    headers={"X-CityOS-User": str(uid)})
     assert r.status_code == 200, r.text
-    return r.json()["views"]
+    rows = r.json()["views"]
+    return rows if main else [v for v in rows if v.get("kind") != "main"]
 
 
 # ── saving a cut, and getting it back whole ───────────────────────────────

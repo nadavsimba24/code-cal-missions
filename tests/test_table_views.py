@@ -299,7 +299,10 @@ def test_a_view_in_the_bin_is_not_on_the_strip_and_not_in_the_count(client, admi
     client.delete(f"/api/views/{vid}", headers=_h(admin_id))
     with Session(cityos_main.engine) as db:
         live = (db.query(SavedView)
-                  .filter(SavedView.board_id == bid, SavedView.deleted_at.is_(None)).count())
+                  .filter(SavedView.board_id == bid, SavedView.deleted_at.is_(None),
+                          # the board's own table is a row now, and it is
+                          # never in the bin — see tests/test_view_records.py
+                          SavedView.kind != "main").count())
     assert live == 0
     assert _mk(client, bid, admin_id, "אחרת").status_code == 200
 

@@ -199,9 +199,46 @@ def _migrate():
             for name, ddl in [("locked", "BOOLEAN DEFAULT 0"),
                               ("pinned", "BOOLEAN DEFAULT 0"),
                               ("deleted_at", "DATETIME"),
-                              ("deleted_by", "INTEGER")]:
+                              ("deleted_by", "INTEGER"),
+                              ("kind", "VARCHAR(10) DEFAULT 'saved'"),
+                              ("config_version", "INTEGER DEFAULT 1"),
+                              ("schema_version", "INTEGER DEFAULT 1")]:
                 if name not in vcols:
                     conn.execute(text(f"ALTER TABLE saved_views ADD COLUMN {name} {ddl}"))
+            # The main table has no author — it is the board — so owner_id has
+            # to accept NULL. SQLite cannot relax a NOT NULL in place, and the
+            # column predates this, so the table is rebuilt: the documented
+            # create-copy-drop-rename, with the rows carried across by name so
+            # the order of the columns here cannot matter.
+            notnull = {r[1] for r in conn.execute(text("PRAGMA table_info(saved_views)"))
+                       if r[3] and r[1] == "owner_id"}
+            if notnull:
+                cols = [r[1] for r in conn.execute(text("PRAGMA table_info(saved_views)"))]
+                names = ", ".join(cols)
+                conn.execute(text("""CREATE TABLE saved_views__new (
+                    id INTEGER PRIMARY KEY,
+                    board_id INTEGER NOT NULL REFERENCES boards(id),
+                    owner_id INTEGER REFERENCES users(id),
+                    name VARCHAR(80) NOT NULL,
+                    kind VARCHAR(10) DEFAULT 'saved',
+                    visibility VARCHAR(10) DEFAULT 'private',
+                    filters JSON,
+                    position INTEGER DEFAULT 0,
+                    locked BOOLEAN DEFAULT 0,
+                    pinned BOOLEAN DEFAULT 0,
+                    deleted_at DATETIME,
+                    deleted_by INTEGER REFERENCES users(id),
+                    config_version INTEGER DEFAULT 1,
+                    schema_version INTEGER DEFAULT 1,
+                    created_at DATETIME,
+                    updated_at DATETIME)"""))
+                conn.execute(text(f"INSERT INTO saved_views__new ({names}) "
+                                  f"SELECT {names} FROM saved_views"))
+                conn.execute(text("DROP TABLE saved_views"))
+                conn.execute(text("ALTER TABLE saved_views__new RENAME TO saved_views"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_saved_views_board_id "
+                                  "ON saved_views (board_id)"))
+                print("[views] saved_views rebuilt — owner_id now accepts NULL")
         pcols = {r[1] for r in conn.execute(text("PRAGMA table_info(board_view_prefs)"))}
         if pcols and "last_view_id" not in pcols:
             conn.execute(text("ALTER TABLE board_view_prefs ADD COLUMN last_view_id INTEGER"))
@@ -308,6 +345,17 @@ else:
         "ALTER TABLE comments ADD COLUMN IF NOT EXISTS seen_by JSON",
         "ALTER TABLE comments ADD COLUMN IF NOT EXISTS origin JSON",
         "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS origin JSON",
+        # saved views: lock, pin, their own bin, and the three fields the
+        # record chapter adds — kind, and the two versions
+        "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS locked BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+        "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS deleted_by INTEGER",
+        "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS kind VARCHAR(10) DEFAULT 'saved'",
+        "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS config_version INTEGER DEFAULT 1",
+        "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS schema_version INTEGER DEFAULT 1",
+        "ALTER TABLE saved_views ALTER COLUMN owner_id DROP NOT NULL",
+        "ALTER TABLE board_view_prefs ADD COLUMN IF NOT EXISTS last_view_id INTEGER",
         "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS task_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS environment_id INTEGER",
         "ALTER TABLE boards ADD COLUMN IF NOT EXISTS folder_id INTEGER",
@@ -2120,10 +2168,12 @@ def _check_view_name(db, board_id, name, exclude_id=None):
 
 def _check_view_room(db, board_id):
     """One more active view, main table included — or a refusal."""
+    # The main table is one of these rows now, so it counts itself — the +1
+    # that used to stand in for it would be counting it twice.
     live = (db.query(SavedView)
               .filter(SavedView.board_id == board_id,
                       SavedView.deleted_at.is_(None)).count())
-    if live + 1 >= VIEW_MAX:            # +1: the main table is one of them
+    if live >= VIEW_MAX:
         raise HTTPException(400, f"יותר מדי תצוגות פעילות בלוח (מקסימום {VIEW_MAX})")
 
 
@@ -2175,15 +2225,15 @@ def _may_edit_view(v, user_id, role):
     before: see _ws_role_for. Views are not the place to re-answer who an
     administrator is.
 
-    The one place authorship still counts is the private views written before
-    this version decided there were none. Their owner keeps them: a row only
-    one person can see, which that person cannot delete, is a dead end. It buys
-    nothing once the view is locked — a lock is the board owner's either way.
+    Authorship counts for nothing here, and that is the rule rather than an
+    omission: "היוצר משמש לתיעוד ואינו מכתיב הרשאות ניהול". owner_id says who
+    made the view, which is worth recording and worth showing; it is not a
+    claim on it. An earlier version let the author of a legacy private row
+    keep it, which was the same mistake wearing a kinder face — the right
+    answer for those rows is to share them, not to hand their author a
+    permission the matrix does not give.
     """
-    if role in ("admin", "editor"):
-        return True
-    # legacy private rows — see _view_visible_to
-    return v.visibility != "public" and v.owner_id == user_id
+    return role in ("admin", "editor")
 
 
 def _view_blocked_for(b, v, user_id, role):
@@ -2394,6 +2444,9 @@ def _merge_view_cols(incoming, stored, unseen):
 
 def _view_json(v, db=None, names=None):
     return {"id": v.id, "board_id": v.board_id, "name": v.name,
+            "kind": v.kind or "saved",
+            "config_version": v.config_version or 1,
+            "schema_version": v.schema_version or 1,
             "visibility": v.visibility, "owner_id": v.owner_id,
             "owner_name": (names or {}).get(v.owner_id, ""),
             "filters": v.filters or {}, "position": v.position or 0,
@@ -2432,6 +2485,11 @@ def _arrange_views(rows, personal):
     """
     rank = {vid: i for i, vid in enumerate(personal)}
     def key(v):
+        # The board's own table is always first. It is not pinned and cannot
+        # be — pinning is a choice among the saved cuts, and this one is the
+        # board. Ahead of the pinned block rather than inside it.
+        if (v.kind or "saved") == "main":
+            return (-1, 0, 0, v.id)
         if v.pinned:
             return (0, 0, v.position or 0, v.id)
         return (1, rank.get(v.id, len(rank)), v.position or 0, v.id)
@@ -2595,6 +2653,8 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
             v.filters = _view_config(
                 _merge_view_cols(data["filters"], v.filters,
                                  _unseen_col_ids(b, user_id, role)))
+            # the configuration moved, so the version does — and only here
+            v.config_version = (v.config_version or 1) + 1
         if isinstance(data.get("position"), int):
             v.position = data["position"]
         v.updated_at = datetime.now(timezone.utc)
@@ -2606,6 +2666,52 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         # whether this reader has temporary adjustments to protect.
         bus.publish("view.changed", board_id=v.board_id, actor_id=user_id, view_id=v.id)
         return dict(_view_json(v), can_edit=True)
+
+
+def _ensure_main_views(db=None):
+    """One main-table row per board — "טבלה ראשית אחת תובטח גם עבור לוחות קיימים".
+
+    The board's fixed table used to be nothing at all: the board itself, with
+    its column layout in board.settings and no record to point at. That cost
+    three things. It could not be named in a link the way a saved view can; it
+    had no configuration version, so a client could not tell whether what it
+    was holding was stale; and every place that lists views had to special-case
+    it, which is how "the main table's name is taken" came to be a hardcoded
+    string rather than a row like every other name on the strip.
+
+    Idempotent, and run at startup so boards made before this have one too. It
+    never touches a board that already has its row, and it never creates a
+    second: the board's own id is what makes the row unique, not the name.
+    """
+    own = db is None
+    db = db or Session(engine)
+    try:
+        have = {b for (b,) in db.query(SavedView.board_id)
+                                .filter(SavedView.kind == "main").all()}
+        made = 0
+        for (bid,) in db.query(Board.id).all():
+            if bid in have:
+                continue
+            db.add(SavedView(board_id=bid, owner_id=None, kind="main",
+                             name=MAIN_VIEW_NAME, visibility="public",
+                             filters={"view": "table"}, position=-1))
+            made += 1
+        if made:
+            db.commit()
+            print(f"[views] main table ensured on {made} board(s)")
+        return made
+    finally:
+        if own:
+            db.close()
+
+
+# Run once at import, after the function above exists. Deliberately not up
+# beside the seeding: that block runs before this module has finished loading,
+# and calling a name defined further down from there silently did nothing.
+try:
+    _ensure_main_views()
+except Exception as _e:                      # never block startup over it
+    print(f"⚠️  main-table backfill skipped: {_e}", flush=True)
 
 
 def _within_restore_window(v):
@@ -2648,6 +2754,10 @@ def delete_saved_view(view_id: int, user_id: int = Depends(current_user_id)):
     """
     with Session(engine) as db:
         v, role, may = _view_or_404(db, view_id, user_id)
+        # "לא ניתן למחוק את הטבלה הראשית." It is the board's own table; there
+        # is no board without one, so there is nothing here to delete.
+        if (v.kind or "saved") == "main":
+            raise HTTPException(400, "לא ניתן למחוק את הטבלה הראשית")
         if not may:
             raise HTTPException(403, "אפשר למחוק רק תצוגה שיצרת")
         if v.locked and not _may_write_locked(role):
@@ -3435,6 +3545,13 @@ def create_board(data: dict, actor_id: int = Depends(current_user_id)):
                         created_by=creator, custom_fields=cf))
         # creator becomes the board admin; the board is private until they invite others
         db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
+        # and the board's own table, which every board has exactly one of.
+        # Created here as well as backfilled at startup: the backfill is for
+        # the boards that already existed, and a board made a minute from now
+        # must not have to wait for the next restart to have one.
+        db.add(SavedView(board_id=b.id, owner_id=None, kind="main",
+                         name=MAIN_VIEW_NAME, visibility="public",
+                         filters={"view": "table"}, position=-1))
         db.commit()
         db.refresh(b)
         return {"id": b.id, "name": b.name, "icon": b.icon, "views": _board_views(b), "my_role": "admin"}
