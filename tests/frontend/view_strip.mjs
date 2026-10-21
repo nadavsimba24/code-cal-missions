@@ -15,10 +15,6 @@
    a view with no actions gets no menu button rather than one that opens
    nothing.
 
-   The PICKER searches the names the way the uniqueness rule compares them —
-   trimmed, without case — because a search that disagreed with the rule would
-   fail to find a view that is definitely there.
-
    Driven by tests/test_view_strip.py. */
 import fs from 'fs';
 import path from 'path';
@@ -112,26 +108,6 @@ const keys = v => Views.actionsFor(v).map(a => a[0]);
   ck('the open tab is marked for assistive tech too', /aria-current="page"/.test(some), some);
   ck('and unsaved temporary changes are announced, not only dotted',
      /aria-label="יש שינויים זמניים שלא נשמרו"/.test(some), some);
-}
-
-// ── the picker searches the names ──────────────────────────────────────────
-{
-  const many = {items: [V({id: 1, name: 'Urgent'}), V({id: 2, name: 'דחופים'}),
-                        V({id: 3, name: 'הכול', pinned: true})],
-                active: 2, tabIcons: Views.tabIcons};
-  const all = Views.pickerHTML.call(many, '');
-  ck('with no search every view is listed', (all.match(/vp-row/g) || []).length === 3);
-  ck('the active one is marked', /aria-label="התצוגה הפעילה"/.test(all), all);
-
-  ck('a search narrows by name', (Views.pickerHTML.call(many, 'דחופ').match(/vp-row/g) || []).length === 1);
-  /* The uniqueness rule compares names trimmed and without case. A search
-     that did otherwise would fail to find a view that is definitely there. */
-  ck('...without case, for the English the rule also folds',
-     (Views.pickerHTML.call(many, 'urgent').match(/vp-row/g) || []).length === 1);
-  ck('...and with the ends trimmed',
-     (Views.pickerHTML.call(many, '  Urgent  ').match(/vp-row/g) || []).length === 1);
-  ck('a search matching nothing says so rather than showing an empty box',
-     /אין תצוגה בשם הזה/.test(Views.pickerHTML.call(many, 'זזזז')));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

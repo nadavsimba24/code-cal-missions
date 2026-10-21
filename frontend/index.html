@@ -2049,40 +2049,12 @@ tr.chat-open>td{background:var(--primary-soft)!important}
   /* 44x44 of TARGET without 44px of box: the padding reaches past the glyph
      into the tab's own padding, so the row keeps the height it had. */
   .tab-view-menu{opacity:1;width:22px;height:22px;padding:11px;margin:-11px -4px -11px 0}
-  .tab-all{min-height:44px;padding:0 14px}
-  .vp-row{min-height:44px}
   .pop-row-act{min-height:44px}
 }
 /* A focus ring that is actually visible, on every control added here. The
    board is operable from the keyboard only if the caret can be seen. */
-.tab-view-menu:focus-visible,.tab-all:focus-visible,.vp-row:focus-visible,
-.vp-search input:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
-/* not a tab: a button beside them, so it keeps its own height */
-.tab-all{align-self:center;display:inline-flex;align-items:center;gap:5px;
-  border:1px solid var(--border);background:var(--surface);color:var(--text-muted);
-  border-radius:8px;height:30px;padding:0 9px;cursor:pointer;font:inherit;font-size:12.5px}
-.tab-all:hover{border-color:var(--border-strong);color:var(--text)}
-.tab-all-nm{font-weight:700;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tab-all-caret{font-size:9px;opacity:.6}
-/* the open view, said once more where the eye already is */
-.tab-view.active{background:var(--primary-soft)}
-/* the picker itself — a search over the names, and the list under it */
-.view-picker{width:280px;max-width:min(92vw,320px);display:flex;flex-direction:column;gap:6px}
-.vp-search{display:flex;align-items:center;gap:7px;padding:2px 2px 6px;border-bottom:1px solid var(--border)}
-.vp-search i{color:var(--text-light);font-size:12px}
-.vp-search input{flex:1;min-width:0;border:none;background:none;font:inherit;font-size:13px;
-  color:var(--text);outline:none}
-.vp-list{max-height:min(52vh,340px);overflow-y:auto;display:flex;flex-direction:column;gap:1px}
-.vp-row{display:flex;align-items:center;gap:8px;width:100%;border:none;background:none;
-  font:inherit;font-size:13px;color:var(--text);text-align:start;padding:8px 8px;border-radius:7px;
-  cursor:pointer}
-.vp-row:hover{background:var(--row-hover)}
-.vp-row.on{background:var(--primary-soft);font-weight:600}
-.vp-row.off{opacity:.6}
-.vp-ic{flex:none;display:inline-flex;gap:4px;color:var(--text-light);font-size:11px}
-.vp-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vp-chk{color:var(--primary);font-size:11px}
-.vp-empty{padding:14px 8px;color:var(--text-light);font-size:12.5px;text-align:center}
+.tab-view-menu:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+
 /* the "+" menu's own action row — a button, not a checkbox like the rest */
 .pop-row-act{display:flex;align-items:center;gap:8px;width:100%;border:none;background:none;
   font:inherit;font-size:13px;color:var(--text);text-align:start;padding:9px 8px;
@@ -4628,62 +4600,6 @@ const Views = {
       await this.load(st.board&&st.board.id);
     }catch(e){ toast((e&&e.detail)||'הפעולה נכשלה'); }
   },
-  /* All of them, when the strip has run out of room.
-
-     A tab strip that scrolls sideways hides the thing somebody is looking
-     for behind the thing they are not, and on a board with twenty cuts that
-     is most of them. The picker lists every view with a search on the NAMES
-     — which is why names are unique, and the search matches the way the
-     uniqueness rule does: trimmed, and without case for the English.
-
-     Pinned first, exactly as the strip orders them, so the two never
-     disagree about what is important here. */
-  pickerHTML(q){
-    const key=x=>String(x||'').trim().toLowerCase();
-    const needle=key(q);
-    const rows=this.items.filter(v=>!needle||key(v.name).includes(needle));
-    if(!rows.length) return `<div class="vp-empty">אין תצוגה בשם הזה</div>`;
-    return rows.map(v=>`
-      <button class="vp-row${this.active===v.id?' on':''}${v.blocked?' off':''}"
-              onclick="Views.pick(${v.id})" ${this.active===v.id?'aria-current="true"':''}>
-        <span class="vp-ic">${this.tabIcons(v)||'<i class="fa-regular fa-rectangle-list"></i>'}</span>
-        <span class="vp-nm">${esc(v.name)}</span>
-        ${this.active===v.id?'<i class="fa-solid fa-check vp-chk" role="img" aria-label="התצוגה הפעילה"></i>':''}
-      </button>`).join('');
-  },
-  /* Rebuilt as she types rather than filtered in place: the rows carry their
-     own state (active, pinned, blocked) and rebuilding is the only way those
-     cannot drift from the list behind them. */
-  pickerFilter(q){
-    const box=document.getElementById('vp-list');
-    if(box) box.innerHTML=this.pickerHTML(q);
-  },
-  pick(id){
-    closeCellPops();
-    const v=this.items.find(x=>x.id==id);
-    /* A blocked view is listed and marked rather than hidden — somebody who
-       knows the tab exists must not be left wondering where it went — and
-       choosing it says so and goes to the main table. Without naming the
-       column: that is the disclosure the block exists to prevent. */
-    if(v&&v.blocked){
-      toast('התצוגה אינה זמינה לך — מוצגת הטבלה הראשית');
-      return this.leave();
-    }
-    this.apply(id);
-  },
-  openPicker(ev){
-    ev&&ev.stopPropagation();
-    const html=`<div class="view-picker" onclick="event.stopPropagation()">
-      <div class="vp-search">
-        <i class="fa-solid fa-magnifying-glass"></i>
-        <input id="vp-q" type="search" placeholder="חיפוש תצוגה לפי שם" aria-label="חיפוש תצוגה לפי שם"
-               oninput="Views.pickerFilter(this.value)">
-      </div>
-      <div class="vp-list" id="vp-list" role="menu">${this.pickerHTML('')}</div>
-    </div>`;
-    openCellPop(ev.currentTarget||ev.target, html, 'view-picker-pop');
-    setTimeout(()=>{const i=document.getElementById('vp-q'); if(i&&!isMobile())i.focus();},0);
-  },
   async duplicate(id){
     try{
       const c=await api('/api/views/'+id+'/duplicate',{method:'POST',
@@ -4735,32 +4651,6 @@ function renderTabs(){
      because by then the thing they are looking for is off-screen and so is
      this. The CSS decides when the strip itself scrolls; the button is how
      you stop needing it to. */
-  /* And the button says where you are, not just how many there are.
-
-     A count answers a question nobody asked. The one actually being asked,
-     by somebody who has scrolled the strip or is on a narrow screen, is
-     "which of these am I looking at" — so the button carries the open view's
-     name, or the board's own table when none is open. */
-  const openNow=Views.openView&&Views.openView();
-  const hereName=openNow?openNow.name:(VIEW_META[st.view]||VIEW_META.table).he;
-  const picker=Views.items.length
-    ? `<button class="tab-all" onclick="Views.openPicker(event)" aria-haspopup="menu"
-               aria-label="התצוגה הנוכחית: ${esc(hereName)}. בחירת תצוגה מתוך ${Views.items.length}"
-               title="בחירת תצוגה">
-         <i class="fa-solid fa-list-ul"></i>
-         <span class="tab-all-nm">${esc(hereName)}</span>
-         <i class="fa-solid fa-chevron-down tab-all-caret"></i>
-       </button>`
-    : '';
-  /* What can be saved, and by whom.
-
-     With no view open it is simply "save this cut". With one open and
-     changed, the offer depends on who owns it: its owner — and an
-     administrator — may write over it, and anybody else is offered only a
-     copy of their own. That asymmetry is the point of the rule: a tab other
-     people rely on must not be rewritten by somebody who was adjusting what
-     they were looking at, and the damage is invisible to everyone it affects
-     until they next open the tab and find it answering another question. */
   const openV=Views.openView(), changed=Views.dirty();
   let saveBtn='';
   if(st.board&&openV&&changed){
@@ -4774,7 +4664,7 @@ function renderTabs(){
     saveBtn=`<button class="tab-save" title="שמירת החיתוך הנוכחי כתצוגה" onclick="Views.saveNew()">
          <i class="fa-regular fa-bookmark"></i> שמור תצוגה</button>`;
   }
-  document.getElementById('tabs').innerHTML = dd + tabs + formTab + saved + picker + saveBtn +
+  document.getElementById('tabs').innerHTML = dd + tabs + formTab + saved + saveBtn +
     (typeof Views!=='undefined'&&Views.failedHTML?Views.failedHTML():'') +
     `
      <div class="tab-add-wrap" id="tab-add-wrap">

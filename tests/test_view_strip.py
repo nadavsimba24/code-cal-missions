@@ -50,28 +50,6 @@ def test_the_delete_dialog_says_the_board_is_not_being_deleted():
     text = (note.group(1) or "") + (note.group(2) or "")
     assert "פריטי הלוח לא יימחקו" in text, text
     assert "לשחזר" in text, "nobody is told it can be brought back"
-
-
-def test_the_picker_is_reachable_before_the_strip_overflows():
-    """A strip that only reveals its escape hatch once it has overflowed is
-    one nobody finds: by then the thing they are looking for is off-screen and
-    so is the button."""
-    m = re.search(r"const picker=Views\.items\.length(.*?);\n", SRC, re.S)
-    assert m, "the picker button moved"
-    assert "openPicker" in m.group(1)
-    # the accessible name now carries WHERE YOU ARE as well as what the button
-    # does — see test_the_button_says_which_view_you_are_on
-    assert 'aria-label="התצוגה הנוכחית' in m.group(1), "the button has no accessible name"
-
-
-def test_choosing_a_blocked_view_goes_to_the_main_table_without_explaining():
-    m = re.search(r"\n  pick\(id\)\{(.*?)\n  \},", SRC, re.S)
-    assert m, "Views.pick moved"
-    body = m.group(1)
-    assert "v.blocked" in body and "this.leave()" in body, body
-    assert "עמודה" not in body, "the message names the column the block exists to hide"
-
-
 def test_the_tabs_share_one_underline():
     """The open tab is marked by a border along its bottom edge, so every tab
     has to end at the same height. Centring them let a taller tab — one
@@ -91,7 +69,7 @@ def test_the_things_beside_the_tabs_keep_their_own_height():
     # the file — so slicing at the block cut the real rule out and slicing
     # before it matched the override. At least one declaration has to carry
     # the opt-out, which is what the browser resolves to.
-    for sel in (".tab-add-wrap", ".tab-save", ".tab-all", ".save-failed"):
+    for sel in (".tab-add-wrap", ".tab-save", ".save-failed"):
         decls = re.findall(r"(?:^|\n|,)" + re.escape(sel) + r"\{([^}]*)\}", SRC)
         assert decls, sel
         assert any("align-self:center" in d for d in decls), (sel, decls)
@@ -133,32 +111,6 @@ def test_only_one_tab_is_lit_at_a_time():
     assert "onSaved" in body, "the board's own tabs stay lit under a saved view"
     flat = body.replace(" ", "")
     assert "(!onSaved&&st.view===id)?'active':''" in flat, flat[-300:]
-
-
-def test_the_button_says_which_view_you_are_on():
-    """A count answers a question nobody asked. The one actually being asked,
-    by somebody who has scrolled the strip or is on a narrow screen, is "which
-    of these am I looking at"."""
-    i = SRC.index("const openNow=Views.openView")
-    body = SRC[i:SRC.index("    : '';", i)]
-    # the span's CONTENT, not merely that the variable exists above it: the
-    # first version of this passed with the name swapped back for the count,
-    # because `hereName` was still declared a line earlier
-    flat = body.replace(" ", "")
-    assert '<spanclass="tab-all-nm">${esc(hereName)}</span>' in flat, body[:400]
-    assert "tab-all-n{" not in SRC, "the count is still what the button shows"
-    assert 'aria-label="התצוגה הנוכחית' in body, "the name is not announced"
-
-
-def test_the_button_is_there_as_soon_as_there_is_a_view():
-    """It used to appear only past two views, which is the moment it stops
-    being needed as an indicator and starts being needed as a list."""
-    m = re.search(r"const picker=Views\.items\.length(\S*)", SRC)
-    assert m, "the picker button moved"
-    assert not m.group(1).startswith(">"), \
-        "the indicator hides until there is more than one view"
-
-
 def test_choosing_the_boards_own_table_leaves_the_saved_view():
     """The strip looked stuck: clicking "טבלה ראשית" while a saved view was
     open did nothing at all. setView only assigned st.view, which was ALREADY
