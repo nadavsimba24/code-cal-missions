@@ -14238,8 +14238,8 @@ function GIS_args(tool){
 
 /* ============ new item + forms ============ */
 // Add-item: no form. Clicking "פריט חדש" (or a group's "+ הוסף פריט") instantly
-// creates an item at the bottom of the target group — default is "בתכנון" (the
-// first/backlog group) — and opens its title for inline editing.
+// creates an item at the bottom of the target group — the board's first group
+// when the button names none — and opens its title for inline editing.
 async function openNewItem(group){
   if(!st.board||window._creatingItem)return;            // guard against double-submit
   window._creatingItem=true;
@@ -14288,13 +14288,27 @@ function focusNewItemTitle(id){
   const span=document.querySelector('tr[data-tid="'+id+'"] .item-title, tr[data-sid="'+id+'"] .item-title');
   if(span){ span.scrollIntoView({block:'center'}); titleEdit({currentTarget:span,stopPropagation(){}},id); }
 }
-// default group for a new item created from the top "פריט חדש" button: the
-// "בתכנון" (backlog) group, else the first group by position — never ungrouped
+/* The group a new item goes into when the "פריט חדש" button at the top of the
+   board is what created it. A group's own "+ הוסף פריט" names its group and
+   never asks this.
+
+   It is the board's FIRST group, and nothing else. It used to be whichever
+   group carried the backlog status — "בתכנון" on a board whose groups came out
+   of the box — falling back to the first only when no group had it. So on every
+   board where the first group is something else (one reordered, one imported,
+   one built by hand) the button filed the item somewhere down the page, under a
+   heading nobody had pointed at, while the row it was meant to be was at the
+   top. The order on screen is an order somebody arranged, and "the first one"
+   is the only reading of it the board itself offers.
+
+   Never ungrouped: a board with no groups at all has nowhere to put an item,
+   and says so by answering null. */
 function defaultGroupId(){
   const gs=(st.board&&st.board.groups)||[];
   if(!gs.length)return null;
-  const backlog=gs.find(g=>g.task_status==='backlog');
-  return (backlog||gs.slice().sort((a,b)=>(a.position||0)-(b.position||0))[0]).id;
+  // position first, then id: two groups can carry the same position after a
+  // reorder, and the button must not land somewhere different each click
+  return gs.slice().sort((a,b)=>(a.position||0)-(b.position||0)||(a.id-b.id))[0].id;
 }
 
 /* ============ groups (קבוצות) ============ */
