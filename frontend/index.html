@@ -664,6 +664,34 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tb-pop-wide .arr-sec{padding:10px 14px;border-bottom:1px solid var(--border)}
 .tb-pop-wide .arr-sec .pop-title{margin:0 0 8px;border:none;padding:0;display:flex;align-items:center;gap:6px}
 .tb-pop-wide .pop-people{max-height:150px}
+/* the columns of the board, each opening to the values it holds */
+.fcols{padding-bottom:4px}
+.fcol-search{display:flex;align-items:center;gap:7px;padding:6px 9px;margin-bottom:6px;
+  border:1px solid var(--border-strong);border-radius:8px;background:var(--surface)}
+.fcol-search i{color:var(--text-light);font-size:11px}
+.fcol-search input{flex:1;min-width:0;border:none;outline:none;background:none;
+  font-family:inherit;font-size:13px;color:var(--text)}
+.fcol{border-bottom:1px solid var(--border)}
+.fcol:last-child{border-bottom:none}
+.fcol-h{display:flex;align-items:center;gap:8px;width:100%;padding:8px 2px;background:none;
+  border:none;cursor:pointer;font-family:inherit;font-size:13.5px;color:var(--text);text-align:start}
+.fcol-h:hover{background:var(--row-hover)}
+.fcol-h>i{width:11px;font-size:10px;color:var(--text-light);flex-shrink:0}
+.fcol-t{font-weight:600;white-space:nowrap}
+/* what is picked, where there is room for it — the panel is readable shut */
+.fcol-sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:12px;color:var(--text-light)}
+.fcol-n{flex-shrink:0;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
+  background:var(--primary);color:#fff;font-size:11px;font-weight:700;
+  display:inline-flex;align-items:center;justify-content:center}
+.fcol.on .fcol-t{color:var(--primary)}
+.fcol-b{padding:2px 0 10px}
+.fcol-txt{width:100%;padding:6px 9px;margin-bottom:7px;border:1px solid var(--border-strong);
+  border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
+/* ריק / אינו ריק sit under the column's own values, as the different kind of
+   question they are */
+.fcol-any{margin-top:7px;padding-top:7px;border-top:1px dashed var(--border)}
+.fcol-none{padding:10px 2px;color:var(--text-light);font-size:13px}
 .arr-foot{padding:10px 14px;position:sticky;bottom:0;background:var(--surface)}
 .tb-clear{display:none;color:var(--red);font-weight:600}
 .tb-clear.show{display:inline-flex}
@@ -6193,6 +6221,195 @@ function advQuery(node){
           tz_offset:-now.getTimezoneOffset()};
 }
 
+/* ── filtering by the board's own columns ────────────────────────────────
+   The filter button opens the columns THIS board has — status, אחראים, and
+   every column somebody added to it — and each one offers the values it
+   actually holds. Picking values is the whole interaction: no field/operator
+   /value sentence to build, which is what the advanced builder is for and
+   what most filtering is not.
+
+   It writes into the same condition tree the advanced builder edits, and that
+   is the point rather than an implementation detail. The tree is the one
+   thing both the browser and the SERVER know how to evaluate (backend/
+   filter_ast.py), so a filter picked here narrows a 40-row board in the
+   browser and a 4,000-row board in the database, travels inside a saved view,
+   and shows up in the advanced builder as the conditions it is. A second
+   filter model beside it would have had to be taught all of that again.
+
+   The shape written is one group per column, OR inside it and AND between:
+   "(סטטוס = בעבודה or סטטוס = תקוע) and (אחראים = דנה)" — which is what
+   picking two values in one column and one in another means.
+
+   Rules a person built by hand are left exactly where they are. The picker
+   only ever reads and rewrites groups that are entirely about one column —
+   its own shape — so a hand-built "(סטטוס = בוצע or עדיפות = גבוהה)" is not
+   its to touch, and survives untouched. */
+function advFilterRoot(){
+  const root=st.filters.adv;
+  if(!root||root.rules===undefined)return {op:'and',rules:[]};
+  // An "or" tree somebody built means what it says. Adding a column's group
+  // beside its rules would make that OR an alternative to the column instead
+  // of a narrowing of it, so the existing tree is kept whole, as one branch.
+  if(root.op==='or'&&(root.rules||[]).length)return {op:'and',rules:[root]};
+  root.op='and';
+  return root;
+}
+// Is this node the picker's own group for `field` — a group of nothing but
+// rules on that one column?
+const advOwnGroup=(n,field)=>!!(n&&n.rules&&n.rules.length
+  &&n.rules.every(r=>r&&r.rules===undefined&&String(r.field)===String(field)));
+/* What is picked on one column: the rules, as {op,v} pairs. A bare rule at the
+   top of the tree counts — that is what the advanced builder writes for a
+   single condition, and it is about this column as much as a group is. */
+function advPicked(field){
+  const root=st.filters.adv, out=[];
+  ((root&&root.rules)||[]).forEach(n=>{
+    if(!n)return;
+    if(n.rules===undefined){ if(String(n.field)===String(field))out.push({op:n.op,v:n.v}); return; }
+    if(advOwnGroup(n,field))n.rules.forEach(r=>out.push({op:r.op,v:r.v}));
+  });
+  return out;
+}
+/* Replace everything this column says with `picks` ({op,v} pairs). An empty
+   list removes the column from the filter entirely — including the group that
+   held it, because an empty group matches everything and would leave the
+   badge counting a filter that no longer narrows anything. */
+function advSetPicked(field,picks){
+  const root=advFilterRoot();
+  root.rules=(root.rules||[]).filter(n=>{
+    if(!n)return false;
+    if(n.rules===undefined)return String(n.field)!==String(field);
+    return !advOwnGroup(n,field);
+  });
+  if(picks.length)
+    root.rules.push({op:'or',rules:picks.map(p=>({field:String(field),op:p.op,
+                                                  v:p.v===undefined?'':p.v,v2:''}))});
+  st.filters.adv=root.rules.length?root:null;
+}
+/* Turn one value on or off. Two values on the same column are alternatives —
+   "בעבודה או תקוע" — and that is what picking both means. */
+function advToggle(field,op,v){
+  const same=(a,b)=>a.op===b.op&&String(a.v==null?'':a.v)===String(b.v==null?'':b.v);
+  const want={op,v:v===undefined?'':v};
+  /* Everything the column shows as picked, the toolbar's own fields included —
+     a chip that is lit must not go out because something else was clicked. */
+  const now=advPickedAll(field);
+  const hit=now.findIndex(p=>same(p,want));
+  if(hit>=0)now.splice(hit,1); else now.push(want);
+  /* An old saved view holds this column in the toolbar's own fields rather
+     than in the tree (see applyFilters). It is shown as picked, so the board
+     and the panel agree; the moment somebody changes that column it moves
+     into the tree, which is the one model from then on. */
+  advDropLegacy(field);
+  advSetPicked(field,now);
+  advChanged();
+}
+/* ── the toolbar's own three, as they were before the tree ──────────────
+   st.filters.status / .priority / .people predate this panel and still arrive
+   inside saved views made before it. They narrow the board exactly as they
+   did; what they must not do is narrow it invisibly, with the panel showing
+   nothing picked on a column that is plainly filtering. So they are read as
+   picks, and dropped when that column is next touched. */
+function advLegacyPicks(field){
+  const f=st.filters;
+  if(field==='status'  &&f.status)   return [{op:'eq', v:f.status}];
+  if(field==='priority'&&f.priority) return [{op:'eq', v:f.priority}];
+  if(field==='assignees')            return (f.people||[]).map(id=>({op:'has',v:id}));
+  return [];
+}
+function advDropLegacy(field){
+  const f=st.filters;
+  if(field==='status')f.status='';
+  if(field==='priority')f.priority='';
+  if(field==='assignees')f.people=[];
+}
+// everything picked on one column, the tree and the legacy fields together
+function advPickedAll(field){
+  const out=advPicked(field);
+  advLegacyPicks(field).forEach(x=>{
+    if(!out.some(p=>p.op===x.op&&String(p.v==null?'':p.v)===String(x.v)))out.push(x);
+  });
+  return out;
+}
+/* The board answers on the keystroke from what this browser holds, and the
+   server is then asked the same question — it is the authority, and on a
+   board too large to hold it is the only one that can answer. Same two steps
+   the advanced builder takes when it applies; see Adv.apply. */
+/* The values one column offers to be filtered by — chips, in the order the
+   column itself puts them in.
+
+   A column with a vocabulary offers the words in it: a status column its own
+   options, in the board's colours, so the panel reads like the board. A people
+   column offers the board's members, and "אני" first — the commonest filter
+   on any board, and the one that keeps meaning the right person when the
+   filter travels inside a saved view. A date column offers the spans the
+   advanced builder already resolves against the viewer's own clock.
+
+   A column with no vocabulary — text, a number — offers no list, because there
+   is nothing true to put in it. What every column offers instead is ריק and
+   אינו ריק, which are questions about any column at all, and a text column
+   also takes a word to look for. Anything finer than that is a sentence, and a
+   sentence is what סינון מתקדם is for.
+
+   Returns [{op, v, label, color}] — `op`+`v` is what goes into the rule, and
+   is also what identifies a chip as picked. */
+function colFilterChips(f){
+  const K=f.kind;
+  if(f.id==='status')   return boardStatusList().map(v=>({op:'eq',v:v.key,label:v.he,color:v.c}));
+  if(f.id==='priority') return boardPriorityList().map(v=>({op:'eq',v:v.key,label:v.he,color:v.c}));
+  if(K==='people'){
+    const me=meId();
+    const mine=me?[{op:'has',v:'me',label:'אני',color:'var(--primary)'}]:[];
+    // whoever a rule already names comes with the list, even if they have since
+    // left the board — see the note on advPeopleOptions
+    const named=advPickedAll(f.id).map(p=>p.v).filter(v=>v!=='me').map(Number).filter(n=>!isNaN(n));
+    return mine.concat(boardPeople(named).map(u=>({op:'has',v:u.id,label:u.name||'',color:''})));
+  }
+  if(K==='status')      return statusColOpts(f.col).map(o=>({op:'eq',v:o.label,label:o.label,color:o.color}));
+  if(K==='check')       return [{op:'yes',label:'מסומן',color:'var(--green)'},
+                                {op:'no', label:'לא מסומן',color:''}];
+  if(K==='date')        return ADV_DATES.map(([tok,he])=>({op:'on',v:tok,label:he,color:''}));
+  return [];
+}
+// ריק / אינו ריק — asked of every column, and the only thing a number column
+// can be asked from a list of values
+const COL_EMPTY_CHIPS=[{op:'filled',label:'אינו ריק',color:''},{op:'empty',label:'ריק',color:''}];
+const colChipKey=c=>c.op+'|'+(c.v==null?'':c.v);
+/* What a column's header says when it is shut: the words picked in it, so the
+   panel can be read without opening anything. */
+function colFilterSummary(f){
+  const picked=advPickedAll(f.id);
+  if(!picked.length)return '';
+  const all=colFilterChips(f).concat(COL_EMPTY_CHIPS);
+  const txt=picked.map(p=>{
+    const hit=all.find(c=>colChipKey(c)===colChipKey(p));
+    return hit?hit.label:(p.op==='has'&&p.v!=='me'?(userName(p.v)||String(p.v)):String(p.v||p.op));
+  });
+  return txt.join(', ');
+}
+const userName=id=>((st.users||[]).find(u=>u.id===Number(id))||{}).name||'';
+
+function advChanged(){
+  st.filters.advIds=null;
+  refreshToolbar(); reArrange(); renderView();
+  advAskServer();
+}
+async function advAskServer(){
+  const node=st.filters.adv;
+  if(!node||!st.board)return;
+  if(filterMode()==='server'){ Paged.load(true); return; }
+  try{
+    const r=await api('/api/boards/'+st.board.id+'/items/query',
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:withMe(advQuery(node))});
+    st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
+    renderView();
+  }catch(e){
+    st.filters.advIds=null;          // the local answer stands
+    if(e&&e.detail)toast(e.detail);  // a filter the server refused, said out loud
+  }
+}
+
 /* How many conditions are in it — the number on the toolbar badge, and the
    answer to "is anything filtering?". */
 function advCount(node){
@@ -6504,6 +6721,7 @@ function setSearch(v){
   refreshToolbar(); renderView();
 }
 function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();
+  _fcolOpen=null; _fcolQ='';          // the panel reopens on the whole list, nothing picked
   // nothing is filtered any more, so no saved cut is what is on screen
   if(typeof Views!=='undefined')Views.leave({keep:true});
   refreshToolbar();renderTabs();renderView();}
@@ -9804,19 +10022,113 @@ function renderPop(name){
   }
   if(name!=='arrange')return;
   const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
-  const sChips=boardStatusList().map(v=>`<button class="pop-chip ${f.status===v.key?'sel':''}" style="--c:${v.c}" onclick="setStatusFilter('${v.key}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
-  const pChips=boardPriorityList().map(v=>`<button class="pop-chip ${f.priority===v.key?'sel':''}" style="--c:${v.c}" onclick="setPriorityFilter('${v.key}')"><span class="dot" style="background:${v.c}"></span>${esc(v.he)}</button>`).join('');
-  const people=(st.users||[]).map(u=>`<label class="pop-row"><input type="checkbox" ${f.people.includes(u.id)?'checked':''} onchange="toggleFilterPerson(${u.id},this.checked)"><span class="av" style="background:var(--primary)">${avatarInner(u)}</span><span>${esc(u.name)}</span></label>`).join('')||'<div style="padding:8px;color:var(--text-light);font-size:13px">אין משתמשים</div>';
   const sortOpts=[['','ללא מיון','fa-ban'],['due','תאריך יעד','fa-calendar-day'],['priority','עדיפות','fa-flag'],['title','שם (א-ת)','fa-arrow-down-a-z']];
   const sort=sortOpts.map(([k,he,ic])=>`<label class="pop-row"><input type="radio" name="sortby" ${(f.sort||'')===k?'checked':''} onchange="setSort('${k}')"><i class="fa-solid ${ic}" style="width:16px;color:var(--text-light)"></i><span>${he}</span></label>`).join('');
   el.innerHTML=`
     <div class="arr-head"><i class="fa-solid fa-sliders"></i> סינון ומיון<button class="arr-x" onclick="closePops()" aria-label="סגור">✕</button></div>
-    <div class="arr-sec"><div class="pop-title"><i class="fa-regular fa-user"></i> אדם</div><div class="pop-people">${people}</div></div>
-    <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-filter"></i> סינון לפי סטטוס</div><div class="pop-chips">${sChips}</div></div>
-    <div class="arr-sec"><div class="pop-title">סינון לפי עדיפות</div><div class="pop-chips">${pChips}</div></div>
+    ${colFilterHTML()}
     ${linkFilterHTML()}
     <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</div>${sort}</div>
     <div class="arr-foot"><button class="btn btn-ghost" style="color:var(--red);width:100%;justify-content:center" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button></div>`;
+}
+/* The filter panel: the columns of the board being looked at, each opening to
+   the values it holds.
+
+   It used to be three fixed sections — אדם, סטטוס, עדיפות — which are three of
+   the board's columns and not the board's columns. Everything somebody had
+   added to their own board, which is most of what a board is, could only be
+   filtered through the advanced builder: pick a column, pick an operator,
+   type a value. For "show me what is תקוע" that is a sentence to build in
+   order to ask a question with one answer.
+
+   One column is open at a time. A board here carries up to forty, and a panel
+   that opens them all is a page to scroll rather than a list to choose from;
+   the ones with something picked say so in their header, so what is filtering
+   is readable without opening anything. */
+let _fcolOpen=null;          // the column whose values are showing
+let _fcolQ='';               // what was typed into "חפש עמודה"
+function toggleFilterCol(id){
+  _fcolOpen=(_fcolOpen===id)?null:id;
+  reArrange();
+}
+function filterColSearch(v){
+  _fcolQ=(v||'').trim();
+  reArrange();
+  const i=document.getElementById('fcol-q');
+  if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); }
+}
+const FCOL_SEARCH_FROM=8;    // below this the list is short enough to read whole
+function colFilterHTML(){
+  const fields=advFields();
+  if(!fields.length)return '';
+  const q=_fcolQ.toLowerCase();
+  const shown=q?fields.filter(x=>(x.label||'').toLowerCase().includes(q)):fields;
+  const search=fields.length>=FCOL_SEARCH_FROM
+    ? `<div class="fcol-search"><i class="fa-solid fa-magnifying-glass"></i>
+        <input id="fcol-q" value="${esc(_fcolQ)}" placeholder="חפש עמודה…"
+               oninput="filterColSearch(this.value)" aria-label="חפש עמודה"></div>` : '';
+  const rows=shown.map(x=>{
+    const picked=advPickedAll(x.id), open=(_fcolOpen===x.id);
+    const sum=colFilterSummary(x);
+    const body=open?`<div class="fcol-b">${colChipsHTML(x,picked)}</div>`:'';
+    return `<div class="fcol${picked.length?' on':''}">
+      <button class="fcol-h" onclick="toggleFilterCol('${esc(String(x.id))}')"
+              aria-expanded="${open?'true':'false'}">
+        <i class="fa-solid fa-chevron-${open?'down':'left'}"></i>
+        <span class="fcol-t">${esc(x.label)}</span>
+        ${picked.length?`<span class="fcol-sum" title="${esc(sum)}">${esc(sum)}</span>
+                         <span class="fcol-n">${picked.length}</span>`:''}
+      </button>${body}</div>`;
+  }).join('');
+  return `<div class="arr-sec fcols">
+    <div class="pop-title"><i class="fa-solid fa-filter"></i> סינון לפי עמודה</div>
+    ${search}
+    ${rows||'<div class="fcol-none">אין עמודה בשם הזה</div>'}
+  </div>`;
+}
+/* One column's values. `picked` decides which chips are lit — compared by the
+   rule they would write, so a chip is lit by the filter itself rather than by
+   anything this panel remembers.
+
+   A chip hands back its INDEX, never its text. A status option is a word
+   somebody typed, and "ג'ובים" written into an onclick closes the quoted
+   string two characters early — the chip then does nothing at all, silently,
+   on exactly the boards whose vocabulary has an apostrophe in it. (esc leaves
+   ' alone, and must: it escapes for HTML, and HTML is not JavaScript.) The
+   same reason the status picker on a cell passes an index. */
+function colChipsHTML(x,picked){
+  const on=c=>picked.some(p=>colChipKey(p)===colChipKey(c));
+  const chip=(c,i)=>`<button class="pop-chip${on(c)?' sel':''}"${c.color?` style="--c:${c.color}"`:''}
+      onclick="advPickChip('${esc(String(x.id))}',${i})">
+      ${c.color?`<span class="dot" style="background:${c.color}"></span>`:''}${esc(c.label)}</button>`;
+  const vals=colFilterChips(x);
+  // a text column takes a word instead of a list: "מכיל" is the one question
+  // worth asking of free text without building a sentence for it
+  const txt=(x.kind==='text')?`<input class="fcol-txt" placeholder="מכיל…"
+      value="${esc(advTextOf(x.id))}" onchange="advSetText('${esc(String(x.id))}',this.value)"
+      onkeydown="if(event.key==='Enter')this.blur()">`:'';
+  return `${txt}${vals.length?`<div class="pop-chips">${vals.map((c,i)=>chip(c,i)).join('')}</div>`:''}
+    <div class="pop-chips fcol-any">${COL_EMPTY_CHIPS.map((c,i)=>chip(c,vals.length+i)).join('')}</div>`;
+}
+/* The chip at that position, picked or unpicked. The list is rebuilt here
+   rather than remembered: it is derived from the board and the filter, both of
+   which the panel redraws itself from after every change, so the index that
+   was rendered is the index that is read. */
+function advPickChip(field,i){
+  const f=advField(field); if(!f)return;
+  const c=colFilterChips(f).concat(COL_EMPTY_CHIPS)[i];
+  if(c)advToggle(field,c.op,c.v);
+}
+// the word a text column is being searched for, if any
+function advTextOf(field){
+  const hit=advPickedAll(field).find(p=>p.op==='has');
+  return hit?String(hit.v==null?'':hit.v):'';
+}
+function advSetText(field,v){
+  const keep=advPickedAll(field).filter(p=>p.op!=='has');
+  advDropLegacy(field);
+  advSetPicked(field,(v||'').trim()?keep.concat([{op:'has',v:v.trim()}]):keep);
+  advChanged();
 }
 /* Filtering by the links themselves: is there one, is there none, or is it
    this particular item. The item list is built from what is actually linked on
@@ -9851,9 +10163,13 @@ function setLinkMode(m){ const l=st.filters.links; l.mode=(l.mode===m)?'':m; if(
   refreshToolbar(); reArrange(); renderView(); }
 function setLinkItem(v){ st.filters.links.item=+v||0; refreshToolbar(); reArrange(); renderView(); }
 function reArrange(){const c=document.getElementById('ctl-arrange');if(c&&c.classList.contains('open'))renderPop('arrange');}
-function toggleFilterPerson(id,on){const p=st.filters.people,i=p.indexOf(id);if(on&&i<0)p.push(id);if(!on&&i>=0)p.splice(i,1);refreshToolbar();reArrange();renderView();}
-function setStatusFilter(s){st.filters.status=st.filters.status===s?'':s;refreshToolbar();reArrange();renderView();}
-function setPriorityFilter(s){st.filters.priority=st.filters.priority===s?'':s;refreshToolbar();reArrange();renderView();}
+/* The three the panel used to call — one person, one status, one priority —
+   are gone with the three fixed sections they drove. The fields themselves are
+   not: st.filters.status/.priority/.people still arrive inside saved views
+   made before the panel and still narrow the board (see applyFilters), and the
+   panel shows them as picked on their column. What nothing writes any more is
+   a NEW filter into them; a column touched here moves into the tree, which is
+   where every column now says what it is filtered by. */
 function setSort(s){st.filters.sort=s||'';refreshToolbar();reArrange();renderView();}
 /* ===== סינון מתקדם — the builder =====
 
@@ -10012,20 +10328,7 @@ const Adv = {
        including any the browser was not handed, and it is where a filter
        would be refused if it were malformed. A failure is not fatal; the
        local answer stands, and the only thing lost is the check. */
-    const node=st.filters.adv;
-    if(!node)return;
-    // a large board is answered by pages of rows, not by a list of ids
-    if(filterMode()==='server'){ Paged.load(true); return; }
-    try{
-      const r=await api('/api/boards/'+st.board.id+'/items/query',
-        {method:'POST',headers:{'Content-Type':'application/json'},
-         body:withMe(advQuery(node))});
-      st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
-      renderView();
-    }catch(e){
-      st.filters.advIds=null;          // the local answer is the answer
-      if(e&&e.detail) toast(e.detail); // a filter the server refused, said out loud
-    }
+    return advAskServer();           // the same question, asked of the authority
   },
   clear(){ st.filters.adv=null; st.filters.advIds=null; this.draft={op:'and',rules:[]};
     closeModals(); refreshToolbar(); renderView(); },
@@ -10034,9 +10337,13 @@ const Adv = {
 let _pagedTimer=null;
 function refreshToolbar(){
   const f=st.filters;
-  const total=(f.people.length||0)+(f.status?1:0)+(f.priority?1:0)+(f.sort?1:0)
-             +((f.links&&f.links.mode)?1:0);
+  /* The panel writes conditions into the tree, so the tree is most of what
+     the filter button is now counting. The toolbar's own three are still
+     counted beside it: they arrive inside saved views made before the panel
+     and narrow the board exactly as they did. */
   const adv=advCount(f.adv);
+  const total=(f.people.length||0)+(f.status?1:0)+(f.priority?1:0)+(f.sort?1:0)
+             +((f.links&&f.links.mode)?1:0)+adv;
   const ac=document.getElementById('ctl-adv');
   if(ac){ac.classList.toggle('on',!!adv);const ab=document.getElementById('badge-adv');if(ab)ab.textContent=adv||'';}
   const c=document.getElementById('ctl-arrange');
