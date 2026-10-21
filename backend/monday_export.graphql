@@ -73,10 +73,18 @@ query ($boardId: [ID!]) {
     items_count
 
     groups { id title color }
-    # The board's own column definitions. A formula lives ONLY here — the copy of
+    # The board's own column definitions. Two things live ONLY here — the copy of
     # a column that rides inside every item carries its title and type and
-    # nothing else — and `settings_str` is the JSON holding the expression:
+    # nothing else — and `settings_str` is the JSON holding both.
+    #
+    # A formula, as the expression itself:
     #   {"formula": "{numeric_mkl3sp} + 5"}   (references are column IDs)
+    # and a status column's vocabulary, as the words beside their colours:
+    #   {"labels": {"0": "בעבודה", "1": "הושלם"},
+    #    "labels_colors": {"0": {"color": "#fdab3d"}, "1": {"color": "#00c875"}}}
+    # Without this line every status arrives in a colour of this app's choosing,
+    # cycled by position — so "הושלם" comes across red as often as green, and
+    # the board can no longer be read at a glance the way it could in monday.
     # It is the deprecated spelling of the typed `settings` object, and it is
     # asked for deliberately: it exists in every API version this export runs
     # against, while `settings` does not. The importer reads either shape.

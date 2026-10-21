@@ -4966,6 +4966,25 @@ function importReport(b){
         <div class="imp-grp"><div class="imp-why">${esc(note)}</div>
         <div class="imp-cols">${titles.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div></div>`).join('')}
     </div>`:'';
+  /* The colours of the statuses, asked the same way the groups' are. A status
+     is read as its colour before it is read as a word — the red one is stuck,
+     the green one is done — so a vocabulary that arrived in this app's palette
+     is a board that reads differently from the one it came from, and that is
+     worth a line. `mapping` is only in a monday report, which is the one case
+     where the file can be re-exported carrying them. */
+  const stOpts=r.status_options||0, stColored=r.status_colors||0;
+  const statusHTML=!r.status_cols?'':`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-circle-half-stroke"></i> ${r.status_cols} עמודות סטטוס, ${stOpts} סטטוסים</div>
+      ${stColored>=stOpts
+        ?`<div class="imp-why">צבעי הסטטוסים יובאו מהקובץ — כל סטטוס בצבע שהיה לו שם.</div>`
+        :(stColored
+          ?`<div class="imp-why">${stColored} מתוך ${stOpts} הסטטוסים הגיעו עם הצבע שהיה להם בקובץ;
+            לשאר לא היה צבע בקובץ והם קיבלו צבע ברירת מחדל. אפשר לשנות כל צבע כאן, בעריכת העמודה.</div>`
+          :`<div class="imp-why">הקובץ אינו נושא את צבעי הסטטוסים, ולכן הם קיבלו צבעי ברירת מחדל${
+            r.mapping?` — להבאת הצבעים מריצים מחדש את השאילתה עם <b dir="ltr">columns { id title type settings_str }</b> ברמת הלוח ומייבאים שוב`:''}.
+            אפשר גם לשנות כל צבע כאן, בעריכת העמודה.</div>`)}
+    </div>`;
   /* An export that stopped mid-board looks exactly like a small board once it
      is imported, so the one moment it can be said is now. */
   const cut=[];
@@ -5293,7 +5312,7 @@ function importReport(b){
     </div>`;
   const title=(b.name||'הלוח יובא');
   const body=`${statsHTML}
-      ${cutHTML}${othersHTML}${nameHTML}${groupHTML}${actHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
+      ${cutHTML}${othersHTML}${nameHTML}${groupHTML}${statusHTML}${actHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
   // kept for the three things that can be done with it once it is on screen —
   // this report cannot be asked for again, so closing it is the one action
   // worth stopping to confirm

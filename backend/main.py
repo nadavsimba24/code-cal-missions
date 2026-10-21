@@ -3711,6 +3711,81 @@ def _imp_infer_type(values):
     return "text"
 
 
+# ── a status column, read off the paint ─────────────────────────────────────
+# A status cell is a coloured chip and a sheet says so by filling it: monday's
+# own export paints every status cell in that label's colour, and this app's
+# export writes the same fill. Read as text — which is all a spreadsheet column
+# was ever read as here — a status column arrives as free text: the picker
+# offers nothing, every cell is grey, and a board migrated in cannot be read at
+# a glance the way the board it came from could.
+#
+# What makes a column a status column is the paint. Repeated words happen in
+# plenty of text columns; a column whose cells are FILLED, each word always in
+# the same colour, is not something a sheet does by accident. A stray fill or
+# two is not one either, so most of the filled cells have to agree — and a
+# column of long sentences is prose somebody highlighted, not a vocabulary.
+IMPORT_STATUS_MIN_PAINTED = 0.6
+IMPORT_STATUS_MAX_LABEL = 40
+# The word this app's export writes for a cell nobody has set. It is the ABSENCE
+# of a status rather than one of the words the column offers: read back as an
+# option it would stand in the picker of a board that never had it, and every
+# unset cell would come home holding a value.
+IMPORT_STATUS_UNSET = "טרם הוגדר"
+
+
+def _imp_status_vocab(values, paints):
+    """The vocabulary a painted column offers, or None if it is not one.
+
+    `[{"label": …, "color": "#rrggbb" or None}, …]` in the order the sheet
+    first uses each word — which is the order the column will offer them in.
+    A colour of None is a label the sheet left unpainted; the caller gives it
+    one of this app's own, the same way an uncoloured group gets one.
+    """
+    at = lambda row, i: (row[i] if i < len(row) else None)
+    pairs = []
+    for i, v in enumerate(values):
+        label = "" if v is None else str(v).strip()
+        if not label or label == IMPORT_STATUS_UNSET:
+            continue
+        pairs.append((label, at(paints, i)))
+    if not pairs:
+        return None
+    painted = [(v, c) for v, c in pairs if c]
+    if len(painted) < IMPORT_STATUS_MIN_PAINTED * len(pairs):
+        return None
+    labels = []
+    for v, _ in pairs:
+        if v not in labels:
+            labels.append(v)
+    if len(labels) > STATUS_COL_MAX or any(len(v) > IMPORT_STATUS_MAX_LABEL for v in labels):
+        return None
+    # One colour per word: the one most of its cells wear. A sheet where the
+    # same word is painted two ways has been edited by hand, and the colour it
+    # mostly is, is the colour it is.
+    tally = {}
+    for v, c in painted:
+        worn = tally.setdefault(v, {})
+        worn[c] = worn.get(c, 0) + 1
+    return [{"label": v,
+             "color": (max(tally[v].items(), key=lambda kv: kv[1])[0] if v in tally else None)}
+            for v in labels]
+
+
+def _imp_status_cell(opts, val):
+    """One status cell, pointing at the option the column offers for that word.
+
+    Written as the bare word the sheet rendered it matches nothing in the
+    column's vocabulary and the board shows "טרם הוגדר" over data that is
+    plainly there — the same reason the monday import resolves its cells.
+    """
+    label = "" if val is None else str(val).strip()
+    if not label or label == IMPORT_STATUS_UNSET:
+        return None
+    o = (opts or {}).get(label)
+    return ({"id": o["id"], "label": o["label"], "color": o["color"]} if o
+            else {"label": label[:IMPORT_STATUS_MAX_LABEL], "color": "#c4c4c4"})
+
+
 def _imp_coerce(v, ctype):
     if v is None:
         return None
@@ -3730,14 +3805,19 @@ def _imp_coerce(v, ctype):
 IMPORT_SUBHEAD_FILL = "FFEDEFF5"
 
 
-def _imp_cell_paint(cell):
+def _imp_cell_paint(cell, fills_only=False):
     """The colour a sheet painted a cell with, as #rrggbb — or None.
 
     A group's row is coloured in every file that has groups at all: monday
     fills it, and this app's own export writes the colour on the text. Either
     is the group's colour, and reading it is what lets a board come back the
-    colour it left. Read for the group rows only, so a fill anywhere else is
-    nobody's business.
+    colour it left.
+
+    A status cell is painted too, and only ever filled — the chip IS the fill,
+    in monday's export and in this app's own. `fills_only` is for reading those:
+    text in a colour is how one file writes a group's name and is not a status
+    anywhere, and a sheet whose body text happens to be navy would otherwise
+    arrive as a board of navy statuses.
 
     White and black are not read as colours: they are what a sheet looks like
     when nothing was painted, and a group headed "ללא צבע" white-on-white is
@@ -3762,6 +3842,8 @@ def _imp_cell_paint(cell):
             # anybody chose for a group
             if c and c != "#" + IMPORT_SUBHEAD_FILL[2:].lower():
                 return c
+        if fills_only:
+            return None
         font = getattr(cell, "font", None)
         if font is not None and font.color is not None:
             return hexof(font.color)
@@ -3774,16 +3856,18 @@ def _imp_parse_tabular(raw, filename, with_shape=False):
     """Rows (each a list of cell values) from CSV or XLSX bytes.
 
     With `with_shape`, each row is paired with what the sheet says it is:
-    `(level, is_band, paint, values)`. A board exported from here indents the
-    first cell by two per level — a group at 0, an item at 1, a sub-item at 2 —
-    and paints the sub-item column band grey. Both survive a read-back (the
-    outline levels do not, in the streaming reader), so they are what the
-    hierarchy is read from. A file with no indentation reads as level 0
+    `(level, is_band, paint, values, paints)`. A board exported from here
+    indents the first cell by two per level — a group at 0, an item at 1, a
+    sub-item at 2 — and paints the sub-item column band grey. Both survive a
+    read-back (the outline levels do not, in the streaming reader), so they are
+    what the hierarchy is read from. A file with no indentation reads as level 0
     throughout, which is what a flat CSV is.
 
     `paint` is the colour the sheet gave the row's first cell, which on a group
     row is the group's own colour — the thing a board is recognised by before
-    any of it is read. A CSV carries no colour, and says None.
+    any of it is read. `paints` is the same question asked of every cell in the
+    row, as fills only: a status cell is a coloured chip, and the fill is where
+    a sheet says which colour. A CSV carries no colour, and says None to both.
     """
     name = (filename or "").lower()
     if name.endswith((".xlsx", ".xlsm")):
@@ -3808,7 +3892,8 @@ def _imp_parse_tabular(raw, filename, with_shape=False):
             except (AttributeError, TypeError, ValueError):
                 pass
             paint = _imp_cell_paint(first) if first is not None else None
-            shaped.append((indent // 2, band, paint, [c.value for c in cells]))
+            shaped.append((indent // 2, band, paint, [c.value for c in cells],
+                           [_imp_cell_paint(c, fills_only=True) for c in cells]))
         wb.close()
         return shaped
     # CSV / TSV / plain text
@@ -3831,7 +3916,7 @@ def _imp_parse_tabular(raw, filename, with_shape=False):
     rows = [list(r) for r in _csv.reader(_io.StringIO(text), delimiter=delim)]
     # a CSV carries no indentation, so every row is flat — a parent column is the
     # only way such a file can name a hierarchy
-    return [(0, False, None, r) for r in rows] if with_shape else rows
+    return [(0, False, None, r, [None] * len(r)) for r in rows] if with_shape else rows
 
 
 def _imp_formula_text(raw, filename, shaped):
@@ -3874,7 +3959,8 @@ def _imp_formula_text(raw, filename, shaped):
     finally:
         wb.close()
     filled = 0
-    for i, (*_shape, vals) in enumerate(shaped):
+    for i, row in enumerate(shaped):
+        vals = row[3]
         if i >= len(src):
             break
         for j, v in enumerate(vals):
@@ -4469,7 +4555,7 @@ def _imp_monday_layout(shaped):
     def txt(vals):
         return [("" if c is None else str(c).strip()) for c in vals]
 
-    rows = [txt(v) for *_, v in shaped]
+    rows = [txt(row[3]) for row in shaped]
     if len(rows) < 3:
         return None
     filled = [sum(1 for c in r if c) for r in rows]
@@ -4498,25 +4584,27 @@ def _imp_monday_layout(shaped):
 
     body, in_band, i, summaries = [], False, head + 1, 0
     if head == 2:
-        body.append((0, False, shaped[1][2], shaped[1][3]))  # the group this header is for
+        # the group this header is for
+        body.append((0, False, shaped[1][2], shaped[1][3], shaped[1][4]))
     while i < len(shaped):
-        r, vals, paint = rows[i], shaped[i][3], shaped[i][2]
+        r, vals, paint, paints = rows[i], shaped[i][3], shaped[i][2], shaped[i][4]
         # A name on a line of its own, with the header repeated beneath it, is
         # how monday says "a new group starts here". The header-beneath is what
         # tells it apart from an item nobody filled anything in for.
         if lone[i] and i + 1 < len(rows) and is_header(rows[i + 1]):
-            body.append((0, False, paint, vals))
+            body.append((0, False, paint, vals, paints))
             in_band, i = False, i + 2                # the repeat is not a row of the board
             continue
         if is_header(r):
             i += 1
             continue
         if is_band(r):
-            body.append((2, True, None, vals))
+            body.append((2, True, None, vals, paints))
             in_band, i = True, i + 1
             continue
         if in_band and not r[0]:
-            body.append((2, False, None, vals))      # a sub-item: its name is in the second cell
+            # a sub-item: its name is in the second cell
+            body.append((2, False, None, vals, paints))
             i += 1
             continue
         if not r[0] and not (len(r) > 1 and r[1]):
@@ -4531,7 +4619,7 @@ def _imp_monday_layout(shaped):
             i += 1
             continue
         in_band = False
-        body.append((1, False, None, vals))
+        body.append((1, False, None, vals, paints))
         i += 1
     return rows[0][0], shaped[head][3], body, summaries
 
@@ -4679,10 +4767,18 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             if c["type"] == "status":
                 # through the same normaliser a column edited by hand goes
                 # through, so every label gets the stable id a cell points at —
-                # renaming the option later then carries its cells with it
+                # renaming the option later then carries its cells with it.
+                #
+                # Each label in the colour the file gave it. A status is read as
+                # its colour before it is read as a word — "הושלם" green, "תקוע"
+                # red — and the palette below is cycled by POSITION, so a
+                # vocabulary coloured by it arrives with those two swapped as
+                # often as not. It is the fallback for a label the file says no
+                # colour for, and nothing more; see import_monday.status_colors.
+                paint = c.get("option_colors") or {}
                 col["options"] = _status_col_options(
                     [{"label": str(o)[:40],
-                      "color": IMPORT_PALETTE[j % len(IMPORT_PALETTE)]}
+                      "color": paint.get(o) or IMPORT_PALETTE[j % len(IMPORT_PALETTE)]}
                      for j, o in enumerate(c.get("options") or [])])
                 status_opts[c["key"]] = {o["label"]: o for o in (col["options"] or [])}
             elif c["type"] == "dropdown":
@@ -4998,7 +5094,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
               if any(c is not None and str(c).strip() != "" for c in row[3])]
     if not shaped:
         raise HTTPException(400, "הקובץ ריק")
-    rows = [r for *_, r in shaped]
+    rows = [row[3] for row in shaped]
     ncols = min(max(len(r) for r in rows), IMPORT_MAX_COLS)
     if ncols < 1:
         raise HTTPException(400, "לא נמצאו עמודות בקובץ")
@@ -5044,11 +5140,15 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     # row with the group's colour and this app's own export writes it on the
     # text, so it is the source board saying what colour the group is. Kept by
     # name, which is how every step after this one refers to a group.
+    # `plan` carries each row's paints beside its values: a status cell is a
+    # coloured chip, and the fill is the sheet saying which colour — see
+    # _imp_status_vocab.
     plan, band_vals, sub_labels, group_paint = [], None, [], {}
-    for lvl, is_band, paint, r in body:
+    for lvl, is_band, paint, r, cpaint in body:
         vals = [_cell(r, i) for i in range(ncols)]
+        paints = [(cpaint[i] if i < len(cpaint) else None) for i in range(ncols)]
         if hier and lvl == 0:
-            plan.append(("group", vals))
+            plan.append(("group", vals, paints))
             if paint and vals[0]:
                 group_paint.setdefault(vals[0], paint)
             continue
@@ -5057,11 +5157,13 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                 band_vals = vals
                 sub_labels = [v or f"עמודה {i + 1}" for i, v in enumerate(vals)]
                 continue
-            plan.append(("sub", vals))
+            plan.append(("sub", vals, paints))
             continue
-        plan.append(("item", vals))
-    item_rows = [v for kind, v in plan if kind == "item"]
-    sub_rows = [v for kind, v in plan if kind == "sub"]
+        plan.append(("item", vals, paints))
+    item_rows = [v for kind, v, _ in plan if kind == "item"]
+    item_paints = [p for kind, _, p in plan if kind == "item"]
+    sub_rows = [v for kind, v, _ in plan if kind == "sub"]
+    sub_paints = [p for kind, _, p in plan if kind == "sub"]
     # monday writes its sub-items twice: once as their own rows under the band,
     # and once comma-joined into a column of the item ("Subitems"). Kept, that
     # column is the same names a second time as text, standing beside the
@@ -5104,13 +5206,44 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                   and _cell(header, i) and not _has_values(i)]
     data_at = [i for i in range(1, ncols)
                if i not in (parent_at, group_at, sub_col_at) and _has_values(i)]
-    col_types = [_imp_infer_type([(r[i] if i < len(r) else None) for r in item_rows])
-                 for i in data_at]
+    # What a column holds, and — for the ones that would otherwise be text — the
+    # vocabulary its paint says it is. A status column read as text loses both
+    # the words the picker offers and the colour each one is read by, which on a
+    # board exported from here is the whole of what its status columns were.
+    def _typed(i, body_rows, body_paints):
+        ctype = _imp_infer_type([(r[i] if i < len(r) else None) for r in body_rows])
+        if ctype != "text":
+            return ctype, None
+        vocab = _imp_status_vocab([_cell(r, i) for r in body_rows],
+                                  [(p[i] if i < len(p) else None) for p in body_paints])
+        return ("status", vocab) if vocab else ("text", None)
+
+    col_typed = [_typed(i, item_rows, item_paints) for i in data_at]
     col_ids = ["col_" + uuid.uuid4().hex[:8] for _ in data_at]
     by_label = {labels[i]: (cid, i) for i, cid in zip(data_at, col_ids)}
-    custom_cols = [{"id": cid, "type": ctype, "title": labels[i], "options": None,
+    # column id → {label: the option its cells point at}, so a cell can be
+    # written as the option it references rather than as a loose word
+    status_opts = {}
+
+    def _status_col(cid, vocab):
+        """A status column's options: each word in the colour the sheet painted
+        it, and this app's palette only where the sheet painted none."""
+        opts = _status_col_options(
+            [{"label": o["label"],
+              "color": o["color"] or IMPORT_PALETTE[j % len(IMPORT_PALETTE)]}
+             for j, o in enumerate(vocab)])
+        status_opts[cid] = {o["label"]: o for o in (opts or [])}
+        return opts
+
+    custom_cols = [{"id": cid, "type": ctype, "title": labels[i],
+                    "options": _status_col(cid, vocab) if ctype == "status" else None,
                     "formula": None, "connect": None, "copy_mode": None, "perms": {}}
-                   for cid, ctype, i in zip(col_ids, col_types, data_at)]
+                   for cid, (ctype, vocab), i in zip(col_ids, col_typed, data_at)]
+    # how much of the statuses' colour came out of the sheet rather than out of
+    # the palette — the same question the report already answers for the groups
+    status_options = sum(len(c["options"] or []) for c in custom_cols if c["type"] == "status")
+    status_colored = sum(1 for ctype, vocab in col_typed if ctype == "status"
+                         for o in vocab if o["color"])
     # a sub-item column maps to the board column of the same name, or becomes one
     sub_map = []          # (index in the sub row, column id)
     sub_col_ids = []
@@ -5132,9 +5265,13 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
             cid = hit[0]
         else:
             cid = "col_" + uuid.uuid4().hex[:8]
-            ctype = _imp_infer_type([(r[i] if i < len(r) else None) for r in sub_rows])
-            custom_cols.append({"id": cid, "type": ctype, "title": sub_labels[i], "options": None,
+            ctype, vocab = _typed(i, sub_rows, sub_paints)
+            custom_cols.append({"id": cid, "type": ctype, "title": sub_labels[i],
+                                "options": _status_col(cid, vocab) if ctype == "status" else None,
                                 "formula": None, "connect": None, "copy_mode": None, "perms": {}})
+            if ctype == "status":
+                status_options += len(custom_cols[-1]["options"] or [])
+                status_colored += sum(1 for o in vocab if o["color"])
             by_label[sub_labels[i]] = (cid, None)
             sub_only_ids.append(cid)
         sub_map.append((i, cid))
@@ -5204,10 +5341,10 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         # the group rows an exported board writes between its items, a column
         # naming each row's group — the only way a CSV can say it — and, failing
         # both, nothing, which is the one case that gets the default stages.
-        named = [_cell(v, 0) for kind, v in plan if kind == "group" and _cell(v, 0)]
+        named = [_cell(v, 0) for kind, v, _ in plan if kind == "group" and _cell(v, 0)]
         col_groups = []
         if not named and group_at is not None:
-            for kind, vals in plan:
+            for kind, vals, _ in plan:
                 if kind != "item":
                     continue
                 g = _cell(vals, group_at)
@@ -5216,7 +5353,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         # an item whose group cell is empty belongs to no group the file named,
         # and filing it under the first one would be a quiet misplacement
         col_blank = bool(col_groups) and any(
-            not _cell(v, group_at) for kind, v in plan if kind == "item")
+            not _cell(v, group_at) for kind, v, _ in plan if kind == "item")
         from_file = named or col_groups
         groups = []
         if from_file:
@@ -5250,7 +5387,10 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
             for i, cid in pairs:
                 col = next((c for c in custom_cols if c["id"] == cid), None)
                 val = _imp_coerce(vals[i] if i < len(vals) else None, col["type"] if col else "text")
-                if col and col["type"] == "files" and val:
+                if col and col["type"] == "status":
+                    # the option the column offers for that word, not the word
+                    val = _imp_status_cell(status_opts.get(cid), val)
+                elif col and col["type"] == "files" and val:
                     # a name is enough to see that an item had a spec attached,
                     # and useless for opening it — so the bytes come too, where
                     # they can be had at all
@@ -5264,7 +5404,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         by_title, parent_of = {}, {}
         grp = groups[0]
         gi, gpos, last_item = -1, {}, None
-        for kind, vals in plan:
+        for kind, vals, _paints in plan:
             if kind == "group":
                 gi += 1
                 if gi < len(groups):
@@ -5368,6 +5508,13 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                            # those the sheet itself painted — see group_paint
                            "group_hex": [g.color for g in groups][:40],
                            "group_colors": sum(1 for g in groups if g.name in group_paint),
+                           # and the statuses: the columns the sheet's paint
+                           # said were status columns, how many words they
+                           # offer, and how many of those came out of the file
+                           # wearing their own colour rather than the palette
+                           "status_cols": sum(1 for c in custom_cols if c["type"] == "status"),
+                           "status_options": status_options,
+                           "status_colors": status_colored,
                            # and where it came from, because "3 קבוצות" over an
                            # undivided board reads exactly like a division
                            "board_name": board_name[:200],

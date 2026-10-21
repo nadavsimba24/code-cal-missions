@@ -108,14 +108,15 @@ RETYPED = {
 }
 
 
-# ── a group's colour ────────────────────────────────────────────────────────
-# The colour of a group's header is how the board is read at a glance, so it
-# travels with the group's name. monday answers `color` as a hex string, and
-# that is the whole of the usual case; the names below are the same palette by
-# the other spelling, which older responses and hand-made files use. A colour
-# that is neither is left out rather than guessed at — the importer then gives
-# the group a colour of its own, which is a visible default instead of a wrong
-# claim about the source board.
+# ── the colours monday states ───────────────────────────────────────────────
+# A group's header colour and a status label's colour are both how a board is
+# read at a glance, and monday states both the same way: `color` as a hex
+# string, which is the whole of the usual case, and the names below, which are
+# that same palette by the other spelling — what older responses, a status
+# column's `labels_colors` (`var_name`) and hand-made files use. A colour that
+# is neither is left out rather than guessed at: the importer then gives a
+# colour of its own, which is a visible default instead of a wrong claim about
+# the source board.
 MONDAY_COLORS = {
     "grass_green":    "#037f4c",
     "done_green":     "#00c875",
@@ -150,7 +151,7 @@ MONDAY_COLORS = {
 
 
 def group_color(raw):
-    """monday's colour for a group, as the #rrggbb this app stores.
+    """A colour monday states — a group's, a status label's — as #rrggbb.
 
     Takes the hex monday answers, the three-digit shorthand, and the colour's
     name. Anything else — an empty field, a name this table does not hold — is
@@ -167,6 +168,83 @@ def group_color(raw):
             return "#" + h
         return None
     return MONDAY_COLORS.get(re.sub(r"[\s-]+", "_", c))
+
+
+# ── a status column's own colours ───────────────────────────────────────────
+# A status cell does not hold a word, it points at one of the column's options
+# — and an option is a word AND a colour. The colour is most of what a status
+# column is: "הושלם" is read as green before it is read as a word, and a board
+# whose statuses arrive in a palette cycled by position says things it never
+# said.
+#
+# monday keeps that vocabulary in the column's own settings, and writes it two
+# ways. The older, and still the usual one, is two maps side by side keyed by
+# the label's index:
+#
+#     {"labels": {"0": "בעבודה", "1": "הושלם"},
+#      "labels_colors": {"0": {"color": "#fdab3d", "var_name": "working-orange"},
+#                        "1": {"color": "#00c875", "var_name": "done-green"}}}
+#
+# the newer one a single list, each entry carrying its own colour:
+#
+#     {"labels": [{"id": 1, "name": "בעבודה", "color": "#fdab3d"}, …]}
+#
+# Both are read. A label the file gives no colour for is simply absent here,
+# which the importer reads as "the file did not say" and answers with a default
+# — the same rule a group's colour follows.
+def status_colors(settings):
+    """{label: #rrggbb} for one status column, from monday's own definition."""
+    if not isinstance(settings, dict):
+        return {}
+    labels = settings.get("labels")
+    colors = settings.get("labels_colors")
+    out = {}
+    if isinstance(labels, dict):
+        # the two maps, joined on the index they are both keyed by. The colour
+        # is an object — `color` is the chip, `border` the darker edge of the
+        # same chip and not a second colour to choose from — and `var_name` is
+        # that colour by name, which is the half older responses carry.
+        for idx, label in labels.items():
+            name = str(label or "").strip()
+            if not name:
+                continue
+            spec = (colors or {}).get(idx) if isinstance(colors, dict) else None
+            if isinstance(spec, str):
+                hexed = group_color(spec)
+            elif isinstance(spec, dict):
+                hexed = group_color(spec.get("color")) or group_color(spec.get("var_name"))
+            else:
+                hexed = None
+            if hexed:
+                out.setdefault(name, hexed)
+    elif isinstance(labels, list):
+        for it in labels:
+            if not isinstance(it, dict):
+                continue
+            name = str(it.get("name") or it.get("label") or "").strip()
+            hexed = group_color(it.get("color")) or group_color(it.get("var_name"))
+            if name and hexed:
+                out.setdefault(name, hexed)
+    return out
+
+
+def cell_label_color(cv):
+    """The colour a single status CELL states, when the query asked for it.
+
+    `... on StatusValue { label_style { color } }` answers the colour of the
+    option that cell points at. It is the same colour the column's settings
+    hold, said per cell — so it stands in for a file whose query asked for the
+    items and not for the column definitions, which is most hand-written ones.
+    """
+    style = (cv or {}).get("label_style")
+    if isinstance(style, str):
+        try:
+            style = json.loads(style)
+        except Exception:                           # noqa: BLE001
+            return None
+    if isinstance(style, dict):
+        return group_color(style.get("color"))
+    return None
 
 
 # ── the board's activity log ────────────────────────────────────────────────
@@ -1127,6 +1205,12 @@ def parse(raw, max_cols):
         sub_only_titles.append(col["title"])
 
     by_key = {c["key"]: c["type"] for c in columns}
+    # column key → {label: #rrggbb}, filled from the cells themselves. The
+    # column's settings are where a status vocabulary properly lives, and a
+    # query that asked only for the items carries none — so the colour each
+    # cell states for its own label is read too, and the two are merged with
+    # the definition winning. See cell_label_color.
+    cell_colors = {}
 
     def read(it, lookup_by_title=False):
         # a file's real name and link, when the item happens to carry them
@@ -1153,6 +1237,10 @@ def parse(raw, max_cols):
             v = _cell_value(cv, by_key[key], assets, by_id, people_by_id)
             if v is not None and v != "" and v != []:
                 vals[key] = v
+                if by_key[key] == "status":
+                    paint = cell_label_color(cv)
+                    if paint:
+                        cell_colors.setdefault(key, {}).setdefault(str(v), paint)
         return vals
 
     # ── groups, in the order the board puts them ─────────────────────────────
@@ -1212,6 +1300,22 @@ def parse(raw, max_cols):
                     if one and one not in seen:
                         seen.append(one)
         c["options"] = seen
+        if c["type"] == "status":
+            # and the colour each of those words is shown in. The column's own
+            # definition first — it is the board's vocabulary, and it holds a
+            # colour for every option including the ones no item happens to be
+            # on — and the cells themselves after it, which is all a file gets
+            # when its query never asked for the column definitions.
+            paint = dict(cell_colors.get(c["key"]) or {})
+            paint.update(status_colors((defs.get(c["key"]) or {}).get("settings")))
+            c["option_colors"] = {lbl: paint[lbl] for lbl in seen if lbl in paint}
+
+    # How much of the statuses' colour actually came across, counted the way the
+    # groups' is: a board whose every status arrives in this app's palette looks
+    # recoloured by somebody here rather than unasked-for in the file.
+    status_cols = [c for c in columns if c["type"] == "status"]
+    status_options = sum(len(c.get("options") or []) for c in status_cols)
+    status_colored = sum(len(c.get("option_colors") or {}) for c in status_cols)
 
     return {
         "board_name": (board.get("name") or "").strip() or None,
@@ -1243,6 +1347,14 @@ def parse(raw, max_cols):
             # comes across in this app's palette instead — which looks like a
             # choice somebody made rather than a field nobody requested.
             "group_colors": sum(1 for g in groups if g.get("color")),
+            # and the same question for the statuses: how many of the words the
+            # status columns offer arrived wearing monday's own colour. A query
+            # that asked for neither the column definitions nor `label_style`
+            # answers none of them, and the whole vocabulary comes across in
+            # this app's palette — see status_colors.
+            "status_cols": len(status_cols),
+            "status_options": status_options,
+            "status_colors": status_colored,
             # how many of them, and the group they all ended up in
             "items_ungrouped": ungrouped,
             "ungrouped_into": groups[0]["title"] if (ungrouped and groups) else "",
