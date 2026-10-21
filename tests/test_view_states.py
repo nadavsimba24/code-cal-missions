@@ -59,6 +59,20 @@ def test_the_focus_ring_is_visible_on_what_was_added():
     assert ".pop-row-act:focus-visible" in SRC, "the + menu's action has no ring"
 
 
+def test_the_failure_message_is_not_truncated():
+    """The message is the point of the banner. "השינויים נשמרו במסך" cut to
+    "השינויים נשמרו ב…" removes exactly the reassurance somebody needs at
+    that moment — and a DOM-reading test never sees it, because innerText
+    carries the whole string while the screen shows an ellipsis."""
+    m = re.search(r"\.sf-msg\{([^}]*)\}", SRC)
+    assert m, ".sf-msg moved"
+    assert "text-overflow:ellipsis" not in m.group(1), m.group(1)
+    assert "white-space:nowrap" not in m.group(1), m.group(1)
+    btn = re.search(r"\.save-failed \.btn\{([^}]*)\}", SRC)
+    assert btn and "white-space:nowrap" in btn.group(1), \
+        "the button wraps to two lines in a one-line strip"
+
+
 def test_the_states_announce_themselves():
     """A state that replaces the whole board has to reach a screen reader —
     silently swapping the table for a message is a change nobody is told

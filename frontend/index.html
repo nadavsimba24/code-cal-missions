@@ -2069,12 +2069,19 @@ input.has-err{border-color:var(--red,#d83a52)!important}
 input.has-err:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--red,#d83a52) 25%,transparent)}
 /* "חיווי ברור, שמירת התאמות במסך וניסיון חוזר" — a banner rather than a
    toast, because four seconds is the wrong lifetime for "not saved yet". */
-.save-failed{align-self:center;display:inline-flex;align-items:center;gap:9px;margin-inline-start:8px;
+/* The message is the point of the banner, so it is not truncated: a
+   "השינויים נשמרו במסך" cut to "השינויים נשמרו ב…" removes exactly the
+   reassurance somebody needs at that moment. It wraps instead, and the
+   button beside it never does — a two-line button in a one-line strip
+   reads as broken. */
+.save-failed{align-self:center;display:inline-flex;align-items:center;gap:10px;margin-inline-start:8px;
   background:color-mix(in srgb,var(--red,#d83a52) 10%,var(--surface));
   border:1px solid color-mix(in srgb,var(--red,#d83a52) 35%,transparent);
-  color:var(--text);border-radius:9px;padding:5px 8px;font-size:12.5px;max-width:min(560px,70vw)}
-.save-failed>i{color:var(--red,#d83a52)}
-.sf-msg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  color:var(--text);border-radius:9px;padding:6px 10px;font-size:12.5px;
+  max-width:min(640px,72vw)}
+.save-failed>i{color:var(--red,#d83a52);flex:none}
+.save-failed .btn{flex:none;white-space:nowrap}
+.sf-msg{min-width:0;line-height:1.4}
 .sf-x{border:none;background:none;color:var(--text-light);cursor:pointer;
   width:28px;height:28px;border-radius:6px;display:grid;place-items:center}
 .sf-x:hover{background:var(--row-hover);color:var(--text)}
