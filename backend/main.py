@@ -3786,6 +3786,26 @@ def _imp_status_cell(opts, val):
             else {"label": label[:IMPORT_STATUS_MAX_LABEL], "color": "#c4c4c4"})
 
 
+def _imp_subitem_names(text):
+    """The sub-item names one sub-items cell holds, in the file's own order.
+
+    monday renders that column as the sub-items' names joined by ", " and
+    escapes nothing, so the comma is the only split there is — a sub-item whose
+    own name holds one arrives as two. That is the file's limit rather than a
+    choice here, and the report says what to re-export to get the sub-items
+    themselves instead of their names. Same rule as the JSON import's
+    import_monday._subitem_names, and the same ceiling.
+    """
+    out = []
+    for part in str(text or "").split(","):
+        name = part.strip()
+        if name:
+            out.append(name)
+        if len(out) >= import_monday.SUBITEM_NAMES_MAX:
+            break
+    return out
+
+
 def _imp_coerce(v, ctype):
     if v is None:
         return None
@@ -5401,6 +5421,11 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
 
         item_pairs = list(zip(data_at, col_ids))
         pos, subs_made, made_tasks = 0, 0, []
+        # item id → the sub-item names its sub-items column holds, for the items
+        # whose sub-items are in the file as NAMES and not as rows of their own.
+        # Emptied the moment a sub-item row turns up under the item — a row says
+        # everything a name does and more. See _imp_subitem_names.
+        named_subs, pending_named = 0, {}
         by_title, parent_of = {}, {}
         grp = groups[0]
         gi, gpos, last_item = -1, {}, None
@@ -5416,6 +5441,7 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                 title = _cell(vals, 1) or f"תת־פריט {subs_made + 1}"
                 if last_item is None:
                     continue                      # a sub-item with nothing above it
+                pending_named.pop(last_item.id, None)
                 t = Task(board_id=b.id, group_id=last_item.group_id, parent_id=last_item.id,
                          title=title[:500], status=TaskStatus.BACKLOG, priority=Priority.MEDIUM,
                          position=subs_made, created_by=creator,
@@ -5446,8 +5472,45 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                 pname = _cell(vals, parent_at)
                 if pname:
                     parent_of[t.id] = pname
+            # Only for a row that names ITSELF. A row with an empty first cell
+            # and a name in its second is a sub-item whose band went unread (see
+            # the summary-line rule in _imp_monday_layout) — that second cell is
+            # its own name, not a list of sub-items under it, and read as one it
+            # became a sub-item of a nameless item.
+            if sub_col_at is not None and _cell(vals, 0):
+                names = _imp_subitem_names(_cell(vals, sub_col_at))
+                if names:
+                    pending_named[t.id] = (t, names)
             last_item = t
             pos += 1
+
+        # ── sub-items the file names and does not spell out ──────────────
+        # monday writes its sub-items twice: as rows of their own under a band,
+        # and as their names joined by commas in the item's sub-items column.
+        # A file exported without the rows — monday's CSV export, an Excel one
+        # whose sub-items were not expanded — still carries that column, and it
+        # is the file saying those sub-items exist. Read as nothing, the board
+        # arrived without them while the report said that column "became the
+        # sub-items": the loss named as the feature.
+        #
+        # So the names become sub-items. They carry a name and nothing else —
+        # the file holds nothing else about them — and the report says exactly
+        # that, beside what to re-export to bring the rest.
+        for t, names in pending_named.values():
+            for name in names:
+                sub = Task(board_id=b.id, group_id=t.group_id, parent_id=t.id,
+                           title=name[:500], status=TaskStatus.BACKLOG,
+                           priority=Priority.MEDIUM, position=subs_made, created_by=creator,
+                           custom_fields={"status_unset": True, "priority_unset": True})
+                db.add(sub)
+                db.flush()
+                _ensure_item_uid(db, sub)
+                _audit(db, sub.id, "create", field="subitem", old=None, new=sub.title,
+                       user_id=creator)
+                made_tasks.append(sub)
+                subs_made += 1
+                named_subs += 1
+        db.flush()
 
         # ── a parent named by column ─────────────────────────────────────
         # Resolved after every row is in, because a file may name a parent that
@@ -5539,6 +5602,12 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                                          else ""),
                            # the columns that were the sub-items themselves
                            "as_subitems": ([labels[sub_col_at]] if sub_col_at is not None else []),
+                           # Of the sub-items on the board, the ones built from
+                           # a name in that column and nothing else, because the
+                           # file carried no row for them. They are here, and
+                           # they carry no columns: said apart from the count,
+                           # so it is not read as sub-items that came whole.
+                           "subitems_named": named_subs,
                            # and the ones the sub-items have and the items do
                            # not — named, because that is where somebody will
                            # look for them on the item row and not find them

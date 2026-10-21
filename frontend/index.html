@@ -5041,11 +5041,30 @@ function importReport(b){
      are created as theirs alone; named here, because the item row is where
      somebody will look for them and not find them. */
   const subOnly=r.columns_sub||[];
+  /* Sub-items the file named and did not describe. monday writes them twice —
+     as rows of their own, and as their names joined by commas in the sub-items
+     column — and a file exported without the rows carries only the names. They
+     are imported from those names, which is the difference between a board
+     that has its sub-items and one that does not; but a name is not the
+     sub-item, and saying so here is what stops "87 תתי־פריטים" being read as 87
+     that came across whole. */
+  const namedSubs=r.subitems_named||0;
   const subColHTML=(asSub.length||subOnly.length)?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-diagram-project"></i> תתי־פריטים</div>
-      ${asSub.length?`<div class="imp-why">${asSub.map(t=>esc(t)).join(', ')} אינה עמודה כאן — מה שהיה בה יובא
-        כתתי־פריטים של הפריטים עצמם${b.subitems?` (${b.subitems})`:''}.</div>`:''}
+      ${asSub.length?(namedSubs?`
+        <div class="imp-why">${asSub.map(t=>esc(t)).join(', ')} אינה עמודה כאן — היא תתי־הפריטים עצמם.
+          בקובץ הזה הם מופיעים <b>רק בשמם</b>, ולכן נוצרו ${namedSubs} תתי־פריטים הנושאים שם בלבד —
+          בלי העמודות שלהם ובלי השיחות שעליהם.</div>
+        <div class="imp-why"><b>מה עושים:</b> ${r.mapping
+          ?`${REEXPORT_RUN} — היא מבקשת <b dir="ltr">subitems { id name column_values { … } }</b> בכל פריט —
+            ומייבאים את הקובץ החדש. אז כל תת־פריט יגיע עם הערכים שלו.`
+          :`מייצאים מחדש ממאנדיי כשתתי־הפריטים פתוחים בלוח (אז הייצוא כותב לכל פריט את שורות
+            תתי־הפריטים שלו, ולא רק את שמותיהם), או מייבאים את תשובת ה-API שמביאה אותם במלואם.`}</div>
+        <div class="imp-why">שם שמכיל פסיק הגיע כשני תתי־פריטים: מאנדיי מחבר את השמות בפסיק ואינו
+          מסמן היכן כל אחד נגמר. גם זה נפתר בייצוא שמביא את השורות.</div>`
+        :`<div class="imp-why">${asSub.map(t=>esc(t)).join(', ')} אינה עמודה כאן — מה שהיה בה יובא
+        כתתי־פריטים של הפריטים עצמם${b.subitems?` (${b.subitems})`:''}.</div>`):''}
       ${subOnly.length?`<div class="imp-why">${subOnly.length} עמודות קיימות בתתי־הפריטים ולא
         בפריטי האב, ולכן הן נוצרו כאן כעמודות של תתי־הפריטים בלבד — הן מופיעות בשורות
         תת־הפריט ולא על הפריט עצמו. זה המבנה שהקובץ מתאר; כעמודות רגילות הן היו עומדות גם

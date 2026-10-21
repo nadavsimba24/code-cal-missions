@@ -247,6 +247,46 @@ def cell_label_color(cv):
     return None
 
 
+# ── sub-items a file names and does not describe ────────────────────────────
+# monday's sub-items column holds no value of its own: it is the sub-items, and
+# a query that asked for `subitems` brings them whole — their own columns, their
+# own conversation. A query that did not still renders that column, as the
+# sub-items' NAMES joined by commas, and monday's own CSV/Excel export of a
+# board writes exactly the same thing.
+#
+# That text is the file saying these sub-items exist. Read as nothing it is a
+# board that arrives without them, which is what somebody notices a week later
+# when half their work is missing from a migrated board.
+#
+# A name is not a sub-item the way the real thing is — there are no columns
+# behind it and no history — and what is built from one is reported as that. It
+# is still the difference between a board that has its sub-items and a board
+# that does not.
+#
+# The names cannot be split better than on the comma: monday joins them with
+# ", " and escapes nothing, so a sub-item whose own name holds a comma arrives
+# as two. That is the file's limit, not a choice here — a re-export that asks
+# for `subitems` carries them properly, and the report says so.
+SUBITEM_NAMES_MAX = 100
+
+
+def _subitem_names(it, sub_col_ids):
+    """The sub-item names an item's sub-items column holds, in file order."""
+    out = []
+    for cv in it.get("column_values") or []:
+        if not isinstance(cv, dict):
+            continue
+        if cv.get("id") not in sub_col_ids and cv.get("type") != SUBITEMS_TYPE:
+            continue
+        for part in str(cv.get("text") or "").split(","):
+            name = part.strip()
+            if name:
+                out.append(name[:500])
+        if len(out) >= SUBITEM_NAMES_MAX:
+            break
+    return out[:SUBITEM_NAMES_MAX]
+
+
 # ── the board's activity log ────────────────────────────────────────────────
 # monday's `activity_logs` is the board's history: who changed what, when. The
 # events worth carrying across are the ones that describe an item this import is
@@ -1045,12 +1085,13 @@ def parse(raw, max_cols):
         for s_it in it.get("subitems") or []:
             survey(s_it, (smeta, sfill, sorder), note=False)
 
-    skipped, keep, as_subitems = [], [], []
+    skipped, keep, as_subitems, sub_col_ids = [], [], [], set()
     for cid in order:
         m = meta[cid]
         title = m["title"] or cid
         if m["type"] == SUBITEMS_TYPE:
             as_subitems.append(title)
+            sub_col_ids.add(cid)
         elif m["type"] in UNSUPPORTED:
             skipped.append({"title": title, "type": m["type"], "reason": UNSUPPORTED[m["type"]]})
         elif m["type"] not in TYPE_MAP:
@@ -1255,7 +1296,7 @@ def parse(raw, max_cols):
             groups.append({"id": gid, "title": seen_g[gid],
                            "color": group_color(g.get("color"))})
 
-    rows, sub_total, talk_dropped = [], 0, [0]
+    rows, sub_total, talk_dropped, named_subs = [], 0, [0], 0
     for it in items:
         g = it.get("group") or {}
         gid = g.get("id")
@@ -1269,6 +1310,20 @@ def parse(raw, max_cols):
             talk_dropped[0] += sdrop
             subs.append({"name": (s.get("name") or "").strip() or "תת-פריט",
                          "values": read(s, lookup_by_title=True), "updates": sups})
+        if not subs:
+            # The query never asked for `subitems`, and the sub-items column is
+            # then the only place the file says they exist — monday renders it
+            # as their names, comma-joined. Dropped, as it was, the board came
+            # across with the sub-items missing entirely while the report said
+            # that column "became the sub-items", which is the one shape of
+            # report nobody can catch: it names the loss as the feature.
+            #
+            # So they are created from their names. A name is all the file
+            # holds about them — no columns, no conversation — and the report
+            # says so, together with what to re-export to get the rest.
+            for name in _subitem_names(it, sub_col_ids):
+                subs.append({"name": name, "values": {}, "updates": []})
+                named_subs += 1
         sub_total += len(subs)
         ups, dropped = _updates_of(it)
         talk_dropped[0] += dropped
@@ -1327,6 +1382,12 @@ def parse(raw, max_cols):
         "report": {
             "items": len(rows),
             "subitems": sub_total,
+            # Of those, the ones built from a name in the sub-items column and
+            # nothing else — because the query never asked for `subitems`. They
+            # are on the board, and they carry no columns and no conversation:
+            # a re-export brings the rest. Said apart from the count, so "87
+            # תתי-פריטים" is not read as 87 sub-items that came across whole.
+            "subitems_named": named_subs,
             # the conversation on the items, and what a per-item ceiling cut
             "updates": sum(len(r["updates"]) + sum(len(u["replies"]) for u in r["updates"])
                            + sum(len(s["updates"]) + sum(len(u["replies"]) for u in s["updates"])
