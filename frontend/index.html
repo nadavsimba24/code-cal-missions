@@ -4311,8 +4311,23 @@ const Views = {
     this.apply(id);
     toast('השינויים הזמניים אופסו');
   },
-  leave(){ if(this.active==null)return; this.active=null; this.base=null;
-    Router.set(st.board&&st.board.id, Chat.taskId, null); renderTabs(); },
+  /* Leaving a view puts the board back as it is without one.
+
+     "מעבר לתצוגה אחרת, יציאה מהלוח או טעינה מחדש מאפסים את ההתאמות הזמניות
+     ואת החיפוש ללא התראה." A view's cut belongs to the view; carrying it
+     onto the board's own table would show the main table filtered by a view
+     that is no longer open, which is the same screen under a different name.
+
+     `keep` is for the one caller that is not leaving: clearFilters has
+     already emptied the cut itself and only needs the tab unlit. Calling the
+     reset from inside it would be a loop. */
+  leave(opts){
+    if(this.active==null)return;
+    this.active=null; this.base=null; this.stale=false; this.failed=null;
+    if(!(opts&&opts.keep)) clearFilters();
+    Router.set(st.board&&st.board.id, Chat.taskId, null);
+    renderTabs();
+  },
 
   /* Has the person changed what the open view shows?
 
@@ -4792,7 +4807,16 @@ function openViewPicker(e){
     : '';
   openCellPop(e.currentTarget,`<div class="row-menu">${rows}${forms}</div>`,'row-menu-pop view-pick-pop');
 }
-function setView(v){st.view=v;renderTabs();renderView();}
+/* Clicking one of the board's own view tabs.
+
+   It used to set st.view and re-render, which did nothing at all while a
+   saved view was open: st.view was already 'table', so the value did not
+   change and the view stayed applied — the strip looked stuck. Choosing the
+   board's own table IS leaving the view, so that is what it does. */
+function setView(v){
+  if(typeof Views!=='undefined' && Views.active!=null) Views.leave();
+  st.view=v; renderTabs(); renderView();
+}
 function toggleAddView(e){
   e.stopPropagation();
   const w=document.getElementById('tab-add-wrap');
@@ -6546,7 +6570,7 @@ function setSearch(v){
 }
 function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();
   // nothing is filtered any more, so no saved cut is what is on screen
-  if(typeof Views!=='undefined')Views.leave();
+  if(typeof Views!=='undefined')Views.leave({keep:true});
   refreshToolbar();renderTabs();renderView();}
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}

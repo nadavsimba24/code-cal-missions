@@ -159,6 +159,21 @@ def test_the_button_is_there_as_soon_as_there_is_a_view():
         "the indicator hides until there is more than one view"
 
 
+def test_choosing_the_boards_own_table_leaves_the_saved_view():
+    """The strip looked stuck: clicking "טבלה ראשית" while a saved view was
+    open did nothing at all. setView only assigned st.view, which was ALREADY
+    'table' — a saved view is a cut OF the table, so opening one never
+    changed it — and the view stayed applied under an unlit tab.
+
+    Choosing the board's own table IS leaving the view."""
+    m = re.search(r"\nfunction setView\(v\)\{(.*?)\n\}", SRC, re.S)
+    assert m, "setView moved"
+    body = m.group(1)
+    assert "Views.leave()" in body, "clicking a board tab does not leave the view"
+    assert body.index("Views.leave()") < body.index("st.view=v"), \
+        "the view is left after the render decides what to draw"
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_strip_harness():
     r = subprocess.run(["node", str(ROOT / "tests" / "frontend" / "view_strip.mjs")],

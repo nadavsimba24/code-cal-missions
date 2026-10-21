@@ -32,9 +32,17 @@ function world(){
      board already filtered. Captured here so the cases below can read what
      the URL would say. */
   w.url=[];
+  /* clearFilters is the real thing's effect, not an empty stub: leaving a
+     view resets the board, and a stub that did nothing would let the case
+     below pass while the reset was broken. */
+  w.cleared=0;
+  const clearFilters=()=>{ w.cleared++;
+    st.filters={q:'',people:[],status:'',priority:'',sort:'',
+                links:{col:'',mode:'',item:0},adv:null,advIds:null}; };
   const V=new Function('st','api','withMe','meId','toast','showModal','closeModals',
     'askConfirm','renderTabs','renderView','refreshToolbar','boardViews','esc',
     'document','advQuery','filtersActive','setTimeout','Router','Chat','advPrune',
+    'clearFilters',
     viewsSrc+'\nreturn Views;')(
     st, async(url)=>(url.includes('/views')?{views:w.serverViews||[]}:{item_ids:[1,2]}),
     x=>JSON.stringify(x), ()=>7,
@@ -48,7 +56,8 @@ function world(){
     /* A rule whose column was deleted is pruned before the view is applied.
        These cases are about the round trip, so nothing is pruned here —
        tests/frontend/filter_edge_cases.mjs runs the real advPrune. */
-    n=>({tree:n, removed:w.pruned||[], denied:w.denied||[]}));
+    n=>({tree:n, removed:w.pruned||[], denied:w.denied||[]}),
+    clearFilters);
   return {w, st, V};
 }
 
@@ -127,8 +136,14 @@ function world(){
   V.apply(3);
   V.leave();
   ck('leaving a view unlights the tab', V.active===null);
-  ck('...and does NOT clear the board — somebody editing a cut has not asked '
-     +'for their work to vanish', st.filters.q==='באג');
+  /* This case used to assert the opposite: that leaving kept the cut on the
+     board, because "somebody editing a cut has not asked for their work to
+     vanish". The spec settles it the other way — "מעבר לתצוגה אחרת, יציאה
+     מהלוח או טעינה מחדש מאפסים את ההתאמות הזמניות ואת החיפוש ללא התראה" —
+     and that is the better answer: a view's cut belongs to the view, and
+     carrying it onto the board's own table shows the main table filtered by
+     a view that is no longer open. Same screen, different name on it. */
+  ck('...and puts the board back as it is without a view', st.filters.q==='');
 }
 
 // ── saving ────────────────────────────────────────────────────────────────
@@ -243,6 +258,36 @@ function world(){
   ck('opening an item keeps the view in the address', got==='#/board/3/view/9/item/42', got);
   R.set(3, null, null);
   ck('...and it can still be cleared on purpose', got==='#/board/3', got);
+}
+
+// ── switching away from a view ────────────────────────────────────────────
+/* The strip looked stuck: clicking "טבלה ראשית" while a saved view was open
+   did nothing at all. setView only assigned st.view, which was ALREADY
+   'table' — a saved view is a cut of the table, so opening one never changed
+   it — and the view stayed applied under an unlit tab.
+
+   Choosing the board's own table IS leaving the view. */
+{
+  const {st,V,w}=world();
+  V.items=[{id:9,name:'טבלה',filters:{q:'באג'},can_edit:true}];
+  V.apply(9);
+  ck('a view is open and its cut is on the board',
+     V.active===9 && st.filters.q==='באג');
+
+  const before=w.cleared;
+  V.leave();
+  ck('leaving it unlights the tab', V.active===null);
+  ck('...and resets the temporary adjustments', w.cleared===before+1 && st.filters.q==='');
+}
+{
+  // the one caller that must NOT reset: clearFilters has already done it
+  const {st,V,w}=world();
+  V.items=[{id:9,name:'טבלה',filters:{q:'באג'},can_edit:true}];
+  V.apply(9);
+  const before=w.cleared;
+  V.leave({keep:true});
+  ck('clearFilters unlights the tab without asking for a second reset',
+     V.active===null && w.cleared===before);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
