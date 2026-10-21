@@ -2143,11 +2143,17 @@ VIEW_MAX = max(2, int(os.environ.get("VIEW_MAX_PER_BOARD", "100") or 100))
 # The fixed main table. It has no row of its own — it is the board — but it
 # occupies a name on the strip, and a saved view answering to the same name
 # would make the strip ambiguous in the one place a reader cannot afford it.
-MAIN_VIEW_NAME = (os.environ.get("MAIN_VIEW_NAME") or "טבלה ראשית").strip()
 # What a view is called when nobody named it. Adding a table view is one
 # click — there is no type to choose and no question to answer — so the name
 # cannot be a question either. It is numbered if it is taken, and renaming it
 # afterwards is one item in the view's own menu.
+#
+# A board starts with NO view tabs. There was briefly a row per board called
+# "טבלה ראשית", created automatically so that the board's fixed table had an
+# id to be linked to — and it meant every board grew a tab nobody asked for.
+# A tab is something somebody added; a board with none shows none. The `kind`
+# column stays on the model for the day a fixed table needs a record again,
+# and nothing writes "main" to it now.
 NEW_VIEW_NAME = (os.environ.get("NEW_VIEW_NAME") or "טבלה").strip()
 # How long a deleted view can still be brought back. After it, the row stays
 # where it is — this is a window on RESTORING, not a promise to erase — but the
@@ -2176,8 +2182,6 @@ def _check_view_name(db, board_id, name, exclude_id=None):
         # somebody typed, and it can collide with a view that already exists
         raise HTTPException(400, f"שם תצוגה עד {VIEW_NAME_MAX} תווים")
     key = _view_name_key(name)
-    if key == _view_name_key(MAIN_VIEW_NAME):
-        raise HTTPException(400, "השם הזה שייך לטבלה הראשית")
     q = (db.query(SavedView)
            .filter(SavedView.board_id == board_id, SavedView.deleted_at.is_(None)))
     if exclude_id is not None:
@@ -2793,52 +2797,6 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         return dict(_view_json(v), can_edit=True)
 
 
-def _ensure_main_views(db=None):
-    """One main-table row per board — "טבלה ראשית אחת תובטח גם עבור לוחות קיימים".
-
-    The board's fixed table used to be nothing at all: the board itself, with
-    its column layout in board.settings and no record to point at. That cost
-    three things. It could not be named in a link the way a saved view can; it
-    had no configuration version, so a client could not tell whether what it
-    was holding was stale; and every place that lists views had to special-case
-    it, which is how "the main table's name is taken" came to be a hardcoded
-    string rather than a row like every other name on the strip.
-
-    Idempotent, and run at startup so boards made before this have one too. It
-    never touches a board that already has its row, and it never creates a
-    second: the board's own id is what makes the row unique, not the name.
-    """
-    own = db is None
-    db = db or Session(engine)
-    try:
-        have = {b for (b,) in db.query(SavedView.board_id)
-                                .filter(SavedView.kind == "main").all()}
-        made = 0
-        for (bid,) in db.query(Board.id).all():
-            if bid in have:
-                continue
-            db.add(SavedView(board_id=bid, owner_id=None, kind="main",
-                             name=MAIN_VIEW_NAME, visibility="public",
-                             filters={"view": "table"}, position=-1))
-            made += 1
-        if made:
-            db.commit()
-            print(f"[views] main table ensured on {made} board(s)")
-        return made
-    finally:
-        if own:
-            db.close()
-
-
-# Run once at import, after the function above exists. Deliberately not up
-# beside the seeding: that block runs before this module has finished loading,
-# and calling a name defined further down from there silently did nothing.
-try:
-    _ensure_main_views()
-except Exception as _e:                      # never block startup over it
-    print(f"⚠️  main-table backfill skipped: {_e}", flush=True)
-
-
 def _within_restore_window(v):
     """Is this deleted view still inside the window it can be brought back in?
 
@@ -3019,7 +2977,6 @@ def _free_name(db, board_id, name, suffix, exclude_id=None):
     if exclude_id is not None:
         q = q.filter(SavedView.id != exclude_id)
     taken = {_view_name_key(n) for (n,) in q.all()}
-    taken.add(_view_name_key(MAIN_VIEW_NAME))
 
     def fit(tail):
         room = VIEW_NAME_MAX - len(tail)
@@ -3048,7 +3005,6 @@ def _copy_name(db, v):
     taken = {_view_name_key(n) for (n,) in
              db.query(SavedView.name).filter(SavedView.board_id == v.board_id,
                                              SavedView.deleted_at.is_(None)).all()}
-    taken.add(_view_name_key(MAIN_VIEW_NAME))
 
     def fit(suffix):
         room = VIEW_NAME_MAX - len(suffix)
@@ -3669,23 +3625,9 @@ def create_board(data: dict, actor_id: int = Depends(current_user_id)):
                         created_by=creator, custom_fields=cf))
         # creator becomes the board admin; the board is private until they invite others
         db.add(BoardMember(board_id=b.id, user_id=creator, role="admin"))
+        # No view tabs. A board starts with the table it has always had and
+        # no saved cuts of it; a tab is something somebody added.
         db.commit()
-        # and the board's own table, which every board has exactly one of.
-        # Created here as well as backfilled at startup: the backfill is for
-        # the boards that already existed, and a board made a minute from now
-        # must not have to wait for the next restart to have one.
-        #
-        # After the board's own commit, and never able to fail it. A board
-        # that could not be created because its main table collided with
-        # something would be a board lost to bookkeeping — and the row is
-        # recoverable by the backfill, while the board is not.
-        try:
-            db.add(SavedView(board_id=b.id, owner_id=None, kind="main",
-                             name=MAIN_VIEW_NAME, visibility="public",
-                             filters={"view": "table"}, position=-1))
-            db.commit()
-        except IntegrityError:
-            db.rollback()
         db.refresh(b)
         return {"id": b.id, "name": b.name, "icon": b.icon, "views": _board_views(b), "my_role": "admin"}
 

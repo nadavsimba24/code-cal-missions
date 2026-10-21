@@ -65,66 +65,36 @@ def test_the_record_carries_every_required_field():
     assert not missing, missing
 
 
-# ── one main table per board, old boards included ──────────────────────────
-def test_every_board_has_exactly_one_main_table(client, admin_id):
+# ── a board starts with no tabs at all ─────────────────────────────────────
+def test_a_new_board_has_no_view_tabs(client, admin_id):
+    """There was briefly a row per board called "טבלה ראשית", created
+    automatically so the board's fixed table had an id to be linked to. It
+    meant every board grew a tab nobody asked for.
+
+    A tab is something somebody added. A board with none shows none, and the
+    board's own table is what it always was: the board."""
     bid = _board(client, admin_id)
     with Session(cityos_main.engine) as db:
-        rows = db.query(SavedView).filter(SavedView.board_id == bid,
-                                          SavedView.kind == "main").all()
-    assert len(rows) == 1
-    assert rows[0].name == cityos_main.MAIN_VIEW_NAME
-    assert rows[0].visibility == "public"
+        assert db.query(SavedView).filter(SavedView.board_id == bid).count() == 0
+    assert _list(client, bid, admin_id, main=True) == []
 
 
-def test_a_board_that_existed_before_gets_one_too(client, admin_id):
-    """"טבלה ראשית אחת תובטח גם עבור לוחות קיימים." Acted out: the row is
-    removed, and the backfill puts it back."""
+def test_the_first_view_somebody_adds_is_called_tavla(client, admin_id):
     bid = _board(client, admin_id)
-    with Session(cityos_main.engine) as db:
-        db.query(SavedView).filter(SavedView.board_id == bid,
-                                   SavedView.kind == "main").delete()
-        db.commit()
-        assert db.query(SavedView).filter(SavedView.board_id == bid,
-                                          SavedView.kind == "main").count() == 0
-
-    made = cityos_main._ensure_main_views()
-    assert made >= 1
-    assert _main_of(bid).name == cityos_main.MAIN_VIEW_NAME
+    r = client.post(f"/api/boards/{bid}/views",
+                    json={"user_id": admin_id, "filters": {"view": "table"}},
+                    headers=_h(admin_id))
+    assert r.status_code == 200, r.text
+    assert r.json()["name"] == "טבלה"
+    assert [v["name"] for v in _list(client, bid, admin_id, main=True)] == ["טבלה"]
 
 
-def test_the_backfill_never_makes_a_second_one(client, admin_id):
-    """Idempotent, because it runs on every start."""
-    bid = _board(client, admin_id)
-    for _ in range(3):
-        cityos_main._ensure_main_views()
-    with Session(cityos_main.engine) as db:
-        assert db.query(SavedView).filter(SavedView.board_id == bid,
-                                          SavedView.kind == "main").count() == 1
-
-
-def test_the_main_table_has_no_author(client, admin_id):
-    """It is the board. It existed before anybody saved anything."""
-    assert _main_of(_board(client, admin_id)).owner_id is None
-
-
-def test_the_main_table_comes_first_even_before_a_pinned_view(client, admin_id):
-    """Ahead of the pinned block rather than inside it: pinning is a choice
-    among the saved cuts, and this one is the board."""
-    bid = _board(client, admin_id)
-    vid = _mk(client, bid, admin_id, "מוצמדת").json()["id"]
-    client.patch(f"/api/views/{vid}", json={"user_id": admin_id, "pinned": True},
-                 headers=_h(admin_id))
-    rows = _list(client, bid, admin_id, main=True)
-    assert rows[0]["kind"] == "main", [v["name"] for v in rows]
-    assert rows[1]["name"] == "מוצמדת"
-
-
-def test_a_saved_view_cannot_take_the_main_tables_name(client, admin_id):
-    """It is a row on the strip now, so the ordinary uniqueness rule is what
-    stops it — the same rule, not a reserved string beside it."""
-    bid = _board(client, admin_id)
-    r = _mk(client, bid, admin_id, cityos_main.MAIN_VIEW_NAME)
-    assert r.status_code == 400
+def test_nothing_writes_the_main_kind_any_more(client, admin_id):
+    """The `kind` column stays on the model for the day a fixed table needs a
+    record again. Nothing produces one now, and this is what says so."""
+    src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+    assert 'kind="main"' not in src, "something still creates a main-table row"
+    assert "_ensure_main_views" not in src, "the backfill is still there"
 
 
 # ── the configuration version ──────────────────────────────────────────────

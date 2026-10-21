@@ -105,22 +105,14 @@ def test_the_ceiling_is_rechecked_inside_the_transaction():
     assert "IntegrityError" in body, "a duplicate name would surface as a 500"
 
 
-def test_a_board_is_never_lost_to_its_own_bookkeeping(client, admin_id):
-    """The main row is written after the board's own commit and can never
-    fail it. A board that could not be created because its main table
-    collided with something would be a board lost to bookkeeping — and the
-    row is recoverable by the backfill, while the board is not."""
-    src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
-    i = src.index("def create_board(")
-    body = src[i:src.index("\n# ── Import a board", i)]
-    add = body.index('kind="main"')
-    assert body.count("db.commit()", 0, add) >= 1, "the board is not committed first"
-    assert "except IntegrityError" in body[add:], "the main row can still fail the board"
-    # and it really does produce a board, with its table
+def test_a_new_board_writes_no_view_rows_at_all(client, admin_id):
+    """A board used to be given a "טבלה ראשית" row as it was created, which
+    had to be written after the board's own commit so it could never fail it.
+    The row is gone — a tab is something somebody added — so there is nothing
+    left to fail with."""
     bid = _board(client, admin_id)
     with Session(cityos_main.engine) as db:
-        assert db.query(SavedView).filter(SavedView.board_id == bid,
-                                          SavedView.kind == "main").count() == 1
+        assert db.query(SavedView).filter(SavedView.board_id == bid).count() == 0
 
 
 # ── permission is answered from the request in front of the server ─────────

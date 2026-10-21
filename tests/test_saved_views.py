@@ -245,11 +245,10 @@ def test_the_tabs_come_back_in_the_order_they_were_made(client, admin_id):
 
 
 def test_a_tab_strip_is_not_a_list(client, admin_id):
-    """The ceiling counts ACTIVE views on the board, the main table as one of
-    them — so VIEW_MAX - 1 saved views fill it. Per board and not per person:
-    the strip is shared, so one person filling it fills everybody's."""
+    """The ceiling counts the ACTIVE views on the board. Per board and not per
+    person: the strip is shared, so one person filling it fills everybody's."""
     bid = _board(client, admin_id)
-    for i in range(cityos_main.VIEW_MAX - 1):
+    for i in range(cityos_main.VIEW_MAX):
         assert _mk(client, bid, admin_id, f"תצוגה {i}").status_code == 200
     r = _mk(client, bid, admin_id, "אחת יותר מדי")
     assert r.status_code == 400 and "יותר מדי" in r.json()["detail"]
@@ -258,7 +257,7 @@ def test_a_tab_strip_is_not_a_list(client, admin_id):
 def test_the_ceiling_is_the_boards_and_not_each_persons(client, admin_id, guinea_id):
     """Counted per owner, a second editor could double the strip."""
     bid = _board(client, admin_id, invite=[guinea_id])
-    for i in range(cityos_main.VIEW_MAX - 1):
+    for i in range(cityos_main.VIEW_MAX):
         assert _mk(client, bid, admin_id, f"תצוגה {i}").status_code == 200
     assert _mk(client, bid, guinea_id, "ואחת שלי").status_code == 400
 

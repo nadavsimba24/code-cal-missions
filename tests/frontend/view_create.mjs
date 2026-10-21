@@ -55,8 +55,7 @@ function views(over = {}) {
 {
   let sent = null;
   const V = views({api: async (_u, o) => { sent = o.body; return {id: 9, name: 'טבלה'}; }});
-  V.items = [{id: 1, kind: 'main', name: 'טבלה ראשית',
-              filters: {view: 'table', sort: 'title', cols: {widths: {item: 300}}, q: 'ישן'}}];
+  V.items = [];
   V.load = async () => {};
   V.apply = id => V.calls.push(['apply', id]);
   await V.createTable();
@@ -64,12 +63,12 @@ function views(over = {}) {
   ck('the + asks nothing — no dialog', !V.calls.some(c => c[0] === 'modal'), V.calls);
   ck('...and does not name the view either, the server does',
      sent && !('name' in sent), sent);
-  ck('a new view starts from the MAIN table, not from the screen',
-     sent.filters.sort === 'title', sent.filters);
-  ck('...carrying its stored column layout',
-     sent.filters.cols.widths.item === 300, sent.filters);
-  ck('...and never a search, not even the main table’s own',
-     !('q' in sent.filters), sent.filters);
+  /* The board's own table: its columns, order and widths live on the board,
+     and the new view carries no cut at all. Not the screen — somebody who
+     adjusted the board and pressed + was not asking to freeze that. */
+  ck('a new view starts from the board, not from the screen',
+     sent.filters.view === 'table' && !('sort' in sent.filters), sent.filters);
+  ck('...and never a search', !('q' in sent.filters), sent.filters);
   ck('the view it made is the view it opens',
      V.calls.some(c => c[0] === 'apply' && c[1] === 9), V.calls);
   ck('...and it says which one was made',

@@ -4474,9 +4474,12 @@ const Views = {
      screen. "שמור כתצוגה חדשה" is the button that means the screen. */
   async createTable(){
     if(!st.board){ toast('פתחו לוח'); return; }
-    const main=(this.items||[]).find(v=>v.kind==='main');
-    const base=Object.assign({}, (main&&main.filters)||{}, {view:'table'});
-    delete base.q;                        // a search is never part of a view
+    /* A new view starts from the board's own table — its columns, their
+       order and their widths, which live on the board — and from no cut at
+       all. Deliberately not from what is on screen: somebody who adjusted
+       the board and then pressed + was not asking to freeze those
+       adjustments. "שמור כתצוגה חדשה" is the button that means the screen. */
+    const base={view:'table'};
     try{
       const v=await api('/api/boards/'+st.board.id+'/views',
         {method:'POST',headers:{'Content-Type':'application/json'},

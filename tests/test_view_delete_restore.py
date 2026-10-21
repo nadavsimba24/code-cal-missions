@@ -62,26 +62,21 @@ def _age(vid, days):
 
 
 # ── the main table is not deletable ────────────────────────────────────────
-def test_the_main_table_cannot_be_deleted(client, admin_id):
+def test_the_board_itself_is_not_a_view_that_can_be_deleted(client, admin_id):
     """"לא ניתן למחוק את הטבלה הראשית."
 
-    This case used to assert the opposite shape: that the main table had no
-    row at all, which was the strongest form the rule could take while that
-    was true. The record chapter made it a row — it needs an id to be linked
-    to, a configuration version, and a place on the strip that is not a
-    special case — so the rule is now enforced rather than structural, and
-    that is exactly why it needs a case of its own."""
+    This case has been through three shapes, and the current one is the first
+    again: the board's table has no row, so there is nothing addressable to
+    delete. In between it WAS a row, and the rule had to be enforced; the row
+    was taken out because it meant every board grew a tab nobody asked for.
+    Structural beats enforced when it is available."""
     bid = _board(client, admin_id)
     with Session(cityos_main.engine) as db:
-        main = (db.query(SavedView)
-                  .filter(SavedView.board_id == bid, SavedView.kind == "main").one())
-        mid, name = main.id, main.name
-    assert name == cityos_main.MAIN_VIEW_NAME
-
-    r = client.delete(f"/api/views/{mid}", headers=_h(admin_id))
-    assert r.status_code == 400 and "הטבלה הראשית" in r.json()["detail"]
-    with Session(cityos_main.engine) as db:
-        assert db.query(SavedView).filter(SavedView.id == mid).one().deleted_at is None
+        assert db.query(SavedView).filter(SavedView.board_id == bid).count() == 0
+    # and the table view TYPE cannot be switched off the board either
+    r = client.patch(f"/api/boards/{bid}", json={"user_id": admin_id, "views": ["kanban"]},
+                     headers=_h(admin_id))
+    assert r.status_code == 200 and "table" in r.json()["views"]
 
 
 # ── the window ─────────────────────────────────────────────────────────────

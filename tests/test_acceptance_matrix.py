@@ -90,11 +90,9 @@ def test_TC03_the_main_table_cannot_be_removed_from_the_board(client, admin_id):
     assert r.status_code == 200, r.text
     assert "table" in r.json()["views"], "the main table was switched off"
 
+    # and there is no row standing for it that somebody could delete instead
     with Session(cityos_main.engine) as db:
-        main = db.query(SavedView).filter(SavedView.board_id == bid,
-                                          SavedView.kind == "main").one()
-    assert client.delete(f"/api/views/{main.id}",
-                         headers=_h(admin_id)).status_code == 400
+        assert db.query(SavedView).filter(SavedView.board_id == bid).count() == 0
 
 
 def test_TC03_only_the_board_owner_saves_the_main_tables_layout(client, admin_id, guinea_id):

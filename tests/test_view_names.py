@@ -92,16 +92,15 @@ def test_the_ends_are_trimmed_before_it_is_stored(client, admin_id):
     assert v["name"] == "דחופים"
 
 
-# ── the main table holds its name ──────────────────────────────────────────
-def test_the_main_tables_name_is_taken(client, admin_id):
+# ── there is no reserved name any more ────────────────────────────────────
+def test_no_name_is_reserved(client, admin_id):
+    """"טבלה ראשית" was held back while a row per board answered to it. With
+    no such row the name is ordinary — and reserving a name nothing uses would
+    be refusing a word for no reason."""
     bid = _board(client, admin_id)
-    r = _mk(client, bid, admin_id, cityos_main.MAIN_VIEW_NAME)
-    assert r.status_code == 400 and "לטבלה הראשית" in r.json()["detail"]
-
-
-def test_and_taken_by_the_same_comparison_as_everything_else(client, admin_id):
-    bid = _board(client, admin_id)
-    assert _mk(client, bid, admin_id, f"  {cityos_main.MAIN_VIEW_NAME}  ").status_code == 400
+    assert _mk(client, bid, admin_id, "טבלה ראשית").status_code == 200
+    # and the ordinary rule still applies to it like any other name
+    assert _mk(client, bid, admin_id, "  טבלה ראשית  ").status_code == 400
 
 
 # ── renaming is held to the same rule ──────────────────────────────────────
@@ -237,6 +236,6 @@ def test_both_ceilings_are_read_from_the_environment():
     src = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
     assert 'os.environ.get("VIEW_NAME_MAX"' in src
     assert 'os.environ.get("VIEW_MAX_PER_BOARD"' in src
-    assert 'os.environ.get("MAIN_VIEW_NAME"' in src
+    assert 'os.environ.get("NEW_VIEW_NAME"' in src
     assert cityos_main.VIEW_NAME_MAX == 80 and cityos_main.VIEW_MAX == 100, \
         "the documented starting values changed"

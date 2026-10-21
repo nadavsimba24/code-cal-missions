@@ -45,9 +45,9 @@ def test_the_creation_starts_from_the_main_table():
     m = re.search(r"\n  async createTable\(\)\{(.*?)\n  \},", SRC, re.S)
     assert m, "createTable moved"
     body = m.group(1)
-    assert "kind==='main'" in body.replace(" ", ""), body
-    assert "delete base.q" in body, "a new view could carry a search"
-    assert "this.current()" not in body, "it starts from the screen, not the main table"
+    assert "{view:'table'}" in body.replace(" ", ""), body
+    assert "this.current()" not in body, "it starts from the screen, not the board"
+    assert "q:" not in body, "a new view could carry a search"
 
 
 def test_adding_a_table_asks_nothing(client=None):
