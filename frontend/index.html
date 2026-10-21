@@ -665,7 +665,10 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tb-pop-wide .arr-sec .pop-title{margin:0 0 8px;border:none;padding:0;display:flex;align-items:center;gap:6px}
 .tb-pop-wide .pop-people{max-height:150px}
 /* the columns of the board, side by side, each a list of its values */
-.tb-pop-wide.tb-pop-qf{min-width:min(920px,92vw)}
+/* Wide enough for three columns and no wider. It opened at 920px — most of a
+   laptop screen, for a panel that is read in one glance — and the columns past
+   the edge had nothing but a hidden scrollbar to reach them by. */
+.tb-pop-wide.tb-pop-qf{min-width:min(620px,94vw);max-width:calc(100vw - 24px)}
 .qf-head{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;
   color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:0 2px 9px}
 .qf-head i{color:var(--primary)}
@@ -676,9 +679,25 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .fcol-search input{flex:1;min-width:0;border:none;outline:none;background:none;
   font-family:inherit;font-size:13px;color:var(--text)}
 /* the strip. One column per board column; past the width it scrolls sideways,
-   the way the board does */
-.qf-cols{display:flex;gap:14px;overflow-x:auto;padding-bottom:8px}
-.qf-col{flex:0 0 190px;min-width:0}
+   the way the board does — with an arrow at each end and a scrollbar you can
+   actually see and drag, because a strip that only answers to a trackpad
+   gesture reads as a panel with three columns in it and no more. */
+.qf-wrap{position:relative}
+.qf-cols{display:flex;gap:12px;overflow-x:auto;padding-bottom:10px;scroll-behavior:smooth}
+.qf-cols::-webkit-scrollbar{height:9px}
+.qf-cols::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:5px}
+.qf-cols::-webkit-scrollbar-thumb:hover{background:var(--text-light)}
+.qf-cols::-webkit-scrollbar-track{background:transparent}
+.qf-cols{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+.qf-col{flex:0 0 178px;min-width:0}
+.qf-arr{position:absolute;top:50%;transform:translateY(-50%);z-index:2;display:none;
+  width:28px;height:28px;border-radius:50%;border:1px solid var(--border);
+  background:var(--surface);box-shadow:var(--shadow);color:var(--text-muted);
+  cursor:pointer;align-items:center;justify-content:center;font-size:12px}
+.qf-arr.show{display:inline-flex}
+.qf-arr:hover{color:var(--primary);border-color:var(--primary)}
+.qf-arr.prev{inset-inline-start:-6px}
+.qf-arr.next{inset-inline-end:-6px}
 .qf-col-t{font-size:13px;font-weight:700;color:var(--text);margin-bottom:7px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .qf-col.on .qf-col-t{color:var(--primary)}
@@ -3615,6 +3634,7 @@ async function openBoard(id){
   if(st.board && st.board.id!==id){ closeItemPanel(); Paged.reset(); }
   if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.collapsedGroups.clear(); st.colSort=null; st.subSort=null; }
   st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};
+  _fcolQ=''; _qfScroll=0;   // another board, another set of columns to start at the first of
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
   /* The drawer closes on the tap, not when the board has finished arriving.
@@ -6731,7 +6751,7 @@ function setSearch(v){
   refreshToolbar(); renderView();
 }
 function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();
-  _fcolQ='';                          // the panel reopens on the whole list of columns
+  _fcolQ=''; _qfScroll=0;             // the panel reopens whole, at its first column
   // nothing is filtered any more, so no saved cut is what is on screen
   if(typeof Views!=='undefined')Views.leave({keep:true});
   refreshToolbar();renderTabs();renderView();}
@@ -10059,6 +10079,7 @@ function renderPop(name){
            where somebody is standing when they find they need one -->
       <button class="qf-adv" onclick="closePops();Adv.open()">סינון מתקדם <i class="fa-solid fa-arrow-left"></i></button>
     </div>`;
+  qfRestore();          // the strip is in the document now
 }
 /* The filter panel: the columns of the board, side by side, each showing the
    values it holds and how many items carry each one.
@@ -10103,9 +10124,48 @@ function colFilterHTML(){
     <div class="qf-head"><i class="fa-solid fa-filter"></i> סינון לפי עמודה
       <span class="qf-showing">${qfShowing()}</span></div>
     ${search}
-    ${cols?`<div class="qf-cols">${cols}</div>`
+    ${cols?`<div class="qf-wrap">
+        <button class="qf-arr prev" id="qf-prev" onclick="qfScroll(1)" tabindex="-1"
+                aria-label="עמודות קודמות"><i class="fa-solid fa-chevron-right"></i></button>
+        <div class="qf-cols" id="qf-cols" onscroll="qfArrows()">${cols}</div>
+        <button class="qf-arr next" id="qf-next" onclick="qfScroll(-1)" tabindex="-1"
+                aria-label="עמודות נוספות"><i class="fa-solid fa-chevron-left"></i></button>
+      </div>`
           :'<div class="fcol-none">אין עמודה בשם הזה</div>'}
   </div>`;
+}
+/* Moving along the strip.
+
+   The panel redraws itself on every value picked, and a redraw that started
+   the strip back at the first column would throw somebody out of the column
+   they are working in — so where it was scrolled to is kept across the redraw
+   and put back before the frame is painted.
+
+   RTL is why this is arithmetic rather than a comparison: scrollLeft counts
+   away from the starting edge, which is the RIGHT one here, and runs negative
+   as the strip moves. Its absolute value is the distance travelled either way,
+   which is what both arrows are decided by. */
+let _qfScroll=0;
+function qfScroll(dir){
+  const el=document.getElementById('qf-cols'); if(!el)return;
+  el.scrollBy({left:dir*Math.max(178,el.clientWidth-70),behavior:'smooth'});
+}
+function qfArrows(){
+  const el=document.getElementById('qf-cols'); if(!el)return;
+  _qfScroll=el.scrollLeft;
+  const gone=Math.abs(el.scrollLeft), room=el.scrollWidth-el.clientWidth;
+  const show=(id,on)=>{const b=document.getElementById(id);if(b)b.classList.toggle('show',on);};
+  show('qf-prev', gone>2);                   // something is off the near edge
+  show('qf-next', room>2 && gone<room-2);    // and something past the far one
+}
+// after a redraw: back to the column she was in, with the arrows re-decided
+function qfRestore(){
+  const el=document.getElementById('qf-cols'); if(!el)return;
+  const prev=el.style.scrollBehavior;
+  el.style.scrollBehavior='auto';            // a restore is not a movement
+  el.scrollLeft=_qfScroll;
+  el.style.scrollBehavior=prev||'';
+  qfArrows();
 }
 /* "מציג 12 מתוך 155 פריטים" — the sentence the whole panel is in service of.
    On a board answered by the server in pages the browser holds one page, so

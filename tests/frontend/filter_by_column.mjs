@@ -276,5 +276,53 @@ function world(){
      lit.includes('qf-v sel') && lit.includes('aria-pressed="true"'));
 }
 
+// ── moving along the strip ────────────────────────────────────────────────
+/* scrollLeft counts away from the starting edge, which in RTL is the right
+   one, and runs NEGATIVE as the strip moves. Both arrows are decided by how
+   far it has travelled, which is that number's absolute value — the one shape
+   of this arithmetic that is the same in both directions. */
+{
+  const nodes = {};
+  const el = {scrollLeft:0, clientWidth:600, scrollWidth:1400,
+              style:{}, scrollBy(o){ this.scrollLeft += o.left; }};
+  const doc = {getElementById:id=>id==='qf-cols'?el:(nodes[id]=nodes[id]||
+    {classes:new Set(), classList:{toggle:(c,on)=>on?nodes[id].classes.add(c):nodes[id].classes.delete(c)}})};
+  const fns = new Function('document','_qfScroll',
+    grab('qfArrows')+grab('qfScroll')+grab('qfRestore')
+    +';return {qfArrows,qfScroll,qfRestore,get scroll(){return _qfScroll;}};')(doc, 0);
+  const shown = id => nodes[id] && nodes[id].classes.has('show');
+
+  fns.qfArrows();
+  ck('at the first column only the "more columns" arrow shows',
+     !shown('qf-prev') && shown('qf-next'));
+
+  el.scrollLeft = -400;                     // moved along, in RTL's own sign
+  fns.qfArrows();
+  ck('in the middle both arrows show', shown('qf-prev') && shown('qf-next'));
+
+  el.scrollLeft = -(el.scrollWidth - el.clientWidth);
+  fns.qfArrows();
+  ck('at the last column the "more columns" arrow is gone',
+     shown('qf-prev') && !shown('qf-next'), [...(nodes['qf-next'].classes)]);
+
+  el.scrollLeft = 0; el.scrollWidth = 600;  // every column already on screen
+  fns.qfArrows();
+  ck('a strip that fits shows no arrows at all', !shown('qf-prev') && !shown('qf-next'));
+}
+{
+  const el = {scrollLeft:0, clientWidth:600, scrollWidth:1400, style:{},
+              scrollBy(o){ this.scrollLeft += o.left; }};
+  const doc = {getElementById:()=>el};
+  const fns = new Function('document','_qfScroll',
+    grab('qfArrows')+grab('qfScroll')+grab('qfRestore')
+    +';return {qfScroll,qfArrows};')(doc, 0);
+  fns.qfScroll(-1);
+  ck('one press moves about a screenful, toward the far columns',
+     el.scrollLeft < -400 && el.scrollLeft > -600, el.scrollLeft);
+  const was = el.scrollLeft;
+  fns.qfScroll(1);
+  ck('and the other arrow brings it back', el.scrollLeft > was);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

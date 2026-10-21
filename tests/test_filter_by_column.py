@@ -114,3 +114,31 @@ def test_the_counts_are_skipped_rather_than_guessed():
     body = SRC[i:SRC.index("\n}\n", i)]
     assert "Paged.on" in body and "QF_COUNT_MAX" in body, \
         "the counts are computed where they cannot be right"
+
+
+def test_the_strip_can_be_moved_without_a_trackpad():
+    """A strip that only answers to a two-finger swipe reads as a panel with
+    three columns in it and no more. An arrow at each end, shown only when
+    there is something past it, and a scrollbar that can be seen and dragged."""
+    assert "function qfScroll(" in SRC and "function qfArrows(" in SRC
+    assert 'class="qf-arr prev"' in SRC and 'class="qf-arr next"' in SRC
+    assert "::-webkit-scrollbar-thumb" in SRC, "the strip's scrollbar is invisible again"
+
+
+def test_a_pick_does_not_throw_her_back_to_the_first_column():
+    """The panel redraws on every value picked. Starting the strip over would
+    move the column she is working in out from under her."""
+    assert "function qfRestore(" in SRC
+    i = SRC.index("function qfRestore(")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "scrollBehavior='auto'" in body, \
+        "restoring the position animates, so a pick slides the strip about"
+    assert "qfRestore();" in SRC, "the restore is never called after a redraw"
+
+
+def test_the_panel_opens_at_a_size_that_fits():
+    """It opened at 920px — most of a laptop screen for something read in a
+    glance — and could then run off the edge with no way to move it."""
+    i = SRC.index(".tb-pop-wide.tb-pop-qf{")
+    rule = SRC[i:SRC.index("}", i)]
+    assert "620px" in rule and "max-width:calc(100vw" in rule, rule
