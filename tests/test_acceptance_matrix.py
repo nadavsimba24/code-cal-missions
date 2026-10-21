@@ -129,6 +129,20 @@ def test_TC07_a_restricted_column_is_not_in_the_list_a_saved_view_is_built_from(
         "the rule reaches the board's own main table, which it must not"
 
 
+def test_TC07_setting_column_permissions_is_offered_only_inside_a_view():
+    """The feature is old — it predates this work by months, and the server
+    has enforced it all along. What is new is WHERE it is offered: setting
+    permissions is part of what a טבלה view is for, and the board's own table
+    keeps the menu it has always had — rename, and delete.
+
+    The server side is untouched on purpose: permissions already set still
+    apply everywhere, and hiding the entry does not unset anything."""
+    i = SRC.index("ColPerms.open('${colId}')")
+    entry = SRC[SRC.rindex("+(", 0, i):i]
+    assert "Views.active!=null" in entry.replace(" ", ""), entry
+    assert "isAdmin" in entry, "it is offered to somebody who may not set them"
+
+
 def test_TC07_a_viewers_adjustments_never_reach_the_server(client, admin_id, member_id):
     bid = _board(client, admin_id)
     client.post(f"/api/boards/{bid}/members",

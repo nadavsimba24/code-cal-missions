@@ -13234,7 +13234,14 @@ function colMenu(e,colId){
     </div>`:'')
     +(c&&c.type==='mirror'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openMirrorConfig('${colId}')"><i class="fa-solid fa-clone"></i> הגדרות שדה מראה</button>`:'')
     +(c&&c.type==='connect'&&isBoardAdmin()?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();openConnectConfig('${colId}')"><i class="fa-solid fa-diagram-project"></i> הגדרות קישור</button>`:'')
-    +(isAdmin?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
+    /* Column permissions are offered inside a saved טבלה view and nowhere
+       else. The feature itself is old — it predates this work by months, and
+       the server has enforced it all along — but setting them is part of what
+       a טבלה view is for, and the board's own table is not this feature's to
+       change. On the main table the menu is what it has always been: rename,
+       and delete. */
+    +(isAdmin&&typeof Views!=='undefined'&&Views.active!=null
+      ?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
     +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   openCellPop(e.currentTarget,html);
 }
