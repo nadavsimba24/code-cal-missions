@@ -59,7 +59,9 @@ def test_the_picker_is_reachable_before_the_strip_overflows():
     m = re.search(r"const picker=Views\.items\.length(.*?);\n", SRC, re.S)
     assert m, "the picker button moved"
     assert "openPicker" in m.group(1)
-    assert 'aria-label="כל התצוגות' in m.group(1), "the button has no accessible name"
+    # the accessible name now carries WHERE YOU ARE as well as what the button
+    # does — see test_the_button_says_which_view_you_are_on
+    assert 'aria-label="התצוגה הנוכחית' in m.group(1), "the button has no accessible name"
 
 
 def test_choosing_a_blocked_view_goes_to_the_main_table_without_explaining():
@@ -119,6 +121,42 @@ def test_the_plus_offers_tavla_by_that_name():
     body = SRC[i:SRC.index("\n}", SRC.index("join('')", i))]
     assert "<span>טבלה</span>" in body, body[:400]
     assert "תצוגת טבלה חדשה" not in body
+
+
+def test_only_one_tab_is_lit_at_a_time():
+    """A saved view is a cut OF the table, so opening one leaves st.view on
+    'table' — which lit "טבלה ראשית" at the same time as the view itself. Two
+    active tabs is the same as none: there was no telling which one you were
+    looking at."""
+    i = SRC.index("function renderTabs()")
+    body = SRC[i:SRC.index("const formTab", i)]
+    assert "onSaved" in body, "the board's own tabs stay lit under a saved view"
+    flat = body.replace(" ", "")
+    assert "(!onSaved&&st.view===id)?'active':''" in flat, flat[-300:]
+
+
+def test_the_button_says_which_view_you_are_on():
+    """A count answers a question nobody asked. The one actually being asked,
+    by somebody who has scrolled the strip or is on a narrow screen, is "which
+    of these am I looking at"."""
+    i = SRC.index("const openNow=Views.openView")
+    body = SRC[i:SRC.index("    : '';", i)]
+    # the span's CONTENT, not merely that the variable exists above it: the
+    # first version of this passed with the name swapped back for the count,
+    # because `hereName` was still declared a line earlier
+    flat = body.replace(" ", "")
+    assert '<spanclass="tab-all-nm">${esc(hereName)}</span>' in flat, body[:400]
+    assert "tab-all-n{" not in SRC, "the count is still what the button shows"
+    assert 'aria-label="התצוגה הנוכחית' in body, "the name is not announced"
+
+
+def test_the_button_is_there_as_soon_as_there_is_a_view():
+    """It used to appear only past two views, which is the moment it stops
+    being needed as an indicator and starts being needed as a list."""
+    m = re.search(r"const picker=Views\.items\.length(\S*)", SRC)
+    assert m, "the picker button moved"
+    assert not m.group(1).startswith(">"), \
+        "the indicator hides until there is more than one view"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
