@@ -106,16 +106,27 @@ def test_TC03_only_the_board_owner_saves_the_main_tables_layout(client, admin_id
 
 
 # ── TC07 — a restricted column is not offered for choosing ─────────────────
-def test_TC07_a_restricted_column_is_not_in_the_list_everything_is_built_from():
+def test_TC07_a_restricted_column_is_not_in_the_list_a_saved_view_is_built_from():
     """"עמודות מוגבלות אינן מופיעות לבחירה", and the way to be sure is that
     there is ONE list. The table, the column picker, the filter's field list
-    and the export are all built from orderedColumns — filtering it in four
-    places would be four chances to miss one, and the one missed is the
-    leak."""
+    and the export are all built from orderedColumns — applying the rule in
+    four places would be four chances to miss one, and the one missed is the
+    leak.
+
+    Scoped to a saved טבלה view, and that is the point of this case as much
+    as the rule is. The board's own main table has shown restricted columns
+    with their values withheld for as long as column permissions have
+    existed; this feature is not the place to change how the board underneath
+    it behaves."""
     i = SRC.index("function _orderedColumns()")
     body = SRC[i:SRC.index("\n}", SRC.index("return all;", i))]
     assert "advColHidden" in body, \
-        "a column the reader may not see still reaches the table and the picker"
+        "a column the reader may not see still reaches a view's table and picker"
+    # the GATE, in the filter itself — asking only whether the variable exists
+    # passed with the gate deleted from the expression that uses it
+    flat = body.replace(" ", "")
+    assert "!(inSavedView&&advColHidden(c.id))" in flat, \
+        "the rule reaches the board's own main table, which it must not"
 
 
 def test_TC07_a_viewers_adjustments_never_reach_the_server(client, admin_id, member_id):

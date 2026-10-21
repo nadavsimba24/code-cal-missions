@@ -10734,16 +10734,23 @@ function _orderedColumns(){
     .map(c=>({kind:'builtin',id:c.key,key:c.key,label:builtinLabel(c.key,c.label)}));
   // sub-item-only columns never appear among the parent's item columns
   const soIds=new Set(((st.board&&st.board.sub_only)||[]).map(String));
-  /* And a column this person may not see is not among them either.
+  /* A column this person may not see is left out of a saved טבלה view —
      "עמודה שאין למשתמש הרשאת צפייה בה לא תוצג בטבלה ולא ברשימת העמודות
-     לבחירה. הוספה מחדש של עמודה לתצוגה לא תאפשר לעקוף הגבלה זו."
+     לבחירה" — and ONLY there.
 
-     Here rather than at each of the places that draw a column, because this
-     is the one list all of them are built from — the table, the column
-     picker, the filter's field list, the export. Hiding it in four places
-     would be four chances to miss one, and the one missed is the leak. */
+     The board's own main table is not this feature's to change. It has shown
+     restricted columns with their values withheld for as long as column
+     permissions have existed, people read it that way, and a column quietly
+     vanishing from it is a change to something that was working. The rule
+     belongs to the thing being built, not to the board underneath it.
+
+     Scoped here rather than at each of the places that draw a column,
+     because this is the one list all of them are built from — the table, the
+     column picker, the filter's field list, the export. Applying it in four
+     places would be four chances to miss one, and the one missed is the leak. */
+  const inSavedView=typeof Views!=='undefined' && Views.active!=null;
   const customs=customColumns()
-    .filter(c=>!soIds.has(String(c.id)) && !advColHidden(c.id))
+    .filter(c=>!soIds.has(String(c.id)) && !(inSavedView && advColHidden(c.id)))
     .map(c=>({kind:'custom',id:String(c.id),col:c}));
   let all=builtins.concat(customs);
   const order=((st.board&&st.board.col_order)||[]).map(String);
