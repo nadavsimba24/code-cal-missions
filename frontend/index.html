@@ -10299,7 +10299,9 @@ function vTable(el){
     sp.replaceWith(...tmp.childNodes);
     wireTable(el);
     try{ fitLinkChips(el); }catch(e){}
-    try{ Chat.markOpenRow(); }catch(e){}            // the open row may be in a late group
+    // the open row may be in a late group — re-mark it, and finish a jump that
+    // found nothing to scroll to while this half of the board was still a spacer
+    try{ Chat.markOpenRow(); Chat.finishReveal(); }catch(e){}
   },0));
 }
 function wireTable(el){
@@ -14505,6 +14507,7 @@ const fdatetimeY = d=>d?new Date(_utc(d)).toLocaleString('he-IL',{day:'2-digit',
 const EMOJIS=['👍','🙏','✅','🔥','🎉','⚠️','❗','👀','💡','😀','🙌','📌'];
 const Chat = {
   taskId:null, task:null, tabName:'chat', comments:[], replyTo:null, replyToName:'', atts:[], mentions:[], logUser:'', logDate:'', editing:null,
+  _reveal:null,     // an item to scroll to as soon as its row is painted — see finishReveal
   /* opts.center — a deliberate jump (a notification, a deep link, a linked item)
      always centres the row, even if it happens to be on screen already. Clicking
      the bubble on a row you are looking at still does not move the board. */
@@ -14513,6 +14516,7 @@ const Chat = {
     // Leaving one behind would let a later open of that same item serve the
     // conversation as it looked minutes ago.
     if(this._pre && this._pre.id!==id) this._pre=null;
+    this._reveal=null;          // a jump still pending belongs to the item we are leaving
     this.taskId=id; this.task=findAnyTask(id); this.tabName='chat';
     this.replyTo=null; this.atts=[]; this.mentions=[];
     document.getElementById('chat-panel').classList.add('open');
@@ -14583,15 +14587,20 @@ const Chat = {
     this.saveDraft();          // keep whatever was typed — before taskId is cleared
     document.getElementById('chat-panel').classList.remove('open');
     document.getElementById('chat-overlay').classList.remove('open');
-    this.taskId=null; this.markOpenRow();
+    this.taskId=null; this._reveal=null; this.markOpenRow();
     Router.set(st.board&&st.board.id, null);
+  },
+  /* The row an item is drawn as, in whichever view is on screen — or null when
+     it is not in the document at all. */
+  rowOf(id){
+    return document.querySelector(`tr[data-tid="${id}"], tr[data-sid="${id}"], .kcard[data-id="${id}"]`);
   },
   /* Highlight the open item on the board behind. Re-applied after every render
      (renderView rebuilds the rows, which drops the class). */
   markOpenRow(){
     document.querySelectorAll('.chat-open').forEach(n=>n.classList.remove('chat-open'));
     const id=this.taskId; if(id==null)return;
-    const n=document.querySelector(`tr[data-tid="${id}"], tr[data-sid="${id}"], .kcard[data-id="${id}"]`);
+    const n=this.rowOf(id);
     if(n)n.classList.add('chat-open');
   },
   /* Take the board behind to the item, not just mark it. Arriving from a
@@ -14616,8 +14625,23 @@ const Chat = {
     if(parent && !st.openSubs.has(parent.id)){ st.openSubs.add(parent.id); changed=true; }
     if(changed) renderView();                    // the row did not exist until now
     this.markOpenRow();
-    const n=document.querySelector(`tr[data-tid="${id}"], tr[data-sid="${id}"], .kcard[data-id="${id}"]`);
-    if(!n)return;
+    const n=this.rowOf(id);
+    if(!n){
+      /* The row is not in the document YET. A board paints its first group and
+         defers the rest by a frame (see the table renderer), so an item in any
+         later group has nothing to scroll to at this moment — and a board that
+         was opened by this very jump is always in that state.
+
+         Giving up here is why a link from an e-mail opened the conversation and
+         left the board behind it wherever it happened to be, while the same
+         click from a notification worked: a notification usually points at the
+         board already on screen, drawn in full, so the row was there to find.
+         The two must behave the same, so the jump is remembered and finished by
+         the deferred paint — see finishReveal. */
+      if(center) this._reveal=id;
+      return;
+    }
+    this._reveal=null;
     // only move the board when the row is actually out of sight — clicking the
     // chat bubble on a row you are already looking at should not jump the page
     const view=document.getElementById('view');
@@ -14626,6 +14650,20 @@ const Chat = {
     // is visible and must not be scrolled
     const hidden=!v || r.top<v.top-1 || r.bottom>v.bottom+1;
     if(center || hidden) n.scrollIntoView({block:'center',behavior:'smooth'});
+  },
+  /* The second half of a reveal whose row had not been painted when it was
+     asked for. Called by the deferred paint, which is the moment the rest of
+     the board enters the document.
+
+     It re-checks that the item is still the open one: by the time the frame
+     lands somebody may have opened another record, and scrolling the board to
+     the one they just left is worse than not scrolling at all. */
+  finishReveal(){
+    const id=this._reveal;
+    if(id==null||id!==this.taskId)return;
+    const n=this.rowOf(id); if(!n)return;
+    this._reveal=null;
+    n.scrollIntoView({block:'center',behavior:'smooth'});
   },
   /* An unsent message survives closing the panel. Kept per item and in
      localStorage, so it also survives a reload — closing a panel by accident
