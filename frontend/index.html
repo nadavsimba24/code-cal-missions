@@ -664,34 +664,44 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tb-pop-wide .arr-sec{padding:10px 14px;border-bottom:1px solid var(--border)}
 .tb-pop-wide .arr-sec .pop-title{margin:0 0 8px;border:none;padding:0;display:flex;align-items:center;gap:6px}
 .tb-pop-wide .pop-people{max-height:150px}
-/* the columns of the board, each opening to the values it holds */
-.fcols{padding-bottom:4px}
-.fcol-search{display:flex;align-items:center;gap:7px;padding:6px 9px;margin-bottom:6px;
+/* the columns of the board, side by side, each a list of its values */
+.tb-pop-wide.tb-pop-qf{min-width:min(920px,92vw)}
+.qf-head{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;
+  color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:0 2px 9px}
+.qf-head i{color:var(--primary)}
+.qf-showing{margin-inline-start:auto;text-transform:none;letter-spacing:0;font-weight:600}
+.fcol-search{display:flex;align-items:center;gap:7px;padding:6px 9px;margin-bottom:9px;
   border:1px solid var(--border-strong);border-radius:8px;background:var(--surface)}
 .fcol-search i{color:var(--text-light);font-size:11px}
 .fcol-search input{flex:1;min-width:0;border:none;outline:none;background:none;
   font-family:inherit;font-size:13px;color:var(--text)}
-.fcol{border-bottom:1px solid var(--border)}
-.fcol:last-child{border-bottom:none}
-.fcol-h{display:flex;align-items:center;gap:8px;width:100%;padding:8px 2px;background:none;
-  border:none;cursor:pointer;font-family:inherit;font-size:13.5px;color:var(--text);text-align:start}
-.fcol-h:hover{background:var(--row-hover)}
-.fcol-h>i{width:11px;font-size:10px;color:var(--text-light);flex-shrink:0}
-.fcol-t{font-weight:600;white-space:nowrap}
-/* what is picked, where there is room for it — the panel is readable shut */
-.fcol-sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-size:12px;color:var(--text-light)}
-.fcol-n{flex-shrink:0;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
-  background:var(--primary);color:#fff;font-size:11px;font-weight:700;
-  display:inline-flex;align-items:center;justify-content:center}
-.fcol.on .fcol-t{color:var(--primary)}
-.fcol-b{padding:2px 0 10px}
-.fcol-txt{width:100%;padding:6px 9px;margin-bottom:7px;border:1px solid var(--border-strong);
-  border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
+/* the strip. One column per board column; past the width it scrolls sideways,
+   the way the board does */
+.qf-cols{display:flex;gap:14px;overflow-x:auto;padding-bottom:8px}
+.qf-col{flex:0 0 190px;min-width:0}
+.qf-col-t{font-size:13px;font-weight:700;color:var(--text);margin-bottom:7px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qf-col.on .qf-col-t{color:var(--primary)}
+.qf-vals{max-height:230px;overflow-y:auto;display:flex;flex-direction:column;gap:5px}
+.qf-v{display:flex;align-items:center;gap:7px;width:100%;padding:8px 10px;border:1.5px solid transparent;
+  border-radius:8px;background:var(--row-hover);cursor:pointer;font-family:inherit;
+  font-size:13px;color:var(--text);text-align:start}
+.qf-v:hover{border-color:var(--border-strong)}
+.qf-v.sel{border-color:var(--primary);background:var(--primary-soft);font-weight:600}
+.qf-v .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.qf-v-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qf-v-n{flex-shrink:0;font-size:12px;color:var(--text-light);font-variant-numeric:tabular-nums}
+.qf-v.sel .qf-v-n{color:var(--primary)}
 /* ריק / אינו ריק sit under the column's own values, as the different kind of
    question they are */
-.fcol-any{margin-top:7px;padding-top:7px;border-top:1px dashed var(--border)}
+.qf-any{display:flex;flex-direction:column;gap:5px;margin-top:5px;padding-top:7px;
+  border-top:1px dashed var(--border)}
+.fcol-txt{width:100%;padding:6px 9px;margin-bottom:7px;border:1px solid var(--border-strong);
+  border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
 .fcol-none{padding:10px 2px;color:var(--text-light);font-size:13px}
+.qf-adv{display:block;width:100%;margin-top:6px;padding:7px;background:none;border:none;
+  cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:600;color:var(--primary)}
+.qf-adv:hover{text-decoration:underline}
 .arr-foot{padding:10px 14px;position:sticky;bottom:0;background:var(--surface)}
 .tb-clear{display:none;color:var(--red);font-weight:600}
 .tb-clear.show{display:inline-flex}
@@ -2382,7 +2392,7 @@ body, body *{ font-weight:400!important; }
       </div>
       <div class="tb-ctl" id="ctl-arrange">
         <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון ומיון <span class="tb-badge" id="badge-arrange"></span></button>
-        <div class="tb-pop tb-pop-wide" id="pop-arrange"></div>
+        <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
       </div>
       <div class="tb-ctl" id="ctl-adv">
         <button class="tb-btn" onclick="Adv.open()"><i class="fa-solid fa-filter-circle-check"></i> סינון מתקדם <span class="tb-badge" id="badge-adv"></span></button>
@@ -6721,13 +6731,26 @@ function setSearch(v){
   refreshToolbar(); renderView();
 }
 function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();
-  _fcolOpen=null; _fcolQ='';          // the panel reopens on the whole list, nothing picked
+  _fcolQ='';                          // the panel reopens on the whole list of columns
   // nothing is filtered any more, so no saved cut is what is on screen
   if(typeof Views!=='undefined')Views.leave({keep:true});
   refreshToolbar();renderTabs();renderView();}
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
-document.addEventListener('click',e=>{if(!e.target.closest('.tb-ctl'))closePops();});
+/* A click anywhere else closes the open popup — and the question "anywhere
+   else?" has to be asked BEFORE the click is acted on.
+
+   A panel that redraws itself on a click (the quick filters do, on every value
+   picked) replaces the very element that was clicked. By the time this
+   listener ran, in the bubble phase, that element was detached from the
+   document: `closest('.tb-ctl')` on a detached node finds nothing, the click
+   read as "outside", and the panel shut itself the moment it was used. Asked
+   in the CAPTURE phase the element is still where it was clicked, which is the
+   only moment the answer is reliable — and it covers a keyboard Enter on a
+   focused chip too, where there is no mousedown to go by. */
+let _popInside=false;
+document.addEventListener('click',e=>{_popInside=!!(e.target&&e.target.closest&&e.target.closest('.tb-ctl'));},true);
+document.addEventListener('click',()=>{if(!_popInside)closePops();_popInside=false;});
 /* ===== in-app notifications (bell) ===== */
 const Notif={
   items:[], unread:0, _timer:null,
@@ -10029,86 +10052,137 @@ function renderPop(name){
     ${colFilterHTML()}
     ${linkFilterHTML()}
     <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</div>${sort}</div>
-    <div class="arr-foot"><button class="btn btn-ghost" style="color:var(--red);width:100%;justify-content:center" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button></div>`;
+    <div class="arr-foot">
+      <button class="btn btn-ghost" style="color:var(--red);width:100%;justify-content:center" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button>
+      <!-- picking values answers most questions; a sentence ("תאריך יעד לפני
+           היום וגם הסטטוס אינו בוצע") is what the builder is for, and this is
+           where somebody is standing when they find they need one -->
+      <button class="qf-adv" onclick="closePops();Adv.open()">סינון מתקדם <i class="fa-solid fa-arrow-left"></i></button>
+    </div>`;
 }
-/* The filter panel: the columns of the board being looked at, each opening to
-   the values it holds.
+/* The filter panel: the columns of the board, side by side, each showing the
+   values it holds and how many items carry each one.
 
    It used to be three fixed sections — אדם, סטטוס, עדיפות — which are three of
-   the board's columns and not the board's columns. Everything somebody had
-   added to their own board, which is most of what a board is, could only be
-   filtered through the advanced builder: pick a column, pick an operator,
-   type a value. For "show me what is תקוע" that is a sentence to build in
-   order to ask a question with one answer.
+   a board's columns and not the board's columns. Everything somebody had added
+   to their own board could only be filtered by building a sentence in the
+   advanced builder: a column, an operator, a value, to ask a question with one
+   answer.
 
-   One column is open at a time. A board here carries up to forty, and a panel
-   that opens them all is a page to scroll rather than a list to choose from;
-   the ones with something picked say so in their header, so what is filtering
-   is readable without opening anything. */
-let _fcolOpen=null;          // the column whose values are showing
+   Laid out as a row of columns rather than a list to open one at a time: the
+   whole board is then one glance — which statuses exist, who is on it, how
+   many items each value accounts for — and picking is one click rather than
+   open-pick-close. Too many columns for the width is a horizontal scroll, the
+   way the board itself is. */
 let _fcolQ='';               // what was typed into "חפש עמודה"
-function toggleFilterCol(id){
-  _fcolOpen=(_fcolOpen===id)?null:id;
-  reArrange();
-}
 function filterColSearch(v){
   _fcolQ=(v||'').trim();
   reArrange();
   const i=document.getElementById('fcol-q');
   if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); }
 }
-const FCOL_SEARCH_FROM=8;    // below this the list is short enough to read whole
+const FCOL_SEARCH_FROM=6;    // below this the columns are all on screen anyway
 function colFilterHTML(){
   const fields=advFields();
   if(!fields.length)return '';
   const q=_fcolQ.toLowerCase();
   const shown=q?fields.filter(x=>(x.label||'').toLowerCase().includes(q)):fields;
+  const counts=qfCounts();
   const search=fields.length>=FCOL_SEARCH_FROM
     ? `<div class="fcol-search"><i class="fa-solid fa-magnifying-glass"></i>
         <input id="fcol-q" value="${esc(_fcolQ)}" placeholder="חפש עמודה…"
                oninput="filterColSearch(this.value)" aria-label="חפש עמודה"></div>` : '';
-  const rows=shown.map(x=>{
-    const picked=advPickedAll(x.id), open=(_fcolOpen===x.id);
-    const sum=colFilterSummary(x);
-    const body=open?`<div class="fcol-b">${colChipsHTML(x,picked)}</div>`:'';
-    return `<div class="fcol${picked.length?' on':''}">
-      <button class="fcol-h" onclick="toggleFilterCol('${esc(String(x.id))}')"
-              aria-expanded="${open?'true':'false'}">
-        <i class="fa-solid fa-chevron-${open?'down':'left'}"></i>
-        <span class="fcol-t">${esc(x.label)}</span>
-        ${picked.length?`<span class="fcol-sum" title="${esc(sum)}">${esc(sum)}</span>
-                         <span class="fcol-n">${picked.length}</span>`:''}
-      </button>${body}</div>`;
+  const cols=shown.map(x=>{
+    const picked=advPickedAll(x.id);
+    return `<div class="qf-col${picked.length?' on':''}">
+      <div class="qf-col-t" title="${esc(x.label)}">${esc(x.label)}</div>
+      ${colChipsHTML(x,picked,counts)}
+    </div>`;
   }).join('');
   return `<div class="arr-sec fcols">
-    <div class="pop-title"><i class="fa-solid fa-filter"></i> סינון לפי עמודה</div>
+    <div class="qf-head"><i class="fa-solid fa-filter"></i> סינון לפי עמודה
+      <span class="qf-showing">${qfShowing()}</span></div>
     ${search}
-    ${rows||'<div class="fcol-none">אין עמודה בשם הזה</div>'}
+    ${cols?`<div class="qf-cols">${cols}</div>`
+          :'<div class="fcol-none">אין עמודה בשם הזה</div>'}
   </div>`;
 }
-/* One column's values. `picked` decides which chips are lit — compared by the
-   rule they would write, so a chip is lit by the filter itself rather than by
-   anything this panel remembers.
+/* "מציג 12 מתוך 155 פריטים" — the sentence the whole panel is in service of.
+   On a board answered by the server in pages the browser holds one page, so
+   the number it could print is the page's and not the board's; it says what it
+   knows instead of printing a number that means something else. */
+function qfShowing(){
+  const all=((st.board&&st.board.tasks)||[]).length;
+  if(Paged.on)return Paged.total?`מתוך ${Paged.total} פריטים`:'';
+  const now=applyFilters(st.board&&st.board.tasks||[]).length;
+  if(!all)return '';
+  return now>=all?`מציג את כל ${all} הפריטים`:`מציג ${now} מתוך ${all} פריטים`;
+}
+/* How many items carry each value, per column — one pass over the board for
+   the columns whose values are an identity (a status, a person, a tick), and
+   per value for the dates, where one day belongs to several spans at once.
 
-   A chip hands back its INDEX, never its text. A status option is a word
+   Counted over the whole board rather than over what is left after the other
+   columns: the number then says what the board holds, which is what makes it
+   worth reading before picking anything. It is skipped on a board too large to
+   count in a popup, and on one the server is filtering — where the browser
+   holds a page and the page's numbers are not the board's. */
+const QF_COUNT_MAX=4000;
+function qfCounts(){
+  const rows=(st.board&&st.board.tasks)||[];
+  if(Paged.on||rows.length>QF_COUNT_MAX)return null;
+  const out={};
+  advFields().forEach(x=>{
+    const n={}, bump=k=>{n[k]=(n[k]||0)+1;};
+    const K=x.kind;
+    rows.forEach(t=>{
+      const c=advCell(t,x);
+      const blank=advEmpty(c);
+      bump(blank?'empty|':'filled|');
+      if(K==='people')     (c||[]).forEach(id=>bump('has|'+id));
+      else if(K==='check') bump(c===true?'yes|':'no|');
+      // a cell with nothing in it is counted by ריק and is not a value of
+      // its own — tallied as one it would be a number no chip ever shows
+      else if(K==='status'&&!blank)bump('eq|'+String(c));
+    });
+    if(K==='people'&&meId()!=null)n['has|me']=n['has|'+meId()]||0;
+    if(K==='date')ADV_DATES.forEach(([tok])=>{
+      n['on|'+tok]=rows.filter(t=>advRuleMatch(t,{field:x.id,op:'on',v:tok})).length;
+    });
+    out[x.id]=n;
+  });
+  return out;
+}
+/* One column's values, as the list the screenshot asks for: the value on one
+   side and how many items carry it on the other. `picked` decides which rows
+   are lit — compared by the rule each would write, so a row is lit by the
+   filter itself rather than by anything this panel remembers.
+
+   A row hands back its INDEX, never its text. A status option is a word
    somebody typed, and "ג'ובים" written into an onclick closes the quoted
-   string two characters early — the chip then does nothing at all, silently,
-   on exactly the boards whose vocabulary has an apostrophe in it. (esc leaves
-   ' alone, and must: it escapes for HTML, and HTML is not JavaScript.) The
-   same reason the status picker on a cell passes an index. */
-function colChipsHTML(x,picked){
+   string two characters early — the row would then do nothing at all,
+   silently, on exactly the boards whose vocabulary has an apostrophe in it.
+   (esc leaves ' alone, and must: it escapes for HTML, and HTML is not
+   JavaScript.) The same reason the status picker on a cell passes an index. */
+function colChipsHTML(x,picked,counts){
   const on=c=>picked.some(p=>colChipKey(p)===colChipKey(c));
-  const chip=(c,i)=>`<button class="pop-chip${on(c)?' sel':''}"${c.color?` style="--c:${c.color}"`:''}
-      onclick="advPickChip('${esc(String(x.id))}',${i})">
-      ${c.color?`<span class="dot" style="background:${c.color}"></span>`:''}${esc(c.label)}</button>`;
+  const n=(counts&&counts[x.id])||null;
+  const row=(c,i)=>{
+    const k=colChipKey(c), cnt=n?(n[k]||0):null;
+    return `<button class="qf-v${on(c)?' sel':''}" onclick="advPickChip('${esc(String(x.id))}',${i})"
+        title="${esc(c.label)}" aria-pressed="${on(c)?'true':'false'}">
+      ${c.color?`<span class="dot" style="background:${c.color}"></span>`:''}
+      <span class="qf-v-t">${esc(c.label)}</span>
+      <span class="qf-v-n">${cnt==null?'':cnt}</span></button>`;
+  };
   const vals=colFilterChips(x);
   // a text column takes a word instead of a list: "מכיל" is the one question
   // worth asking of free text without building a sentence for it
   const txt=(x.kind==='text')?`<input class="fcol-txt" placeholder="מכיל…"
       value="${esc(advTextOf(x.id))}" onchange="advSetText('${esc(String(x.id))}',this.value)"
       onkeydown="if(event.key==='Enter')this.blur()">`:'';
-  return `${txt}${vals.length?`<div class="pop-chips">${vals.map((c,i)=>chip(c,i)).join('')}</div>`:''}
-    <div class="pop-chips fcol-any">${COL_EMPTY_CHIPS.map((c,i)=>chip(c,vals.length+i)).join('')}</div>`;
+  return `${txt}<div class="qf-vals">${vals.map((c,i)=>row(c,i)).join('')}
+    <div class="qf-any">${COL_EMPTY_CHIPS.map((c,i)=>row(c,vals.length+i)).join('')}</div></div>`;
 }
 /* The chip at that position, picked or unpicked. The list is rebuilt here
    rather than remembered: it is derived from the board and the filter, both of

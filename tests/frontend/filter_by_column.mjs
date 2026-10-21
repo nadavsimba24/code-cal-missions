@@ -48,7 +48,11 @@ function world(){
                {id:'col_b', type:'people', title:'בודק'},
                {id:'col_c', type:'text',   title:'הערות'},
                {id:'col_d', type:'connect',title:'מקושר'}],
-      members:[{id:3},{id:4}]},
+      members:[{id:3},{id:4}],
+      tasks:[{id:1,status:'done',assignees:[{id:3}],custom_fields:{col_a:{label:'הושלם'}}},
+             {id:2,status:'stuck',assignees:[{id:4}],custom_fields:{col_a:{label:'תקוע'}}},
+             {id:3,status:'done',assignees:[{id:3}],custom_fields:{col_a:{label:'הושלם'}}},
+             {id:4,status:'done',assignees:[],custom_fields:{}}]},
     users:[{id:3,name:'דנה'},{id:4,name:'רינה'}],
     me:{id:3},
     filters:{q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null},
@@ -56,17 +60,20 @@ function world(){
   const names = ['advFilterRoot','advPicked','advSetPicked','advToggle','advLegacyPicks',
                  'advDropLegacy','advPickedAll','advCount','advFields','advColHidden',
                  'colFilterChips','colFilterSummary','advTextOf','advSetText','customColumns',
-                 'boardPeople','statusColOpts','advPickChip','colChipsHTML'];
+                 'boardPeople','statusColOpts','advPickChip','colChipsHTML',
+                 'qfCounts','advCell','advRuleMatch','advMatch','statusKeyOf',
+                 'priorityKeyOf','advSpan','advDay','advIso'];
   const body = names.map(grab).join('\n')
-    + '\n' + konst('advOwnGroup') + '\n' + konst('advField') + '\n'
+    + '\n' + konst('advOwnGroup') + '\n' + konst('advField') + '\n' + konst('advEmpty') + '\n'
     + konst('colChipKey') + '\n' + konst('userName') + '\n'
     + `const COL_EMPTY_CHIPS=[{op:'filled',label:'אינו ריק',color:''},{op:'empty',label:'ריק',color:''}];\n`
-    + `const ADV_DATES=[['today','היום'],['this_week','השבוע']];\n`;
+    + `const ADV_DATES=[['today','היום'],['this_week','השבוע']];\n`
+    + `const QF_COUNT_MAX=4000;\n`;
   const api = new Function('st','meId','esc','boardStatusList','boardPriorityList','ADV_KINDS',
-    'STATUS_OPTS','refreshToolbar','reArrange','renderView','advAskServer','advChanged',
+    'STATUS_OPTS','refreshToolbar','reArrange','renderView','advAskServer','advChanged','Paged',
     body + `;return {advPicked,advPickedAll,advToggle,advSetPicked,advCount,advFields,
                      colFilterChips,colFilterSummary,advTextOf,advSetText,
-                     advPickChip,colChipsHTML};`)(
+                     advPickChip,colChipsHTML,qfCounts};`)(
     st,
     () => st.me && st.me.id,
     x => String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
@@ -76,7 +83,7 @@ function world(){
     {text:'text', status:'status', people:'people', date:'date', checkbox:'check',
      number:'number', dropdown:'status'},
     [{label:'ברירת מחדל',color:'#c4c4c4'}],
-    ()=>{}, ()=>{}, ()=>{}, ()=>{}, ()=>{});
+    ()=>{}, ()=>{}, ()=>{}, ()=>{}, ()=>{}, {on:false,rows:[],total:0});
   return [api, st];
 }
 
@@ -225,6 +232,48 @@ function world(){
   f.advPickChip('col_a', 4);          // the first of the two that follow the values
   ck('...and the chips after the values are "אינו ריק" and "ריק"',
      f.advPicked('col_a').map(p=>p.op).sort().join()==='eq,filled', f.advPicked('col_a'));
+}
+
+// ── how many items carry each value ───────────────────────────────────────
+{
+  const [f] = world();
+  const n = f.qfCounts();
+  ck('a status column counts the items on each of its words',
+     n.col_a['eq|הושלם']===2 && n.col_a['eq|תקוע']===1, n.col_a);
+  ck('...a built-in column too', n.status['eq|done']===3 && n.status['eq|stuck']===1, n.status);
+  ck('a people column counts the items each person is on',
+     n.assignees['has|3']===2 && n.assignees['has|4']===1, n.assignees);
+  ck('..."אני" counts the person looking', n.assignees['has|me']===2, n.assignees);
+  ck('every column counts ריק and אינו ריק',
+     n.col_a['empty|']===1 && n.col_a['filled|']===3, n.col_a);
+  ck('a cell with nothing in it is not counted as a value of its own',
+     !Object.keys(n.col_a).includes('eq|'), Object.keys(n.col_a));
+}
+{
+  const [f, st] = world();
+  st.board.tasks = [];
+  ck('a board with no items counts nothing rather than failing',
+     f.qfCounts().status['eq|done']===undefined);
+}
+{
+  const [f, st] = world();
+  st.filters.status='done';
+  const n = f.qfCounts();
+  ck('the numbers say what the BOARD holds, not what is left after filtering',
+     n.status['eq|stuck']===1, n.status);
+}
+
+// ── the rows carry the number, and the picked one is marked ───────────────
+{
+  const [f, st] = world();
+  const col = f.advFields().find(x=>x.id==='col_a');
+  const html = f.colChipsHTML(col, f.advPickedAll('col_a'), f.qfCounts());
+  ck('each value shows its count beside it', html.includes('>2<') && html.includes('qf-v-n'),
+     html.slice(0,160));
+  f.advToggle('col_a','eq','הושלם');
+  const lit = f.colChipsHTML(col, f.advPickedAll('col_a'), f.qfCounts());
+  ck('a picked value is marked, for the eye and for a screen reader',
+     lit.includes('qf-v sel') && lit.includes('aria-pressed="true"'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

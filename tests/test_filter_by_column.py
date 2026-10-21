@@ -76,3 +76,41 @@ def test_the_filter_travels_to_the_server():
     assert "async function advAskServer()" in SRC
     i = SRC.index("function advChanged()")
     assert "advAskServer()" in SRC[i:i + 400], "a pick in the panel never reaches the server"
+
+
+def test_a_click_inside_the_panel_does_not_close_it():
+    """The panel redraws itself on every value picked, which replaces the very
+    element that was clicked. The "did this click land outside?" listener ran
+    afterwards, in the bubble phase, found a detached node, read it as outside
+    and shut the panel — so it closed the moment it was used.
+
+    Asked in the CAPTURE phase the element is still where it was clicked. That
+    is the only moment the answer is reliable, and it covers a keyboard Enter
+    on a focused value too, where there is no mousedown to go by."""
+    assert "let _popInside=false;" in SRC, "the inside/outside answer is no longer kept"
+    i = SRC.index("let _popInside=false;")
+    wiring = SRC[i:i + 420]
+    assert "},true);" in wiring, \
+        "the inside/outside question is asked after the redraw again — the panel will shut itself"
+    assert "if(!_popInside)closePops()" in wiring
+
+
+def test_the_panel_says_how_much_of_the_board_is_showing():
+    """"מציג 12 מתוך 155 פריטים" is the sentence the whole panel is in service
+    of. On a board the server filters in pages the browser holds one page, so
+    it says what it knows instead of printing the page's number as the
+    board's."""
+    assert "function qfShowing(" in SRC
+    i = SRC.index("function qfShowing(")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "Paged.on" in body, "a paged board would report its page as the whole board"
+
+
+def test_the_counts_are_skipped_rather_than_guessed():
+    """A number beside a value is only worth printing when it is the board's.
+    Too many rows to count in a popup, or a board the server is filtering, and
+    there is no number — the reference shows a dash in exactly those places."""
+    i = SRC.index("function qfCounts(")
+    body = SRC[i:SRC.index("\n}\n", i)]
+    assert "Paged.on" in body and "QF_COUNT_MAX" in body, \
+        "the counts are computed where they cannot be right"
