@@ -144,3 +144,72 @@ def test_a_name_the_admin_chose_is_still_left_alone(client, admin_id):
         with Session(cityos_main.engine) as db:
             db.query(Environment).filter(Environment.id == pid).update({Environment.name: original})
             db.commit()
+
+
+# ── a workspace an admin removed, and one they renamed ──────────────────────
+# The seeder used to create the municipality's 17 workspaces BY NAME on every
+# boot, so either act was undone by the next restart. Both happened in QA:
+# "חדשנות טכנולוגיה ומערכות מידע" was deleted on the 18th and was back on the
+# 19th. These are about the 17, not about the primary workspace above.
+
+def test_a_seeded_workspace_that_was_deleted_stays_deleted(client, admin_id):
+    """A restart must not reverse an administrative decision. And what came
+    back was not even the thing that was deleted: its boards had been moved to
+    the default workspace on the way out, and nothing moves them back, so the
+    workspace returned empty, wearing the name of something finished with."""
+    name = "חדשנות טכנולוגיה ומערכות מידע"
+    with Session(cityos_main.engine) as db:
+        env = db.query(Environment).filter(Environment.name == name).first()
+        assert env is not None, "this test is about one of the seeded workspaces"
+        eid = env.id
+
+    assert client.delete(f"/api/environments/{eid}?actor_id={admin_id}").status_code == 200
+
+    cityos_main._seed_environments()          # what every server boot does
+    cityos_main._seed_environments()          # and the boot after that
+    with Session(cityos_main.engine) as db:
+        assert db.query(Environment).filter(Environment.name == name).count() == 0, \
+            "a deleted workspace came back on the next boot"
+
+
+def test_renaming_a_seeded_workspace_does_not_mint_a_second_one(client, admin_id):
+    """Renamed, the old name is missing from the table — which is exactly what
+    the name-matching seeder read as "create it"."""
+    with Session(cityos_main.engine) as db:
+        env = db.query(Environment).filter(Environment.name == "שיווק").first()
+        assert env is not None
+        eid = env.id
+
+    r = client.patch(f"/api/environments/{eid}",
+                     json={"actor_id": admin_id, "name": "שיווק ודוברות"})
+    assert r.status_code == 200, r.text
+    try:
+        cityos_main._seed_environments()
+        with Session(cityos_main.engine) as db:
+            assert db.query(Environment).filter(Environment.name == "שיווק").count() == 0, \
+                "the old name came back as a second workspace"
+            assert db.query(Environment).filter(Environment.id == eid).first().name \
+                == "שיווק ודוברות"
+    finally:
+        client.patch(f"/api/environments/{eid}", json={"actor_id": admin_id, "name": "שיווק"})
+
+
+def test_a_new_database_still_starts_with_every_workspace(tmp_path, monkeypatch):
+    """The other half of the rule: the list is still what a fresh installation
+    is set up with, in its own order, behind the default workspace."""
+    from models import Organization, init_db
+    eng = init_db("sqlite:///" + str(tmp_path / "fresh.db"))
+    with Session(eng) as db:
+        db.add(Organization(name="עיריית בדיקה", slug="fresh-test"))
+        db.commit()
+    monkeypatch.setattr(cityos_main, "engine", eng)
+    cityos_main._seed_environments()
+    with Session(eng) as db:
+        rows = db.query(Environment).order_by(Environment.position, Environment.id).all()
+        names = [e.name for e in rows]
+        assert names[0] == cityos_main.PRIMARY_ENV_NAME
+        assert rows[0].is_primary is True
+        assert names[1:] == [n for n, _ in cityos_main.ENVIRONMENTS_SEED]
+        # and a second boot of that same database adds nothing
+        cityos_main._seed_environments()
+        assert db.query(Environment).count() == len(names)

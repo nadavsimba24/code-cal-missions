@@ -624,11 +624,16 @@ PRIMARY_ENV_NAME = "סביבה ראשית"
 LEGACY_PRIMARY_NAMES = ("בדיקה", "מערכות מידע")
 
 def _seed_environments():
-    """Seed environments on first run (idempotent by name):
-    - a primary workspace (PRIMARY_ENV_NAME) that holds the existing/legacy boards
-    - the municipality's 17 environments
-    Also gives every current user access to the primary workspace so nothing
-    disappears, and attaches legacy (unassigned) boards to the primary workspace."""
+    """What a database starts with, and what every boot keeps true.
+
+    On a database with no environments at all — a new installation — this
+    creates the primary workspace (PRIMARY_ENV_NAME) and the municipality's 17
+    workspaces after it.
+
+    On every boot, new or not, it keeps the two invariants that cannot be left
+    to chance: exactly one workspace is the primary one, and a board belongs to
+    a workspace. It creates nothing else, ever: a workspace an admin deleted or
+    renamed is their decision, and a restart must not reverse it."""
     with Session(engine) as db:
         org = db.query(Organization).first()
         existing = {e.name: e for e in db.query(Environment).all()}
@@ -663,14 +668,35 @@ def _seed_environments():
         if (primary.name or "").strip() in LEGACY_PRIMARY_NAMES:
             primary.name = PRIMARY_ENV_NAME
             print(f"↻ the default workspace is now '{PRIMARY_ENV_NAME}'")
-        # 2) the 17 municipality environments after it
-        pos = max([e.position for e in existing.values()], default=0) + 1
-        for name, icon in ENVIRONMENTS_SEED:
-            if name in existing:
-                continue
-            db.add(Environment(name=name, icon=icon, color=_ENV_COLORS[pos % len(_ENV_COLORS)],
-                               position=pos, organization_id=org.id if org else None))
-            pos += 1
+        # 2) the municipality's own workspaces, after it — and ONLY on a
+        # database that has none at all, which is a new installation and
+        # nothing else.
+        #
+        # They used to be created BY NAME on every boot: any of the 17 missing
+        # from the table was added back. That made two ordinary administrative
+        # acts impossible, and both were done in QA and both were undone by the
+        # next deploy:
+        #
+        #   * DELETING one. "חדשנות טכנולוגיה ומערכות מידע" was deleted on the
+        #     18th and was back on the 19th, put there by a restart. Worse than
+        #     merely back: deleting a workspace moves its boards to the default
+        #     one and nothing moves them back, so what returned was an empty
+        #     shell wearing the name of something somebody had finished with.
+        #   * RENAMING one. The old name is then missing from the table, so the
+        #     next boot minted a SECOND workspace under it, standing beside the
+        #     renamed one.
+        #
+        # This is the same bug the default workspace already had, and the same
+        # fix: the seeder says what a NEW database starts with, and holds no
+        # opinion about a database that is in use. A workspace added to the list
+        # after this reaches new installations only — on a live one, creating a
+        # workspace is something an admin does in the app, and then it is theirs
+        # to rename and to delete.
+        if not existing:
+            for pos, (name, icon) in enumerate(ENVIRONMENTS_SEED, start=1):
+                db.add(Environment(name=name, icon=icon,
+                                   color=_ENV_COLORS[pos % len(_ENV_COLORS)],
+                                   position=pos, organization_id=org.id if org else None))
         # 3) legacy boards (no environment) belong to the primary workspace
         db.query(Board).filter(Board.environment_id == None).update({Board.environment_id: primary.id})
         # 4) nothing to grant: every user belongs to the primary workspace by
