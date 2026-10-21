@@ -392,7 +392,11 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 #boardhead .bt-icon.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
 .cell-pop.board-icon-pop{padding:10px}
 .board-icon-pop .icon-grid{gap:6px}
-.tabs{display:flex;gap:4px;align-items:center}
+/* stretch, not center: every tab is as tall as the row, so the underline that
+   marks the open one sits at the same height on all of them. Centring let a
+   taller tab — one carrying a menu button — ride its underline lower than its
+   neighbours. Items that are not tabs opt back out with align-self. */
+.tabs{display:flex;gap:4px;align-items:stretch}
 .tab-dd{display:none}   /* narrow screens only — see the mobile block */
 .rm-item .rm-grow{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rm-item .rm-check{color:var(--primary);font-size:12px}
@@ -400,7 +404,9 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tab{display:flex;align-items:center;gap:7px;padding:9px 14px;font-size:14px;color:var(--text-muted);border-bottom:3px solid transparent;font-weight:600;border-radius:6px 6px 0 0;cursor:pointer}
 .tab:hover{background:var(--row-hover)}
 .tab.active{color:var(--primary);border-bottom-color:var(--primary)}
-.tab-add-wrap{position:relative}
+/* the + and the save buttons are beside the tabs, not among them: they keep
+   their own height while the tabs stretch to share one underline */
+.tab-add-wrap{position:relative;align-self:center}
 .tab-add{width:30px;height:30px;border-radius:6px;color:var(--text-light);display:grid;place-items:center;font-size:13px;margin-inline-start:2px}
 .tab-add:hover{background:var(--row-hover);color:var(--primary)}
 .tab-add-wrap.open .tab-add{background:var(--primary-soft);color:var(--primary-hover)}
@@ -1837,7 +1843,7 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .tab-view .tab-view-edit{opacity:0;font-size:10.5px;padding:2px 3px;border-radius:4px;transition:opacity .12s}
 .tab-view:hover .tab-view-edit{opacity:.65}
 .tab-view .tab-view-edit:hover{opacity:1;background:var(--primary-soft);color:var(--primary)}
-.tab-save{border:1px dashed var(--border);background:none;color:var(--text-light);cursor:pointer;
+.tab-save{align-self:center;border:1px dashed var(--border);background:none;color:var(--text-light);cursor:pointer;
   font:inherit;font-size:12.5px;border-radius:8px;padding:5px 11px;margin-inline-start:6px;
   display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .tab-save:hover{color:var(--primary);border-color:var(--primary)}
@@ -2025,24 +2031,36 @@ tr.chat-open>td{background:var(--primary-soft)!important}
    asked to do. Below the pointer breakpoint it is simply always there.
    The tap target is 44x44 on touch (WCAG 2.5.5), achieved with padding rather
    than a larger glyph so the strip does not grow. */
+/* The menu button must not make the tab taller. The tabs row is a flex row
+   of items that share one underline, and a tab that grows pushes ITS underline
+   below the others — "לא אותו קו". So the button is sized to the line box it
+   sits in rather than to a comfortable target, and the comfortable target is
+   provided by padding under a coarse pointer, where .tabs stretches to match.
+   The row below also stretches, so every tab ends at the same baseline no
+   matter what any of them contains. */
 .tab-view-menu{border:none;background:none;color:var(--text-light);cursor:pointer;
-  width:28px;height:28px;border-radius:5px;display:grid;place-items:center;font-size:12px;
+  width:22px;height:22px;margin-block:-4px;border-radius:5px;display:grid;
+  place-items:center;font-size:12px;
   opacity:0;transition:opacity .12s,background .12s}
 .tab-view:hover .tab-view-menu,.tab-view.active .tab-view-menu,
 .tab-view-menu:focus-visible{opacity:1}
 .tab-view-menu:hover{background:var(--row-hover);color:var(--text)}
 @media (hover:none),(pointer:coarse){
-  .tab-view-menu{opacity:1;width:44px;height:44px;margin-inline-end:-6px}
-  .tab-all{height:44px;padding:0 14px}
+  /* 44x44 of TARGET without 44px of box: the padding reaches past the glyph
+     into the tab's own padding, so the row keeps the height it had. */
+  .tab-view-menu{opacity:1;width:22px;height:22px;padding:11px;margin:-11px -4px -11px 0}
+  .tab-all{min-height:44px;padding:0 14px}
   .vp-row{min-height:44px}
+  .pop-row-act{min-height:44px}
 }
 /* A focus ring that is actually visible, on every control added here. The
    board is operable from the keyboard only if the caret can be seen. */
 .tab-view-menu:focus-visible,.tab-all:focus-visible,.vp-row:focus-visible,
 .vp-search input:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
-.tab-all{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);
-  background:var(--surface);color:var(--text-muted);border-radius:8px;height:30px;padding:0 9px;
-  cursor:pointer;font:inherit;font-size:12.5px}
+/* not a tab: a button beside them, so it keeps its own height */
+.tab-all{align-self:center;display:inline-flex;align-items:center;gap:5px;
+  border:1px solid var(--border);background:var(--surface);color:var(--text-muted);
+  border-radius:8px;height:30px;padding:0 9px;cursor:pointer;font:inherit;font-size:12.5px}
 .tab-all:hover{border-color:var(--border-strong);color:var(--text)}
 .tab-all-n{font-weight:700;font-size:11.5px}
 /* the picker itself — a search over the names, and the list under it */
@@ -2076,7 +2094,7 @@ input.has-err{border-color:var(--red,#d83a52)!important}
 input.has-err:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--red,#d83a52) 25%,transparent)}
 /* "חיווי ברור, שמירת התאמות במסך וניסיון חוזר" — a banner rather than a
    toast, because four seconds is the wrong lifetime for "not saved yet". */
-.save-failed{display:inline-flex;align-items:center;gap:9px;margin-inline-start:8px;
+.save-failed{align-self:center;display:inline-flex;align-items:center;gap:9px;margin-inline-start:8px;
   background:color-mix(in srgb,var(--red,#d83a52) 10%,var(--surface));
   border:1px solid color-mix(in srgb,var(--red,#d83a52) 35%,transparent);
   color:var(--text);border-radius:9px;padding:5px 8px;font-size:12.5px;max-width:min(560px,70vw)}
@@ -4774,7 +4792,7 @@ function renderAddViewPop(){
   const types=VIEWS.filter(v=>!VIEWS_WIP.has(v.id)&&v.id!=='table');
   pop.innerHTML = (mayAdd?`<button class="pop-row pop-row-act" onclick="closeAddView();Views.createTable()">
       <i class="fa-solid fa-table-list" style="width:16px;color:var(--primary)"></i>
-      <span>תצוגת טבלה חדשה</span></button>`:'')
+      <span>טבלה</span></button>`:'')
     + (types.length?'<div class="pop-title">תצוגות בלוח</div>':'')
     + types.map(v=>{
     const on=enabled.has(v.id);

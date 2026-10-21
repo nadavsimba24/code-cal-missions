@@ -70,6 +70,57 @@ def test_choosing_a_blocked_view_goes_to_the_main_table_without_explaining():
     assert "עמודה" not in body, "the message names the column the block exists to hide"
 
 
+def test_the_tabs_share_one_underline():
+    """The open tab is marked by a border along its bottom edge, so every tab
+    has to end at the same height. Centring them let a taller tab — one
+    carrying a menu button — ride its underline lower than its neighbours,
+    which reads as the row being out of line rather than as one tab being
+    bigger."""
+    m = re.search(r"\n\.tabs\{([^}]*)\}", SRC)
+    assert m, ".tabs moved"
+    assert "align-items:stretch" in m.group(1), m.group(1)
+
+
+def test_the_things_beside_the_tabs_keep_their_own_height():
+    """Stretch is for tabs. The + , the save buttons and the all-views picker
+    are controls next to them, and a stretched button is a tall pill."""
+    # Every declaration of each selector, not the first one: a coarse-pointer
+    # block redeclares some of them, and these rules are defined after it in
+    # the file — so slicing at the block cut the real rule out and slicing
+    # before it matched the override. At least one declaration has to carry
+    # the opt-out, which is what the browser resolves to.
+    for sel in (".tab-add-wrap", ".tab-save", ".tab-all", ".save-failed"):
+        decls = re.findall(r"(?:^|\n|,)" + re.escape(sel) + r"\{([^}]*)\}", SRC)
+        assert decls, sel
+        assert any("align-self:center" in d for d in decls), (sel, decls)
+
+
+def test_the_menu_button_does_not_make_its_tab_taller():
+    """A 44px target inside a 42px row is the whole of the bug. The target is
+    made of padding that reaches into the tab's own, so the row keeps the
+    height it had."""
+    m = re.search(r"\.tab-view-menu\{([^}]*)\}", SRC)
+    assert m and "height:22px" in m.group(1), m and m.group(1)
+
+    coarse = re.search(r"@media \(hover:none\),\(pointer:coarse\)\{(.*?)\n\}", SRC, re.S)
+    # the menu button's own declaration inside that block — "height:44px"
+    # anywhere in it also matches .tab-all's min-height, which is a different
+    # control and is allowed to be 44 tall
+    btn = re.search(r"\.tab-view-menu\{([^}]*)\}", coarse.group(1))
+    assert btn, coarse.group(1)
+    assert "height:44px" not in btn.group(1), "the touch size grows the row again"
+    assert "padding:11px" in btn.group(1) and "margin:-11px" in btn.group(1), btn.group(1)
+
+
+def test_the_plus_offers_tavla_by_that_name():
+    """It is what the thing is called everywhere else — the first one added is
+    "טבלה". A menu item named "תצוגת טבלה חדשה" names a category instead."""
+    i = SRC.index("function renderAddViewPop()")
+    body = SRC[i:SRC.index("\n}", SRC.index("join('')", i))]
+    assert "<span>טבלה</span>" in body, body[:400]
+    assert "תצוגת טבלה חדשה" not in body
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_strip_harness():
     r = subprocess.run(["node", str(ROOT / "tests" / "frontend" / "view_strip.mjs")],
