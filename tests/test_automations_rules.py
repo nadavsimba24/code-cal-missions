@@ -204,9 +204,17 @@ def test_rule5_losing_a_permission_suspends_the_rule_and_tells_its_owner(client,
     assert any("הרשאה חסרה" in (n.title or "") for n in told), [n.title for n in told]
 
 
-def test_rule5_a_missing_dependency_skips_but_does_not_suspend(client, admin_id):
-    """Only a permission loss takes a rule out of service; a status that was
-    removed is this one firing being pointless, not the rule being wrong."""
+def test_rule5_a_missing_dependency_takes_the_rule_out_of_service_too(client, admin_id):
+    """A permission and a dependency end the same way — "מושהית עקב שגיאה"
+    names both among its causes.
+
+    This used to be the exception: a status somebody removed was read as making
+    THIS firing pointless rather than the rule wrong, so the rule stayed active.
+    A removed status does not come back on its own, so what that produced was a
+    rule showing as "פעילה" and skipping every event until somebody read the
+    history. The firing is still recorded as a skip — that is what happened to
+    the event — and the rule stops.
+    """
     bid = _board(client, admin_id)
     a = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"})
     with Session(cityos_main.engine) as db:
@@ -216,7 +224,18 @@ def test_rule5_a_missing_dependency_skips_but_does_not_suspend(client, admin_id)
     _item(client, bid, admin_id)
     assert _runs(client, bid, admin_id)["runs"][0]["outcome"] == "skipped"
     with Session(cityos_main.engine) as db:
-        assert db.query(Automation).filter(Automation.id == a["id"]).first().status == "active"
+        row = db.query(Automation).filter(Automation.id == a["id"]).first()
+        assert row.status == "paused_error" and row.is_active is False
+    assert _notes_automation(admin_id, "תלות חסרה", bid), "nobody was told it had stopped"
+
+
+def _notes_automation(uid, needle, board_id):
+    from models import Notification
+    with Session(cityos_main.engine) as db:
+        return [n for n in db.query(Notification)
+                .filter(Notification.user_id == uid, Notification.type == "automation",
+                        Notification.board_id == board_id).all()
+                if needle in (n.title or "")]
 
 
 def test_rule5_the_log_hides_an_item_the_reader_may_not_open(client, admin_id, guinea_id):

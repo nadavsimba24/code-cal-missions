@@ -125,23 +125,24 @@ def test_rule3_the_owner_hears_about_a_deleted_dependency_once(client, admin_id)
 
 
 def test_rule3_a_run_that_works_clears_the_notice(client, admin_id):
-    """So the next occurrence is reported again instead of being suppressed."""
+    """So the next occurrence is reported again instead of being suppressed.
+
+    The marker's one remaining user is the loop notice: a dependency and a
+    permission now take the rule out of service, and a suspension is its own
+    notice rather than something to repeat. The loop's does repeat — a rule put
+    back into service after the chain was shortened is told again if it starts
+    being cut off a second time.
+    """
     bid = _board(client, admin_id)
-    a = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"})
-    with Session(cityos_main.engine) as db:
+    a = _add(client, bid, admin_id)
+    with Session(cityos_main.engine) as db:                 # as the loop notice leaves it
         row = db.query(Automation).filter(Automation.id == a["id"]).first()
-        row.config = {"a_status": "no_such"}
+        row.state = {"told": {"loop": "2026-01-01T00:00:00"}}
         db.commit()
-    _item(client, bid, admin_id, "א")
-    assert len(_notes(admin_id, "תלות חסרה", bid)) >= 1
+    _item(client, bid, admin_id, "פריט שעובד")              # a run that works
     with Session(cityos_main.engine) as db:
         row = db.query(Automation).filter(Automation.id == a["id"]).first()
-        assert (row.state or {}).get("told"), "nothing was recorded as told"
-        row.config = {"a_status": "done"}
-        db.commit()
-    _item(client, bid, admin_id, "ב")
-    with Session(cityos_main.engine) as db:
-        row = db.query(Automation).filter(Automation.id == a["id"]).first()
+        assert row.last_outcome == "ran", row.last_outcome
         assert not (row.state or {}).get("told"), "a working run left the notice in place"
 
 

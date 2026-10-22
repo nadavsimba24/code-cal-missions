@@ -9542,19 +9542,28 @@ def _automation_blockers(db, board, a):
     return out
 
 
-def _suspend_for_lost_permission(db, a, board, why):
-    """Rule 5: a permission the rule needs is gone, so the rule stops.
+def _suspend_blocked(db, a, board, kind, why):
+    """Something the rule needs is gone, so the rule stops.
 
-    Not a skip. A rule that cannot do what it says, every time, is a rule
-    somebody has to look at — and leaving it "active" means the board reads as
-    automated when it is not.
+    "מושהית עקב שגיאה" names four causes — a dependency, a permission, a loop
+    and repeated failures. These are the first two, and they are not a skip: a
+    rule that cannot do what it says, every time it fires, is a rule somebody
+    has to look at, and leaving it "active" means the board reads as automated
+    when it is not.
+
+    The dependency used to be the exception — it skipped and left the rule
+    running, on the reading that a status somebody removed makes THIS firing
+    pointless rather than the rule wrong. A deleted group does not come back on
+    its own, so what that produced was a rule showing as "פעילה" and skipping
+    every event until somebody happened to read the history.
     """
     if a.status != "active":
         return
     _set_automation_status(a, "paused_error")
     a.consecutive_failures = max(a.consecutive_failures or 0, 1)
+    head = "הרשאה חסרה" if kind == "permission" else "תלות חסרה"
     for who in _automation_tell(db, a, board):
-        _notify(db, who, "automation", "אוטומציה הושהתה — הרשאה חסרה",
+        _notify(db, who, "automation", f"אוטומציה הושהתה — {head}",
                 f"האוטומציה בלוח '{board.name}' הושהתה: {why}. "
                 f"{_automation_label(db, board, a)}",
                 board_id=a.board_id)
@@ -9640,15 +9649,11 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
         _count_automation_usage(db, a.board_id, "skipped")
         row = _log_automation_run(db, board, a, task, event, "skipped", why,
                                   depth, actor_id, retry_of)
-        if lost:
-            _suspend_for_lost_permission(db, a, board, lost["text"])
-        else:
-            # a dependency that is gone is the owner's to fix, and they are told
-            # once rather than on every firing — see _notify_owner_once
-            _notify_owner_once(db, a, board, "dependency",
-                               "אוטומציה מדלגת — תלות חסרה",
-                               f"האוטומציה בלוח '{board.name}' אינה מתבצעת: {why}. "
-                               f"{_automation_label(db, board, a)}")
+        # the firing is recorded as a skip either way — it is what happened to
+        # this event — and the rule itself is taken out of service, which is
+        # what the status table asks of both causes
+        _suspend_blocked(db, a, board, "permission" if lost else "dependency",
+                         (lost or blockers[0])["text"])
         return row
     # The other half of the "if". The trigger said what happened; the rule's
     # conditions say what also had to be true of the item, and they are read

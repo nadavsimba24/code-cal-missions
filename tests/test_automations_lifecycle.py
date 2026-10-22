@@ -399,3 +399,103 @@ def test_a_bulk_activation_still_switches_on_a_rule_that_is_fine(client, admin_i
                     json={"ids": [a["id"]], "action": "activate"})
     assert r.json()["results"][0]["ok"] is True, r.json()
     assert _get(client, bid, a["id"], admin_id)["status"] == "active"
+
+
+# ── the status table, line by line ─────────────────────────────────────────
+#   טיוטה              אינה מאזינה לאירועים, ומחזיקה הגדרה חלקית
+#   פעילה              תקינה ומאזינה
+#   מושהית             נעצרה ידנית ואינה קולטת אירועים חדשים
+#   מושהית עקב שגיאה   נעצרה בשל תלות, הרשאה, לולאה או כשלים חוזרים
+#   בתהליך מחיקה       אינה קולטת אירועים
+# and "דורשת שיוך בעלים" is none of them — it is an operational indicator that
+# sits alongside the status, so a rule can be פעילה and need an owner at once.
+
+def test_a_paused_rule_does_not_listen_to_events(client, admin_id):
+    bid = _board(client, admin_id, "לוח מושהית")
+    _add(client, bid, admin_id, "created_set_status", {"a_status": "done"}, status="paused")
+    tid = _item(client, bid, admin_id)
+    with Session(cityos_main.engine) as db:
+        assert cityos_main._st_of(db.query(Task).filter(Task.id == tid).first()) != "done"
+
+
+def test_a_missing_dependency_suspends_the_rule_as_the_status_table_says(client, admin_id):
+    """"נעצרה בשל תלות" — the first of the four causes the table names.
+
+    It used to skip and leave the rule active: the thinking was that a status
+    somebody removed makes THIS firing pointless rather than the rule wrong. But
+    a dependency does not come back on its own, so what that produced was a rule
+    reading as "פעילה" while skipping every single event — which is the thing
+    the suspended state exists to stop.
+    """
+    bid = _board(client, admin_id, "לוח תלות")
+    grp = client.post("/api/groups", json={"board_id": bid, "name": "קבוצה",
+                                           "actor_id": admin_id}).json()["id"]
+    a = _add(client, bid, admin_id, "status_move_group", {"t_status": "done", "a_group": grp})
+    client.delete(f"/api/groups/{grp}?actor_id={admin_id}")
+    tid = _item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
+
+    row = _get(client, bid, a["id"], admin_id)
+    assert row["status"] == "paused_error", row["status"]
+    assert row["is_active"] is False
+    # the firing that found it is still in the history, with the reason
+    runs = client.get(f"/api/boards/{bid}/automations/runs?user_id={admin_id}").json()["runs"]
+    assert runs[0]["outcome"] == "skipped" and "נמחקה" in runs[0]["reason"], runs[0]
+
+
+def test_the_four_causes_of_a_suspension_all_reach_the_same_status(client, admin_id,
+                                                                    guinea_id, monkeypatch):
+    """תלות, הרשאה, לולאה, כשלים חוזרים — one status, four ways in. The loop
+    has a test of its own above; these are the other three."""
+    # הרשאה
+    bid = _board(client, admin_id, "לוח הרשאה")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    a = _add(client, bid, admin_id, "created_notify_person", {"a_person": guinea_id})
+    client.delete(f"/api/boards/{bid}/members/{guinea_id}?actor_id={admin_id}")
+    _item(client, bid, admin_id)
+    assert _get(client, bid, a["id"], admin_id)["status"] == "paused_error"
+
+    # כשלים חוזרים
+    bid2 = _board(client, admin_id, "לוח כשלים")
+    b = _add(client, bid2, admin_id)
+    monkeypatch.setattr(cityos_main, "_run_action",
+                        lambda *x, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    for i in range(cityos_main.AUTOMATION_FAIL_CUTOFF):
+        _item(client, bid2, admin_id, f"פריט {i}")
+    monkeypatch.undo()
+    assert _get(client, bid2, b["id"], admin_id)["status"] == "paused_error"
+
+
+def test_needing_an_owner_is_an_indicator_beside_the_status_not_one_of_them(
+        client, admin_id, guinea_id):
+    assert "needs_owner" not in cityos_main.AUTOMATION_STATUSES
+    bid = _board(client, admin_id, "לוח חיווי")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "admin"})
+    a = _add(client, bid, admin_id)
+    client.patch(f"/api/automations/{a['id']}?user_id={admin_id}",
+                 json={"owner_id": guinea_id})
+    client.patch(f"/api/boards/{bid}/members/{guinea_id}",
+                 json={"actor_id": admin_id, "role": "editor"})
+    row = _get(client, bid, a["id"], admin_id)
+    assert row["status"] == "active" and row["is_active"] is True
+    assert row["needs_owner"] is True and row["owner_problem"]
+
+
+def test_the_screen_carries_the_status_table():
+    """The screen already said what each status means — it was the engine that
+    did not keep one of the promises. The two are checked together so they
+    cannot drift apart again."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+           ).read_text(encoding="utf-8")
+    for he, what in (
+            ("טיוטה", "אינה מאזינה לאירועים"),
+            ("פעילה", "תקינה ומאזינה לאירועים"),
+            ("מושהית", "נעצרה ידנית ואינה קולטת אירועים חדשים"),
+            ("מושהית עקב שגיאה", "נעצרה בשל תלות, הרשאה, לולאה או כשלים חוזרים"),
+            ("בתהליך מחיקה", "אינה קולטת אירועים")):
+        assert what in src, f"the screen does not say what {he} means"
+    # and the indicator is never offered as one of them
+    assert "דורשת שיוך בעלים" in src and "needs_owner" in src
