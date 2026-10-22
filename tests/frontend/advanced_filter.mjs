@@ -38,6 +38,10 @@ const COLUMNS = [
   {id:'c_date', title:'מועד',   type:'date'},
   {id:'c_chk',  title:'אושר',   type:'checkbox'},
   {id:'c_link', title:'מקושר',  type:'connect'},     // nothing to ask of it yet
+  // the two the system fills in by itself — nothing of theirs is in
+  // custom_fields, and they are asked about all the same
+  {id:'c_made', title:'מועד יצירה',  type:'created_at'},
+  {id:'c_by',   title:'יוצר הרשומה', type:'created_by'},
 ];
 
 const api = new Function('st','meId','customColumns','boardStatusList','boardPriorityList',
@@ -56,14 +60,15 @@ const api = new Function('st','meId','customColumns','boardStatusList','boardPri
   t=>((t.custom_fields||{}).status_unset?null:(t.status||null)),
   t=>((t.custom_fields||{}).priority_unset?null:(t.priority||null)));
 
-const {advOps, advSpan, advFields, advField, advChoices, advCell,
+const {advOps, advSpan, advFields, advField, advChoices, advCell, advIso,
        advRuleMatch, advMatch, advCount, ADV_DATES} = api;
 
 let pass=0, fail=0;
 const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+String(x).slice(0,220):''))); };
 
 const item = (o={}) => ({id:o.id||1, title:o.title||'פריט', status:o.status, priority:o.priority,
-  due_date:o.due, assignees:(o.people||[]).map(id=>({id})), custom_fields:o.cf||{}});
+  due_date:o.due, assignees:(o.people||[]).map(id=>({id})), custom_fields:o.cf||{},
+  created_at:o.made, created_by:o.by});
 const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
 
 // ── the catalogue: what can be asked, and of what ─────────────────────────
@@ -73,6 +78,8 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
      ['title','status','priority','assignees','due'].every(i=>ids.includes(i)), ids.join(','));
   ck('...and so can every custom column with a kind',
      ['c_txt','c_num','c_sta','c_ppl','c_date','c_chk'].every(i=>ids.includes(i)), ids.join(','));
+  ck('...including the ones the system fills in on its own',
+     ids.includes('c_made') && ids.includes('c_by'), ids.join(','));
   ck('a column with nothing to ask of it is not offered rather than offered broken',
      !ids.includes('c_link'), ids.join(','));
 }
@@ -375,6 +382,43 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
   Adv.addRule('');
   ck('adding a condition beside the groups does not rename them',
      Adv.label('0')==='A' && Adv.label('1')==='B', Adv.label('1'));
+}
+
+
+/* ── the columns nobody types ──────────────────────────────────────────────
+   מועד יצירה and יוצר הרשומה are not in custom_fields: they are derived from
+   the item, the same way the cell on screen is drawn. Read as custom fields
+   they came back undefined for EVERY row, which is not "no value here" but
+   "no value anywhere" — "ריק" answered with the whole board and every other
+   question with none of it. The first looks like a filter that never ran and
+   the second like one that broke the board; they were the same missing
+   lookup. */
+{
+  const made = item({made:'2026-03-05T08:00:00Z'});
+  ck('מועד יצירה is read off the item', advCell(made, advField('c_made'))==='2026-03-05');
+  ck('...and answers "ביום" for the day it names',
+     m(made,'c_made','on','2026-03-05') && !m(made,'c_made','on','2026-03-04'));
+  ck('...and before/after around it',
+     m(made,'c_made','before','2026-03-06') && m(made,'c_made','after','2026-03-04'));
+  ck('an item created in the evening belongs to the day the VIEWER is having',
+     advCell(item({made:'2026-03-05T22:30:00Z'}), advField('c_made'))
+       === advIso(new Date('2026-03-05T22:30:00Z')));
+  ck('an item with no creation time recorded is the empty one',
+     m(item({}),'c_made','empty') && !m(item({}),'c_made','filled'));
+  ck('...and one with a creation time is not — which it was for every row',
+     m(made,'c_made','filled') && !m(made,'c_made','empty'));
+}
+{
+  const mine = item({by:ME}), hers = item({by:8});
+  ck('יוצר הרשומה is read off the item, as a people column answers',
+     JSON.stringify(advCell(mine, advField('c_by')))==='['+ME+']');
+  ck('...so "מוקצה ל" finds what somebody created',
+     m(mine,'c_by','has',ME) && !m(hers,'c_by','has',ME));
+  ck('..."אני" means the person looking, here too', m(mine,'c_by','has','me'));
+  ck('...and its opposite is the other way round',
+     m(hers,'c_by','nhas',ME) && !m(mine,'c_by','nhas',ME));
+  ck('an item with no creator recorded is the empty one',
+     m(item({}),'c_by','empty') && !m(mine,'c_by','empty'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

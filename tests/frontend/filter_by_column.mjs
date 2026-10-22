@@ -66,7 +66,7 @@ function world(){
   const body = names.map(grab).join('\n')
     + '\n' + konst('advOwnGroup') + '\n' + konst('advField') + '\n' + konst('advEmpty') + '\n'
     + konst('colChipKey') + '\n' + konst('userName') + '\n'
-    + konst('COL_EMPTY_CHIPS') + '\n' + konst('COL_EMPTY_WORDS') + '\n'
+    + konst('COL_EMPTY_CHIPS') + '\n' + konst('COL_EMPTY_WORDS') + '\n' + konst('DERIVED_CELL') + '\n'
     + `const ADV_DATES=[['today','היום'],['this_week','השבוע']];\n`
     + `const QF_COUNT_MAX=4000;\n`;
   const api = new Function('st','meId','esc','boardStatusList','boardPriorityList','ADV_KINDS',

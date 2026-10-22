@@ -336,3 +336,74 @@ def test_the_client_sends_the_tree_the_server_parses():
     assert "tz_offset:-now.getTimezoneOffset()" in q, \
         "the client does not send its offset, so an instant cannot be put in its day"
     assert "/items/query" in SRC, "nothing ever sends the tree"
+
+
+# ── the columns the system issues on its own ───────────────────────────────
+def test_a_created_at_column_is_filtered_by_when_the_item_was_created(client, admin_id):
+    """מועד יצירה holds nothing in custom_fields — nobody types it, and the
+    board draws it from the item. Read as a custom field it came back None for
+    EVERY row, and None is not "this item has no value": "ריק" answered with
+    the whole board and every other question with none of it. The first reads
+    as a filter that never ran, which is what it was reported as."""
+    bid = _board(client, admin_id, "לוח מועדי יצירה")
+    cols = client.patch(f"/api/boards/{bid}",
+                        json={"user_id": admin_id,
+                              "columns": [{"type": "created_at", "title": "מועד יצירה"}]}
+                        ).json()["columns"]
+    cid = cols[0]["id"]
+    mine = _task(client, bid, admin_id, "נוצר עכשיו")
+
+    def ask(op, value=None):
+        rule = {"field": cid, "operator": op}
+        if value is not None:
+            rule["value"] = value
+        r = client.post(f"/api/boards/{bid}/items/query", json={
+            "user_id": admin_id, "today": dt.date.today().isoformat(),
+            "tz_offset": 180,
+            "filter": {"operator": "and", "rules": [rule]}})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    d = ask("empty")
+    assert mine not in d["item_ids"], "an item created a moment ago has no creation date"
+    assert d["matched"] == 0, "ריק answered with the whole board"
+
+    d = ask("filled")
+    assert mine in d["item_ids"] and d["matched"] == d["total"], \
+        "אינו ריק answered with none of the board"
+
+    assert mine in ask("on", "today")["item_ids"], "an item created today is not 'היום'"
+    assert mine not in ask("on", "yesterday")["item_ids"]
+    assert mine in ask("after", "yesterday")["item_ids"]
+
+
+def test_a_created_by_column_is_filtered_by_who_made_the_item(client, admin_id, guinea_id):
+    """Same column, same defect: the creator is on the item, not in its cells.
+    And "אני" still means the person asking."""
+    bid = _board(client, admin_id, "לוח יוצרים")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    cols = client.patch(f"/api/boards/{bid}",
+                        json={"user_id": admin_id,
+                              "columns": [{"type": "created_by", "title": "יוצר הרשומה"}]}
+                        ).json()["columns"]
+    cid = cols[0]["id"]
+    mine = _task(client, bid, admin_id, "שלי")
+    theirs = client.post("/api/tasks",
+                         json={"board_id": bid, "title": "שלהם", "user_id": guinea_id},
+                         headers={"X-CityOS-User": str(guinea_id)}).json()["id"]
+
+    def ask(op, value, uid=admin_id):
+        r = client.post(f"/api/boards/{bid}/items/query", json={
+            "user_id": uid, "today": TODAY,
+            "filter": {"operator": "and", "rules": [
+                {"field": cid, "operator": op, "value": value}]}},
+            headers={"X-CityOS-User": str(uid)})
+        assert r.status_code == 200, r.text
+        return r.json()["item_ids"]
+
+    assert mine in ask("has", admin_id) and theirs not in ask("has", admin_id)
+    assert theirs in ask("has", guinea_id) and mine not in ask("has", guinea_id)
+    assert mine in ask("has", "me"), '"אני" does not find what I created'
+    assert theirs in ask("has", "me", uid=guinea_id), '"אני" is not the person asking'
+    assert theirs in ask("nhas", admin_id)

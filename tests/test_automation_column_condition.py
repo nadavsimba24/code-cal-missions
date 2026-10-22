@@ -470,3 +470,48 @@ def test_the_builder_asks_for_a_type_then_a_column_then_a_value():
     h = ROOT / "tests" / "frontend" / "automation_column_condition.mjs"
     r = subprocess.run([node, str(h)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, "\n" + r.stdout + r.stderr
+
+
+# ── the columns the system issues on its own ────────────────────────────────
+
+def test_a_condition_on_a_derived_column_reads_the_item_and_not_its_cells(
+        client, admin_id):
+    """מועד יצירה, יוצר הרשומה and מזהה פריט are in the matrix as conditions,
+    and nothing of theirs is in custom_fields — nobody types them. Read as
+    cells they came back None for every item, and None is not "no value here":
+    "ריק" held for the whole board and everything else for none of it. The
+    board filter had the same defect, from the same missing lookup, and both
+    sides now read them off the item (DERIVED_CELLS)."""
+    bid = _board(client, admin_id, "לוח שדות מערכת")
+    made = _col(client, bid, admin_id, type="created_at", title="מועד יצירה")
+    today = datetime.now(IL).strftime("%Y-%m-%d")
+    _add(client, bid, admin_id, _cond(made["id"], "created_at", today))
+    assert _fired(client, bid, admin_id, None), \
+        "an item created today did not answer «מועד יצירה הוא היום»"
+
+
+def test_a_derived_column_is_not_empty_on_every_item(client, admin_id):
+    """The symptom the other way round: "ריק" on מועד יצירה held for
+    everything, so a rule written with it fired on the whole board."""
+    bid = _board(client, admin_id, "לוח ריק")
+    made = _col(client, bid, admin_id, type="created_at", title="מועד יצירה")
+    r = _add(client, bid, admin_id,
+             [{"kind": "column_is",
+               "value": {"col": made["id"], "type": "created_at", "op": "empty"}}])
+    assert r.status_code == 200, r.text
+    assert not _fired(client, bid, admin_id, None), \
+        "«מועד יצירה ריק» held for an item created a moment ago"
+
+
+def test_a_condition_can_ask_who_created_the_item(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, "לוח יוצרים")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "editor"})
+    by = _col(client, bid, admin_id, type="created_by", title="יוצר הרשומה")
+    _add(client, bid, admin_id, _cond(by["id"], "created_by", guinea_id))
+    theirs = client.post("/api/tasks",
+                         json={"board_id": bid, "title": "שלהם", "user_id": guinea_id},
+                         headers={"X-CityOS-User": str(guinea_id)}).json()["id"]
+    assert _prio(theirs) == "high", "the rule did not see who created the item"
+    assert not _fired(client, bid, admin_id, None), \
+        "the rule fired on an item somebody else created"
