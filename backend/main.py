@@ -9321,15 +9321,36 @@ def _automation_owner_state(db, board, a):
     return {"owner_id": owner_id, "needs_owner": False, "reason": ""}
 
 
+def _automation_tell(db, a, board):
+    """Who to tell about this rule's trouble — the owner, or the board.
+
+    Rule 3 sends it to the owner. But the owner is exactly the thing that can go
+    missing: a blocked account, somebody who is no longer a manager here, a rule
+    that answers to nobody at all. A notice addressed to an account that cannot
+    read it is how "האוטומציה הושהתה" goes unnoticed for a quarter — so where
+    rule 5 hands the answerability to the board's managers, the trouble goes
+    with it, to the same people and for the same reason.
+    """
+    state = _automation_owner_state(db, board, a) or {}
+    if not state.get("needs_owner") and state.get("owner_id"):
+        return [state["owner_id"]]
+    admins = [m.user_id for m in db.query(BoardMember)
+              .filter(BoardMember.board_id == a.board_id,
+                      BoardMember.role == "admin").all()]
+    # a board with no manager of its own — the name on the rule is still better
+    # than telling nobody at all
+    return admins or [x for x in (a.owner_id, a.created_by) if x][:1]
+
+
 def _notify_owner_once(db, a, board, key, title, body):
-    """Tell the owner about a problem, once, until it clears.
+    """Tell whoever answers for the rule about a problem, once, until it clears.
 
     A rule can fire hundreds of times a day, and a rule whose group was deleted
     would fire the same notification every single time. The marker lives on the
     rule, and a successful run wipes it — so the next occurrence is reported
     again rather than being suppressed forever.
     """
-    who = (_automation_owner_state(db, board, a) or {}).get("owner_id")
+    who = _automation_tell(db, a, board)
     if not who:
         return
     st = dict(a.state or {})
@@ -9339,7 +9360,8 @@ def _notify_owner_once(db, a, board, key, title, body):
     told[key] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     st["told"] = told
     a.state = st
-    _notify(db, who, "automation", title, body, board_id=a.board_id)
+    for uid in who:
+        _notify(db, uid, "automation", title, body, board_id=a.board_id)
 
 
 def _clear_owner_notices(a):
@@ -9531,8 +9553,7 @@ def _suspend_for_lost_permission(db, a, board, why):
         return
     _set_automation_status(a, "paused_error")
     a.consecutive_failures = max(a.consecutive_failures or 0, 1)
-    who = a.owner_id or a.created_by
-    if who:
+    for who in _automation_tell(db, a, board):
         _notify(db, who, "automation", "אוטומציה הושהתה — הרשאה חסרה",
                 f"האוטומציה בלוח '{board.name}' הושהתה: {why}. "
                 f"{_automation_label(db, board, a)}",
@@ -9550,8 +9571,7 @@ def _suspend_if_broken(db, a, board):
         return
     _set_automation_status(a, "paused_error")
     a.consecutive_failures = AUTOMATION_FAIL_CUTOFF      # keep the count that suspended it
-    who = a.owner_id or a.created_by
-    if who:
+    for who in _automation_tell(db, a, board):
         _notify(db, who, "automation", "אוטומציה הושהתה עקב שגיאות",
                 f"האוטומציה בלוח '{board.name}' נכשלה {AUTOMATION_FAIL_CUTOFF} פעמים "
                 f"ברצף והושהתה: {_automation_label(db, board, a)}",
@@ -10189,6 +10209,11 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
         _set_automation_status(a, _automation_status_from(data))
         db.add(a)
         db.flush()
+        # the create call takes an owner_id, so a rule can be born answering to
+        # somebody who did not write it. That is a handover like any other, and
+        # rule 7 wants every one of them in the Audit.
+        if a.owner_id != user_id:
+            _audit_owner_change(db, a, user_id, a.owner_id, user_id)
         _record_automation_version(db, b, a, user_id)
         db.commit()
         db.refresh(a)
@@ -11743,7 +11768,7 @@ def bulk_automations(board_id: int, data: dict, user_id: int = Depends(current_u
             # never invited to the board cannot be made answerable for it
             if not _can_be_assigned(db, board_id, owner_id):
                 raise HTTPException(400, "אפשר להעביר בעלות רק למי שהוזמן ללוח")
-            if _board_role(db, board_id, owner_id) != "admin" and not data.get("force_owner"):
+            if _board_role(db, board_id, owner_id) != "admin":
                 nm = db.query(User.name).filter(User.id == owner_id).scalar() or ""
                 raise HTTPException(400, f"{nm} אינו מנהל הלוח — בעלות מועברת למנהל מורשה")
 

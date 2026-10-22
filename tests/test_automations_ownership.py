@@ -330,3 +330,149 @@ def test_rule7_a_patch_that_does_not_move_the_owner_writes_nothing(client, admin
         assert db.query(AuditLog).filter(AuditLog.entity_type == "automation",
                                          AuditLog.entity_id == a["id"],
                                          AuditLog.action == "transfer_owner").count() == 0
+
+
+# ── rule 1, the escape hatch nobody asked for ──────────────────────────────
+
+def test_rule1_ownership_cannot_be_forced_onto_someone_who_is_not_a_manager(
+        client, admin_id, guinea_id):
+    """"מנהל מורשה אחר" has no exception in it.
+
+    The bulk handover carried a `force_owner` flag that waived the check. No
+    screen sends it and nothing asked for it — and what it produces is a rule
+    owned by somebody who cannot change it, which rule 4 then reports as
+    "דורשת שיוך בעלים" from the moment it is saved.
+    """
+    bid = _board(client, admin_id, "לוח כפייה")
+    _member(client, admin_id, bid, guinea_id, "editor")
+    a = _add(client, bid, admin_id)
+    r = client.post(f"/api/boards/{bid}/automations/bulk?user_id={admin_id}",
+                    json={"ids": [a["id"]], "action": "transfer",
+                          "owner_id": guinea_id, "force_owner": True})
+    assert r.status_code == 400, r.text
+    assert "מנהל" in r.json()["detail"]
+    with Session(cityos_main.engine) as db:
+        assert db.query(Automation).filter(
+            Automation.id == a["id"]).first().owner_id != guinea_id
+
+
+# ── rule 3 meets rule 5 — a notice to an owner who is not there ────────────
+# Rule 3 sends the trouble to the owner. Rule 5 says that when the owner is
+# blocked or is no longer a manager, the board's managers take over. Between
+# the two sat the case that matters most: the notices went on being addressed
+# to the owner alone, so "האוטומציה הושהתה" went to a blocked account and
+# nobody on the board was told that a rule had stopped.
+
+def _blocked(uid, on=True):
+    with Session(cityos_main.engine) as db:
+        u = db.query(User).filter(User.id == uid).first()
+        u.is_active = not on
+        db.commit()
+
+
+def test_rule3_a_suspension_reaches_the_board_when_the_owner_cannot_hear_it(
+        client, admin_id, guinea_id, member_id):
+    bid = _board(client, admin_id, "לוח בעלים חסום")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    _member(client, admin_id, bid, member_id, "editor")
+    a = _add(client, bid, admin_id, "created_notify_person", {"a_person": member_id})
+    client.patch(f"/api/automations/{a['id']}?user_id={admin_id}",
+                 json={"owner_id": guinea_id})
+    _blocked(guinea_id)
+    try:
+        # the person the rule notifies is taken off the board → permission lost
+        client.delete(f"/api/boards/{bid}/members/{member_id}?actor_id={admin_id}")
+        _item(client, bid, admin_id)
+        with Session(cityos_main.engine) as db:
+            assert db.query(Automation).filter(
+                Automation.id == a["id"]).first().status == "paused_error"
+        told = _notes(admin_id, "הרשאה חסרה", bid)
+        assert told, "the board's manager was never told a rule had been suspended"
+    finally:
+        _blocked(guinea_id, False)
+
+
+def test_rule3_a_dependency_notice_does_the_same(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, "לוח תלות חסרה")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    grp = client.post("/api/groups", json={"board_id": bid, "name": "קבוצה",
+                                           "actor_id": admin_id}).json()["id"]
+    a = _add(client, bid, admin_id, "status_move_group",
+             {"t_status": "done", "a_group": grp})
+    client.patch(f"/api/automations/{a['id']}?user_id={admin_id}",
+                 json={"owner_id": guinea_id})
+    _blocked(guinea_id)
+    try:
+        client.delete(f"/api/groups/{grp}?actor_id={admin_id}")
+        tid = _item(client, bid, admin_id)
+        client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
+        told = _notes(admin_id, "תלות חסרה", bid)
+        assert told, "nobody who could act on it was told"
+    finally:
+        _blocked(guinea_id, False)
+
+
+def test_rule3_an_owner_who_can_hear_it_is_still_the_one_told(client, admin_id, guinea_id):
+    """The fallback is a fallback — it does not turn every notice into a
+    board-wide announcement."""
+    bid = _board(client, admin_id, "לוח בעלים תקין")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    a = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"})
+    client.patch(f"/api/automations/{a['id']}?user_id={admin_id}",
+                 json={"owner_id": guinea_id})
+    with Session(cityos_main.engine) as db:
+        row = db.query(Automation).filter(Automation.id == a["id"]).first()
+        row.config = {"a_status": "no_such_status"}
+        db.commit()
+    _item(client, bid, admin_id)
+    assert _notes(guinea_id, "תלות חסרה", bid), "the owner was not told"
+    assert not _notes(admin_id, "תלות חסרה", bid), \
+        "everybody was told about a rule that has an owner"
+
+
+# ── rule 7 — a handover written into the creation itself ───────────────────
+
+def test_rule7_a_rule_born_under_someone_elses_name_is_audited_too(client, admin_id,
+                                                                    guinea_id):
+    """"היוצר מוגדר כבעלים בעת היצירה" is the default, not the only option: the
+    create call takes an owner_id, and a rule can be born answering to somebody
+    who did not write it. That is a handover, and rule 7 says every handover is
+    in the Audit — previous owner, new owner, who and when."""
+    bid = _board(client, admin_id, "לוח לידה")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    a = _add(client, bid, admin_id, owner_id=guinea_id)
+    assert a["owner_id"] == guinea_id and a["created_by"] == admin_id
+    with Session(cityos_main.engine) as db:
+        logs = db.query(AuditLog).filter(AuditLog.entity_type == "automation",
+                                         AuditLog.entity_id == a["id"],
+                                         AuditLog.action == "transfer_owner").all()
+    assert len(logs) == 1, logs
+    assert str(admin_id) in (logs[0].old_value or ""), logs[0].old_value
+    assert str(guinea_id) in (logs[0].new_value or ""), logs[0].new_value
+    assert logs[0].changed_by == admin_id and logs[0].created_at is not None
+
+
+def test_rule7_a_rule_born_to_its_creator_writes_no_handover(client, admin_id):
+    bid = _board(client, admin_id, "לוח לידה רגילה")
+    a = _add(client, bid, admin_id)
+    with Session(cityos_main.engine) as db:
+        assert db.query(AuditLog).filter(AuditLog.entity_type == "automation",
+                                         AuditLog.entity_id == a["id"],
+                                         AuditLog.action == "transfer_owner").count() == 0
+
+
+def test_rule3_a_board_with_no_manager_of_its_own_still_tells_somebody(client, admin_id):
+    """The fallback has a fallback. A board whose managers have all left would
+    otherwise send the notice to an empty list — which is the silence this was
+    supposed to end."""
+    bid = _board(client, admin_id, "לוח בלי מנהלים")
+    a = _add(client, bid, admin_id, "created_set_status", {"a_status": "done"})
+    with Session(cityos_main.engine) as db:
+        row = db.query(Automation).filter(Automation.id == a["id"]).first()
+        row.config = {"a_status": "no_such_status"}
+        row.owner_id = None                       # answers to its creator, who is
+        db.query(cityos_main.BoardMember).filter(                  # off the board
+            cityos_main.BoardMember.board_id == bid).delete()
+        db.commit()
+    _item(client, bid, admin_id)
+    assert _notes(admin_id, "תלות חסרה", bid), "the notice went nowhere"
