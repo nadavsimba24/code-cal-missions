@@ -118,8 +118,26 @@ function world(){
   const [f] = world();
   const chips = f.colFilterChips(f.advFields().find(x=>x.id==='col_b'));
   ck('a people column offers "אני" first, then the board\'s members',
-     chips.map(c=>c.label).join()==='אני,דנה,רינה', chips.map(c=>c.label));
+     chips.map(c=>c.label).join()==='אני,רינה', chips.map(c=>c.label));
   ck('...and "אני" travels as the token, not as a user id', chips[0].v==='me');
+  ck('the person looking is listed once, as "אני" and not also by name',
+     !chips.some(c=>c.label==='דנה'), chips.map(c=>c.label));
+}
+{
+  /* …unless a rule already names them by id. That is somebody's deliberate
+     "this person specifically", and the panel has to show what is filtering. */
+  const [f, st] = world();
+  st.filters.adv={op:'and',rules:[{op:'or',rules:[{field:'col_b',op:'has',v:3,v2:''}]}]};
+  const chips = f.colFilterChips(f.advFields().find(x=>x.id==='col_b'));
+  ck('a rule naming the viewer by id still shows their name',
+     chips.map(c=>c.label).join()==='אני,דנה,רינה', chips.map(c=>c.label));
+}
+{
+  const [f, st] = world();
+  st.me=null;                       // nobody signed in: no token to offer
+  const chips = f.colFilterChips(f.advFields().find(x=>x.id==='col_b'));
+  ck('with no "אני" to offer, everyone is listed by name',
+     chips.map(c=>c.label).join()==='דנה,רינה', chips.map(c=>c.label));
 }
 {
   const [f] = world();

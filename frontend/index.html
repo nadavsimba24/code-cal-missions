@@ -6398,7 +6398,16 @@ function colFilterChips(f){
     // whoever a rule already names comes with the list, even if they have since
     // left the board — see the note on advPeopleOptions
     const named=advPickedAll(f.id).map(p=>p.v).filter(v=>v!=='me').map(Number).filter(n=>!isNaN(n));
-    return mine.concat(boardPeople(named).map(u=>({op:'has',v:u.id,label:u.name||'',color:''})));
+    /* The person looking is listed ONCE, as "אני". They were in the list twice
+       — the token and their own name, two rows that pick the same items for
+       the person reading them. "אני" is the one that keeps meaning the right
+       person when the filter travels inside a saved view somebody else opens,
+       so it is the one that stays.
+       Their name is still offered when a rule already names them by id: that
+       rule is somebody's deliberate "שלי פיינברג specifically", written in the
+       advanced builder, and the panel must show what is filtering. */
+    const people=boardPeople(named).filter(u=>!me||u.id!==me||named.includes(u.id));
+    return mine.concat(people.map(u=>({op:'has',v:u.id,label:u.name||'',color:''})));
   }
   if(K==='status')      return statusColOpts(f.col).map(o=>({op:'eq',v:o.label,label:o.label,color:o.color}));
   if(K==='check')       return [{op:'yes',label:'מסומן',color:'var(--green)'},
@@ -10254,8 +10263,11 @@ function colChipsHTML(x,picked,counts){
   const n=(counts&&counts[x.id])||null;
   const row=(c,i)=>{
     const k=colChipKey(c), cnt=n?(n[k]||0):null;
+    // "אני" names who it is on hover: one row for the person looking, and no
+    // doubt about which person that is
+    const tip=(c.v==='me'&&st.me&&st.me.name)?`${c.label} — ${st.me.name}`:c.label;
     return `<button class="qf-v${on(c)?' sel':''}" onclick="advPickChip('${esc(String(x.id))}',${i})"
-        title="${esc(c.label)}" aria-pressed="${on(c)?'true':'false'}">
+        title="${esc(tip)}" aria-pressed="${on(c)?'true':'false'}">
       ${c.color?`<span class="dot" style="background:${c.color}"></span>`:''}
       <span class="qf-v-t">${esc(c.label)}</span>
       <span class="qf-v-n">${cnt==null?'':cnt}</span></button>`;
