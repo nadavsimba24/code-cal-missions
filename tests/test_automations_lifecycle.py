@@ -332,3 +332,70 @@ def test_the_screen_carries_the_lifecycle():
     # a draft may be saved half-built, so that button is never disabled
     i = src.index("שמור כטיוטה")
     assert "disabled" not in src[i - 120:i], "the draft button is gated on completeness"
+
+
+# ── the two ways past the explicit publish ─────────────────────────────────
+# "הגרסה הקודמת תמשיך לפעול עד להפעלה מפורשת של החדשה" is the whole of the
+# third rule, and the save that edits an active rule carried a `publish` flag
+# that skipped it: the edit went straight into force, with no draft to read
+# first and none of the checks the publish does. No screen ever sent it.
+
+def _member(client, admin_id, bid, uid, role="editor"):
+    r = client.post(f"/api/boards/{bid}/members",
+                    json={"actor_id": admin_id, "user_id": uid, "role": role})
+    assert r.status_code == 200, r.text
+
+
+def test_an_edit_to_an_active_rule_always_waits_for_a_publish(client, admin_id):
+    bid = _board(client, admin_id, "לוח קיצור דרך")
+    a = _add(client, bid, admin_id)                       # active, עדיפות גבוהה
+    r = client.patch(f"/api/automations/{a['id']}?user_id={admin_id}",
+                     json={"config": {"a_priority": "low"}, "publish": True})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["draft_version"], "the edit went into force with no draft"
+    assert got["config"]["a_priority"] == "high", \
+        "the running rule changed under a flag instead of a publish"
+    assert _get(client, bid, a["id"], admin_id)["config"]["a_priority"] == "high"
+    # and the explicit publish is still the way in
+    assert client.post(f"/api/automations/{a['id']}/publish?user_id={admin_id}"
+                       ).json()["config"]["a_priority"] == "low"
+
+
+# ── one bar for switching a rule on, whichever button does it ──────────────
+# The switch re-derives everything the engine checks before a run. The bulk
+# "הפעל" had a health check of its own that read only the recipe's own action —
+# so a rule whose SECOND action names somebody who left the board passed it,
+# and a screenful of rules that will skip every time went back on looking like
+# it had worked.
+
+def test_a_bulk_activation_holds_the_same_bar_as_the_switch(client, admin_id, member_id):
+    bid = _board(client, admin_id, "לוח הפעלה מרובה")
+    _member(client, admin_id, bid, member_id, "editor")
+    a = _add(client, bid, admin_id, "created_set_priority",
+             {"a_priority": "high",
+              "actions": [{"key": "notify_person", "values": {"person": member_id}}]},
+             status="paused")
+    client.delete(f"/api/boards/{bid}/members/{member_id}?actor_id={admin_id}")
+
+    one = client.patch(f"/api/automations/{a['id']}?user_id={admin_id}",
+                       json={"status": "active"})
+    assert one.status_code == 400, one.text          # the switch refuses it
+
+    r = client.post(f"/api/boards/{bid}/automations/bulk?user_id={admin_id}",
+                    json={"ids": [a["id"]], "action": "activate"})
+    assert r.status_code == 200, r.text
+    row = r.json()["results"][0]
+    assert row["ok"] is False, row
+    assert "חבר בלוח" in row["message"] or "מושבת" in row["message"], row
+    assert _get(client, bid, a["id"], admin_id)["status"] != "active", \
+        "the bulk action switched on a rule the switch had just refused"
+
+
+def test_a_bulk_activation_still_switches_on_a_rule_that_is_fine(client, admin_id):
+    bid = _board(client, admin_id, "לוח הפעלה מרובה תקינה")
+    a = _add(client, bid, admin_id, status="paused")
+    r = client.post(f"/api/boards/{bid}/automations/bulk?user_id={admin_id}",
+                    json={"ids": [a["id"]], "action": "activate"})
+    assert r.json()["results"][0]["ok"] is True, r.json()
+    assert _get(client, bid, a["id"], admin_id)["status"] == "active"

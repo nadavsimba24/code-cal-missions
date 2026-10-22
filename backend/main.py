@@ -10310,7 +10310,12 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
         if "owner_id" in data and a.owner_id != _prev_owner:
             _audit_owner_change(db, a, _prev_owner, a.owner_id, user_id)
         if "config" in data:
-            live = (a.status == "active") and not data.get("publish")
+            # An ACTIVE rule's configuration never changes under the save. It is
+            # written as a draft and the live rule goes on running until someone
+            # publishes it — rule 3, which had a `publish` flag in the body that
+            # skipped it, going straight into force with none of the checks the
+            # publish does. No screen ever sent it.
+            live = (a.status == "active")
             cfg, err = (recipes.validate_partial if (a.status == "draft" or live)
                         else recipes.validate)(a.recipe_id, data.get("config") or {})
             if err:
@@ -11420,44 +11425,22 @@ def _require_sys_admin(db, user_id):
 def _automation_health(db, board, a):
     """What is wrong with this rule, in words, or [] when nothing is.
 
-    Read before switching a rule back on in bulk: a rule that names a status the
+    Read before switching rules back on in bulk: a rule that names a status the
     board no longer has, or a person who left it, is a rule that will skip every
     time it fires — and switching a screenful of those back on looks like it
     worked until someone reads the history.
+
+    Asked of exactly what the switch asks (see _refuse_incomplete_activation):
+    the placeholders still blank, and then the blockers the engine re-derives
+    before every single run. It used to be a second implementation that walked
+    the recipe's own action and nothing else — so a rule's second, third and
+    fourth actions were invisible to it, and the bulk "הפעל" let through rules
+    the switch beside them refused.
     """
-    problems = []
-    r = recipes.recipe(a.recipe_id)
-    if not r:
-        return ["המתכון אינו מוכר בגרסה הזאת"]
-    cfg = a.config or {}
-    _, err = recipes.validate(a.recipe_id, cfg)
-    if err:
-        problems.append(err)
-    for f in r.get("fields", []):
-        v = cfg.get(f["key"])
-        if f["type"] == "person" and not _can_be_assigned(db, a.board_id, v):
-            nm = db.query(User.name).filter(User.id == v).scalar() or v
-            why = _not_taggable_reason(db, a.board_id, v) or "אינו חבר בלוח"
-            problems.append(f"{nm} {why}")
-        elif f["type"] == "status" and not any(
-                x["key"] == str(v) for x in _board_statuses(board)):
-            problems.append(f"הסטטוס '{v}' אינו קיים בלוח")
-        elif f["type"] == "priority" and not any(
-                x["key"] == str(v) for x in _board_priorities(board)):
-            problems.append(f"העדיפות '{v}' אינה קיימת בלוח")
-        elif f["type"] == "group" and not db.query(Group).filter(
-                Group.id == v, Group.board_id == a.board_id).first():
-            problems.append("הקבוצה שהכלל מפנה אליה נמחקה")
-        elif f["type"] == "connect":
-            col = _find_col(db, a.board_id, str(v))
-            if not col or col.get("type") != "connect":
-                problems.append("עמודת הקישור אינה קיימת בלוח")
-        elif f["type"] == "item" and not db.query(Task).filter(Task.id == v).first():
-            problems.append("הפריט שהכלל מקשר אליו נמחק")
-        elif f["type"] == "board" and not db.query(Board).filter(
-                Board.id == v, Board.deleted_at == None).first():           # noqa: E711
-            problems.append("לוח היעד נמחק")
-    return problems
+    missing = recipes.missing_fields(a.recipe_id, a.config or {})
+    if missing:
+        return ["חסרים שדות חובה: " + ", ".join(missing)]
+    return [b["text"] for b in _automation_blockers(db, board, a)]
 
 
 def _org_automation_row(db, a, board, dept_names, now):
