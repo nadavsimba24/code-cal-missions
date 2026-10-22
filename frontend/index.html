@@ -489,6 +489,9 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   padding:3px 11px;font-size:12px;cursor:pointer;color:var(--text)}
 .au-grp-b.on{background:var(--primary);border-color:var(--primary);color:#fff}
 .au-op{background:var(--bg);border-color:var(--border);color:var(--text)}
+.au-tok{margin:4px 0}
+.au-tok>summary{cursor:pointer;font-size:12px;color:var(--primary);padding:3px 6px}
+.au-tok .rm-item{font-size:12px}
 .au-tmiss{margin-top:7px;font-size:12px;color:var(--red)}
 .ah-batch{cursor:pointer;border:none;font:inherit}
 .au-imp-lnk{margin-bottom:8px}
@@ -6120,6 +6123,15 @@ function advCell(t,f){
   if(f.id==='priority')  return priorityKeyOf(t)||null;
   if(f.id==='assignees') return ((t.assignees||[]).map(a=>a&&a.id).filter(x=>x!=null));
   if(f.id==='due')       return advDay(t.due_date);
+  /* A column the system fills in on its own — מועד יצירה, יוצר הרשומה —
+     holds NOTHING in custom_fields: nobody typed it, and the cell on screen is
+     drawn from the item itself. Read as a custom field it came back undefined,
+     which to a filter is not "this item has no value" but "no item has one":
+     "ריק" then answered with the whole board — a filter that looks like it did
+     not run at all — and every other question answered with none of it. Both
+     are the same missing lookup, and this is it. */
+  const derived=DERIVED_CELL[f.col&&f.col.type];
+  if(derived) return derived(t);
   const v=cf[f.id];
   switch(f.kind){
     case 'people': {
@@ -6148,6 +6160,19 @@ function advCell(t,f){
   }
 }
 
+/* The system's own columns, read from the item the same place the cell on
+   screen reads them from. Kept beside advCell rather than inside it so the
+   list is one thing to look at: a column type is here, or it is a cell
+   somebody filled in.
+
+   מזהה פריט is not in this table because it is not in ADV_KINDS — the board
+   filter does not offer it. An automation condition does, and reads it on the
+   server (DERIVED_CELLS in main.py), which is where that question is asked. */
+const DERIVED_CELL={
+  created_at:t=>advDay(t&&t.created_at),
+  // one creator, in the shape a people column answers in: a list of ids
+  created_by:t=>(t&&t.created_by!=null)?[Number(t.created_by)]:[],
+};
 /* What "ריק" catches. The spec asks for a NULL in the database and for an
    empty string, and those are the same emptiness to the person looking at the
    cell — a column that was never filled and a column somebody cleared by
@@ -8657,6 +8682,9 @@ const Automations = {
       await this.pickLinkedItem(anchor,null,{actIdx:i,key,connect}); return;
     }
     if(f.type==='fields'){ this.pickCopyFields(anchor,key,{actIdx:i,key}); return; }
+    if(f.type==='recipient'){ this.pickRecipient(anchor,key,{actIdx:i,key}); return; }
+    if(f.type==='wait'){ this.pickWait(anchor,key,{actIdx:i,key}); return; }
+    if(f.type==='map'){ toast('מיפוי שדות נערך דרך ה-API בשלב זה'); return; }
     if(f.type==='target_group'){ await this.pickActTargetGroup(anchor,i,key); return; }
     const items=this._optionsFor(f.type,connect);
     this._popItems=items;
@@ -9014,6 +9042,14 @@ const Automations = {
     // picker awaits a fetch before it has anything to anchor to
     const anchor=e.currentTarget;
     const r=this.building.recipe, f=r&&r.fields.find(x=>x.key===key); if(!f)return;
+    /* ---- נמען ---- five answers, four of them read off the event ---- */
+    if(f.type==='recipient'){ this.pickRecipient(e.currentTarget,key,null); return; }
+    /* ---- המתנה ---- stored in minutes, asked in the words people use ---- */
+    if(f.type==='wait'){ this.pickWait(e.currentTarget,key,null); return; }
+    if(f.type==='map'){
+      toast('מיפוי שדות נערך דרך ה-API בשלב זה');
+      return;
+    }
     if(f.type==='days'){
       const cur=this.building.values[key];
       openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
@@ -9030,6 +9066,7 @@ const Automations = {
       openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
         <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
                onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setText('${key}');}">
+        ${this.tokenMenuHTML()}
         <button class="rm-item" onclick="Automations.setText('${key}')"><i class="fa-solid fa-check"></i> אישור</button>
       </div>`,'row-menu-pop');
       setTimeout(()=>{const i=document.getElementById('au-txt'); if(i){i.focus();i.select();}},30);
@@ -9117,6 +9154,109 @@ const Automations = {
           ${esc(it.label)}<small style="margin-inline-start:auto;color:var(--text-light)">${esc(it.sub||'')}</small></button>`).join('')
       : '<div class="rm-note">אין פריטים זמינים בלוחות היעד</div>';
     openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+
+  /* ---- ערכים דינמיים ----
+     A text can be built from the item it will be written on. The menu puts the
+     token where the caret is, because somebody writing "המשך ל-" wants the
+     name to land after it and not at the end. */
+  tokenMenuHTML(){
+    const toks=((this.caps||{}).tokens||[]).filter(t=>!t.takes_column);
+    const cols=(customColumns()||[]).filter(c=>c.type!=='connect');
+    if(!toks.length&&!cols.length) return '';
+    return `<details class="au-tok"><summary>ערך מהפריט</summary>
+      ${toks.map(t=>`<button class="rm-item" onclick="event.stopPropagation();Automations.putToken('${t.token}')">
+          ${esc(t.label)}</button>`).join('')}
+      ${cols.map(c=>`<button class="rm-item" onclick="event.stopPropagation();Automations.putToken('field.${c.id}')">
+          ערך של «${esc(c.title||c.id)}»</button>`).join('')}
+    </details>`;
+  },
+  putToken(name){
+    const el=document.getElementById('au-txt'); if(!el)return;
+    const at=el.selectionStart==null?el.value.length:el.selectionStart;
+    const ins='{{'+name+'}}';
+    el.value=el.value.slice(0,at)+ins+el.value.slice(el.selectionEnd==null?at:el.selectionEnd);
+    el.focus();
+    el.selectionStart=el.selectionEnd=at+ins.length;
+  },
+
+  /* ---- the recipient picker ---- */
+  pickRecipient(anchor,key,into){
+    const kinds=(this.caps&&this.caps.recipients)||[
+      {key:'user',label:'משתמש קבוע',takes_value:true},
+      {key:'field',label:'אחראי משדה אנשים',takes_value:true},
+      {key:'actor',label:'המשתמש שביצע את השינוי'},
+      {key:'owner',label:'בעל האוטומציה'},
+      {key:'board_admin',label:'מנהל הלוח'}];
+    this._recInto={key:key,into:into||null,anchor:anchor};
+    const body=kinds.map(k=>`<button class="rm-item" onclick="event.stopPropagation();Automations.pickRecipientKind('${k.key}')">
+        ${esc(k.label)}${k.takes_value?' …':''}</button>`).join('');
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  pickRecipientKind(kind){
+    const c=this._recInto; if(!c)return;
+    if(kind==='user'){
+      const items=this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
+      this._popItems=items;
+      const body=items.length
+        ? items.map((it,i)=>`<button class="rm-item" onclick="Automations.setRecipient('user',${i})">
+            <span class="av av-xs">${avatarInner(it.person)}</span> ${esc(it.label)}</button>`).join('')
+        : '<div class="rm-note">אין משתמשים בלוח</div>';
+      openCellPop(c.anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+      return;
+    }
+    if(kind==='field'){
+      const cols=(customColumns()||[]).filter(x=>['people','assignees','created_by'].includes(x.type));
+      this._popItems=cols.map(x=>({v:x.id,label:x.title||x.id}));
+      const body=this._popItems.length
+        ? this._popItems.map((it,i)=>`<button class="rm-item" onclick="Automations.setRecipient('field',${i})">${esc(it.label)}</button>`).join('')
+        : '<div class="rm-note">אין בלוח עמודת אנשים</div>';
+      openCellPop(c.anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+      return;
+    }
+    this._applyRecipient({kind:kind},
+      ((this.caps&&this.caps.recipients)||[]).find(k=>k.key===kind));
+  },
+  setRecipient(kind,idx){
+    const it=(this._popItems||[])[idx]; if(!it)return;
+    this._applyRecipient({kind:kind,value:it.v},null,it.label);
+  },
+  _applyRecipient(val,spec,label){
+    const c=this._recInto; if(!c)return;
+    const HE={actor:'המשתמש שביצע את השינוי',owner:'בעל האוטומציה',board_admin:'מנהל הלוח'};
+    const shown=label||(spec&&spec.label)||HE[val.kind]||val.kind;
+    const cell={v:val,label:shown,color:''};
+    if(c.into){ const a=this.building.acts[c.into.actIdx];
+                (a.values=a.values||{})[c.key]=cell; }
+    else this.building.values[c.key]=cell;
+    closeCellPops(); this.render();
+  },
+
+  /* ---- the wait picker: minutes, asked in hours and days ---- */
+  pickWait(anchor,key,into){
+    this._waitInto={key:key,into:into||null};
+    const opts=[['15','רבע שעה'],['60','שעה'],['180','שלוש שעות'],['1440','יום'],
+                ['4320','שלושה ימים'],['10080','שבוע'],['43200','30 ימים']];
+    const body=opts.map(o=>`<button class="rm-item" onclick="Automations.setWait(${o[0]})">${esc(o[1])}</button>`).join('')
+      +`<div class="rm-note" style="padding-top:6px">או בדקות:</div>
+        <input id="au-wait" class="au-in" type="number" min="1" max="43200" style="max-width:120px"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setWait(+this.value);}">`;
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  setWait(min){
+    const c=this._waitInto; if(!c)return;
+    const n=Math.max(1,Math.min(43200,+min||0));
+    if(!n){ toast('יש להזין מספר דקות'); return; }
+    const cell={v:n,label:this.waitHe(n),color:''};
+    if(c.into){ const a=this.building.acts[c.into.actIdx];
+                (a.values=a.values||{})[c.key]=cell; }
+    else this.building.values[c.key]=cell;
+    closeCellPops(); this.render();
+  },
+  waitHe(m){
+    if(m<60) return m===1?'דקה':m+' דקות';
+    if(m<1440){ const h=Math.floor(m/60); return h===1?'שעה':(h===2?'שעתיים':h+' שעות'); }
+    const d=Math.floor(m/1440); return d===1?'יום':(d===2?'יומיים':d+' ימים');
   },
 
   setDays(key){

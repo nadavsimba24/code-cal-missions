@@ -140,7 +140,12 @@ def test_the_extra_actions_come_back_as_they_were_stored(client, admin_id, guine
     a = _add(client, bid, admin_id, "created_set_priority",
              {"a_priority": "high",
               "actions": [{"key": "notify_person", "values": {"person": guinea_id}}]}).json()
-    assert a["actions"] == [{"key": "notify_person", "values": {"person": guinea_id}}]
+    # A recipient is stored as what KIND of recipient it is — a fixed person is
+    # one of five, and the other four are read off the event (see
+    # automations.RECIPIENTS). A bare id is the old shape and still means the
+    # one it always meant, normalised on the way in.
+    assert a["actions"] == [{"key": "notify_person",
+                             "values": {"person": {"kind": "user", "value": guinea_id}}}]
     assert _get(client, bid, a["id"], admin_id)["actions"] == a["actions"]
 
 
@@ -381,7 +386,9 @@ def test_the_catalog_offers_the_actions_and_says_how_many(client, admin_id):
     keys = {a["key"] for a in d["action_catalog"]}
     assert keys == set(recipes.ACTIONS), keys
     notify = next(a for a in d["action_catalog"] if a["key"] == "notify_person")
-    assert notify["fields"] == [{"key": "person", "type": "person", "label": "נמען"}]
+    # a recipient is its own kind of blank: five answers, four of them read off
+    # the event rather than named in advance
+    assert notify["fields"] == [{"key": "person", "type": "recipient", "label": "נמען"}]
 
 
 def test_the_impact_screen_counts_what_every_action_writes(client, admin_id, guinea_id):

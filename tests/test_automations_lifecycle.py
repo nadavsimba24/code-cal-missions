@@ -172,7 +172,9 @@ def test_a_draft_that_would_not_work_cannot_be_published(client, admin_id, guine
     r = client.post(f"/api/automations/{a['id']}/publish?user_id={admin_id}")
     assert r.status_code == 400, "a draft naming someone off the board was published"
     assert "ללוח" in r.json()["detail"], r.json()
-    assert _get(client, bid, a["id"], admin_id)["config"] == {"a_person": admin_id}
+    # a recipient is stored as WHICH KIND it is — a named person is one of five
+    assert _get(client, bid, a["id"], admin_id)["config"] == {
+        "a_person": {"kind": "user", "value": admin_id}}
 
 
 def test_a_draft_can_be_thrown_away_and_the_rule_never_moved(client, admin_id):

@@ -3319,7 +3319,8 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
                 "status": _task_status_key(t), "priority": _task_priority_key(t),
                 "due_date": t.due_date.isoformat() if t.due_date else None,
                 "assignees": [{"id": u.id} for u in t.assignees],
-                "custom_fields": t.custom_fields or {},
+                # …and the columns nobody typed, beside the ones somebody did
+                "custom_fields": {**(t.custom_fields or {}), **_derived_cells(b, t)},
             }
             return (_passes_toolbar(t)
                     and filter_ast.match(item, tree, fields, today, off, user_id))
@@ -8583,7 +8584,8 @@ AUTOMATION_GRANTED_ACTIONS = frozenset({
     "notify_person", "notify_assignees", "assign_person", "set_status",
     "set_priority", "move_to_group", "create_subitem", "link_to_item",
     "create_and_link", "post_update", "copy_to_linked",
-    "create_in_group_and_link",
+    "create_in_group_and_link", "set_column", "clear_column",
+    "unassign_person", "create_item", "wait", "create_mapped_and_link",
 })
 # The item fields automation may write. The recipes only ever touch these, and
 # an action that reached past them would be doing something nobody approved.
@@ -8593,6 +8595,8 @@ AUTOMATION_GRANTED_FIELDS = frozenset({
     # item's conversation, and the two more of its own fields that a copy to a
     # linked item may carry
     "comment", "due", "description",
+    # a rule may also write an ordinary column of the board, and make an item
+    "custom_fields_value", "item",
 })
 # And what each action actually writes, so the grant above is something asked
 # rather than something stated. The two are held against each other before every
@@ -8615,6 +8619,12 @@ AUTOMATION_ACTION_FIELDS = {
     "create_and_link":  ("custom_fields",),
     "create_in_group_and_link": ("custom_fields",),
     "post_update":      ("comment",),
+    "set_column":       ("custom_fields_value",),
+    "clear_column":     ("custom_fields_value",),
+    "unassign_person":  ("assignees",),
+    "create_item":      ("item",),
+    "wait":             (),          # it writes nothing; it only delays
+    "create_mapped_and_link": ("custom_fields",),
     # it writes on the item at the other end of the link, and only the fields
     # the rule names — but a grant is what an action MAY reach, so all of them
     "copy_to_linked":   ("status", "priority", "due", "assignees", "description"),
@@ -8888,15 +8898,53 @@ def _apply_priority_key(db, task, key):
     return True
 
 
+# ── the columns the system issues on its own ────────────────────────────────
+# מזהה פריט, מועד יצירה, יוצר הרשומה. Nobody types them, so nothing of theirs
+# is in custom_fields — they are derived from the item, which is also how the
+# board draws them. Read as custom fields they come back None for EVERY item,
+# and that is not "this item has no value": "ריק" then answers with the whole
+# board — a filter that looks like it never ran — and every other question
+# answers with none of it. Same defect in the browser (DERIVED_CELL in
+# index.html), and it is a lookup in both places, not a rule.
+#
+# Each returns the cell in the shape filter_ast's kind for that type expects:
+# an ISO instant for a date (day_in_zone turns it into the viewer's day — an
+# item written at 22:30 UTC was created tomorrow in Jerusalem), a list of ids
+# for a people column, a string for text.
+#
+# נוסחה is deliberately absent. It is computed, not stored, and the engine that
+# computes it lives in the browser — a formula column therefore cannot be asked
+# about here at all, which is a different problem from this one.
+DERIVED_CELLS = {
+    "created_at": lambda t: t.created_at.isoformat() if t.created_at else None,
+    "created_by": lambda t: [] if t.created_by is None else [t.created_by],
+    "item_id": lambda t: str(t.item_uid) if t.item_uid else None,
+}
+
+
+def _derived_cells(board, task):
+    """This board's derived columns, keyed by column id, ready to sit beside
+    the cells somebody actually typed."""
+    cols = ((board.settings or {}).get("columns") or []) if board else []
+    out = {}
+    for c in cols:
+        fn = DERIVED_CELLS.get(c.get("type"))
+        if fn:
+            out[str(c.get("id"))] = fn(task)
+    return out
+
+
 def _filter_item(db, task):
     """One item in the shape filter_ast reads — the advanced filter's own shape,
     because an automation condition about a column asks the same question of the
     same cell and must answer it the same way."""
+    board = db.query(Board).filter(Board.id == task.board_id).first()
     return {"id": task.id, "title": task.title,
             "status": _task_status_key(task), "priority": _task_priority_key(task),
             "due_date": task.due_date.isoformat() if task.due_date else None,
             "assignees": [{"id": u.id} for u in list(task.assignees or [])],
-            "custom_fields": task.custom_fields or {}}
+            "custom_fields": {**(task.custom_fields or {}),
+                              **_derived_cells(board, task)}}
 
 
 # Israel's day, not the server's. A column condition about a date resolves
@@ -9012,9 +9060,11 @@ def _il_day(tz=None):
 def _cond_cell_raw(db, task, col, viewer=None):
     """What a column condition reads off the item.
 
-    Everything but a mirror is in `custom_fields`. A mirror stores nothing — it
-    is the field of a LINKED item, read through the connect column each time —
-    so it is resolved here.
+    Two kinds of column store nothing of their own. A derived column — מזהה
+    פריט, מועד יצירה, יוצר הרשומה — is read off the item itself (see
+    DERIVED_CELLS). A mirror is the field of a LINKED item, read through the
+    connect column each time, and is resolved here. Everything else is a cell
+    somebody filled in, and is in `custom_fields`.
 
     `viewer` is None when the ENGINE is asking: a rule is board configuration
     written by an admin, the same stance _apply_automation_link takes, and a
@@ -9024,6 +9074,9 @@ def _cond_cell_raw(db, task, col, viewer=None):
     where what they may not see is withheld rather than quietly dropped.
     """
     cid = str(col.get("id") or "")
+    derived = DERIVED_CELLS.get(col.get("type"))
+    if derived:
+        return derived(task)          # nothing of theirs is in custom_fields
     if col.get("type") != "mirror":
         return (task.custom_fields or {}).get(cid)
     cells = _mirror_cells(db, task, col, viewer, _board_columns(db, task.board_id))
@@ -9272,6 +9325,220 @@ def _conditions_hold(db, board, task, conds, group_op="and"):
     return True, ""
 
 
+def _automation_plain_name(db, board, a):
+    """What to call a rule that was never given a name: its trigger and action
+    in plain words. Not its sentence — that carries the values it names."""
+    r = recipes.recipe(a.recipe_id) or {}
+    trig = recipes.plain(recipes.TRIGGERS.get(r.get("trigger"), ""))
+    act = recipes.plain(recipes.ACTIONS.get(r.get("action"), ""))
+    return " · ".join([x for x in (trig, act) if x]) or "אוטומציה"
+
+
+class _Waiting(Exception):
+    """A rule asked to wait. What is left of it is queued and comes back."""
+
+    def __init__(self, minutes):
+        super().__init__(minutes)
+        self.minutes = max(recipes.MIN_WAIT_MINUTES,
+                           min(int(minutes or 0), recipes.MAX_WAIT_DAYS * 24 * 60))
+
+
+# The built-in fields a mapping may name on either side, and the kind each one
+# is. A mapping is between two boards' columns, and these are the fields every
+# board has whatever its columns are called.
+MAP_BUILTINS = {"title": "text", "status": "status", "priority": "status",
+                "due": "date", "description": "text", "assignees": "people"}
+MAP_BUILTIN_HE = {"title": "שם הפריט", "status": "סטטוס", "priority": "עדיפות",
+                  "due": "תאריך יעד", "description": "תיאור", "assignees": "אחראים"}
+
+
+def _map_side(db, board_id, name):
+    """(kind, label) for one side of a mapping, or (None, why) when it is not
+    a field this engine can carry."""
+    if name in MAP_BUILTINS:
+        return MAP_BUILTINS[name], MAP_BUILTIN_HE[name]
+    col = _find_col(db, board_id, str(name))
+    if not col:
+        return None, f"השדה '{name}' אינו קיים"
+    kind = recipes.column_kind(col.get("type"))
+    if not kind:
+        return None, f"שדה מסוג '{col.get('type')}' אינו נתמך במיפוי"
+    if col.get("type") in AUTOMATION_UNWATCHABLE_COLUMNS:
+        return None, f"אי אפשר לכתוב לעמודת {col.get('title') or name}"
+    return kind, (col.get("title") or name)
+
+
+def _map_problems(db, src_board_id, dst_board_id, mapping):
+    """What is wrong with a mapping, in words — empty when nothing is.
+
+    "המערכת תאפשר מיפוי רק בין סוגי שדות תואמים" — so a date into a number is
+    refused, and so is a field that is not there any more. Checked when the
+    rule is saved AND again before every firing, because a column can be
+    deleted or re-typed under a rule that was right when it was written.
+    """
+    out = []
+    for pair in mapping or []:
+        a, b = pair.get("from"), pair.get("to")
+        ka, la = _map_side(db, src_board_id, a)
+        kb, lb = _map_side(db, dst_board_id, b)
+        if ka is None:
+            out.append(f"מקור: {la}")
+            continue
+        if kb is None:
+            out.append(f"יעד: {lb}")
+            continue
+        if ka != kb:
+            out.append(f"'{la}' ו'{lb}' אינם מסוג תואם")
+    return out
+
+
+def _check_automation_map(db, board_id, recipe_id, cfg):
+    """Refuse a mapping that cannot work, where it is written."""
+    r = recipes.recipe(recipe_id) or {}
+    pairs = [(f, (cfg or {}).get(f["key"])) for f in r.get("fields", [])
+             if f["type"] == "map"]
+    for extra in (cfg or {}).get(recipes.ACTIONS_KEY) or []:
+        vals = (extra or {}).get("values") or {}
+        pairs += [(f, vals.get(f["key"]))
+                  for f in recipes.action_fields(str((extra or {}).get("key") or ""))
+                  if f["type"] == "map"]
+    if not pairs:
+        return
+    target = (cfg or {}).get("a_board")
+    for extra in (cfg or {}).get(recipes.ACTIONS_KEY) or []:
+        target = ((extra or {}).get("values") or {}).get("board") or target
+    for _f, mapping in pairs:
+        bad = _map_problems(db, board_id, target or board_id, mapping)
+        if bad:
+            raise HTTPException(400, "מיפוי שדות אינו תקין — " + " · ".join(bad[:3]))
+
+
+def _copy_mapped_fields(db, src, dst, mapping, actor_id):
+    """Carry the mapped values across. Returns how many moved."""
+    moved = 0
+    for pair in mapping or []:
+        a, b = pair.get("from"), pair.get("to")
+        val = _map_read(db, src, a)
+        if val in (None, "", []):
+            continue                   # nothing to carry is not a failure
+        if _map_write(db, dst, b, val, actor_id):
+            moved += 1
+    return moved
+
+
+def _map_read(db, task, name):
+    if name == "title":
+        return task.title
+    if name == "status":
+        return _task_status_key(task)
+    if name == "priority":
+        return _task_priority_key(task)
+    if name == "due":
+        return task.due_date
+    if name == "description":
+        return task.description
+    if name == "assignees":
+        return [u.id for u in list(task.assignees or [])]
+    return (task.custom_fields or {}).get(str(name))
+
+
+def _map_write(db, task, name, value, actor_id):
+    if name == "title":
+        task.title = str(value)[:500]
+    elif name == "status":
+        return bool(_apply_status_key(db, task, value))
+    elif name == "priority":
+        return bool(_apply_priority_key(db, task, value))
+    elif name == "due":
+        task.due_date = value
+    elif name == "description":
+        task.description = str(value)
+    elif name == "assignees":
+        have = {u.id for u in task.assignees}
+        added = 0
+        for uid in (value if isinstance(value, list) else [value]):
+            if uid in have or not _can_be_assigned(db, task.board_id, uid):
+                continue
+            u = db.query(User).filter(User.id == uid).first()
+            if u is not None:
+                task.assignees.append(u)
+                added += 1
+        return bool(added)
+    else:
+        cf = dict(task.custom_fields or {})
+        cf[str(name)] = value
+        task.custom_fields = cf
+    return True
+
+
+def _coerce_cell(db, board_id, col, value):
+    """(stored value, error) for writing `value` into this column.
+
+    "ערך שאינו מתאים לסוג שדה היעד לא יישמר" — so a number column refuses a
+    word rather than storing one, and a status column refuses a label that is
+    not in its own vocabulary. The value arrives as text because it may have
+    been built from the item (see _resolve_tokens); what it becomes is the
+    column's business.
+    """
+    kind = recipes.column_kind(col.get("type"))
+    raw = "" if value is None else str(value).strip()
+    if raw == "":
+        return None, "אין ערך לכתוב"
+    if kind == "number":
+        try:
+            n = float(raw)
+        except ValueError:
+            return None, f"'{raw}' אינו מספר — לא נכתב לעמודה"
+        return (int(n) if n == int(n) else n), None
+    if kind == "date":
+        if not filter_ast._ISO_DAY.match(raw[:10]):
+            return None, f"'{raw}' אינו תאריך — לא נכתב לעמודה"
+        return raw[:10], None
+    if kind == "check":
+        return (raw not in ("0", "false", "לא", "")), None
+    if kind == "status":
+        opts = [o for o in (col.get("options") or [])]
+        labels = [str(o.get("label") if isinstance(o, dict) else o) for o in opts]
+        if labels and raw not in labels:
+            return None, f"'{raw}' אינו ערך מוכר בעמודה — לא נכתב"
+        return raw, None
+    if kind == "people":
+        uid = db.query(User.id).filter(User.name == raw).scalar()
+        if not uid or not _can_be_assigned(db, board_id, uid):
+            return None, f"'{raw}' אינו משתמש בלוח — לא נכתב לעמודה"
+        return [uid], None
+    return raw[:500], None
+
+
+def _duration_he(minutes):
+    """A wait in the words people use for it."""
+    try:
+        m = int(minutes)
+    except (TypeError, ValueError):
+        return "—"
+    if m < 60:
+        return "דקה" if m == 1 else f"{m} דקות"
+    if m < 60 * 24:
+        h = m // 60
+        return "שעה" if h == 1 else ("שעתיים" if h == 2 else f"{h} שעות")
+    d = m // (60 * 24)
+    return "יום" if d == 1 else ("יומיים" if d == 2 else f"{d} ימים")
+
+
+def _recipient_label(db, board, v):
+    """A recipient as a person reads it: a name, or what it is read off."""
+    if not isinstance(v, dict):
+        return db.query(User.name).filter(User.id == v).scalar() or str(v)
+    kind = v.get("kind") or "user"
+    if kind == "user":
+        return db.query(User.name).filter(User.id == v.get("value")).scalar() \
+            or str(v.get("value"))
+    if kind == "field":
+        col = _find_col(db, board.id, str(v.get("value") or "")) if board else None
+        return f"האחראי בעמודה '{(col or {}).get('title') or v.get('value')}'"
+    return recipes.RECIPIENTS.get(kind, kind)
+
+
 def _shown_value(db, board, ftype, v):
     """One value as the board shows it — a status's label, a person's name.
 
@@ -9284,6 +9551,17 @@ def _shown_value(db, board, ftype, v):
     if ftype == "priority":
         e = next((x for x in _board_priorities(board) if x["key"] == str(v)), None)
         return e["label"] if e else str(v)
+    if ftype == "wait":
+        return _duration_he(v)
+    if ftype == "map":
+        pairs = v if isinstance(v, list) else []
+        return (", ".join(f"{_map_side(db, board.id if board else 0, p.get('from'))[1]}"
+                          f" → {p.get('to')}" for p in pairs[:4])
+                + (" ועוד" if len(pairs) > 4 else "")) or "—"
+    if ftype == "target_group":
+        return db.query(Group.name).filter(Group.id == v).scalar() or "—"
+    if ftype == "recipient":
+        return _recipient_label(db, board, v)
     if ftype == "person":
         return db.query(User.name).filter(User.id == v).scalar() or "—"
     if ftype == "group":
@@ -9336,7 +9614,8 @@ def _automation_label(db, board, a):
     return text
 
 
-def _run_action(db, a, task, actor_id, board, event=None):
+def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None,
+                notice="", start=0):
     """Perform the rule's actions, in order. Returns (follow-up events, note).
 
     The events let a rule trigger another, bounded by AUTOMATION_MAX_DEPTH.
@@ -9355,11 +9634,26 @@ def _run_action(db, a, task, actor_id, board, event=None):
     """
     out, skipped = [], []
     label = _automation_label(db, board, a)
-    acts = recipes.action_list(a.recipe_id, a.config or {})
-    for one in acts:
+    # a notification names the rule; the board's own screens show the sentence
+    told = notice or _automation_plain_name(db, board, a)
+    acts = recipes.action_list(a.recipe_id, a.config or {})[start:]
+    for i, one in enumerate(acts):
         try:
             out.extend(_run_one_action(db, one["key"], one["values"],
-                                       task, actor_id, board, label, event) or [])
+                                       task, actor_id, board, told, event,
+                                       human=human, owner=owner) or [])
+        except _Waiting as w:
+            # What is left of the rule goes to the queue with the moment it may
+            # come back, and this firing ends here. Deliberately not a thread
+            # and not a sleep: a request may not be held for thirty days, and a
+            # wait that lived only in memory would be lost on the next restart.
+            _queue_resume(db, a, task, event, start + i + 1, w.minutes,
+                          human=human, owner=owner)
+            note = (f"{len(acts) - 1 - i} פעולות ממתינות · "
+                    f"ההמשך בעוד {_duration_he(w.minutes)}")
+            if skipped:
+                note += " · " + " · ".join(dict.fromkeys(skipped))
+            return out, note
         except _Skipped as sk:
             skipped.append(sk.reason)
     if acts and len(skipped) == len(acts):
@@ -9372,7 +9666,218 @@ def _run_action(db, a, task, actor_id, board, event=None):
     return out, note
 
 
-def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None):
+def _resolve_tokens(db, text, task, board, event=None, actor=None, owner=None):
+    """Fill the {{…}} in a text from the item the rule is acting on.
+
+    Every token is one the catalog names (see automations.TOKENS) — an unknown
+    one was refused when the rule was saved, so anything left here that does
+    not resolve is a value that is genuinely missing, and it becomes an empty
+    string. Not the word "None": a name is not improved by that in the middle
+    of it, and a person reading the result would not know where it came from.
+
+    `linked.<col>.<field>` answers only where there is exactly ONE item at the
+    other end. "The value from the linked item" is not a value at all when
+    there are three of them, and picking one of them would be an answer nobody
+    asked for.
+    """
+    raw = str(text or "")
+    if "{{" not in raw:
+        return raw
+    now = datetime.now(_board_tz(db, board))
+    uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+
+    def one(name):
+        if name == "item.id":
+            return str(task.id)
+        if name == "item.name":
+            return task.title or ""
+        if name == "item.url":
+            return _item_url(board, task)
+        if name == "board.id":
+            return str(board.id) if board else ""
+        if name == "board.name":
+            return (board.name or "") if board else ""
+        if name == "actor.name":
+            return uname(actor)
+        if name == "actor.email":
+            return (db.query(User.email).filter(User.id == actor).scalar() or "") if actor else ""
+        if name == "owner.name":
+            return uname(owner)
+        if name == "now":
+            return now.strftime("%d/%m/%Y %H:%M")
+        if name == "now.date":
+            return now.strftime("%d/%m/%Y")
+        if name == "now.time":
+            return now.strftime("%H:%M")
+        if name in ("event.old", "event.new"):
+            key = "was" if name.endswith("old") else "now"
+            v = (event or {}).get(key)
+            if v is None and name == "event.new":
+                # the status and priority events name their value directly
+                v = (event or {}).get("status") or (event or {}).get("priority")
+            return _shown_cell(db, board, v)
+        if name.startswith("field."):
+            col = _find_col(db, board.id, name[6:]) if board else None
+            if not col:
+                return ""
+            return _column_cell_text(db, board, task, {"col": col["id"]}) \
+                if col.get("type") == "mirror" else _shown_cell(db, board, (task.custom_fields or {}).get(col["id"]))
+        if name.startswith("linked."):
+            return _linked_token(db, task, board, name[7:])
+        return ""
+
+    return recipes.TOKEN_RE.sub(lambda m: one(m.group(1)), raw)
+
+
+def _shown_cell(db, board, v):
+    """One stored cell value as a person reads it."""
+    if v in (None, "", []):
+        return ""
+    if isinstance(v, list):
+        return ", ".join(_shown_cell(db, board, x) for x in v if x not in (None, ""))
+    if isinstance(v, dict):
+        return str(v.get("label") or v.get("text") or v.get("from") or v.get("value") or "")
+    return str(v)
+
+
+def _linked_token(db, task, board, rest):
+    """`<connect col>.<field>` of the one item at the other end — or nothing."""
+    cid, _, field = rest.partition(".")
+    col = _find_col(db, board.id, cid) if board else None
+    if not col or col.get("type") != "connect":
+        return ""
+    ids = (_linked_ids(db, task.id, cid) if _is_two_way(col)
+           else [i for i in ((task.custom_fields or {}).get(cid) or []) if isinstance(i, int)])
+    if len(ids) != 1:
+        return ""                      # not an unambiguous value
+    other = db.query(Task).filter(Task.id == ids[0]).first()
+    if not other or other.deleted_at:
+        return ""
+    ob = db.query(Board).filter(Board.id == other.board_id).first()
+    if field in ("", "name", "title"):
+        return other.title or ""
+    if field == "id":
+        return str(other.id)
+    if field == "status":
+        return _logged_status(other)
+    if field == "priority":
+        return _logged_priority(other)
+    ocol = _find_col(db, other.board_id, field) if ob else None
+    if not ocol:
+        return ""
+    return _shown_cell(db, ob, (other.custom_fields or {}).get(ocol["id"]))
+
+
+def _item_url(board, task):
+    """A direct link to the item, as the notifications already build one."""
+    base = (os.getenv("APP_BASE_URL") or "").rstrip("/")
+    return f"{base}/?board={board.id if board else ''}&item={task.id}"
+
+
+# What a notification says, and what it may not.
+_NOTICE_WHAT = {"notify_person": "שליחת התראה", "notify_assignees": "שליחת התראה",
+                "assign_person": "שיוך אחראי", "set_status": "שינוי סטטוס",
+                "set_priority": "שינוי עדיפות", "move_to_group": "העברה לקבוצה",
+                "create_subitem": "יצירת תת־פריט", "link_to_item": "קישור לפריט",
+                "create_and_link": "יצירת פריט מקושר",
+                "create_in_group_and_link": "יצירת פריט מקושר",
+                "copy_to_linked": "עדכון פריט מקושר",
+                "post_update": "עדכון בשיחת הפריט"}
+
+
+def _can_see_item(db, task, user_id):
+    """Whether this person may open the item a notification is about.
+
+    An item can be closed to particular people inside a board they may read,
+    and a notification is a copy of its title arriving in their list. The rule
+    is the same one the run log keeps: what somebody may not see, they are not
+    told about either.
+    """
+    if not user_id:
+        return False
+    try:
+        _require_task_view(db, task.id, user_id)
+        return True
+    except HTTPException:
+        return False
+
+
+def _notice_body(db, task, board, label, act, event=None):
+    """The text of a notification an automation sends.
+
+    Five things, because they are the five a person needs to act on it: which
+    rule, what happened, which item (and a way straight to it), which board,
+    and when.
+
+    What it deliberately does NOT carry is the rule's filled-in sentence. That
+    sentence quotes the values the rule was built with — a person's name, an
+    item on another board — and a recipient entitled to this item is not
+    thereby entitled to those. The rule's own name is what identifies it here.
+    """
+    now = datetime.now(_board_tz(db, board)).strftime("%d/%m/%Y %H:%M")
+    trig = recipes.plain(recipes.TRIGGERS.get((event or {}).get("type"), "")) \
+        or (event or {}).get("type") or ""
+    what = _NOTICE_WHAT.get(act, "")
+    lines = [label,
+             " · ".join([x for x in (trig, what) if x]),
+             f"פריט: {task.title or ''}",
+             f"לוח: {board.name if board else ''}",
+             f"זמן: {now}",
+             _item_url(board, task)]
+    return "\n".join([x for x in lines if x and x.strip()])
+
+
+def _recipient_ids(db, board, task, spec, human=None, owner=None):
+    """(who, why_empty) for a notification's recipient.
+
+    Five answers, and four of them are read off the thing that happened — which
+    is what lets one rule serve a board where the right person is different
+    every time. Everyone returned may be notified: somebody who left the board,
+    or whose account was turned off, is dropped here rather than written to.
+
+    An empty answer is NOT an error. The notification is skipped and the reason
+    is in the history, because "nobody was named" is a thing to see rather than
+    a reason to stop the rule.
+    """
+    if not isinstance(spec, dict):
+        spec = {"kind": "user", "value": spec}
+    kind = spec.get("kind") or "user"
+    ok = lambda uid: bool(uid) and _can_be_assigned(db, board.id, uid)
+    if kind == "user":
+        uid = spec.get("value")
+        if ok(uid):
+            return [int(uid)], ""
+        return [], ("נמען ההתראה מושבת" if _account_blocked(db, uid)
+                    else "נמען ההתראה אינו חבר בלוח")
+    if kind == "field":
+        col = _find_col(db, board.id, str(spec.get("value") or ""))
+        if not col:
+            return [], "עמודת הנמענים אינה קיימת בלוח"
+        raw = (task.custom_fields or {}).get(col["id"])
+        got = raw if isinstance(raw, list) else ([] if raw in (None, "") else [raw])
+        ids = []
+        for x in got:
+            try:
+                uid = int(x.get("id") if isinstance(x, dict) else x)
+            except (TypeError, ValueError):
+                continue
+            if ok(uid) and uid not in ids:
+                ids.append(uid)
+        return ids, ("" if ids else f"אין נמען בעמודה '{col.get('title') or col['id']}'")
+    if kind == "actor":
+        return ([human], "") if ok(human) else ([], "מי שביצע את השינוי אינו חבר בלוח")
+    if kind == "owner":
+        return ([owner], "") if ok(owner) else ([], "לאוטומציה אין בעלים שניתן להתריע לו")
+    if kind == "board_admin":
+        ids = [m.user_id for m in db.query(BoardMember)
+               .filter(BoardMember.board_id == board.id,
+                       BoardMember.role == "admin").all() if ok(m.user_id)]
+        return ids, ("" if ids else "אין מנהל לוח פעיל להתריע לו")
+    return [], "סוג נמען לא מוכר"
+
+
+def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
+                    human=None, owner=None):
     """One action of a rule. Raises _Skipped where there is nothing to do.
 
     `cfg` is the action's own values, keyed by the bare field name — see
@@ -9380,23 +9885,29 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None):
     extra action's stored values into that one shape.
     """
     out = []
-    body = f"אוטומציה בלוח '{board.name}': {label} — פריט '{task.title}'."
+    # the text an action writes may be built from the item it is acting on
+    text = lambda v: _resolve_tokens(db, v, task, board, event, human, owner)
+    body = _notice_body(db, task, board, label, act, event)
 
     # An automation is a stored rule: the person it names may have been chosen
     # while they were a member and removed from the board since. Re-check at run
     # time, or a rule becomes a standing way to reach someone who was taken off
     # the board on purpose.
     if act == "notify_person":
-        if not _can_be_assigned(db, task.board_id, cfg.get("person")):
-            raise _Skipped("נמען ההתראה מושבת"
-                           if _account_blocked(db, cfg.get("person"))
-                           else "נמען ההתראה אינו חבר בלוח")
-        _notify(db, cfg.get("person"), "automation", "אוטומציה הופעלה", body,
-                board_id=task.board_id, task_id=task.id)
+        who, why = _recipient_ids(db, board, task, cfg.get("person"), human, owner)
+        allowed = [u for u in who if _can_see_item(db, task, u)]
+        if not allowed:
+            raise _Skipped("לנמען אין הרשאה לראות את הפריט" if who
+                           else (why or "אין נמען להתראה"))
+        who = allowed
+        for uid in who:
+            _notify(db, uid, "automation", "אוטומציה הופעלה", body,
+                    board_id=task.board_id, task_id=task.id)
     elif act == "notify_assignees":
-        people = list(task.assignees)
+        people = [u for u in list(task.assignees) if _can_see_item(db, task, u.id)]
         if not people:
-            raise _Skipped("לפריט אין משויכים")
+            raise _Skipped("לפריט אין משויכים" if not list(task.assignees)
+                           else "למשויכים אין הרשאה לראות את הפריט")
         for u in people:
             _notify(db, u.id, "automation", "אוטומציה הופעלה", body,
                     board_id=task.board_id, task_id=task.id)
@@ -9440,17 +9951,17 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None):
         task.group_id = g.id
     elif act == "create_subitem":
         db.add(Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
-                    title=cfg.get("text") or "תת־פריט", status=TaskStatus.TODO,
+                    title=text(cfg.get("text")) or "תת־פריט", status=TaskStatus.TODO,
                     priority=Priority.MEDIUM, created_by=actor_id))
     elif act == "post_update":
         # An update written by the engine, under the engine's own name. Not a
         # notification: a notification is gone once it is read, and "מה קרה כאן"
         # is answered on the item itself. No mentions, so nobody is pulled into
         # a thread by a rule.
-        text = str(cfg.get("text") or "").strip()
-        if not text:
+        said = text(cfg.get("text")).strip()
+        if not said:
             raise _Skipped("אין תוכן לעדכון")
-        db.add(Comment(task_id=task.id, user_id=actor_id, content=text[:2000],
+        db.add(Comment(task_id=task.id, user_id=actor_id, content=said[:2000],
                        attachments=[], mentions=[], likes=[], seen_by=[]))
     elif act == "copy_to_linked":
         picked = [k for k in (cfg.get("fields") or []) if k in recipes.COPY_FIELDS]
@@ -9466,6 +9977,74 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None):
             moved += _copy_item_fields(db, task, other, picked, actor_id)
         if not moved:
             raise _Skipped("לפריט המקושר כבר יש את הערכים האלה")
+    elif act in ("set_column", "clear_column"):
+        col = _find_col(db, task.board_id, str(cfg.get("column") or ""))
+        if not col:
+            raise _Skipped("העמודה שהכלל מעדכן אינה קיימת בלוח")
+        if col.get("type") in AUTOMATION_UNWATCHABLE_COLUMNS:
+            # a mirror shows another item's value and a formula works one out —
+            # neither is a cell anything can be written into
+            raise _Skipped(f"עמודת {col.get('title') or col['id']} אינה ניתנת לעדכון")
+        cf = dict(task.custom_fields or {})
+        was = cf.get(col["id"])
+        if act == "clear_column":
+            if was in (None, "", []):
+                raise _Skipped("העמודה ריקה כבר")
+            cf.pop(col["id"], None)
+            now_v = None
+        else:
+            now_v, err = _coerce_cell(db, task.board_id, col, text(cfg.get("text")))
+            if err:
+                # "ערך שאינו מתאים לסוג שדה היעד לא יישמר" — and the history
+                # says what was asked for and why it was not written
+                raise _Skipped(err)
+            if now_v == was:
+                raise _Skipped("לעמודה יש את הערך הזה כבר")
+            cf[col["id"]] = now_v
+        task.custom_fields = cf
+        _audit(db, task.id, "update", f"col:{col['id']}",
+               _shown_cell(db, board, was), _shown_cell(db, board, now_v), None)
+        out.append({"type": "column_changed", "col": col["id"], "was": was, "now": now_v})
+    elif act == "unassign_person":
+        u = db.query(User).filter(User.id == cfg.get("person")).first()
+        if not u or u not in task.assignees:
+            raise _Skipped("האדם אינו משויך לפריט")
+        task.assignees.remove(u)
+        out.append({"type": "person_unassigned", "user_ids": [u.id]})
+    elif act == "create_item":
+        grp = db.query(Group).filter(Group.id == cfg.get("group"),
+                                     Group.board_id == task.board_id).first()
+        if not grp:
+            raise _Skipped("הקבוצה שהכלל יוצר בה אינה קיימת בלוח")
+        made = Task(board_id=task.board_id, group_id=grp.id,
+                    title=(text(cfg.get("text")) or "").strip()[:500] or "פריט חדש",
+                    status=grp.task_status or TaskStatus.TODO,
+                    priority=Priority.MEDIUM, created_by=actor_id)
+        db.add(made)
+        db.flush()
+        _ensure_item_uid(db, made)
+        _audit(db, made.id, "create", field="item", old=None, new=made.title,
+               user_id=actor_id)
+    elif act == "create_mapped_and_link":
+        col = _find_col(db, task.board_id, cfg.get("connect"))
+        if not col or col.get("type") != "connect":
+            raise _Skipped("עמודת הקישור אינה קיימת בלוח")
+        grp = db.query(Group).filter(Group.id == cfg.get("target_group"),
+                                     Group.board_id == cfg.get("board")).first()
+        if not grp:
+            raise _Skipped("הקבוצה שנבחרה אינה קיימת בלוח היעד")
+        bad = _map_problems(db, task.board_id, cfg.get("board"), cfg.get("map"))
+        if bad:
+            raise _Skipped("מיפוי שדות אינו תקין — " + " · ".join(bad[:2]))
+        made = _create_linked_item(db, task, col, cfg.get("board"),
+                                   text(cfg.get("text")), actor_id, group=grp)
+        if made is None:
+            raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
+        _copy_mapped_fields(db, task, made, cfg.get("map"), actor_id)
+        out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
+    elif act == "wait":
+        # handled a level up, where the rest of the actions are — see _run_action
+        raise _Waiting(int(cfg.get("days") or 0))
     elif act == "link_to_item":
         col = _find_col(db, task.board_id, cfg.get("connect"))
         if not col or col.get("type") != "connect":
@@ -9481,7 +10060,7 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None):
         if not col or col.get("type") != "connect":
             raise _Skipped("עמודת הקישור אינה קיימת בלוח")
         made = _create_linked_item(db, task, col, cfg.get("board"),
-                                   cfg.get("text"), actor_id)
+                                   text(cfg.get("text")), actor_id)
         if made is None:
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
         out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
@@ -9494,7 +10073,7 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None):
         if not grp:
             raise _Skipped("הקבוצה שנבחרה אינה קיימת בלוח היעד")
         made = _create_linked_item(db, task, col, cfg.get("board"),
-                                   cfg.get("text"), actor_id, group=grp)
+                                   text(cfg.get("text")), actor_id, group=grp)
         if made is None:
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
         _copy_item_fields(db, task, made,
@@ -9934,6 +10513,26 @@ def _automation_blockers(db, board, a):
                     nm = db.query(User.name).filter(User.id == v).scalar() or v
                     why = _not_taggable_reason(db, a.board_id, v) or "אינו חבר בלוח"
                     out.append({"kind": "permission", "text": f"{nm} {why}"})
+            elif f["type"] == "recipient":
+                # only the two that name something in advance can be wrong in
+                # advance. "מי שביצע את השינוי" is not knowable until something
+                # happens, and a rule is not broken for not knowing it yet.
+                spec = v if isinstance(v, dict) else {"kind": "user", "value": v}
+                if spec.get("kind") == "user":
+                    uid = spec.get("value")
+                    if not _can_be_assigned(db, a.board_id, uid):
+                        nm = db.query(User.name).filter(User.id == uid).scalar() or uid
+                        why = _not_taggable_reason(db, a.board_id, uid) or "אינו חבר בלוח"
+                        out.append({"kind": "permission", "text": f"{nm} {why}"})
+                elif spec.get("kind") == "field":
+                    col = _find_col(db, a.board_id, str(spec.get("value") or ""))
+                    if not col:
+                        out.append({"kind": "dependency",
+                                    "text": "עמודת הנמענים אינה קיימת בלוח"})
+                    elif recipes.column_kind(col.get("type")) != "people":
+                        out.append({"kind": "dependency",
+                                    "text": f"עמודת '{col.get('title') or col['id']}' "
+                                            "אינה עמודת אנשים"})
             elif f["type"] == "status":
                 if not any(x["key"] == str(v) for x in _board_statuses(board)):
                     out.append({"kind": "dependency", "text": f"הסטטוס '{v}' אינו קיים בלוח"})
@@ -9950,6 +10549,12 @@ def _automation_blockers(db, board, a):
             elif f["type"] == "item":
                 if not db.query(Task).filter(Task.id == v, Task.deleted_at == None).first():  # noqa: E711
                     out.append({"kind": "dependency", "text": "הפריט שהכלל מקשר אליו נמחק"})
+            elif f["type"] == "map":
+                bad = _map_problems(db, a.board_id,
+                                    one["values"].get("board") or a.board_id, v)
+                if bad:
+                    out.append({"kind": "dependency",
+                                "text": "מיפוי שדות אינו תקין — " + bad[0]})
             elif f["type"] == "target_group":
                 if not db.query(Group).filter(Group.id == v).first():
                     out.append({"kind": "dependency", "text": "הקבוצה בלוח היעד נמחקה"})
@@ -10124,7 +10729,12 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         # untouched by this one failing.
         sp = db.begin_nested()
         try:
-            follow, note = _run_action(db, a, task, engine_id, board, event)
+            follow, note = _run_action(db, a, task, engine_id, board, event,
+                                       human=actor_id, owner=a.owner_id or a.created_by,
+                                       # what a notification calls the rule: its
+                                       # own name where it has one, and only
+                                       # then the sentence
+                                       notice=(a.name or "").strip())
             sp.commit()
         except BaseException:
             sp.rollback()
@@ -10215,6 +10825,9 @@ def _sweep_due_date_automations(db, board_id, actor_id):
     """
     if _automation_freeze(db, board_id) is not None:
         return
+    # the same read that sweeps the dates delivers what has come due in the
+    # queue — a rule that waited is waiting on the same clock
+    _drain_automation_queue(db, board_id, actor_id)
     rules = [a for a in db.query(Automation).filter(
                 Automation.board_id == board_id,
                 Automation.is_active == True)                             # noqa: E712
@@ -10611,6 +11224,20 @@ AUTOMATION_QUEUE_PAUSE = float(os.getenv("AUTOMATION_QUEUE_PAUSE", "1.0"))
 _queue_last = {}            # board id → when its last slice went out
 
 
+def _queue_resume(db, a, task, event, index, minutes, human=None, owner=None):
+    """Put the rest of a rule's actions in the queue, to come back later."""
+    after = (datetime.now(timezone.utc) + timedelta(minutes=minutes))
+    db.add(AutomationQueue(
+        board_id=a.board_id, task_id=task.id,
+        batch_id=((event or {}).get("batch") or "")[:36],
+        approved_by=human,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        event={**(event or {}), "type": "resume", "automation_id": a.id,
+               "from": int(index), "after": after.isoformat(),
+               "human": human, "owner": owner,
+               "source": (event or {}).get("source") or "automation"}))
+
+
 def _queue_pending(db, board_id):
     return (db.query(AutomationQueue)
               .filter(AutomationQueue.board_id == board_id,
@@ -10730,14 +11357,51 @@ def _drain_automation_queue(db, board_id, actor_id=None, force=False):
         return 0
     _queue_last[board_id] = now
     sent = 0
+    now = datetime.now(timezone.utc)
     for row in pending[:max(1, AUTOMATION_QUEUE_SLICE)]:
+        ev = row.event or {}
+        if ev.get("type") == "resume" and not _wait_is_over(ev, now):
+            continue                   # its moment has not come; it stays queued
         t = db.query(Task).filter(Task.id == row.task_id).first()
         if t is not None and not t.deleted_at:
-            _run_automations(db, t, row.event or {}, actor_id or row.approved_by)
+            if ev.get("type") == "resume":
+                _resume_rule(db, ev, t)
+            else:
+                _run_automations(db, t, ev, actor_id or row.approved_by)
         row.done_at = datetime.now(timezone.utc).replace(tzinfo=None)
         sent += 1
     db.commit()
     return sent
+
+
+def _wait_is_over(ev, now):
+    try:
+        return datetime.fromisoformat(str(ev.get("after"))) <= now
+    except (TypeError, ValueError):
+        return True                    # unreadable: better late than never
+
+
+def _resume_rule(db, ev, task):
+    """The second half of a rule that waited. Never raises — a rule that blew
+    up on its way back must not take the drain down with it."""
+    a = db.query(Automation).filter(Automation.id == ev.get("automation_id")).first()
+    board = db.query(Board).filter(Board.id == task.board_id).first()
+    if not a or not board or board.deleted_at:
+        return
+    if a.status in ("deleting",) or _automation_freeze(db, a.board_id) is not None:
+        return
+    try:
+        follow, note = _run_action(db, a, task, _automation_identity(db), board,
+                                   {k: v for k, v in ev.items() if k != "type"},
+                                   human=ev.get("human"), owner=ev.get("owner"),
+                                   start=int(ev.get("from") or 0))
+    except Exception as e:             # noqa: BLE001
+        _log_automation_run(db, board, a, task, ev, "failed",
+                            f"{type(e).__name__}: {e}", 0, ev.get("human"))
+        return
+    _log_automation_run(db, board, a, task, ev, "ran",
+                        "המשך אחרי המתנה" + (f" · {note}" if note else ""),
+                        0, ev.get("human"))
 
 
 @app.get("/api/boards/{board_id}/automations/queue")
@@ -10772,7 +11436,14 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
     them may be listened to, asked about, written — so the question "can I use
     this column" is answered once, here, instead of in three screens.
     """
-    out = recipes.capabilities()
+    out = {**recipes.capabilities(),
+           "recipients": recipes.recipients_catalog(),
+           "tokens": recipes.tokens_catalog(),
+           "wait": {"min_minutes": recipes.MIN_WAIT_MINUTES,
+                    "max_days": recipes.MAX_WAIT_DAYS},
+           "map": {"max_pairs": recipes.MAX_MAP_PAIRS,
+                   "builtins": [{"key": k, "label": MAP_BUILTIN_HE[k], "kind": v}
+                                for k, v in MAP_BUILTINS.items()]}}
     if not board_id:
         return out
     with Session(engine) as db:
@@ -10956,12 +11627,20 @@ def _check_automation_person(db, board_id, cfg):
     # every action in the rule, not only the recipe's own: a second action that
     # notifies somebody who was never invited is the same rule that silently
     # does nothing, one line further down
-    people = [(cfg or {}).get("a_person")]
+    # A recipient that NAMES a person is checked here like any other; one that
+    # is read off the event ("מי שביצע את השינוי", "מנהל הלוח") names nobody in
+    # advance and has nothing to check until something happens.
+    def _named(v):
+        if isinstance(v, dict):
+            return v.get("value") if v.get("kind") == "user" else None
+        return v
+
+    people = [_named((cfg or {}).get("a_person"))]
     for extra in (cfg or {}).get(recipes.ACTIONS_KEY) or []:
         values = (extra or {}).get("values") or {}
         for f in recipes.action_fields(str((extra or {}).get("key") or "")):
-            if f["type"] == "person":
-                people.append(values.get(f["key"]))
+            if f["type"] in ("person", "recipient"):
+                people.append(_named(values.get(f["key"])))
     for pid in people:
         if pid in (None, ""):
             continue
@@ -11045,6 +11724,7 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
         if err:
             raise HTTPException(400, err)
         _check_automation_person(db, board_id, cfg)
+        _check_automation_map(db, board_id, data["recipe_id"], cfg)
         _check_automation_reach(db, board_id, data["recipe_id"], cfg, user_id)
         meta = _automation_meta(db, board_id, data)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -11188,6 +11868,7 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
             if err:
                 raise HTTPException(400, err)
             _check_automation_person(db, a.board_id, cfg)
+            _check_automation_map(db, a.board_id, a.recipe_id, cfg)
             _check_automation_reach(db, a.board_id, a.recipe_id, cfg, user_id)
             if live:
                 snap = _snapshot_automation(a)
@@ -11317,6 +11998,10 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
             raise HTTPException(404, "board not found")
         if not _can_view_automations(db, b, user_id):
             raise HTTPException(403, "אין לך הרשאה לצפות בהיסטוריית ההפעלות")
+        # a queued run that has come due goes out before the log is read, so
+        # the history somebody is looking at is not one step behind
+        if _can_manage_automations(db, b, user_id):
+            _drain_automation_queue(db, board_id, user_id)
         q = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
         if outcome in RUN_OUTCOMES:
             q = q.filter(AutomationRun.outcome == outcome)
@@ -11504,6 +12189,12 @@ AUTOMATION_ACTION_WRITES = {
     "create_and_link":  ["קישור בין לוחות"],
     "create_in_group_and_link": ["קישור בין לוחות", "קבוצה"],
     "post_update":      ["שיחת הפריט"],
+    "set_column":       ["עמודה בלוח"],
+    "clear_column":     ["עמודה בלוח"],
+    "unassign_person":  ["אחראים"],
+    "create_item":      ["פריט חדש"],
+    "wait":             [],
+    "create_mapped_and_link": ["קישור בין לוחות", "קבוצה", "שדות ממופים"],
     "copy_to_linked":   ["שדות בפריט המקושר"],
 }
 # What each trigger reads.
@@ -11560,6 +12251,16 @@ def _automation_impact(db, board, a, viewer=None):
                 recipients.append({"name": u.name if u else str(v),
                                    "kind": "נמען מוגדר",
                                    "ok": _can_be_assigned(db, board.id, v)})
+            elif f["type"] == "recipient":
+                spec = v if isinstance(v, dict) else {"kind": "user", "value": v}
+                kind = spec.get("kind") or "user"
+                recipients.append({
+                    "name": _recipient_label(db, board, spec),
+                    "kind": recipes.RECIPIENTS.get(kind, "נמען"),
+                    # only a named person can be checked in advance; the rest
+                    # are read off the event, which has not happened yet
+                    "ok": (_can_be_assigned(db, board.id, spec.get("value"))
+                           if kind == "user" else True)})
             elif f["type"] == "connect":
                 col = _find_col(db, board.id, str(v))
                 title = (col or {}).get("title") or str(v)
@@ -11676,7 +12377,8 @@ def _automation_loop_risk(db, board, a):
     PRODUCES = {"set_status": "status_changes_to", "set_priority": "priority_changes_to",
                 "assign_person": "person_assigned", "link_to_item": "link_added",
                 "create_and_link": "link_added",
-                "create_in_group_and_link": "link_added"}
+                "create_in_group_and_link": "link_added",
+                "create_mapped_and_link": "link_added"}
     # every action the rule carries, because any one of them is enough to start
     # the rule on the other side
     produces = {PRODUCES[x["key"]] for x in recipes.action_list(a.recipe_id, a.config or {})
@@ -11917,10 +12619,12 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
                 "no_op": False, "note": ""}
     if key in ("notify_person", "notify_assignees"):
         if key == "notify_person":
-            u = db.query(User).filter(User.id == values.get("person")).first()
-            who = u.name if u else "—"
-            no_op = not _can_be_assigned(db, board.id, values.get("person"))
-            note = "הנמען אינו חבר בלוח — לא תישלח התראה" if no_op else ""
+            ids, why = _recipient_ids(db, board, task, values.get("person"))
+            who = (", ".join(db.query(User.name).filter(User.id == i).scalar() or str(i)
+                             for i in ids) if ids
+                   else _recipient_label(db, board, values.get("person")))
+            no_op = not ids
+            note = (why or "אין נמען — ההתראה תדולג") if no_op else ""
         else:
             people = [u.name for u in list(task.assignees)]
             who = ", ".join(people) if people else "—"
@@ -11939,6 +12643,25 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
                 "to": shown("item", values.get("item")) if key == "link_to_item"
                       else (values.get("text") or ""),
                 "from": "", "no_op": False, "note": note}
+    if key in ("set_column", "clear_column"):
+        col = db and _find_col(db, task.board_id, str(values.get("column") or ""))
+        name = (col or {}).get("title") or values.get("column") or "—"
+        was = _shown_cell(db, board, (task.custom_fields or {}).get((col or {}).get("id")))
+        to = "" if key == "clear_column" else str(values.get("text") or "")
+        return {"what": f"עדכון עמודה «{name}»", "to": to or "(ריק)", "from": was,
+                "no_op": not col, "note": "" if col else "העמודה אינה קיימת בלוח"}
+    if key == "unassign_person":
+        u = db.query(User).filter(User.id == values.get("person")).first()
+        on = bool(u and u in list(task.assignees))
+        return {"what": "הסרת שיוך", "to": u.name if u else "—", "from": "",
+                "no_op": not on, "note": "" if on else "האדם אינו משויך לפריט"}
+    if key == "create_item":
+        g = db.query(Group).filter(Group.id == values.get("group")).first()
+        return {"what": "יצירת פריט", "to": values.get("text") or "", "from": "",
+                "no_op": not g, "note": f"בקבוצה {g.name}" if g else "הקבוצה אינה קיימת"}
+    if key == "wait":
+        return {"what": "המתנה", "to": _duration_he(values.get("days")), "from": "",
+                "no_op": False, "note": "הפעולות שאחריה יתבצעו מאוחר יותר"}
     if key == "post_update":
         return {"what": "עדכון בשיחת הפריט", "to": values.get("text") or "", "from": "",
                 "no_op": not str(values.get("text") or "").strip(),
@@ -12051,6 +12774,7 @@ def publish_automation_draft(automation_id: int, data: dict = None,
         if err:
             raise HTTPException(400, f"לא ניתן להפעיל את הטיוטה: {err}")
         _check_automation_person(db, a.board_id, cfg)
+        _check_automation_map(db, a.board_id, a.recipe_id, cfg)
         _check_automation_reach(db, a.board_id, a.recipe_id, cfg, user_id)
         before = _snapshot_automation(a)
         a.config = cfg
@@ -12101,9 +12825,10 @@ def discard_automation_draft(automation_id: int, user_id: int = Depends(current_
 _VERSION_GROUPS = [
     ("trigger", "גורם מפעיל", lambda k, f: k == "recipe_id"),
     ("conditions", "תנאים", lambda k, f: k.startswith("t_") or k == recipes.CONDITION_KEY),
-    ("actions", "פעולות", lambda k, f: (k.startswith("a_") and f != "person")
+    ("actions", "פעולות", lambda k, f: (k.startswith("a_") and f not in ("person", "recipient"))
                                        or k == recipes.ACTIONS_KEY),
-    ("permissions", "הרשאות", lambda k, f: k == "owner_id" or (k.startswith("a_") and f == "person")),
+    ("permissions", "הרשאות", lambda k, f: k == "owner_id"
+                                           or (k.startswith("a_") and f in ("person", "recipient"))),
     ("order", "סדר", lambda k, f: k in ("run_order", "importance")),
 ]
 
@@ -12147,6 +12872,8 @@ def compare_automation_versions(automation_id: int, a: int = 0, b: int = 0,
                 # same reasoning for the extra actions: the stored list is JSON,
                 # and what changed has to be readable as the sentence it is
                 return " וגם ".join(_action_phrases(db, board, value, quote=False)) or "—"
+            if t == "recipient":
+                return _recipient_label(db, board, value)
             if t == "person" or key == "owner_id":
                 return db.query(User.name).filter(User.id == value).scalar() or str(value)
             if t == "status":

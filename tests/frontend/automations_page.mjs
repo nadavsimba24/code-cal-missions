@@ -18,6 +18,7 @@ function grabConst(name){
 }
 
 const st={board:{id:1,name:'לוח תשתיות',groups:[],my_role:'admin'},boards:[]};
+let lastPop='';
 const stored={};
 const localStorage={getItem:k=>stored[k]||null,setItem:(k,v)=>{stored[k]=String(v);}};
 const A=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','avatarInner','boardStatusList',
@@ -26,7 +27,9 @@ const A=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','ava
   grabConst('Automations')+' return Automations;')(
   st, x=>String(x==null?'':x), ()=>{}, {ago:()=>'עכשיו',goto(){}}, ()=>'01/01/2026',
   ()=>'01/01/2026',
-  ()=>'', ()=>[], ()=>[], ()=>[], ()=>1, async()=>({}), ()=>{}, ()=>{}, ()=>{},
+  ()=>'', ()=>[], ()=>[],
+  ()=>[{id:'col_a',type:'text',title:'אזור'},{id:'col_p',type:'people',title:'מלווה'}],
+  ()=>1, async()=>({}), (a,html)=>{lastPop=String(html||'');}, ()=>{}, ()=>{},
   ()=>{}, ()=>{}, {getElementById:()=>null}, ()=>{}, localStorage);
 
 const RULES=[
@@ -678,6 +681,53 @@ ck('a board with no created-rule says there is nothing to run',
    mg.includes('אין בלוח אוטומציה שמופעלת ביצירת פריט'));
 ck('...and does not offer to', mg.includes('disabled'));
 A.imprt=null;
+
+
+/* ── פעולות וערכים דינמיים ────────────────────────────────────────────────
+   Who a notification goes to, how long a rule waits, and a value taken from
+   the item rather than typed into the rule. */
+A.caps={recipients:[{key:'user',label:'משתמש קבוע',takes_value:true},
+                    {key:'field',label:'אחראי משדה אנשים',takes_value:true},
+                    {key:'actor',label:'המשתמש שביצע את השינוי'},
+                    {key:'owner',label:'בעל האוטומציה'},
+                    {key:'board_admin',label:'מנהל הלוח'}],
+        tokens:[{token:'item.name',label:'שם הפריט'},{token:'now.date',label:'תאריך ההפעלה'},
+                {token:'field.',label:'ערך של עמודה בפריט',takes_column:true}],
+        wait:{min_minutes:1,max_days:30}};
+A.members=[{user_id:4,name:'יואב'},{user_id:5,name:'דנה'}];
+A.building={recipe:{id:'x',fields:[]},values:{},conds:[],acts:[]};
+A._recInto=null;
+A.pickRecipient({},'a_person',null);
+ck('the recipient offers all five kinds',
+   ['משתמש קבוע','אחראי משדה אנשים','המשתמש שביצע את השינוי','בעל האוטומציה','מנהל הלוח']
+     .every(x=>lastPop.includes(x)), lastPop.slice(0,200));
+A.pickRecipientKind('actor');
+ck('one read off the event is chosen in a single step',
+   JSON.stringify(A.building.values['a_person'].v)==='{"kind":"actor"}',
+   JSON.stringify(A.building.values['a_person']));
+ck('...and reads as what it is', A.building.values['a_person'].label==='המשתמש שביצע את השינוי');
+A.pickRecipient({},'a_person',null);
+A.pickRecipientKind('user');
+A.setRecipient('user',1);
+ck('a named person is chosen in two',
+   JSON.stringify(A.building.values['a_person'].v)==='{"kind":"user","value":5}'
+   && A.building.values['a_person'].label==='דנה');
+
+A.building.values={};
+A.pickWait({},'a_days',null);
+ck('a wait is offered in the words people use', lastPop.includes('שלוש שעות'));
+A.setWait(180);
+ck('...and stored in minutes', A.building.values['a_days'].v===180);
+ck('...reading back as hours', A.building.values['a_days'].label==='3 שעות',
+   A.building.values['a_days'].label);
+A.setWait(1);  ck('a minute is a minute', A.building.values['a_days'].label==='דקה');
+A.setWait(2880); ck('two days are two days', A.building.values['a_days'].label==='יומיים');
+A.setWait(99999); ck('and thirty days is the ceiling', A.building.values['a_days'].v===43200);
+
+const tm=A.tokenMenuHTML();
+ck('a text blank offers values from the item', tm.includes('ערך מהפריט')
+   && tm.includes("Automations.putToken('item.name')"));
+ck('...including the board\'s own columns', tm.includes("putToken('field."));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

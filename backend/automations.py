@@ -9,6 +9,8 @@ admin fills in. A stored Automation keeps only `recipe_id` + the filled values,
 so a recipe's wording can be improved later without rewriting saved rules.
 """
 
+import re
+
 import filter_ast          # pure, like this module: no app imports, no database
 
 # ── field types the UI knows how to render ──────────────────────────
@@ -16,7 +18,7 @@ import filter_ast          # pure, like this module: no app imports, no database
 # group → a group on the board; text → free text.
 # connect → a connect column on this board; item → a specific item to link to;
 # board → one of the boards that connect column points at.
-FIELD_TYPES = ("status", "priority", "person", "group", "text",
+FIELD_TYPES = ("status", "priority", "person", "recipient", "group", "text",
                "connect", "item", "board")
 
 # ── conditions ("רק אם") ────────────────────────────────────────────
@@ -194,6 +196,121 @@ def capabilities():
             "unmet_condition_is": "skipped",
         },
     }
+
+
+# ── ערכים דינמיים ───────────────────────────────────────────────────────────
+# A value an action writes can be taken from the item it is acting on instead
+# of typed into the rule. Written as {{…}} inside a text, which is the one
+# place a person can put several of them in a row and read the result:
+#
+#     "המשך טיפול ב-{{item.name}} — {{field.col_area}}"
+#
+# Every token is named here. An unknown one is refused when the rule is SAVED
+# rather than left to resolve into nothing at three in the morning, and a token
+# whose value is missing resolves to an empty string rather than to the word
+# "None" — a name is not improved by the word None in the middle of it.
+TOKENS = {
+    "item.id":     "מזהה הפריט",
+    "item.name":   "שם הפריט",
+    "item.url":    "קישור ישיר לפריט",
+    "board.id":    "מזהה הלוח",
+    "board.name":  "שם הלוח",
+    "actor.name":  "מי ביצע את השינוי",
+    "actor.email": "הדוא\"ל של מי שביצע",
+    "now":         "זמן ההפעלה",
+    "now.date":    "תאריך ההפעלה",
+    "now.time":    "שעת ההפעלה",
+    "event.old":   "הערך הקודם",
+    "event.new":   "הערך החדש",
+    "owner.name":  "בעל האוטומציה",
+}
+# Two that take a column after them: a field of this item, and a field of the
+# item at the other end of a connect column — the latter only where there is
+# exactly one linked item, because "the value from the linked item" is not a
+# value at all when there are three of them.
+TOKEN_PREFIXES = {
+    "field.":  "ערך של עמודה בפריט",
+    "linked.": "ערך חד־משמעי מפריט מקושר",
+}
+TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
+
+
+# ── נמען ההתראה ─────────────────────────────────────────────────────────────
+# Who a notification goes to. A fixed person is one answer of five, and the
+# other four are read off the thing that happened — which is what makes one
+# rule serve a board where the right recipient is a different person each time.
+#
+# An empty one is NOT an error and NOT everybody: the notification is skipped
+# and the log says so, because "nobody was named" is a thing to see in the
+# history rather than a reason to stop the rule.
+RECIPIENTS = {
+    "user":      "משתמש קבוע",
+    "field":     "אחראי משדה אנשים",
+    "actor":     "המשתמש שביצע את השינוי",
+    "owner":     "בעל האוטומציה",
+    "board_admin": "מנהל הלוח",
+}
+RECIPIENT_NEEDS_VALUE = ("user", "field")
+
+
+def recipients_catalog():
+    return [{"key": k, "label": he, "takes_value": k in RECIPIENT_NEEDS_VALUE}
+            for k, he in RECIPIENTS.items()]
+
+
+def recipient_value(raw):
+    """(clean, error) for a notification's recipient.
+
+    Stored as {kind, value} — a user id for "משתמש קבוע", a column id for
+    "אחראי משדה אנשים", nothing for the three that are read off the event.
+    A bare number is the old shape: one fixed person, which is what every rule
+    written before this meant.
+    """
+    if isinstance(raw, (int, str)) and str(raw).lstrip("-").isdigit():
+        return {"kind": "user", "value": int(raw)}, None
+    if not isinstance(raw, dict):
+        return None, "נמען לא תקין"
+    kind = str(raw.get("kind") or "user")
+    if kind not in RECIPIENTS:
+        return None, "סוג נמען לא מוכר"
+    if kind == "user":
+        try:
+            return {"kind": kind, "value": int(raw.get("value"))}, None
+        except (TypeError, ValueError):
+            return None, "חסר נמען"
+    if kind == "field":
+        col = str(raw.get("value") or "").strip()
+        if not col:
+            return None, "חסרה עמודת אנשים בנמען"
+        return {"kind": kind, "value": col}, None
+    return {"kind": kind}, None
+
+
+def tokens_catalog():
+    return ([{"token": k, "label": he, "takes_column": False} for k, he in TOKENS.items()]
+            + [{"token": k, "label": he, "takes_column": True}
+               for k, he in TOKEN_PREFIXES.items()])
+
+
+def token_names(text):
+    """Every {{…}} in a text, in the order they appear."""
+    return TOKEN_RE.findall(str(text or ""))
+
+
+def unknown_tokens(text):
+    """The ones this engine has no answer for — refused when the rule is saved.
+
+    A typo in a token is a value that silently never appears, which is the
+    hardest kind of mistake to see in a rule that otherwise works.
+    """
+    bad = []
+    for name in token_names(text):
+        if name in TOKENS:
+            continue
+        if any(name.startswith(p) and len(name) > len(p) for p in TOKEN_PREFIXES):
+            continue
+        bad.append(name)
+    return bad
 
 
 # A mirror can reflect several linked items. Whoever writes the rule says
@@ -585,7 +702,59 @@ ACTIONS = {
     "create_in_group_and_link":
         "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, העתק {fields} "
         "וקשר אותו בעמודה {connect}",
+    # ── the rest of the MVP table ──
+    "set_column":       "עדכן את העמודה {column} ל{text}",
+    "clear_column":     "נקה את העמודה {column}",
+    "unassign_person":  "הסר את השיוך של {person}",
+    "create_item":      "צור פריט בשם {text} בקבוצה {group}",
+    # Waiting is an action like any other: it sits between two of them and the
+    # ones after it happen later. A minute is the shortest wait worth having
+    # and thirty days the longest the specification asks for.
+    "wait":             "המתן {days} לפני הפעולה הבאה",
+    # The fullest form of creating an item on another board: which group, what
+    # it is called, and a mapping between the columns of the two boards. A
+    # separate action rather than more placeholders on the ones before it — a
+    # rule somebody already built is not re-asked a question it was never
+    # asked, which is the versioning rule in practice.
+    "create_mapped_and_link":
+        "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, מפה {map} "
+        "וקשר אותו בעמודה {connect}",
 }
+MIN_WAIT_MINUTES = 1
+MAX_WAIT_DAYS = 30
+# How many pairs one mapping may carry. A mapping is read as a table by a
+# person before they switch the rule on, and a table nobody reads is not a
+# safeguard.
+MAX_MAP_PAIRS = 20
+
+
+def map_value(raw):
+    """(clean, error) for a field mapping — the SHAPE of it only.
+
+    Whether the two sides exist, and whether their types can carry each
+    other, is a question about two boards and is answered where the boards are
+    (see _check_automation_map). Here: a list of pairs, each naming a source
+    and a target, with no side empty and no target written twice.
+    """
+    if raw in (None, "", []):
+        return None, "חסר מיפוי שדות"
+    if not isinstance(raw, list):
+        return None, "מיפוי שדות אינו תקין"
+    if len(raw) > MAX_MAP_PAIRS:
+        return None, f"אפשר למפות עד {MAX_MAP_PAIRS} שדות"
+    out, seen = [], set()
+    for pair in raw:
+        if not isinstance(pair, dict):
+            return None, "מיפוי שדות אינו תקין"
+        a = str(pair.get("from") or "").strip()
+        b = str(pair.get("to") or "").strip()
+        if not a or not b:
+            return None, "במיפוי יש שדה בלי צד שני"
+        if b in seen:
+            return None, "אותו שדה יעד מופיע פעמיים במיפוי"
+        seen.add(b)
+        out.append({"from": a[:64], "to": b[:64]})
+    return out, None
 
 # What "השדות שהוגדרו" may be. The item's own built-ins, which every board has
 # — a custom column exists on one board under one id and on the next board
@@ -643,7 +812,7 @@ MAX_ACTIONS = 4
 # own action declares the same fields prefixed `a_` (see RECIPES), and
 # action_list below reads the two into one shape.
 ACTION_FIELDS = {
-    "notify_person":    [_f("person", "person", "נמען")],
+    "notify_person":    [_f("person", "recipient", "נמען")],
     "notify_assignees": [],
     "assign_person":    [_f("person", "person", "אחראי")],
     "set_status":       [_f("status", "status", "סטטוס")],
@@ -656,6 +825,19 @@ ACTION_FIELDS = {
                          _f("board", "board", "לוח היעד"),
                          _f("text", "text", "שם הפריט החדש")],
     "post_update":      [_f("text", "text", "תוכן העדכון")],
+    "set_column":       [_f("column", "column", "עמודה"),
+                         _f("text", "text", "הערך החדש")],
+    "clear_column":     [_f("column", "column", "עמודה")],
+    "unassign_person":  [_f("person", "person", "אחראי")],
+    "create_item":      [_f("text", "text", "שם הפריט"),
+                         _f("group", "group", "קבוצה")],
+    "wait":             [_f("days", "wait", "המתנה")],
+    "create_mapped_and_link":
+                        [_f("connect", "connect", "עמודת הקישור"),
+                         _f("board", "board", "לוח היעד"),
+                         _f("target_group", "target_group", "הקבוצה בלוח היעד"),
+                         _f("text", "text", "שם הפריט החדש"),
+                         _f("map", "map", "מיפוי שדות")],
     "copy_to_linked":   [_f("fields", "fields", "השדות להעתקה")],
     "create_in_group_and_link":
                         [_f("connect", "connect", "עמודת הקישור"),
@@ -726,8 +908,31 @@ def _coerce_field(f, v, require):
     neighbour is held to."""
     if f["type"] == "text":
         v = str(v or "").strip()[:200]
+        # a token nobody can answer is refused where it is written — in an
+        # extra action exactly as in the recipe's own placeholder
+        bad = unknown_tokens(v)
+        if bad:
+            return None, "ערך דינמי לא מוכר: {{" + bad[0] + "}}"
     elif f["type"] == "connect":
         v = str(v or "").strip()          # a column id, not a number
+    elif f["type"] == "recipient":
+        v, err = recipient_value(v)
+        if err:
+            return None, (err if require else None)
+        return v, None
+    elif f["type"] == "map":
+        v, err = map_value(v)
+        if err:
+            return None, (err if require else None)
+        return v, None
+    elif f["type"] == "wait":
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None, (f"חסר ערך בשדה '{f['label']}'" if require else None)
+        if n < MIN_WAIT_MINUTES or n > MAX_WAIT_DAYS * 24 * 60:
+            return None, f"המתנה היא בין דקה ל-{MAX_WAIT_DAYS} ימים"
+        return n, None
     elif f["type"] == "fields":
         # a set of the item's own built-ins, in the catalog's order so two rules
         # that chose the same fields read the same way
@@ -817,7 +1022,7 @@ def _primary_values(recipe_id, config):
 RECIPES = [
     # ── status ──
     {"id": "status_notify_person", "trigger": "status_changes_to", "action": "notify_person",
-     "fields": [_f("t_status", "status", "סטטוס"), _f("a_person", "person", "נמען")]},
+     "fields": [_f("t_status", "status", "סטטוס"), _f("a_person", "recipient", "נמען")]},
     {"id": "status_notify_assignees", "trigger": "status_changes_to", "action": "notify_assignees",
      "fields": [_f("t_status", "status", "סטטוס")]},
     {"id": "status_assign_person", "trigger": "status_changes_to", "action": "assign_person",
@@ -835,13 +1040,13 @@ RECIPES = [
     {"id": "created_set_status", "trigger": "item_created", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
     {"id": "created_notify_person", "trigger": "item_created", "action": "notify_person",
-     "fields": [_f("a_person", "person", "נמען")]},
+     "fields": [_f("a_person", "recipient", "נמען")]},
     {"id": "created_set_priority", "trigger": "item_created", "action": "set_priority",
      "fields": [_f("a_priority", "priority", "עדיפות")]},
 
     # ── priority ──
     {"id": "priority_notify_person", "trigger": "priority_changes_to", "action": "notify_person",
-     "fields": [_f("t_priority", "priority", "עדיפות"), _f("a_person", "person", "נמען")]},
+     "fields": [_f("t_priority", "priority", "עדיפות"), _f("a_person", "recipient", "נמען")]},
     {"id": "priority_assign_person", "trigger": "priority_changes_to", "action": "assign_person",
      "fields": [_f("t_priority", "priority", "עדיפות"), _f("a_person", "person", "אחראי")]},
 
@@ -849,13 +1054,13 @@ RECIPES = [
     {"id": "assigned_set_status", "trigger": "person_assigned", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
     {"id": "assigned_notify_person", "trigger": "person_assigned", "action": "notify_person",
-     "fields": [_f("a_person", "person", "נמען")]},
+     "fields": [_f("a_person", "recipient", "נמען")]},
 
     # ── due date ──
     {"id": "due_notify_assignees", "trigger": "due_date_arrives", "action": "notify_assignees",
      "fields": []},
     {"id": "due_notify_person", "trigger": "due_date_arrives", "action": "notify_person",
-     "fields": [_f("a_person", "person", "נמען")]},
+     "fields": [_f("a_person", "recipient", "נמען")]},
     {"id": "due_set_status", "trigger": "due_date_arrives", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
 
@@ -876,13 +1081,13 @@ RECIPES = [
 
     # a link being made, or unmade, as the thing that starts a rule
     {"id": "link_added_notify_person", "trigger": "link_added", "action": "notify_person",
-     "fields": [_f("a_person", "person", "נמען")]},
+     "fields": [_f("a_person", "recipient", "נמען")]},
     {"id": "link_added_notify_assignees", "trigger": "link_added", "action": "notify_assignees",
      "fields": []},
     {"id": "link_added_set_status", "trigger": "link_added", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
     {"id": "link_removed_notify_person", "trigger": "link_removed", "action": "notify_person",
-     "fields": [_f("a_person", "person", "נמען")]},
+     "fields": [_f("a_person", "recipient", "נמען")]},
     {"id": "link_removed_notify_assignees", "trigger": "link_removed", "action": "notify_assignees",
      "fields": []},
     {"id": "link_removed_set_status", "trigger": "link_removed", "action": "set_status",
@@ -895,7 +1100,7 @@ RECIPES = [
      "action": "notify_assignees", "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר")]},
     {"id": "linked_status_notify_person", "trigger": "linked_status_changes_to",
      "action": "notify_person", "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר"),
-                                           _f("a_person", "person", "נמען")]},
+                                           _f("a_person", "recipient", "נמען")]},
     {"id": "linked_status_set_priority", "trigger": "linked_status_changes_to",
      "action": "set_priority", "fields": [_f("t_status", "status", "הסטטוס בפריט המקושר"),
                                           _f("a_priority", "priority", "עדיפות")]},
@@ -910,7 +1115,7 @@ RECIPES = [
     # one remain the same row.
     {"id": "cond_status_prio_notify_person", "trigger": "status_changes_to",
      "action": "notify_person", "conds": ["priority_is"],
-     "fields": [_f("t_status", "status", "סטטוס"), _f("a_person", "person", "נמען")]},
+     "fields": [_f("t_status", "status", "סטטוס"), _f("a_person", "recipient", "נמען")]},
     {"id": "cond_status_prio_open_notify_assignees", "trigger": "status_changes_to",
      "action": "notify_assignees", "conds": ["priority_is", "has_assignee"],
      "fields": [_f("t_status", "status", "סטטוס")]},
@@ -925,7 +1130,7 @@ RECIPES = [
      "fields": [_f("t_status", "status", "סטטוס"), _f("a_group", "group", "קבוצה")]},
     {"id": "cond_created_no_due_notify_person", "trigger": "item_created",
      "action": "notify_person", "conds": ["no_due_date"],
-     "fields": [_f("a_person", "person", "נמען")]},
+     "fields": [_f("a_person", "recipient", "נמען")]},
 
     # ── the recommended templates that had no recipe ──
     # A sub-item finishing reaches the rule as an event on the PARENT, so
@@ -947,27 +1152,27 @@ RECIPES = [
      "fields": [_f("t_group", "group", "קבוצה"), _f("a_status", "status", "סטטוס")]},
     {"id": "moved_group_notify_person", "trigger": "moved_to_group",
      "action": "notify_person",
-     "fields": [_f("t_group", "group", "קבוצה"), _f("a_person", "person", "נמען")]},
+     "fields": [_f("t_group", "group", "קבוצה"), _f("a_person", "recipient", "נמען")]},
     {"id": "subitem_created_notify_assignees", "trigger": "subitem_created",
      "action": "notify_assignees", "fields": []},
     {"id": "subitem_created_set_status", "trigger": "subitem_created", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס בפריט האב")]},
     {"id": "column_changed_notify_person", "trigger": "column_changed",
      "action": "notify_person",
-     "fields": [_f("t_column", "column", "עמודה"), _f("a_person", "person", "נמען")]},
+     "fields": [_f("t_column", "column", "עמודה"), _f("a_person", "recipient", "נמען")]},
     {"id": "column_changed_notify_assignees", "trigger": "column_changed",
      "action": "notify_assignees", "fields": [_f("t_column", "column", "עמודה")]},
     {"id": "column_changed_set_status", "trigger": "column_changed", "action": "set_status",
      "fields": [_f("t_column", "column", "עמודה"), _f("a_status", "status", "סטטוס")]},
     {"id": "unassigned_notify_person", "trigger": "person_unassigned",
-     "action": "notify_person", "fields": [_f("a_person", "person", "נמען")]},
+     "action": "notify_person", "fields": [_f("a_person", "recipient", "נמען")]},
     {"id": "unassigned_set_status", "trigger": "person_unassigned", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
     {"id": "due_near_notify_assignees", "trigger": "due_date_near",
      "action": "notify_assignees", "conds": ["status_is_not"],
      "fields": [_f("t_days", "days", "ימים לפני")]},
     {"id": "due_near_notify_person", "trigger": "due_date_near", "action": "notify_person",
-     "fields": [_f("t_days", "days", "ימים לפני"), _f("a_person", "person", "נמען")]},
+     "fields": [_f("t_days", "days", "ימים לפני"), _f("a_person", "recipient", "נמען")]},
     {"id": "due_passed_notify_assignees", "trigger": "due_date_passed",
      "action": "notify_assignees", "conds": ["status_is_not"],
      "fields": [_f("t_days", "days", "ימים אחרי")]},
@@ -1148,7 +1353,7 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and"):
         trig = trig.replace("{" + k + "}", "{t_" + k + "}")
     act = ACTIONS[r["action"]]
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
-              "fields", "target_group"):
+              "fields", "target_group", "column", "days", "map"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
     clause = conditions_clause(cond_phrases, group_op)
     more = [p for p in (action_phrases or []) if p]
@@ -1245,6 +1450,8 @@ def validate_partial(recipe_id, config):
             continue                              # not filled in yet, and that is allowed
         if f["type"] == "text":
             v = (str(v)).strip()[:200]
+            if unknown_tokens(v):
+                continue              # a half-typed token is simply not kept
         elif f["type"] in ("connect", "column"):
             v = (str(v)).strip()
         elif f["type"] == "days":
@@ -1253,6 +1460,25 @@ def validate_partial(recipe_id, config):
             except (TypeError, ValueError):
                 continue
             clean[f["key"]] = v
+            continue
+        elif f["type"] == "recipient":
+            v, rerr = recipient_value(v)
+            if rerr:
+                continue                          # half-chosen: simply not kept
+            clean[f["key"]] = v
+            continue
+        elif f["type"] == "map":
+            v, merr = map_value(v)
+            if merr:
+                continue                          # half-built: simply not kept
+            clean[f["key"]] = v
+            continue
+        elif f["type"] == "wait":
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                continue
+            clean[f["key"]] = max(MIN_WAIT_MINUTES, min(v, MAX_WAIT_DAYS * 24 * 60))
             continue
         elif f["type"] == "fields":
             v = [k for k in COPY_FIELDS if k in set(v or [])]
@@ -1319,10 +1545,30 @@ def validate(recipe_id, config):
             v = (str(v or "")).strip()[:200]
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"
+            # a token nobody can answer is refused where it is written, not
+            # left to resolve into nothing at three in the morning
+            bad = unknown_tokens(v)
+            if bad:
+                return None, "ערך דינמי לא מוכר: {{" + bad[0] + "}}"
         elif f["type"] == "connect":
             v = (str(v or "")).strip()          # a column id, not a number
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"
+        elif f["type"] == "recipient":
+            v, rerr = recipient_value(v)
+            if rerr:
+                return None, rerr
+        elif f["type"] == "map":
+            v, merr = map_value(v)
+            if merr:
+                return None, merr
+        elif f["type"] == "wait":
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                return None, f"חסר ערך בשדה '{f['label']}'"
+            if v < MIN_WAIT_MINUTES or v > MAX_WAIT_DAYS * 24 * 60:
+                return None, f"המתנה היא בין דקה ל-{MAX_WAIT_DAYS} ימים"
         elif f["type"] == "fields":
             v = [k for k in COPY_FIELDS if k in set(v or [])]
             if not v:
