@@ -9637,11 +9637,13 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
     # a notification names the rule; the board's own screens show the sentence
     told = notice or _automation_plain_name(db, board, a)
     acts = recipes.action_list(a.recipe_id, a.config or {})[start:]
+    clash = []
     for i, one in enumerate(acts):
         try:
             out.extend(_run_one_action(db, one["key"], one["values"],
                                        task, actor_id, board, told, event,
                                        human=human, owner=owner) or [])
+            clash += _note_conflict(event, task, a, one["key"], told)
         except _Waiting as w:
             # What is left of the rule goes to the queue with the moment it may
             # come back, and this firing ends here. Deliberately not a thread
@@ -9663,7 +9665,37 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
         done = len(acts) - len(skipped)
         note = (f"{done} מתוך {len(acts)} פעולות בוצעו · "
                 + " · ".join(dict.fromkeys(skipped)))
+    if clash:
+        # The impact screen warns about this before a rule is switched on, and
+        # the history said nothing about it ever after — so "why is the status
+        # not what my rule set it to" had no answer once the rule was running.
+        # It does now, on the row of the rule that wrote last.
+        note = (note + " · " if note else "") + " · ".join(dict.fromkeys(clash))
     return out, note
+
+
+def _note_conflict(event, task, a, act_key, told):
+    """Which fields this action has just written over, inside this same event.
+
+    One event can trip several rules and two of them can write the same field;
+    the one that runs last decides and the other one's work is gone. The ledger
+    lives on the event because that is exactly its lifetime — rules firing on
+    two different changes are not in conflict, they are two changes.
+    """
+    fields = AUTOMATION_ACTION_FIELDS.get(act_key) or ()
+    if not fields or event is None:
+        return []
+    ledger = event.setdefault("_wrote", {})
+    out = []
+    for f in fields:
+        key = f"{task.id}:{f}"
+        before = ledger.get(key)
+        if before and before.get("id") != a.id:
+            what = ", ".join(AUTOMATION_ACTION_WRITES.get(act_key) or [f])
+            out.append(f"«{what}» נכתב באירוע הזה גם בידי «{before['name']}» "
+                       "— הכתיבה האחרונה קובעת")
+        ledger[key] = {"id": a.id, "name": told}
+    return out
 
 
 def _resolve_tokens(db, text, task, board, event=None, actor=None, owner=None):
@@ -10238,7 +10270,8 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             sentence=_automation_label(db, board, a),
             trigger_key=r.get("trigger") or "", action_key=r.get("action") or "",
             task_id=task.id, task_title=(task.title or "")[:300],
-            event=event or {}, outcome=outcome, reason=(reason or "")[:400],
+            event={k: v for k, v in (event or {}).items() if not k.startswith("_")},
+            outcome=outcome, reason=(reason or "")[:400],
             source=((event or {}).get("source") or "")[:16],
             batch_id=((event or {}).get("batch") or "")[:36],
             event_id=((event or {}).get("id") or "")[:32],
@@ -11589,6 +11622,12 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
                 "people": _automation_people(db, board_id, out),
                 "statuses": list(AUTOMATION_STATUSES), "importance": list(AUTOMATION_IMPORTANCE),
                 "can_manage": _can_manage_automations(db, b, user_id),
+                # An emergency stop holding over this board. Without it the
+                # screen reads as an ordinary board with four active rules and
+                # no explanation of why nothing is happening — which is the one
+                # question somebody looking at it is asking.
+                "freeze": (lambda f: _freeze_json(db, f) if f else None)(
+                    _automation_freeze(db, board_id)),
                 # which clock the date rules are keeping, and whose decision
                 # that was — the board's own, or the organisation's
                 "timezone": str(_board_tz(db, b)),
@@ -11709,6 +11748,12 @@ def _automation_status_from(data, current="active"):
     return current
 
 
+def _next_run_order(db, board_id):
+    n = db.query(func.max(Automation.run_order)).filter(
+        Automation.board_id == board_id).scalar()
+    return (n + 1) if n is not None else 0
+
+
 @app.post("/api/boards/{board_id}/automations")
 def create_automation(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -11738,7 +11783,11 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
                        fail_count=0, skip_count=0, consecutive_failures=0, last_outcome="",
                        name=meta.get("name", ""), description=meta.get("description", ""),
                        importance=meta.get("importance", "normal"),
-                       run_order=meta.get("run_order", 0),
+                       # last, unless somebody said where. Every rule used to
+                       # be created on 0, so a board's whole list shared one
+                       # number and the order between them was their ids —
+                       # which is not an order anybody chose.
+                       run_order=meta.get("run_order", _next_run_order(db, board_id)),
                        # unset means the creator, so a new rule is never ownerless
                        owner_id=meta.get("owner_id", user_id))
         # a rule saved as a draft is written but does not run until someone says so
@@ -13501,6 +13550,90 @@ def admin_automations_release(data: dict, user_id: int = Depends(current_user_id
 # screenful of checkboxes is exactly the wrong place to make an irreversible
 # choice. See the MVP note in the spec.
 AUTOMATION_BULK_ACTIONS = ("pause", "activate", "transfer")
+
+
+@app.post("/api/boards/{board_id}/automations/order")
+def order_automations(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Arrange the board's rules into the order they fire in.
+
+    `run_order` could be set one rule at a time, which is how two rules end up
+    claiming the same number — and then the order between them is their ids,
+    which is not an order anybody chose. This takes the whole list and
+    renumbers it 0..n-1, so what the screen shows is what will happen.
+
+    Rules left out of the list keep their place behind the ones named, in the
+    order they were already in: an admin arranging the three that matter is not
+    asking to shuffle the other twenty.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לשנות את סדר הביצוע")
+        rows = (db.query(Automation).filter(Automation.board_id == board_id)
+                  .order_by(Automation.run_order, Automation.id).all())
+        by_id = {a.id: a for a in rows}
+        wanted = [i for i in (data.get("ids") or []) if i in by_id]
+        if not wanted:
+            raise HTTPException(400, "לא נבחרו אוטומציות")
+        seen = set(wanted)
+        order = wanted + [a.id for a in rows if a.id not in seen]
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        moved = 0
+        for pos, aid in enumerate(order):
+            a = by_id[aid]
+            if (a.run_order or 0) == pos:
+                continue
+            before = _snapshot_automation(a)
+            a.run_order = pos
+            a.updated_by, a.updated_at = user_id, now
+            _record_automation_version(db, b, a, user_id, before=before,
+                                       note=f"סדר הביצוע שונה ל-{pos + 1}")
+            moved += 1
+        db.commit()
+        return {"order": order, "moved": moved,
+                "automations": [_automation_json(db, b, by_id[i]) for i in order]}
+
+
+@app.get("/api/boards/{board_id}/automations/order")
+def automation_order(board_id: int, trigger: str = "",
+                     user_id: int = Depends(current_user_id)):
+    """The order the board's rules will actually fire in — and, with a trigger
+    named, only the ones that answer to it.
+
+    The order is `run_order` and then the id, which is what the engine reads.
+    Two rules sharing a number are shown as sharing it, because that is the
+    thing somebody arranging them needs to see.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות באוטומציות הלוח")
+        rows = (db.query(Automation).filter(Automation.board_id == board_id)
+                  .order_by(Automation.run_order, Automation.id).all())
+        if trigger:
+            rows = [a for a in rows
+                    if (recipes.recipe(a.recipe_id) or {}).get("trigger") == trigger]
+        counts = {}
+        for a in rows:
+            counts[a.run_order or 0] = counts.get(a.run_order or 0, 0) + 1
+        return {"order": [{
+            "id": a.id, "position": i + 1, "run_order": a.run_order or 0,
+            "name": a.name or _automation_label(db, b, a).replace("«", "").replace("»", ""),
+            "status": a.status or ("active" if a.is_active else "paused"),
+            "importance": a.importance or "normal",
+            "trigger": (recipes.recipe(a.recipe_id) or {}).get("trigger") or "",
+            # two rules on one number are ordered by their ids, which is not an
+            # order anybody chose
+            "shares_number": counts.get(a.run_order or 0, 0) > 1,
+        } for i, a in enumerate(rows)],
+            # said here rather than assumed: a rule marked קריטית does not run
+            # before one marked נמוכה. Importance is for reading and filtering.
+            "importance_affects_order": False,
+            "can_manage": _can_manage_automations(db, b, user_id)}
 
 
 @app.post("/api/boards/{board_id}/automations/bulk")

@@ -729,5 +729,50 @@ ck('a text blank offers values from the item', tm.includes('ערך מהפריט'
    && tm.includes("Automations.putToken('item.name')"));
 ck('...including the board\'s own columns', tm.includes("putToken('field."));
 
+
+/* ── סדר ביצוע, התנגשות והשהיה ────────────────────────────────────────── */
+A.tab='manage'; A.ord=null; A.imprt=null;
+A.data={automations:RULES,can_manage:true,counts:{total:4,active:2,paused:1,draft:1},
+        people:[],can_export:false};
+let mh=A.manageHTML();
+ck('the manage tab offers the firing order', mh.includes('Automations.orderOpen()'));
+A.data.can_manage=false;
+ck('...to a board admin only', !A.manageHTML().includes('Automations.orderOpen()'));
+A.data.can_manage=true;
+
+A.ord={rows:[{id:1,position:1,run_order:0,name:'ראשון',status:'active',shares_number:true},
+             {id:2,position:2,run_order:0,name:'שני',status:'active',shares_number:true},
+             {id:3,position:3,run_order:1,name:'שלישי',status:'paused',shares_number:false}],
+       can:true,importance:false};
+let oh=A.orderHTML();
+ck('the order is shown as a numbered list', oh.includes('>1<') && oh.includes('ראשון'));
+ck('...saying the last write wins', oh.includes('האחרונה שכותבת שדה היא שקובעת'));
+ck('...and that importance does not decide it',
+   oh.includes('החשיבות אינה משפיעה על הסדר'));
+ck('two rules on one number are marked', oh.includes('מספר כפול'));
+ck('the first cannot go up and the last cannot go down',
+   (oh.match(/disabled/g)||[]).length===2, String((oh.match(/disabled/g)||[]).length));
+A.orderMove(1,-1);
+ck('a rule can be moved', A.ord.rows.map(x=>x.id).join()==='2,1,3');
+A.orderMove(0,-1);
+ck('...and not past the top', A.ord.rows.map(x=>x.id).join()==='2,1,3');
+A.ord.can=false;
+ck('somebody who may not arrange them sees no arrows and no save',
+   !A.orderHTML().includes('Automations.orderMove(') && !A.orderHTML().includes('orderSave'));
+A.ord=null;
+
+A.data.freeze={scope:'board',reason:'חקירה של תקלה',created_by_name:'משה',
+               created_at:'2026-10-22T09:00:00'};
+mh=A.manageHTML();
+ck('a frozen board says so at the top', mh.includes('האוטומציות בלוח מושהות'));
+ck('...with the reason and who stopped it', mh.includes('חקירה של תקלה') && mh.includes('משה'));
+ck('...and what it means', mh.includes('כללים אינם נורים ואינם נרשמים'));
+A.data.freeze={scope:'org',reason:'שדרוג',created_by_name:'משה',created_at:null};
+ck('an organisation-wide stop says that it is one',
+   A.manageHTML().includes('השהיה ארגונית'));
+A.data.freeze=null;
+ck('a board that is running says nothing',
+   !A.manageHTML().includes('האוטומציות בלוח מושהות'));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

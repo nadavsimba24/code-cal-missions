@@ -489,6 +489,13 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   padding:3px 11px;font-size:12px;cursor:pointer;color:var(--text)}
 .au-grp-b.on{background:var(--primary);border-color:var(--primary);color:#fff}
 .au-op{background:var(--bg);border-color:var(--border);color:var(--text)}
+.au-frozen{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--red);
+  background:color-mix(in srgb,var(--red) 7%,transparent);border-radius:8px;
+  padding:10px 12px;margin-bottom:10px;font-size:13px}
+.au-frozen i{color:var(--red);margin-top:2px}
+.au-ordrow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border)}
+.au-ordn{min-width:26px;height:26px;border-radius:50%;background:var(--bg);display:flex;
+  align-items:center;justify-content:center;font-size:12px;color:var(--text-muted)}
 .au-tok{margin:4px 0}
 .au-tok>summary{cursor:pointer;font-size:12px;color:var(--primary);padding:3px 6px}
 .au-tok .rm-item{font-size:12px}
@@ -2707,6 +2714,9 @@ const api = async (p,o)=>{o=o||{};
   if(!r.ok){ let detail=''; try{ const j=await r.json(); detail=(j&&j.detail)||''; }catch(e){}
     if(r.status===401){ Auth.onUnauthenticated(); }
     const err=new Error(p+' '+r.status+(detail?': '+detail:'')); err.status=r.status; err.detail=detail; throw err; }
+  // an item was written to: whatever the server last said about the filter was
+  // said about the item as it was before — see advAnswerStale
+  advWrote(p,o);
   return r.json();};
 const esc = s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const initials = n=>(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('');
@@ -6558,16 +6568,55 @@ async function advAskServer(){
   const node=st.filters.adv;
   if(!node||!st.board)return;
   if(filterMode()==='server'){ Paged.load(true); return; }
+  const stamp=_advWrites;            // what the board looked like when we asked
   try{
     const r=await api('/api/boards/'+st.board.id+'/items/query',
       {method:'POST',headers:{'Content-Type':'application/json'},
        body:withMe(advQuery(node))});
+    // An item written WHILE this was in flight is an item this answer does not
+    // know about, and storing it would put the stale list back a moment after
+    // it was dropped. The write already asked for a fresh one.
+    if(stamp!==_advWrites)return;
     st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
     renderView();
   }catch(e){
     st.filters.advIds=null;          // the local answer stands
     if(e&&e.detail)toast(e.detail);  // a filter the server refused, said out loud
   }
+}
+/* ── an item that changed after the server answered ──────────────────────
+   The server's answer to a filter is a LIST OF IDS, and a list of ids is a
+   photograph: it cannot know that one of the items in it has since been
+   edited. Filtering by סטטוס "בדיקה" and setting a row to "נבדק ותקין" left
+   the row sitting there — its id was still in the answer — and the opposite
+   was the same bug the other way round: a row edited INTO the filter stayed
+   hidden until something forced a reload.
+
+   So a write to an item retires the answer. The board falls back to the local
+   engine, which is reading the values that were just typed — the same state
+   the board is in between opening a filter and the server replying — and a
+   fresh answer is asked for once the typing stops. Debounced, because a drag
+   or a bulk edit is many writes and one question. */
+let _advWrites=0, _advAgain=null;
+function advAnswerStale(){
+  _advWrites++;
+  const had=st.filters.advIds instanceof Set;
+  st.filters.advIds=null;
+  if(!advCount(st.filters.adv))return;      // nothing is filtering; nothing to re-ask
+  clearTimeout(_advAgain);
+  _advAgain=setTimeout(()=>advAskServer(),400);
+  return had;
+}
+/* Which calls count as writing to an item. Every one of the dozen places that
+   changes a cell — the status picker, a people cell, a drag between groups, the
+   item panel, a bulk edit — leaves through api(), and they all leave through
+   /api/tasks. Asking here rather than at each of them is what keeps the next
+   one from being the one that forgot. A GET is not a write, and the filter's
+   own query is a POST to /api/boards/… — neither matches, so neither loops. */
+function advWrote(path,opt){
+  if((((opt||{}).method)||'GET').toUpperCase()==='GET')return;
+  if(!/^\/api\/tasks(\/|$)/.test(String(path||'').split('?')[0]))return;
+  advAnswerStale();
 }
 
 /* How many conditions are in it — the number on the toolbar badge, and the
@@ -7157,6 +7206,9 @@ const Live = {
       // filter, changes more than one row — those need the full view
       const moved=before && before.group_id!==fresh.group_id;
       if(!this.replace(fresh)){ whole=true; break; }
+      // …and it is just as stale when the edit was somebody else's. The fetch
+      // above is a GET, so nothing retired the answer on the way in.
+      advAnswerStale();
       if(moved || this.dropsOutOfView(fresh) || st.colSort){ whole=true; break; }
       if(!this.patchRow(fresh)){ whole=true; break; }
       changed=true;
@@ -7276,7 +7328,7 @@ const Automations = {
     showModal('<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
     document.getElementById('modal').classList.add('modal-80');
     this.building=null; this.mode='templates'; this.scratch={trigger:'',conds:[]};
-    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=null;
+    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=this.ord=null;
     this.sort='order';
     this.picked=new Set(); this.bulkRes=null;
     this.f={q:'',status:'',owner:0,creator:0,importance:'',trigger:'',action:'',last:''};
@@ -7326,7 +7378,7 @@ const Automations = {
 
   setTab(t){
     this.tab=t; this.building=null;
-    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=null;
+    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=this.ord=null;
     if(t!=='manage'){ this.picked=new Set(); this.bulkRes=null; }
     this.render();
     if(t==='history'&&!this.runsLoaded) this.loadRuns();
@@ -7507,7 +7559,78 @@ const Automations = {
   SORTS:{order:'סדר ביצוע (קדימות בפועל)',importance:'חשיבות (תצוגה בלבד)',updated:'עדכון אחרון',
          last_run:'הפעלה אחרונה',success:'שיעור הצלחה',name:'שם'},
 
+  /* ---- סדר ביצוע ----
+     Which rule goes first when one event trips several. It could be set one
+     rule at a time, which is how two of them end up claiming the same number
+     and the order between them becomes their ids — an order nobody chose. */
+  async orderOpen(){
+    this.ord={rows:null};
+    this.render();
+    try{ const d=await api('/api/boards/'+st.board.id+'/automations/order'
+                           +(meId()?'?user_id='+meId():''));
+         this.ord={rows:d.order||[],can:!!d.can_manage,
+                   importance:d.importance_affects_order}; }
+    catch(e){ this.ord=null; toast(e.detail||'לא ניתן לקרוא את סדר הביצוע'); }
+    this.render();
+  },
+  orderClose(){ this.ord=null; this.render(); },
+  orderMove(i,d){
+    const r=this.ord&&this.ord.rows; if(!r)return;
+    const j=i+d; if(j<0||j>=r.length)return;
+    [r[i],r[j]]=[r[j],r[i]];
+    this.render();
+  },
+  async orderSave(){
+    const r=this.ord&&this.ord.rows; if(!r)return;
+    try{
+      await api('/api/boards/'+st.board.id+'/automations/order'+(meId()?'?user_id='+meId():''),
+                {method:'POST',headers:{'Content-Type':'application/json'},
+                 body:JSON.stringify({ids:r.map(x=>x.id)})});
+      toast('סדר הביצוע נשמר');
+    }catch(e){ toast(e.detail||'לא ניתן לשמור את הסדר'); return; }
+    this.ord=null;
+    await this.load(); this.render();
+  },
+  orderHTML(){
+    const o=this.ord;
+    if(o.rows===null) return '<div class="spin"></div>';
+    const rows=o.rows.map((x,i)=>`<div class="au-ordrow">
+        <span class="au-ordn">${i+1}</span>
+        <div style="flex:1">${esc(x.name)}
+          ${x.shares_number?'<span class="oa-flag" title="שתי אוטומציות על אותו מספר — הסדר ביניהן נקבע לפי מזהה">מספר כפול</span>':''}
+          <div class="au-res-msg">${esc((this.ST&&this.ST[x.status]&&this.ST[x.status].he)||x.status)}</div></div>
+        ${o.can?`<button class="am-ico" title="למעלה" ${i?'':'disabled'} onclick="Automations.orderMove(${i},-1)"><i class="fa-solid fa-arrow-up"></i></button>
+        <button class="am-ico" title="למטה" ${i<o.rows.length-1?'':'disabled'} onclick="Automations.orderMove(${i},1)"><i class="fa-solid fa-arrow-down"></i></button>`:''}
+      </div>`).join('')
+      ||'<div class="au-hint" style="margin:0">אין אוטומציות בלוח</div>';
+    return `<div class="au-group-h">סדר ביצוע</div>
+      <div class="am-ed">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i>
+          כאשר אירוע אחד מפעיל כמה אוטומציות, הן רצות בסדר הזה — והאחרונה שכותבת שדה היא שקובעת.
+          ${o.importance===false?'<b>החשיבות אינה משפיעה על הסדר</b> — היא לתצוגה ולסינון.':''}</div>
+        <div class="logs-list">${rows}</div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          ${o.can?'<button class="btn btn-primary" onclick="Automations.orderSave()"><i class="fa-solid fa-check"></i> שמור סדר</button>':''}
+          <button class="btn btn-ghost" onclick="Automations.orderClose()">ביטול</button>
+        </div>
+      </div>`;
+  },
+
+  /* An emergency stop holding over this board. Shown at the top of every tab,
+     because "פעילות: 4" over a board where nothing is happening is worse than
+     no answer at all. */
+  freezeHTML(){
+    const f=(this.data||{}).freeze; if(!f) return '';
+    return `<div class="au-frozen"><i class="fa-solid fa-hand"></i>
+      <div><b>האוטומציות בלוח מושהות${f.scope==='org'?' — השהיה ארגונית':''}.</b>
+        ${f.reason?esc(f.reason):''}
+        <div class="au-res-msg">${esc(f.created_by_name||'')}${
+          f.created_at?' · '+esc(fdatetimeY(f.created_at)):''} —
+          כללים אינם נורים ואינם נרשמים עד שההשהיה תוסר.</div></div></div>`;
+  },
+
   manageHTML(){
+    if(this.ord) return this.orderHTML();
     if(this.editing) return this.editHTML();
     if(this.viewing) return this.versionsHTML();
     if(this.testing) return this.testHTML();
@@ -7518,8 +7641,10 @@ const Automations = {
     if(!rows.length)
       return `<div class="empty" style="padding:30px"><i class="fa-solid fa-bolt"></i><div>אין אוטומציות בלוח הזה</div></div>`+
         (can?`<div style="text-align:center"><button class="btn btn-primary" onclick="Automations.setTab('create')"><i class="fa-solid fa-plus"></i> בנה את הראשונה</button></div>`:'');
-    return this.tilesHTML(c)+this.barHTML(rows)+
+    return this.freezeHTML()+this.tilesHTML(c)+this.barHTML(rows)+
       (can?'':'<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i> <b>רק מנהל הלוח יכול להגדיר או לשנות.</b></div>')+
+      (can?`<div class="au-imp-lnk"><button class="au-lnk" onclick="Automations.orderOpen()">
+          <i class="fa-solid fa-arrow-down-1-9"></i> סדר ביצוע</button></div>`:'')+
       this.importHTML()+this.bulkBarHTML()+this.bulkResHTML()+
       `<div id="au-list">${this.listBody()}</div>`;
   },
@@ -8190,7 +8315,7 @@ const Automations = {
   setRunAuto(v){ this.runAuto=+v||0; this.loadRuns(); },
   historyFor(id){
     this.runAuto=id; this.runOutcome=''; this.tab='history';
-    this.building=this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=null;
+    this.building=this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=this.ord=null;
     this.loadRuns();
   },
 
@@ -8210,7 +8335,7 @@ const Automations = {
     const batchBar=this.batch?`<div class="au-chips"><span class="ah-tag"><i class="fa-solid fa-layer-group"></i>
         פעולה מרובה אחת — ${shown.length} פריטים</span>
         <button class="au-lnk" onclick="Automations.showBatch('${esc(this.batch)}')">הצג הכל</button></div>`:'';
-    return `<div class="au-chips">${chip('','הכל',c.total)}${chip('ran','הופעלו',c.ran)}${chip('skipped','דילוגים',c.skipped)}${
+    return this.freezeHTML()+`<div class="au-chips">${chip('','הכל',c.total)}${chip('ran','הופעלו',c.ran)}${chip('skipped','דילוגים',c.skipped)}${
         chip('failed','כשלים',c.failed)}${chip('retried','ניסיונות חוזרים',c.retried)}${sel}
         ${this.data.can_export?`<button class="btn btn-ghost" style="margin-inline-start:auto" onclick="Automations.exportRuns()"><i class="fa-solid fa-file-csv" style="color:var(--green)"></i> ייצוא הלוג</button>`:''}</div>
       <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i>
