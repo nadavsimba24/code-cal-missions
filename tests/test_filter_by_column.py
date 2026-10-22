@@ -93,6 +93,67 @@ def test_the_panel_is_filtering_and_nothing_else():
     assert "מיון" not in panel, "the sort section is back in the filter panel"
 
 
+
+def test_the_panel_does_not_ask_for_the_item_s_name():
+    """שם הפריט has one question in it — "מכיל" — and the toolbar already asks
+    it: חיפוש פריטים sits above the board, filters as it is typed, and is there
+    whether or not the panel is open. A second box for the same word, behind a
+    click and a scroll along the strip, is the slower way to do what somebody
+    has already done. The column stays in the advanced builder, where a title
+    rule is one clause of a sentence rather than a search on its own."""
+    i = SRC.index("function colFilterHTML()")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "x.id!=='title'" in body, "the item-name column is back in the filter panel"
+    assert 'id="tb-q"' in SRC, "the toolbar search is gone, so nothing asks for a title now"
+    assert "{id:'title'" in SRC[SRC.index("function advFields()"):], \
+        "title left advFields entirely — the builder can no longer filter by it"
+
+
+
+def test_the_people_column_shows_people():
+    """A person is a face, not a word. The board's rows draw their assignees
+    with avatarInner against st.users; the filter's list draws them the same
+    way, from the same place, so the chip and the rows it leaves on screen are
+    read as one person — which a name alone does not manage on a board with
+    two people called שרון."""
+    i = SRC.index("function colChipsHTML(")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "avatarInner(c.av)" in body, "the people chips lost their avatars"
+
+
+def test_somebody_whose_account_is_off_is_still_on_the_board():
+    """Deactivating an account does not take the person's items off the board.
+    boardPeople stops listing them — right for the assignee picker, where
+    nobody should be newly assigned to someone who has left — but the filter
+    answers about rows that already exist, and offering only current members
+    would leave those rows reachable by no chip at all. They are offered when
+    they are actually on this board's items, and marked, so the chip is not
+    read as a colleague who simply has nothing."""
+    i = SRC.index("function colFilterChips(")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "colAssigned(f)" in body, \
+        "the people chips are back to the board's members only"
+    assert "u.is_active===false" in body, "a deactivated person is no longer marked"
+    assert ".qf-v.off" in SRC, "nothing tells a deactivated person apart on screen"
+
+
+def test_a_people_column_asks_about_a_person():
+    """"ריק" is true of a people column and tells nobody anything. Same two
+    conditions and the same two keys — only the words change, so a filter
+    written under one name is the same filter read back under the other."""
+    assert "COL_EMPTY_WORDS" in SRC, "the per-column wording is gone"
+    assert "ללא שיוך" in SRC, "the people column is back to asking about ריק"
+    i = SRC.index("const COL_EMPTY_CHIPS=")
+    assert "op:'empty'" in SRC[i:i + 200], \
+        "the renamed chip stopped writing the plain empty condition"
+    # every reader of the pair goes through the wording, or one list of chips
+    # would be drawn and a different one indexed into by the click
+    for fn in ("function colFilterSummary(", "function advPickChip(", "function colChipsHTML("):
+        j = SRC.index(fn)
+        body = SRC[j:SRC.index("\n}", j)]
+        assert "colEmptyChips(" in body, fn + " still reads the raw chip list"
+
+
 def test_an_old_view_s_sort_is_still_honoured():
     """Nothing writes st.filters.sort any more, and a saved view made before
     this still carries one. It must keep sorting the board."""

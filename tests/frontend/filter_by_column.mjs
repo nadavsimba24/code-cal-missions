@@ -60,20 +60,21 @@ function world(){
   const names = ['advFilterRoot','advPicked','advSetPicked','advToggle','advLegacyPicks',
                  'advDropLegacy','advPickedAll','advCount','advFields','advColHidden',
                  'colFilterChips','colFilterSummary','advTextOf','advSetText','customColumns',
-                 'boardPeople','statusColOpts','advPickChip','colChipsHTML',
+                 'boardPeople','statusColOpts','advPickChip','colChipsHTML','colAssigned','colEmptyChips',
                  'qfCounts','advCell','advRuleMatch','advMatch','statusKeyOf',
                  'priorityKeyOf','advSpan','advDay','advIso'];
   const body = names.map(grab).join('\n')
     + '\n' + konst('advOwnGroup') + '\n' + konst('advField') + '\n' + konst('advEmpty') + '\n'
     + konst('colChipKey') + '\n' + konst('userName') + '\n'
-    + `const COL_EMPTY_CHIPS=[{op:'filled',label:'אינו ריק',color:''},{op:'empty',label:'ריק',color:''}];\n`
+    + konst('COL_EMPTY_CHIPS') + '\n' + konst('COL_EMPTY_WORDS') + '\n'
     + `const ADV_DATES=[['today','היום'],['this_week','השבוע']];\n`
     + `const QF_COUNT_MAX=4000;\n`;
   const api = new Function('st','meId','esc','boardStatusList','boardPriorityList','ADV_KINDS',
     'STATUS_OPTS','refreshToolbar','reArrange','renderView','advAskServer','advChanged','Paged',
+    'avatarInner',
     body + `;return {advPicked,advPickedAll,advToggle,advSetPicked,advCount,advFields,
                      colFilterChips,colFilterSummary,advTextOf,advSetText,
-                     advPickChip,colChipsHTML,qfCounts};`)(
+                     advPickChip,colChipsHTML,qfCounts,colAssigned,colEmptyChips};`)(
     st,
     () => st.me && st.me.id,
     x => String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
@@ -83,7 +84,8 @@ function world(){
     {text:'text', status:'status', people:'people', date:'date', checkbox:'check',
      number:'number', dropdown:'status'},
     [{label:'ברירת מחדל',color:'#c4c4c4'}],
-    ()=>{}, ()=>{}, ()=>{}, ()=>{}, ()=>{}, {on:false,rows:[],total:0});
+    ()=>{}, ()=>{}, ()=>{}, ()=>{}, ()=>{}, {on:false,rows:[],total:0},
+    u=>`<i data-face="${(u&&u.id)==null?'':u.id}"></i>`);
   return [api, st];
 }
 
@@ -143,6 +145,90 @@ function world(){
   const [f] = world();
   ck('a text column offers no list of values to pick from',
      f.colFilterChips(f.advFields().find(x=>x.id==='col_c')).length===0);
+}
+
+// ── a people column: the face, who is still on the board, and who has left ──
+{
+  const [f] = world();
+  const chips = f.colFilterChips(f.advFields().find(x=>x.id==='col_b'));
+  ck('every person chip carries the person it names, so a face can be drawn',
+     chips.every(c=>c.av!=null) && String(chips[0].av.id)==='3'
+     && String(chips[1].av.id)==='4', chips.map(c=>c.av));
+  ck('a status chip still travels as a colour and not as a person',
+     f.colFilterChips(f.advFields().find(x=>x.id==='col_a')).every(c=>c.av==null));
+}
+{
+  /* Somebody whose account was switched off is no longer a board member, and
+     their items are still on the board. Offering only members would leave
+     those rows reachable by no chip at all. */
+  const [f, st] = world();
+  st.users.push({id:5, name:'אורית', is_active:false});
+  st.board.tasks[1].custom_fields.col_b=[5];
+  const chips = f.colFilterChips(f.advFields().find(x=>x.id==='col_b'));
+  ck('a deactivated person who is on an item of this board is still offered',
+     chips.some(c=>String(c.v)==='5'), chips.map(c=>c.label));
+  ck('...and is marked as deactivated rather than listed as a colleague',
+     chips.find(c=>String(c.v)==='5').off===true, chips);
+  ck('...while the board\'s own members are not marked',
+     chips.filter(c=>String(c.v)==='4').every(c=>!c.off), chips);
+}
+{
+  const [f, st] = world();
+  st.users.push({id:6, name:'מי שעזבה', is_active:false});   // no items here
+  const chips = f.colFilterChips(f.advFields().find(x=>x.id==='col_b'));
+  ck('a deactivated person with nothing on this board is not offered',
+     !chips.some(c=>String(c.v)==='6'), chips.map(c=>c.label));
+}
+{
+  const [f, st] = world();
+  st.users.push({id:5, name:'אורית', is_active:false});
+  st.board.tasks[0].assignees=[{id:3},{id:5}];
+  const chips = f.colFilterChips(f.advFields().find(x=>x.id==='assignees'));
+  ck('the built-in אחראים column counts who is on its items the same way',
+     chips.some(c=>String(c.v)==='5'&&c.off===true), chips.map(c=>c.label));
+  f.advPickChip('assignees', chips.findIndex(c=>String(c.v)==='5'));
+  ck('...and picking a person who has left writes the same rule as anyone else',
+     f.advPicked('assignees').map(p=>p.op+':'+p.v).join()==='has:5',
+     st.filters.adv);
+}
+
+// ── ריק, in the words of the column being asked ──────────────────────────
+{
+  const [f] = world();
+  const people = f.colEmptyChips(f.advFields().find(x=>x.id==='col_b'));
+  ck('a people column asks about a person, not about emptiness',
+     people.map(c=>c.label).join()==='משויך,ללא שיוך', people.map(c=>c.label));
+  ck('"ללא שיוך" is the last thing the column offers',
+     people[people.length-1].op==='empty');
+  const text = f.colEmptyChips(f.advFields().find(x=>x.id==='col_c'));
+  ck('every other column still says ריק / אינו ריק',
+     text.map(c=>c.label).join()==='אינו ריק,ריק', text.map(c=>c.label));
+}
+{
+  /* The words changed and the conditions did not: a filter written by one
+     name is the same filter read back under the other. */
+  const [f, st] = world();
+  const col = f.advFields().find(x=>x.id==='col_b');
+  const i = f.colFilterChips(col).length + 1;          // the last chip: ללא שיוך
+  f.advPickChip('col_b', i);
+  ck('"ללא שיוך" writes the plain "empty" condition',
+     f.advPicked('col_b').map(p=>p.op).join()==='empty', st.filters.adv);
+  ck('...and reads back as picked, so clicking it again turns it off',
+     f.colFilterSummary(col)==='ללא שיוך', f.colFilterSummary(col));
+}
+
+// ── what the panel actually draws ────────────────────────────────────────
+{
+  const [f, st] = world();
+  st.users.push({id:5, name:'אורית', is_active:false});
+  st.board.tasks[1].custom_fields.col_b=[5];
+  const col = f.advFields().find(x=>x.id==='col_b');
+  const html = f.colChipsHTML(col, f.advPickedAll('col_b'), null);
+  ck('a person is drawn with their avatar', html.includes('data-face="4"'), html.slice(0,200));
+  ck('...and nobody is drawn with a colour dot', !html.includes('class="dot"'));
+  ck('a deactivated person is greyed and says so',
+     html.includes('qf-v off') && html.includes('qf-v-off'), html);
+  ck('and the column ends with ללא שיוך', html.lastIndexOf('ללא שיוך')>html.lastIndexOf('משויך'));
 }
 
 // ── picking values writes the tree ────────────────────────────────────────
