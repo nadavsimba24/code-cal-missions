@@ -10181,6 +10181,9 @@ def duplicate_automation(automation_id: int, user_id: int = Depends(current_user
         b = db.query(Board).filter(Board.id == src.board_id).first()
         if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לשכפל אוטומציות")
+        # the copy is a new rule, written by whoever asked for it — so it is
+        # written under their rights, not those of whoever wrote the original
+        _check_automation_act(db, src, user_id)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         name = (src.name or _automation_label(db, b, src).replace("«", "").replace("»", ""))[:105]
         a = Automation(board_id=src.board_id, recipe_id=src.recipe_id, config=dict(src.config or {}),
@@ -10244,6 +10247,7 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
             want = _automation_status_from(data, a.status or "active")
             # a draft may be half-built; switching it on may not be
             if want == "active" and a.status != "active":
+                _check_automation_act(db, a, user_id)
                 _refuse_incomplete_activation(db, b, a)
             _set_automation_status(a, want)
         _prev_owner = a.owner_id
@@ -10416,6 +10420,7 @@ def retry_automation_run(run_id: int, user_id: int = Depends(current_user_id)):
              if row.automation_id else None)
         if not a:
             raise HTTPException(400, "האוטומציה נמחקה — אין מה להפעיל שוב")
+        _check_automation_act(db, a, user_id)
         task = db.query(Task).filter(Task.id == row.task_id).first()
         if not task or task.deleted_at:
             raise HTTPException(400, "הפריט אינו קיים עוד")
@@ -11172,6 +11177,7 @@ def test_automation(automation_id: int, data: dict, user_id: int = Depends(curre
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול להריץ בדיקה")
+        _check_automation_act(db, a, user_id)
         task = db.query(Task).filter(Task.id == data.get("task_id"),
                                      Task.board_id == a.board_id).first()
         if not task or task.deleted_at:
@@ -11210,6 +11216,7 @@ def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(cu
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול להפעיל אוטומציה ידנית")
+        _check_automation_act(db, a, user_id)
         if _automation_freeze(db, a.board_id) is not None:
             raise HTTPException(400, "האוטומציות בלוח מושהות בהשהיית חירום")
         task = db.query(Task).filter(Task.id == data.get("task_id"),
@@ -11225,6 +11232,51 @@ def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(cu
         return {"run": _automation_run_json(db, row)}
 
 
+def _automation_reach_blocked(db, board_id, recipe_id, cfg, actor_id):
+    """The boards this rule would write on that `actor_id` may not write on.
+
+    Returns their names, ready to put in front of a person, and an empty string
+    when nothing is in the way — so the caller can refuse outright, or report it
+    on one rule out of fifty without failing the other forty-nine.
+    """
+    if actor_id is None or _ws_role(db, actor_id) == "admin":
+        return ""                                  # a system admin reaches every board
+    r = recipes.recipe(recipe_id) or {}
+    # Every blank the rule fills in, as (type, value): the recipe's own action,
+    # whose fields sit in `config` under their `a_` keys, and then each EXTRA
+    # action, whose fields sit inside its own `values` under the bare name. The
+    # second, third and fourth actions reach precisely as far as the first does
+    # — "שנה עדיפות, וגם צור פריט בלוח ההוא" writes on that board too, and the
+    # rule reads as a harmless one-liner about priorities.
+    filled = [(f["type"], (cfg or {}).get(f["key"])) for f in r.get("fields", [])]
+    for extra in (cfg or {}).get(recipes.ACTIONS_KEY) or []:
+        if not isinstance(extra, dict):
+            continue
+        vals = extra.get("values") if isinstance(extra.get("values"), dict) else {}
+        filled += [(f["type"], vals.get(f["key"]))
+                   for f in recipes.action_fields(extra.get("key"))]
+    targets = set()
+    for ftype, v in filled:
+        if not v:
+            continue
+        if ftype == "board":
+            if str(v).lstrip("-").isdigit():
+                targets.add(int(v))
+        elif ftype == "item":
+            t = db.query(Task).filter(Task.id == v).first()
+            if t and t.board_id != board_id:
+                targets.add(t.board_id)
+        elif ftype == "connect":
+            col = _find_col(db, board_id, str(v))
+            for bid in (_connect_cfg(col).get("board_ids") or []) if col else []:
+                if str(bid).lstrip("-").isdigit() and int(bid) != board_id:
+                    targets.add(int(bid))
+    blocked = [t for t in targets
+               if _board_role(db, t, actor_id) not in ("admin", "editor")]
+    return ", ".join((db.query(Board.name).filter(Board.id == t).scalar() or str(t))
+                     for t in blocked)
+
+
 def _check_automation_reach(db, board_id, recipe_id, cfg, actor_id):
     """A rule that writes on ANOTHER board needs its author authorised there.
 
@@ -11234,30 +11286,26 @@ def _check_automation_reach(db, board_id, recipe_id, cfg, actor_id):
     So every board the rule can reach is checked against the author, at the bar
     that writing an item takes: admin or editor there.
     """
-    if actor_id is None or _ws_role(db, actor_id) == "admin":
-        return                                     # a system admin reaches every board
-    r = recipes.recipe(recipe_id) or {}
-    targets = set()
-    for f in r.get("fields", []):
-        v = (cfg or {}).get(f["key"])
-        if f["type"] == "board" and v:
-            targets.add(int(v))
-        elif f["type"] == "item" and v:
-            t = db.query(Task).filter(Task.id == v).first()
-            if t and t.board_id != board_id:
-                targets.add(t.board_id)
-        elif f["type"] == "connect" and v:
-            col = _find_col(db, board_id, str(v))
-            for bid in (_connect_cfg(col).get("board_ids") or []) if col else []:
-                if str(bid).lstrip("-").isdigit() and int(bid) != board_id:
-                    targets.add(int(bid))
-    blocked = [t for t in targets
-               if _board_role(db, t, actor_id) not in ("admin", "editor")]
-    if blocked:
-        names = ", ".join((db.query(Board.name).filter(Board.id == t).scalar() or str(t))
-                          for t in blocked)
+    names = _automation_reach_blocked(db, board_id, recipe_id, cfg, actor_id)
+    if names:
         raise HTTPException(403, "אוטומציה בין לוחות דורשת הרשאה בכל הלוחות שהיא נוגעת בהם. "
                                  f"אין לך הרשאה ב: {names}")
+
+
+def _check_automation_act(db, a, actor_id):
+    """The same bar, for acting on a cross-board rule that already exists.
+
+    Writing one was checked against its author. But the rule then sits on the
+    board with a switch beside it, a "הפעלה ידנית", a "הפעלה שוב" and a "שכפול",
+    and every one of those makes it write on the far board exactly as saving it
+    did — while the hand reaching for them need not be the hand that wrote it.
+    So they are held to what row 7 says: rights on every board it touches.
+
+    Reading it, renaming it and STOPPING it are deliberately not here. A stop
+    only ever reduces what the rule reaches, and refusing it would leave the
+    admin of a board unable to halt something running on their own board.
+    """
+    _check_automation_reach(db, a.board_id, a.recipe_id, a.config or {}, actor_id)
 
 
 # ── Organisational view of the automations (ניהול ארגוני) ────────────
@@ -11653,7 +11701,15 @@ def bulk_automations(board_id: int, data: dict, user_id: int = Depends(current_u
                     _set_automation_status(a, "paused")
                     row["message"] = "הושהתה"
             elif action == "activate":
-                if problems:
+                far = _automation_reach_blocked(db, board_id, a.recipe_id,
+                                                a.config or {}, user_id)
+                if far:
+                    # one rule out of the batch they may not set off; the other
+                    # forty-nine are none the worse for it
+                    row.update(ok=False,
+                               message="אוטומציה בין לוחות — דורשת הרשאה בכל הלוחות. "
+                                       f"אין לך הרשאה ב: {far}")
+                elif problems:
                     # the health check is the point of this action: a rule that
                     # cannot work is left off and says why
                     row.update(ok=False, message=" · ".join(problems[:3]))

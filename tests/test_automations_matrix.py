@@ -172,6 +172,71 @@ def test_row4_a_manual_run_refuses_while_an_emergency_stop_holds(client, admin_i
                 json={"freeze_id": f["freeze"]["id"]})
 
 
+# ── column 2 on its own — מנהל לוח who is not מנהל מערכת ─────────────────────
+# Every check above that says "כן" was made by a system admin, who passes each
+# of these by being one. So none of them showed that being admin OF THE BOARD
+# is itself enough, which is what the second column of the matrix claims.
+
+def test_rows2to4_a_board_admin_is_enough_on_their_own_board(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, "לוח בניהול חבר")
+    _role(client, admin_id, bid, guinea_id, "admin")
+    assert _ws_role_of(guinea_id) != "admin", "this needs an ordinary member"
+    tid = _item(client, bid, admin_id)
+    me = f"user_id={guinea_id}"
+
+    r = client.post(f"/api/boards/{bid}/automations?{me}",                      # יצירה
+                    json={"recipe_id": "created_set_priority",
+                          "config": {"a_priority": "high"}})
+    assert r.status_code == 200, r.text
+    aid = r.json()["id"]
+
+    for body in ({"name": "שם חדש"},                                            # עריכה
+                 {"description": "הסבר"},
+                 {"importance": "critical", "run_order": 4},                     # חשיבות וסדר
+                 {"owner_id": guinea_id},                                        # בעלות
+                 {"status": "paused"},                                           # השהיה
+                 {"status": "active"},                                           # הפעלה
+                 {"config": {"a_priority": "low"}}):                             # תוכן הכלל
+        got = client.patch(f"/api/automations/{aid}?{me}", json=body)
+        assert got.status_code == 200, (body, got.text)
+
+    assert client.post(f"/api/automations/{aid}/publish?{me}").status_code == 200
+    client.patch(f"/api/automations/{aid}?{me}", json={"config": {"a_priority": "high"}})
+    assert client.post(f"/api/automations/{aid}/discard-draft?{me}").status_code == 200
+
+    assert client.post(f"/api/automations/{aid}/test?{me}",                      # Dry Run
+                       json={"task_id": tid}).status_code == 200
+    assert client.post(f"/api/automations/{aid}/run?{me}",                       # הפעלה ידנית
+                       json={"task_id": tid}).status_code == 200
+    assert client.post(f"/api/boards/{bid}/automations/bulk?{me}",               # פעולה מרובה
+                       json={"ids": [aid], "action": "pause"}).status_code == 200
+    copy = client.post(f"/api/automations/{aid}/duplicate?{me}")                 # שכפול
+    assert copy.status_code == 200, copy.text
+
+    for url in (f"/api/boards/{bid}/automations?{me}",                           # row 1, without
+                f"/api/boards/{bid}/automations/runs?{me}",                      # any capability
+                f"/api/boards/{bid}/automations/tests?{me}",                     # being granted
+                f"/api/automations/{aid}/versions?{me}",
+                f"/api/automations/{aid}/versions/compare?{me}",
+                f"/api/automations/{aid}/impact?{me}"):
+        assert client.get(url).status_code == 200, url
+
+    assert client.delete(f"/api/automations/{copy.json()['id']}?{me}").status_code == 200
+    assert client.delete(f"/api/automations/{aid}?{me}").status_code == 200      # מחיקה
+
+
+def test_row4_a_board_admin_may_retry_a_run(client, admin_id, guinea_id):
+    bid = _board(client, admin_id, "לוח הפעלה חוזרת")
+    _add(client, bid, admin_id, "assigned_set_status", {"a_status": "todo"})
+    tid = _item(client, bid, admin_id)
+    client.post(f"/api/tasks/{tid}/assignees", json={"actor_id": admin_id, "user_id": admin_id})
+    runs = client.get(f"/api/boards/{bid}/automations/runs?user_id={admin_id}").json()["runs"]
+    skipped = next(r for r in runs if r["can_retry"])
+    _role(client, admin_id, bid, guinea_id, "admin")
+    assert client.post(f"/api/automation-runs/{skipped['id']}/retry?user_id={guinea_id}"
+                       ).status_code == 200
+
+
 # ── row 5 — שחזור גרסה וייצוא לוג, לפי הרשאת נתונים ──────────────────────────
 
 def test_row5_restore_and_log_export_need_the_data_capability(client, admin_id, guinea_id):
@@ -329,6 +394,184 @@ def test_row7_a_rule_that_stays_on_its_own_board_is_unaffected(client, admin_id,
                              "config": {"a_priority": "high"}}).status_code == 200
 
 
+def test_row7_a_second_action_reaches_just_as_far_as_the_first(client, admin_id, guinea_id):
+    """A rule carries up to four actions, and only the first of them is the
+    recipe's own. "אז שנה עדיפות — וגם צור פריט בלוח ההוא" writes on the far
+    board exactly as a connect recipe does, and the rule reads as harmless.
+    """
+    far = _board(client, admin_id, "יעד של פעולה נוספת")
+    near = _connect_board(client, admin_id, "מקור של פעולה נוספת", [far])
+    _role(client, admin_id, near, guinea_id, "admin")
+    body = {"recipe_id": "created_set_priority",
+            "config": {"a_priority": "high",
+                       "actions": [{"key": "create_and_link",
+                                    "values": {"connect": "col_link", "board": far,
+                                               "text": "פריט מרוחק"}}]}}
+    r = client.post(f"/api/boards/{near}/automations?user_id={guinea_id}", json=body)
+    assert r.status_code == 403, r.text
+    assert "בכל הלוחות" in r.json()["detail"]
+    assert "יעד של פעולה נוספת" in r.json()["detail"]
+
+    _role(client, admin_id, far, guinea_id, "editor")
+    assert client.post(f"/api/boards/{near}/automations?user_id={guinea_id}",
+                       json=body).status_code == 200
+
+
+def test_row7_a_second_action_is_checked_when_it_is_added_to_a_saved_rule(client, admin_id,
+                                                                          guinea_id):
+    """The same, arriving the way it really would: an ordinary rule, saved and
+    switched on, which someone then gives a second action."""
+    far = _board(client, admin_id, "יעד שנוסף אחר כך")
+    near = _connect_board(client, admin_id, "מקור שנוסף אחר כך", [far])
+    _role(client, admin_id, near, guinea_id, "admin")
+    a = client.post(f"/api/boards/{near}/automations?user_id={guinea_id}",
+                    json={"recipe_id": "created_set_priority",
+                          "config": {"a_priority": "high"}}).json()
+    r = client.patch(f"/api/automations/{a['id']}?user_id={guinea_id}",
+                     json={"config": {"a_priority": "high",
+                                      "actions": [{"key": "create_and_link",
+                                                   "values": {"connect": "col_link",
+                                                              "board": far,
+                                                              "text": "פריט"}}]}})
+    assert r.status_code == 403, r.text
+    assert "בכל הלוחות" in r.json()["detail"]
+
+
+def test_row7_an_extra_action_linking_to_an_item_elsewhere_is_checked_too(client, admin_id,
+                                                                          guinea_id):
+    """`קשר את הפריט אל …` names an item, and an item belongs to a board."""
+    far = _board(client, admin_id, "יעד לקישור פריט")
+    far_item = _item(client, far, admin_id, "פריט בלוח הרחוק")
+    near = _connect_board(client, admin_id, "מקור לקישור פריט", [far])
+    _role(client, admin_id, near, guinea_id, "admin")
+    r = client.post(f"/api/boards/{near}/automations?user_id={guinea_id}",
+                    json={"recipe_id": "created_set_priority",
+                          "config": {"a_priority": "high",
+                                     "actions": [{"key": "link_to_item",
+                                                  "values": {"connect": "col_link",
+                                                             "item": far_item}}]}})
+    assert r.status_code == 403, r.text
+    assert "יעד לקישור פריט" in r.json()["detail"]
+
+
+# ── row 7, the other half — ACTING on a cross-board rule ────────────────────
+# Writing the rule was checked. But the rule is an object on the board, and a
+# board admin has a whole shelf of verbs for it: switch it on, run it by hand,
+# run it again, copy it, activate it with fifty others in one click. Each of
+# those makes it write on the far board just as surely as saving it does, and
+# the one who typed it there may not be the one who reaches for the switch.
+
+
+def _far_reaching_rule(client, admin_id, guinea_id, name="מקור בניהול חבר"):
+    """A paused rule on `near` that creates items on `far`.
+
+    A system admin wrote it — they may. guinea runs `near` and has nothing at
+    all on `far`, which is the whole question: what may they do with it.
+    """
+    far = _board(client, admin_id, "יעד ללא הרשאה " + name)
+    near = _connect_board(client, admin_id, name, [far])
+    a = client.post(f"/api/boards/{near}/automations?user_id={admin_id}",
+                    json={"recipe_id": "created_create_and_link", "status": "paused",
+                          "config": {"a_connect": "col_link", "a_board": far,
+                                     "a_text": "פריט מרוחק"}})
+    assert a.status_code == 200, a.text
+    _role(client, admin_id, near, guinea_id, "admin")
+    return far, near, a.json()
+
+
+def test_row7_switching_a_cross_board_rule_on_needs_rights_there(client, admin_id, guinea_id):
+    far, near, a = _far_reaching_rule(client, admin_id, guinea_id, "הפעלה")
+    me = f"user_id={guinea_id}"
+    r = client.patch(f"/api/automations/{a['id']}?{me}", json={"status": "active"})
+    assert r.status_code == 403, r.text
+    assert "בכל הלוחות" in r.json()["detail"]
+    assert client.get(f"/api/automations/{a['id']}/impact?{me}").json()["status"] != "active", \
+        "the rule started anyway"
+    _role(client, admin_id, far, guinea_id, "editor")
+    assert client.patch(f"/api/automations/{a['id']}?{me}",
+                        json={"status": "active"}).status_code == 200
+
+
+def test_row7_a_bulk_activate_leaves_a_cross_board_rule_off(client, admin_id, guinea_id):
+    """The same switch, reached through the action that moves fifty at once —
+    and it has to say which rule it would not touch, not fail the whole call."""
+    far, near, a = _far_reaching_rule(client, admin_id, guinea_id, "מרובה")
+    mine = client.post(f"/api/boards/{near}/automations?user_id={guinea_id}",
+                       json={"recipe_id": "created_set_priority", "status": "paused",
+                             "config": {"a_priority": "high"}}).json()
+    r = client.post(f"/api/boards/{near}/automations/bulk?user_id={guinea_id}",
+                    json={"ids": [a["id"], mine["id"]], "action": "activate"})
+    assert r.status_code == 200, r.text
+    rows = {x["id"]: x for x in r.json()["results"]}
+    assert rows[a["id"]]["ok"] is False and "בכל הלוחות" in rows[a["id"]]["message"]
+    assert rows[mine["id"]]["ok"] is True, rows[mine["id"]]
+    live = client.get(f"/api/boards/{near}/automations?user_id={guinea_id}").json()["automations"]
+    assert {x["id"]: x["status"] for x in live}[a["id"]] != "active"
+
+
+def test_row7_running_a_cross_board_rule_by_hand_needs_rights_there(client, admin_id, guinea_id):
+    """Row 4 says a board admin may run a rule by hand. Row 7 says this rule
+    is not theirs to set off — and a manual run is the shortest way to make it
+    write on a board they were never given."""
+    far, near, a = _far_reaching_rule(client, admin_id, guinea_id, "ידנית")
+    tid = _item(client, near, admin_id)
+    me = f"user_id={guinea_id}"
+    r = client.post(f"/api/automations/{a['id']}/run?{me}", json={"task_id": tid})
+    assert r.status_code == 403 and "בכל הלוחות" in r.json()["detail"], r.text
+    assert client.post(f"/api/automations/{a['id']}/test?{me}",
+                       json={"task_id": tid}).status_code == 403, "a dry run too"
+    _role(client, admin_id, far, guinea_id, "editor")
+    assert client.post(f"/api/automations/{a['id']}/run?{me}",
+                       json={"task_id": tid}).status_code == 200
+
+
+def test_row7_retrying_a_cross_board_run_needs_rights_there(client, admin_id, guinea_id):
+    far = _board(client, admin_id, "יעד להפעלה חוזרת")
+    near = _connect_board(client, admin_id, "מקור להפעלה חוזרת", [far])
+    client.post(f"/api/boards/{near}/automations?user_id={admin_id}",
+                json={"recipe_id": "created_create_and_link",
+                      "config": {"a_connect": "col_link", "a_board": far,
+                                 "a_text": "פריט מרוחק",
+                                 "conditions": [{"kind": "priority_is", "value": "critical"}]}})
+    _item(client, near, admin_id, "פריט רגיל")          # not critical → the run skips
+    runs = client.get(f"/api/boards/{near}/automations/runs?user_id={admin_id}").json()["runs"]
+    skipped = next(r for r in runs if r["can_retry"])
+    _role(client, admin_id, near, guinea_id, "admin")
+    r = client.post(f"/api/automation-runs/{skipped['id']}/retry?user_id={guinea_id}")
+    assert r.status_code == 403 and "בכל הלוחות" in r.json()["detail"], r.text
+    _role(client, admin_id, far, guinea_id, "editor")
+    assert client.post(f"/api/automation-runs/{skipped['id']}/retry?user_id={guinea_id}"
+                       ).status_code == 200
+
+
+def test_row7_a_cross_board_rule_cannot_be_copied_onto_rights_nobody_gave(client, admin_id,
+                                                                          guinea_id):
+    """A copy is a new rule, written by whoever asked for it — so it is written
+    under their rights, not under the rights of whoever wrote the original."""
+    far, near, a = _far_reaching_rule(client, admin_id, guinea_id, "שכפול")
+    me = f"user_id={guinea_id}"
+    r = client.post(f"/api/automations/{a['id']}/duplicate?{me}")
+    assert r.status_code == 403 and "בכל הלוחות" in r.json()["detail"], r.text
+    _role(client, admin_id, far, guinea_id, "editor")
+    assert client.post(f"/api/automations/{a['id']}/duplicate?{me}").status_code == 200
+
+
+def test_row7_reading_it_and_pausing_it_are_never_blocked(client, admin_id, guinea_id):
+    """The check is on making it act. Looking at a rule on your own board, and
+    stopping one, are not that — and refusing the stop would be the wrong way
+    round: it would leave the admin of a board unable to halt what runs on it."""
+    far, near, a = _far_reaching_rule(client, admin_id, guinea_id, "עצירה")
+    me = f"user_id={guinea_id}"
+    client.patch(f"/api/automations/{a['id']}?user_id={admin_id}", json={"status": "active"})
+    assert client.get(f"/api/boards/{near}/automations?{me}").status_code == 200
+    assert client.get(f"/api/automations/{a['id']}/versions?{me}").status_code == 200
+    assert client.patch(f"/api/automations/{a['id']}?{me}",
+                        json={"status": "paused"}).status_code == 200
+    assert client.patch(f"/api/automations/{a['id']}?{me}",
+                        json={"name": "שם אחר"}).status_code == 200
+    assert client.delete(f"/api/automations/{a['id']}?{me}").status_code == 200
+
+
 # ── the capabilities are offered where permissions are managed ───────────────
 
 def test_the_two_new_capabilities_are_manageable(client, admin_id):
@@ -370,3 +613,7 @@ def test_the_screen_hides_what_the_server_would_refuse():
     # the export and the restore read the data capability
     assert "this.data.can_export?" in src
     assert "canRestore=this.data.can_manage&&this.data.can_export" in src
+    # and the on/off switch says WHICH refusal it got: "you are not the board's
+    # admin" and "you are, but not on the board this rule writes on" are two
+    # different problems with two different things to do about them
+    assert "toast(e.detail||'רק מנהל הלוח יכול לשנות אוטומציות')" in src

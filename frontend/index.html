@@ -8156,7 +8156,10 @@ const Automations = {
       await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
                 {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:on})});
       toast(on?'האוטומציה הופעלה':'האוטומציה כובתה');
-    }catch(e){ toast('רק מנהל הלוח יכול לשנות אוטומציות'); }
+    /* the server has more than one reason to refuse this — being the wrong
+       person, and being the right person on only one of the boards the rule
+       writes on — so say which one it was rather than guessing */
+    }catch(e){ toast(e.detail||'רק מנהל הלוח יכול לשנות אוטומציות'); }
     await this.load(); this.render();
   },
 
