@@ -50,7 +50,7 @@ function world(){
     users:[{id:3,name:'דנה'}], me:{id:3}, colSort:null,
     filters:{q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null},
   };
-  const log = {modals:0, closed:0, asked:0, toasts:[], redraws:0};
+  const log = {modals:0, closed:0, asked:0, toasts:[], redraws:0, quick:0};
   const names = ['advFields','advColHidden','customColumns','advCount','advPicked','advPickedAll',
                  'advSetPicked','advToggle','advFilterRoot','advLegacyPicks','advDropLegacy',
                  'advChoices','advPersonLabel','boardPeople','statusColOpts','advToAst'];
@@ -61,19 +61,28 @@ function world(){
   const Adv = new Function(
     'st','esc','showModal','closeModals','document','refreshToolbar','renderView',
     'advAskServer','toast','boardStatusList','boardPriorityList','filterMode','STATUS_OPTS',
+    'advMatch','advIcon','avatarInner','Paged','togglePop',
     body + '\n' + advObject() + '\nreturn Adv;')(
     st,
     x => String(x==null?'':x),
     () => { log.modals++; },
     () => { log.closed++; },
-    {getElementById:()=>({classList:{add(){},remove(){}}, set innerHTML(v){log.redraws++;}})},
+    {getElementById:()=>({classList:{add(){},remove(){}}, set innerHTML(v){log.redraws++;}}),
+     querySelector:()=>null},
     () => {}, () => {},
     () => { log.asked++; },
     m => log.toasts.push(m),
     () => [{key:'done',he:'בוצע',c:'#00c875'}],
     () => [{key:'high',he:'גבוהה',c:'#e2445c'}],
     () => 'client',
-    [{label:'x',color:'#c4c4c4'}]);
+    [{label:'x',color:'#c4c4c4'}],
+    // the engine, the column icon, a face and the paging flag — the builder
+    // draws with all four, and a stub that lacks one hides a real error
+    (t,node) => !node || !node.rules || !node.rules.length,
+    f => 'fa-font',
+    u => `<i data-face="${(u&&u.id)==null?'':u.id}"></i>`,
+    {on:false,total:0},
+    () => { log.quick++; });
   /* The panel's own half of the same tree. advChanged is the redraw-and-ask
      step, which is not what these checks are about — they are about the two
      doors opening on one filter. */
@@ -159,6 +168,67 @@ function world(){
      panel.advPickedAll('col_a').map(p=>p.v).sort().join()==='בעבודה,תקוע',
      panel.advPickedAll('col_a'));
   ck('...with the count the badge shows covering both', panel.advCount(st.filters.adv)===2);
+}
+
+// ── it reads as a sentence, and says what it is doing ─────────────────────
+{
+  /* A stack of boxes with an unexplained gap above the first one is a form.
+     The first condition of every group opens with "כאשר" and the rest carry
+     the group's own word, so the filter reads straight down. */
+  const [Adv] = world();
+  Adv.open();
+  Adv.addRule(''); Adv.addRule('');
+  const html = Adv.bodyHTML();
+  ck('the first condition opens with כאשר', /adv-joiner first">כאשר</.test(html), html.slice(0,300));
+  ck('…and the next carries the group\'s own word',
+     (html.match(/adv-joiner">וגם</g)||[]).length===1, html);
+  Adv.setOp('','or');
+  ck('…which follows the group when it is switched',
+     /adv-joiner">או</.test(Adv.bodyHTML()));
+}
+{
+  /* A condition whose value is still empty matches EVERY item: it widens the
+     filter rather than narrowing it, and it used to do that in silence. */
+  const [Adv] = world();
+  Adv.open();
+  Adv.addRule('');
+  ck('a condition with no value is counted as not filtering', Adv.todo(Adv.draft)===1);
+  ck('…and says so on its own row', /adv-rule adv-todo/.test(Adv.bodyHTML()));
+  ck('…and once above the tree, for the row that scrolled off',
+     /adv-warn/.test(Adv.bodyHTML()));
+  Adv.setV('0','v','תקוע');
+  ck('…and stops saying it once the value is there',
+     Adv.todo(Adv.draft)===0 && !/adv-todo/.test(Adv.bodyHTML())
+     && !/adv-warn/.test(Adv.bodyHTML()), Adv.bodyHTML().slice(0,200));
+  Adv.setRuleOp('0','empty');
+  ck('a question that takes no value is finished without one',
+     Adv.todo(Adv.draft)===0, Adv.draft.rules[0]);
+}
+{
+  /* The count is the whole point of the dialog, so it sits beside the title
+     where the eye already is. It answers about the DRAFT — before anything is
+     applied — which is what makes it worth looking at while building. */
+  const [Adv, st] = world();
+  st.board.tasks=[{id:1,title:'א'},{id:2,title:'ב'},{id:3,title:'ג'}];
+  Adv.open();
+  ck('with nothing to filter by, the whole board survives',
+     /את כל 3 הפריטים/.test(Adv.preview()), Adv.preview());
+  ck('…and the count is drawn beside the title, not under the list',
+     /id="adv-count"/.test(Adv.html()) && !/id="adv-count"/.test(Adv.bodyHTML()));
+}
+
+// ── the door turns both ways ──────────────────────────────────────────────
+{
+  /* The quick panel's foot opens this builder. Without a way back, returning
+     to picking values meant closing the dialog and finding the filter button
+     again — and what had been built would have been thrown away on the trip. */
+  const [Adv, st, log] = world();
+  Adv.open();
+  Adv.addRule(''); Adv.setField('0','col_a'); Adv.setRuleOp('0','eq'); Adv.setV('0','v','תקוע');
+  await Adv.toQuick();
+  ck('going back to the quick panel opens it', log.quick===1);
+  ck('…and takes what was built along rather than dropping it',
+     st.filters.adv && st.filters.adv.rules.length===1, st.filters.adv);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

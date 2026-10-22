@@ -12,7 +12,7 @@ the real functions out of index.html — the operator table, the cell reader,
 the rule evaluator, the tree — and the real builder's path editing, which is
 where a tree editor goes wrong.
 
-Two kinds of value are deliberately not literals. [אני] and the dynamic dates
+Two kinds of value are deliberately not literals. "אני (דינמי)" and the dates
 (היום, השבוע, חודש הבא…) are kept as tokens and resolved when the filter RUNS:
 stored as the id or the dates they happen to mean today, a saved filter would
 quietly become somebody else's filter, or last week's.
@@ -71,7 +71,11 @@ def test_a_people_rule_can_mean_me_and_a_date_rule_can_mean_this_week():
     """Not stored as the id or the dates they resolve to — a filter saved on
     Sunday still has to mean "this week" on Thursday, and "mine" still has to
     mean the person looking."""
-    assert "'me'" in SRC and "[אני]" in SRC
+    assert "'me'" in SRC, "the people token is gone"
+    # the label says it is not a person but a thing that resolves — the whole
+    # reason to pick it over one's own name, and what makes it travel inside a
+    # saved view somebody else opens
+    assert "אני (דינמי)" in SRC, "nothing offers the viewer as a value"
     m = re.search(r"const ADV_DATES = \[(.*?)\];", SRC, re.S)
     assert m, "the dynamic dates moved"
     for tok in ("today", "this_week", "next_month", "last_7"):
@@ -140,3 +144,58 @@ def test_groups_are_named_the_way_the_spec_names_them():
     assert "k.rules!==undefined" in body, "groups are lettered among the plain rules too"
     assert "if(path==='')return ''" in body, "the root is named as though it were a group"
     assert "adv-grp-name" in SRC, "the name is computed and never drawn"
+
+
+# ── the builder as something a person reads ────────────────────────────────
+def test_a_condition_reads_as_a_sentence():
+    """כאשר «עמודה» «שאלה» «ערך», then וגם or או before each one after it.
+    The gap above the first condition used to be blank, which left the reader
+    to work out that the box under it was a condition at all."""
+    i = SRC.index("  groupHTML(g,path){")
+    body = SRC[i:SRC.index("\n  },", i)]
+    assert "'כאשר'" in body, "the first condition opens with nothing again"
+    assert "adv-joiner" in body, "the joining word is gone"
+
+
+def test_the_column_wears_its_own_type():
+    """Three identical dropdowns in a row, and the column — the part that
+    decides what the other two will even offer — was the hardest of them to
+    find. It now carries the icon the board draws it with."""
+    assert "function advIcon(" in SRC, "the column type is no longer shown"
+    i = SRC.index("  ruleHTML(r,path){")
+    body = SRC[i:SRC.index("\n  },", i)]
+    assert "advIcon(f)" in body, "the rule row dropped the column's icon"
+    assert "avatarInner(" in body, "a person is back to being only a name"
+
+
+def test_a_condition_without_a_value_says_it_is_not_filtering():
+    """It matches every item — it widens the filter rather than narrowing it —
+    and it did so in silence: three conditions on screen, one of them doing
+    nothing, and a row count nobody could account for."""
+    assert "ruleDone(r){" in SRC and "todoNote(){" in SRC, \
+        "an unfinished condition is silent again"
+    assert ".adv-rule.adv-todo" in SRC, "nothing marks it on the row"
+    assert ".adv-warn" in SRC, "nothing says it above a tree that scrolls"
+
+
+def test_the_count_is_beside_the_title():
+    """How many items the filter being built would leave is the whole point of
+    the dialog. It was in grey at the foot of a list that scrolls."""
+    i = SRC.index("  html(){")
+    head = SRC[i:SRC.index("\n  },", i)]
+    assert 'id="adv-count"' in head, "the live count left the title row"
+    i = SRC.index("  stamp(){")
+    body = SRC[i:SRC.index("\n  },", i)]
+    assert "adv-count" in body and "adv-note" in body, \
+        "the count and the warning stopped following the draft"
+
+
+def test_the_door_turns_both_ways():
+    """The quick panel's foot opens the builder. Without this, getting back to
+    picking values meant closing the dialog and finding the filter button
+    again — and what had been built would be lost on the trip."""
+    assert "toQuick()" in SRC, "there is no way back to the quick panel"
+    i = SRC.index("  async toQuick(){")
+    assert "this.apply()" in SRC[i:i + 200], \
+        "going back to the quick panel throws away what was built"
+    assert 'onclick="Adv.toQuick()"' in SRC, "nothing offers the way back"

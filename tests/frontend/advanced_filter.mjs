@@ -240,13 +240,15 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
   const advSrc = src.slice(src.indexOf('const Adv = {'), src.indexOf('\nfunction refreshToolbar(){'));
   const Adv = new Function('st','esc','toast','showModal','closeModals','document',
     'advFields','advField','advOps','advOpArity','advChoices','advMatch','advCount','ADV_DATES',
-    'refreshToolbar','renderView',
+    'refreshToolbar','renderView','advIcon','avatarInner','Paged','togglePop',
     advSrc + '\nreturn Adv;')(
-    {board:{columns:COLUMNS, tasks:[item({people:[ME]}), item({id:2,people:[8]})]}, filters:{}},
+    {board:{columns:COLUMNS, tasks:[item({people:[ME]}), item({id:2,people:[8]})]},
+     filters:{}, me:{id:ME}},
     x=>String(x==null?'':x), ()=>{}, ()=>{}, ()=>{},
-    {getElementById:()=>null},
+    {getElementById:()=>null, querySelector:()=>null},
     advFields, advField, advOps, api.advOpArity, advChoices, advMatch, advCount, ADV_DATES,
-    ()=>{}, ()=>{});
+    ()=>{}, ()=>{}, f=>'fa-font', u=>`<i data-face="${(u&&u.id)==null?'':u.id}"></i>`,
+    {on:false,total:0}, ()=>{});
 
   Adv.draft={op:'and',rules:[]};
   Adv.addRule('');
@@ -285,10 +287,17 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
 
   const html=Adv.bodyHTML();
   ck('the builder draws a row per rule and a box per group',
-     (html.match(/class="adv-rule"/g)||[]).length===2
+     (html.match(/class="adv-rule/g)||[]).length===2
      && (html.match(/class="adv-grp /g)||[]).length===2, html.slice(0,200));
+  /* The count sits beside the dialog's title rather than under a list that
+     scrolls, so it is preview() that has to answer — and it answers about the
+     DRAFT, before anything is applied, which is what makes it worth showing. */
   ck('...and says how many items survive, before anything is applied',
-     /\d+ מתוך \d+ פריטים/.test(html), html.slice(-200));
+     /\d+ מתוך \d+ פריטים|את כל \d+ הפריטים/.test(Adv.preview()), Adv.preview());
+  /* A condition with no value yet matches every item. It used to do that in
+     silence; now the row says so and the top of the tree counts them. */
+  ck('a condition still missing its value is marked as not filtering',
+     /class="adv-rule adv-todo"/.test(html) && /adv-warn/.test(html), html.slice(0,200));
 
   Adv.del('1');
   ck('a whole group can be removed', Adv.draft.rules.length===1);
@@ -334,11 +343,15 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
   const advSrc = src.slice(src.indexOf('const Adv = {'), src.indexOf('\nfunction refreshToolbar(){'));
   const Adv = new Function('st','esc','toast','showModal','closeModals','document',
     'advFields','advField','advOps','advOpArity','advChoices','advMatch','advCount','ADV_DATES',
-    'refreshToolbar','renderView', advSrc + '\nreturn Adv;')(
-    {board:{columns:COLUMNS, tasks:[doneThisWeek, doneLastWeek, openHigh, openLowOld]}, filters:{}},
-    x=>String(x==null?'':x), ()=>{}, ()=>{}, ()=>{}, {getElementById:()=>null},
+    'refreshToolbar','renderView','advIcon','avatarInner','Paged','togglePop',
+    advSrc + '\nreturn Adv;')(
+    {board:{columns:COLUMNS, tasks:[doneThisWeek, doneLastWeek, openHigh, openLowOld]},
+     filters:{}, me:{id:ME}},
+    x=>String(x==null?'':x), ()=>{}, ()=>{}, ()=>{},
+    {getElementById:()=>null, querySelector:()=>null},
     advFields, advField, advOps, api.advOpArity, advChoices, advMatch, advCount, ADV_DATES,
-    ()=>{}, ()=>{});
+    ()=>{}, ()=>{}, f=>'fa-font', u=>`<i data-face="${(u&&u.id)==null?'':u.id}"></i>`,
+    {on:false,total:0}, ()=>{});
 
   Adv.draft={op:'and',rules:[]};
   Adv.setOp('','or');                       // the root becomes OR
