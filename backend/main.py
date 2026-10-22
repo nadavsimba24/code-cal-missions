@@ -8536,6 +8536,26 @@ AUTOMATION_GRANTED_ACTIONS = frozenset({
 AUTOMATION_GRANTED_FIELDS = frozenset({
     "status", "priority", "group_id", "assignees", "custom_fields", "subitem",
 })
+# And what each action actually writes, so the grant above is something asked
+# rather than something stated. The two are held against each other before every
+# firing (rule 3): an action added to the catalog later cannot quietly widen what
+# the engine touches, and one that is not listed here at all is refused — a field
+# nobody declared is a field nobody approved.
+#
+# A notification writes nothing on the item, which is why those two are empty
+# rather than missing. (AUTOMATION_ACTION_WRITES, further down, is the Hebrew
+# wording of the same thing for the impact screen; this is the machine's copy.)
+AUTOMATION_ACTION_FIELDS = {
+    "notify_person":    (),
+    "notify_assignees": (),
+    "assign_person":    ("assignees",),
+    "set_status":       ("status",),
+    "set_priority":     ("priority",),
+    "move_to_group":    ("group_id",),
+    "create_subitem":   ("subitem",),
+    "link_to_item":     ("custom_fields",),
+    "create_and_link":  ("custom_fields",),
+}
 _AUTOMATION_UID = None
 
 
@@ -9432,6 +9452,15 @@ def _automation_blockers(db, board, a):
         if one["key"] not in AUTOMATION_GRANTED_ACTIONS:
             return [{"kind": "permission",
                      "text": f"הפעולה '{one['key']}' אינה מאושרת לאוטומציה"}]
+        # the other half of the grant: the fields the action writes. An action
+        # missing from the map is refused with it — a field nobody declared is
+        # a field nobody approved.
+        outside = [f for f in AUTOMATION_ACTION_FIELDS.get(one["key"], ("?",))
+                   if f not in AUTOMATION_GRANTED_FIELDS]
+        if outside:
+            he = ", ".join(AUTOMATION_ACTION_WRITES.get(one["key"]) or outside)
+            return [{"kind": "permission",
+                     "text": f"השדה '{he}' אינו מאושר לאוטומציה"}]
     _, err = recipes.validate(a.recipe_id, cfg)
     if err:
         out.append({"kind": "dependency", "text": err})
@@ -10332,6 +10361,23 @@ def _redact_run(row_json):
     return row_json
 
 
+def _redact_test(row_json):
+    """A Dry Run's log row with what the reader may not see taken out.
+
+    A test row carries the item's title and `details` — every condition's actual
+    value read off that item, and every value the actions would have written. It
+    is a log of runs that did not happen, which makes it no less a log.
+    """
+    row_json = dict(row_json)
+    row_json["task_title"] = "פריט שאין לך הרשאה אליו"
+    row_json["task_id"] = None
+    row_json["sentence"] = "—"
+    row_json["summary"] = ""
+    row_json["details"] = {}
+    row_json["redacted"] = True
+    return row_json
+
+
 def _automation_run_json(db, row):
     uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
     return {
@@ -10424,6 +10470,9 @@ def retry_automation_run(run_id: int, user_id: int = Depends(current_user_id)):
         task = db.query(Task).filter(Task.id == row.task_id).first()
         if not task or task.deleted_at:
             raise HTTPException(400, "הפריט אינו קיים עוד")
+        # the log already refuses to say which item this row was about; running
+        # the rule on it again would be the same answer, out loud
+        _require_task_view(db, task.id, user_id)
         event = row.event or {"type": (recipes.recipe(a.recipe_id) or {}).get("trigger")}
         made = _fire_rule(db, a, task, event, user_id, 0, retry_of=row.id)
         row.retried_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -10958,13 +11007,19 @@ def list_automation_tests(board_id: int, automation_id: int = 0, limit: int = 50
             q = q.filter(AutomationTestRun.automation_id == automation_id)
         rows = q.order_by(AutomationTestRun.id.desc()).limit(max(1, min(limit, 200))).all()
         uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
-        return {"tests": [{"id": t.id, "automation_id": t.automation_id,
-                           "task_id": t.task_id, "task_title": t.task_title or "",
-                           "sentence": t.sentence or "", "version": t.version,
-                           "verdict": t.verdict, "summary": t.summary or "",
-                           "details": t.details or {},
-                           "tested_by": t.tested_by, "tested_by_name": uname(t.tested_by),
-                           "created_at": t.created_at.isoformat() if t.created_at else None}
+        # an item-level restriction holds here too — see _redact_test
+        seen = {}
+        for t in rows:
+            if t.task_id not in seen:
+                seen[t.task_id] = _can_see_run_item(db, t, user_id)
+        one = lambda t: {"id": t.id, "automation_id": t.automation_id,
+                         "task_id": t.task_id, "task_title": t.task_title or "",
+                         "sentence": t.sentence or "", "version": t.version,
+                         "verdict": t.verdict, "summary": t.summary or "",
+                         "details": t.details or {},
+                         "tested_by": t.tested_by, "tested_by_name": uname(t.tested_by),
+                         "created_at": t.created_at.isoformat() if t.created_at else None}
+        return {"tests": [one(t) if seen.get(t.task_id, True) else _redact_test(one(t))
                           for t in rows],
                 "retention_days": AUTOMATION_TEST_LOG_DAYS}
 
@@ -11182,6 +11237,10 @@ def test_automation(automation_id: int, data: dict, user_id: int = Depends(curre
                                      Task.board_id == a.board_id).first()
         if not task or task.deleted_at:
             raise HTTPException(400, "יש לבחור פריט מהלוח הזה")
+        # the report reads every condition's value off the item and says what
+        # each action would write to it. Being the board's admin is not
+        # permission to open an item inside it (rule 5).
+        _require_task_view(db, task.id, user_id)
         found = _dry_run_automation(db, b, a, task)
         row = AutomationTestRun(
             automation_id=a.id, board_id=a.board_id, task_id=task.id,
@@ -11223,6 +11282,8 @@ def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(cu
                                      Task.board_id == a.board_id).first()
         if not task or task.deleted_at:
             raise HTTPException(400, "יש לבחור פריט מהלוח הזה")
+        # and the rule is not a way to write on an item they may not open
+        _require_task_view(db, task.id, user_id)
         trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
         row = _fire_rule(db, a, task, {"type": trig, "manual": True}, user_id, 0)
         db.commit()

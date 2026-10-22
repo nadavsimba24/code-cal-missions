@@ -292,3 +292,125 @@ def test_rule3_the_identity_is_made_at_startup(client):
         u = db.query(User).filter(
             User.email == cityos_main.AUTOMATION_IDENTITY_EMAIL).first()
     assert u is not None and u.is_active is False
+
+
+# ── rule 3, the rest of the grant — "לוחות, שדות וסוגי פעולות" ──────────────
+# The boards are granted by the connect column, the action types by the list
+# above. The FIELDS were written down and never asked: AUTOMATION_GRANTED_FIELDS
+# was a constant nothing read. Today's actions happen to stay inside it, so
+# nothing was wrong on the board — but a grant nobody checks is not a grant, and
+# the next action added to the catalog would widen what the engine may write to
+# an item without anything saying so.
+
+def test_rule3_every_granted_action_declares_the_fields_it_writes(client):
+    writes = cityos_main.AUTOMATION_ACTION_FIELDS
+    for act in cityos_main.AUTOMATION_GRANTED_ACTIONS:
+        assert act in writes, f"{act} is allowed to run without saying what it writes"
+        assert set(writes[act]) <= cityos_main.AUTOMATION_GRANTED_FIELDS, \
+            f"{act} writes outside the grant: {writes[act]}"
+    import automations as recipes
+    for act in recipes.ACTIONS:
+        assert act in writes, f"the catalog offers {act} and nothing says what it writes"
+
+
+def test_rule3_a_field_outside_the_grant_is_refused_at_run_time(client, admin_id,
+                                                                monkeypatch):
+    """The same answer the action grant gives, for the other half of it."""
+    bid = _board(client, admin_id)
+    a = _add(client, bid, admin_id)                       # שנה עדיפות
+    monkeypatch.setattr(cityos_main, "AUTOMATION_GRANTED_FIELDS",
+                        cityos_main.AUTOMATION_GRANTED_FIELDS - {"priority"})
+    _item(client, bid, admin_id)
+    runs = _runs(client, bid, admin_id)["runs"]
+    assert runs and runs[0]["outcome"] == "skipped", runs[:1]
+    assert "אינו מאושר לאוטומציה" in runs[0]["reason"], runs[0]
+    monkeypatch.undo()
+    with Session(cityos_main.engine) as db:
+        assert db.query(Automation).filter(
+            Automation.id == a["id"]).first().status == "paused_error"
+
+
+def test_rule3_a_field_inside_the_grant_still_runs(client, admin_id):
+    bid = _board(client, admin_id)
+    _add(client, bid, admin_id)
+    _item(client, bid, admin_id)
+    assert _runs(client, bid, admin_id)["runs"][0]["outcome"] == "ran"
+
+
+# ── rule 5, the rest of it — every door onto a restricted item ─────────────
+# The run log and its export hide an item the reader may not open. They are not
+# the only places a run shows its item.
+
+def _secret_item(client, admin_id, guinea_id, bid, title="פריט סודי"):
+    """An item on `bid` that guinea — an admin of the board — may not open."""
+    tid = _item(client, bid, admin_id, title)
+    r = client.post(f"/api/tasks/{tid}/permissions",
+                    json={"actor_id": admin_id, "user_id": guinea_id, "perm": "none"})
+    assert r.status_code == 200, r.text
+    return tid
+
+
+def test_rule5_the_test_log_hides_an_item_the_reader_may_not_open(client, admin_id,
+                                                                  guinea_id):
+    """A Dry Run keeps a log of its own, and it carries the item's title and
+    every value the test read off it — the run log's restriction, one table
+    across."""
+    bid = _board(client, admin_id, "לוח יומן בדיקות")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    a = _add(client, bid, admin_id)
+    tid = _secret_item(client, admin_id, guinea_id, bid)
+    assert client.post(f"/api/automations/{a['id']}/test?user_id={admin_id}",
+                       json={"task_id": tid}).status_code == 200
+
+    rows = client.get(f"/api/boards/{bid}/automations/tests?user_id={guinea_id}"
+                      ).json()["tests"]
+    assert rows, "the test log came back empty"
+    assert all("פריט סודי" not in str(t) for t in rows), rows
+    assert rows[0]["redacted"] is True and rows[0]["task_id"] is None
+    # and the admin who may open it still sees it
+    mine = client.get(f"/api/boards/{bid}/automations/tests?user_id={admin_id}"
+                      ).json()["tests"]
+    assert mine[0]["task_title"] == "פריט סודי" and not mine[0].get("redacted")
+
+
+def test_rule5_a_dry_run_cannot_read_an_item_the_tester_may_not_open(client, admin_id,
+                                                                     guinea_id):
+    """A Dry Run reports every condition's actual value off the item. Being the
+    board's admin is not permission to open an item inside it."""
+    bid = _board(client, admin_id, "לוח בדיקה יבשה")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    a = _add(client, bid, admin_id)
+    tid = _secret_item(client, admin_id, guinea_id, bid)
+    r = client.post(f"/api/automations/{a['id']}/test?user_id={guinea_id}",
+                    json={"task_id": tid})
+    assert r.status_code == 403, r.text
+
+
+def test_rule5_a_manual_run_cannot_reach_an_item_the_runner_may_not_open(client, admin_id,
+                                                                         guinea_id):
+    """And the rule is not a way to write on one either."""
+    bid = _board(client, admin_id, "לוח הפעלה ידנית")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    a = _add(client, bid, admin_id)
+    tid = _secret_item(client, admin_id, guinea_id, bid)
+    r = client.post(f"/api/automations/{a['id']}/run?user_id={guinea_id}",
+                    json={"task_id": tid})
+    assert r.status_code == 403, r.text
+    assert client.post(f"/api/automations/{a['id']}/run?user_id={admin_id}",
+                       json={"task_id": tid}).status_code == 200
+
+
+def test_rule5_a_run_hidden_in_the_log_cannot_be_retried_from_it(client, admin_id,
+                                                                 guinea_id):
+    """The log already refuses to say which item this was. Retrying it would
+    run the rule on that item all the same."""
+    bid = _board(client, admin_id, "לוח הפעלה חוזרת מוסתרת")
+    _member(client, admin_id, bid, guinea_id, "admin")
+    _add(client, bid, admin_id, "created_set_status", {"a_status": "no_such_status"})
+    tid = _secret_item(client, admin_id, guinea_id, bid)
+    row = next(r for r in _runs(client, bid, admin_id)["runs"] if r["task_id"] == tid)
+    assert row["can_retry"], row
+    hidden = next(r for r in _runs(client, bid, guinea_id)["runs"] if r["id"] == row["id"])
+    assert hidden["redacted"] is True and hidden["can_retry"] is False
+    assert client.post(f"/api/automation-runs/{row['id']}/retry?user_id={guinea_id}"
+                       ).status_code == 403
