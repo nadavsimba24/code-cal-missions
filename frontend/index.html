@@ -665,10 +665,16 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tb-pop-wide .arr-sec .pop-title{margin:0 0 8px;border:none;padding:0;display:flex;align-items:center;gap:6px}
 .tb-pop-wide .pop-people{max-height:150px}
 /* the columns of the board, side by side, each a list of its values */
-/* Wide enough for three columns and no wider. It opened at 920px — most of a
-   laptop screen, for a panel that is read in one glance — and the columns past
-   the edge had nothing but a hidden scrollbar to reach them by. */
-.tb-pop-wide.tb-pop-qf{min-width:min(620px,94vw);max-width:calc(100vw - 24px)}
+/* A WIDTH, not a minimum.
+
+   min-width was the whole of why it kept opening huge: the strip inside is as
+   wide as the board has columns — ten of them is nearly two thousand pixels —
+   and a popup with only a minimum grows to fit its content. It went on growing
+   until it hit the viewport, so the panel filled the screen and the strip
+   never had anything to scroll. Fixed at three columns' worth, the overflow
+   has nowhere to go but sideways, which is where the arrows and the scrollbar
+   are. */
+.tb-pop-wide.tb-pop-qf{width:min(540px,92vw);min-width:0;max-width:92vw}
 .qf-head{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;
   color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:0 2px 9px}
 .qf-head i{color:var(--primary)}
@@ -689,7 +695,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .qf-cols::-webkit-scrollbar-thumb:hover{background:var(--text-light)}
 .qf-cols::-webkit-scrollbar-track{background:transparent}
 .qf-cols{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
-.qf-col{flex:0 0 178px;min-width:0}
+.qf-col{flex:0 0 160px;min-width:0}
 .qf-arr{position:absolute;top:50%;transform:translateY(-50%);z-index:2;display:none;
   width:28px;height:28px;border-radius:50%;border:1px solid var(--border);
   background:var(--surface);box-shadow:var(--shadow);color:var(--text-muted);
@@ -701,8 +707,10 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .qf-col-t{font-size:13px;font-weight:700;color:var(--text);margin-bottom:7px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .qf-col.on .qf-col-t{color:var(--primary)}
-.qf-vals{max-height:230px;overflow-y:auto;display:flex;flex-direction:column;gap:5px}
-.qf-v{display:flex;align-items:center;gap:7px;width:100%;padding:8px 10px;border:1.5px solid transparent;
+/* five values and the start of a sixth — enough to read a column at a glance,
+   short enough that the panel is not a page */
+.qf-vals{max-height:186px;overflow-y:auto;display:flex;flex-direction:column;gap:5px}
+.qf-v{display:flex;align-items:center;gap:7px;width:100%;padding:6px 9px;border:1.5px solid transparent;
   border-radius:8px;background:var(--row-hover);cursor:pointer;font-family:inherit;
   font-size:13px;color:var(--text);text-align:start}
 .qf-v:hover{border-color:var(--border-strong)}
@@ -718,9 +726,12 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .fcol-txt{width:100%;padding:6px 9px;margin-bottom:7px;border:1px solid var(--border-strong);
   border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
 .fcol-none{padding:10px 2px;color:var(--text-light);font-size:13px}
-.qf-adv{display:block;width:100%;margin-top:6px;padding:7px;background:none;border:none;
-  cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:600;color:var(--primary)}
-.qf-adv:hover{text-decoration:underline}
+.arr-foot{display:flex;align-items:center;gap:10px}
+.qf-clear,.qf-adv{padding:6px 2px;background:none;border:none;cursor:pointer;
+  font-family:inherit;font-size:12.5px;font-weight:600}
+.qf-clear{color:var(--red)}
+.qf-adv{margin-inline-start:auto;color:var(--primary)}
+.qf-clear:hover,.qf-adv:hover{text-decoration:underline}
 .arr-foot{padding:10px 14px;position:sticky;bottom:0;background:var(--surface)}
 .tb-clear{display:none;color:var(--red);font-weight:600}
 .tb-clear.show{display:inline-flex}
@@ -10065,18 +10076,25 @@ function renderPop(name){
   }
   if(name!=='arrange')return;
   const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
+  /* Four stacked rows of radio buttons were a third of the panel's height for
+     a choice of four words. The same four as chips are one line, and read the
+     same way the values above them do. */
   const sortOpts=[['','ללא מיון','fa-ban'],['due','תאריך יעד','fa-calendar-day'],['priority','עדיפות','fa-flag'],['title','שם (א-ת)','fa-arrow-down-a-z']];
-  const sort=sortOpts.map(([k,he,ic])=>`<label class="pop-row"><input type="radio" name="sortby" ${(f.sort||'')===k?'checked':''} onchange="setSort('${k}')"><i class="fa-solid ${ic}" style="width:16px;color:var(--text-light)"></i><span>${he}</span></label>`).join('');
+  const sort=`<div class="pop-chips">${sortOpts.map(([k,he,ic])=>
+    `<button class="pop-chip${(f.sort||'')===k?' sel':''}" onclick="setSort('${k}')">
+      <i class="fa-solid ${ic}" style="font-size:10px"></i> ${he}</button>`).join('')}</div>`;
   el.innerHTML=`
     <div class="arr-head"><i class="fa-solid fa-sliders"></i> סינון ומיון<button class="arr-x" onclick="closePops()" aria-label="סגור">✕</button></div>
     ${colFilterHTML()}
     ${linkFilterHTML()}
     <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</div>${sort}</div>
+    <!-- one row: clearing and the way out to the builder are both one click,
+         and neither is worth a line of its own. Picking values answers most
+         questions; a sentence ("תאריך יעד לפני היום וגם הסטטוס אינו בוצע") is
+         what the builder is for, and this is where somebody is standing when
+         they find they need one. -->
     <div class="arr-foot">
-      <button class="btn btn-ghost" style="color:var(--red);width:100%;justify-content:center" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button>
-      <!-- picking values answers most questions; a sentence ("תאריך יעד לפני
-           היום וגם הסטטוס אינו בוצע") is what the builder is for, and this is
-           where somebody is standing when they find they need one -->
+      <button class="qf-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button>
       <button class="qf-adv" onclick="closePops();Adv.open()">סינון מתקדם <i class="fa-solid fa-arrow-left"></i></button>
     </div>`;
   qfRestore();          // the strip is in the document now
@@ -10127,7 +10145,7 @@ function colFilterHTML(){
     ${cols?`<div class="qf-wrap">
         <button class="qf-arr prev" id="qf-prev" onclick="qfScroll(1)" tabindex="-1"
                 aria-label="עמודות קודמות"><i class="fa-solid fa-chevron-right"></i></button>
-        <div class="qf-cols" id="qf-cols" onscroll="qfArrows()">${cols}</div>
+        <div class="qf-cols" id="qf-cols" onscroll="qfArrows()" onwheel="qfWheel(event)">${cols}</div>
         <button class="qf-arr next" id="qf-next" onclick="qfScroll(-1)" tabindex="-1"
                 aria-label="עמודות נוספות"><i class="fa-solid fa-chevron-left"></i></button>
       </div>`
@@ -10148,7 +10166,32 @@ function colFilterHTML(){
 let _qfScroll=0;
 function qfScroll(dir){
   const el=document.getElementById('qf-cols'); if(!el)return;
-  el.scrollBy({left:dir*Math.max(178,el.clientWidth-70),behavior:'smooth'});
+  el.scrollBy({left:dir*Math.max(160,el.clientWidth-60),behavior:'smooth'});
+}
+/* A wheel over the strip moves it sideways.
+
+   A trackpad can swipe horizontally and a mouse cannot — it has one wheel, and
+   over a strip that only reads horizontal scrolling that wheel does nothing at
+   all, or scrolls the panel behind it while the thing under the pointer sits
+   still. So a vertical wheel here is taken as sideways movement.
+
+   It is handed back the moment the strip reaches its end: the panel itself
+   scrolls, and a strip that swallowed the wheel at its edge would trap the
+   page under the pointer. Only taken while there is somewhere to go. */
+function qfWheel(e){
+  const el=document.getElementById('qf-cols'); if(!el)return;
+  const room=el.scrollWidth-el.clientWidth;
+  if(room<2)return;                                   // every column is on screen
+  const d=(Math.abs(e.deltaY)>Math.abs(e.deltaX))?e.deltaY:e.deltaX;
+  if(!d)return;
+  // RTL: scrollLeft runs negative away from the right-hand edge, so "forward"
+  // is downward on the wheel and negative here
+  const next=el.scrollLeft-d;
+  const gone=Math.abs(el.scrollLeft);
+  if((d>0&&gone>=room-1)||(d<0&&gone<=1))return;      // at the end — let the panel have it
+  e.preventDefault();
+  el.scrollLeft=Math.max(-room,Math.min(0,next));
+  qfArrows();
 }
 function qfArrows(){
   const el=document.getElementById('qf-cols'); if(!el)return;

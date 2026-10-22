@@ -136,9 +136,24 @@ def test_a_pick_does_not_throw_her_back_to_the_first_column():
     assert "qfRestore();" in SRC, "the restore is never called after a redraw"
 
 
-def test_the_panel_opens_at_a_size_that_fits():
-    """It opened at 920px — most of a laptop screen for something read in a
-    glance — and could then run off the edge with no way to move it."""
+def test_the_panel_has_a_width_rather_than_a_minimum():
+    """This is the whole of why it kept opening huge. The strip inside is as
+    wide as the board has columns — ten of them is nearly two thousand pixels —
+    and a popup with only a min-width grows to fit its content, so it filled
+    the screen and the strip never had anything to scroll. A width pins it, and
+    the overflow has nowhere to go but sideways."""
     i = SRC.index(".tb-pop-wide.tb-pop-qf{")
     rule = SRC[i:SRC.index("}", i)]
-    assert "620px" in rule and "max-width:calc(100vw" in rule, rule
+    assert rule.count("width:min(") and "min-width:0" in rule, rule
+    assert "min-width:min(" not in rule, \
+        "a minimum again — the panel will grow to its content and fill the screen"
+
+
+def test_a_mouse_can_move_the_strip_too():
+    """A trackpad swipes sideways; a mouse has one wheel, and over a strip that
+    only reads horizontal scrolling that wheel does nothing at all."""
+    assert "function qfWheel(" in SRC
+    i = SRC.index("function qfWheel(")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "preventDefault" in body and "return;" in body, body[:200]
+    assert 'onwheel="qfWheel(event)"' in SRC, "the strip never hears the wheel"

@@ -324,5 +324,51 @@ function world(){
   ck('and the other arrow brings it back', el.scrollLeft > was);
 }
 
+// ── a mouse wheel over the strip ──────────────────────────────────────────
+{
+  const mk = (scrollLeft, scrollWidth) => {
+    const el = {scrollLeft, clientWidth:540, scrollWidth, style:{}, scrollBy(){}};
+    const fns = new Function('document','_qfScroll',
+      grab('qfWheel')+grab('qfArrows')+';return {qfWheel};')(
+      {getElementById:id=>id==='qf-cols'?el:({classList:{toggle(){}}})}, 0);
+    return [fns, el];
+  };
+  const ev = d => { let stopped=false;
+    return {deltaY:d, deltaX:0, preventDefault(){stopped=true;}, get taken(){return stopped;}}; };
+
+  let [f, el] = mk(0, 1400);
+  let e = ev(120);
+  f.qfWheel(e);
+  ck('a wheel down moves the strip toward the far columns',
+     e.taken && el.scrollLeft < 0, el.scrollLeft);
+
+  [f, el] = mk(-400, 1400);
+  e = ev(-120);
+  f.qfWheel(e);
+  ck('...and a wheel up brings it back', e.taken && el.scrollLeft > -400, el.scrollLeft);
+
+  [f, el] = mk(-(1400-540), 1400);
+  e = ev(120);
+  f.qfWheel(e);
+  ck('at the last column the wheel is handed back to the panel',
+     !e.taken && el.scrollLeft === -(1400-540), el.scrollLeft);
+
+  [f, el] = mk(0, 1400);
+  e = ev(-120);
+  f.qfWheel(e);
+  ck('and at the first column too, in the other direction', !e.taken);
+
+  [f, el] = mk(0, 500);
+  e = ev(120);
+  f.qfWheel(e);
+  ck('a strip with every column on screen never takes the wheel', !e.taken);
+
+  [f, el] = mk(0, 1400);
+  e = ev(99999);
+  f.qfWheel(e);
+  ck('one enormous wheel event cannot scroll past the last column',
+     el.scrollLeft >= -(1400-540), el.scrollLeft);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
