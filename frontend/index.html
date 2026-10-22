@@ -679,11 +679,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:0 2px 9px}
 .qf-head i{color:var(--primary)}
 .qf-showing{margin-inline-start:auto;text-transform:none;letter-spacing:0;font-weight:600}
-.fcol-search{display:flex;align-items:center;gap:7px;padding:6px 9px;margin-bottom:9px;
-  border:1px solid var(--border-strong);border-radius:8px;background:var(--surface)}
-.fcol-search i{color:var(--text-light);font-size:11px}
-.fcol-search input{flex:1;min-width:0;border:none;outline:none;background:none;
-  font-family:inherit;font-size:13px;color:var(--text)}
 /* the strip. One column per board column; past the width it scrolls sideways,
    the way the board does — with an arrow at each end and a scrollbar you can
    actually see and drag, because a strip that only answers to a trackpad
@@ -725,7 +720,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   border-top:1px dashed var(--border)}
 .fcol-txt{width:100%;padding:6px 9px;margin-bottom:7px;border:1px solid var(--border-strong);
   border-radius:7px;font-family:inherit;font-size:13px;background:var(--surface);color:var(--text)}
-.fcol-none{padding:10px 2px;color:var(--text-light);font-size:13px}
 .arr-foot{display:flex;align-items:center;gap:10px}
 .qf-clear,.qf-adv{padding:6px 2px;background:none;border:none;cursor:pointer;
   font-family:inherit;font-size:12.5px;font-weight:600}
@@ -2421,7 +2415,7 @@ body, body *{ font-weight:400!important; }
         <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div class="tb-ctl" id="ctl-arrange">
-        <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון ומיון <span class="tb-badge" id="badge-arrange"></span></button>
+        <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון <span class="tb-badge" id="badge-arrange"></span></button>
         <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
       </div>
       <div class="tb-ctl" id="ctl-adv">
@@ -3645,7 +3639,7 @@ async function openBoard(id){
   if(st.board && st.board.id!==id){ closeItemPanel(); Paged.reset(); }
   if(!st.board || st.board.id!==id){ st.view='table'; st.openSubs.clear(); st.selected.clear(); st.collapsedGroups.clear(); st.colSort=null; st.subSort=null; }
   st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};
-  _fcolQ=''; _qfScroll=0;   // another board, another set of columns to start at the first of
+  _qfScroll=0;              // another board, another set of columns to start at the first of
   const qi=document.getElementById('tb-q'); if(qi)qi.value='';
   closePops();
   /* The drawer closes on the tap, not when the board has finished arriving.
@@ -6762,7 +6756,7 @@ function setSearch(v){
   refreshToolbar(); renderView();
 }
 function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();
-  _fcolQ=''; _qfScroll=0;             // the panel reopens whole, at its first column
+  _qfScroll=0;                        // the panel reopens at its first column
   // nothing is filtered any more, so no saved cut is what is on screen
   if(typeof Views!=='undefined')Views.leave({keep:true});
   refreshToolbar();renderTabs();renderView();}
@@ -10076,18 +10070,18 @@ function renderPop(name){
   }
   if(name!=='arrange')return;
   const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
-  /* Four stacked rows of radio buttons were a third of the panel's height for
-     a choice of four words. The same four as chips are one line, and read the
-     same way the values above them do. */
-  const sortOpts=[['','ללא מיון','fa-ban'],['due','תאריך יעד','fa-calendar-day'],['priority','עדיפות','fa-flag'],['title','שם (א-ת)','fa-arrow-down-a-z']];
-  const sort=`<div class="pop-chips">${sortOpts.map(([k,he,ic])=>
-    `<button class="pop-chip${(f.sort||'')===k?' sel':''}" onclick="setSort('${k}')">
-      <i class="fa-solid ${ic}" style="font-size:10px"></i> ${he}</button>`).join('')}</div>`;
+  /* No sort section. It was four fixed fields in a panel that is now about the
+     board's own columns, and every column header carries its own sort button
+     with the three states — off, descending, ascending (see sortBtn). Sorting
+     by a column from a list of four that does not include it was the odd one
+     out here long before this panel was rebuilt.
+
+     st.filters.sort is still honoured where it arrives inside a saved view
+     made before this; nothing writes a new one. */
   el.innerHTML=`
-    <div class="arr-head"><i class="fa-solid fa-sliders"></i> סינון ומיון<button class="arr-x" onclick="closePops()" aria-label="סגור">✕</button></div>
+    <div class="arr-head"><i class="fa-solid fa-sliders"></i> סינון<button class="arr-x" onclick="closePops()" aria-label="סגור">✕</button></div>
     ${colFilterHTML()}
     ${linkFilterHTML()}
-    <div class="arr-sec"><div class="pop-title"><i class="fa-solid fa-arrow-down-wide-short"></i> מיון</div>${sort}</div>
     <!-- one row: clearing and the way out to the builder are both one click,
          and neither is worth a line of its own. Picking values answers most
          questions; a sentence ("תאריך יעד לפני היום וגם הסטטוס אינו בוצע") is
@@ -10113,25 +10107,15 @@ function renderPop(name){
    many items each value accounts for — and picking is one click rather than
    open-pick-close. Too many columns for the width is a horizontal scroll, the
    way the board itself is. */
-let _fcolQ='';               // what was typed into "חפש עמודה"
-function filterColSearch(v){
-  _fcolQ=(v||'').trim();
-  reArrange();
-  const i=document.getElementById('fcol-q');
-  if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); }
-}
-const FCOL_SEARCH_FROM=6;    // below this the columns are all on screen anyway
+/* No "חפש עמודה" box. The columns are a strip that is moved along — by the
+   arrows, the scrollbar or the wheel — and a search that hid all but one of
+   them answered a question the movement already answers, while taking a row
+   of the panel's height to do it. */
 function colFilterHTML(){
   const fields=advFields();
   if(!fields.length)return '';
-  const q=_fcolQ.toLowerCase();
-  const shown=q?fields.filter(x=>(x.label||'').toLowerCase().includes(q)):fields;
   const counts=qfCounts();
-  const search=fields.length>=FCOL_SEARCH_FROM
-    ? `<div class="fcol-search"><i class="fa-solid fa-magnifying-glass"></i>
-        <input id="fcol-q" value="${esc(_fcolQ)}" placeholder="חפש עמודה…"
-               oninput="filterColSearch(this.value)" aria-label="חפש עמודה"></div>` : '';
-  const cols=shown.map(x=>{
+  const cols=fields.map(x=>{
     const picked=advPickedAll(x.id);
     return `<div class="qf-col${picked.length?' on':''}">
       <div class="qf-col-t" title="${esc(x.label)}">${esc(x.label)}</div>
@@ -10141,15 +10125,13 @@ function colFilterHTML(){
   return `<div class="arr-sec fcols">
     <div class="qf-head"><i class="fa-solid fa-filter"></i> סינון לפי עמודה
       <span class="qf-showing">${qfShowing()}</span></div>
-    ${search}
     ${cols?`<div class="qf-wrap">
         <button class="qf-arr prev" id="qf-prev" onclick="qfScroll(1)" tabindex="-1"
                 aria-label="עמודות קודמות"><i class="fa-solid fa-chevron-right"></i></button>
         <div class="qf-cols" id="qf-cols" onscroll="qfArrows()" onwheel="qfWheel(event)">${cols}</div>
         <button class="qf-arr next" id="qf-next" onclick="qfScroll(-1)" tabindex="-1"
                 aria-label="עמודות נוספות"><i class="fa-solid fa-chevron-left"></i></button>
-      </div>`
-          :'<div class="fcol-none">אין עמודה בשם הזה</div>'}
+      </div>`:''}
   </div>`;
 }
 /* Moving along the strip.
@@ -10347,7 +10329,9 @@ function reArrange(){const c=document.getElementById('ctl-arrange');if(c&&c.clas
    panel shows them as picked on their column. What nothing writes any more is
    a NEW filter into them; a column touched here moves into the tree, which is
    where every column now says what it is filtered by. */
-function setSort(s){st.filters.sort=s||'';refreshToolbar();reArrange();renderView();}
+/* setSort is gone with the panel's sort section. st.filters.sort is still read
+   where a saved view made before it carries one (see applyFilters), and the
+   column headers are where a sort is chosen now. */
 /* ===== סינון מתקדם — the builder =====
 
    One modal that edits st.filters.adv in place and redraws itself. It is

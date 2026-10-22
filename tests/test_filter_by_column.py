@@ -49,6 +49,29 @@ def test_the_panel_is_built_from_the_board_s_columns():
     assert "advFields()" in body, "the filter panel is no longer built from the board's columns"
 
 
+def test_the_panel_is_filtering_and_nothing_else():
+    """No column search, no sort block. The columns are a strip that is moved
+    along — by the arrows, the scrollbar or the wheel — and a search that hid
+    all but one of them answered a question the movement already answers. The
+    sort was four fixed fields in a panel about the board's own columns, and
+    every column header carries its own sort button (sortBtn)."""
+    assert "fcol-search" not in SRC and "filterColSearch" not in SRC, \
+        "the column search box is back"
+    assert "function sortBtn(" in SRC, "sorting has nowhere left to be chosen from"
+    assert "setSort('" not in SRC, "the panel is writing a sort again"
+    i = SRC.index("if(name!=='arrange')return;")
+    panel = SRC[i:SRC.index("qfRestore();", i)]
+    assert "מיון" not in panel, "the sort section is back in the filter panel"
+
+
+def test_an_old_view_s_sort_is_still_honoured():
+    """Nothing writes st.filters.sort any more, and a saved view made before
+    this still carries one. It must keep sorting the board."""
+    i = SRC.index("function applyFilters(")
+    body = SRC[i:SRC.index("\nfunction ", i + 10)]
+    assert "f.sort" in body, "a saved view's sort stopped being applied"
+
+
 def test_the_three_fixed_sections_are_gone():
     """Status and אחראים are columns now, offered beside every other column.
     Leaving the old sections in would mean two places that filter the same
