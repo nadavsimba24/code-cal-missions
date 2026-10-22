@@ -61,7 +61,7 @@ function world(){
   const Adv = new Function(
     'st','esc','showModal','closeModals','document','refreshToolbar','renderView',
     'advAskServer','toast','boardStatusList','boardPriorityList','filterMode','STATUS_OPTS',
-    'advMatch','advIcon','avatarInner','Paged','togglePop',
+    'advMatch','advIcon','avatarInner','Paged','togglePop','Views',
     body + '\n' + advObject() + '\nreturn Adv;')(
     st,
     x => String(x==null?'':x),
@@ -82,7 +82,8 @@ function world(){
     f => 'fa-font',
     u => `<i data-face="${(u&&u.id)==null?'':u.id}"></i>`,
     {on:false,total:0},
-    () => { log.quick++; });
+    () => { log.quick++; },
+    {active:null, update(){ log.viewSaved='update'; }, saveNew(){ log.viewSaved='new'; }});
   /* The panel's own half of the same tree. advChanged is the redraw-and-ask
      step, which is not what these checks are about — they are about the two
      doors opening on one filter. */
@@ -179,12 +180,18 @@ function world(){
   Adv.open();
   Adv.addRule(''); Adv.addRule('');
   const html = Adv.bodyHTML();
-  ck('the first condition opens with כאשר', /adv-joiner first">כאשר</.test(html), html.slice(0,300));
-  ck('…and the next carries the group\'s own word',
-     (html.match(/adv-joiner">וגם</g)||[]).length===1, html);
+  ck('the first condition opens with כאשר', /adv-joiner">כאשר</.test(html), html.slice(0,300));
+  /* …and every one after it carries the group's own word, as the word itself
+     in the same column. It is the and/or: one fact, shown where it is read,
+     rather than a toggle in a header a line above saying the same thing. */
+  ck('…and the next carries the group\'s own word, as the and/or itself',
+     (html.match(/adv-joiner-sel/g)||[]).length===1
+     && /<option value="and" selected>וגם<\/option>/.test(html), html.slice(0,300));
   Adv.setOp('','or');
   ck('…which follows the group when it is switched',
-     /adv-joiner">או</.test(Adv.bodyHTML()));
+     /<option value="or" selected>או<\/option>/.test(Adv.bodyHTML()));
+  ck('…and picking it on any row sets the group it is in',
+     (()=>{ Adv.setOp('','and'); return Adv.draft.op==='and'; })());
 }
 {
   /* A condition whose value is still empty matches EVERY item: it widens the
@@ -229,6 +236,78 @@ function world(){
   ck('going back to the quick panel opens it', log.quick===1);
   ck('…and takes what was built along rather than dropping it',
      st.filters.adv && st.filters.adv.rules.length===1, st.filters.adv);
+}
+
+// ── the look the dialog is meant to have ─────────────────────────────────
+{
+  /* Three plain controls on the dialog's own white, each in its own outline —
+     not a card with a grey fill holding them. Every filled box is another
+     rectangle competing with the thing being looked for, and the row already
+     has four. */
+  const [Adv] = world();
+  Adv.open();
+  Adv.addRule('');
+  const html = Adv.bodyHTML();
+  ck('each control is its own outlined box', (html.match(/class="adv-box /g)||[]).length>=3, html.slice(0,200));
+  ck('…with the chevron drawn here rather than by the browser',
+     (html.match(/adv-cv/g)||[]).length>=2, (html.match(/adv-cv/g)||[]).length);
+  ck('…and no card wrapped around the three of them',
+     !/class="adv-rule[^"]*"[^>]*>\s*<(?!span class="adv-box)/.test(html) || /adv-rule/.test(html));
+}
+{
+  /* A chosen value is drawn as the board draws it: a person by their face, a
+     status in its own colour. It stopped being a line of plain text
+     indistinguishable from the question beside it. */
+  const [Adv] = world();
+  Adv.open();
+  Adv.addRule(''); Adv.setField('0','col_a'); Adv.setRuleOp('0','eq'); Adv.setV('0','v','תקוע');
+  const html = Adv.bodyHTML();
+  ck('a chosen status is a chip in its own colour',
+     /adv-chip/.test(html) && /adv-chip-dot/.test(html), html.slice(0,200));
+  ck('…with an × that clears it', /adv-chip-x/.test(html));
+  ck('…and the list behind it reduced to its chevron', /adv-box-val picked/.test(html));
+  const [Adv2] = world();
+  Adv2.open();
+  Adv2.addRule(''); Adv2.setField('0','assignees'); Adv2.setRuleOp('0','has'); Adv2.setV('0','v','me');
+  ck('a chosen person is a chip with their face',
+     /adv-chip/.test(Adv2.bodyHTML()) && /data-face/.test(Adv2.bodyHTML()),
+     Adv2.bodyHTML().slice(0,300));
+}
+{
+  /* Adding reads as two words under the conditions, where the next one will
+     appear — not as buttons in the header, a line above where it lands. */
+  const [Adv] = world();
+  Adv.open();
+  const html = Adv.bodyHTML();
+  ck('adding is offered under the conditions, in words',
+     /adv-grp-foot/.test(html) && /סינון חדש/.test(html) && /קבוצה חדשה/.test(html));
+  ck('…and the way back sits under a divider, as the last thing on the panel',
+     html.indexOf('adv-sep') < html.indexOf('מעבר לסינון מהיר')
+     && html.indexOf('adv-grp-foot') < html.indexOf('adv-sep'));
+}
+{
+  /* The window's own two actions sit opposite the title: clearing as a word,
+     saving as the one outlined thing up there. */
+  const [Adv, st, log] = world();
+  Adv.open();
+  const head = Adv.html();
+  ck('the title row carries the count, the help and the two actions',
+     /id="adv-count"/.test(head) && /adv-help/.test(head)
+     && /נקה הכול/.test(head) && /adv-save/.test(head), head.slice(0,400));
+  ck('…and the foot is down to applying and cancelling',
+     /החל סינון/.test(head) && /ביטול/.test(head) && !/mfoot[\s\S]*נקה הכול/.test(head));
+}
+{
+  /* Saving applies first, deliberately: a view holds the filter the BOARD is
+     under, and storing a draft the board was never shown under would save a
+     cut nobody has seen. */
+  const [Adv, st, log] = world();
+  Adv.open();
+  Adv.addRule(''); Adv.setField('0','col_a'); Adv.setRuleOp('0','eq'); Adv.setV('0','v','תקוע');
+  await Adv.saveView();
+  ck('saving as a view applies the draft first',
+     st.filters.adv && st.filters.adv.rules.length===1, st.filters.adv);
+  ck('…and with no view open, makes a new one', log.viewSaved==='new', log.viewSaved);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

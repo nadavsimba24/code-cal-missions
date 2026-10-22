@@ -61,7 +61,7 @@ function world(){
     if(/items\/query$/.test(p)) return {item_ids:(reply||[]).slice()};
     return {};
   };
-  const renders=[];
+  const renders=[], said=[];
   const paged={on:false,rows:[],total:0};
   const f=new Function('st','meId','customColumns','boardStatusList','boardPriorityList',
     'boardPeople','statusColOpts','statusKeyOf','priorityKeyOf','api','withMe',
@@ -76,8 +76,8 @@ function world(){
     t=>t.status||null, t=>t.priority||null,
     (p,o)=>api(p,o), b=>JSON.stringify(b||{}),
     ()=>'client', ()=>renders.push(1), ()=>{}, ()=>{},
-    paged, ()=>[], ()=>[], ()=>0, ()=>0, ()=>{});
-  return {st, f, sent, renders, setReply:v=>{reply=v;}};
+    paged, ()=>[], ()=>[], ()=>0, ()=>0, m=>said.push(m));
+  return {st, f, sent, renders, setReply:v=>{reply=v;}, toasts:()=>said};
 }
 
 const titles = (f,st) => f.applyFilters(st.board.tasks).map(t=>t.title).join(',');
@@ -193,6 +193,47 @@ const sleep = ms => new Promise(r=>setTimeout(r,ms));
   await sleep(700);
   ck('a paged board is not re-fetched from the top on every edit',
      sent.filter(c=>/items\/query$/.test(c.p)).length===before);
+}
+
+// ── when the two halves of the app disagree ───────────────────────────────
+{
+  /* The server's list can only REMOVE rows here — these are the rows this
+     browser already holds. Removing every one of them while the engine here
+     matched some is not an answer: it is a server that has not been restarted
+     onto this version, or a column one of them knows about and the other does
+     not. An empty board is the one outcome that looks like a correct answer
+     and is not, and on screen it is unarguable — the filter panel goes on
+     counting the items the board holds while the board shows none. */
+  const {st,f,setReply,toasts} = world();
+  f.advToggle('status','eq','check');
+  setReply([]);                                  // the stale server: nothing
+  await f.advAskServer();
+  ck('the board shows what the browser can see, not an empty board',
+     titles(f,st)==='א,ב', titles(f,st));
+  ck('…and the disagreement is said out loud', toasts().length===1, toasts());
+  f.applyFilters(st.board.tasks); f.applyFilters(st.board.tasks);
+  ck('…once per answer, not once per render', toasts().length===1, toasts());
+}
+{
+  /* An empty answer to a filter nothing matches is a correct answer, and must
+     stay silent — otherwise every genuinely empty cut cries wolf. */
+  const {st,f,setReply,toasts} = world();
+  f.advToggle('status','eq','nothing-matches-this');
+  setReply([]);
+  await f.advAskServer();
+  ck('a cut that really matches nothing shows nothing, quietly',
+     titles(f,st)==='' && toasts().length===0, toasts());
+}
+{
+  /* And an ordinary disagreement — the server keeping some of them — is still
+     the server's to answer. It is the authority; what it may not do is empty
+     the board behind a count that says otherwise. */
+  const {st,f,setReply} = world();
+  f.advToggle('status','eq','check');
+  setReply([1]);
+  await f.advAskServer();
+  ck('the server still narrows where it answered with something',
+     titles(f,st)==='א', titles(f,st));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

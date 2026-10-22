@@ -70,3 +70,24 @@ def test_an_answer_overtaken_by_a_write_is_refused():
     i = SRC.index("async function advAskServer(")
     body = SRC[i:SRC.index("\n}", i)]
     assert "_advWrites" in body, "a reply can no longer tell that it was overtaken"
+
+
+def test_the_two_halves_disagreeing_never_shows_an_empty_board():
+    """The server's list can only REMOVE rows in the browser's own mode —
+    those are the rows this browser already holds. Removing every one of them
+    while the engine here matched some is not an answer: it is a server that
+    has not been restarted onto this version, or a column one of them knows
+    about and the other does not. An empty board is the one outcome that looks
+    like a correct answer and is not, and on screen it is unarguable — the
+    filter panel goes on counting the items the board holds while the board
+    shows none. That is exactly how a stale backend reached a user."""
+    i = SRC.index("function applyFilters(")
+    body = SRC[i:SRC.index("\nfunction ", i + 10)]
+    assert "advDisagreed()" in body, \
+        "an empty answer from the server can silently empty the board again"
+    assert "theirs.length || !mine.length" in body, \
+        "a cut that genuinely matches nothing no longer shows nothing"
+    i = SRC.index("function advDisagreed(")
+    note = SRC[i:SRC.index("\n}", i)]
+    assert "_advSplit" in note, "the warning fires on every render again"
+    assert "toast(" in note, "the disagreement is back to being silent"

@@ -150,11 +150,16 @@ def test_groups_are_named_the_way_the_spec_names_them():
 def test_a_condition_reads_as_a_sentence():
     """כאשר «עמודה» «שאלה» «ערך», then וגם or או before each one after it.
     The gap above the first condition used to be blank, which left the reader
-    to work out that the box under it was a condition at all."""
+    to work out that the box under it was a condition at all — and the and/or
+    was a toggle in a header a line above, saying the same thing in a second
+    place that could be read as disagreeing with the first."""
     i = SRC.index("  groupHTML(g,path){")
     body = SRC[i:SRC.index("\n  },", i)]
-    assert "'כאשר'" in body, "the first condition opens with nothing again"
+    assert "כאשר" in body, "the first condition opens with nothing again"
     assert "adv-joiner" in body, "the joining word is gone"
+    assert "adv-joiner-sel" in body and "Adv.setOp(" in body, \
+        "the and/or left the column it joins"
+    assert "adv-join-wrap" not in SRC, "the old toggle is back beside the word"
 
 
 def test_the_column_wears_its_own_type():
@@ -199,3 +204,44 @@ def test_the_door_turns_both_ways():
     assert "this.apply()" in SRC[i:i + 200], \
         "going back to the quick panel throws away what was built"
     assert 'onclick="Adv.toQuick()"' in SRC, "nothing offers the way back"
+
+
+def test_the_dialog_looks_like_three_controls_and_not_a_card():
+    """Three plain outlined boxes on the dialog's own white — not a card with
+    a grey fill holding them. Every filled box is another rectangle competing
+    with the thing being looked for, and the row already has four."""
+    assert ".adv-box{" in SRC, "the controls lost their own outline"
+    assert "background:none}" in SRC.split(".adv-grp{")[1][:80], \
+        "the group is drawing a filled card again"
+    i = SRC.index("  box(cls,inner){")
+    assert "adv-cv" in SRC[i:i + 300], \
+        "the chevron is back to whatever the browser draws"
+
+
+def test_a_chosen_value_is_shown_the_way_the_board_shows_it():
+    """A person by their face, a status in its own colour. It was a line of
+    plain text indistinguishable from the question beside it."""
+    assert ".adv-chip{" in SRC and ".adv-chip-x{" in SRC, "the value chip is gone"
+    i = SRC.index("function advChoices(")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "color:s.c" in body, "a status choice stopped carrying its colour"
+
+
+def test_the_window_actions_sit_opposite_the_title():
+    """Clearing as a word, saving as the one outlined thing up there — and the
+    foot down to the two that decide what happens to the draft."""
+    i = SRC.index("  html(){")
+    head = SRC[i:SRC.index("\n  },", i)]
+    assert "adv-h-acts" in head and "נקה הכול" in head, "the header actions are gone"
+    assert "Adv.saveView()" in head, "the cut can no longer be saved as a view"
+    assert "adv-help" in head, "nothing explains וגם / או / קבוצה"
+
+
+def test_saving_a_view_applies_the_draft_first():
+    """A view holds the filter the BOARD is under. Storing a draft the board
+    was never shown under would save a cut nobody has seen."""
+    i = SRC.index("  async saveView(){")
+    body = SRC[i:SRC.index("\n  },", i)]
+    assert "await this.apply()" in body, "a draft can be saved without being applied"
+    assert "Views.update()" in body and "Views.saveNew()" in body, \
+        "saving no longer answers the question the tab strip answers"

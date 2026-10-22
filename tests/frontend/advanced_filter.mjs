@@ -240,7 +240,7 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
   const advSrc = src.slice(src.indexOf('const Adv = {'), src.indexOf('\nfunction refreshToolbar(){'));
   const Adv = new Function('st','esc','toast','showModal','closeModals','document',
     'advFields','advField','advOps','advOpArity','advChoices','advMatch','advCount','ADV_DATES',
-    'refreshToolbar','renderView','advIcon','avatarInner','Paged','togglePop',
+    'refreshToolbar','renderView','advIcon','avatarInner','Paged','togglePop','Views',
     advSrc + '\nreturn Adv;')(
     {board:{columns:COLUMNS, tasks:[item({people:[ME]}), item({id:2,people:[8]})]},
      filters:{}, me:{id:ME}},
@@ -248,7 +248,7 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
     {getElementById:()=>null, querySelector:()=>null},
     advFields, advField, advOps, api.advOpArity, advChoices, advMatch, advCount, ADV_DATES,
     ()=>{}, ()=>{}, f=>'fa-font', u=>`<i data-face="${(u&&u.id)==null?'':u.id}"></i>`,
-    {on:false,total:0}, ()=>{});
+    {on:false,total:0}, ()=>{}, {active:null,update(){},saveNew(){}});
 
   Adv.draft={op:'and',rules:[]};
   Adv.addRule('');
@@ -343,7 +343,7 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
   const advSrc = src.slice(src.indexOf('const Adv = {'), src.indexOf('\nfunction refreshToolbar(){'));
   const Adv = new Function('st','esc','toast','showModal','closeModals','document',
     'advFields','advField','advOps','advOpArity','advChoices','advMatch','advCount','ADV_DATES',
-    'refreshToolbar','renderView','advIcon','avatarInner','Paged','togglePop',
+    'refreshToolbar','renderView','advIcon','avatarInner','Paged','togglePop','Views',
     advSrc + '\nreturn Adv;')(
     {board:{columns:COLUMNS, tasks:[doneThisWeek, doneLastWeek, openHigh, openLowOld]},
      filters:{}, me:{id:ME}},
@@ -351,7 +351,7 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
     {getElementById:()=>null, querySelector:()=>null},
     advFields, advField, advOps, api.advOpArity, advChoices, advMatch, advCount, ADV_DATES,
     ()=>{}, ()=>{}, f=>'fa-font', u=>`<i data-face="${(u&&u.id)==null?'':u.id}"></i>`,
-    {on:false,total:0}, ()=>{});
+    {on:false,total:0}, ()=>{}, {active:null,update(){},saveNew(){}});
 
   Adv.draft={op:'and',rules:[]};
   Adv.setOp('','or');                       // the root becomes OR

@@ -1946,30 +1946,28 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .comp-drop small{font-weight:500;font-size:11px;color:var(--text-muted)}
 /* ===== סינון מתקדם ===== a condition tree, read as a sentence:
    «כאשר» עמודה · שאלה · ערך, then «וגם» or «או» before each one after it.
-   The words are the structure — a stack of boxes with an unexplained gap
-   above the first one is a form, and a filter is a question somebody is
-   asking. Nesting is still shown by the border and the indent alone: a
-   second colour per level competes with the data the filter is about.
 
-   The root carries no border of its own. It is the filter, not a box inside
-   the dialog, and a dashed frame drawn just inside the modal's own frame was
-   one rectangle too many — it also made the one thing that DOES deserve a
-   box, a real nested group, harder to pick out. */
-.adv-grp{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface)}
-.adv-grp .adv-grp{margin:2px 0;background:var(--bg)}
-.adv-root{border:0;padding:0;background:none}
+   Drawn as three plain controls on the dialog's own white, each in its own
+   outline — not as a card with a grey fill holding them. Every filled box is
+   another rectangle competing with the thing the reader is looking for, and
+   the row already has four of them; the row itself does not need a fifth.
+   Nesting is still the one thing shown by a box, which is what makes a real
+   nested group legible at a glance.
+
+   The and/or sits in the joining word's own column from the second condition
+   on. It IS the joining word — having it both as a toggle in a header and as
+   a word beside each row was the same fact said twice, in two places that
+   could be read as disagreeing. */
+.adv-grp{border:0;padding:0;background:none}
+/* a group inside a group is the one thing that earns an outline */
+.adv-grp .adv-grp{border:1px solid var(--border);border-radius:12px;padding:12px;
+  background:var(--surface);margin:4px 0}
 .adv-grp-head{display:flex;align-items:center;gap:9px;margin-bottom:9px;min-width:0}
-.adv-join-wrap{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;flex-shrink:0}
-.adv-join{border:0;background:var(--surface);color:var(--text-light);font-size:12.5px;font-weight:700;
-  padding:5px 13px;cursor:pointer;font-family:inherit;transition:.12s}
-.adv-join:hover{background:var(--row-hover);color:var(--text)}
-.adv-join.on{background:var(--primary);color:#fff}
-/* never allowed to wrap the row it explains — it is the least important thing
-   on that line and was pushing the buttons onto a second one */
-.adv-grp-note{font-size:11.5px;color:var(--text-light);min-width:0;flex:1;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.adv-root > .adv-grp-head{display:none}
 .adv-grp-name{font-size:12px;font-weight:700;color:var(--primary);background:var(--primary-soft);
   border-radius:6px;padding:3px 9px;letter-spacing:.3px;flex-shrink:0}
+.adv-grp-note{font-size:11.5px;color:var(--text-light);min-width:0;flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* ===== תצוגות שמורות ===== tabs on the same strip as the board's own views,
    marked by a lock or a group of people so "who else sees this" never has to
    be asked. */
@@ -1993,67 +1991,106 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .vw-opt-off{opacity:.6;cursor:default}
 .vw-opt-off:hover{border-color:var(--border)}
 .vw-note{font-size:12px;color:var(--text-light);background:var(--bg);border-radius:8px;padding:9px 11px}
-.adv-row{display:flex;align-items:flex-start;gap:9px;margin:5px 0}
-/* The word that joins this condition to the one above it. A fixed column so
+.adv-row{display:flex;align-items:center;gap:10px;margin:0 0 10px}
+/* The word that joins this condition to the one above it. A fixed column, so
    every condition starts on the same vertical line and the eye reads down the
-   values rather than hunting for where each row begins. */
-.adv-joiner{flex:0 0 46px;text-align:start;font-size:12px;font-weight:700;
-  color:var(--text-light);padding-top:13px}
-.adv-joiner.first{color:var(--text)}
-.adv-rule{display:flex;align-items:center;gap:7px;flex-wrap:wrap;flex:1;min-width:0;
-  background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:7px 9px;transition:.12s}
-.adv-rule:focus-within{border-color:var(--primary);background:var(--surface)}
+   values instead of hunting for where each row begins. */
+.adv-joiner{flex:0 0 58px;font-size:13.5px;color:var(--text);padding-top:1px}
+.adv-joiner-sel{flex:0 0 58px}
+/* the controls themselves — no card around them, see the note above */
+.adv-rule{display:flex;align-items:center;gap:10px;flex:1;min-width:0;flex-wrap:wrap}
+/* One control: an outlined box holding whatever it holds and a chevron at its
+   far edge. A native select draws its own arrow in a different place in every
+   browser, so the arrow is drawn here and the select is left bare inside. */
+.adv-box{display:inline-flex;align-items:center;gap:8px;min-width:0;height:40px;
+  padding:0 11px;border:1px solid var(--border-strong);border-radius:9px;
+  background:var(--surface);transition:border-color .12s,box-shadow .12s}
+.adv-box:hover{border-color:var(--text-light)}
+.adv-box:focus-within{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
+.adv-bare{appearance:none;-webkit-appearance:none;border:0;outline:none;background:none;
+  font:inherit;font-size:13.5px;color:var(--text);cursor:pointer;min-width:0;
+  padding:0;height:100%;text-overflow:ellipsis}
+.adv-cv{color:var(--text-light);font-size:10px;pointer-events:none;flex-shrink:0;margin-inline-start:auto}
+.adv-box-field{flex:0 1 230px;padding-inline-start:5px}
+.adv-box-field .adv-bare{font-weight:600}
+.adv-box-op{flex:0 1 170px}
+.adv-box-val{flex:1 1 230px}
 /* the column's own type, where the board draws it too — a date is a date and a
    person is a person before the name is read */
-.adv-ic{flex-shrink:0;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
-  background:var(--primary-soft);color:var(--primary);font-size:12px}
-.adv-row > .adv-grp{flex:1;min-width:0}
-.adv-in{font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--border);
-  border-radius:7px;background:var(--surface);color:var(--text);min-width:110px}
-.adv-in:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
-.adv-in-sm{min-width:0;flex:1}
-.adv-field{min-width:150px;font-weight:600}
-.adv-op{min-width:112px}
-.adv-date{display:inline-flex;gap:5px;align-items:center;flex:1;min-width:210px}
-.adv-face{flex-shrink:0}
-.adv-noval{color:var(--text-light);font-size:12px;flex:1}
+.adv-ic{flex-shrink:0;width:28px;height:28px;border-radius:7px;display:grid;place-items:center;
+  background:var(--primary);color:#fff;font-size:12px}
+/* A chosen value is shown as the board shows it: a person by their face, a
+   status in its own colour. The select behind it is reduced to its chevron —
+   clicking the box still opens the same list, and the value stops being a
+   line of plain text indistinguishable from the question beside it. */
+.adv-chip{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;
+  background:var(--primary-soft);color:var(--text);border-radius:7px;
+  padding:3px 8px;font-size:13px}
+.adv-chip .av{flex-shrink:0}
+.adv-chip-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.adv-chip-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adv-chip-x{border:0;background:none;color:var(--text-light);cursor:pointer;font-size:13px;
+  line-height:1;padding:0 1px;flex-shrink:0}
+.adv-chip-x:hover{color:var(--danger,#e2445c)}
+.adv-box-val.picked .adv-bare{width:0;flex:0 0 0;opacity:0}
+.adv-in{font:inherit;font-size:13.5px;border:0;outline:none;background:none;color:var(--text);
+  min-width:0;flex:1;height:100%}
+.adv-date{display:flex;gap:9px;align-items:center;flex:1 1 300px;min-width:0}
+.adv-date .adv-box{flex:1 1 0}
+.adv-noval{color:var(--text-light);font-size:13px;flex:1}
 /* a value the board no longer offers — a person who left, an option deleted.
    Marked, not hidden: the rule still filters, and it says what it is. */
 .adv-in-gone{border-color:#fdab3d;background:color-mix(in srgb,#fdab3d 9%,var(--surface))}
 /* A condition whose value is still empty matches EVERY item: it widens the
-   filter instead of narrowing it, and it did so in silence — three conditions
-   on screen, one of them doing nothing, and a row count nobody could account
-   for. It says so now, on the row and once at the top. */
-.adv-rule.adv-todo{border-style:dashed;border-color:#fdab3d}
+   filter instead of narrowing it, and it used to do that in silence — three
+   conditions on screen, one of them doing nothing, and a row count nobody
+   could account for. It says so now, on the row and once at the top. */
+.adv-rule.adv-todo .adv-box-val{border-style:dashed;border-color:#fdab3d}
 .adv-todo-tag{font-size:11px;font-weight:600;color:#9a6200;flex-shrink:0;
   background:color-mix(in srgb,#fdab3d 20%,transparent);border-radius:20px;padding:2px 9px}
 .adv-warn{font-size:12.5px;color:#9a6200;background:color-mix(in srgb,#fdab3d 14%,transparent);
-  border-radius:9px;padding:8px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
-.adv-and{font-size:12px;color:var(--text-light)}
-.adv-x{border:0;background:none;color:var(--text-light);cursor:pointer;padding:5px 7px;border-radius:7px;
-  margin-inline-start:auto}
+  border-radius:9px;padding:8px 12px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.adv-and{font-size:12.5px;color:var(--text-light);flex-shrink:0}
+.adv-x{border:0;background:none;color:var(--text-light);cursor:pointer;padding:6px 7px;
+  border-radius:7px;font-size:14px;flex-shrink:0;margin-inline-start:auto}
 .adv-x:hover{background:var(--primary-soft);color:var(--danger,#e2445c)}
-/* Adding sits UNDER the conditions, where the next one will appear, instead of
-   in the group's header a line above where it lands. */
-.adv-grp-foot{display:flex;gap:7px;margin-top:9px;padding-inline-start:46px}
-.adv-add{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border-strong);
-  background:none;color:var(--text-light);font:inherit;font-size:12.5px;font-weight:600;
-  border-radius:8px;padding:6px 12px;cursor:pointer;transition:.12s}
-.adv-add:hover{border-style:solid;border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
-.adv-blank{font-size:12.5px;color:var(--text-light);padding:10px 0 2px;display:flex;align-items:center;gap:7px}
+/* Adding sits UNDER the conditions, where the next one will appear, and as
+   words rather than buttons: they are two of the quietest things on a panel
+   whose subject is the conditions themselves. */
+.adv-grp-foot{display:flex;gap:18px;margin-top:4px}
+.adv-link{border:0;background:none;color:var(--primary);font:inherit;font-size:13.5px;
+  font-weight:600;cursor:pointer;padding:5px 0;display:inline-flex;align-items:center;gap:6px}
+.adv-link:hover{text-decoration:underline}
+.adv-link.muted{color:var(--text-light)}
+.adv-link.muted:hover{color:var(--primary)}
+.adv-sep{height:1px;background:var(--border);margin:18px -20px 14px}
+.adv-blank{font-size:13px;color:var(--text-light);padding:4px 0 10px;display:flex;align-items:center;gap:7px}
 /* how many items the filter being built would leave — beside the title, where
    the eye already is, rather than in grey at the foot of a scrolling list */
-.adv-shown{font-size:13px;font-weight:400;color:var(--text-light);margin-inline-start:10px}
+/* a flex row, so the two actions can be pushed to the far side — and padded
+   clear of the window's own ✕, which is absolutely placed in that corner */
+.modal h2.adv-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-inline-end:50px}
+.adv-shown{font-size:13.5px;font-weight:400;color:var(--text-light);margin-inline-start:4px}
 .adv-shown b{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums}
-.adv-back{margin-inline-start:auto;border:0;background:none;color:var(--primary);font:inherit;
-  font-size:12.5px;font-weight:600;cursor:pointer;padding:6px 2px}
-.adv-back:hover{text-decoration:underline}
+.adv-help{border:0;background:none;color:var(--text-light);cursor:help;font-size:14px;
+  padding:0 4px;vertical-align:middle}
+.adv-help:hover{color:var(--primary)}
+/* the window's own two actions, opposite the title — clearing is a word,
+   saving is the one outlined thing up there */
+.adv-h-acts{margin-inline-start:auto;display:inline-flex;align-items:center;gap:16px;
+  font-weight:400}
+.adv-save{border:1px solid var(--border-strong);background:var(--surface);color:var(--text);
+  font:inherit;font-size:13px;font-weight:600;border-radius:8px;padding:8px 16px;cursor:pointer;
+  transition:.12s}
+.adv-save:hover{border-color:var(--primary);color:var(--primary)}
 @media (max-width:620px){
-  .adv-rule{gap:5px}
-  .adv-in,.adv-field,.adv-op{min-width:0;flex:1 1 100%}
-  .adv-joiner{flex-basis:34px;padding-top:12px}
-  .adv-grp-foot{padding-inline-start:34px}
-  .adv-grp-note{display:none}
+  .adv-row{align-items:stretch;flex-wrap:wrap;gap:7px}
+  .adv-joiner,.adv-joiner-sel{flex-basis:100%}
+  .adv-rule{gap:7px}
+  .adv-box-field,.adv-box-op,.adv-box-val{flex:1 1 100%}
+  .adv-sep{margin-inline:-12px}
+  .adv-h-acts{width:100%;margin-top:8px;margin-inline-start:0}
+}
 }
 .reply-ctx{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:6px;padding:5px 9px;margin-bottom:7px;display:flex;align-items:center;gap:7px}
 .comp-tools{display:flex;gap:2px;margin-bottom:6px}
@@ -6173,10 +6210,12 @@ function advChoices(f,cur){
       out.push({v:String(cur), label:advPersonLabel(cur), gone:true});
     return out;
   }
-  if(f.id==='status')   return boardStatusList().map(s=>({v:s.key,label:s.he}));
-  if(f.id==='priority') return boardPriorityList().map(s=>({v:s.key,label:s.he}));
+  // the colour rides along so a chosen value can be shown as the chip the
+  // board itself draws — a status is its colour before it is its word
+  if(f.id==='status')   return boardStatusList().map(s=>({v:s.key,label:s.he,color:s.c}));
+  if(f.id==='priority') return boardPriorityList().map(s=>({v:s.key,label:s.he,color:s.c}));
   if(f.kind==='status'){
-    const out=statusColOpts(f.col).map(o=>({v:o.label,label:o.label}));
+    const out=statusColOpts(f.col).map(o=>({v:o.label,label:o.label,color:o.color}));
     // a status whose option was deleted: same rule, same reason — the value
     // must survive a redraw, and it says plainly that it is no longer offered
     if(cur!=null && cur!=='' && !out.some(o=>o.v===String(cur)))
@@ -6625,6 +6664,7 @@ const userName=id=>((st.users||[]).find(u=>u.id===Number(id))||{}).name||'';
 
 function advChanged(){
   st.filters.advIds=null;
+  _advSplit=false;                   // a different question, asked afresh
   refreshToolbar(); reArrange(); renderView();
   advAskServer();
 }
@@ -6641,6 +6681,7 @@ async function advAskServer(){
     // know about, and storing it would put the stale list back a moment after
     // it was dropped. The write already asked for a fresh one.
     if(stamp!==_advWrites)return;
+    _advSplit=false;                 // a new answer may say something new
     st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
     renderView();
   }catch(e){
@@ -6661,6 +6702,17 @@ async function advAskServer(){
    the board is in between opening a filter and the server replying — and a
    fresh answer is asked for once the typing stops. Debounced, because a drag
    or a bulk edit is many writes and one question. */
+/* Said once per answer, not once per redraw: applyFilters runs on every
+   render, and a board that re-renders on a scroll would say it ten times. */
+let _advSplit=false;
+function advDisagreed(){
+  if(_advSplit)return;
+  _advSplit=true;
+  if(typeof toast==='function')
+    toast('הסינון בשרת לא החזיר פריטים — מוצגת התשובה של הדפדפן');
+  console.warn('[filter] the server answered with no items where the browser found some —'
+    +' the two are not running the same version of this filter');
+}
 let _advWrites=0, _advAgain=null;
 function advAnswerStale(){
   _advWrites++;                             // …so an answer in flight is refused
@@ -6738,9 +6790,23 @@ function applyFilters(tasks){
      rules over every item on the board rather than over the ones this
      browser happens to hold. */
   if(advCount(f.adv)){
-    out=(f.advIds instanceof Set)
-      ? out.filter(t=>f.advIds.has(t.id))
-      : out.filter(t=>advMatch(t,f.adv));
+    const mine=out.filter(t=>advMatch(t,f.adv));
+    if(f.advIds instanceof Set){
+      const theirs=out.filter(t=>f.advIds.has(t.id));
+      /* The server's list can only ever REMOVE rows here: these are the rows
+         this browser already holds, and an id in the list that is not among
+         them is inert. Removing every one of them while the engine here
+         matched some is not an answer — it is the two halves of the app out
+         of step: a server that has not been restarted onto this version, a
+         column one of them knows about and the other does not. An empty board
+         is the one outcome that looks like a correct answer and is not, and it
+         is unarguable on screen: the panel goes on counting four items under
+         «היום» because it counts the board, and the board shows none.
+
+         So the local answer stands and the disagreement is said out loud. */
+      if(theirs.length || !mine.length) out=theirs;
+      else { out=mine; advDisagreed(); }
+    } else out=mine;
   }
   if(st.colSort&&st.colSort.key){
     const {key,dir}=st.colSort, s=dir==='desc'?-1:1;
@@ -11379,6 +11445,10 @@ const Adv = {
   },
 
   // ── drawing ──
+  /* One control: an outlined box with whatever it holds and a chevron at its
+     far edge. The select inside is bare — a native select draws its arrow in a
+     different place in every browser, and three rows of them never lined up. */
+  box(cls,inner){ return `<span class="adv-box ${cls}">${inner}<i class="fa-solid fa-chevron-down adv-cv"></i></span>`; },
   ruleHTML(r,path){
     const f=advField(r.field), kind=f?f.kind:'text';
     const n=advOpArity(kind,r.op);
@@ -11389,32 +11459,42 @@ const Adv = {
       // offered depends on what that input holds
       const choices=advChoices(f,v);
       if(choices.length){
-        /* A person is shown by their face, the same avatar the board's rows
-           carry — a name alone does not settle which שרון this is. "אני" is
-           the one looking, so it wears their picture too. */
-        const face=(kind==='people'&&v!=null&&v!=='')
-          ? `<span class="av av-xs adv-face">${avatarInner(v==='me'?(st.me||{}):{id:Number(v)})}</span>` : '';
-        return face+`<select class="adv-in${choices.some(c=>c.gone&&String(c.v)===String(v))?' adv-in-gone':''}" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
-          <option value="">— בחרו —</option>
-          ${choices.map(c=>`<option value="${esc(c.v)}" ${String(v)===String(c.v)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`;
+        const picked=(v!=null&&v!=='')?choices.find(c=>String(c.v)===String(v)):null;
+        /* A chosen value is drawn as the board draws it — a person by their
+           face, a status in its own colour — and the select behind it is
+           reduced to its chevron. Clicking the box opens the same list. */
+        const chip=picked?`<span class="adv-chip${picked.gone?' adv-in-gone':''}">
+            ${kind==='people'?`<span class="av av-xs">${avatarInner(String(picked.v)==='me'?(st.me||{}):{id:Number(picked.v)})}</span>`
+              :(picked.color?`<span class="adv-chip-dot" style="background:${esc(picked.color)}"></span>`:'')}
+            <span class="adv-chip-t">${esc(picked.label)}</span>
+            <button class="adv-chip-x" title="נקה ערך"
+                    onclick="event.stopPropagation();Adv.setV('${path}','${which}','');Adv.redraw()">&times;</button>
+          </span>`:'';
+        return this.box('adv-box-val'+(picked?' picked':''),
+          chip+`<select class="adv-bare" aria-label="ערך" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
+            <option value="">בחרו ערך…</option>
+            ${choices.map(c=>`<option value="${esc(c.v)}" ${String(v)===String(c.v)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`);
       }
       if(kind==='date')
         return `<span class="adv-date">
-          <select class="adv-in adv-in-sm" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
+          ${this.box('',`<select class="adv-bare" aria-label="תאריך" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
             <option value="">תאריך מדויק</option>
             ${ADV_DATES.map(d=>`<option value="${d[0]}" ${v===d[0]?'selected':''}>${esc(d[1])}</option>`).join('')}
-          </select>
-          <input type="date" class="adv-in adv-in-sm" value="${/^\d{4}-\d{2}-\d{2}$/.test(v||'')?esc(v):''}"
-                 onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
+          </select>`)}
+          <span class="adv-box"><input type="date" class="adv-in" value="${/^\d{4}-\d{2}-\d{2}$/.test(v||'')?esc(v):''}"
+                 onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()"></span>
         </span>`;
-      return `<input class="adv-in" type="${kind==='number'?'number':'text'}" value="${esc(v==null?'':v)}"
-                placeholder="${kind==='number'?'מספר':'ערך'}" oninput="Adv.setV('${path}','${which}',this.value)">`;
+      return `<span class="adv-box adv-box-val"><input class="adv-in" type="${kind==='number'?'number':'text'}"
+                value="${esc(v==null?'':v)}" placeholder="${kind==='number'?'מספר':'ערך'}"
+                oninput="Adv.setV('${path}','${which}',this.value)"></span>`;
     };
     const done=this.ruleDone(r);
     return `<div class="adv-rule${done?'':' adv-todo'}" data-path="${path}">
-      <span class="adv-ic" title="${esc(f?f.label:'')}"><i class="fa-solid ${advIcon(f)}"></i></span>
-      <select class="adv-in adv-field" aria-label="עמודה" onchange="Adv.setField('${path}',this.value)">${fields}</select>
-      <select class="adv-in adv-op" aria-label="תנאי" onchange="Adv.setRuleOp('${path}',this.value)">${ops}</select>
+      ${this.box('adv-box-field',
+        `<span class="adv-ic"><i class="fa-solid ${advIcon(f)}"></i></span>
+         <select class="adv-bare adv-field" aria-label="עמודה" onchange="Adv.setField('${path}',this.value)">${fields}</select>`)}
+      ${this.box('adv-box-op',
+        `<select class="adv-bare adv-op" aria-label="תנאי" onchange="Adv.setRuleOp('${path}',this.value)">${ops}</select>`)}
       ${n>=1?val('v',r.v):'<span class="adv-noval">אין צורך בערך</span>'}
       ${n>=2?`<span class="adv-and">עד</span>${val('v2',r.v2)}`:''}
       ${done?'':'<span class="adv-todo-tag" title="תנאי בלי ערך מתקיים בכל פריט, ולכן אינו מסנן">חסר ערך</span>'}
@@ -11443,30 +11523,36 @@ const Adv = {
     return name;
   },
   groupHTML(g,path){
-    const join=o=>`<button class="adv-join ${g.op===o?'on':''}" onclick="Adv.setOp('${path}','${o}')">${o==='and'?'וגם':'או'}</button>`;
-    /* The first condition of a group opens with "כאשר" and the rest with the
-       group's own word. The gap above the first one used to be blank, which
-       left the reader to work out that the box below it was a condition at
-       all; now the filter reads straight down as the sentence it is. */
-    const kids=(g.rules||[]).map((k,i)=>{
-      const kp=path===''?String(i):path+'.'+i;
-      return `<div class="adv-row">
-        <span class="adv-joiner${i===0?' first':''}">${i===0?'כאשר':(g.op==='and'?'וגם':'או')}</span>
-        ${(k&&k.rules!==undefined)?this.groupHTML(k,kp):this.ruleHTML(k,kp)}
-      </div>`;
-    }).join('');
+    /* The first condition of a group opens with "כאשר" and every one after it
+       with the group's own word — as the word itself, in its own column, not
+       as a toggle in a header a line above. The and/or belongs to the GROUP,
+       so changing any of them changes all of them; they are one fact shown
+       once per place it is read, which is why they are all drawn the same. */
+    const joiner=i=>i===0
+      ? `<span class="adv-joiner">כאשר</span>`
+      : this.box('adv-joiner-sel',
+          `<select class="adv-bare" aria-label="צירוף התנאים"
+             title="${g.op==='and'?'כל התנאים חייבים להתקיים':'מספיק שאחד מהתנאים יתקיים'}"
+             onchange="Adv.setOp('${path}',this.value)">
+            <option value="and" ${g.op==='and'?'selected':''}>וגם</option>
+            <option value="or" ${g.op==='or'?'selected':''}>או</option>
+          </select>`);
+    const kids=(g.rules||[]).map((k,i)=>`<div class="adv-row">
+        ${joiner(i)}
+        ${(k&&k.rules!==undefined)?this.groupHTML(k,path===''?String(i):path+'.'+i)
+                                  :this.ruleHTML(k,path===''?String(i):path+'.'+i)}
+      </div>`).join('');
     const name=this.label(path);
     return `<div class="adv-grp ${path===''?'adv-root':''}">
       <div class="adv-grp-head">
         ${name?`<span class="adv-grp-name">קבוצה ${name}</span>`:''}
-        <span class="adv-join-wrap">${join('and')}${join('or')}</span>
         <span class="adv-grp-note">${g.op==='and'?'כל התנאים חייבים להתקיים':'מספיק שאחד מהתנאים יתקיים'}</span>
         ${path===''?'':`<button class="adv-x" title="הסרת קבוצה" onclick="Adv.del('${path}')"><i class="fa-solid fa-xmark"></i></button>`}
       </div>
       ${kids||'<div class="adv-blank"><i class="fa-regular fa-circle-question"></i> אין תנאים — הלוח יוצג במלואו</div>'}
       <div class="adv-grp-foot">
-        <button class="adv-add" onclick="Adv.addRule('${path}')"><i class="fa-solid fa-plus"></i> תנאי</button>
-        <button class="adv-add" onclick="Adv.addGroup('${path}')"><i class="fa-solid fa-code-branch"></i> קבוצה</button>
+        <button class="adv-link" onclick="Adv.addRule('${path}')"><i class="fa-solid fa-plus"></i> סינון חדש</button>
+        <button class="adv-link muted" onclick="Adv.addGroup('${path}')"><i class="fa-solid fa-plus"></i> קבוצה חדשה</button>
       </div>
     </div>`;
   },
@@ -11491,20 +11577,43 @@ const Adv = {
       ${n===1?'תנאי אחד עדיין בלי ערך':`${n} תנאים עדיין בלי ערך`} —
       תנאי בלי ערך מתקיים בכל פריט, ולכן אינו מסנן.</div>`;
   },
-  bodyHTML(){ return `<div id="adv-note">${this.todoNote()}</div>`+this.groupHTML(this.draft,''); },
+  bodyHTML(){
+    return `<div id="adv-note">${this.todoNote()}</div>`
+      + this.groupHTML(this.draft,'')
+      + `<div class="adv-sep"></div>
+         <!-- the way back. The quick panel's foot opens this builder; without
+              this the door only turned one way, and returning to picking values
+              meant closing the dialog and finding the filter button again. -->
+         <button class="adv-link muted" onclick="Adv.toQuick()">
+           <i class="fa-solid fa-arrow-right"></i> מעבר לסינון מהיר</button>`;
+  },
   html(){
-    return `<h2><i class="fa-solid fa-filter-circle-check" style="color:var(--primary)"></i> סינון מתקדם
-        <span class="adv-shown" id="adv-count">${this.preview()}</span></h2>
+    const onView=(typeof Views!=='undefined')&&Views.active!=null;
+    return `<h2 class="adv-h"><i class="fa-solid fa-filter-circle-check" style="color:var(--primary)"></i>
+        <span>סינון מתקדם</span>
+        <span class="adv-shown" id="adv-count">${this.preview()}</span>
+        <button class="adv-help" tabindex="-1"
+          title="כל תנאי הוא עמודה, שאלה וערך. «וגם» מצמצם — כל התנאים חייבים להתקיים; «או» מרחיב — די באחד מהם. קבוצה היא סוגריים: היא נשאלת כשאלה אחת."
+          ><i class="fa-regular fa-circle-question"></i></button>
+        <span class="adv-h-acts">
+          <button class="adv-link muted" onclick="Adv.clear()">נקה הכול</button>
+          <button class="adv-save" onclick="Adv.saveView()">${onView?'שמירה בתצוגה זו':'שמירה כתצוגה'}</button>
+        </span></h2>
       <div class="mbody"><div id="adv-body">${this.bodyHTML()}</div></div>
       <div class="mfoot">
         <button class="btn btn-primary" onclick="Adv.apply()"><i class="fa-solid fa-check"></i> החל סינון</button>
-        <button class="btn btn-ghost" onclick="Adv.clear()"><i class="fa-solid fa-eraser"></i> נקה הכל</button>
         <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
-        <!-- the way back. The panel's foot opens this builder; without this the
-             door only turned one way, and getting back to picking values meant
-             closing the dialog and finding the filter button again. -->
-        <button class="adv-back" onclick="Adv.toQuick()">מעבר לסינון מהיר <i class="fa-solid fa-arrow-right"></i></button>
       </div>`;
+  },
+  /* Saving the cut as a tab. It applies first, deliberately: a view holds the
+     filter the BOARD is under, and saving a draft the board was never shown
+     under would store a cut nobody has seen. Which of the two it is — writing
+     back to the open view or making a new one — is the same question the tab
+     strip answers, answered the same way. */
+  async saveView(){
+    await this.apply();
+    if(typeof Views==='undefined')return;
+    if(Views.active!=null)Views.update(); else Views.saveNew();
   },
   // what is built travels with you: going back to the quick panel applies it
   // rather than throwing it away, since the two edit the same tree
