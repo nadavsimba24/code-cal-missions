@@ -469,6 +469,29 @@ class Automation(Base):
     board = relationship("Board")
 
 
+class AutomationQueue(Base):
+    """Events waiting to be delivered, at a rate somebody approved.
+
+    An import does not set automations off — that is the rule. But a board that
+    has just had four hundred items imported into it may be exactly the board
+    whose rules should now run, and a manager can say so. Four hundred items
+    firing at once is not a thing to do inside a request, so the events are
+    written here and drained a slice at a time.
+
+    The row is the event, not the run: what comes of it is an AutomationRun
+    like any other, carrying the same batch id as the rest of its approval.
+    """
+    __tablename__ = "automation_queue"
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    event = Column(JSON, default=dict)
+    batch_id = Column(String(36), default="", index=True)
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    done_at = Column(DateTime, nullable=True, index=True)
+
+
 class AutomationRun(Base):
     """One attempt of one rule on one item — the "היסטוריית הפעלות" log.
 
@@ -501,6 +524,9 @@ class AutomationRun(Base):
     # and a log that answered them with one field could answer neither.
     source = Column(String(16), default="", index=True)
     batch_id = Column(String(36), default="", index=True)
+    # The id of the event itself — what the API hands back so a caller can ask
+    # afterwards what their call set off.
+    event_id = Column(String(32), default="", index=True)
     outcome = Column(String(12), default="ran")      # ran | skipped | failed
     # a "בדיקה על פריט": the action really ran, inside a transaction that was
     # then rolled back, so the outcome is real but nothing it did survived

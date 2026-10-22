@@ -1,7 +1,7 @@
 """
 CityOS — FastAPI Backend Server
 """
-import os, sys, json, uuid, csv, io, re, secrets, threading, urllib.parse, urllib.request
+import os, sys, json, uuid, csv, io, re, secrets, threading, time, urllib.parse, urllib.request
 import concurrent.futures
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
@@ -29,7 +29,7 @@ import filter_ast
 import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
-    AutomationTestRun,
+    AutomationTestRun, AutomationQueue,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
@@ -286,7 +286,8 @@ def _migrate():
         if ocols and "settings" not in ocols:
             conn.execute(text("ALTER TABLE organizations ADD COLUMN settings JSON"))
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
-        for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)")]:
+        for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)"),
+                          ("event_id", "VARCHAR(32)")]:
             if rcols and name not in rcols:
                 conn.execute(text(f"ALTER TABLE automation_runs ADD COLUMN {name} {ddl}"))
         for name, ddl in [("name", "VARCHAR(120)"), ("description", "TEXT"),
@@ -410,6 +411,7 @@ else:
         "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS settings JSONB",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS source VARCHAR(16)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS event_id VARCHAR(32)",
         "UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END WHERE status IS NULL",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS version INTEGER",
@@ -7670,15 +7672,20 @@ def create_task(data: dict, request: Request = None,
                         _mail.append(_item_mail(db, aid, task, board, actor, "assign",
                                                 _app_base_url(request)))
         # ── automations ── a new item can trigger rules (assign, set status, notify)
-        _run_automations(db, task, _event("item_created", "create"), actor_id)
+        _src = (data.get("source") if data.get("source") in AUTOMATION_SOURCES
+                else "create")
+        _made = _event("item_created", _src)
+        _event_ids = [_made["id"]]
+        _run_automations(db, task, _made, actor_id)
         # a sub-item being created is an event on its PARENT, the way a sub-item
         # finishing is — the rule acts on the parent, which is the item somebody
         # is looking at
         if task.parent_id:
             _parent = db.query(Task).filter(Task.id == task.parent_id).first()
             if _parent and not _parent.deleted_at:
-                _run_automations(db, _parent, _event("subitem_created", "create",
-                                                     subitem_id=task.id), actor_id)
+                _sub = _event("subitem_created", _src, subitem_id=task.id)
+                _event_ids.append(_sub["id"])
+                _run_automations(db, _parent, _sub, actor_id)
         _bid, _tid = task.board_id, task.id
         db.commit()
         _send_item_mails(_mail)
@@ -7688,7 +7695,11 @@ def create_task(data: dict, request: Request = None,
         # in place (no full-board refetch/re-render on every add)
         my_role = _board_role(db, board_id, creator)
         cols = (db.query(Board.settings).filter(Board.id == board_id).scalar() or {}).get("columns", [])
-        return _serialize_task(task, db, user_id=creator, board_role=my_role, columns=cols)
+        # what this call raised, so an API caller can ask the run log afterwards
+        # what came of it
+        return {**_serialize_task(task, db, user_id=creator, board_role=my_role,
+                                  columns=cols),
+                "event_ids": _event_ids}
 
 # ── two-way links ────────────────────────────────────────────────────
 # A one-way connect column keeps its links in custom_fields, unchanged. A
@@ -8756,17 +8767,55 @@ def _restore_choice(db, task, field, value):
 # one action over many items: each item still gets its own event and its own
 # run row (a rule is about an item, and "12 items updated" hides the two it
 # skipped), and the shared id is what puts them back together afterwards.
-AUTOMATION_SOURCES = ("item", "create", "bulk", "automation", "import",
-                      "manual", "date", "link")
+AUTOMATION_SOURCES = ("item", "create", "bulk", "api", "automation", "import",
+                      "migration", "repair", "manual", "date", "link")
+
+# Which sources set a rule off, and which do not — the heart of the table.
+#
+# A change somebody made is a change: the screen, a bulk edit, the API, another
+# rule's own write, a manual run, a date arriving, a link. The rest are not
+# business events at all, and a rule that fired on them would be acting on
+# history rather than on what the board is doing:
+#
+#   ייבוא      · four hundred items arriving at once is a file being read, not
+#                four hundred things happening. It can be approved separately
+#                and then runs at a rate somebody chose — see the queue below.
+#   מיגרציה    · a board moved from monday, or restored from a backup, is the
+#                past being written down. There is no approval for it: those
+#                events already happened, somewhere else, once.
+#   תיקון מערכתי · a correction to data that was wrong. It fires only where it
+#                was marked in advance as a real change to the business.
+AUTOMATION_SILENT_SOURCES = {
+    "import":    "ייבוא אינו מפעיל אוטומציות — אפשר לאשר הפעלה מבוקרת בנפרד",
+    "migration": "מיגרציה ושחזור מגיבוי אינם מפעילים אוטומציות",
+    "repair":    "תיקון מערכתי אינו מפעיל אוטומציות אלא אם סומן כאירוע עסקי",
+}
+# The two that can be let through, and what lets them. A migration is not
+# among them on purpose.
+AUTOMATION_SILENT_OVERRIDE = {"import": "approved", "repair": "business"}
 
 
 def _event(kind, source="item", batch="", **params):
-    """One event, stamped with where it came from."""
-    ev = {"type": kind, "source": source if source in AUTOMATION_SOURCES else "item"}
+    """One event, stamped with where it came from and with an id of its own.
+
+    The id is what an API caller is handed back: "what did my call set off" is
+    answerable afterwards by asking the run log for it.
+    """
+    ev = {"type": kind, "source": source if source in AUTOMATION_SOURCES else "item",
+          "id": uuid.uuid4().hex[:24]}
     if batch:
         ev["batch"] = str(batch)[:36]
     ev.update(params)
     return ev
+
+
+def _fires(event):
+    """Whether an event of this source reaches the rules at all."""
+    src = (event or {}).get("source") or "item"
+    if src not in AUTOMATION_SILENT_SOURCES:
+        return True
+    key = AUTOMATION_SILENT_OVERRIDE.get(src)
+    return bool(key and (event or {}).get(key))
 
 
 def _new_batch():
@@ -9555,6 +9604,7 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             event=event or {}, outcome=outcome, reason=(reason or "")[:400],
             source=((event or {}).get("source") or "")[:16],
             batch_id=((event or {}).get("batch") or "")[:36],
+            event_id=((event or {}).get("id") or "")[:32],
             # rule 4 — which version carried this out. The config is read once,
             # when the event arrives, so this is the version that decided it.
             version=_live_version(db, a),
@@ -10215,6 +10265,12 @@ def _run_automations(db, task, event, actor_id, depth=0):
     """Fire every active rule on the item's board that matches this event."""
     if task is None:
         return
+    # where the change came from decides whether there is anything to fire at
+    # all — see AUTOMATION_SILENT_SOURCES. Nothing is logged for one that does
+    # not: a board's history is what the board DID, and an import that set
+    # nothing off did nothing.
+    if not _fires(event):
+        return
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board or board.deleted_at:
         return
@@ -10485,6 +10541,163 @@ def _board_template_has(db, board):
     }
 
 
+# ── running the rules over items that are already there ─────────────────────
+# How many queued events one pass delivers, and how long a pass waits after the
+# one before it. Together they are the "קצב מבוקר": the work is done in slices
+# somebody can watch, and a board of four hundred items does not turn into four
+# hundred firings inside one request.
+AUTOMATION_QUEUE_SLICE = int(os.getenv("AUTOMATION_QUEUE_SLICE", "25"))
+AUTOMATION_QUEUE_PAUSE = float(os.getenv("AUTOMATION_QUEUE_PAUSE", "1.0"))
+_queue_last = {}            # board id → when its last slice went out
+
+
+def _queue_pending(db, board_id):
+    return (db.query(AutomationQueue)
+              .filter(AutomationQueue.board_id == board_id,
+                      AutomationQueue.done_at == None)                # noqa: E711
+              .order_by(AutomationQueue.id).all())
+
+
+def _automation_quota(db):
+    """This month's allowance, what is left of it, and what has gone."""
+    period = datetime.now(timezone.utc).strftime("%Y-%m")
+    used = 0
+    try:
+        for row in db.query(AutomationUsage).filter(AutomationUsage.period == period).all():
+            used += (row.ran or 0) + (row.skipped or 0) + (row.failed or 0)
+    except Exception:                              # noqa: BLE001
+        used = 0
+    return {"period": period, "limit": AUTOMATION_MONTHLY_QUOTA, "used": used,
+            "left": max(0, AUTOMATION_MONTHLY_QUOTA - used)}
+
+
+def _import_estimate(db, board):
+    """What approving this would come to: how many items, how many rules would
+    be asked about each, and what that is against the month's allowance.
+
+    The estimate counts the rules an item ARRIVING sets off, which is what a
+    replay of an import raises. What those rules then set off in turn cannot be
+    counted from here — a cascade depends on values this has not read — so the
+    figure is a floor and says so.
+    """
+    items = (db.query(Task)
+               .filter(Task.board_id == board.id, Task.deleted_at == None,     # noqa: E711
+                       Task.is_archived == False).count())                     # noqa: E712
+    rules = [a for a in db.query(Automation).filter(
+                Automation.board_id == board.id,
+                Automation.is_active == True).all()                            # noqa: E712
+             if (recipes.recipe(a.recipe_id) or {}).get("trigger") == "item_created"]
+    quota = _automation_quota(db)
+    runs = items * len(rules)
+    return {"items": items, "rules": len(rules), "estimated_runs": runs,
+            "estimate_is_a_floor": True, "quota": quota,
+            "fits": runs <= quota["left"],
+            "slice": AUTOMATION_QUEUE_SLICE, "pause_seconds": AUTOMATION_QUEUE_PAUSE}
+
+
+@app.get("/api/boards/{board_id}/automations/import-preview")
+def import_automations_preview(board_id: int, user_id: int = Depends(current_user_id)):
+    """What a manager is shown BEFORE approving: how many items, how many runs
+    that comes to, and how much of the month's allowance is left."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות באוטומציות הלוח")
+        pending = _queue_pending(db, board_id)
+        return {**_import_estimate(db, b), "pending": len(pending),
+                "can_approve": _can_manage_automations(db, b, user_id),
+                "note": AUTOMATION_SILENT_SOURCES["import"]}
+
+
+@app.post("/api/boards/{board_id}/automations/import-run")
+def import_automations_run(board_id: int, data: dict = None,
+                           user_id: int = Depends(current_user_id)):
+    """A manager approves it. The events go to the queue; nothing fires here.
+
+    Deliberately: approving must answer at once however many items the board
+    has, and the work is what the slices are for. A board that already has a
+    queue is not given a second one — the answer says so rather than doubling
+    somebody's notifications.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לאשר הפעלת אוטומציות")
+        if _automation_freeze(db, board_id) is not None:
+            raise HTTPException(400, "האוטומציות בלוח מושהות בהשהיית חירום")
+        if _queue_pending(db, board_id):
+            raise HTTPException(400, "כבר יש תור ממתין בלוח הזה")
+        est = _import_estimate(db, b)
+        if not est["rules"]:
+            raise HTTPException(400, "אין בלוח אוטומציות שמופעלות ביצירת פריט")
+        if not est["fits"] and not (data or {}).get("over_quota"):
+            raise HTTPException(400, "ההפעלה חורגת מהמכסה החודשית — "
+                                     f"נותרו {est['quota']['left']} ונדרשות {est['estimated_runs']}")
+        batch = _new_batch()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        items = (db.query(Task.id)
+                   .filter(Task.board_id == board_id, Task.deleted_at == None,  # noqa: E711
+                           Task.is_archived == False)                           # noqa: E712
+                   .order_by(Task.id).all())
+        for (tid,) in items:
+            db.add(AutomationQueue(
+                board_id=board_id, task_id=tid, batch_id=batch, approved_by=user_id,
+                created_at=now,
+                # approved: the one thing that lets an import event through
+                event=_event("item_created", "import", batch, approved=True)))
+        db.commit()
+        return {"queued": len(items), "batch_id": batch, **est}
+
+
+def _drain_automation_queue(db, board_id, actor_id=None, force=False):
+    """Deliver one slice of the board's queue. Returns how many went out.
+
+    There is no scheduler here, so this runs when the board is read and when the
+    screen that approved it asks how far along it is — the admin watching it is
+    exactly who wants it to move. `force` is that screen asking: a poll is a
+    deliberate step, and waiting a second between two of them is the rate.
+    """
+    pending = _queue_pending(db, board_id)
+    if not pending:
+        return 0
+    last = _queue_last.get(board_id)
+    now = time.monotonic()
+    if last is not None and (now - last) < AUTOMATION_QUEUE_PAUSE and not force:
+        return 0
+    _queue_last[board_id] = now
+    sent = 0
+    for row in pending[:max(1, AUTOMATION_QUEUE_SLICE)]:
+        t = db.query(Task).filter(Task.id == row.task_id).first()
+        if t is not None and not t.deleted_at:
+            _run_automations(db, t, row.event or {}, actor_id or row.approved_by)
+        row.done_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        sent += 1
+    db.commit()
+    return sent
+
+
+@app.get("/api/boards/{board_id}/automations/queue")
+def automation_queue_status(board_id: int, user_id: int = Depends(current_user_id)):
+    """How far along the approved run is — and a step of it, since the screen
+    asking is the one watching it."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות באוטומציות הלוח")
+        sent = (_drain_automation_queue(db, board_id, user_id, force=True)
+                if _can_manage_automations(db, b, user_id) else 0)
+        left = _queue_pending(db, board_id)
+        batch = left[0].batch_id if left else ""
+        return {"pending": len(left), "sent_now": sent, "batch_id": batch,
+                "slice": AUTOMATION_QUEUE_SLICE, "pause_seconds": AUTOMATION_QUEUE_PAUSE}
+
+
 @app.get("/api/organization/settings")
 def org_settings(user_id: int = Depends(current_user_id)):
     """The organisation's own preferences. `timezone` is the one it holds today
@@ -10592,6 +10805,7 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
         # screen is the person who has to appoint someone
         if _can_manage_automations(db, b, user_id):
             _sweep_automation_ownership(db, b, user_id)
+            _drain_automation_queue(db, b.id, user_id)
         rows = (db.query(Automation).filter(Automation.board_id == board_id)
                   .order_by(Automation.run_order, Automation.id).all())
         out = [_automation_json(db, b, a) for a in rows]
@@ -10968,6 +11182,7 @@ def _automation_run_json(db, row):
         "depth": row.depth or 0, "event_type": (row.event or {}).get("type") or "",
         # where the change came from, and the batch it belonged to
         "source": row.source or "", "batch_id": row.batch_id or "",
+        "event_id": row.event_id or "",
         "actor_id": row.actor_id, "actor_name": uname(row.actor_id),
         "is_retry": row.retry_of is not None, "retry_of": row.retry_of,
         "retried_at": row.retried_at.isoformat() if row.retried_at else None,
@@ -10984,6 +11199,7 @@ def _automation_run_json(db, row):
 
 @app.get("/api/boards/{board_id}/automations/runs")
 def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 0,
+                         event_id: str = "", batch_id: str = "",
                          limit: int = 150, user_id: int = Depends(current_user_id)):
     """Every attempt the board's rules made, newest first.
 
@@ -11004,6 +11220,10 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
             q = q.filter(AutomationRun.retry_of != None)                   # noqa: E711
         if automation_id:
             q = q.filter(AutomationRun.automation_id == automation_id)
+        if event_id:
+            q = q.filter(AutomationRun.event_id == str(event_id)[:32])
+        if batch_id:
+            q = q.filter(AutomationRun.batch_id == str(batch_id)[:36])
         rows = q.order_by(AutomationRun.id.desc()).limit(max(1, min(limit, 500))).all()
         # an item-level restriction holds in the history too — see _redact_run
         seen = {}
@@ -12899,7 +13119,15 @@ def update_task(task_id: int, data: dict, request: Request = None,
         _src = (data.get("source") if data.get("source") in AUTOMATION_SOURCES
                 else "item")
         _batch = str(data.get("batch") or "")[:36]
-        _ev = lambda kind, **kw: _event(kind, _src, _batch, **kw)
+        # the two markers the table allows, and nothing else a request might
+        # put in the body: "this import was approved", "this fix is a real
+        # change to the business" — see AUTOMATION_SILENT_OVERRIDE
+        _marks = {k: True for k in AUTOMATION_SILENT_OVERRIDE.values() if data.get(k)}
+        _events = []
+        def _ev(kind, **kw):
+            ev = _event(kind, _src, _batch, **dict(_marks, **kw))
+            _events.append(ev["id"])
+            return ev
         # Every one of these is guarded on the value having actually MOVED. A
         # save that re-sends what was already there is not a change, and a rule
         # that fired on it would act on an edit nobody made.
@@ -12960,7 +13188,10 @@ def update_task(task_id: int, data: dict, request: Request = None,
         # tell (it would echo their own edit back at them), so the answer to
         # "where is it now" has to come back with the write itself.
         out = {"id": task.id, "group_id": task.group_id,
-               "custom_fields": task.custom_fields or {}}
+               "custom_fields": task.custom_fields or {},
+               # what this call raised — one edit can be several events (a
+               # status AND a column AND a link), so this is a list
+               "event_ids": _events}
         if _link_report:
             # The rules already refused these. Saying so is the difference
             # between a link that did not take and a link that vanished.
@@ -14069,9 +14300,12 @@ def move_items_bulk(board_id: int, data: dict, actor_id: int = Depends(current_u
         # which two it skipped. What they share is the batch id, which is what
         # puts the twelve rows back together in the log afterwards.
         batch = _new_batch()
+        ev_ids = []
         for t in moving:
-            _run_automations(db, t, _event("moved_to_group", "bulk", batch,
-                                           group_id=gid, from_group=was_group[t.id]), actor_id)
+            ev = _event("moved_to_group", "bulk", batch,
+                        group_id=gid, from_group=was_group[t.id])
+            ev_ids.append(ev["id"])
+            _run_automations(db, t, ev, actor_id)
         db.commit()
         order = [{"group_id": g,
                   "ids": [t.id for t in _group_items(db, board_id, g)]} for g in touched]
@@ -14082,7 +14316,7 @@ def move_items_bulk(board_id: int, data: dict, actor_id: int = Depends(current_u
         return {"moved": [{"id": t.id, "group_id": t.group_id, "position": t.position}
                           for t in moving],
                 "unchanged": unchanged, "missing": missing, "order": order,
-                "batch_id": batch}
+                "batch_id": batch, "event_ids": ev_ids}
 
 @app.post("/api/tasks/{parent_id}/subitems/reorder")
 def reorder_subitems(parent_id: int, data: dict, actor_id: int = Depends(current_user_id)):

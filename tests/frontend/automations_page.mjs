@@ -633,5 +633,51 @@ A.data={automations:[],can_manage:true,can_export:false};
 ck('a payload without one says nothing rather than guessing',
    !A.historyHTML().includes('תזמון לפי אזור הזמן'));
 
+
+/* ── הפעלת אוטומציות על פריטים שכבר בלוח ─────────────────────────────────
+   An import sets nothing off. A manager can approve a run over what is there
+   — after being shown what it comes to — and then watch it go out in slices. */
+A.tab='manage'; A.f={status:'',q:'',owner:'',creator:'',importance:'',trigger:'',action:'',last:''};
+A.view='full'; A.picked=new Set(); A.bulkRes=null; A.imprt=null;
+A.data={automations:RULES,can_manage:true,counts:{total:4,active:2,paused:1,draft:1},
+        people:[],can_export:false};
+let mg=A.manageHTML();
+ck('the manage tab offers to run the rules over what is already there',
+   mg.includes('Automations.importOpen()'));
+A.data.can_manage=false;
+ck('...to a board admin only', !A.manageHTML().includes('Automations.importOpen()'));
+A.data.can_manage=true;
+
+A.imprt={items:400,rules:2,estimated_runs:800,estimate_is_a_floor:true,
+         quota:{limit:20000,used:1200,left:18800},fits:true,pending:0,
+         note:'ייבוא אינו מפעיל אוטומציות — אפשר לאשר הפעלה מבוקרת בנפרד'};
+mg=A.manageHTML();
+ck('the preview says how many items', mg.includes('400'));
+ck('...how many runs that comes to, and that it is a floor',
+   mg.includes('800') && mg.includes('לפחות'));
+ck('...and what is left of the month', mg.includes('18800'));
+ck('...and why it was not run already', mg.includes('ייבוא אינו מפעיל'));
+ck('it can be approved', mg.includes('Automations.importApprove(false)'));
+
+A.imprt.fits=false; A.imprt.quota.left=10;
+mg=A.manageHTML();
+ck('over the quota it says so', mg.includes('חורגת מהמכסה'));
+ck('...and asks for a deliberate second answer',
+   mg.includes('Automations.importApprove(true)') && mg.includes('אשר בכל זאת'));
+
+A.imprt={queued:400,pending:150,done:250,quota:{}};
+mg=A.manageHTML();
+ck('while it runs it shows how far along it is',
+   mg.includes('250 מתוך 400') && mg.includes('150 ממתינים'));
+ck('...and says the screen may be left', mg.includes('אפשר לעזוב את המסך'));
+
+A.imprt={items:3,rules:0,estimated_runs:0,estimate_is_a_floor:true,
+         quota:{limit:20000,used:0,left:20000},fits:true,pending:0,note:''};
+mg=A.manageHTML();
+ck('a board with no created-rule says there is nothing to run',
+   mg.includes('אין בלוח אוטומציה שמופעלת ביצירת פריט'));
+ck('...and does not offer to', mg.includes('disabled'));
+A.imprt=null;
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

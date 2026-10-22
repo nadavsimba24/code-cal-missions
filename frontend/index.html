@@ -486,6 +486,15 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-recipe.au-off{opacity:.62;cursor:not-allowed;display:block;width:100%;text-align:start}
 .au-tmiss{margin-top:7px;font-size:12px;color:var(--red)}
 .ah-batch{cursor:pointer;border:none;font:inherit}
+.au-imp-lnk{margin-bottom:8px}
+.au-impgrid{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.au-impgrid>div{background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  padding:7px 12px;min-width:96px;text-align:center}
+.au-impgrid>div>b{display:block;font-size:17px}
+.au-impgrid>div>span{font-size:11px;color:var(--text-light)}
+.au-impgrid>div.warn{border-color:var(--red)}
+.au-prog{height:6px;background:var(--bg);border-radius:4px;overflow:hidden;margin-top:8px}
+.au-prog>span{display:block;height:100%;background:var(--primary);transition:width .3s}
 .au-ccount{font-size:10.5px;font-weight:700;color:#fff;background:var(--primary);border-radius:9px;padding:1px 7px;margin-inline-end:5px;vertical-align:middle}
 .au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
 .au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
@@ -7192,7 +7201,7 @@ const Automations = {
     showModal('<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
     document.getElementById('modal').classList.add('modal-80');
     this.building=null; this.mode='templates'; this.scratch={trigger:'',conds:[]};
-    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=null;
+    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=null;
     this.sort='order';
     this.picked=new Set(); this.bulkRes=null;
     this.f={q:'',status:'',owner:0,creator:0,importance:'',trigger:'',action:'',last:''};
@@ -7235,7 +7244,7 @@ const Automations = {
 
   setTab(t){
     this.tab=t; this.building=null;
-    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=null;
+    this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=null;
     if(t!=='manage'){ this.picked=new Set(); this.bulkRes=null; }
     this.render();
     if(t==='history'&&!this.runsLoaded) this.loadRuns();
@@ -7429,8 +7438,89 @@ const Automations = {
         (can?`<div style="text-align:center"><button class="btn btn-primary" onclick="Automations.setTab('create')"><i class="fa-solid fa-plus"></i> בנה את הראשונה</button></div>`:'');
     return this.tilesHTML(c)+this.barHTML(rows)+
       (can?'':'<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i> <b>רק מנהל הלוח יכול להגדיר או לשנות.</b></div>')+
-      this.bulkBarHTML()+this.bulkResHTML()+
+      this.importHTML()+this.bulkBarHTML()+this.bulkResHTML()+
       `<div id="au-list">${this.listBody()}</div>`;
+  },
+
+  /* ---- הפעלת אוטומציות על פריטים שכבר בלוח ----
+     An import does not set the rules off: four hundred items arriving is a
+     file being read, not four hundred things happening. But that may be
+     exactly the board whose rules should now run, so a manager can say so —
+     after being shown how many items, how many runs that comes to and what is
+     left of the month. The events then go out a slice at a time, which is what
+     this panel is watching. */
+  async importOpen(){
+    this.imprt={loading:true};
+    this.render();
+    try{ this.imprt=await api('/api/boards/'+st.board.id+'/automations/import-preview'
+                              +(meId()?'?user_id='+meId():'')); }
+    catch(e){ this.imprt=null; toast(e.detail||'לא ניתן לקרוא את הנתונים'); }
+    this.render();
+    if(this.imprt&&this.imprt.pending) this.importPoll();
+  },
+  importClose(){ this.imprt=null; this.render(); },
+  async importApprove(over){
+    if(!this.imprt)return;
+    this.imprt.busy=true; this.render();
+    try{
+      const d=await api('/api/boards/'+st.board.id+'/automations/import-run'
+                        +(meId()?'?user_id='+meId():''),
+                        {method:'POST',headers:{'Content-Type':'application/json'},
+                         body:JSON.stringify(over?{over_quota:true}:{})});
+      this.imprt={...this.imprt,pending:d.queued,queued:d.queued,done:0,busy:false};
+      this.render();
+      this.importPoll();
+    }catch(e){ this.imprt.busy=false; toast(e.detail||'לא ניתן לאשר'); this.render(); }
+  },
+  /* one step at a time, because that is what the rate is */
+  async importPoll(){
+    if(!this.imprt)return;
+    let d=null;
+    try{ d=await api('/api/boards/'+st.board.id+'/automations/queue'
+                     +(meId()?'?user_id='+meId():'')); }
+    catch(e){ return; }
+    if(!this.imprt)return;
+    this.imprt.pending=d.pending;
+    this.imprt.done=(this.imprt.queued||0)-d.pending;
+    this.render();
+    if(d.pending>0){ setTimeout(()=>this.importPoll(), Math.max(400,(d.pause_seconds||1)*1000)); }
+    else { await this.load(); this.runsLoaded=false; this.render(); }
+  },
+  importHTML(){
+    const i=this.imprt;
+    if(!i) return this.data.can_manage
+      ? `<div class="au-imp-lnk"><button class="au-lnk" onclick="Automations.importOpen()">
+          <i class="fa-solid fa-play"></i> הפעלת אוטומציות על פריטים שכבר בלוח</button></div>` : '';
+    if(i.loading) return '<div class="imp-sec"><div class="spin"></div></div>';
+    if(i.pending){
+      const total=i.queued||i.pending, done=Math.max(0,i.done||0);
+      return `<div class="imp-sec">
+        <div class="imp-sec-t"><i class="fa-solid fa-gauge-high"></i> ההפעלה רצה בקצב מבוקר</div>
+        <div class="imp-why">${done} מתוך ${total} פריטים — ${i.pending} ממתינים בתור.
+          אפשר לעזוב את המסך; התור ימשיך כשהלוח ייקרא.</div>
+        <div class="au-prog"><span style="width:${total?Math.round(done*100/total):0}%"></span></div>
+      </div>`;
+    }
+    const q=i.quota||{};
+    return `<div class="imp-sec">
+      <div class="imp-sec-t"><i class="fa-solid fa-play"></i> הפעלת אוטומציות על פריטים שכבר בלוח</div>
+      <div class="imp-why">${esc(i.note||'')}</div>
+      <div class="au-impgrid">
+        <div><b>${i.items||0}</b><span>פריטים</span></div>
+        <div><b>${i.rules||0}</b><span>אוטומציות על יצירת פריט</span></div>
+        <div><b>${i.estimated_runs||0}</b><span>הפעלות משוערות${i.estimate_is_a_floor?' (לפחות)':''}</span></div>
+        <div class="${i.fits?'':'warn'}"><b>${q.left==null?'—':q.left}</b><span>נותרו במכסה החודשית</span></div>
+      </div>
+      ${i.fits?'':`<div class="imp-why" style="color:var(--red)">
+        ההפעלה חורגת מהמכסה החודשית (${q.used||0} מתוך ${q.limit||0}).</div>`}
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ${i.fits?'btn-primary':'btn-ghost'}" ${i.busy||!i.rules?'disabled':''}
+          onclick="Automations.importApprove(${i.fits?'false':'true'})">
+          <i class="fa-solid fa-check"></i> ${i.fits?'אשר והפעל':'אשר בכל זאת'}</button>
+        <button class="btn btn-ghost" onclick="Automations.importClose()">ביטול</button>
+      </div>
+      ${i.rules?'':'<div class="imp-why">אין בלוח אוטומציה שמופעלת ביצירת פריט.</div>'}
+    </div>`;
   },
 
   tilesHTML(c){
@@ -8018,7 +8108,7 @@ const Automations = {
   setRunAuto(v){ this.runAuto=+v||0; this.loadRuns(); },
   historyFor(id){
     this.runAuto=id; this.runOutcome=''; this.tab='history';
-    this.building=this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=null;
+    this.building=this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=null;
     this.loadRuns();
   },
 
