@@ -2418,9 +2418,13 @@ body, body *{ font-weight:400!important; }
         <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון <span class="tb-badge" id="badge-arrange"></span></button>
         <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
       </div>
-      <div class="tb-ctl" id="ctl-adv">
-        <button class="tb-btn" onclick="Adv.open()"><i class="fa-solid fa-filter-circle-check"></i> סינון מתקדם <span class="tb-badge" id="badge-adv"></span></button>
-      </div>
+      <!-- The advanced builder has no button of its own in the toolbar. It is
+           reached from the foot of the filter panel, which is where somebody
+           is standing when they find that picking values is not enough for
+           what they want to ask. Two buttons side by side were two doors into
+           one filter: the panel and the builder edit the same condition tree,
+           and the badge on "סינון" already counts whatever is in it, whichever
+           of the two wrote it. -->
       <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
       <div style="flex:1"></div>
       <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
@@ -10098,7 +10102,7 @@ function renderPop(name){
          they find they need one. -->
     <div class="arr-foot">
       <button class="qf-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button>
-      <button class="qf-adv" onclick="closePops();Adv.open()">סינון מתקדם <i class="fa-solid fa-arrow-left"></i></button>
+      <button class="qf-adv" onclick="closePops();Adv.open()" title="בניית תנאים: עמודה, אופרטור, ערך — וקבוצות של וגם/או">מעבר לסינון מתקדם <i class="fa-solid fa-arrow-left"></i></button>
     </div>`;
   qfRestore();          // the strip is in the document now
 }
@@ -10517,8 +10521,6 @@ function refreshToolbar(){
   const adv=advCount(f.adv);
   const total=(f.people.length||0)+(f.status?1:0)+(f.priority?1:0)+(f.sort?1:0)
              +((f.links&&f.links.mode)?1:0)+adv;
-  const ac=document.getElementById('ctl-adv');
-  if(ac){ac.classList.toggle('on',!!adv);const ab=document.getElementById('badge-adv');if(ab)ab.textContent=adv||'';}
   const c=document.getElementById('ctl-arrange');
   if(c){c.classList.toggle('on',!!total);const b=document.getElementById('badge-arrange');if(b)b.textContent=total||'';}
   const qc=document.getElementById('tb-q-clear'); if(qc)qc.classList.toggle('show',!!f.q);

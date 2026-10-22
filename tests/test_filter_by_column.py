@@ -49,6 +49,35 @@ def test_the_panel_is_built_from_the_board_s_columns():
     assert "advFields()" in body, "the filter panel is no longer built from the board's columns"
 
 
+def test_the_advanced_builder_is_whole_from_its_one_door():
+    """Driven harness: tests/frontend/advanced_filter_reachable.mjs.
+
+    The builder had a button of its own in the toolbar, beside "סינון". Two
+    buttons side by side were two doors into one filter — the panel and the
+    builder edit the same condition tree — so the toolbar button is gone and
+    the way in is "מעבר לסינון מתקדם" at the foot of the panel. This is the
+    check that nothing went with the button: it opens, edits, applies, clears,
+    and the two doors show each other's work."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    h = ROOT / "tests" / "frontend" / "advanced_filter_reachable.mjs"
+    r = subprocess.run([node, str(h)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, "\n" + r.stdout + r.stderr
+
+
+def test_the_toolbar_has_one_filter_button():
+    """And the badge on it counts the whole filter, whichever door wrote it —
+    otherwise a filter built in the builder would light nothing."""
+    assert "ctl-adv" not in SRC and "badge-adv" not in SRC, \
+        "the second filter button is back in the toolbar"
+    assert 'onclick="closePops();Adv.open()"' in SRC, \
+        "the builder has no way in at all"
+    i = SRC.index("function refreshToolbar()")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "+adv" in body, "the filter badge stopped counting the conditions"
+
+
 def test_the_panel_is_filtering_and_nothing_else():
     """No column search, no sort block. The columns are a strip that is moved
     along — by the arrows, the scrollbar or the wheel — and a search that hid
