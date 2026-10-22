@@ -292,7 +292,8 @@ def _migrate():
                           ("consecutive_failures", "INTEGER DEFAULT 0"),
                           ("last_success_at", "DATETIME"), ("last_failure_at", "DATETIME"),
                           ("last_outcome", "VARCHAR(12)"),
-                          ("activated_at", "DATETIME"), ("draft_version", "INTEGER")]:
+                          ("activated_at", "DATETIME"), ("draft_version", "INTEGER"),
+                          ("template_version", "INTEGER DEFAULT 1")]:
             if acols and name not in acols:
                 conn.execute(text(f"ALTER TABLE automations ADD COLUMN {name} {ddl}"))
         # a rule stored before status existed is described by the switch it has
@@ -398,6 +399,7 @@ else:
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_success_at TIMESTAMP",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_failure_at TIMESTAMP",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_outcome VARCHAR(12)",
+        "ALTER TABLE automations ADD COLUMN IF NOT EXISTS template_version INTEGER DEFAULT 1",
         "UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END WHERE status IS NULL",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS version INTEGER",
@@ -8529,12 +8531,17 @@ AUTOMATION_IDENTITY_NAME = "מנוע האוטומציות"
 AUTOMATION_GRANTED_ACTIONS = frozenset({
     "notify_person", "notify_assignees", "assign_person", "set_status",
     "set_priority", "move_to_group", "create_subitem", "link_to_item",
-    "create_and_link",
+    "create_and_link", "post_update", "copy_to_linked",
+    "create_in_group_and_link",
 })
 # The item fields automation may write. The recipes only ever touch these, and
 # an action that reached past them would be doing something nobody approved.
 AUTOMATION_GRANTED_FIELDS = frozenset({
     "status", "priority", "group_id", "assignees", "custom_fields", "subitem",
+    # what the template library's own actions reach: an update written into the
+    # item's conversation, and the two more of its own fields that a copy to a
+    # linked item may carry
+    "comment", "due", "description",
 })
 # And what each action actually writes, so the grant above is something asked
 # rather than something stated. The two are held against each other before every
@@ -8555,6 +8562,11 @@ AUTOMATION_ACTION_FIELDS = {
     "create_subitem":   ("subitem",),
     "link_to_item":     ("custom_fields",),
     "create_and_link":  ("custom_fields",),
+    "create_in_group_and_link": ("custom_fields",),
+    "post_update":      ("comment",),
+    # it writes on the item at the other end of the link, and only the fields
+    # the rule names — but a grant is what an action MAY reach, so all of them
+    "copy_to_linked":   ("status", "priority", "due", "assignees", "description"),
 }
 _AUTOMATION_UID = None
 
@@ -9032,7 +9044,7 @@ def _automation_label(db, board, a):
     return text
 
 
-def _run_action(db, a, task, actor_id, board):
+def _run_action(db, a, task, actor_id, board, event=None):
     """Perform the rule's actions, in order. Returns (follow-up events, note).
 
     The events let a rule trigger another, bounded by AUTOMATION_MAX_DEPTH.
@@ -9055,7 +9067,7 @@ def _run_action(db, a, task, actor_id, board):
     for one in acts:
         try:
             out.extend(_run_one_action(db, one["key"], one["values"],
-                                       task, actor_id, board, label) or [])
+                                       task, actor_id, board, label, event) or [])
         except _Skipped as sk:
             skipped.append(sk.reason)
     if acts and len(skipped) == len(acts):
@@ -9068,7 +9080,7 @@ def _run_action(db, a, task, actor_id, board):
     return out, note
 
 
-def _run_one_action(db, act, cfg, task, actor_id, board, label):
+def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None):
     """One action of a rule. Raises _Skipped where there is nothing to do.
 
     `cfg` is the action's own values, keyed by the bare field name — see
@@ -9138,6 +9150,30 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label):
         db.add(Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
                     title=cfg.get("text") or "תת־פריט", status=TaskStatus.TODO,
                     priority=Priority.MEDIUM, created_by=actor_id))
+    elif act == "post_update":
+        # An update written by the engine, under the engine's own name. Not a
+        # notification: a notification is gone once it is read, and "מה קרה כאן"
+        # is answered on the item itself. No mentions, so nobody is pulled into
+        # a thread by a rule.
+        text = str(cfg.get("text") or "").strip()
+        if not text:
+            raise _Skipped("אין תוכן לעדכון")
+        db.add(Comment(task_id=task.id, user_id=actor_id, content=text[:2000],
+                       attachments=[], mentions=[], likes=[], seen_by=[]))
+    elif act == "copy_to_linked":
+        picked = [k for k in (cfg.get("fields") or []) if k in recipes.COPY_FIELDS]
+        ids = [i for i in ((event or {}).get("item_ids") or []) if isinstance(i, int)]
+        if not picked:
+            raise _Skipped("לא נבחרו שדות להעתקה")
+        if not ids:
+            raise _Skipped("אין פריט מקושר להעתיק אליו")
+        moved = 0
+        for other in db.query(Task).filter(Task.id.in_(ids[:MAX_COPY_TO_LINKED])).all():
+            if other.deleted_at or other.id == task.id:
+                continue
+            moved += _copy_item_fields(db, task, other, picked, actor_id)
+        if not moved:
+            raise _Skipped("לפריט המקושר כבר יש את הערכים האלה")
     elif act == "link_to_item":
         col = _find_col(db, task.board_id, cfg.get("connect"))
         if not col or col.get("type") != "connect":
@@ -9157,7 +9193,81 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label):
         if made is None:
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
         out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
+    elif act == "create_in_group_and_link":
+        col = _find_col(db, task.board_id, cfg.get("connect"))
+        if not col or col.get("type") != "connect":
+            raise _Skipped("עמודת הקישור אינה קיימת בלוח")
+        grp = db.query(Group).filter(Group.id == cfg.get("target_group"),
+                                     Group.board_id == cfg.get("board")).first()
+        if not grp:
+            raise _Skipped("הקבוצה שנבחרה אינה קיימת בלוח היעד")
+        made = _create_linked_item(db, task, col, cfg.get("board"),
+                                   cfg.get("text"), actor_id, group=grp)
+        if made is None:
+            raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
+        _copy_item_fields(db, task, made,
+                          [k for k in (cfg.get("fields") or []) if k in recipes.COPY_FIELDS],
+                          actor_id)
+        out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
     return out
+
+
+# How many items one link event may copy onto. A cell can hold many links, and
+# a rule that writes onto every one of them on a busy board is a different
+# animal from one that updates the item somebody just connected.
+MAX_COPY_TO_LINKED = 25
+
+
+def _copy_item_fields(db, src, dst, fields, actor_id):
+    """Copy the named built-ins from one item to another. Returns how many moved.
+
+    Only the item's own built-ins travel (see automations.COPY_FIELDS): a custom
+    column exists on one board under one id and on the next under another, so
+    copying those is a mapping between two boards and not a list of checkboxes.
+
+    Each change is audited the way an automated change always is — with no user
+    behind it, which both logs render as "מערכת".
+    """
+    moved = 0
+    for key in fields or []:
+        if key == "status":
+            if _task_status_key(dst) == _task_status_key(src):
+                continue
+            was = _logged_status(dst)
+            if not _apply_status_key(db, dst, _task_status_key(src)):
+                continue
+            _audit(db, dst.id, "update", "status", was, _logged_status(dst), None)
+        elif key == "priority":
+            if _task_priority_key(dst) == _task_priority_key(src):
+                continue
+            was = _logged_priority(dst)
+            if not _apply_priority_key(db, dst, _task_priority_key(src)):
+                continue
+            _audit(db, dst.id, "update", "priority", was, _logged_priority(dst), None)
+        elif key == "due":
+            if dst.due_date == src.due_date:
+                continue
+            was = dst.due_date.isoformat() if dst.due_date else ""
+            dst.due_date = src.due_date
+            _audit(db, dst.id, "update", "due_date", was,
+                   dst.due_date.isoformat() if dst.due_date else "", None)
+        elif key == "description":
+            if (dst.description or "") == (src.description or ""):
+                continue
+            dst.description = src.description
+            _audit(db, dst.id, "update", "description", "", "", None)
+        elif key == "assignees":
+            have = {u.id for u in dst.assignees}
+            add = [u for u in src.assignees
+                   if u.id not in have and _can_be_assigned(db, dst.board_id, u.id)]
+            if not add:
+                continue
+            for u in add:
+                dst.assignees.append(u)
+        else:
+            continue
+        moved += 1
+    return moved
 
 
 def _apply_automation_link(db, task, col, ids, actor_id):
@@ -9195,7 +9305,7 @@ def _apply_automation_link(db, task, col, ids, actor_id):
     return True
 
 
-def _create_linked_item(db, task, col, board_id, title, actor_id):
+def _create_linked_item(db, task, col, board_id, title, actor_id, group=None):
     """Make an item on the connect column's target board and link it back.
 
     The board has to be one the column actually points at — otherwise the new
@@ -9213,8 +9323,8 @@ def _create_linked_item(db, task, col, board_id, title, actor_id):
     tb = db.query(Board).filter(Board.id == board_id).first()
     if not tb or tb.deleted_at:
         return None
-    grp = (db.query(Group).filter(Group.board_id == board_id)
-           .order_by(Group.position, Group.id).first())
+    grp = group or (db.query(Group).filter(Group.board_id == board_id)
+                    .order_by(Group.position, Group.id).first())
     made = Task(board_id=board_id, group_id=grp.id if grp else None,
                 title=(title or "").strip() or "פריט חדש",
                 status=grp.task_status if grp else TaskStatus.TODO,
@@ -9526,6 +9636,12 @@ def _automation_blockers(db, board, a):
             elif f["type"] == "item":
                 if not db.query(Task).filter(Task.id == v, Task.deleted_at == None).first():  # noqa: E711
                     out.append({"kind": "dependency", "text": "הפריט שהכלל מקשר אליו נמחק"})
+            elif f["type"] == "target_group":
+                if not db.query(Group).filter(Group.id == v).first():
+                    out.append({"kind": "dependency", "text": "הקבוצה בלוח היעד נמחקה"})
+            elif f["type"] == "fields":
+                if not [k for k in (v or []) if k in recipes.COPY_FIELDS]:
+                    out.append({"kind": "dependency", "text": "לא נבחרו שדות להעתקה"})
             elif f["type"] == "board":
                 tb = db.query(Board).filter(Board.id == v, Board.deleted_at == None).first()  # noqa: E711
                 if not tb:
@@ -9692,7 +9808,7 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         # untouched by this one failing.
         sp = db.begin_nested()
         try:
-            follow, note = _run_action(db, a, task, engine_id, board)
+            follow, note = _run_action(db, a, task, engine_id, board, event)
             sp.commit()
         except BaseException:
             sp.rollback()
@@ -9950,6 +10066,9 @@ def _automation_json(db, board, a):
         "owner_is_creator": owner == a.created_by,
         # rule 4 — shown, never acted on: the rule keeps running
         "needs_owner": _own["needs_owner"], "owner_problem": _own["reason"],
+        # the template it was built from, and which version of it
+        "template_version": a.template_version or 1,
+        "template_current": recipes.template_version(a.recipe_id),
         "created_by": a.created_by, "created_by_name": uname(a.created_by),
         "created_at": iso(a.created_at),
         "updated_by": a.updated_by, "updated_by_name": uname(a.updated_by),
@@ -10066,6 +10185,80 @@ def automation_recipes(user_id: int = Depends(current_user_id)):
             # them a rule may carry in all (the recipe's own included)
             "action_catalog": recipes.actions_catalog(),
             "max_actions": recipes.MAX_ACTIONS}
+
+
+def _board_template_has(db, board):
+    """What this board already is, for the compatibility check.
+
+    These are the four things a template can need that a person cannot answer
+    in the form, because they are the board's structure rather than a value:
+    a connect column, a two-way one, a group to move an item into, and somebody
+    on the board to assign or notify.
+    """
+    cols = (board.settings or {}).get("columns", []) or []
+    conns = [c for c in cols if c.get("type") == "connect"]
+    people = [m.user_id for m in db.query(BoardMember)
+              .filter(BoardMember.board_id == board.id).all()]
+    return {
+        "connect": bool(conns),
+        "connect_two_way": any(_is_two_way(c) for c in conns),
+        "group": db.query(Group).filter(Group.board_id == board.id).count() > 0,
+        "people": any(_can_be_assigned(db, board.id, u) for u in people),
+    }
+
+
+@app.get("/api/boards/{board_id}/automations/templates")
+def automation_templates(board_id: int, q: str = "", tags: str = "", only: str = "",
+                         user_id: int = Depends(current_user_id)):
+    """ספריית התבניות — the catalog as something to look through.
+
+    The same recipes /api/automations/recipes serves, with the three things a
+    library needs that a catalog does not: the name each of the recommended
+    ones is listed under, whether it can be used on THIS board and what is
+    missing if it cannot, and what to search and filter by.
+
+    A template that does not fit is returned all the same, marked unavailable
+    and carrying what it lacks — a list that silently omitted it would leave
+    somebody looking for a template that is there.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות בתבניות הלוח")
+        has = _board_template_has(db, b)
+        want = {t for t in (tags or "").split(",") if t in recipes.LIBRARY_TAGS}
+        needle = (q or "").strip().lower()
+        rows = []
+        for t in recipes.catalog():
+            missing = [recipes.NEEDS_HE[k] for k in t["needs"] if not has.get(k)]
+            row = {**t, "available": not missing, "missing": missing}
+            hay = " ".join([row["title"], row["sentence"],
+                            recipes.plain(recipes.TRIGGERS.get(row["trigger"], "")),
+                            recipes.plain(recipes.ACTIONS.get(row["action"], "")),
+                            " ".join(recipes.LIBRARY_TAGS[x] for x in row["tags"])]).lower()
+            if needle and needle not in hay:
+                continue
+            if want and not (want <= set(row["tags"])):
+                continue
+            if only == "recommended" and not row["recommended"]:
+                continue
+            rows.append(row)
+        rows.sort(key=lambda r: (not r["recommended"], r["order"], r["id"]))
+        # the counts are over what the filters would leave, so a tag that would
+        # empty the list says so before it is pressed
+        counts = {k: 0 for k in recipes.LIBRARY_TAGS}
+        for r in rows:
+            for k in r["tags"]:
+                counts[k] += 1
+        return {"templates": rows,
+                "tags": [{"key": k, "label": he, "count": counts[k]}
+                         for k, he in recipes.LIBRARY_TAGS.items()],
+                "board": has,
+                "copy_fields": recipes.copy_fields_catalog(),
+                "recommended": [rid for rid, _ in recipes.MVP_TEMPLATES],
+                "unavailable": sum(1 for r in rows if not r["available"])}
 
 
 @app.get("/api/boards/{board_id}/automations")
@@ -10216,6 +10409,10 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
         meta = _automation_meta(db, board_id, data)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         a = Automation(board_id=board_id, recipe_id=data["recipe_id"], config=cfg,
+                       # which version of the template this was built from, kept
+                       # as it was: a template that moves on does not rewrite the
+                       # rules already made from it
+                       template_version=recipes.template_version(data["recipe_id"]),
                        created_by=user_id, updated_by=user_id,
                        created_at=now, updated_at=now, run_count=0, state={},
                        fail_count=0, skip_count=0, consecutive_failures=0, last_outcome="",
@@ -10266,6 +10463,9 @@ def duplicate_automation(automation_id: int, user_id: int = Depends(current_user
         # items it has already fired for, and where the owner notices are marked
         # as sent — is empty, so the copy repeats nothing and suppresses nothing.
         a = Automation(board_id=src.board_id, recipe_id=src.recipe_id, config=cfg,
+                       # a copy is the same rule, so it answers the same version
+                       # of the template the original did
+                       template_version=src.template_version or 1,
                        name=f"{name} (עותק)"[:120], description=src.description or "",
                        importance=src.importance or "normal", run_order=src.run_order or 0,
                        # whoever asked for the copy answers for it — a handover
@@ -10654,6 +10854,9 @@ AUTOMATION_ACTION_WRITES = {
     "create_subitem":   ["תתי־פריטים"],
     "link_to_item":     ["קישור בין לוחות"],
     "create_and_link":  ["קישור בין לוחות"],
+    "create_in_group_and_link": ["קישור בין לוחות", "קבוצה"],
+    "post_update":      ["שיחת הפריט"],
+    "copy_to_linked":   ["שדות בפריט המקושר"],
 }
 # What each trigger reads.
 AUTOMATION_TRIGGER_READS = {
@@ -10665,6 +10868,7 @@ AUTOMATION_TRIGGER_READS = {
     "link_added":               ["קישור בין לוחות"],
     "link_removed":             ["קישור בין לוחות"],
     "linked_status_changes_to": ["סטטוס של פריט מקושר"],
+    "subitem_done":             ["סטטוס של תת־פריט"],
 }
 
 
@@ -10817,7 +11021,8 @@ def _automation_loop_risk(db, board, a):
     r = recipes.recipe(a.recipe_id) or {}
     PRODUCES = {"set_status": "status_changes_to", "set_priority": "priority_changes_to",
                 "assign_person": "person_assigned", "link_to_item": "link_added",
-                "create_and_link": "link_added"}
+                "create_and_link": "link_added",
+                "create_in_group_and_link": "link_added"}
     # every action the rule carries, because any one of them is enough to start
     # the rule on the other side
     produces = {PRODUCES[x["key"]] for x in recipes.action_list(a.recipe_id, a.config or {})
@@ -11048,12 +11253,29 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
             note = "לפריט אין משויכים" if no_op else ""
         return {"what": "שליחת התראה", "to": who, "from": "", "no_op": no_op,
                 "note": note + (" · בבדיקה לא נשלחת התראה" if not no_op else "")}
-    if key in ("link_to_item", "create_and_link"):
+    if key in ("link_to_item", "create_and_link", "create_in_group_and_link"):
+        note = f"בעמודה {shown('connect', values.get('connect'))}"
+        if key == "create_in_group_and_link":
+            g = db.query(Group).filter(Group.id == values.get("target_group")).first()
+            note += f" · בקבוצה {g.name if g else '—'}"
+            if values.get("fields"):
+                note += " · מעתיק: " + recipes.copy_fields_label(values.get("fields"))
         return {"what": "קישור בין לוחות",
                 "to": shown("item", values.get("item")) if key == "link_to_item"
                       else (values.get("text") or ""),
-                "from": "", "no_op": False,
-                "note": f"בעמודה {shown('connect', values.get('connect'))}"}
+                "from": "", "no_op": False, "note": note}
+    if key == "post_update":
+        return {"what": "עדכון בשיחת הפריט", "to": values.get("text") or "", "from": "",
+                "no_op": not str(values.get("text") or "").strip(),
+                "note": "בבדיקה לא נכתב עדכון"}
+    if key == "copy_to_linked":
+        # which item is at the other end is the event's to say, and a test
+        # reasons about the rule rather than about one link that has not
+        # happened yet
+        return {"what": "העתקה לפריט המקושר",
+                "to": recipes.copy_fields_label(values.get("fields")), "from": "",
+                "no_op": not (values.get("fields") or []),
+                "note": "אל הפריט שהקישור אליו הפעיל את הכלל"}
     return None
 
 
@@ -12350,6 +12572,15 @@ def update_task(task_id: int, data: dict, request: Request = None,
             if _removed:
                 _run_automations(db, task, {"type": "link_removed", "col": _k,
                                             "item_ids": _removed}, actor)
+        # a sub-item finishing is an event on its PARENT — the rule then acts
+        # on the parent, which is what makes "עדכן שדה בפריט האב" every action
+        # the catalog already has instead of one that writes somewhere else
+        if (_task_status_key(task) != _before_status and task.parent_id
+                and _st_of(task) == "done"):
+            _parent = db.query(Task).filter(Task.id == task.parent_id).first()
+            if _parent and not _parent.deleted_at:
+                _run_automations(db, _parent, {"type": "subitem_done",
+                                               "subitem_id": task.id}, actor)
         # and the items pointing at this one hear that its status moved
         if _task_status_key(task) != _before_status:
             _fan_out_linked_status(db, task, _task_status_key(task), actor)

@@ -502,5 +502,88 @@ ck('the log button no longer wears the same icon as it',
    /id="bh-log"[^>]*>\s*<i class="fa-solid fa-clock-rotate-left">/.test(src),
    'two identical ⚡ buttons in the header');
 
+
+/* ── ספריית התבניות ──────────────────────────────────────────────────────
+   The catalog read as a library: the nine recommended at the top under their
+   own names, a search box, the six filters, and a template the board cannot
+   carry — still listed, not clickable, saying what is missing. */
+A.tab='create'; A.mode='templates'; A.tq=''; A.ttags=new Set();
+A.trigLabels={status_changes_to:'כאשר הסטטוס משתנה ל…', item_created:'כאשר נוצר פריט חדש'};
+A.libTags=[{key:'status',label:'סטטוס',count:2},{key:'date',label:'תאריך',count:0},
+           {key:'assign',label:'שיוך',count:1},{key:'subitem',label:'תת־פריט',count:1},
+           {key:'link',label:'קישור',count:1},{key:'notify',label:'התראה',count:0}];
+A.templates=[
+  {id:'status_move_group',trigger:'status_changes_to',action:'move_to_group',
+   sentence:'כאשר הסטטוס משתנה ל{t_status}, העבר את הפריט לקבוצה {a_group}',
+   fields:[{key:'t_status',label:'סטטוס'},{key:'a_group',label:'קבוצה'}],conditions:[],
+   title:'כאשר סטטוס משתנה ל״הושלם״, העבר את הפריט לקבוצת ״הושלמו״',
+   recommended:true,order:0,tags:['status'],needs:['group'],version:1,
+   available:true,missing:[]},
+  {id:'subitem_done_set_status',trigger:'subitem_done',action:'set_status',
+   sentence:'כאשר תת־פריט הושלם, שנה את הסטטוס ל{a_status}',
+   fields:[{key:'a_status',label:'סטטוס בפריט האב'}],conditions:[],
+   title:'כאשר תת־פריט הושלם, עדכן שדה בפריט האב',
+   recommended:true,order:4,tags:['status','subitem'],needs:[],version:1,
+   available:true,missing:[]},
+  {id:'created_create_and_link',trigger:'item_created',action:'create_and_link',
+   sentence:'כאשר נוצר פריט חדש, צור פריט בשם {a_text} בלוח {a_board}',
+   fields:[{key:'a_text',label:'שם הפריט'},{key:'a_board',label:'לוח היעד'}],conditions:[],
+   title:'כאשר נוצר פריט בלוח מקור, צור פריט בלוח יעד וקשר ביניהם',
+   recommended:true,order:6,tags:['link'],needs:['connect'],version:1,
+   available:false,missing:['עמודת קישור בלוח']},
+  {id:'created_assign_person',trigger:'item_created',action:'assign_person',
+   sentence:'כאשר נוצר פריט חדש, שייך את {a_person}',
+   fields:[{key:'a_person',label:'אחראי'}],conditions:[],
+   title:'',recommended:false,order:9,tags:['assign'],needs:['people'],version:1,
+   available:true,missing:[]},
+];
+let lib=A.catalogHTML();
+ck('the library opens with a search box', lib.includes('חיפוש תבנית'));
+ck('...and the six filters', ['סטטוס','תאריך','שיוך','תת־פריט','קישור','התראה']
+   .every(x=>lib.includes(x)), lib.slice(0,400));
+ck('the recommended ones come first, under their own names',
+   lib.indexOf('תבניות מומלצות') >= 0
+   && lib.indexOf('כאשר תת־פריט הושלם, עדכן שדה בפריט האב') > lib.indexOf('תבניות מומלצות'));
+ck('a usable template opens the builder',
+   lib.includes(`Automations.pick('status_move_group')`));
+ck('one the board cannot carry is still listed', lib.includes('created_create_and_link')
+   || lib.includes('צור פריט בשם'));
+ck('...but does not open', !lib.includes(`Automations.pick('created_create_and_link')`));
+ck('...and says what the board is missing',
+   lib.includes('לא זמינה בלוח הזה') && lib.includes('עמודת קישור בלוח'));
+ck('a blank in the sentence is shown as the thing to fill',
+   lib.includes('<span class="ph">קבוצה</span>'));
+
+A.ttags=new Set(['subitem']);
+lib=A.catalogHTML();
+ck('filtering by a tag drops what is not about it',
+   lib.includes('כאשר תת־פריט הושלם') && !lib.includes('העבר את הפריט לקבוצה'));
+ck('...and offers a way back', lib.includes('Automations.clearTemplateFilters()'));
+A.ttags=new Set(['subitem','link']);
+ck('two filters narrow rather than widen', A.filteredTemplates().length===0);
+A.ttags=new Set();
+A.tq='קבוצ';
+ck('search matches the wording', A.filteredTemplates().map(x=>x.id).join()==='status_move_group');
+A.tq='שאיןכזהדבר';
+ck('a search with no answer says so', A.catalogHTML().includes('אין תבנית שמתאימה לחיפוש'));
+A.tq=''; A.ttags=new Set();
+
+/* the two new kinds of blank */
+A.copyFields=[{key:'status',label:'סטטוס'},{key:'priority',label:'עדיפות'},
+              {key:'due',label:'תאריך יעד'}];
+A.building={recipe:{id:'x',fields:[{key:'a_fields',type:'fields',label:'השדות להעתקה'}]},
+            values:{},conds:[],acts:[]};
+A._copyInto={key:'a_fields',into:null,anchor:null};
+A.toggleCopyField('priority');
+A.toggleCopyField('status');
+ck('a copy-fields blank holds a set, in the catalog\'s order',
+   JSON.stringify(A.building.values['a_fields'].v)==='["status","priority"]',
+   JSON.stringify(A.building.values['a_fields']));
+ck('...and reads back as one phrase',
+   A.building.values['a_fields'].label==='סטטוס, עדיפות');
+A.toggleCopyField('status'); A.toggleCopyField('priority');
+ck('...and emptying it leaves the blank unfilled',
+   A.building.values['a_fields']===undefined);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

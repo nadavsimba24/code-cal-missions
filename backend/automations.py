@@ -292,6 +292,11 @@ TRIGGERS = {
     "link_added":           "כאשר נוצר קשר לפריט בלוח אחר",
     "link_removed":         "כאשר מוסר קשר לפריט בלוח אחר",
     "linked_status_changes_to": "כאשר הסטטוס של פריט מקושר משתנה ל{status}",
+    # ── a sub-item finishing, reported to its PARENT ──
+    # The item the rule then acts on is the parent, which is what makes
+    # "עדכן שדה בפריט האב" every action the catalog already has rather than a
+    # new one that writes somewhere else.
+    "subitem_done":         "כאשר תת־פריט הושלם",
 }
 
 ACTIONS = {
@@ -304,7 +309,39 @@ ACTIONS = {
     "create_subitem":   "צור תת־פריט בשם {text}",
     "link_to_item":     "קשר את הפריט אל {item} בעמודה {connect}",
     "create_and_link":  "צור פריט בשם {text} בלוח {board} וקשר אותו בעמודה {connect}",
+    # ── and the three the template library asked for ──
+    "post_update":      "הוסף עדכון לשיחת הפריט: {text}",
+    "copy_to_linked":   "העתק {fields} לפריט המקושר",
+    # the fuller form of create_and_link: it says which group on the target
+    # board, and which of the item's own fields travel with it. A separate
+    # action rather than three more placeholders on the old one — a rule
+    # somebody already built is not re-asked a question it was never asked.
+    "create_in_group_and_link":
+        "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, העתק {fields} "
+        "וקשר אותו בעמודה {connect}",
 }
+
+# What "השדות שהוגדרו" may be. The item's own built-ins, which every board has
+# — a custom column exists on one board under one id and on the next board
+# under another, so copying those is a mapping between two boards' columns and
+# not a list of checkboxes. That is in the Roadmap, not here.
+COPY_FIELDS = {
+    "status":      "סטטוס",
+    "priority":    "עדיפות",
+    "due":         "תאריך יעד",
+    "assignees":   "אחראים",
+    "description": "תיאור",
+}
+
+
+def copy_fields_catalog():
+    return [{"key": k, "label": he} for k, he in COPY_FIELDS.items()]
+
+
+def copy_fields_label(v):
+    """The chosen fields as one readable phrase for the rule's sentence."""
+    picked = [COPY_FIELDS[k] for k in (v or []) if k in COPY_FIELDS]
+    return ", ".join(picked) if picked else "שדות"
 
 
 def _f(key, type_, label):
@@ -349,6 +386,14 @@ ACTION_FIELDS = {
     "create_and_link":  [_f("connect", "connect", "עמודת הקישור"),
                          _f("board", "board", "לוח היעד"),
                          _f("text", "text", "שם הפריט החדש")],
+    "post_update":      [_f("text", "text", "תוכן העדכון")],
+    "copy_to_linked":   [_f("fields", "fields", "השדות להעתקה")],
+    "create_in_group_and_link":
+                        [_f("connect", "connect", "עמודת הקישור"),
+                         _f("board", "board", "לוח היעד"),
+                         _f("target_group", "target_group", "הקבוצה בלוח היעד"),
+                         _f("text", "text", "שם הפריט החדש"),
+                         _f("fields", "fields", "השדות להעתקה")],
 }
 
 # Actions that write one field of the item, so two of them in one rule means the
@@ -414,7 +459,13 @@ def _coerce_field(f, v, require):
         v = str(v or "").strip()[:200]
     elif f["type"] == "connect":
         v = str(v or "").strip()          # a column id, not a number
-    elif f["type"] in ("person", "group", "item", "board"):
+    elif f["type"] == "fields":
+        # a set of the item's own built-ins, in the catalog's order so two rules
+        # that chose the same fields read the same way
+        picked = [k for k in COPY_FIELDS if k in set(v or [])]
+        return (picked, None) if picked else (
+            None, (f"חסר ערך בשדה '{f['label']}'" if require else None))
+    elif f["type"] in ("person", "group", "item", "board", "target_group"):
         try:
             return int(v), None
         except (TypeError, ValueError):
@@ -599,9 +650,158 @@ RECIPES = [
     {"id": "cond_created_no_due_notify_person", "trigger": "item_created",
      "action": "notify_person", "conds": ["no_due_date"],
      "fields": [_f("a_person", "person", "נמען")]},
+
+    # ── the recommended templates that had no recipe ──
+    # A sub-item finishing reaches the rule as an event on the PARENT, so
+    # "עדכן שדה בפריט האב" is every action the catalog already has.
+    {"id": "subitem_done_set_status", "trigger": "subitem_done", "action": "set_status",
+     "fields": [_f("a_status", "status", "סטטוס בפריט האב")]},
+    {"id": "subitem_done_set_priority", "trigger": "subitem_done", "action": "set_priority",
+     "fields": [_f("a_priority", "priority", "עדיפות בפריט האב")]},
+    {"id": "subitem_done_notify_assignees", "trigger": "subitem_done",
+     "action": "notify_assignees", "fields": []},
+    {"id": "link_added_copy_to_linked", "trigger": "link_added", "action": "copy_to_linked",
+     "fields": [_f("a_fields", "fields", "השדות להעתקה")]},
+    {"id": "assigned_post_update", "trigger": "person_assigned", "action": "post_update",
+     "fields": [_f("a_text", "text", "תוכן העדכון")]},
+    {"id": "status_create_in_group_and_link", "trigger": "status_changes_to",
+     "action": "create_in_group_and_link",
+     "fields": [_f("t_status", "status", "סטטוס"),
+                _f("a_connect", "connect", "עמודת הקישור"),
+                _f("a_board", "board", "לוח היעד"),
+                _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
+                _f("a_text", "text", "שם הפריט החדש"),
+                _f("a_fields", "fields", "השדות להעתקה")]},
 ]
 
 RECIPES_BY_ID = {r["id"]: r for r in RECIPES}
+
+
+# ── the template library ────────────────────────────────────────────────────
+# The catalog above is what a rule can be BUILT from. The library is how it is
+# FOUND: the nine the specification recommends, first and under their own
+# names, and the rest searchable and filterable by the six things a person
+# actually has in mind — a status, a date, who it is assigned to, a sub-item, a
+# link, a notification.
+
+LIBRARY_TAGS = {
+    "status":  "סטטוס",
+    "date":    "תאריך",
+    "assign":  "שיוך",
+    "subitem": "תת־פריט",
+    "link":    "קישור",
+    "notify":  "התראה",
+}
+
+_TRIGGER_TAGS = {
+    "status_changes_to":        ("status",),
+    "priority_changes_to":      (),
+    "item_created":             (),
+    "person_assigned":          ("assign",),
+    "due_date_arrives":         ("date",),
+    "link_added":               ("link",),
+    "link_removed":             ("link",),
+    "linked_status_changes_to": ("link", "status"),
+    "subitem_done":             ("subitem", "status"),
+}
+_ACTION_TAGS = {
+    "notify_person":    ("notify",),
+    "notify_assignees": ("notify", "assign"),
+    "assign_person":    ("assign",),
+    "set_status":       ("status",),
+    "set_priority":     (),
+    "move_to_group":    (),
+    "create_subitem":   ("subitem",),
+    "link_to_item":     ("link",),
+    "create_and_link":  ("link",),
+    "create_in_group_and_link": ("link",),
+    "copy_to_linked":   ("link",),
+    "post_update":      (),
+}
+_COND_TAGS = {
+    "status_is": ("status",), "status_is_not": ("status",),
+    "person_is": ("assign",), "person_is_not": ("assign",),
+    "has_assignee": ("assign",), "no_assignee": ("assign",),
+    "has_due_date": ("date",), "no_due_date": ("date",),
+    "overdue": ("date",), "not_overdue": ("date",),
+}
+
+# What a board must already have for a template to be usable on it. Everything
+# else a template needs it asks for when it is filled in; these are the things
+# a person cannot answer in the form because they are the board's structure.
+NEEDS_HE = {
+    "connect":          "עמודת קישור בלוח",
+    "connect_two_way":  "עמודת קישור דו־כיוונית בלוח",
+    "group":            "לפחות קבוצה אחת בלוח",
+    "people":           "לפחות משתמש אחד מוזמן ללוח",
+}
+_TRIGGER_NEEDS = {
+    "link_added":               ("connect",),
+    "link_removed":             ("connect",),
+    "linked_status_changes_to": ("connect_two_way",),
+}
+_ACTION_NEEDS = {
+    "link_to_item":             ("connect",),
+    "create_and_link":          ("connect",),
+    "create_in_group_and_link": ("connect", "group"),
+    "copy_to_linked":           ("connect",),
+    "move_to_group":            ("group",),
+    "assign_person":            ("people",),
+    "notify_person":            ("people",),
+}
+
+# The nine the specification recommends for the MVP, in its order, under the
+# names it gives them — a library that opened on 43 generated sentences would
+# be a list nobody reads.
+MVP_TEMPLATES = [
+    ("status_move_group",
+     "כאשר סטטוס משתנה ל״הושלם״, העבר את הפריט לקבוצת ״הושלמו״"),
+    ("created_assign_person",
+     "כאשר פריט נוצר, שייך אותו למשתמש מוגדר"),
+    ("cond_due_open_notify_assignees",
+     "כאשר הגיע תאריך היעד והסטטוס אינו ״הושלם״, שלח התראה לאחראי"),
+    ("status_create_subitem",
+     "כאשר סטטוס משתנה ל״מאושר״, צור תת־פריט המשך"),
+    ("subitem_done_set_status",
+     "כאשר תת־פריט הושלם, עדכן שדה בפריט האב"),
+    ("link_added_copy_to_linked",
+     "כאשר פריט מקושר, העתק ערך מוגדר לפריט המקושר"),
+    ("created_create_and_link",
+     "כאשר נוצר פריט בלוח מקור, צור פריט בלוח יעד וקשר ביניהם"),
+    ("status_create_in_group_and_link",
+     "כאשר סטטוס בלוח המקור משתנה, צור פריט בקבוצה בלוח היעד, העתק שדות וקשר אותו"),
+    ("assigned_post_update",
+     "כאשר אחראי משתנה, הוסף עדכון לשיחת הפריט"),
+]
+MVP_TITLES = dict(MVP_TEMPLATES)
+MVP_ORDER = {rid: i for i, (rid, _) in enumerate(MVP_TEMPLATES)}
+
+# ── template versions ──
+# A system template is versioned so that a rule built from it goes on meaning
+# what it meant when it was built. The rule stores its own configuration, so a
+# version is a statement about the TEMPLATE: bump it for an additive or
+# cosmetic change, and give a NEW id to anything that would change what an
+# existing rule does — which is why the fuller create-and-link is its own
+# action rather than three more placeholders on the old one.
+TEMPLATE_VERSIONS = {}
+
+
+def template_version(recipe_id):
+    return TEMPLATE_VERSIONS.get(recipe_id, 1)
+
+
+def tags_of(recipe_id):
+    r = recipe(recipe_id) or {}
+    out = set(_TRIGGER_TAGS.get(r.get("trigger"), ())) | set(_ACTION_TAGS.get(r.get("action"), ()))
+    for c in r.get("conds") or []:
+        out |= set(_COND_TAGS.get(c, ()))
+    return sorted(out)
+
+
+def needs_of(recipe_id):
+    r = recipe(recipe_id) or {}
+    return sorted(set(_TRIGGER_NEEDS.get(r.get("trigger"), ()))
+                  | set(_ACTION_NEEDS.get(r.get("action"), ())))
 
 
 def recipe(recipe_id):
@@ -626,7 +826,8 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None):
         return ""
     trig = TRIGGERS[r["trigger"]].replace("{status}", "{t_status}").replace("{priority}", "{t_priority}")
     act = ACTIONS[r["action"]]
-    for k in ("person", "status", "priority", "group", "text", "connect", "item", "board"):
+    for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
+              "fields", "target_group"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
     clause = conditions_clause(cond_phrases)
     more = [p for p in (action_phrases or []) if p]
@@ -691,7 +892,15 @@ def catalog():
              "sentence": sentence(r["id"]), "fields": r["fields"],
              # a template that comes with its own conditions says so; one that
              # does not sends an empty list and reads exactly as it always did
-             "conditions": recipe_conditions(r["id"])} for r in RECIPES]
+             "conditions": recipe_conditions(r["id"]),
+             # and what the library needs of it: the name it is listed under,
+             # what it is about, what the board must already have, and which
+             # version of the template this is
+             "title": MVP_TITLES.get(r["id"], ""),
+             "recommended": r["id"] in MVP_TITLES,
+             "order": MVP_ORDER.get(r["id"], len(MVP_ORDER)),
+             "tags": tags_of(r["id"]), "needs": needs_of(r["id"]),
+             "version": template_version(r["id"])} for r in RECIPES]
 
 
 def validate_partial(recipe_id, config):
@@ -711,13 +920,18 @@ def validate_partial(recipe_id, config):
     clean = {}
     for f in r["fields"]:
         v = config.get(f["key"])
-        if v is None or v == "":
+        if v is None or v == "" or v == []:
             continue                              # not filled in yet, and that is allowed
         if f["type"] == "text":
             v = (str(v)).strip()[:200]
         elif f["type"] == "connect":
             v = (str(v)).strip()
-        elif f["type"] in ("person", "group", "item", "board"):
+        elif f["type"] == "fields":
+            v = [k for k in COPY_FIELDS if k in set(v or [])]
+            if v:
+                clean[f["key"]] = v
+            continue
+        elif f["type"] in ("person", "group", "item", "board", "target_group"):
             try:
                 v = int(v)
             except (TypeError, ValueError):
@@ -781,7 +995,11 @@ def validate(recipe_id, config):
             v = (str(v or "")).strip()          # a column id, not a number
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"
-        elif f["type"] in ("person", "group", "item", "board"):
+        elif f["type"] == "fields":
+            v = [k for k in COPY_FIELDS if k in set(v or [])]
+            if not v:
+                return None, f"חסר ערך בשדה '{f['label']}'"
+        elif f["type"] in ("person", "group", "item", "board", "target_group"):
             try:
                 v = int(v)
             except (TypeError, ValueError):

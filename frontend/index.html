@@ -468,6 +468,23 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 /* A template that comes with its conditions: the "רק אם" on a line of its own,
    so the row reads as the two clauses it is instead of one long sentence. */
 .au-recipe-if{margin-top:7px;padding-top:7px;border-top:1px dashed var(--border);font-size:12.5px;color:var(--text-muted);line-height:1.9}
+/* ספריית התבניות — the search, the six filters, and a template the board
+   cannot carry: still listed, not clickable, and saying what it lacks. */
+.au-libbar{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.au-tfilters{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.au-tfilter{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);background:var(--card);
+  border-radius:14px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--text)}
+.au-tfilter small{color:var(--text-light);font-size:11px}
+.au-tfilter.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.au-tfilter.on small{color:#fff;opacity:.85}
+.au-tfilter.clr{border-style:dashed;color:var(--text-muted)}
+.au-libcount{font-size:12px;color:var(--text-light)}
+.au-tname{font-weight:600;margin-bottom:4px}
+.au-ttags{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+.au-ttag{font-size:11px;color:var(--text-light);background:var(--bg);border:1px solid var(--border);
+  border-radius:10px;padding:1px 7px}
+.au-recipe.au-off{opacity:.62;cursor:not-allowed;display:block;width:100%;text-align:start}
+.au-tmiss{margin-top:7px;font-size:12px;color:var(--red)}
 .au-ccount{font-size:10.5px;font-weight:700;color:#fff;background:var(--primary);border-radius:9px;padding:1px 7px;margin-inline-end:5px;vertical-align:middle}
 .au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
 .au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
@@ -7200,6 +7217,14 @@ const Automations = {
         this.colKinds=d.column_kinds||{}; this.multiCols=d.multi_column_types||[];
       }catch(e){ this.recipes=[]; this.blueprint=[]; }
     }
+    // the same templates, told apart by this board: which of them it can
+    // actually carry, and what it is missing for the ones it cannot
+    try{
+      const lib=await api('/api/boards/'+bid+'/automations/templates'+q);
+      this.templates=lib.templates||[]; this.libTags=lib.tags||[];
+      this.copyFields=lib.copy_fields||[];
+    }catch(e){ this.templates=this.templates||[]; this.libTags=this.libTags||[];
+               this.copyFields=this.copyFields||[]; }
     // the person picker offers the board's own members, matching who can be
     // assigned — so a deactivated account is left out: the server refuses to
     // store a rule naming one, and would skip it at run time anyway
@@ -7242,25 +7267,92 @@ const Automations = {
   },
   setMode(m){ this.mode=m; this.scratch={trigger:'',conds:[]}; this.render(); },
 
+  setTemplateQ(v){ this.tq=v; this.renderCatalog(); },
+  toggleTemplateTag(k){
+    this.ttags=this.ttags||new Set();
+    if(this.ttags.has(k)) this.ttags.delete(k); else this.ttags.add(k);
+    this.render();
+  },
+  clearTemplateFilters(){ this.tq=''; this.ttags=new Set(); this.render(); },
+  /* redrawn in place so typing in the search box does not lose the caret */
+  renderCatalog(){
+    const el=document.getElementById('au-lib-list');
+    if(el) el.innerHTML=this.libraryRows();
+    const n=document.getElementById('au-lib-count');
+    if(n) n.textContent=this.filteredTemplates().length;
+  },
+  filteredTemplates(){
+    const q=(this.tq||'').trim().toLowerCase(), tags=this.ttags||new Set();
+    return (this.templates||[]).filter(t=>{
+      if(tags.size&&![...tags].every(k=>(t.tags||[]).includes(k))) return false;
+      if(!q) return true;
+      const hay=((t.title||'')+' '+(t.sentence||'')+' '
+        +(t.tags||[]).map(k=>((this.libTags||[]).find(x=>x.key===k)||{}).label||'').join(' ')).toLowerCase();
+      return hay.includes(q);
+    });
+  },
+  /* One row. An unavailable template is still shown — a list that silently
+     dropped it would leave somebody hunting for a template that is there —
+     but it does not open, and it says what the board is missing. */
+  templateRow(x){
+    const fill=esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
+      const f=(x.fields||[]).find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';});
+    const tags=(x.tags||[]).map(k=>`<span class="au-ttag">${esc(((this.libTags||[]).find(y=>y.key===k)||{}).label||k)}</span>`).join('');
+    const head=x.title?`<div class="au-tname">${esc(x.title)}</div>`:'';
+    if(!x.available){
+      return `<div class="au-recipe au-off" title="התבנית אינה מתאימה למבנה הלוח">
+        ${head}<div>${fill}</div>${this.condLine(x)}
+        <div class="au-tmiss"><i class="fa-solid fa-circle-exclamation"></i>
+          לא זמינה בלוח הזה — חסר: ${esc((x.missing||[]).join(', '))}</div>
+        <div class="au-ttags">${tags}</div></div>`;
+    }
+    return `<button class="au-recipe" onclick="Automations.pick('${x.id}')">
+      ${head}<div>${fill}</div>${this.condLine(x)}<div class="au-ttags">${tags}</div></button>`;
+  },
+  libraryRows(){
+    const rows=this.filteredTemplates();
+    if(!rows.length) return '<div class="au-hint">אין תבנית שמתאימה לחיפוש</div>';
+    const rec=rows.filter(x=>x.recommended), rest=rows.filter(x=>!x.recommended);
+    const byTrig={};
+    rest.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
+    return (rec.length?`<div class="au-group-h">תבניות מומלצות</div>`
+              +rec.map(x=>this.templateRow(x)).join(''):'')
+      + Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc((this.trigLabels||{})[t]||t)}</div>`
+          +byTrig[t].map(x=>this.templateRow(x)).join('')).join('');
+  },
   catalogHTML(){
+    const tags=(this.libTags||[]).map(t=>`<button class="au-tfilter ${(this.ttags||new Set()).has(t.key)?'on':''}"
+        onclick="Automations.toggleTemplateTag('${t.key}')">${esc(t.label)}<small>${t.count}</small></button>`).join('');
+    const any=(this.tq||'')||((this.ttags||new Set()).size);
+    if(this.templates&&this.templates.length) return `
+      <div style="font-size:12.5px;color:var(--text-muted);margin:12px 0 8px">בחרו תבנית והשלימו את השדות — ואחר כך אפשר להוסיף תנאים ("רק אם"):</div>
+      <div class="au-libbar">
+        <input class="am-in" id="au-lib-q" placeholder="חיפוש תבנית" value="${esc(this.tq||'')}"
+               oninput="Automations.setTemplateQ(this.value)">
+        <div class="au-tfilters">${tags}${any?`<button class="au-tfilter clr" onclick="Automations.clearTemplateFilters()"><i class="fa-solid fa-xmark"></i> נקה</button>`:''}</div>
+        <div class="au-libcount"><span id="au-lib-count">${this.filteredTemplates().length}</span> תבניות</div>
+      </div>
+      <div id="au-lib-list">${this.libraryRows()}</div>`;
     const byTrig={};
     this.recipes.forEach(x=>{ (byTrig[x.trigger]=byTrig[x.trigger]||[]).push(x); });
     /* A template that arrives with conditions says so on its own row: the
        sentence on the first line, the "רק אם" on the second. Two lines rather
        than one long one, because the condition is a separate clause and reads
        as one — and the badge is what makes these findable at a glance. */
-    const condLine=x=>{
-      const cs=x.conditions||[]; if(!cs.length) return '';
-      const parts=cs.map(c=>esc(c.label).replace('…','<span class="ph">'+esc(c.value_label||'ערך')+'</span>'));
-      return `<div class="au-recipe-if"><span class="au-ccount">${cs.length} ${cs.length===1?'תנאי':'תנאים'}</span>
-        רק אם ${parts.join(' וגם ')}</div>`;
-    };
+    const condLine=x=>this.condLine(x);
     const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc((this.trigLabels||{})[t]||t)}</div>`+
       byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
         esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
           const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
       }${condLine(x)}</button>`).join('')).join('');
     return `<div style="font-size:12.5px;color:var(--text-muted);margin:12px 0 2px">בחר תבנית מוכנה והשלם את השדות — ואחר כך אפשר להוסיף תנאים ("רק אם"):</div>${blocks}`;
+  },
+
+  condLine(x){
+    const cs=x.conditions||[]; if(!cs.length) return '';
+    const parts=cs.map(c=>esc(c.label).replace('…','<span class="ph">'+esc(c.value_label||'ערך')+'</span>'));
+    return `<div class="au-recipe-if"><span class="au-ccount">${cs.length} ${cs.length===1?'תנאי':'תנאים'}</span>
+      רק אם ${parts.join(' וגם ')}</div>`;
   },
 
   /* Building from scratch is the catalog read the other way round: what starts
@@ -8383,6 +8475,8 @@ const Automations = {
     if(f.type==='item'){
       await this.pickLinkedItem(anchor,null,{actIdx:i,key,connect}); return;
     }
+    if(f.type==='fields'){ this.pickCopyFields(anchor,key,{actIdx:i,key}); return; }
+    if(f.type==='target_group'){ await this.pickActTargetGroup(anchor,i,key); return; }
     const items=this._optionsFor(f.type,connect);
     this._popItems=items;
     const body=items.length
@@ -8397,6 +8491,23 @@ const Automations = {
     const it=(this._popItems||[])[idx], a=(this.building.acts||[])[i]; if(!it||!a)return;
     (a.values=a.values||{})[key]={v:it.v,label:it.label,color:it.color||''};
     closeCellPops(); this.render();
+  },
+  /* the same group-on-another-board question, asked by an extra action — which
+     carries its own target board rather than reading the sentence's */
+  async pickActTargetGroup(anchor,i,key){
+    const a=(this.building.acts||[])[i]; if(!a)return;
+    const bid=((a.values||{}).board||{}).v;
+    if(!bid){ toast('בחר תחילה את לוח היעד'); return; }
+    let groups=[];
+    try{ const d=await api('/api/boards/'+bid+(meId()?'?user_id='+meId():''));
+         groups=(d.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''})); }
+    catch(err){ toast('לא ניתן לקרוא את הקבוצות בלוח היעד'); return; }
+    this._popItems=groups;
+    const body=groups.length
+      ? groups.map((it,j)=>`<button class="rm-item" onclick="Automations.setActValue(${i},'${key}',${j})">
+          <span class="au-dot" style="background:${it.color||'var(--border)'}"></span> ${esc(it.label)}</button>`).join('')
+      : '<div class="rm-note">אין קבוצות בלוח היעד</div>';
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
   setActText(i,key){
     const el=document.getElementById('au-txt'); const v=(el?el.value:'').trim();
@@ -8647,6 +8758,12 @@ const Automations = {
     // search the picker uses, so a rule can only ever name something the person
     // writing it is allowed to see.
     if(f.type==='item'){ await this.pickLinkedItem(anchor,key,f); return; }
+    // the group is on ANOTHER board, so its groups are fetched the way the
+    // linked item's are — the loaded board knows nothing about them
+    if(f.type==='target_group'){ await this.pickTargetGroup(anchor,key); return; }
+    // "השדות להעתקה" is a set, not a choice: the picker stays open and the
+    // blank reads them back as one phrase
+    if(f.type==='fields'){ this.pickCopyFields(anchor,key); return; }
     const items=this._optionsFor(f.type,(this.building.values['a_connect']||{}).v);
     // referenced by index so a name with quotes can never break out of the handler
     this._popItems=items;
@@ -8719,6 +8836,64 @@ const Automations = {
     closeCellPops(); this.render();
   },
 
+  /* ---- the group on the target board ---- */
+  async pickTargetGroup(anchor,key){
+    const bid=((this.building&&this.building.values['a_board'])||{}).v;
+    if(!bid){ toast('בחר תחילה את לוח היעד'); return; }
+    let groups=[];
+    try{ const d=await api('/api/boards/'+bid+(meId()?'?user_id='+meId():''));
+         groups=(d.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''})); }
+    catch(err){ toast('לא ניתן לקרוא את הקבוצות בלוח היעד'); return; }
+    this._popItems=groups;
+    const body=groups.length
+      ? groups.map((it,i)=>`<button class="rm-item" onclick="Automations.setField('${key}',${i})">
+          <span class="au-dot" style="background:${it.color||'var(--border)'}"></span> ${esc(it.label)}</button>`).join('')
+      : '<div class="rm-note">אין קבוצות בלוח היעד</div>';
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+
+  /* ---- the fields a copy carries ---- */
+  pickCopyFields(anchor,key,into){
+    const all=this.copyFields||[];
+    if(!all.length){ toast('קטלוג השדות לא נטען'); return; }
+    this._copyInto={key:key,into:into||null,anchor:anchor};
+    this.renderCopyFields();
+  },
+  _copyCur(){
+    const c=this._copyInto; if(!c) return [];
+    const cur=c.into?((this.building.acts[c.into.actIdx].values||{})[c.key])
+                    :this.building.values[c.key];
+    return (cur&&Array.isArray(cur.v))?cur.v.slice():[];
+  },
+  toggleCopyField(k){
+    const c=this._copyInto; if(!c)return;
+    const picked=this._copyCur();
+    const i=picked.indexOf(k);
+    if(i<0) picked.push(k); else picked.splice(i,1);
+    // the catalog's own order, so two rules that chose the same fields read alike
+    const order=(this.copyFields||[]).map(f=>f.key);
+    picked.sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+    const label=picked.map(x=>(this.copyFields.find(f=>f.key===x)||{}).label).join(', ');
+    const val=picked.length?{v:picked,label:label,color:''}:undefined;
+    if(c.into){
+      const vals=this.building.acts[c.into.actIdx].values||{};
+      if(val) vals[c.key]=val; else delete vals[c.key];
+      this.building.acts[c.into.actIdx].values=vals;
+    }else{
+      if(val) this.building.values[c.key]=val; else delete this.building.values[c.key];
+    }
+    this.render();
+    this.renderCopyFields();
+  },
+  renderCopyFields(){
+    const c=this._copyInto; if(!c)return;
+    const picked=this._copyCur();
+    const body=(this.copyFields||[]).map(f=>`<button class="rm-item" onclick="event.stopPropagation();Automations.toggleCopyField('${f.key}')">
+        <i class="fa-solid ${picked.includes(f.key)?'fa-square-check':'fa-square'}" style="color:var(--primary)"></i> ${esc(f.label)}</button>`).join('')
+      +`<button class="rm-item" onclick="closeCellPops()"><i class="fa-solid fa-check"></i> סיום</button>`;
+    openCellPop(c.anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+
   setText(key){
     const el=document.getElementById('au-txt'); const v=(el?el.value:'').trim();
     if(!v){ toast('יש להזין טקסט'); return; }
@@ -8736,7 +8911,8 @@ const Automations = {
         if(asDraft) continue;
         toast('יש להשלים את כל השדות'); return;
       }
-      config[f.key]=['person','group','item','board'].includes(f.type)?+cur.v:cur.v;
+      config[f.key]=['person','group','item','board','target_group'].includes(f.type)
+                      ?+cur.v:cur.v;
     }
     // a condition still missing its value is refused here rather than sent: the
     // server would reject it, and a draft must not silently save a condition
@@ -8772,7 +8948,8 @@ const Automations = {
           if(asDraft) continue;
           toast('יש להשלים את הערכים בפעולות הנוספות'); return;
         }
-        values[f.key]=['person','group','item','board'].includes(f.type)?+cur.v:cur.v;
+        values[f.key]=['person','group','item','board','target_group'].includes(f.type)
+                        ?+cur.v:cur.v;
       }
       acts.push({key:a.key,values});
     }

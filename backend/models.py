@@ -414,6 +414,10 @@ class Automation(Base):
     id = Column(Integer, primary_key=True)
     board_id = Column(Integer, ForeignKey("boards.id"), nullable=False)
     recipe_id = Column(String(60), nullable=False)
+    # Which version of that template the rule was built from. A system template
+    # is versioned so a rule goes on meaning what it meant when it was built:
+    # the rule keeps its own `config`, and this says what it was answering.
+    template_version = Column(Integer, default=1)
     config = Column(JSON, default=dict)
     is_active = Column(Boolean, default=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
