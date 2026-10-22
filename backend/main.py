@@ -10646,11 +10646,16 @@ AUTOMATION_TRIGGER_READS = {
 }
 
 
-def _automation_impact(db, board, a):
+def _automation_impact(db, board, a, viewer=None):
     """Everything the rule reaches, for the screen shown before it is switched on.
 
     A rule is a standing instruction that edits items by itself, and the moment
     to understand its reach is before it starts — not from the log afterwards.
+
+    `viewer` is who is reading it. It filters the one part of this that looks
+    beyond the boards already named on this board's own columns: the mirrors
+    elsewhere that follow a field this rule writes. Somebody else's board
+    pointing at yours is not a thing you are entitled to learn from here.
     """
     r = recipes.recipe(a.recipe_id) or {}
     cfg = a.config or {}
@@ -10691,8 +10696,11 @@ def _automation_impact(db, board, a):
                         boards.append({"id": t, "name": tb.name, "mode": "write",
                                        "why": f"עמודת הקישור '{title}' מפנה אליו"})
                 # a mirror column reading through this connect column moves with it
+                # (the connect it reads through is stored as `connect`, which is
+                # what _mirror_cfg has always said — this asked for `col`, so no
+                # mirror had ever appeared on this screen)
                 for mc in (board.settings or {}).get("columns", []):
-                    if mc.get("type") == "mirror" and (mc.get("mirror_of") or {}).get("col") == (col or {}).get("id"):
+                    if mc.get("type") == "mirror" and _mirror_cfg(mc).get("connect") == (col or {}).get("id"):
                         links.append({"kind": "mirror", "column": mc.get("title") or mc.get("id"),
                                       "through": title, "boards": []})
                         reads.append(f"עמודת מראה '{mc.get('title') or mc.get('id')}'")
@@ -10710,6 +10718,43 @@ def _automation_impact(db, board, a):
                                        "why": "האוטומציה מקשרת אל פריט בו"})
     if any(one["key"] == "notify_assignees" for one in acts):
         recipients.append({"name": "משויכי הפריט", "kind": "נמענים דינמיים", "ok": True})
+
+    # ── and the mirrors pointing the other way ──
+    # A mirror shows a field of a LINKED item, so a rule that changes a status
+    # on this board changes a column on every board whose connect column points
+    # back at it — a board the person switching this on is not looking at. Only
+    # the three fields a mirror can follow and an action can write are asked
+    # about; one query for the boards, on a preview somebody clicks.
+    written = {f for one in acts for f in AUTOMATION_ACTION_FIELDS.get(one["key"], ())}
+    watched = written & {"status", "priority", "assignees"}
+    if watched:
+        for ob in db.query(Board).filter(Board.deleted_at == None,            # noqa: E711
+                                         Board.id != board.id).all():
+            ocols = (ob.settings or {}).get("columns", []) or []
+            for mc in ocols:
+                if mc.get("type") != "mirror":
+                    continue
+                m = _mirror_cfg(mc)
+                if m.get("field") not in watched:
+                    continue
+                conn = next((c for c in ocols if c.get("id") == m.get("connect")), None)
+                if not conn or board.id not in {
+                        int(x) for x in (_connect_cfg(conn).get("board_ids") or [])
+                        if str(x).lstrip("-").isdigit()}:
+                    continue
+                # the role is asked last, of the handful of boards that turned
+                # out to have one, rather than of every board in the system
+                if viewer is not None and _board_role(db, ob.id, viewer) is None:
+                    continue
+                title = mc.get("title") or mc.get("id")
+                links.append({"kind": "mirror", "column": title,
+                              "through": conn.get("title") or conn.get("id"),
+                              "follows": m.get("field"),
+                              "boards": [{"id": ob.id, "name": ob.name}]})
+                if not any(x["id"] == ob.id for x in boards):
+                    boards.append({"id": ob.id, "name": ob.name, "mode": "read",
+                                   "why": f"עמודת המראה '{title}' בו מציגה שדה "
+                                          f"שהאוטומציה משנה"})
 
     for b in _automation_blockers(db, board, a):
         if b["kind"] == "permission":
@@ -10786,7 +10831,7 @@ def automation_impact(automation_id: int, user_id: int = Depends(current_user_id
             raise HTTPException(403, "אין לך הרשאה לצפות באוטומציה")
         return {"automation_id": a.id, "sentence": _automation_label(db, b, a),
                 "status": a.status, "missing_fields": recipes.missing_fields(a.recipe_id, a.config or {}),
-                **_automation_impact(db, b, a)}
+                **_automation_impact(db, b, a, viewer=user_id)}
 
 
 def _condition_actual(db, board, task, kind, v=None):
@@ -10841,7 +10886,7 @@ def _column_cell_text(db, board, task, spec):
     return ", ".join([o for o in out if o]) or "ריק"
 
 
-def _dry_run_automation(db, board, a, task):
+def _dry_run_automation(db, board, a, task, viewer=None):
     """Work out what the rule WOULD do to this item. Nothing is written.
 
     Deliberately an analysis and not an execution-and-rollback. A rollback still
@@ -10909,13 +10954,11 @@ def _dry_run_automation(db, board, a, task):
     blockers = _automation_blockers(db, board, a)
     missing = [b["text"] for b in blockers if b["kind"] == "permission"]
     broken = [b["text"] for b in blockers if b["kind"] == "dependency"]
-    impact = _automation_impact(db, board, a)
+    impact = _automation_impact(db, board, a, viewer=viewer)
     # a condition that does not hold stops the rule exactly as a trigger that
     # does not match does, so the test may not answer "would run" over one
     unmet = [c for c in conditions if not c.get("ok")]
     fires = trigger["matches"] and not unmet
-    would = (fires and not blockers
-             and not all(x.get("no_op") for x in actions or [{}]))
     verdict = "blocked" if blockers else ("would_run" if (fires and not
                                           all(x.get("no_op") for x in actions or [{}]))
                                           else "would_skip")
@@ -11276,7 +11319,7 @@ def test_automation(automation_id: int, data: dict, user_id: int = Depends(curre
         # each action would write to it. Being the board's admin is not
         # permission to open an item inside it (rule 5).
         _require_task_view(db, task.id, user_id)
-        found = _dry_run_automation(db, b, a, task)
+        found = _dry_run_automation(db, b, a, task, viewer=user_id)
         row = AutomationTestRun(
             automation_id=a.id, board_id=a.board_id, task_id=task.id,
             task_title=(task.title or "")[:300],

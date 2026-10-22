@@ -348,3 +348,154 @@ def test_the_screen_shows_the_preview_and_the_analysis():
     # and the test log is its own screen
     assert "אינן בלוג ההפעלות" in src
     assert "Automations.testLog(" in src
+
+
+# ── the mirror half of "תלויות בקישור או מראה" ─────────────────────────────
+# A mirror column shows a field of a LINKED item, read through a connect
+# column. Two of them depend on a rule, and both belong on the screen read
+# before it is switched on:
+#
+#   · a mirror on this board reading through the connect column the rule
+#     writes — the rule links an item, and the mirror fills in behind it;
+#   · a mirror on ANOTHER board showing a field this rule writes — the rule
+#     changes a status here, and a column on a board nobody was looking at
+#     changes with it.
+
+def _mirror_on(client, admin_id, bid, mid, title, connect_col, field):
+    cols = [c for c in client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"]
+            if str(c.get("id", "")).startswith("col_")]
+    cols.append({"id": mid, "type": "mirror", "title": title,
+                 "mirror_of": {"connect": connect_col, "field": field}})
+    r = client.patch(f"/api/boards/{bid}?actor_id={admin_id}", json={"columns": cols})
+    assert r.status_code == 200, r.text
+
+
+def test_the_preview_names_the_mirror_that_reads_through_the_rules_connect_column(
+        client, admin_id):
+    far = _board(client, admin_id, "לוח יעד למראה")
+    near = _connect_board(client, admin_id, "לוח עם מראה", [far])
+    _mirror_on(client, admin_id, near, "col_mir", "סטטוס בלוח היעד", "col_link", "status")
+    a = _add(client, near, admin_id, "created_create_and_link",
+             {"a_connect": "col_link", "a_board": far, "a_text": "פריט"})
+    d = _impact(client, a["id"], admin_id)
+    mirrors = [x for x in d["links"] if x["kind"] == "mirror"]
+    assert mirrors, d["links"]
+    assert mirrors[0]["column"] == "סטטוס בלוח היעד"
+    assert mirrors[0]["through"] == "קישור"
+    assert any("מראה" in x for x in d["reads"]), d["reads"]
+
+
+def test_the_preview_names_a_mirror_on_another_board_that_follows_what_it_writes(
+        client, admin_id):
+    """The rule writes a status here; a column on the other board shows it."""
+    here = _board(client, admin_id, "לוח המקור")
+    there = _connect_board(client, admin_id, "לוח שמסתכל", [here])
+    _mirror_on(client, admin_id, there, "col_mir", "סטטוס אצל השכן", "col_link", "status")
+    a = _add(client, here, admin_id, "created_set_status", {"a_status": "done"})
+    d = _impact(client, a["id"], admin_id)
+    mirrors = [x for x in d["links"] if x["kind"] == "mirror"]
+    assert mirrors, d["links"]
+    assert mirrors[0]["column"] == "סטטוס אצל השכן"
+    assert any(b["id"] == there for b in mirrors[0]["boards"]), mirrors[0]
+    assert any(x["id"] == there for x in d["boards"]), d["boards"]
+
+
+def test_a_mirror_of_a_field_the_rule_does_not_write_is_not_named(client, admin_id):
+    here = _board(client, admin_id, "מקור בלי קשר")
+    there = _connect_board(client, admin_id, "שכן בלי קשר", [here])
+    _mirror_on(client, admin_id, there, "col_mir", "שם הפריט", "col_link", "title")
+    a = _add(client, here, admin_id, "created_set_status", {"a_status": "done"})
+    assert [x for x in _impact(client, a["id"], admin_id)["links"]
+            if x["kind"] == "mirror"] == []
+
+
+def test_a_mirror_on_a_board_the_reader_cannot_see_is_not_named(client, admin_id, guinea_id):
+    """The preview is read by a board's manager, who has no standing on every
+    board that happens to point at theirs."""
+    here = _board(client, admin_id, "מקור פרטי")
+    there = _connect_board(client, admin_id, "שכן פרטי", [here])
+    _mirror_on(client, admin_id, there, "col_mir", "סטטוס סודי", "col_link", "status")
+    client.post(f"/api/boards/{here}/members",
+                json={"actor_id": admin_id, "user_id": guinea_id, "role": "admin"})
+    a = _add(client, here, admin_id, "created_set_status", {"a_status": "done"})
+
+    mine = _impact(client, a["id"], admin_id)
+    assert [x for x in mine["links"] if x["kind"] == "mirror"], "the owner cannot see it either"
+    theirs = _impact(client, a["id"], guinea_id)
+    assert [x for x in theirs["links"] if x["kind"] == "mirror"] == [], theirs["links"]
+    assert all("שכן פרטי" not in str(x) for x in theirs["boards"]), theirs["boards"]
+
+
+def test_the_screen_names_the_board_a_mirror_sits_on():
+    """A mirror line that says only "קוראת דרך קישור" leaves out the one thing
+    the reader does not already know: whose board it is on."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent / "frontend" / "index.html"
+           ).read_text(encoding="utf-8")
+    i = src.index("עמודת מראה")
+    assert "l.boards" in src[i:i + 320], "the mirror line does not name its board"
+
+
+# ── missing data, failures, and repeats ────────────────────────────────────
+
+def test_the_preview_says_which_required_fields_are_still_blank(client, admin_id):
+    bid = _board(client, admin_id, "לוח חצי בנוי")
+    a = _add(client, bid, admin_id, "status_notify_person",
+             {"t_status": "done"}, status="draft")          # no recipient yet
+    d = _impact(client, a["id"], admin_id)
+    assert d["missing_fields"] == ["נמען"], d["missing_fields"]
+    assert d["status"] == "draft"
+
+
+def test_a_dry_run_of_a_half_built_rule_says_it_is_blocked(client, admin_id):
+    """Not "would run". A blank the rule never filled is the reason it would
+    not, and naming it is the whole point of testing before switching on."""
+    bid = _board(client, admin_id, "לוח בדיקה חצי בנויה")
+    a = _add(client, bid, admin_id, "status_notify_person",
+             {"t_status": "done"}, status="draft")
+    tid = _item(client, bid, admin_id)
+    client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
+    d = _dry(client, a["id"], tid, admin_id)
+    assert d["verdict"] == "blocked", d
+    assert d["broken_dependencies"] or d["missing_permissions"], d
+    assert d["changed_nothing"] is True and d["notified_nobody"] is True
+
+
+def test_a_test_on_an_item_from_another_board_is_refused(client, admin_id):
+    bid = _board(client, admin_id, "לוח הכלל")
+    other = _board(client, admin_id, "לוח אחר")
+    a = _add(client, bid, admin_id)
+    far = _item(client, other, admin_id, "פריט זר")
+    r = client.post(f"/api/automations/{a['id']}/test?user_id={admin_id}",
+                    json={"task_id": far})
+    assert r.status_code == 400, r.text
+    assert "מהלוח הזה" in r.json()["detail"]
+
+
+def test_a_test_on_an_item_that_is_not_there_is_refused(client, admin_id):
+    bid = _board(client, admin_id, "לוח פריט חסר")
+    a = _add(client, bid, admin_id)
+    tid = _item(client, bid, admin_id)
+    client.delete(f"/api/tasks/{tid}?user_id={admin_id}")
+    r = client.post(f"/api/automations/{a['id']}/test?user_id={admin_id}",
+                    json={"task_id": tid})
+    assert r.status_code == 400, r.text
+    assert client.post(f"/api/automations/{a['id']}/test?user_id={admin_id}",
+                       json={"task_id": 10 ** 7}).status_code == 400
+
+
+def test_testing_the_same_rule_on_the_same_item_twice_keeps_both(client, admin_id):
+    """A test log that overwrote the previous answer would hide the change
+    somebody made between the two runs — which is what they are comparing."""
+    bid = _board(client, admin_id, "לוח בדיקה כפולה")
+    a = _add(client, bid, admin_id, "created_set_priority", {"a_priority": "high"})
+    tid = _item(client, bid, admin_id)
+    first = _dry(client, a["id"], tid, admin_id)
+    second = _dry(client, a["id"], tid, admin_id)
+    assert first["test_id"] != second["test_id"]
+    rows = client.get(f"/api/boards/{bid}/automations/tests?user_id={admin_id}"
+                      f"&automation_id={a['id']}").json()["tests"]
+    assert len([t for t in rows if t["task_id"] == tid]) == 2, rows
+    # and neither of them ran anything: the history of real runs is untouched
+    runs = client.get(f"/api/boards/{bid}/automations/runs?user_id={admin_id}").json()["runs"]
+    assert all(r["is_test"] is False for r in runs), runs

@@ -7687,7 +7687,8 @@ const Automations = {
       ${sec('fa-pen','שדות מתעדכנים',(d.writes||[]).length?chips(d.writes):'')}
       ${sec('fa-diagram-project','תלויות בקישור ובמראה',(d.links||[]).length
         ? d.links.map(l=>`<div class="imp-why">${l.kind==='mirror'
-            ? `עמודת מראה <b>${esc(l.column)}</b> קוראת דרך <b>${esc(l.through||'')}</b>`
+            ? `עמודת מראה <b>${esc(l.column)}</b> קוראת דרך <b>${esc(l.through||'')}</b>${
+                (l.boards||[]).length?' — בלוח '+l.boards.map(b=>esc(b.name)).join(', '):''}`
             : `עמודת קישור <b>${esc(l.column)}</b>${l.two_way?' (דו־כיוונית)':''}${
                 (l.boards||[]).length?' → '+l.boards.map(b=>esc(b.name)).join(', '):''}`}</div>`).join('')
         : '')}
