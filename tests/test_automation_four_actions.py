@@ -1,11 +1,11 @@
-"""כלל אחד שעושה עד ארבעה דברים — the "אז" with more than one action in it.
+"""כלל אחד שעושה עד עשרה דברים — the "אז" with more than one action in it.
 
 A recipe pairs one trigger with one action, and that single action was the
-whole "then". Four things that have to happen on one event — assign somebody,
-raise the priority, move the item, tell a person — were four rules listening to
-the same trigger: four rows to write, four to keep in step when the status they
-all watch is renamed, four lines in the history for one event, and no order
-between them beyond run_order.
+whole "then". Several things that have to happen on one event — assign somebody, raise the
+priority, move the item, tell a person — were that many rules listening to the
+same trigger: that many rows to write, that many to keep in step when the
+status they all watch is renamed, that many lines in the history for one event,
+and no order between them beyond run_order.
 
 So a rule may carry up to `MAX_ACTIONS` actions, run in order, under the rule's
 own conditions — the conditions belong to the rule, not to each action. The
@@ -151,17 +151,26 @@ def test_the_extra_actions_come_back_as_they_were_stored(client, admin_id, guine
 
 # ── how many, and which combinations make sense ─────────────────────────────
 
-def test_a_fifth_action_is_refused(client, admin_id):
+def test_one_action_past_the_ceiling_is_refused(client, admin_id):
+    """The ceiling moved from four to ten; what has not moved is that there is
+    one, and that the rule's own action counts towards it."""
     bid = _board(client, admin_id)
-    other = _groups(client, bid, admin_id)[-1]
+    extras = [{"key": "create_subitem", "values": {"text": f"תת {i}"}}
+              for i in range(recipes.MAX_ACTIONS)]          # + the recipe's own = one too many
     r = _add(client, bid, admin_id, "created_set_priority",
-             {"a_priority": "high",
-              "actions": [{"key": "set_status", "values": {"status": "in_progress"}},
-                          {"key": "move_to_group", "values": {"group": other["id"]}},
-                          {"key": "create_subitem", "values": {"text": "א"}},
-                          {"key": "create_subitem", "values": {"text": "ב"}}]})
+             {"a_priority": "high", "actions": extras})
     assert r.status_code == 400, r.text
     assert str(recipes.MAX_ACTIONS) in r.json()["detail"]
+
+
+def test_a_rule_may_carry_ten_actions(client, admin_id):
+    bid = _board(client, admin_id)
+    extras = [{"key": "create_subitem", "values": {"text": f"תת {i}"}}
+              for i in range(recipes.MAX_ACTIONS - 1)]      # + the recipe's own = ten
+    r = _add(client, bid, admin_id, "created_set_priority",
+             {"a_priority": "high", "actions": extras})
+    assert r.status_code == 200, r.text
+    assert len(r.json()["actions"]) == recipes.MAX_ACTIONS - 1
 
 
 def test_four_is_allowed(client, admin_id):

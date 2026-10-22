@@ -304,6 +304,13 @@ def _migrate():
                           ("template_version", "INTEGER DEFAULT 1")]:
             if acols and name not in acols:
                 conn.execute(text(f"ALTER TABLE automations ADD COLUMN {name} {ddl}"))
+        # Every rule used to be created on 0 — the default, so "deliberately 0"
+        # and "nobody chose" are indistinguishable. The order is now 1..999
+        # with 500 in the middle, and a rule below the range is moved to it;
+        # one somebody really did place stays where they put it.
+        if acols and "run_order" in acols:
+            conn.execute(text("UPDATE automations SET run_order = 500 "
+                              "WHERE run_order IS NULL OR run_order < 1"))
         # a rule stored before status existed is described by the switch it has
         if acols and "status" not in acols:
             conn.execute(text("UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END"))
@@ -408,6 +415,7 @@ else:
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_failure_at TIMESTAMP",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_outcome VARCHAR(12)",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS template_version INTEGER DEFAULT 1",
+        "UPDATE automations SET run_order = 500 WHERE run_order IS NULL OR run_order < 1",
         "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS settings JSONB",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS source VARCHAR(16)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
@@ -8520,6 +8528,25 @@ AUTOMATION_RUN_LOG_MAX = 500
 # The five states a rule can be in. Only "active" runs — see _set_automation_status.
 AUTOMATION_STATUSES = ("draft", "active", "paused", "paused_error", "deleting")
 AUTOMATION_IMPORTANCE = ("critical", "high", "normal", "low")
+
+# ── סדר ביצוע ───────────────────────────────────────────────────────────────
+# Where a rule sits in the order its board fires in: 1 goes first, 999 last,
+# and a rule nobody placed sits in the MIDDLE. 500 rather than 0 or last on
+# purpose — a default at one end leaves no room on that side, and the first
+# rule somebody wants to run before everything else would have nowhere to go.
+#
+# Rules on the same number are ordered by when the version now in force was
+# switched on, and only then by id: two rules nobody placed are not in an
+# arbitrary order, they are in the order they came into service.
+RUN_ORDER_MIN = 1
+RUN_ORDER_MAX = 999
+RUN_ORDER_DEFAULT = 500
+
+
+def _order_key(a):
+    """The order the engine fires rules in, as a sort key."""
+    return (a.run_order if a.run_order is not None else RUN_ORDER_DEFAULT,
+            a.activated_at or datetime.max, a.id)
 # Failures in a row that take a rule out of service. A rule that cannot work is
 # worse than no rule: it looks configured while quietly doing nothing, so it is
 # suspended and its owner is told, rather than failing forever in the log.
@@ -9334,6 +9361,21 @@ def _automation_plain_name(db, board, a):
     return " · ".join([x for x in (trig, act) if x]) or "אוטומציה"
 
 
+class _Failed(Exception):
+    """An action blew up. Which one, out of how many, and what went wrong."""
+
+    def __init__(self, index, total, key, cause):
+        super().__init__(str(cause))
+        self.index, self.total, self.key, self.cause = index, total, key, cause
+
+    @property
+    def reason(self):
+        what = recipes.plain(recipes.ACTIONS.get(self.key, self.key))
+        return (f"נכשלה בפעולה {self.index} מתוך {self.total} «{what}» — "
+                f"{type(self.cause).__name__}: {self.cause} · "
+                "הפעולות הבאות לא בוצעו")
+
+
 class _Waiting(Exception):
     """A rule asked to wait. What is left of it is queued and comes back."""
 
@@ -9658,6 +9700,16 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
             return out, note
         except _Skipped as sk:
             skipped.append(sk.reason)
+        except (_Waiting, Exception) as e:
+            if isinstance(e, _Waiting):
+                raise
+            # "כשל עוצר את הפעולות הבאות" — and says which one it was, because
+            # "the rule failed" over ten actions is not an answer anybody can
+            # act on. Nothing before it survives either: the rule runs inside
+            # one savepoint, so a failure takes the whole of it back (the one
+            # case the specification allows for a completed action to be
+            # rolled back — the same database transaction).
+            raise _Failed(start + i + 1, len(acts) + start, one["key"], e)
     if acts and len(skipped) == len(acts):
         raise _Skipped(" · ".join(dict.fromkeys(skipped)))
     note = ""
@@ -10787,7 +10839,9 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         a.consecutive_failures = (a.consecutive_failures or 0) + 1
         _count_automation_usage(db, a.board_id, "failed")
         row = _log_automation_run(db, board, a, task, event, "failed",
-                                  f"{type(e).__name__}: {e}", depth, actor_id, retry_of)
+                                  e.reason if isinstance(e, _Failed)
+                                  else f"{type(e).__name__}: {e}",
+                                  depth, actor_id, retry_of)
         _suspend_if_broken(db, a, board)
         return row
     a.last_run_at = a.last_success_at = now
@@ -10864,7 +10918,8 @@ def _sweep_due_date_automations(db, board_id, actor_id):
     rules = [a for a in db.query(Automation).filter(
                 Automation.board_id == board_id,
                 Automation.is_active == True)                             # noqa: E712
-                .order_by(Automation.run_order, Automation.id).all()
+                .order_by(Automation.run_order, Automation.activated_at,
+                                  Automation.id).all()
              if (recipes.recipe(a.recipe_id) or {}).get("trigger") in _DUE_TRIGGERS]
     if not rules:
         return
@@ -10986,7 +11041,8 @@ def _run_automations(db, task, event, actor_id, depth=0):
     # the tiebreak, so rules nobody ordered still run oldest-first as before.
     rules = (db.query(Automation)
                .filter(Automation.board_id == task.board_id, Automation.is_active == True)  # noqa: E712
-               .order_by(Automation.run_order, Automation.id).all())
+               .order_by(Automation.run_order, Automation.activated_at,
+                                  Automation.id).all())
     matching = [a for a in rules if _automation_matches(a, event)]
     if depth >= AUTOMATION_MAX_DEPTH:
         # The cascade has gone as far as it is allowed to go. What would have run
@@ -11615,7 +11671,8 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
             _sweep_automation_ownership(db, b, user_id)
             _drain_automation_queue(db, b.id, user_id)
         rows = (db.query(Automation).filter(Automation.board_id == board_id)
-                  .order_by(Automation.run_order, Automation.id).all())
+                  .order_by(Automation.run_order, Automation.activated_at,
+                                  Automation.id).all())
         out = [_automation_json(db, b, a) for a in rows]
         return {"automations": out, "counts": _automation_counts(out),
                 "can_export": _can_export_automations(db, b, user_id),
@@ -11712,7 +11769,11 @@ def _automation_meta(db, board_id, data, a=None):
         out["importance"] = imp
     if "run_order" in data:
         try:
-            out["run_order"] = max(0, min(int(data.get("run_order") or 0), 9999))
+            # `or` would read a deliberate 0 as "nothing given" — and 0 is
+            # outside the range, which is a different answer from the default
+            asked = data.get("run_order")
+            asked = RUN_ORDER_DEFAULT if asked in (None, "") else int(asked)
+            out["run_order"] = max(RUN_ORDER_MIN, min(asked, RUN_ORDER_MAX))
         except (TypeError, ValueError):
             raise HTTPException(400, "סדר ביצוע חייב להיות מספר")
     if "owner_id" in data:
@@ -11748,12 +11809,6 @@ def _automation_status_from(data, current="active"):
     return current
 
 
-def _next_run_order(db, board_id):
-    n = db.query(func.max(Automation.run_order)).filter(
-        Automation.board_id == board_id).scalar()
-    return (n + 1) if n is not None else 0
-
-
 @app.post("/api/boards/{board_id}/automations")
 def create_automation(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
@@ -11783,11 +11838,9 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
                        fail_count=0, skip_count=0, consecutive_failures=0, last_outcome="",
                        name=meta.get("name", ""), description=meta.get("description", ""),
                        importance=meta.get("importance", "normal"),
-                       # last, unless somebody said where. Every rule used to
-                       # be created on 0, so a board's whole list shared one
-                       # number and the order between them was their ids —
-                       # which is not an order anybody chose.
-                       run_order=meta.get("run_order", _next_run_order(db, board_id)),
+                       # the middle of the range unless somebody said where —
+                       # see RUN_ORDER_DEFAULT
+                       run_order=meta.get("run_order", RUN_ORDER_DEFAULT),
                        # unset means the creator, so a new rule is never ownerless
                        owner_id=meta.get("owner_id", user_id))
         # a rule saved as a draft is written but does not run until someone says so
@@ -11893,12 +11946,18 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לשנות אוטומציות")
         before = _snapshot_automation(a)
+        _warn = []
         if "is_active" in data or "status" in data:
             want = _automation_status_from(data, a.status or "active")
             # a draft may be half-built; switching it on may not be
             if want == "active" and a.status != "active":
                 _check_automation_act(db, a, user_id)
                 _refuse_incomplete_activation(db, b, a)
+                # "לפני הפעלה תוצג אזהרה על כתיבה אפשרית לאותו שדה" — shown,
+                # not refused: two rules writing one field is a thing somebody
+                # may mean, and the engine is not the one to decide they did
+                # not. What it must not be is a surprise.
+                _warn = _same_field_warning(db, b, a)
             _set_automation_status(a, want)
         _prev_owner = a.owner_id
         for k, v in _automation_meta(db, a.board_id, data).items():
@@ -11927,14 +11986,14 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
                 a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 db.commit()
                 db.refresh(a)
-                return _automation_json(db, b, a)
+                return {**_automation_json(db, b, a), "warnings": _warn}
             a.config = cfg
         a.updated_by = user_id
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         _record_automation_version(db, b, a, user_id, before=before)
         db.commit()
         db.refresh(a)
-        return _automation_json(db, b, a)
+        return {**_automation_json(db, b, a), "warnings": _warn}
 
 
 @app.delete("/api/automations/{automation_id}")
@@ -12266,6 +12325,41 @@ AUTOMATION_TRIGGER_READS = {
 }
 
 
+def _same_field_warning(db, board, a):
+    """The rules already running that write a field this one writes.
+
+    A warning and not a refusal: two rules writing one field is a thing
+    somebody may well mean, and the engine is not the one to decide they did
+    not. What it must not be is a surprise — and the answer says which of them
+    runs last, because that is the one whose value survives.
+    """
+    mine = {f for one in recipes.action_list(a.recipe_id, a.config or {})
+            for f in AUTOMATION_ACTION_FIELDS.get(one["key"], ())}
+    if not mine:
+        return []
+    out = []
+    for o in db.query(Automation).filter(Automation.board_id == board.id,
+                                         Automation.id != a.id,
+                                         Automation.is_active == True).all():   # noqa: E712
+        theirs = {f for x in recipes.action_list(o.recipe_id, o.config or {})
+                  for f in AUTOMATION_ACTION_FIELDS.get(x["key"], ())}
+        shared = theirs & mine
+        if not shared:
+            continue
+        name = o.name or _automation_label(db, board, o).replace("«", "").replace("»", "")
+        words = sorted({w for x in recipes.action_list(o.recipe_id, o.config or {})
+                        for w in AUTOMATION_ACTION_WRITES.get(x["key"], [])
+                        if set(AUTOMATION_ACTION_FIELDS.get(x["key"], ())) & shared})
+        later = _order_key(o) > _order_key(a)
+        out.append({
+            "id": o.id, "name": name, "fields": sorted(shared),
+            "text": (f"«{name}» כותבת גם היא ל{', '.join(words) or 'אותם שדות'} — "
+                     + ("היא רצה אחרי הכלל הזה וערכה יקבע"
+                        if later else "הכלל הזה רץ אחריה וערכו יקבע")),
+            "runs_after_this": later})
+    return out
+
+
 def _automation_impact(db, board, a, viewer=None):
     """Everything the rule reaches, for the screen shown before it is switched on.
 
@@ -12396,7 +12490,8 @@ def _automation_impact(db, board, a, viewer=None):
     if same:
         for o in (db.query(Automation)
                     .filter(Automation.board_id == board.id, Automation.id != a.id)
-                    .order_by(Automation.run_order, Automation.id).all()):
+                    .order_by(Automation.run_order, Automation.activated_at,
+                                  Automation.id).all()):
             ow = {w for x in recipes.action_list(o.recipe_id, o.config or {})
                   for w in AUTOMATION_ACTION_WRITES.get(x["key"], [])}
             if not (ow & same):
@@ -13572,7 +13667,8 @@ def order_automations(board_id: int, data: dict, user_id: int = Depends(current_
         if not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לשנות את סדר הביצוע")
         rows = (db.query(Automation).filter(Automation.board_id == board_id)
-                  .order_by(Automation.run_order, Automation.id).all())
+                  .order_by(Automation.run_order, Automation.activated_at,
+                                  Automation.id).all())
         by_id = {a.id: a for a in rows}
         wanted = [i for i in (data.get("ids") or []) if i in by_id]
         if not wanted:
@@ -13581,7 +13677,11 @@ def order_automations(board_id: int, data: dict, user_id: int = Depends(current_
         order = wanted + [a.id for a in rows if a.id not in seen]
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         moved = 0
-        for pos, aid in enumerate(order):
+        # spread across the range rather than packed at 1: somebody inserting a
+        # rule between two of these later needs a number to put it on
+        step = max(1, min(10, (RUN_ORDER_MAX - RUN_ORDER_MIN) // max(1, len(order))))
+        for i, aid in enumerate(order):
+            pos = min(RUN_ORDER_MAX, RUN_ORDER_MIN + i * step)
             a = by_id[aid]
             if (a.run_order or 0) == pos:
                 continue
@@ -13613,7 +13713,8 @@ def automation_order(board_id: int, trigger: str = "",
         if not _can_view_automations(db, b, user_id):
             raise HTTPException(403, "אין לך הרשאה לצפות באוטומציות הלוח")
         rows = (db.query(Automation).filter(Automation.board_id == board_id)
-                  .order_by(Automation.run_order, Automation.id).all())
+                  .order_by(Automation.run_order, Automation.activated_at,
+                                  Automation.id).all())
         if trigger:
             rows = [a for a in rows
                     if (recipes.recipe(a.recipe_id) or {}).get("trigger") == trigger]
@@ -13750,7 +13851,8 @@ def export_board_automations(board_id: int, user_id: int = Depends(current_user_
         if not _can_export_automations(db, b, user_id):
             raise HTTPException(403, "ייצוא נתוני אוטומציות דורש הרשאת נתונים")
         rows = (db.query(Automation).filter(Automation.board_id == board_id)
-                  .order_by(Automation.run_order, Automation.id).all())
+                  .order_by(Automation.run_order, Automation.activated_at,
+                                  Automation.id).all())
         buf = io.StringIO()
         buf.write("﻿")
         w = csv.writer(buf)

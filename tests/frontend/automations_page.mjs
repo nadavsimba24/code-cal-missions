@@ -239,7 +239,8 @@ ck('the importance submenu offers all four',
 ck('...and says it does not change precedence',
    menu(11,'importance').includes('אינה משפיעה על סדר הביצוע'));
 ck('the order submenu edits the number that actually decides precedence',
-   menu(11,'order').includes('id="am-ordin"') && menu(11,'order').includes('קובע קדימות בפועל'));
+   menu(11,'order').includes('id="am-ordin"')
+   && menu(11,'order').includes('מספר נמוך רץ ראשון'));
 ck('every submenu can get back to the menu', menu(11,'owner').includes("Automations.showMenu(11,'main')"));
 
 // versions
@@ -773,6 +774,18 @@ ck('an organisation-wide stop says that it is one',
 A.data.freeze=null;
 ck('a board that is running says nothing',
    !A.manageHTML().includes('האוטומציות בלוח מושהות'));
+
+
+/* ── 9.1: the order field, and the warning when a rule is switched on ───── */
+{
+  const row=RULES.find(r=>r.id===11);
+  const m=A.menuHTML({...row,run_order:500},'order');
+  ck('the order field is 1 to 999', m.includes('min="1"') && m.includes('max="999"'));
+  ck('...saying what the default is and why', m.includes('500') && m.includes('באמצע'));
+  ck('...and what breaks a tie', m.includes('בשוויון'));
+  ck('importance still says it decides nothing',
+     A.menuHTML(row,'importance').includes('אינה משפיעה על סדר הביצוע'));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

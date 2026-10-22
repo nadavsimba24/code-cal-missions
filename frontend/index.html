@@ -6599,13 +6599,19 @@ async function advAskServer(){
    or a bulk edit is many writes and one question. */
 let _advWrites=0, _advAgain=null;
 function advAnswerStale(){
-  _advWrites++;
-  const had=st.filters.advIds instanceof Set;
-  st.filters.advIds=null;
+  _advWrites++;                             // …so an answer in flight is refused
+  st.filters.advIds=null;                   // back to the engine with the new values
   if(!advCount(st.filters.adv))return;      // nothing is filtering; nothing to re-ask
+  /* …except on a board the server is PAGING, where re-asking means fetching
+     the first page again: somebody who has scrolled two hundred rows into a
+     long board would be thrown back to the top on every cell they touch, and
+     that is a worse thing to live with than the row it would correct. There
+     the rows on screen are the server's answer and the browser holds one page
+     of them, so the board still needs a refresh to follow an edit out of the
+     filter. Written down rather than papered over. */
+  if(Paged.on)return;
   clearTimeout(_advAgain);
   _advAgain=setTimeout(()=>advAskServer(),400);
-  return had;
 }
 /* Which calls count as writing to an item. Every one of the dozen places that
    changes a cell — the status picker, a people cell, a drag between groups, the
@@ -7978,8 +7984,9 @@ const Automations = {
         +'<div class="rm-note">למיון ולסינון בלבד — אינה משפיעה על סדר הביצוע</div>';
     if(which==='order')
       return back+`<div class="rm-sep"></div>
-        <div class="rm-note">מספר נמוך רץ ראשון כשאותו אירוע מפעיל כמה אוטומציות. זה השדה שקובע קדימות בפועל.</div>
-        <input id="am-ordin" class="au-in" type="number" min="0" max="9999" value="${a.run_order||0}"
+        <div class="rm-note">1 עד 999 — מספר נמוך רץ ראשון כשאותו אירוע מפעיל כמה אוטומציות.
+          ברירת המחדל היא 500, באמצע, כדי שיהיה מקום משני הצדדים. בשוויון קובע מי נכנס לתוקף קודם.</div>
+        <input id="am-ordin" class="au-in" type="number" min="1" max="999" value="${a.run_order||500}"
                onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setOrder(${a.id});}">
         <button class="rm-item" onclick="Automations.setOrder(${a.id})"><i class="fa-solid fa-check"></i> שמור</button>`;
     const on=a.status==='active';
@@ -8014,7 +8021,9 @@ const Automations = {
   setImportance(id,v){ this.patchRule(id,{importance:v},'החשיבות עודכנה'); },
   setOrder(id){
     const el=document.getElementById('am-ordin');
-    this.patchRule(id,{run_order:Math.max(0,+((el&&el.value)||0))},'סדר הביצוע עודכן');
+    // 1 first, 999 last — a rule nobody placed sits in the middle, on 500
+    this.patchRule(id,{run_order:Math.max(1,Math.min(999,+((el&&el.value)||500)))},
+                   'סדר הביצוע עודכן');
   },
 
   async duplicate(id){
@@ -8638,9 +8647,13 @@ const Automations = {
 
   async toggle(id,on){
     try{
-      await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
+      const d=await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
                 {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:on})});
       toast(on?'האוטומציה הופעלה':'האוטומציה כובתה');
+      // "לפני הפעלה תוצג אזהרה על כתיבה אפשרית לאותו שדה" — shown and not
+      // refused: two rules writing one field is a thing somebody may mean.
+      // What it must not be is a surprise.
+      (((d||{}).warnings)||[]).forEach(w=>toast(w.text));
     /* the server has more than one reason to refuse this — being the wrong
        person, and being the right person on only one of the boards the rule
        writes on — so say which one it was rather than guessing */

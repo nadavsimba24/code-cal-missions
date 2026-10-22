@@ -806,7 +806,7 @@ def _f(key, type_, label):
 # drafts, versions, publishing, comparing, the export — carries these with it
 # and learns nothing new.
 ACTIONS_KEY = "actions"
-MAX_ACTIONS = 4
+MAX_ACTIONS = 10
 
 # What each action needs filled in. Keyed by the bare field name; the recipe's
 # own action declares the same fields prefixed `a_` (see RECIPES), and
