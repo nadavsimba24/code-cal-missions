@@ -1944,20 +1944,32 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .comp-drop.show{display:flex}
 .comp-drop i{font-size:22px}
 .comp-drop small{font-weight:500;font-size:11px;color:var(--text-muted)}
-/* ===== סינון מתקדם ===== a condition tree. Nesting is shown by the border
-   and the indent alone: a group inside a group is the one thing a reader has
-   to see at a glance, and a second colour per level competes with the data. */
-.adv-grp{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface)}
+/* ===== סינון מתקדם ===== a condition tree, read as a sentence:
+   «כאשר» עמודה · שאלה · ערך, then «וגם» or «או» before each one after it.
+   The words are the structure — a stack of boxes with an unexplained gap
+   above the first one is a form, and a filter is a question somebody is
+   asking. Nesting is still shown by the border and the indent alone: a
+   second colour per level competes with the data the filter is about.
+
+   The root carries no border of its own. It is the filter, not a box inside
+   the dialog, and a dashed frame drawn just inside the modal's own frame was
+   one rectangle too many — it also made the one thing that DOES deserve a
+   box, a real nested group, harder to pick out. */
+.adv-grp{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface)}
 .adv-grp .adv-grp{margin:2px 0;background:var(--bg)}
-.adv-root{border-style:dashed}
-.adv-grp-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-.adv-join-wrap{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.adv-root{border:0;padding:0;background:none}
+.adv-grp-head{display:flex;align-items:center;gap:9px;margin-bottom:9px;min-width:0}
+.adv-join-wrap{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;flex-shrink:0}
 .adv-join{border:0;background:var(--surface);color:var(--text-light);font-size:12.5px;font-weight:700;
-  padding:4px 12px;cursor:pointer}
+  padding:5px 13px;cursor:pointer;font-family:inherit;transition:.12s}
+.adv-join:hover{background:var(--row-hover);color:var(--text)}
 .adv-join.on{background:var(--primary);color:#fff}
-.adv-grp-note{font-size:11.5px;color:var(--text-light)}
+/* never allowed to wrap the row it explains — it is the least important thing
+   on that line and was pushing the buttons onto a second one */
+.adv-grp-note{font-size:11.5px;color:var(--text-light);min-width:0;flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .adv-grp-name{font-size:12px;font-weight:700;color:var(--primary);background:var(--primary-soft);
-  border-radius:6px;padding:3px 9px;letter-spacing:.3px}
+  border-radius:6px;padding:3px 9px;letter-spacing:.3px;flex-shrink:0}
 /* ===== תצוגות שמורות ===== tabs on the same strip as the board's own views,
    marked by a lock or a group of people so "who else sees this" never has to
    be asked. */
@@ -1981,30 +1993,67 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .vw-opt-off{opacity:.6;cursor:default}
 .vw-opt-off:hover{border-color:var(--border)}
 .vw-note{font-size:12px;color:var(--text-light);background:var(--bg);border-radius:8px;padding:9px 11px}
-.adv-row{display:flex;align-items:flex-start;gap:8px;margin:4px 0}
-.adv-joiner{min-width:30px;text-align:center;font-size:11.5px;color:var(--text-light);
-  font-weight:700;padding-top:9px}
-.adv-rule{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1;
-  background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:6px 8px}
-.adv-row > .adv-grp{flex:1}
-.adv-in{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--border);
-  border-radius:6px;background:var(--surface);color:var(--text);min-width:110px}
+.adv-row{display:flex;align-items:flex-start;gap:9px;margin:5px 0}
+/* The word that joins this condition to the one above it. A fixed column so
+   every condition starts on the same vertical line and the eye reads down the
+   values rather than hunting for where each row begins. */
+.adv-joiner{flex:0 0 46px;text-align:start;font-size:12px;font-weight:700;
+  color:var(--text-light);padding-top:13px}
+.adv-joiner.first{color:var(--text)}
+.adv-rule{display:flex;align-items:center;gap:7px;flex-wrap:wrap;flex:1;min-width:0;
+  background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:7px 9px;transition:.12s}
+.adv-rule:focus-within{border-color:var(--primary);background:var(--surface)}
+/* the column's own type, where the board draws it too — a date is a date and a
+   person is a person before the name is read */
+.adv-ic{flex-shrink:0;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
+  background:var(--primary-soft);color:var(--primary);font-size:12px}
+.adv-row > .adv-grp{flex:1;min-width:0}
+.adv-in{font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--border);
+  border-radius:7px;background:var(--surface);color:var(--text);min-width:110px}
+.adv-in:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
 .adv-in-sm{min-width:0;flex:1}
-.adv-field{min-width:140px;font-weight:600}
-.adv-op{min-width:110px}
-.adv-date{display:inline-flex;gap:4px;align-items:center;flex:1;min-width:210px}
-.adv-noval{color:var(--text-light);font-size:12px}
+.adv-field{min-width:150px;font-weight:600}
+.adv-op{min-width:112px}
+.adv-date{display:inline-flex;gap:5px;align-items:center;flex:1;min-width:210px}
+.adv-face{flex-shrink:0}
+.adv-noval{color:var(--text-light);font-size:12px;flex:1}
 /* a value the board no longer offers — a person who left, an option deleted.
    Marked, not hidden: the rule still filters, and it says what it is. */
 .adv-in-gone{border-color:#fdab3d;background:color-mix(in srgb,#fdab3d 9%,var(--surface))}
+/* A condition whose value is still empty matches EVERY item: it widens the
+   filter instead of narrowing it, and it did so in silence — three conditions
+   on screen, one of them doing nothing, and a row count nobody could account
+   for. It says so now, on the row and once at the top. */
+.adv-rule.adv-todo{border-style:dashed;border-color:#fdab3d}
+.adv-todo-tag{font-size:11px;font-weight:600;color:#9a6200;flex-shrink:0;
+  background:color-mix(in srgb,#fdab3d 20%,transparent);border-radius:20px;padding:2px 9px}
+.adv-warn{font-size:12.5px;color:#9a6200;background:color-mix(in srgb,#fdab3d 14%,transparent);
+  border-radius:9px;padding:8px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 .adv-and{font-size:12px;color:var(--text-light)}
-.adv-x{border:0;background:none;color:var(--text-light);cursor:pointer;padding:4px 6px;border-radius:6px}
+.adv-x{border:0;background:none;color:var(--text-light);cursor:pointer;padding:5px 7px;border-radius:7px;
+  margin-inline-start:auto}
 .adv-x:hover{background:var(--primary-soft);color:var(--danger,#e2445c)}
-.adv-blank{font-size:12.5px;color:var(--text-light);padding:6px 2px}
-.adv-foot-note{margin-top:10px;font-size:12.5px;color:var(--text-light);display:flex;gap:6px;align-items:center}
+/* Adding sits UNDER the conditions, where the next one will appear, instead of
+   in the group's header a line above where it lands. */
+.adv-grp-foot{display:flex;gap:7px;margin-top:9px;padding-inline-start:46px}
+.adv-add{display:inline-flex;align-items:center;gap:6px;border:1px dashed var(--border-strong);
+  background:none;color:var(--text-light);font:inherit;font-size:12.5px;font-weight:600;
+  border-radius:8px;padding:6px 12px;cursor:pointer;transition:.12s}
+.adv-add:hover{border-style:solid;border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
+.adv-blank{font-size:12.5px;color:var(--text-light);padding:10px 0 2px;display:flex;align-items:center;gap:7px}
+/* how many items the filter being built would leave — beside the title, where
+   the eye already is, rather than in grey at the foot of a scrolling list */
+.adv-shown{font-size:13px;font-weight:400;color:var(--text-light);margin-inline-start:10px}
+.adv-shown b{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums}
+.adv-back{margin-inline-start:auto;border:0;background:none;color:var(--primary);font:inherit;
+  font-size:12.5px;font-weight:600;cursor:pointer;padding:6px 2px}
+.adv-back:hover{text-decoration:underline}
 @media (max-width:620px){
   .adv-rule{gap:5px}
   .adv-in,.adv-field,.adv-op{min-width:0;flex:1 1 100%}
+  .adv-joiner{flex-basis:34px;padding-top:12px}
+  .adv-grp-foot{padding-inline-start:34px}
+  .adv-grp-note{display:none}
 }
 .reply-ctx{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:6px;padding:5px 9px;margin-bottom:7px;display:flex;align-items:center;gap:7px}
 .comp-tools{display:flex;gap:2px;margin-bottom:6px}
@@ -5972,6 +6021,18 @@ const ADV_OPS = {
   check:  [['yes','מסומן',0],['no','לא מסומן',0]],
 };
 const advOps = kind => ADV_OPS[kind] || ADV_OPS.text;
+/* The icon a column wears on the board, worn again in the filter. A rule is
+   read as "this column, this question, this value", and the column is the part
+   that is hardest to find in a row of three identical dropdowns — the type says
+   at a glance whether the answer about to be asked for is a date, a person or a
+   number. Built-ins have no entry in COLUMN_TYPES, so they name their own. */
+const ADV_BUILTIN_ICONS={title:'fa-font',status:'fa-circle-half-stroke',priority:'fa-flag',
+                         assignees:'fa-user-group',due:'fa-calendar-day'};
+function advIcon(f){
+  if(!f)return 'fa-table-columns';
+  if(f.col)return (COLUMN_TYPES.find(x=>x.type===f.col.type)||{}).ic||'fa-table-columns';
+  return ADV_BUILTIN_ICONS[f.id]||'fa-table-columns';
+}
 const advOpArity = (kind,op) => { const r=(advOps(kind).find(x=>x[0]===op)); return r?r[2]:1; };
 const advOpLabel = (kind,op) => { const r=(advOps(kind).find(x=>x[0]===op)); return r?r[1]:op; };
 
@@ -6103,7 +6164,10 @@ function advPersonLabel(id){
 function advChoices(f,cur){
   if(!f) return [];
   if(f.kind==='people'){
-    const out=[{v:'me',label:'[אני]'}]
+    // "(דינמי)" because it is not a person: it resolves to whoever is looking,
+    // which is the whole reason to pick it over one's own name — and a filter
+    // that travels inside a saved view means the person who OPENS it
+    const out=[{v:'me',label:'אני (דינמי)'}]
       .concat(boardPeople().map(u=>({v:String(u.id),label:u.name||''})));
     if(cur!=null && cur!=='' && !out.some(o=>o.v===String(cur)))
       out.push({v:String(cur), label:advPersonLabel(cur), gone:true});
@@ -8663,11 +8727,27 @@ const Automations = {
 
   del(id){
     const a=(this.data.automations||[]).find(x=>x.id===id);
-    askConfirm('למחוק את האוטומציה?',async()=>{
-      try{ await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),{method:'DELETE'}); toast('האוטומציה נמחקה'); }
-      catch(e){ toast('לא ניתן למחוק'); }
+    const go=async(force)=>{
+      try{
+        await api('/api/automations/'+id+(force?'?cancel_pending=true':'?')
+                  +(meId()?'&user_id='+meId():''),{method:'DELETE'});
+        toast('האוטומציה נמחקה');
+      }catch(e){
+        // "מחיקת האוטומציה מבטלת הפעלות ממתינות לאחר אישור" — the server
+        // refuses until somebody says so, naming how many are at stake
+        const d=e&&e.detail;
+        if(d&&d.needs==='cancel_pending'){
+          askConfirm(d.detail,()=>go(true),
+            {title:'הפעלות ממתינות',confirmText:'מחק ובטל אותן',
+             note:'הפעלות שכבר המתינו לא יתבצעו. הביטול יירשם בלוג.'});
+          return;
+        }
+        toast((d&&d.detail)||d||'לא ניתן למחוק'); return;
+      }
       await this.load(); this.render();
-    },{title:'מחיקת אוטומציה',confirmText:'מחק',
+    };
+    askConfirm('למחוק את האוטומציה?',()=>go(false),
+      {title:'מחיקת אוטומציה',confirmText:'מחק',
        note:(a?a.sentence.replace(/[«»]/g,'"'):'')+' — היסטוריית ההפעלות שלה תישמר.'});
   },
 
@@ -11242,7 +11322,15 @@ const Adv = {
     const last=+parts.pop();
     return {node:this.node(parts.join('.')), i:last};
   },
-  redraw(){ const b=document.getElementById('adv-body'); if(b)b.innerHTML=this.bodyHTML(); },
+  redraw(){ const b=document.getElementById('adv-body'); if(b)b.innerHTML=this.bodyHTML(); this.stamp(); },
+  /* The count and the warning live outside #adv-body — the count beside the
+     title, the warning above the tree — so they are restamped by hand. Both
+     are facts about the draft and have to move with every keystroke, or the
+     dialog shows the answer to the question before last. */
+  stamp(){
+    const c=document.getElementById('adv-count'); if(c)c.innerHTML=this.preview();
+    const w=document.getElementById('adv-note'); if(w)w.innerHTML=this.todoNote();
+  },
 
   // ── editing ──
   setOp(path,op){ this.node(path).op=op; this.redraw(); },
@@ -11250,6 +11338,16 @@ const Adv = {
     const f=advFields()[0];
     this.node(path).rules.push({field:f?f.id:'title', op:advOps(f?f.kind:'text')[0][0], v:'', v2:''});
     this.redraw();
+    this.focusLast(path);
+  },
+  /* The condition that was just added is the one about to be filled in, so the
+     cursor goes there. Without it every new row started with a trip back to
+     the mouse, which on a filter of five conditions is five trips. */
+  focusLast(path){
+    const n=this.node(path), i=((n&&n.rules)||[]).length-1;
+    if(i<0||typeof document==='undefined'||!document.querySelector)return;
+    const el=document.querySelector(`[data-path="${path===''?String(i):path+'.'+i}"] .adv-field`);
+    if(el&&el.focus)el.focus();
   },
   addGroup(path){ this.node(path).rules.push({op:'or',rules:[]}); this.redraw(); },
   del(path){ const {node,i}=this.parent(path); node.rules.splice(i,1); this.redraw(); },
@@ -11264,7 +11362,21 @@ const Adv = {
     this.redraw();
   },
   setRuleOp(path,op){ const r=this.node(path); r.op=op; if(advOpArity(advField(r.field)?advField(r.field).kind:'text',op)<2)r.v2=''; this.redraw(); },
-  setV(path,which,v){ this.node(path)[which]=v; const n=document.getElementById('adv-count'); if(n)n.textContent=this.preview(); },
+  setV(path,which,v){ this.node(path)[which]=v; this.stamp(); },
+
+  /* Is this condition finished? One whose operator takes a value and has none
+     matches EVERY item — it widens the filter rather than narrowing it, and it
+     did that silently: three conditions on screen, one of them doing nothing,
+     and a count nobody could account for. */
+  ruleDone(r){
+    const f=advField(r&&r.field), n=advOpArity(f?f.kind:'text',r&&r.op);
+    const has=v=>!(v==null||String(v).trim()==='');
+    return n===0 ? true : (n===1 ? has(r.v) : (has(r.v)&&has(r.v2)));
+  },
+  todo(node){
+    if(!node||!node.rules)return 0;
+    return node.rules.reduce((n,k)=>n+(!k?0:(k.rules!==undefined?this.todo(k):(this.ruleDone(k)?0:1))),0);
+  },
 
   // ── drawing ──
   ruleHTML(r,path){
@@ -11276,10 +11388,16 @@ const Adv = {
       // built per input, because the option kept for a value no longer
       // offered depends on what that input holds
       const choices=advChoices(f,v);
-      if(choices.length)
-        return `<select class="adv-in${choices.some(c=>c.gone&&String(c.v)===String(v))?' adv-in-gone':''}" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
+      if(choices.length){
+        /* A person is shown by their face, the same avatar the board's rows
+           carry — a name alone does not settle which שרון this is. "אני" is
+           the one looking, so it wears their picture too. */
+        const face=(kind==='people'&&v!=null&&v!=='')
+          ? `<span class="av av-xs adv-face">${avatarInner(v==='me'?(st.me||{}):{id:Number(v)})}</span>` : '';
+        return face+`<select class="adv-in${choices.some(c=>c.gone&&String(c.v)===String(v))?' adv-in-gone':''}" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
           <option value="">— בחרו —</option>
           ${choices.map(c=>`<option value="${esc(c.v)}" ${String(v)===String(c.v)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`;
+      }
       if(kind==='date')
         return `<span class="adv-date">
           <select class="adv-in adv-in-sm" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
@@ -11292,11 +11410,14 @@ const Adv = {
       return `<input class="adv-in" type="${kind==='number'?'number':'text'}" value="${esc(v==null?'':v)}"
                 placeholder="${kind==='number'?'מספר':'ערך'}" oninput="Adv.setV('${path}','${which}',this.value)">`;
     };
-    return `<div class="adv-rule">
-      <select class="adv-in adv-field" onchange="Adv.setField('${path}',this.value)">${fields}</select>
-      <select class="adv-in adv-op" onchange="Adv.setRuleOp('${path}',this.value)">${ops}</select>
-      ${n>=1?val('v',r.v):'<span class="adv-noval">—</span>'}
+    const done=this.ruleDone(r);
+    return `<div class="adv-rule${done?'':' adv-todo'}" data-path="${path}">
+      <span class="adv-ic" title="${esc(f?f.label:'')}"><i class="fa-solid ${advIcon(f)}"></i></span>
+      <select class="adv-in adv-field" aria-label="עמודה" onchange="Adv.setField('${path}',this.value)">${fields}</select>
+      <select class="adv-in adv-op" aria-label="תנאי" onchange="Adv.setRuleOp('${path}',this.value)">${ops}</select>
+      ${n>=1?val('v',r.v):'<span class="adv-noval">אין צורך בערך</span>'}
       ${n>=2?`<span class="adv-and">עד</span>${val('v2',r.v2)}`:''}
+      ${done?'':'<span class="adv-todo-tag" title="תנאי בלי ערך מתקיים בכל פריט, ולכן אינו מסנן">חסר ערך</span>'}
       <button class="adv-x" title="הסרת תנאי" onclick="Adv.del('${path}')"><i class="fa-solid fa-xmark"></i></button>
     </div>`;
   },
@@ -11323,10 +11444,14 @@ const Adv = {
   },
   groupHTML(g,path){
     const join=o=>`<button class="adv-join ${g.op===o?'on':''}" onclick="Adv.setOp('${path}','${o}')">${o==='and'?'וגם':'או'}</button>`;
+    /* The first condition of a group opens with "כאשר" and the rest with the
+       group's own word. The gap above the first one used to be blank, which
+       left the reader to work out that the box below it was a condition at
+       all; now the filter reads straight down as the sentence it is. */
     const kids=(g.rules||[]).map((k,i)=>{
       const kp=path===''?String(i):path+'.'+i;
       return `<div class="adv-row">
-        <span class="adv-joiner">${i===0?'':(g.op==='and'?'וגם':'או')}</span>
+        <span class="adv-joiner${i===0?' first':''}">${i===0?'כאשר':(g.op==='and'?'וגם':'או')}</span>
         ${(k&&k.rules!==undefined)?this.groupHTML(k,kp):this.ruleHTML(k,kp)}
       </div>`;
     }).join('');
@@ -11336,30 +11461,54 @@ const Adv = {
         ${name?`<span class="adv-grp-name">קבוצה ${name}</span>`:''}
         <span class="adv-join-wrap">${join('and')}${join('or')}</span>
         <span class="adv-grp-note">${g.op==='and'?'כל התנאים חייבים להתקיים':'מספיק שאחד מהתנאים יתקיים'}</span>
-        <span style="flex:1"></span>
-        <button class="btn btn-ghost btn-sm" onclick="Adv.addRule('${path}')"><i class="fa-solid fa-plus"></i> תנאי</button>
-        <button class="btn btn-ghost btn-sm" onclick="Adv.addGroup('${path}')"><i class="fa-solid fa-code-branch"></i> קבוצה</button>
         ${path===''?'':`<button class="adv-x" title="הסרת קבוצה" onclick="Adv.del('${path}')"><i class="fa-solid fa-xmark"></i></button>`}
       </div>
-      ${kids||'<div class="adv-blank">אין תנאים — הלוח יוצג במלואו</div>'}
+      ${kids||'<div class="adv-blank"><i class="fa-regular fa-circle-question"></i> אין תנאים — הלוח יוצג במלואו</div>'}
+      <div class="adv-grp-foot">
+        <button class="adv-add" onclick="Adv.addRule('${path}')"><i class="fa-solid fa-plus"></i> תנאי</button>
+        <button class="adv-add" onclick="Adv.addGroup('${path}')"><i class="fa-solid fa-code-branch"></i> קבוצה</button>
+      </div>
     </div>`;
   },
+  /* How many items the filter BEING BUILT would leave. The same sentence the
+     quick panel prints, in the same words, because it is the same fact — and
+     it is the whole point of the dialog, so it sits beside the title where
+     the eye already is rather than in grey under a list that scrolls. */
   preview(){
     const all=((st.board&&st.board.tasks)||[]);
+    if(typeof Paged!=='undefined'&&Paged.on)return Paged.total?`מתוך ${Paged.total} פריטים`:'';
+    if(!all.length)return '';
     const n=all.filter(t=>advMatch(t,this.draft)).length;
-    return `${n} מתוך ${all.length} פריטים`;
+    return n>=all.length?`מציג את כל ${all.length} הפריטים`
+                        :`מציג <b>${n}</b> מתוך <b>${all.length}</b> פריטים`;
   },
-  bodyHTML(){ return this.groupHTML(this.draft,'')
-    +`<div class="adv-foot-note"><i class="fa-solid fa-eye"></i> <span id="adv-count">${this.preview()}</span></div>`; },
+  // said once at the top as well as on each row: on a tree tall enough to
+  // scroll, the row that is doing nothing is the one off the screen
+  todoNote(){
+    const n=this.todo(this.draft);
+    if(!n)return '';
+    return `<div class="adv-warn"><i class="fa-solid fa-circle-exclamation"></i>
+      ${n===1?'תנאי אחד עדיין בלי ערך':`${n} תנאים עדיין בלי ערך`} —
+      תנאי בלי ערך מתקיים בכל פריט, ולכן אינו מסנן.</div>`;
+  },
+  bodyHTML(){ return `<div id="adv-note">${this.todoNote()}</div>`+this.groupHTML(this.draft,''); },
   html(){
-    return `<h2><i class="fa-solid fa-filter-circle-check" style="color:var(--primary)"></i> סינון מתקדם</h2>
+    return `<h2><i class="fa-solid fa-filter-circle-check" style="color:var(--primary)"></i> סינון מתקדם
+        <span class="adv-shown" id="adv-count">${this.preview()}</span></h2>
       <div class="mbody"><div id="adv-body">${this.bodyHTML()}</div></div>
       <div class="mfoot">
         <button class="btn btn-primary" onclick="Adv.apply()"><i class="fa-solid fa-check"></i> החל סינון</button>
         <button class="btn btn-ghost" onclick="Adv.clear()"><i class="fa-solid fa-eraser"></i> נקה הכל</button>
         <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+        <!-- the way back. The panel's foot opens this builder; without this the
+             door only turned one way, and getting back to picking values meant
+             closing the dialog and finding the filter button again. -->
+        <button class="adv-back" onclick="Adv.toQuick()">מעבר לסינון מהיר <i class="fa-solid fa-arrow-right"></i></button>
       </div>`;
   },
+  // what is built travels with you: going back to the quick panel applies it
+  // rather than throwing it away, since the two edit the same tree
+  async toQuick(){ await this.apply(); togglePop('arrange'); },
   async apply(){
     st.filters.adv=advCount(this.draft)?this.draft:null;
     closeModals(); refreshToolbar(); renderView();

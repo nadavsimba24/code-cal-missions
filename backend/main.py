@@ -285,6 +285,12 @@ def _migrate():
         ocols = {r[1] for r in conn.execute(text("PRAGMA table_info(organizations)"))}
         if ocols and "settings" not in ocols:
             conn.execute(text("ALTER TABLE organizations ADD COLUMN settings JSON"))
+        qcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_queue)"))}
+        for name, ddl in [("automation_id", "INTEGER"), ("version", "INTEGER"),
+                          ("state", "VARCHAR(10) DEFAULT 'pending'"),
+                          ("note", "TEXT"), ("resume_at", "DATETIME")]:
+            if qcols and name not in qcols:
+                conn.execute(text(f"ALTER TABLE automation_queue ADD COLUMN {name} {ddl}"))
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
         for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)"),
                           ("event_id", "VARCHAR(32)")]:
@@ -420,6 +426,11 @@ else:
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS source VARCHAR(16)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS event_id VARCHAR(32)",
+        "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS automation_id INTEGER",
+        "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS version INTEGER",
+        "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS state VARCHAR(10) DEFAULT 'pending'",
+        "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS note TEXT",
+        "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS resume_at TIMESTAMP",
         "UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END WHERE status IS NULL",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS version INTEGER",
@@ -10680,6 +10691,11 @@ def _suspend_blocked(db, a, board, kind, why):
     if a.status != "active":
         return
     _set_automation_status(a, "paused_error")
+    # "השהיה עקב שגיאה מקפיאה הפעלות ממתינות" — held rather than cancelled:
+    # the rule is broken, not wrong, and fixing it should not have cost
+    # somebody the work it had already promised
+    _queue_set_state(db, [r for r in _queue_waiting_for(db, a.id, ("pending",))],
+                     "frozen", "האוטומציה הושהתה עקב שגיאה")
     a.consecutive_failures = max(a.consecutive_failures or 0, 1)
     head = "הרשאה חסרה" if kind == "permission" else "תלות חסרה"
     for who in _automation_tell(db, a, board):
@@ -10699,6 +10715,8 @@ def _suspend_if_broken(db, a, board):
     if a.status != "active" or (a.consecutive_failures or 0) < AUTOMATION_FAIL_CUTOFF:
         return
     _set_automation_status(a, "paused_error")
+    _queue_set_state(db, [r for r in _queue_waiting_for(db, a.id, ("pending",))],
+                     "frozen", "האוטומציה הושהתה עקב שגיאות חוזרות")
     a.consecutive_failures = AUTOMATION_FAIL_CUTOFF      # keep the count that suspended it
     for who in _automation_tell(db, a, board):
         _notify(db, who, "automation", "אוטומציה הושהתה עקב שגיאות",
@@ -11314,24 +11332,83 @@ _queue_last = {}            # board id → when its last slice went out
 
 
 def _queue_resume(db, a, task, event, index, minutes, human=None, owner=None):
-    """Put the rest of a rule's actions in the queue, to come back later."""
+    """Put the rest of a rule's actions in the queue, to come back later.
+
+    What the row has to carry, and why each of it: the item it is about, the
+    rule AND the version of it — a rule edited while this waits goes on meaning
+    what it meant when the wait began — the event that started it, so "the old
+    value" and "the new value" are still the ones that happened and not
+    whatever the item says in a week, and the moment it may come back.
+    """
     after = (datetime.now(timezone.utc) + timedelta(minutes=minutes))
     db.add(AutomationQueue(
         board_id=a.board_id, task_id=task.id,
+        automation_id=a.id, version=_live_version(db, a),
+        state="pending", resume_at=after.replace(tzinfo=None),
         batch_id=((event or {}).get("batch") or "")[:36],
         approved_by=human,
         created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-        event={**(event or {}), "type": "resume", "automation_id": a.id,
+        event={**{k: v for k, v in (event or {}).items() if not k.startswith("_")},
+               "type": "resume", "automation_id": a.id,
                "from": int(index), "after": after.isoformat(),
                "human": human, "owner": owner,
                "source": (event or {}).get("source") or "automation"}))
 
 
 def _queue_pending(db, board_id):
+    """The rows still waiting to go out. A frozen one is not among them — it is
+    held, and comes back only when somebody says so."""
     return (db.query(AutomationQueue)
               .filter(AutomationQueue.board_id == board_id,
-                      AutomationQueue.done_at == None)                # noqa: E711
+                      AutomationQueue.done_at == None,                # noqa: E711
+                      or_(AutomationQueue.state == None,              # noqa: E711
+                          AutomationQueue.state == "pending"))
               .order_by(AutomationQueue.id).all())
+
+
+def _queue_waiting_for(db, automation_id, states=("pending", "frozen")):
+    """Everything this rule has waiting — held or not."""
+    return [r for r in db.query(AutomationQueue)
+            .filter(AutomationQueue.automation_id == automation_id,
+                    AutomationQueue.done_at == None).all()            # noqa: E711
+            if (r.state or "pending") in states]
+
+
+def _queue_set_state(db, rows, state, note="", actor_id=None):
+    """Freeze, release or cancel a set of waiting runs — and say so in the log,
+    because a run that was going to happen and now is not is a thing somebody
+    will come looking for."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for r in rows:
+        r.state = state
+        r.note = (note or "")[:400]
+        if state in ("cancelled", "done"):
+            r.done_at = now
+        else:
+            r.done_at = None
+        if state == "cancelled":
+            _log_queue_cancel(db, r, note, actor_id)
+    return len(rows)
+
+
+def _log_queue_cancel(db, row, why, actor_id=None):
+    """A cancelled wait is a run that will not happen. Never raises."""
+    try:
+        a = (db.query(Automation).filter(Automation.id == row.automation_id).first()
+             if row.automation_id else None)
+        board = db.query(Board).filter(Board.id == row.board_id).first()
+        # the item may be the very thing that cancelled this, so it is read
+        # including the deleted ones — the history is about what was going to
+        # happen to it, which is worth keeping precisely when it is gone
+        task = (db.query(Task).filter(Task.id == row.task_id)
+                  .execution_options(include_deleted=True).first())
+        if not board or a is None or task is None:
+            return
+        _log_automation_run(db, board, a, task, row.event or {}, "skipped",
+                            f"המשך מושהה בוטל: {why}", 0,
+                            actor_id or row.approved_by)
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  queue cancel not logged ({row.id}): {e}", flush=True)
 
 
 def _automation_quota(db):
@@ -11452,15 +11529,46 @@ def _drain_automation_queue(db, board_id, actor_id=None, force=False):
         if ev.get("type") == "resume" and not _wait_is_over(ev, now):
             continue                   # its moment has not come; it stays queued
         t = db.query(Task).filter(Task.id == row.task_id).first()
-        if t is not None and not t.deleted_at:
-            if ev.get("type") == "resume":
-                _resume_rule(db, ev, t)
-            else:
-                _run_automations(db, t, ev, actor_id or row.approved_by)
+        if ev.get("type") == "resume":
+            if t is None or t.deleted_at:
+                # "מחיקת פריט גורמת לביטול מתועד"
+                _queue_set_state(db, [row], "cancelled", "הפריט נמחק", actor_id)
+                sent += 1
+                continue
+            state, why = _resume_rule(db, ev, t, row)
+            if state == "frozen":
+                row.state, row.note = "frozen", why[:400]
+                continue               # held, not spent: it comes back later
+            if state == "cancelled":
+                _queue_set_state(db, [row], "cancelled", why, actor_id)
+                sent += 1
+                continue
+            if state == "skipped":
+                _log_queue_skip(db, row, why, actor_id)
+            row.state = "done"
+        elif t is not None and not t.deleted_at:
+            _run_automations(db, t, ev, actor_id or row.approved_by)
+            row.state = "done"
+        else:
+            row.state = "done"
         row.done_at = datetime.now(timezone.utc).replace(tzinfo=None)
         sent += 1
     db.commit()
     return sent
+
+
+def _log_queue_skip(db, row, why, actor_id=None):
+    """A wait that came back to an item the rule no longer holds for."""
+    try:
+        a = db.query(Automation).filter(Automation.id == row.automation_id).first()
+        board = db.query(Board).filter(Board.id == row.board_id).first()
+        task = db.query(Task).filter(Task.id == row.task_id).first()
+        if a and board and task:
+            _log_automation_run(db, board, a, task, row.event or {}, "skipped",
+                                f"המשך מושהה דולג: {why}", 0,
+                                actor_id or row.approved_by)
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  queue skip not logged ({row.id}): {e}", flush=True)
 
 
 def _wait_is_over(ev, now):
@@ -11470,27 +11578,88 @@ def _wait_is_over(ev, now):
         return True                    # unreadable: better late than never
 
 
-def _resume_rule(db, ev, task):
-    """The second half of a rule that waited. Never raises — a rule that blew
-    up on its way back must not take the drain down with it."""
+def _version_config(db, a, version):
+    """The configuration the rule had in the version named — or what it has
+    now, where that version is no longer on record.
+
+    "עריכת אוטומציה אינה משנה הפעלות ממתינות; הן ממשיכות לפי הגרסה שבה נוצרו."
+    A wait is a promise about what was going to happen, and a rule edited in
+    the meantime did not change what was promised.
+    """
+    if not version:
+        return a.config or {}, False
+    row = (db.query(AutomationVersion)
+             .filter(AutomationVersion.automation_id == a.id,
+                     AutomationVersion.version == version).first())
+    snap = (row.snapshot if row and isinstance(row.snapshot, dict) else None) or {}
+    cfg = snap.get("config")
+    if not isinstance(cfg, dict):
+        return a.config or {}, False
+    return cfg, cfg != (a.config or {})
+
+
+def _resume_rule(db, ev, task, row=None):
+    """The second half of a rule that waited.
+
+    Everything is read again HERE and not taken from when the wait began: the
+    item as it is now, the conditions against it, and the permissions the rule
+    needs. The one thing that does NOT move is the configuration — that is the
+    version the wait was made under — and the one thing that is not re-derived
+    is the event, so "the old value" and "the new value" are still the ones
+    that happened and not whatever the item says a week later.
+
+    Never raises: a rule that blew up on its way back must not take the drain
+    down with it.
+    """
     a = db.query(Automation).filter(Automation.id == ev.get("automation_id")).first()
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not a or not board or board.deleted_at:
-        return
-    if a.status in ("deleting",) or _automation_freeze(db, a.board_id) is not None:
-        return
+        return "cancelled", "האוטומציה או הלוח אינם קיימים"
+    if _automation_freeze(db, a.board_id) is not None:
+        return "frozen", "השהיית חירום בלוח"
+    if a.status == "deleting":
+        return "frozen", "האוטומציה בתהליך מחיקה"
+    if a.status in ("paused", "paused_error"):
+        # a rule somebody stopped does not go on finishing things quietly
+        return "frozen", ("האוטומציה מושהית" if a.status == "paused"
+                          else "האוטומציה מושהית עקב שגיאה")
+    cfg, moved = _version_config(db, a, (row.version if row else None)
+                                 or ev.get("version"))
+    # the rule as it was when the wait began, for everything this run reads
+    held = Automation(id=a.id, board_id=a.board_id, recipe_id=a.recipe_id, config=cfg,
+                      name=a.name, owner_id=a.owner_id, created_by=a.created_by,
+                      status="active", is_active=True, run_order=a.run_order)
+    blockers = _automation_blockers(db, board, held)
+    if blockers:
+        lost = next((b for b in blockers if b["kind"] == "permission"), None)
+        why = " · ".join(b["text"] for b in blockers[:2])
+        if lost:
+            # "אובדן הרשאה גורם לביטול מתועד"
+            return "cancelled", why
+        return "skipped", why
+    ok, why_not = _conditions_hold(db, board, task,
+                                   cfg.get(recipes.CONDITION_KEY),
+                                   cfg.get(recipes.CONDITION_GROUP_KEY) or "and")
+    if not ok:
+        # "תנאי שהשתנה גורם לדילוג" — the item is not what it was, and the
+        # rest of the rule was promised about the item it was
+        return "skipped", why_not
     try:
-        follow, note = _run_action(db, a, task, _automation_identity(db), board,
+        follow, note = _run_action(db, held, task, _automation_identity(db), board,
                                    {k: v for k, v in ev.items() if k != "type"},
                                    human=ev.get("human"), owner=ev.get("owner"),
                                    start=int(ev.get("from") or 0))
     except Exception as e:             # noqa: BLE001
         _log_automation_run(db, board, a, task, ev, "failed",
-                            f"{type(e).__name__}: {e}", 0, ev.get("human"))
-        return
+                            e.reason if isinstance(e, _Failed)
+                            else f"{type(e).__name__}: {e}", 0, ev.get("human"))
+        return "done", ""
     _log_automation_run(db, board, a, task, ev, "ran",
-                        "המשך אחרי המתנה" + (f" · {note}" if note else ""),
+                        "המשך אחרי המתנה"
+                        + (" · לפי הגרסה שבה נוצרה ההמתנה" if moved else "")
+                        + (f" · {note}" if note else ""),
                         0, ev.get("human"))
+    return "done", ""
 
 
 @app.get("/api/boards/{board_id}/automations/queue")
@@ -11507,8 +11676,34 @@ def automation_queue_status(board_id: int, user_id: int = Depends(current_user_i
                 if _can_manage_automations(db, b, user_id) else 0)
         left = _queue_pending(db, board_id)
         batch = left[0].batch_id if left else ""
+        # the waits, which are a different thing from an approved import going
+        # out in slices: each one is the second half of a rule, held against a
+        # moment, and somebody may want to see what is coming
+        waits = [r for r in db.query(AutomationQueue)
+                 .filter(AutomationQueue.board_id == board_id,
+                         AutomationQueue.done_at == None)             # noqa: E711
+                 .order_by(AutomationQueue.resume_at, AutomationQueue.id).all()
+                 if (r.event or {}).get("type") == "resume"]
+        names = {}
+        for r in waits:
+            if r.automation_id not in names:
+                a = db.query(Automation).filter(Automation.id == r.automation_id).first()
+                names[r.automation_id] = (
+                    (a.name or _automation_label(db, b, a).replace("«", "").replace("»", ""))
+                    if a else "אוטומציה שנמחקה")
+        titles = {t.id: t.title for t in db.query(Task)
+                  .filter(Task.id.in_([r.task_id for r in waits] or [0]))
+                  .execution_options(include_deleted=True).all()}
         return {"pending": len(left), "sent_now": sent, "batch_id": batch,
-                "slice": AUTOMATION_QUEUE_SLICE, "pause_seconds": AUTOMATION_QUEUE_PAUSE}
+                "slice": AUTOMATION_QUEUE_SLICE, "pause_seconds": AUTOMATION_QUEUE_PAUSE,
+                "waiting": [{
+                    "id": r.id, "automation_id": r.automation_id,
+                    "name": names.get(r.automation_id, ""),
+                    "task_id": r.task_id, "task_title": titles.get(r.task_id, ""),
+                    "state": r.state or "pending", "note": r.note or "",
+                    "version": r.version,
+                    "resume_at": r.resume_at.isoformat() if r.resume_at else None,
+                } for r in waits]}
 
 
 @app.get("/api/automation-capabilities")
@@ -11950,9 +12145,28 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
         if "is_active" in data or "status" in data:
             want = _automation_status_from(data, a.status or "active")
             # a draft may be half-built; switching it on may not be
+            waiting = _queue_waiting_for(db, a.id)
+            if want in ("paused", "paused_error", "deleting") and a.status == "active":
+                # "השהיה ידנית עוצרת אירועים חדשים ומאפשרת להקפיא או לבטל
+                # הפעלות ממתינות" — frozen unless they asked to cancel, because
+                # a stop somebody may undo in an hour should not throw away
+                # work that was promised.
+                if str(data.get("pending") or "freeze") == "cancel":
+                    _queue_set_state(db, waiting, "cancelled",
+                                     "האוטומציה הושהתה והממתינות בוטלו", user_id)
+                else:
+                    _queue_set_state(db, [r for r in waiting
+                                          if (r.state or "pending") == "pending"],
+                                     "frozen", "האוטומציה מושהית")
             if want == "active" and a.status != "active":
                 _check_automation_act(db, a, user_id)
                 _refuse_incomplete_activation(db, b, a)
+                # "הפעלה מחדש מחייבת בדיקה חוזרת" — a held run is let go, and
+                # everything it depends on is read again when it comes back
+                # (see _resume_rule), which is what the re-check IS.
+                _queue_set_state(db, [r for r in waiting
+                                      if (r.state or "pending") == "frozen"],
+                                 "pending", "")
                 # "לפני הפעלה תוצג אזהרה על כתיבה אפשרית לאותו שדה" — shown,
                 # not refused: two rules writing one field is a thing somebody
                 # may mean, and the engine is not the one to decide they did
@@ -11997,7 +12211,8 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
 
 
 @app.delete("/api/automations/{automation_id}")
-def delete_automation(automation_id: int, user_id: int = Depends(current_user_id)):
+def delete_automation(automation_id: int, cancel_pending: bool = False,
+                      user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         a = db.query(Automation).filter(Automation.id == automation_id).first()
         if not a:
@@ -12005,6 +12220,16 @@ def delete_automation(automation_id: int, user_id: int = Depends(current_user_id
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול למחוק אוטומציות")
+        # "מחיקת האוטומציה מבטלת [הפעלות ממתינות] לאחר אישור" — named rather
+        # than taken silently: a wait is something the board was promised, and
+        # deleting the rule is the one act that cannot be undone afterwards.
+        waiting = _queue_waiting_for(db, a.id)
+        if waiting and not cancel_pending:
+            raise HTTPException(409, {
+                "detail": f"לאוטומציה {len(waiting)} הפעלות ממתינות — "
+                          "מחיקה תבטל אותן",
+                "pending": len(waiting), "needs": "cancel_pending"})
+        _queue_set_state(db, waiting, "cancelled", "האוטומציה נמחקה", user_id)
         # the rule goes; what it did stays. Each history row already carries the
         # sentence and the item title, so it still reads without the rule behind it
         (db.query(AutomationRun).filter(AutomationRun.automation_id == a.id)
@@ -12028,11 +12253,18 @@ def _can_see_run_item(db, row, user_id):
     """
     if user_id is None or not row.task_id:
         return True
-    try:
-        _require_task_view(db, row.task_id, user_id)
-        return True
-    except HTTPException:
+    # Deliberately NOT _require_task_view: that one refuses an item in the
+    # recycle bin, and a run about a deleted item is exactly what the history
+    # exists to keep — "the rule goes; what it did stays" is about the items
+    # too. What still applies is the item's own per-person permission.
+    t = (db.query(Task).filter(Task.id == row.task_id)
+           .execution_options(include_deleted=True).first())
+    if t is None:
+        return True                    # purged: the log keeps its own copy
+    role = _board_role(db, t.board_id, user_id)
+    if role is None:
         return False
+    return _item_perm(t, user_id, role) != "none"
 
 
 def _redact_run(row_json):

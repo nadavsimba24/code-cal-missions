@@ -490,6 +490,18 @@ class AutomationQueue(Base):
     approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     done_at = Column(DateTime, nullable=True, index=True)
+    # ── a waiting run, and what it has to remember ──
+    # Which rule and WHICH VERSION of it: a rule edited while this was waiting
+    # goes on meaning what it meant when the wait began, which is the only
+    # reading under which a wait is a promise rather than a guess.
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=True,
+                           index=True)
+    version = Column(Integer, nullable=True)
+    # pending | frozen | done | cancelled. Frozen is a pause somebody can undo;
+    # cancelled is a decision, and it keeps the reason it was taken.
+    state = Column(String(10), default="pending", index=True)
+    note = Column(Text, default="")
+    resume_at = Column(DateTime, nullable=True, index=True)
 
 
 class AutomationRun(Base):
