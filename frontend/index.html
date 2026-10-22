@@ -7349,6 +7349,18 @@ const Automations = {
     return `<div style="font-size:12.5px;color:var(--text-muted);margin:12px 0 2px">בחר תבנית מוכנה והשלם את השדות — ואחר כך אפשר להוסיף תנאים ("רק אם"):</div>${blocks}`;
   },
 
+  /* Which clock the date rules keep. Shown where they are read rather than
+     buried in a settings screen: "למה זה רץ ב-07:00" is a question about this
+     board's zone, and the answer belongs beside the log that raised it. */
+  tzLine(){
+    const d=this.data||{};
+    if(!d.timezone) return '';
+    return `<div style="font-size:12px;color:var(--text-light);margin-bottom:8px">
+      <i class="fa-solid fa-globe"></i> תזמון לפי אזור הזמן ${
+        d.timezone_own?'של הלוח':'של הארגון'} — <b>${esc(d.timezone)}</b>.
+      תאריך ללא שעה מתוזמן ל-${String(d.due_default_hour==null?9:d.due_default_hour).padStart(2,'0')}:00.</div>`;
+  },
+
   condLine(x){
     const cs=x.conditions||[]; if(!cs.length) return '';
     const parts=cs.map(c=>esc(c.label).replace('…','<span class="ph">'+esc(c.value_label||'ערך')+'</span>'));
@@ -8032,6 +8044,7 @@ const Automations = {
       <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i>
         כל הפעלה נרשמת — גם כלל שהתאים ולא היה לו מה לעשות. הפעלה שדילגה או נכשלה אפשר לנסות שוב.
         <button class="au-lnk" onclick="Automations.testLog(0)">לוג הבדיקות בנפרד</button></div>
+      ${this.tzLine()}
       ${batchBar}<div class="logs-list">${rows}</div>`;
   },
 

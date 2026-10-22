@@ -282,6 +282,9 @@ def _migrate():
             conn.execute(text("ALTER TABLE notifications ADD COLUMN task_id INTEGER"))
         # automations: the management columns (owner, importance, status, counters)
         acols = {r[1] for r in conn.execute(text("PRAGMA table_info(automations)"))}
+        ocols = {r[1] for r in conn.execute(text("PRAGMA table_info(organizations)"))}
+        if ocols and "settings" not in ocols:
+            conn.execute(text("ALTER TABLE organizations ADD COLUMN settings JSON"))
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
         for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)")]:
             if rcols and name not in rcols:
@@ -404,6 +407,7 @@ else:
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_failure_at TIMESTAMP",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_outcome VARCHAR(12)",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS template_version INTEGER DEFAULT 1",
+        "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS settings JSONB",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS source VARCHAR(16)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
         "UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END WHERE status IS NULL",
@@ -5667,6 +5671,20 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             s = dict(b.settings or {})
             s["views"] = views
             b.settings = s
+        if "timezone" in data:
+            # the board's dates are read in a place, and this is where it says
+            # which one. Board admins only: it moves when every date rule fires.
+            if _board_role(db, board_id, actor_id) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לשנות את אזור הזמן")
+            tzn = str(data["timezone"] or "").strip()
+            if tzn and not _zone(tzn):
+                raise HTTPException(400, "אזור זמן לא מוכר — נדרש שם IANA, למשל Asia/Jerusalem")
+            s = dict(b.settings or {})
+            if tzn:
+                s["timezone"] = tzn
+            else:
+                s.pop("timezone", None)            # back to the organisation's
+            b.settings = s
         if "view_only" in data:
             s = dict(b.settings or {})
             s["view_only"] = bool(data["view_only"])
@@ -8840,10 +8858,105 @@ def _filter_item(db, task):
 # side of that.
 _IL_TZ = ZoneInfo("Asia/Jerusalem")
 
+# ── when a date means ───────────────────────────────────────────────────────
+# A due date is a date on a board somebody reads in a place. Three things
+# follow, and none of them is the server's own clock:
+#
+#   · the zone is the BOARD's, or failing that the organisation's, and
+#     Asia/Jerusalem when neither says — this municipality's own time;
+#   · a date with no time means nine in the morning THERE, not midnight here;
+#   · the instant that wall clock names is resolved on the date itself, so the
+#     week the clocks move does not move the hour the board agreed on.
+DEFAULT_TZ_NAME = os.getenv("CITYOS_TZ", "Asia/Jerusalem")
+# What "a date, no time" is scheduled for, in the board's own zone.
+DUE_DEFAULT_HOUR = int(os.getenv("CITYOS_DUE_HOUR", "9"))
 
-def _il_day():
-    """(today as YYYY-MM-DD, the zone's offset in minutes)."""
-    now = datetime.now(_IL_TZ)
+
+def _zone(name):
+    """A ZoneInfo for an IANA name, or None. Never raises on a bad name — a
+    board whose zone was typed wrong must still work, on the default."""
+    try:
+        return ZoneInfo(str(name)) if name else None
+    except Exception:                              # noqa: BLE001
+        return None
+
+
+def _board_tz(db, board):
+    """The zone this board's dates are read in.
+
+    The board's own, the organisation's, then Asia/Jerusalem. A name that is
+    not a zone is treated as not given — the alternative is a board whose
+    automations stop at a typo.
+
+    Cached on the session: a rule with a date condition asks this once per item
+    it is evaluated against, and the organisation's row does not change inside
+    one request.
+    """
+    z = _zone((board.settings or {}).get("timezone")) if board is not None else None
+    if z:
+        return z
+    cache = db.info.setdefault("_board_tz", {})
+    key = getattr(board, "organization_id", None) if board is not None else None
+    if key in cache:
+        return cache[key]
+    org = None
+    try:
+        oid = getattr(board, "organization_id", None) if board is not None else None
+        org = db.query(Organization).filter(Organization.id == oid).first() if oid \
+            else db.query(Organization).order_by(Organization.id).first()
+    except Exception:                              # noqa: BLE001
+        org = None
+    z = _zone((getattr(org, "settings", None) or {}).get("timezone")) if org else None
+    cache[key] = z or _zone(DEFAULT_TZ_NAME) or _IL_TZ
+    return cache[key]
+
+
+def _due_moment(due, tz):
+    """The instant a stored due date actually names.
+
+    Two kinds of stored value, and they mean different things:
+
+    · A DATE with no time — stored as exactly midnight, which is what a plain
+      "2026-12-01" becomes. Midnight is not when anybody means a thing to
+      happen, so it is read as DUE_DEFAULT_HOUR on that date IN THE BOARD'S
+      ZONE. The wall clock is resolved on the date itself, which is what makes
+      this survive the clocks moving: nine in the morning in April and nine in
+      the morning in November are both nine on the board, and two different
+      numbers of hours from UTC.
+
+    · Anything else is an instant already. The column holds no zone, and what
+      is written into it is UTC — the picker sends the chosen day at local
+      noon, converted — so a naive value that carries a time is read as the
+      UTC it was stored as, and the board's zone does not get to move it a
+      second time.
+    """
+    if due is None:
+        return None
+    if due.tzinfo is not None:
+        return due.astimezone(timezone.utc)
+    if (due.hour, due.minute, due.second, due.microsecond) == (0, 0, 0, 0):
+        # fold=0 picks the first of a repeated hour, which is the earlier
+        # instant — the reading that fires a reminder sooner rather than later
+        return datetime(due.year, due.month, due.day,
+                        max(0, min(DUE_DEFAULT_HOUR, 23)), tzinfo=tz, fold=0)
+    return due.replace(tzinfo=timezone.utc)
+
+
+def _as_utc(dt, tz):
+    """Any stored datetime as an aware instant, for comparing with now()."""
+    if dt is None:
+        return None
+    return (dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt).astimezone(timezone.utc)
+
+
+def _il_day(tz=None):
+    """(today as YYYY-MM-DD, the zone's offset in minutes).
+
+    `tz` is the board's own where a board is in hand — "היום" on a board is the
+    day on THAT board, which is the same rule the date triggers keep. Without
+    one it is this municipality's day, which is what it always was.
+    """
+    now = datetime.now(tz or _IL_TZ)
     return now.strftime("%Y-%m-%d"), int((now.utcoffset() or timedelta()).total_seconds() // 60)
 
 
@@ -8882,7 +8995,8 @@ def _column_cond_holds(db, task, spec):
         return None
     want = spec.get("value")
     raw = _cond_cell_raw(db, task, col)
-    today, off = _il_day()
+    today, off = _il_day(_board_tz(db, db.query(Board).filter(
+        Board.id == task.board_id).first()))
     if kind == "check":
         got = bool(len(raw)) if isinstance(raw, list) else bool(raw)
         return got is bool(want)
@@ -9966,7 +10080,13 @@ _DUE_TRIGGERS = ("due_date_arrives", "due_date_near", "due_date_passed")
 
 
 def _due_window_reached(trigger, days, due, now):
-    """Has this item reached the moment this rule is waiting for?"""
+    """Has this item reached the moment this rule is waiting for?
+
+    `due` is the instant the date NAMES (see _due_moment) and `now` is an
+    instant too, so the comparison is between two points in time rather than
+    between two wall clocks — which is the whole of surviving a zone and a
+    change of clocks.
+    """
     if trigger == "due_date_arrives":
         return due <= now
     if trigger == "due_date_near":
@@ -9992,14 +10112,20 @@ def _sweep_due_date_automations(db, board_id, actor_id):
              if (recipes.recipe(a.recipe_id) or {}).get("trigger") in _DUE_TRIGGERS]
     if not rules:
         return
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    # "לפני" reaches forward, so the window is the widest any rule asks for
+    now = datetime.now(timezone.utc)
+    board = db.query(Board).filter(Board.id == board_id).first()
+    tz = _board_tz(db, board)
+    # "לפני" reaches forward, so the window is the widest any rule asks for.
+    # A day either side of it, because a date's instant is a wall clock in the
+    # board's zone and the query is a naive comparison in the column's own
+    # terms — the exact test is _due_window_reached, on real instants.
     ahead = max([int((a.config or {}).get("t_days") or 0) for a in rules
                  if (recipes.recipe(a.recipe_id) or {}).get("trigger") == "due_date_near"],
                 default=0)
+    cutoff = now.replace(tzinfo=None) + timedelta(days=ahead + 1)
     due = db.query(Task).filter(Task.board_id == board_id, Task.is_archived == False,  # noqa: E712
                                 Task.due_date != None,                            # noqa: E711
-                                Task.due_date <= now + timedelta(days=ahead)).all()
+                                Task.due_date <= cutoff).all()
     if not due:
         return
     fired_any = False
@@ -10009,21 +10135,34 @@ def _sweep_due_date_automations(db, board_id, actor_id):
         state = dict(a.state or {})
         fired = list(state.get("fired") or [])
         seen = set(fired)
+        since = _as_utc(a.activated_at, tz)
         for t in due:
             # a finished item is not "overdue" in any sense the user cares about
-            if t.id in seen or _st_of(t) in ("done", "cancelled"):
+            if _st_of(t) in ("done", "cancelled"):
                 continue
-            if not _due_window_reached(trig, days, t.due_date, now):
+            when = _due_moment(t.due_date, tz)
+            if when is None:
+                continue
+            # The marker is the item AND the moment it fired for, so moving a
+            # date cancels the schedule that was made for the old one: a new
+            # moment is a new key and the rule is free to fire on it. Keeping
+            # the item id alone meant a date could be moved a month forward and
+            # never be heard from again.
+            key = _due_key(t.id, when)
+            if key in seen:
+                continue
+            if not _due_window_reached(trig, days, when, now):
                 continue
             # rule 2 — the date arriving is the event, and an event from before
-            # the rule was switched on is not one it gets to act on. Without
-            # this, activating a due-date rule fires it at every item that was
-            # already overdue, which reads as the rule inventing history.
-            if a.activated_at and t.due_date and t.due_date < a.activated_at:
+            # the rule was switched on is not one it gets to act on. This is
+            # also what keeps a moment that passed WHILE THE RULE WAS PAUSED
+            # from running retroactively: switching a rule back on restamps
+            # activated_at, so everything behind it stays behind it.
+            if since and when < since:
                 continue
             _run_one_automation(db, a, t, actor_id, trig, days)
-            fired.append(t.id)
-            seen.add(t.id)
+            fired.append(key)
+            seen.add(key)
             fired_any = True
         if len(fired) > _DUE_FIRED_MAX:
             fired = fired[-_DUE_FIRED_MAX:]
@@ -10031,6 +10170,17 @@ def _sweep_due_date_automations(db, board_id, actor_id):
         a.state = state
     if fired_any:
         db.commit()
+
+
+def _due_key(task_id, moment):
+    """What a date rule remembers having fired for: the item, and the moment.
+
+    Two parts because of "שינוי תאריך יבטל את התזמון הקודם" — the schedule
+    belongs to a date, not to an item, so when the date moves the old schedule
+    is spent and the new one has not happened yet. Deleting the date needs
+    nothing here: an item with no date is not in the sweep at all.
+    """
+    return f"{int(task_id)}@{moment.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M')}"
 
 
 def _fan_out_linked_status(db, task, status_key, actor_id, depth=0):
@@ -10335,6 +10485,45 @@ def _board_template_has(db, board):
     }
 
 
+@app.get("/api/organization/settings")
+def org_settings(user_id: int = Depends(current_user_id)):
+    """The organisation's own preferences. `timezone` is the one it holds today
+    — the zone every board inherits unless it names one of its own."""
+    with Session(engine) as db:
+        org = db.query(Organization).order_by(Organization.id).first()
+        cfg = (getattr(org, "settings", None) or {}) if org else {}
+        return {"timezone": cfg.get("timezone") or "",
+                "effective_timezone": str(_zone(cfg.get("timezone"))
+                                          or _zone(DEFAULT_TZ_NAME) or _IL_TZ),
+                "default_timezone": DEFAULT_TZ_NAME,
+                "due_default_hour": DUE_DEFAULT_HOUR}
+
+
+@app.patch("/api/organization/settings")
+def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        if user_id is not None and _ws_role(db, user_id) != "admin":
+            raise HTTPException(403, "רק מנהל מערכת יכול לשנות הגדרות ארגון")
+        org = db.query(Organization).order_by(Organization.id).first()
+        if not org:
+            raise HTTPException(404, "לא נמצא ארגון")
+        if "timezone" in data:
+            tzn = str(data["timezone"] or "").strip()
+            if tzn and not _zone(tzn):
+                raise HTTPException(400, "אזור זמן לא מוכר — נדרש שם IANA, למשל Asia/Jerusalem")
+            cfg = dict(getattr(org, "settings", None) or {})
+            if tzn:
+                cfg["timezone"] = tzn
+            else:
+                cfg.pop("timezone", None)
+            org.settings = cfg
+        db.commit()
+        cfg = getattr(org, "settings", None) or {}
+        return {"timezone": cfg.get("timezone") or "",
+                "effective_timezone": str(_zone(cfg.get("timezone"))
+                                          or _zone(DEFAULT_TZ_NAME) or _IL_TZ)}
+
+
 @app.get("/api/boards/{board_id}/automations/templates")
 def automation_templates(board_id: int, q: str = "", tags: str = "", only: str = "",
                          user_id: int = Depends(current_user_id)):
@@ -10410,7 +10599,12 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
                 "can_export": _can_export_automations(db, b, user_id),
                 "people": _automation_people(db, board_id, out),
                 "statuses": list(AUTOMATION_STATUSES), "importance": list(AUTOMATION_IMPORTANCE),
-                "can_manage": _can_manage_automations(db, b, user_id)}
+                "can_manage": _can_manage_automations(db, b, user_id),
+                # which clock the date rules are keeping, and whose decision
+                # that was — the board's own, or the organisation's
+                "timezone": str(_board_tz(db, b)),
+                "timezone_own": bool((b.settings or {}).get("timezone")),
+                "due_default_hour": DUE_DEFAULT_HOUR}
 
 
 def _check_automation_person(db, board_id, cfg):

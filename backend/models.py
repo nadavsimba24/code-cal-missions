@@ -127,6 +127,9 @@ class Organization(Base):
     logo_url = Column(String(500))
     municipality_code = Column(String(20))  # Israeli municipality code
     address = Column(Text)
+    # Organisation-wide preferences. `timezone` is the one this holds today:
+    # an IANA name every board inherits unless it names one of its own.
+    settings = Column(JSON, default=dict)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     users = relationship("User", back_populates="organization")
     boards = relationship("Board", back_populates="organization")

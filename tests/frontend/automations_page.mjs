@@ -618,5 +618,20 @@ hist=A.historyHTML();
 ck('a cascade says both that it was one and that the engine wrote it',
    hist.includes('שרשור') && hist.includes('>אוטומציה<'));
 
+
+/* ── which clock the date rules keep ────────────────────────────────────── */
+A.data={automations:[],can_manage:true,can_export:false,
+        timezone:'Asia/Jerusalem',timezone_own:false,due_default_hour:9};
+A.runs=[]; A.runCounts={}; A.batch=null;
+let tzh=A.historyHTML();
+ck('the log says which zone the date rules keep', tzh.includes('Asia/Jerusalem'));
+ck('...and whose decision that was', tzh.includes('של הארגון'));
+ck('...and what a date with no time is scheduled for', tzh.includes('09:00'));
+A.data.timezone_own=true;
+ck('a board that named its own says so', A.historyHTML().includes('של הלוח'));
+A.data={automations:[],can_manage:true,can_export:false};
+ck('a payload without one says nothing rather than guessing',
+   !A.historyHTML().includes('תזמון לפי אזור הזמן'));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
