@@ -9009,19 +9009,24 @@ def _il_day(tz=None):
     return now.strftime("%Y-%m-%d"), int((now.utcoffset() or timedelta()).total_seconds() // 60)
 
 
-def _cond_cell_raw(db, task, col):
+def _cond_cell_raw(db, task, col, viewer=None):
     """What a column condition reads off the item.
 
     Everything but a mirror is in `custom_fields`. A mirror stores nothing — it
     is the field of a LINKED item, read through the connect column each time —
-    so it is resolved here. The engine reads it as itself, with no viewer to
-    filter by: a rule is board configuration written by an admin, the same
-    stance _apply_automation_link takes.
+    so it is resolved here.
+
+    `viewer` is None when the ENGINE is asking: a rule is board configuration
+    written by an admin, the same stance _apply_automation_link takes, and a
+    rule that stopped holding because the person who happened to trip it cannot
+    see one of the linked items would be a rule nobody could explain. It is a
+    real viewer when a PERSON is being shown the value — see _column_cell_text,
+    where what they may not see is withheld rather than quietly dropped.
     """
     cid = str(col.get("id") or "")
     if col.get("type") != "mirror":
         return (task.custom_fields or {}).get(cid)
-    cells = _mirror_cells(db, task, col, None, _board_columns(db, task.board_id))
+    cells = _mirror_cells(db, task, col, viewer, _board_columns(db, task.board_id))
     return [c.get("text") for c in (cells or []) if c.get("text") not in (None, "")]
 
 
@@ -9030,50 +9035,84 @@ def _column_cond_holds(db, task, spec):
     answered at all — the column is gone, or is no longer a kind of column
     anything can be asked about.
 
-    A multi-value cell (a dropdown, a people column) answers "is" as "is among
-    them", which is the reading of the words: "רק אם סוג הפנייה הוא «תשתיות»"
-    over a cell holding two types is true of that item.
+    The operators are filter_ast's, evaluated by filter_ast: the board filter
+    and a rule's conditions ask the same questions of the same cells, and two
+    implementations of "contains" would eventually disagree about one. That
+    also brings its null semantics, which are the ones the specification asks
+    for — a cell nobody filled in is not zero and not an empty string, and
+    every operator but the two that ASK about emptiness declines to answer
+    over one.
+
+    A multi-value cell answers "is" as "is among them", which is the reading of
+    the words: "רק אם סוג הפנייה הוא «תשתיות»" over a cell holding two types is
+    true of that item.
     """
     col = _find_col(db, task.board_id, str(spec.get("col") or ""))
     if not col:
         return None
-    kind = recipes.column_kind(col.get("type"))
+    ctype = col.get("type")
+    kind = recipes.column_kind(ctype)
     if not kind or kind != recipes.column_kind(spec.get("type")):
         # the column changed type under the rule: the question it was written to
         # ask no longer exists, and guessing a new one is not the engine's call
         return None
-    want = spec.get("value")
+    allowed = recipes.field_ops(ctype)
+    op = str(spec.get("op") or "eq")
+    if op not in allowed:
+        return None                    # the matrix no longer offers this question
+    if kind == "link":
+        return _link_cond_holds(db, task, col, op, spec.get("value"))
+    board = db.query(Board).filter(Board.id == task.board_id).first()
+    today, off = _il_day(_board_tz(db, board))
     raw = _cond_cell_raw(db, task, col)
-    today, off = _il_day(_board_tz(db, db.query(Board).filter(
-        Board.id == task.board_id).first()))
-    if kind == "check":
-        got = bool(len(raw)) if isinstance(raw, list) else bool(raw)
-        return got is bool(want)
-    if kind == "people":
-        have = raw if isinstance(raw, list) else ([] if raw in (None, "") else [raw])
-        ids = set()
-        for x in have:
-            try:
-                ids.add(int(x.get("id") if isinstance(x, dict) else x))
-            except (TypeError, ValueError):
-                pass
-        return int(want) in ids
-    if kind == "number":
-        rule = {"type": "rule", "field": str(spec["col"]), "operator": "eq", "value": want}
-        return filter_ast.match_rule(_filter_item(db, task), rule,
-                                     {str(spec["col"]): "number"}, today, off, None)
-    if kind == "date":
-        rule = {"type": "rule", "field": str(spec["col"]), "operator": "on", "value": want}
-        return filter_ast.match_rule(_filter_item(db, task), rule,
-                                     {str(spec["col"]): "date"}, today, off, None)
-    # text and status, and a dropdown's several options at once
-    vals = raw if isinstance(raw, list) else [raw]
-    shown = []
-    for v in vals:
-        if v in (None, ""):
-            continue
-        shown.append(str(v.get("label") if isinstance(v, dict) else v).strip().lower())
-    return str(want).strip().lower() in shown
+    rule = {"field": col["id"], "operator": op,
+            "value": spec.get("value"), "value2": spec.get("value2")}
+    fields = {col["id"]: kind}
+    ask = lambda cell: filter_ast.match_rule({"custom_fields": {col["id"]: cell}},
+                                             rule, fields, today, off, None)
+    # "ריק" and "אינו ריק" are about the cell itself, however many values it
+    # holds, so they are asked of it whole
+    if op in ("empty", "filled"):
+        return ask(raw if raw not in ([],) else None)
+    # A cell that holds several values at once — a multi-select, a mirror of
+    # several linked items — is asked value by value. "הוא «תשתיות»" over a
+    # cell holding two types is true of that item, which is the reading of the
+    # words; its opposite is true only when NONE of them is.
+    many = isinstance(raw, list) and kind not in ("people", "check")
+    if not many:
+        return ask(raw)
+    vals = [v for v in raw if v not in (None, "")]
+    if not vals:
+        # nothing to ask of: "אינו שווה" over an empty cell is the one that
+        # still answers, exactly as it does over a single empty value
+        return ask(None)
+    if ctype == "mirror":
+        # the author said which: all of the linked items, or any one of them
+        want_all = str(spec.get("match") or recipes.MIRROR_MATCH_DEFAULT) == "all"
+    else:
+        want_all = op in ("ne", "nhas")
+    return all(ask(v) for v in vals) if want_all else any(ask(v) for v in vals)
+
+
+def _link_cond_holds(db, task, col, op, item_id):
+    """מקושר / אינו מקושר — about the relationship, not about a value.
+
+    With an item named it asks whether THAT item is at the other end; without
+    one, whether the cell holds anything at all. Only links the rule's own
+    board may see are counted: the connect column already withholds the rest,
+    and a condition is not a way around it.
+    """
+    ids = (_linked_ids(db, task.id, col["id"]) if _is_two_way(col)
+           else [i for i in ((task.custom_fields or {}).get(col["id"]) or [])
+                 if isinstance(i, int)])
+    if item_id in (None, "", 0):
+        linked = bool(ids)
+    else:
+        try:
+            linked = int(item_id) in ids
+        except (TypeError, ValueError):
+            return None
+    return linked if op == "linked" else not linked
 
 
 def _condition_value_label(db, board, kind, v):
@@ -9205,10 +9244,28 @@ def _condition_holds(db, task, kind, v):
     return False
 
 
-def _conditions_hold(db, board, task, conds):
-    """(ok, why_not). The first condition that does not hold decides, and it is
-    named — "why did nothing happen" is answerable only if the answer is kept."""
-    for c in conds or []:
+def _conditions_hold(db, board, task, conds, group_op="and"):
+    """(ok, why_not) for the one group of conditions a rule carries.
+
+    Over AND the first condition that does not hold decides, and it is named —
+    "why did nothing happen" is answerable only if the answer is kept. Over OR
+    it takes all of them failing, so the reason names the group rather than
+    pointing at one of them, which would read as the only thing wrong.
+
+    Every condition is asked of the item as it is at the START of the run: the
+    values are read here, before any action writes, so a rule cannot be held up
+    or let through by something it did itself.
+    """
+    rows = list(conds or [])
+    if not rows:
+        return True, ""
+    if str(group_op) == "or":
+        for c in rows:
+            if _condition_holds(db, task, c.get("kind"), c.get("value")):
+                return True, ""
+        phrases = _condition_phrases(db, board, rows) or []
+        return False, ("אף תנאי אינו מתקיים על הפריט: " + " או ".join(phrases))
+    for c in rows:
         if not _condition_holds(db, task, c.get("kind"), c.get("value")):
             phrase = (_condition_phrases(db, board, [c]) or [""])[0]
             return False, f"התנאי אינו מתקיים על הפריט: {phrase}"
@@ -9270,7 +9327,8 @@ def _automation_label(db, board, a):
     cfg = a.config or {}
     text = recipes.sentence(a.recipe_id,
                             _condition_phrases(db, board, cfg.get(recipes.CONDITION_KEY)),
-                            _action_phrases(db, board, cfg.get(recipes.ACTIONS_KEY)))
+                            _action_phrases(db, board, cfg.get(recipes.ACTIONS_KEY)),
+                            cfg.get(recipes.CONDITION_GROUP_KEY) or "and")
     r = recipes.recipe(a.recipe_id)
     for f in (r or {}).get("fields", []):
         shown = _shown_value(db, board, f["type"], cfg.get(f["key"]))
@@ -10039,7 +10097,9 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     # A rule held back by one is recorded as skipped with the condition named,
     # which is the whole reason the history keeps the non-events.
     ok, why_not = _conditions_hold(db, board, task,
-                                   (a.config or {}).get(recipes.CONDITION_KEY))
+                                   (a.config or {}).get(recipes.CONDITION_KEY),
+                                   (a.config or {}).get(recipes.CONDITION_GROUP_KEY)
+                                   or "and")
     if not ok and override:
         # it is in the history that the conditions were stepped over, and whose
         # decision that was — a run nobody can tell apart from an ordinary one
@@ -10696,6 +10756,50 @@ def automation_queue_status(board_id: int, user_id: int = Depends(current_user_i
         batch = left[0].batch_id if left else ""
         return {"pending": len(left), "sent_now": sent, "batch_id": batch,
                 "slice": AUTOMATION_QUEUE_SLICE, "pause_seconds": AUTOMATION_QUEUE_PAUSE}
+
+
+@app.get("/api/automation-capabilities")
+def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_user_id)):
+    """automation-capabilities — what this engine can actually do.
+
+    The field matrix, the operators each kind of column offers, the group
+    operators, and what the engine promises about a value nobody filled in.
+    Served rather than written down: a screen that guessed would offer a column
+    type the engine refuses, and a type nobody has decided about has to be
+    ABSENT rather than half-present.
+
+    With a board named it also answers for that board's own columns — which of
+    them may be listened to, asked about, written — so the question "can I use
+    this column" is answered once, here, instead of in three screens.
+    """
+    out = recipes.capabilities()
+    if not board_id:
+        return out
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות באוטומציות הלוח")
+        cols = []
+        for c in _board_columns(db, b.id):
+            t = str(c.get("type") or "")
+            m = recipes.FIELD_MATRIX.get(t)
+            cols.append({
+                "id": c.get("id"), "title": c.get("title") or c.get("id"), "type": t,
+                "known": bool(m),
+                "kind": (m or {}).get("kind"),
+                "trigger": bool(m and m["trigger"]
+                                and t not in AUTOMATION_UNWATCHABLE_COLUMNS),
+                "condition": bool(m and m["condition"]),
+                "action": bool(m and m["action"]),
+                "operators": list(recipes.field_ops(t)),
+                "rule": (m or {}).get("rule", ""),
+                # a type the matrix has nothing to say about is not offered at
+                # all until somebody decides what it should do
+                "note": "" if m else "סוג שדה שאינו במטריצה — לא זמין עד בדיקת תאימות",
+            })
+        return {**out, "board_id": b.id, "columns": cols}
 
 
 @app.get("/api/organization/settings")
@@ -11611,12 +11715,12 @@ def automation_impact(automation_id: int, user_id: int = Depends(current_user_id
                 **_automation_impact(db, b, a, viewer=user_id)}
 
 
-def _condition_actual(db, board, task, kind, v=None):
+def _condition_actual(db, board, task, kind, v=None, viewer=None):
     """What the item shows for the thing a condition asks about."""
     spec = recipes.condition(kind) or {}
     t = spec.get("type")
     if t == "column":
-        return _column_cell_text(db, board, task, v or {})
+        return _column_cell_text(db, board, task, v or {}, viewer=viewer)
     if t == "status":
         return _condition_value_label(db, board, kind, _task_status_key(task))
     if t == "priority":
@@ -11633,14 +11737,30 @@ def _condition_actual(db, board, task, kind, v=None):
     return "—"
 
 
-def _column_cell_text(db, board, task, spec):
+def _column_cell_text(db, board, task, spec, viewer=None):
     """What the cell a column condition asks about actually holds, in words —
-    the other half of a test that says which condition held it up."""
+    the other half of a test that says which condition held it up.
+
+    A mirror is resolved FOR THE READER: it shows a field of a linked item, and
+    a reader who may not open that item may not learn its value from here
+    either. What they get instead is told to them as withheld rather than as
+    empty — "מידע מוגן" — because a reader who thinks a cell is blank will draw
+    the wrong conclusion about why the rule did not fire.
+    """
     col = _find_col(db, board.id, str(spec.get("col") or "")) if board else None
     if not col:
         return "העמודה אינה קיימת בלוח"
     kind = recipes.column_kind(col.get("type"))
-    raw = _cond_cell_raw(db, task, col)
+    if col.get("type") == "mirror" and viewer is not None:
+        shown = _cond_cell_raw(db, task, col, viewer=viewer)
+        whole = _cond_cell_raw(db, task, col, viewer=None)
+        if len(shown) < len(whole):
+            kept = len(whole) - len(shown)
+            return ((", ".join(str(x) for x in shown) + " · ") if shown else "") \
+                + f"מידע מוגן ({kept})"
+        raw = shown
+    else:
+        raw = _cond_cell_raw(db, task, col)
     if kind == "check":
         return "מסומן" if (len(raw) if isinstance(raw, list) else raw) else "לא מסומן"
     vals = raw if isinstance(raw, list) else [raw]
@@ -11717,7 +11837,8 @@ def _dry_run_automation(db, board, a, task, viewer=None):
             "label": (_condition_phrases(db, board, [c], quote=False) or [""])[0],
             "expected": _condition_value_label(db, board, c.get("kind"), c.get("value"))
                         if spec.get("type") else "—",
-            "actual": _condition_actual(db, board, task, c.get("kind"), c.get("value")),
+            "actual": _condition_actual(db, board, task, c.get("kind"), c.get("value"),
+                                        viewer=viewer),
             "ok": held})
 
     # ── what it would do, with the values — every action, in run order ──
@@ -11733,8 +11854,12 @@ def _dry_run_automation(db, board, a, task, viewer=None):
     broken = [b["text"] for b in blockers if b["kind"] == "dependency"]
     impact = _automation_impact(db, board, a, viewer=viewer)
     # a condition that does not hold stops the rule exactly as a trigger that
-    # does not match does, so the test may not answer "would run" over one
-    unmet = [c for c in conditions if not c.get("ok")]
+    # does not match does, so the test may not answer "would run" over one —
+    # read through the group's own operator, so a rule joined by OR is not
+    # reported as blocked by the one of three that happens to be false
+    group_op = (cfg.get(recipes.CONDITION_GROUP_KEY) or "and")
+    failed = [c for c in conditions if not c.get("ok")]
+    unmet = ([] if (group_op == "or" and len(failed) < len(conditions)) else failed)
     fires = trigger["matches"] and not unmet
     verdict = "blocked" if blockers else ("would_run" if (fires and not
                                           all(x.get("no_op") for x in actions or [{}]))
@@ -11750,7 +11875,7 @@ def _dry_run_automation(db, board, a, task, viewer=None):
     else:
         summary = "הכלל היה מתאים אך לא משנה דבר"
     return {"verdict": verdict, "summary": summary, "trigger": trigger,
-            "conditions": conditions, "actions": actions,
+            "conditions": conditions, "conditions_op": group_op, "actions": actions,
             "missing_permissions": missing, "broken_dependencies": broken,
             "conflicts": impact["others"], "loop_risk": impact["loop_risk"],
             "notified": [x for x in impact["recipients"]]}

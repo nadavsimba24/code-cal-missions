@@ -45,7 +45,9 @@ const COLS=[
   {id:'c_super',  type:'people',   title:'מפקח'},
   {id:'c_due',    type:'date',     title:'תאריך אספקה'},
   {id:'c_ok',     type:'checkbox', title:'אושר'},
-  {id:'c_link',   type:'connect',  title:'לוח מקושר'},     // nothing to compare
+  {id:'c_link',   type:'connect',  title:'לוח מקושר'},     // asked about the link
+  {id:'c_mir',    type:'mirror',   title:'שם אצלם',
+   mirror_of:{connect:'c_link', field:'title'}},          // read, never listened to
 ];
 const MEMBERS=[{user_id:4,name:'יואב'},{user_id:5,name:'דנה'}];
 const st={board:{id:1,name:'לוח תשתיות',groups:[],my_role:'admin',col_perms:{}},boards:[]};
@@ -262,6 +264,8 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
      posted===null && toasts.some(t=>t.includes('הערך')), toasts);
 }
 
+const conds0=A=>(A.building||A.scratch).conds[0];
+
 // ── what is sent ──────────────────────────────────────────────────────────
 {
   const A=build();
@@ -284,6 +288,69 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
        [{kind:'column_is_not',value:{col:'c_stage',type:'status',value:'נדחה'}},
         {kind:'no_assignee'}]),
      posted&&JSON.stringify(posted.body.config.conditions));
+}
+
+
+/* ── the operators, the group, and a mirror's any/all ──────────────────────
+   What may be asked of a column is the column's own business, and the
+   capabilities service is what says so. */
+{
+  const A=build();
+  A.caps={fields:[{type:'number',kind:'number',condition:true,
+                   operators:['eq','ne','gt','lt','between','empty','filled']},
+                  {type:'text',kind:'text',condition:true,
+                   operators:['eq','ne','has','nhas','empty','filled']},
+                  {type:'mirror',kind:'text',condition:true,
+                   operators:['eq','ne','has','nhas','empty','filled']}],
+          operator_labels:{eq:'שווה',ne:'אינו שווה',has:'מכיל',nhas:'אינו מכיל',
+                           empty:'ריק',filled:'אינו ריק',gt:'גדול מ',lt:'קטן מ',between:'בטווח'},
+          operators_without_value:['empty','filled','yes','no','linked','not_linked'],
+          operators_with_two_values:['between'],group_operators:['and','or']};
+  addCond(A,'column_is'); chooseCol(A,0,'number','c_budget');
+  ck('a column with operators offers them', A.capOps('number').length===7);
+  ck('...and one is chosen for it', conds0(A).op==='eq');
+  let html=A.condsHTML({bare:true});
+  ck('the operator is a blank of its own in the phrase', html.includes('Automations.pickCondOp(event,0)'));
+  ck('...reading in words', html.includes('שווה'));
+
+  A.setCondOp2(0,'between');
+  html=A.condsHTML({bare:true});
+  ck('a range asks for a second value', html.includes('ועד')
+     && html.includes('Automations.pickCondValue(event,0,true)'));
+  A.setCondOp2(0,'empty');
+  html=A.condsHTML({bare:true});
+  ck('"ריק" asks for no value at all', !html.includes('Automations.pickCondValue(event,0)'));
+  ck('...and clears the one that was there', conds0(A).v===null);
+}
+{
+  const A=build();
+  A.caps={fields:[{type:'text',kind:'text',condition:true,operators:['eq','ne']}],
+          operator_labels:{eq:'שווה'},
+          operators_without_value:[],operators_with_two_values:[],group_operators:['and','or']};
+  addCond(A,'column_is'); chooseCol(A,0,'text','c_a');
+  let html=A.condsHTML({bare:true});
+  ck('one condition is not offered a group operator', !html.includes('Automations.setCondOp('));
+  addCond(A,'no_assignee');
+  html=A.condsHTML({bare:true});
+  ck('two of them are', html.includes(`Automations.setCondOp('or')`));
+  ck('...and it starts as AND', A.condGroupOp()==='and' && html.includes('וגם'));
+  A.setCondOp('or');
+  html=A.condsHTML({bare:true});
+  ck('switching the group changes how the rule reads',
+     A.condGroupOp()==='or' && html.includes('או') && html.includes('לפחות אחד'));
+}
+{
+  const A=build();
+  A.caps={fields:[{type:'mirror',kind:'text',condition:true,operators:['eq','ne']}],
+          operator_labels:{eq:'שווה'},
+          operators_without_value:[],operators_with_two_values:[],group_operators:['and','or']};
+  addCond(A,'column_is'); chooseCol(A,0,'mirror','c_mir');
+  let html=A.condsHTML({bare:true});
+  ck('a mirror asks how many of the linked items must match',
+     html.includes('Automations.toggleCondMatch(0)') && html.includes('לפחות באחד'));
+  A.toggleCondMatch(0);
+  ck('...and can be asked for all of them',
+     A.condsHTML({bare:true}).includes('בכל הפריטים'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

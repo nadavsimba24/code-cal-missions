@@ -55,6 +55,153 @@ MAX_CONDITIONS = 3
 # the advanced filter asks the same question of the same columns, and a second
 # copy of that table here is how the two would come to disagree.
 COLUMN_CONDITIONS = ("column_is", "column_is_not")
+
+# ── the field matrix ────────────────────────────────────────────────────────
+# What each kind of column may be in a rule: something that sets it off,
+# something it asks about, something it writes — and the rule that governs it.
+#
+# This is the list the capabilities service answers with, and it is the whole
+# of "סוג שדה שלא הוגדר במטריצה לא יהיה זמין": a type absent from here is not
+# offered anywhere, which is a decision somebody has to make deliberately
+# rather than a gap that quietly lets a half-supported column through.
+#
+# `kind` is how its value is compared (see filter_ast.KINDS and the operators
+# below). None means it has no value anything can be asked about.
+FIELD_MATRIX = {
+    # טקסט, מספר, סטטוס, תאריך — the four that do everything
+    "text":       {"trigger": True,  "condition": True,  "action": False, "kind": "text",
+                   "rule": "אימות סוג"},
+    "long_text":  {"trigger": True,  "condition": True,  "action": False, "kind": "text",
+                   "rule": "אימות סוג"},
+    "email":      {"trigger": True,  "condition": True,  "action": False, "kind": "text",
+                   "rule": "אימות סוג"},
+    "number":     {"trigger": True,  "condition": True,  "action": False, "kind": "number",
+                   "rule": "אימות סוג"},
+    "rating":     {"trigger": True,  "condition": True,  "action": False, "kind": "number",
+                   "rule": "אימות סוג"},
+    "status":     {"trigger": True,  "condition": True,  "action": True,  "kind": "status",
+                   "rule": "סטטוס לפי מזהה ערך קבוע"},
+    "priority":   {"trigger": True,  "condition": True,  "action": True,  "kind": "status",
+                   "rule": "סטטוס לפי מזהה ערך קבוע"},
+    "date":       {"trigger": True,  "condition": True,  "action": False, "kind": "date",
+                   "rule": "אימות סוג"},
+    "timeline":   {"trigger": True,  "condition": True,  "action": False, "kind": "date",
+                   "rule": "אימות סוג"},
+    "due":        {"trigger": True,  "condition": True,  "action": True,  "kind": "date",
+                   "rule": "אימות סוג"},
+    # אנשים, תיבה, בחירה יחידה או מרובה
+    "people":     {"trigger": True,  "condition": True,  "action": True,  "kind": "people",
+                   "rule": "משתמש פעיל; הוספה, הסרה או החלפה לפי הסוג"},
+    "assignees":  {"trigger": True,  "condition": True,  "action": True,  "kind": "people",
+                   "rule": "משתמש פעיל; הוספה, הסרה או החלפה לפי הסוג"},
+    "checkbox":   {"trigger": True,  "condition": True,  "action": False, "kind": "check",
+                   "rule": "הוספה, הסרה או החלפה לפי הסוג"},
+    "dropdown":   {"trigger": True,  "condition": True,  "action": False, "kind": "status",
+                   "rule": "בחירה יחידה או מרובה — לפי הסוג"},
+    # קישור בין לוחות
+    "connect":    {"trigger": True,  "condition": True,  "action": True,  "kind": "link",
+                   "rule": "לפי פריטים מקושרים והרשאות היעד"},
+    # מראה — read only, and never a trigger
+    "mirror":     {"trigger": False, "condition": True,  "action": False, "kind": "text",
+                   "rule": "לקריאה בלבד ובכפוף להרשאת מקור"},
+    # קובץ — a trigger only on being added or removed, and only ever asked
+    # whether it is there
+    "files":      {"trigger": True,  "condition": True,  "action": False, "kind": "check",
+                   "rule": "אין העתקה או מחיקה אוטומטית ב־MVP",
+                   "ops": ("empty", "filled")},
+    # שדות מערכת — read only
+    "item_id":    {"trigger": False, "condition": True,  "action": False, "kind": "text",
+                   "rule": "שדה מערכת לקריאה בלבד"},
+    "created_at": {"trigger": False, "condition": True,  "action": False, "kind": "date",
+                   "rule": "שדה מערכת לקריאה בלבד"},
+    "created_by": {"trigger": False, "condition": True,  "action": False, "kind": "people",
+                   "rule": "שדה מערכת לקריאה בלבד"},
+    # נוסחה — asked after it has been worked out, and never a trigger
+    "formula":    {"trigger": False, "condition": True,  "action": False, "kind": "number",
+                   "rule": "לאחר חישוב סופי; שינוי החישוב אינו Trigger עצמאי"},
+}
+
+# The operators each kind offers. filter_ast holds the board filter's own table
+# and is the implementation these are evaluated by, so the two are the same
+# list — with the one kind the filter has no answer for added here.
+COLUMN_OPS = {**{k: tuple(v) for k, v in filter_ast.OPS.items()},
+              "link": ("linked", "not_linked")}
+OPS_HE = {
+    "eq": "שווה", "ne": "אינו שווה", "has": "מכיל", "nhas": "אינו מכיל",
+    "empty": "ריק", "filled": "אינו ריק", "gt": "גדול מ", "lt": "קטן מ",
+    "between": "בטווח", "on": "בתאריך", "before": "לפני", "after": "אחרי",
+    "yes": "מסומן", "no": "אינו מסומן",
+    "linked": "מקושר", "not_linked": "אינו מקושר",
+}
+# An operator that needs no value at all — the null questions and the two
+# checkbox ones. Asked of a missing value they are the only ones that answer:
+# everything else holds its fire, because a value nobody filled in is not zero
+# and not an empty string.
+OPS_NO_VALUE = ("empty", "filled", "yes", "no", "linked", "not_linked")
+OPS_TWO_VALUES = ("between",)
+
+# The one group a rule's conditions form: all of them, or any of them. One
+# group is the whole of "אין לשלב AND ו-OR באותה קבוצה" — there is nowhere to
+# mix them.
+CONDITION_GROUP_OPS = ("and", "or")
+CONDITION_GROUP_KEY = "conditions_op"
+
+
+def field_matrix():
+    """The matrix, as the capabilities service answers it."""
+    out = []
+    for t, m in FIELD_MATRIX.items():
+        kind = m.get("kind")
+        out.append({"type": t, "kind": kind,
+                    "trigger": m["trigger"], "condition": m["condition"],
+                    "action": m["action"], "rule": m["rule"],
+                    "operators": list(m.get("ops") or COLUMN_OPS.get(kind) or ())})
+    return out
+
+
+def field_ops(col_type):
+    """The operators a column of this type may be asked with — () when it may
+    not be asked about at all."""
+    m = FIELD_MATRIX.get(str(col_type or ""))
+    if not m or not m["condition"]:
+        return ()
+    return tuple(m.get("ops") or COLUMN_OPS.get(m.get("kind")) or ())
+
+
+def capabilities():
+    """automation-capabilities — what this engine can actually do today.
+
+    Served rather than written down, because "what is supported" is a question
+    whose answer moves: a screen that guessed would offer a column type the
+    engine refuses, and a type nobody has decided about yet must be absent
+    rather than half-present.
+    """
+    return {
+        "fields": field_matrix(),
+        "operators": {k: list(v) for k, v in COLUMN_OPS.items()},
+        "operator_labels": dict(OPS_HE),
+        "operators_without_value": list(OPS_NO_VALUE),
+        "operators_with_two_values": list(OPS_TWO_VALUES),
+        "group_operators": list(CONDITION_GROUP_OPS),
+        "max_conditions": MAX_CONDITIONS,
+        "mirror_match": list(MIRROR_MATCH),
+        "mirror_match_default": MIRROR_MATCH_DEFAULT,
+        # the three things the engine promises about a value nobody filled in
+        "null_semantics": {
+            "no_coercion": True,
+            "missing_is_not_zero": True,
+            "missing_is_not_empty_string": True,
+            "unmet_condition_is": "skipped",
+        },
+    }
+
+
+# A mirror can reflect several linked items. Whoever writes the rule says
+# whether all of them have to match or any one of them — and the default is
+# any, which is the reading of "רק אם הסטטוס אצלם הוא בוצע" on a cell showing
+# three items: one of them being done is a thing worth acting on.
+MIRROR_MATCH = ("any", "all")
+MIRROR_MATCH_DEFAULT = "any"
 # Columns whose cell holds several values at once. "is" on one of these means
 # "is among them", so two of them on one column are not a contradiction.
 MULTI_COLUMN_TYPES = ("dropdown", "people", "files")
@@ -73,10 +220,15 @@ MIRROR_KIND = "text"
 
 
 def column_kind(col_type):
-    """How a column of this type can be asked about — None if it cannot be."""
+    """How a column of this type can be asked about — None if it cannot be.
+
+    The matrix answers first: it is the list of what this engine supports, and
+    a type outside it has no kind here however the board filter reads it.
+    """
     t = str(col_type or "")
-    if t == "mirror":
-        return MIRROR_KIND
+    m = FIELD_MATRIX.get(t)
+    if m:
+        return m["kind"] if m["condition"] else None
     return filter_ast.KINDS.get(t)
 
 
@@ -84,9 +236,9 @@ def column_types():
     """Every column type a condition can be written against, grouped by the
     kind that decides what its value looks like."""
     out = {}
-    for t, kind in filter_ast.KINDS.items():
-        out.setdefault(kind, []).append(t)
-    out.setdefault(MIRROR_KIND, []).append("mirror")
+    for t, m in FIELD_MATRIX.items():
+        if m["condition"] and m["kind"]:
+            out.setdefault(m["kind"], []).append(t)
     return out
 
 # `type` is the value the condition takes — None for one that asks about the
@@ -154,12 +306,17 @@ def condition_text(kind, shown=None):
                                 shown if shown is not None else "…")
 
 
-def conditions_clause(phrases):
-    """The whole "רק אם" clause from already-rendered condition phrases."""
+def conditions_clause(phrases, group_op="and"):
+    """The whole "רק אם" clause from already-rendered condition phrases.
+
+    The group's operator is in the joining word, because that is where a reader
+    looks for it: "וגם" or "או", once, over the whole clause.
+    """
     parts = [p for p in (phrases or []) if p]
     if not parts:
         return ""
-    return "ורק אם " + " וגם ".join(parts)
+    joiner = " או " if str(group_op) == "or" else " וגם "
+    return "ורק אם " + joiner.join(parts)
 
 
 def conditions_catalog():
@@ -185,30 +342,106 @@ def column_condition_value(raw):
     kind = column_kind(col_type)
     if not kind:
         return None, "לא ניתן להתנות בעמודה מסוג הזה"
-    v = raw.get("value")
+    # the matrix decides what may be asked and how. A type nobody has put in it
+    # is not available — which is the point of having one.
+    allowed = field_ops(col_type)
+    if not allowed:
+        return None, "סוג העמודה אינו נתמך בתנאים — נדרשת בדיקת תאימות"
+    # A condition written before the operators existed carries a value and no
+    # operator. For every kind but the checkbox the default IS what it meant;
+    # for a checkbox the value WAS the question, so it is read back as one —
+    # otherwise "רק אם התיבה אינה מסומנת" would quietly become its opposite.
+    default = _DEFAULT_OP.get(kind, "eq")
+    if kind == "check" and not (raw.get("op") or raw.get("operator")):
+        default = "yes" if bool(raw.get("value")) else "no"
+    op = str(raw.get("op") or raw.get("operator") or default).strip()
+    if op not in allowed:
+        return None, f"האופרטור אינו נתמך לעמודה מסוג '{col_type}'"
+    out = {"col": col, "type": col_type, "op": op}
+    # a mirror of several linked items: all of them, or any one of them
+    if col_type == "mirror":
+        m = str(raw.get("match") or MIRROR_MATCH_DEFAULT)
+        out["match"] = m if m in MIRROR_MATCH else MIRROR_MATCH_DEFAULT
+    # the questions that take no value at all. Asked of a cell nobody filled
+    # in they are the only ones that answer — see the null semantics.
+    if op in OPS_NO_VALUE:
+        if op in ("linked", "not_linked"):
+            # naming an item is optional: "מקושר" on its own asks whether the
+            # cell holds anything
+            try:
+                out["value"] = int(raw.get("value"))
+            except (TypeError, ValueError):
+                out["value"] = None
+        return out, None
+    if op in OPS_TWO_VALUES:
+        a, aerr = _cond_one_value(kind, raw.get("value"))
+        if aerr:
+            return None, aerr
+        b, berr = _cond_one_value(kind, raw.get("value2"))
+        if berr:
+            return None, berr
+        out["value"], out["value2"] = a, b
+        return out, None
+    v, err = _cond_one_value(kind, raw.get("value"))
+    if err:
+        return None, err
+    out["value"] = v
+    return out, None
+
+
+# What a kind is asked with when nothing says — the question people mean by
+# default for that sort of column.
+_DEFAULT_OP = {"text": "eq", "status": "eq", "number": "eq", "people": "has",
+               "date": "on", "check": "yes", "link": "linked"}
+
+
+def _cond_one_value(kind, v):
+    """(value, error) for one side of a column condition, by the kind of
+    column it is about. Type-safe on purpose: a number column asked about the
+    word "גבוה" is a rule that can never hold, and it is refused when it is
+    written rather than skipped for ever afterwards."""
     if kind == "check":
-        v = bool(v)
-    elif kind == "people":
+        return bool(v), None
+    if kind == "people":
         try:
-            v = int(v)
+            return int(v), None
         except (TypeError, ValueError):
             return None, "חסר ערך בתנאי על העמודה"
-    elif kind == "number":
+    if kind == "number":
         try:
             v = float(v)
         except (TypeError, ValueError):
             return None, "הערך בתנאי על העמודה אינו מספר"
         if v == int(v):
             v = int(v)                 # 1000, not 1000.0, in the sentence
-    elif kind == "date":
+        return v, None
+    if kind == "date":
         v = str(v or "").strip()
         if not (filter_ast._ISO_DAY.match(v) or v in filter_ast.DATE_TOKENS):
             return None, "חסר תאריך בתנאי על העמודה"
-    else:
+        return v, None
+    if True:
         v = str(v if v is not None else "").strip()[:200]
         if not v:
             return None, "חסר ערך בתנאי על העמודה"
-    return {"col": col, "type": col_type, "value": v}, None
+    return v, None
+
+
+def condition_group_op(raw, conds):
+    """(operator, error) for the one group a rule's conditions form.
+
+    "MVP יתמוך בקבוצת תנאים אחת: כל התנאים מסוג AND או לפחות תנאי אחד מסוג OR.
+    אין לשלב AND ו-OR באותה קבוצה" — one group, one operator over all of it.
+    There is nowhere to mix them, which is the point of there being one group:
+    a reader of "רק אם א וגם ב או ג" cannot tell what it means, and neither
+    can anyone writing it.
+    """
+    op = str(raw or "and").strip().lower()
+    if op not in CONDITION_GROUP_OPS:
+        return None, "אופרטור תנאים לא מוכר — AND או OR"
+    if op == "or" and len(conds or []) < 2:
+        return None, "OR דורש לפחות שני תנאים"
+    return op, None
 
 
 def validate_conditions(raw):
@@ -282,16 +515,23 @@ def _impossible(conds):
     # is an ordinary two-condition rule. A multi-select column is deliberately
     # left out of the single-value rule — a dropdown cell holds several options
     # at once, so "is A" and "is B" on one are both true of the same item.
+    # Only the plain "is this value" questions can contradict each other this
+    # way. An operator that takes no value, or two of them, is a different
+    # question about the same column and two of those are an ordinary pair.
+    def _plain(c, kind):
+        return (c["kind"] == kind and c["value"].get("op", "eq") == "eq"
+                and "value" in c["value"] and c["value"].get("value2") is None)
+
     for col in {c["value"]["col"] for c in conds if c["kind"] in COLUMN_CONDITIONS}:
         vals = {str(c["value"]["value"]) for c in conds
-                if c["kind"] == "column_is" and c["value"]["col"] == col}
+                if _plain(c, "column_is") and c["value"]["col"] == col}
         multi = any(c["value"]["type"] in MULTI_COLUMN_TYPES
                     for c in conds if c["kind"] in COLUMN_CONDITIONS
                     and c["value"]["col"] == col)
         if len(vals) > 1 and not multi:
             return "לא ניתן להתנות בשני ערכים שונים באותה עמודה"
         refused = {str(c["value"]["value"]) for c in conds
-                   if c["kind"] == "column_is_not" and c["value"]["col"] == col}
+                   if _plain(c, "column_is_not") and c["value"]["col"] == col}
         if vals & refused:
             return "תנאי על עמודה סותר את ההיפוך שלו באותו ערך"
     return None
@@ -887,7 +1127,7 @@ def recipe(recipe_id):
     return RECIPES_BY_ID.get(recipe_id)
 
 
-def sentence(recipe_id, cond_phrases=None, action_phrases=None):
+def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and"):
     """The recipe as one '{placeholder}'-carrying sentence, for the UI to fill.
 
     `cond_phrases` are a stored rule's extra conditions, already rendered — they
@@ -910,7 +1150,7 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None):
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
               "fields", "target_group"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
-    clause = conditions_clause(cond_phrases)
+    clause = conditions_clause(cond_phrases, group_op)
     more = [p for p in (action_phrases or []) if p]
     if more:
         act = act + " וגם " + " וגם ".join(more)
@@ -1111,6 +1351,16 @@ def validate(recipe_id, config):
         return None, cerr
     if conds:
         clean[CONDITION_KEY] = conds
+        gop, gerr = condition_group_op(config.get(CONDITION_GROUP_KEY), conds)
+        if gerr:
+            return None, gerr
+        if gop != "and":
+            clean[CONDITION_GROUP_KEY] = gop
+        gop, gerr = condition_group_op(config.get(CONDITION_GROUP_KEY), conds)
+        if gerr:
+            return None, gerr
+        if gop != "and":
+            clean[CONDITION_GROUP_KEY] = gop
     acts, aerr = validate_actions(config.get(ACTIONS_KEY), recipe_id,
                                   _primary_values(recipe_id, clean),
                                   require_values=True)

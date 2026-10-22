@@ -284,11 +284,12 @@ def test_and_whether_it_is_not(client, admin_id):
 
 # ── a column that cannot be asked about, and one that is gone ───────────────
 
-def test_a_column_with_nothing_to_compare_is_refused(client, admin_id):
-    """connect and mirror hold a relationship, not a value. Refused by type
-    rather than offered and then ignored."""
+def test_a_column_type_outside_the_matrix_is_refused(client, admin_id):
+    """A type nobody has decided about is not available — which is what the
+    field matrix is for. A connect column IS in it now (מקושר / אינו מקושר),
+    so the one left out here is a type the engine does not know at all."""
     bid = _board(client, admin_id)
-    r = _add(client, bid, admin_id, _cond("lnk", "connect", "7"))
+    r = _add(client, bid, admin_id, _cond("x", "a_type_nobody_defined", "7"))
     assert r.status_code == 400, r.text
     assert "סוג" in r.json()["detail"]
 

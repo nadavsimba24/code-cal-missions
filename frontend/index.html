@@ -484,6 +484,11 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-ttag{font-size:11px;color:var(--text-light);background:var(--bg);border:1px solid var(--border);
   border-radius:10px;padding:1px 7px}
 .au-recipe.au-off{opacity:.62;cursor:not-allowed;display:block;width:100%;text-align:start}
+.au-grp{display:flex;gap:6px;margin:6px 0 8px}
+.au-grp-b{border:1px solid var(--border);background:var(--card);border-radius:14px;
+  padding:3px 11px;font-size:12px;cursor:pointer;color:var(--text)}
+.au-grp-b.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.au-op{background:var(--bg);border-color:var(--border);color:var(--text)}
 .au-tmiss{margin-top:7px;font-size:12px;color:var(--red)}
 .ah-batch{cursor:pointer;border:none;font:inherit}
 .au-imp-lnk{margin-bottom:8px}
@@ -738,6 +743,14 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .qf-v:hover{border-color:var(--border-strong)}
 .qf-v.sel{border-color:var(--primary);background:var(--primary-soft);font-weight:600}
 .qf-v .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.qf-v .av{flex-shrink:0}
+/* somebody whose account is off: still pickable, because their items are still
+   on the board — greyed and said out loud, so the chip is not read as a
+   colleague who happens to have nothing */
+.qf-v.off .av{filter:grayscale(1);opacity:.6}
+.qf-v.off .qf-v-t{color:var(--text-light)}
+.qf-v-off{flex-shrink:0;font-size:10.5px;font-weight:600;color:var(--text-light);
+  background:var(--border);border-radius:20px;padding:1px 7px}
 .qf-v-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .qf-v-n{flex-shrink:0;font-size:12px;color:var(--text-light);font-variant-numeric:tabular-nums}
 .qf-v.sel .qf-v-n{color:var(--primary)}
@@ -6435,7 +6448,7 @@ function colFilterChips(f){
   if(f.id==='priority') return boardPriorityList().map(v=>({op:'eq',v:v.key,label:v.he,color:v.c}));
   if(K==='people'){
     const me=meId();
-    const mine=me?[{op:'has',v:'me',label:'אני',color:'var(--primary)'}]:[];
+    const mine=me?[{op:'has',v:'me',label:'אני',color:'var(--primary)',av:{id:me}}]:[];
     // whoever a rule already names comes with the list, even if they have since
     // left the board — see the note on advPeopleOptions
     const named=advPickedAll(f.id).map(p=>p.v).filter(v=>v!=='me').map(Number).filter(n=>!isNaN(n));
@@ -6447,8 +6460,20 @@ function colFilterChips(f){
        Their name is still offered when a rule already names them by id: that
        rule is somebody's deliberate "שלי פיינברג specifically", written in the
        advanced builder, and the panel must show what is filtering. */
-    const people=boardPeople(named).filter(u=>!me||u.id!==me||named.includes(u.id));
-    return mine.concat(people.map(u=>({op:'has',v:u.id,label:u.name||'',color:''})));
+    /* …and so does whoever is ON an item of this board but is no longer a
+       member of it — most often somebody whose account was deactivated. Their
+       items did not leave with them: the rows are still on the board, still
+       carrying their name, and "מה היה אצל אורית" is a question asked
+       precisely BECAUSE she is gone. Offering only current members would
+       leave those rows reachable by no chip at all.
+       Only the people on THIS board's items, so every row offered is a row
+       that comes back. They are marked rather than hidden — a chip that
+       silently names a deactivated account would read as a colleague who
+       simply has no items. */
+    const people=boardPeople(named.concat(colAssigned(f)))
+      .filter(u=>!me||u.id!==me||named.includes(u.id));
+    return mine.concat(people.map(u=>({op:'has',v:u.id,label:u.name||'',color:'',
+                                       av:u, off:u.is_active===false})));
   }
   if(K==='status')      return statusColOpts(f.col).map(o=>({op:'eq',v:o.label,label:o.label,color:o.color}));
   if(K==='check')       return [{op:'yes',label:'מסומן',color:'var(--green)'},
@@ -6456,16 +6481,41 @@ function colFilterChips(f){
   if(K==='date')        return ADV_DATES.map(([tok,he])=>({op:'on',v:tok,label:he,color:''}));
   return [];
 }
+/* Every person carried by this column on this board's items — which is not
+   the same list as the board's members. Someone deactivated, or taken off the
+   board, stops being a member while their items stay exactly where they were.
+
+   Top-level items only, because that is what the filter answers about: a
+   sub-item is shown under the parent that matched, so a person who appears
+   only on sub-items would be a chip that returns nothing. On a board the
+   server is paging, this sees the page — the same limit every count in this
+   panel has. */
+function colAssigned(f){
+  const out=new Set();
+  ((st.board&&st.board.tasks)||[]).forEach(t=>
+    (advCell(t,f)||[]).forEach(id=>{const n=Number(id); if(!isNaN(n))out.add(n);}));
+  return [...out];
+}
 // ריק / אינו ריק — asked of every column, and the only thing a number column
 // can be asked from a list of values
 const COL_EMPTY_CHIPS=[{op:'filled',label:'אינו ריק',color:''},{op:'empty',label:'ריק',color:''}];
+/* …in the column's own words where it has them. "ריק" is true of a people
+   column and tells nobody anything: the thing being asked about is a person,
+   and the question is whether the item has one. Same two conditions, same two
+   keys — only what they are called changes, so a filter written by either
+   name is the same filter. */
+const COL_EMPTY_WORDS={people:{filled:'משויך',empty:'ללא שיוך'}};
+function colEmptyChips(f){
+  const w=f&&COL_EMPTY_WORDS[f.kind];
+  return w?COL_EMPTY_CHIPS.map(c=>({...c,label:w[c.op]||c.label})):COL_EMPTY_CHIPS;
+}
 const colChipKey=c=>c.op+'|'+(c.v==null?'':c.v);
 /* What a column's header says when it is shut: the words picked in it, so the
    panel can be read without opening anything. */
 function colFilterSummary(f){
   const picked=advPickedAll(f.id);
   if(!picked.length)return '';
-  const all=colFilterChips(f).concat(COL_EMPTY_CHIPS);
+  const all=colFilterChips(f).concat(colEmptyChips(f));
   const txt=picked.map(p=>{
     const hit=all.find(c=>colChipKey(c)===colChipKey(p));
     return hit?hit.label:(p.op==='has'&&p.v!=='me'?(userName(p.v)||String(p.v)):String(p.v||p.op));
@@ -7226,6 +7276,13 @@ const Automations = {
         this.acts=d.action_catalog||[]; this.maxActs=d.max_actions||4;
         this.colKinds=d.column_kinds||{}; this.multiCols=d.multi_column_types||[];
       }catch(e){ this.recipes=[]; this.blueprint=[]; }
+    }
+    // what the engine can actually be asked — the operators each column type
+    // offers, and the types it has nothing to say about
+    if(!this.caps){
+      try{ this.caps=await api('/api/automation-capabilities?board_id='+bid
+                               +(meId()?'&user_id='+meId():'')); }
+      catch(e){ this.caps=null; }
     }
     // the same templates, told apart by this board: which of them it can
     // actually carry, and what it is missing for the ones it cannot
@@ -8668,26 +8725,95 @@ const Automations = {
          person or a date. The column chip asks for the TYPE first and the
          column second; on a board with thirty columns a flat list of all of
          them is not a question anybody wants to read. */
+      /* which question is being asked of the column — שווה, מכיל, ריק, בטווח.
+         Offered only where the column is known, because the operators are the
+         column's own (see automation-capabilities). */
+      const opBtn=this.condOpHTML(c,i);
       const body=spec.type==='column'
         ? txt.replace('…',`<button class="au-blank${c.col?' filled':''}" title="עמודה בלוח"
-              onclick="Automations.pickCondCol(event,${i})">${esc(c.colLabel||'עמודה')}</button>`)
-             .replace('…',valBtn)
+              onclick="Automations.pickCondCol(event,${i})">${esc(c.colLabel||'עמודה')}</button>`+opBtn)
+             .replace('…',this.condNeedsValue(c)?valBtn+this.condSecondHTML(c,i)+this.condMatchHTML(c,i):'')
         : spec.type ? txt.replace('…',valBtn) : txt;
       return `<div class="au-cond">
-        <span class="au-cond-and">${i?'וגם':'רק אם'}</span>
+        <span class="au-cond-and">${i?(this.condGroupOp()==='or'?'או':'וגם'):'רק אם'}</span>
         <span class="au-cond-t">${body}</span>
         <button class="au-cond-x" title="הסר תנאי" onclick="Automations.dropCond(${i})"><i class="fa-solid fa-xmark"></i></button>
       </div>`;}).join('');
     const room=list.length<(this.maxConds||3);
+    const op=this.condGroupOp();
     const head=(opts&&opts.bare)?''
-      :'<div class="au-conds-h"><i class="fa-solid fa-filter"></i> תנאים נוספים <small>(לא חובה — הכלל יפעל רק אם כולם מתקיימים)</small></div>';
+      :`<div class="au-conds-h"><i class="fa-solid fa-filter"></i> תנאים נוספים <small>(לא חובה — ${
+          op==='or'?'הכלל יפעל אם לפחות אחד מתקיים':'הכלל יפעל רק אם כולם מתקיימים'})</small></div>`;
+    /* One group, one operator over all of it — there is nowhere to mix them,
+       which is why a rule reading "א וגם ב או ג" cannot be written here. */
+    const grp=list.length>1?`<div class="au-grp">
+        <button class="au-grp-b ${op==='and'?'on':''}" onclick="Automations.setCondOp('and')">כל התנאים (AND)</button>
+        <button class="au-grp-b ${op==='or'?'on':''}" onclick="Automations.setCondOp('or')">לפחות אחד (OR)</button>
+      </div>`:'';
     return `<div class="au-conds">
-      ${head}
+      ${head}${grp}
       ${rows||'<div class="au-hint" style="margin:0">אין תנאים נוספים — הכלל יפעל בכל פעם שהגורם המפעיל מתרחש</div>'}
       ${room?`<button class="btn btn-ghost" onclick="Automations.pickCond(event)"><i class="fa-solid fa-plus"></i> הוסף תנאי</button>`
             :`<div class="au-hint" style="margin:0">הגעת למספר התנאים המקסימלי (${this.maxConds})</div>`}
     </div>`;
   },
+  /* ---- the operator, the second value, and a mirror's any/all ----
+     What may be asked of a column is the column's own business, and the
+     capabilities service is what says so: the screen offers exactly the list
+     the engine will accept, so a question it would refuse cannot be built. */
+  condGroupOp(){ const h=this._condHome(); return h.condOp==='or'?'or':'and'; },
+  setCondOp(op){ const h=this._condHome(); h.condOp=(op==='or'?'or':'and'); this.render(); },
+  capOps(colType){
+    const f=((this.caps||{}).fields||[]).find(x=>x.type===colType);
+    return f?(f.operators||[]):[];
+  },
+  opLabel(op){ return ((this.caps||{}).operator_labels||{})[op]||op; },
+  condNeedsValue(c){
+    const no=((this.caps||{}).operators_without_value||['empty','filled','yes','no']);
+    return !no.includes(c.op||'eq');
+  },
+  condOpHTML(c,i){
+    if(!c.colType) return '';
+    const ops=this.capOps(c.colType);
+    if(ops.length<2) return '';
+    return ` <button class="au-blank filled au-op" title="מה נשאל על העמודה"
+      onclick="Automations.pickCondOp(event,${i})">${esc(this.opLabel(c.op||ops[0]))}</button>`;
+  },
+  condSecondHTML(c,i){
+    const two=((this.caps||{}).operators_with_two_values||['between']);
+    if(!two.includes(c.op||'')) return '';
+    return ` ועד <button class="au-blank${c.label2?' filled':''}"
+      onclick="Automations.pickCondValue(event,${i},true)">${esc(c.label2||'ערך')}</button>`;
+  },
+  /* A mirror can reflect several linked items: all of them, or any one. */
+  condMatchHTML(c,i){
+    if(c.colType!=='mirror') return '';
+    const all=(c.match==='all');
+    return ` <button class="au-blank filled au-op" title="כמה מהפריטים המקושרים חייבים להתאים"
+      onclick="Automations.toggleCondMatch(${i})">${all?'בכל הפריטים':'לפחות באחד'}</button>`;
+  },
+  toggleCondMatch(i){
+    const c=(this._condHome().conds||[])[i]; if(!c)return;
+    c.match=(c.match==='all')?'any':'all';
+    this.render();
+  },
+  pickCondOp(e,i){
+    e.preventDefault(); e.stopPropagation();
+    const c=(this._condHome().conds||[])[i]; if(!c||!c.colType)return;
+    const ops=this.capOps(c.colType);
+    const body=ops.map(o=>`<button class="rm-item" onclick="Automations.setCondOp2(${i},'${o}')">
+        ${esc(this.opLabel(o))}</button>`).join('')
+      ||'<div class="rm-note">אין אופרטורים לעמודה מהסוג הזה</div>';
+    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+  },
+  setCondOp2(i,op){
+    const c=(this._condHome().conds||[])[i]; if(!c)return;
+    c.op=op;
+    if(!this.condNeedsValue(c)){ c.v=null; c.label=''; c.color=''; }
+    c.v2=null; c.label2='';
+    closeCellPops(); this.render();
+  },
+
   /* A condition reads as one phrase with its value in place — the same wording
      the server will store and show in the rule's sentence. */
   condText(c){
@@ -8725,8 +8851,15 @@ const Automations = {
      column itself, and the value. The type menu lists only kinds this board
      actually has a column of — offering "תאריך" on a board with no date column
      is a dead end two clicks deep. */
+  /* Which of the board's columns a condition may be written against. The
+     capabilities service is the authority — it knows about a mirror and a
+     connect column, which the board filter's own table does not, and it is
+     where a type nobody has decided about is absent. ADV_KINDS stands in only
+     where the service has not answered. */
   _condCols(){
-    return (customColumns()||[]).filter(c=>ADV_KINDS[c.type]&&!advColHidden(c.id));
+    const caps=((this.caps||{}).fields||[]);
+    const ok=t=>caps.length?!!(caps.find(f=>f.type===t)||{}).condition:!!ADV_KINDS[t];
+    return (customColumns()||[]).filter(c=>ok(c.type)&&!advColHidden(c.id));
   },
   pickCondCol(e,i){
     e.preventDefault(); e.stopPropagation();
@@ -8758,8 +8891,17 @@ const Automations = {
     if(!col||!c)return;
     // changing the column drops a value chosen for the previous one: a status
     // label from another column is not an answer to this one
-    if(c.col!==col.id){ c.v=null; c.label=''; c.color=''; }
+    if(c.col!==col.id){ c.v=null; c.v2=null; c.label=''; c.label2=''; c.color=''; }
     c.col=col.id; c.colType=col.type; c.colLabel=col.title||col.id;
+    // the operators belong to the column — one the previous column offered may
+    // be a question this one cannot answer
+    // the operators belong to the column, and they come from the capabilities
+    // service — where it has not answered, nothing is chosen here and the
+    // server applies the default for that kind of column
+    const ops=this.capOps(col.type);
+    if(ops.length && !ops.includes(c.op)) c.op=ops[0];
+    else if(!ops.length) c.op=null;
+    if(col.type==='mirror'&&!c.match) c.match='any';
     closeCellPops(); this.render();
     const idx=i;
     setTimeout(()=>{const row=document.querySelectorAll('.au-cond')[idx];
@@ -8778,11 +8920,11 @@ const Automations = {
     }).filter(o=>o.label);
   },
   dropCond(i){ (this._condHome().conds||[]).splice(i,1); this.render(); },
-  pickCondValue(e,i){
+  pickCondValue(e,i,second){
     e.preventDefault(); e.stopPropagation();
     const c=(this._condHome().conds||[])[i]; if(!c)return;
     const spec=(this.conds||[]).find(x=>x.kind===c.kind); if(!spec||!spec.type)return;
-    if(spec.type==='column'){ this.pickColCondValue(e,i,c); return; }
+    if(spec.type==='column'){ this._condSecond=!!second; this.pickColCondValue(e,i,c); return; }
     let items=[];
     if(spec.type==='status')        items=boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
     else if(spec.type==='priority') items=boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
@@ -8799,7 +8941,9 @@ const Automations = {
   },
   setCondValue(i,j){
     const it=(this._popItems||[])[j], c=(this._condHome().conds||[])[i]; if(!it||!c)return;
-    c.v=it.v; c.label=it.label; c.color=it.color||'';
+    if(this._condSecond){ c.v2=it.v; c.label2=it.label; }
+    else { c.v=it.v; c.label=it.label; c.color=it.color||''; }
+    this._condSecond=false;
     closeCellPops(); this.render();
   },
   /* The value, once the column is known — and the column is what decides the
@@ -8849,8 +8993,11 @@ const Automations = {
     const c=(this._condHome().conds||[])[i]; if(!c)return;
     if(v===''){ toast('יש להזין ערך'); return; }
     const kind=ADV_KINDS[c.colType]||'text';
-    c.v=kind==='number'?Number(v):v;
-    c.label=kind==='date'?fdate(v):String(v); c.color='';
+    const val=kind==='number'?Number(v):v;
+    const label=kind==='date'?fdate(v):String(v);
+    if(this._condSecond){ c.v2=val; c.label2=label; }
+    else { c.v=val; c.label=label; c.color=''; }
+    this._condSecond=false;
     closeCellPops(); this.render();
   },
 
@@ -9071,10 +9218,28 @@ const Automations = {
       const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
       if(spec.type==='column'){
         if(!c.col){ toast('יש לבחור עמודה בתנאי'); return; }
-        if(c.v===null||c.v===undefined||c.v===''){ toast('יש להשלים את הערך בתנאי'); return; }
         const kind=ADV_KINDS[c.colType]||'text';
-        conds.push({kind:c.kind,value:{col:c.col,type:c.colType,
-          value:kind==='people'?+c.v:(kind==='number'?Number(c.v):c.v)}});
+        const num=v=>kind==='people'?+v:(kind==='number'?Number(v):v);
+        // the operator is sent only where one was chosen: the server knows the
+        // right default for each kind of column, and guessing "שווה" at a
+        // people column is a question it would refuse
+        const val={col:c.col,type:c.colType};
+        if(c.op) val.op=c.op;
+        if(c.colType==='mirror') val.match=c.match==='all'?'all':'any';
+        // an operator that asks about emptiness takes no value at all, and one
+        // that asks about a range takes two
+        if(this.condNeedsValue(c)){
+          if(c.v===null||c.v===undefined||c.v===''){ toast('יש להשלים את הערך בתנאי'); return; }
+          val.value=num(c.v);
+          const two=((this.caps||{}).operators_with_two_values||['between']);
+          if(two.includes(c.op||'')){
+            if(c.v2===null||c.v2===undefined||c.v2===''){ toast('יש להשלים את שני הערכים בתנאי'); return; }
+            val.value2=num(c.v2);
+          }
+        }else if(c.op==='linked'||c.op==='not_linked'){
+          if(c.v!==null&&c.v!==undefined&&c.v!=='') val.value=+c.v;
+        }
+        conds.push({kind:c.kind,value:val});
         continue;
       }
       if(spec.type&&(c.v===null||c.v===undefined||c.v==='')){
@@ -9083,7 +9248,11 @@ const Automations = {
       conds.push(spec.type?{kind:c.kind,value:['person','group'].includes(spec.type)?+c.v:c.v}
                           :{kind:c.kind});
     }
-    if(conds.length) config.conditions=conds;
+    if(conds.length){
+      config.conditions=conds;
+      // one group, one operator over all of it
+      if(this.condGroupOp()==='or') config.conditions_op='or';
+    }
     // an extra action missing a value is refused here rather than sent: a draft
     // may hold the blank, an active rule may not — the same line the sentence's
     // own blanks are held to, and the server holds it again
@@ -10525,8 +10694,15 @@ function renderPop(name){
    arrows, the scrollbar or the wheel — and a search that hid all but one of
    them answered a question the movement already answers, while taking a row
    of the panel's height to do it. */
+/* No שם הפריט column either. Its one question is "מכיל", and the toolbar
+   already asks it — חיפוש פריטים sits above the board, filters as it is
+   typed, and is there whether or not this panel is open. A second box for the
+   same word, behind a click and only reachable after scrolling the strip, is
+   the slower way to do what somebody has already done. The builder still
+   offers the column, where a title rule is part of a sentence
+   ("השם מכיל כביש וגם הסטטוס אינו בוצע") rather than a search on its own. */
 function colFilterHTML(){
-  const fields=advFields();
+  const fields=advFields().filter(x=>x.id!=='title');
   if(!fields.length)return '';
   const counts=qfCounts();
   const cols=fields.map(x=>{
@@ -10670,11 +10846,20 @@ function colChipsHTML(x,picked,counts){
     const k=colChipKey(c), cnt=n?(n[k]||0):null;
     // "אני" names who it is on hover: one row for the person looking, and no
     // doubt about which person that is
-    const tip=(c.v==='me'&&st.me&&st.me.name)?`${c.label} — ${st.me.name}`:c.label;
-    return `<button class="qf-v${on(c)?' sel':''}" onclick="advPickChip('${esc(String(x.id))}',${i})"
+    const tip=(c.v==='me'&&st.me&&st.me.name)?`${c.label} — ${st.me.name}`
+            :(c.off?`${c.label} · משתמש לא פעיל`:c.label);
+    /* A person is shown by their face. The board's rows show the same avatar,
+       from the same place (avatarInner resolves by id against st.users), so
+       the row in this list and the rows it will leave on screen are read as
+       the same person — which a name alone does not do on a board with two
+       people called שרון. A status keeps its dot: its colour IS the value. */
+    const mark=c.av?`<span class="av av-xs">${avatarInner(c.av)}</span>`
+              :(c.color?`<span class="dot" style="background:${c.color}"></span>`:'');
+    return `<button class="qf-v${on(c)?' sel':''}${c.off?' off':''}" onclick="advPickChip('${esc(String(x.id))}',${i})"
         title="${esc(tip)}" aria-pressed="${on(c)?'true':'false'}">
-      ${c.color?`<span class="dot" style="background:${c.color}"></span>`:''}
+      ${mark}
       <span class="qf-v-t">${esc(c.label)}</span>
+      ${c.off?'<span class="qf-v-off">לא פעיל</span>':''}
       <span class="qf-v-n">${cnt==null?'':cnt}</span></button>`;
   };
   const vals=colFilterChips(x);
@@ -10684,7 +10869,7 @@ function colChipsHTML(x,picked,counts){
       value="${esc(advTextOf(x.id))}" onchange="advSetText('${esc(String(x.id))}',this.value)"
       onkeydown="if(event.key==='Enter')this.blur()">`:'';
   return `${txt}<div class="qf-vals">${vals.map((c,i)=>row(c,i)).join('')}
-    <div class="qf-any">${COL_EMPTY_CHIPS.map((c,i)=>row(c,vals.length+i)).join('')}</div></div>`;
+    <div class="qf-any">${colEmptyChips(x).map((c,i)=>row(c,vals.length+i)).join('')}</div></div>`;
 }
 /* The chip at that position, picked or unpicked. The list is rebuilt here
    rather than remembered: it is derived from the board and the filter, both of
@@ -10692,7 +10877,7 @@ function colChipsHTML(x,picked,counts){
    was rendered is the index that is read. */
 function advPickChip(field,i){
   const f=advField(field); if(!f)return;
-  const c=colFilterChips(f).concat(COL_EMPTY_CHIPS)[i];
+  const c=colFilterChips(f).concat(colEmptyChips(f))[i];
   if(c)advToggle(field,c.op,c.v);
 }
 // the word a text column is being searched for, if any
