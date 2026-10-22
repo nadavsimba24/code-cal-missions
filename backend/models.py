@@ -492,6 +492,12 @@ class AutomationRun(Base):
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
     task_title = Column(String(300), default="")
     event = Column(JSON, default=dict)
+    # Where the change came from, and — when it came from one action over many
+    # items — the id that action shares across all of them. Two different
+    # questions: "what kind of change was this" and "was this one of a batch",
+    # and a log that answered them with one field could answer neither.
+    source = Column(String(16), default="", index=True)
+    batch_id = Column(String(36), default="", index=True)
     outcome = Column(String(12), default="ran")      # ran | skipped | failed
     # a "בדיקה על פריט": the action really ran, inside a transaction that was
     # then rolled back, so the outcome is real but nothing it did survived

@@ -60,10 +60,24 @@ COLUMN_CONDITIONS = ("column_is", "column_is_not")
 MULTI_COLUMN_TYPES = ("dropdown", "people", "files")
 
 
+# A mirror shows a field of a LINKED item. It is read as text — whatever the
+# source field is, what the mirror holds is what it displays — and it is asked
+# about HERE rather than in filter_ast.KINDS, which is the board filter's own
+# vocabulary: a mirror stores nothing, so it is answered by resolving the link
+# each time (see _column_cond_holds), which the automations engine does and the
+# filter does not.
+#
+# This is the whole of "שינוי בעמודת מראה אינו גורם מפעיל עצמאי ב־MVP; ניתן
+# להשתמש בערכה כתנאי בלבד": askable, never listenable.
+MIRROR_KIND = "text"
+
+
 def column_kind(col_type):
-    """How a column of this type can be asked about — None if it cannot be.
-    connect, mirror and the like have no value to compare yet."""
-    return filter_ast.KINDS.get(str(col_type or ""))
+    """How a column of this type can be asked about — None if it cannot be."""
+    t = str(col_type or "")
+    if t == "mirror":
+        return MIRROR_KIND
+    return filter_ast.KINDS.get(t)
 
 
 def column_types():
@@ -72,6 +86,7 @@ def column_types():
     out = {}
     for t, kind in filter_ast.KINDS.items():
         out.setdefault(kind, []).append(t)
+    out.setdefault(MIRROR_KIND, []).append("mirror")
     return out
 
 # `type` is the value the condition takes — None for one that asks about the
@@ -292,6 +307,17 @@ TRIGGERS = {
     "link_added":           "כאשר נוצר קשר לפריט בלוח אחר",
     "link_removed":         "כאשר מוסר קשר לפריט בלוח אחר",
     "linked_status_changes_to": "כאשר הסטטוס של פריט מקושר משתנה ל{status}",
+    # ── the rest of the sources a change can come from ──
+    # Each of these already happened in the product; what they lacked was a way
+    # to be listened to. A mirror column is deliberately NOT among them: it
+    # shows a value that lives on another item, so "it changed" is that item's
+    # event and not this one's. It stays usable as a condition.
+    "moved_to_group":      "כאשר הפריט מועבר לקבוצה {group}",
+    "subitem_created":     "כאשר נוצר תת־פריט",
+    "column_changed":      "כאשר ערך העמודה {column} משתנה",
+    "person_unassigned":   "כאשר מוסר שיוך של אדם מהפריט",
+    "due_date_near":       "{days} ימים לפני תאריך היעד",
+    "due_date_passed":     "{days} ימים אחרי תאריך היעד",
     # ── a sub-item finishing, reported to its PARENT ──
     # The item the rule then acts on is the parent, which is what makes
     # "עדכן שדה בפריט האב" every action the catalog already has rather than a
@@ -325,6 +351,9 @@ ACTIONS = {
 # — a custom column exists on one board under one id and on the next board
 # under another, so copying those is a mapping between two boards' columns and
 # not a list of checkboxes. That is in the Roadmap, not here.
+# How far from the due date a "before"/"after" trigger may be set.
+MAX_TRIGGER_DAYS = 365
+
 COPY_FIELDS = {
     "status":      "סטטוס",
     "priority":    "עדיפות",
@@ -465,6 +494,13 @@ def _coerce_field(f, v, require):
         picked = [k for k in COPY_FIELDS if k in set(v or [])]
         return (picked, None) if picked else (
             None, (f"חסר ערך בשדה '{f['label']}'" if require else None))
+    elif f["type"] == "column":
+        v = str(v or "").strip()          # a column id, like connect
+    elif f["type"] == "days":
+        try:
+            return max(0, min(int(v), MAX_TRIGGER_DAYS)), None
+        except (TypeError, ValueError):
+            return None, (f"חסר ערך בשדה '{f['label']}'" if require else None)
     elif f["type"] in ("person", "group", "item", "board", "target_group"):
         try:
             return int(v), None
@@ -664,6 +700,40 @@ RECIPES = [
      "fields": [_f("a_fields", "fields", "השדות להעתקה")]},
     {"id": "assigned_post_update", "trigger": "person_assigned", "action": "post_update",
      "fields": [_f("a_text", "text", "תוכן העדכון")]},
+    # ── the new sources, each paired with the actions that read naturally ──
+    {"id": "moved_group_notify_assignees", "trigger": "moved_to_group",
+     "action": "notify_assignees", "fields": [_f("t_group", "group", "קבוצה")]},
+    {"id": "moved_group_set_status", "trigger": "moved_to_group", "action": "set_status",
+     "fields": [_f("t_group", "group", "קבוצה"), _f("a_status", "status", "סטטוס")]},
+    {"id": "moved_group_notify_person", "trigger": "moved_to_group",
+     "action": "notify_person",
+     "fields": [_f("t_group", "group", "קבוצה"), _f("a_person", "person", "נמען")]},
+    {"id": "subitem_created_notify_assignees", "trigger": "subitem_created",
+     "action": "notify_assignees", "fields": []},
+    {"id": "subitem_created_set_status", "trigger": "subitem_created", "action": "set_status",
+     "fields": [_f("a_status", "status", "סטטוס בפריט האב")]},
+    {"id": "column_changed_notify_person", "trigger": "column_changed",
+     "action": "notify_person",
+     "fields": [_f("t_column", "column", "עמודה"), _f("a_person", "person", "נמען")]},
+    {"id": "column_changed_notify_assignees", "trigger": "column_changed",
+     "action": "notify_assignees", "fields": [_f("t_column", "column", "עמודה")]},
+    {"id": "column_changed_set_status", "trigger": "column_changed", "action": "set_status",
+     "fields": [_f("t_column", "column", "עמודה"), _f("a_status", "status", "סטטוס")]},
+    {"id": "unassigned_notify_person", "trigger": "person_unassigned",
+     "action": "notify_person", "fields": [_f("a_person", "person", "נמען")]},
+    {"id": "unassigned_set_status", "trigger": "person_unassigned", "action": "set_status",
+     "fields": [_f("a_status", "status", "סטטוס")]},
+    {"id": "due_near_notify_assignees", "trigger": "due_date_near",
+     "action": "notify_assignees", "conds": ["status_is_not"],
+     "fields": [_f("t_days", "days", "ימים לפני")]},
+    {"id": "due_near_notify_person", "trigger": "due_date_near", "action": "notify_person",
+     "fields": [_f("t_days", "days", "ימים לפני"), _f("a_person", "person", "נמען")]},
+    {"id": "due_passed_notify_assignees", "trigger": "due_date_passed",
+     "action": "notify_assignees", "conds": ["status_is_not"],
+     "fields": [_f("t_days", "days", "ימים אחרי")]},
+    {"id": "due_passed_set_priority", "trigger": "due_date_passed", "action": "set_priority",
+     "fields": [_f("t_days", "days", "ימים אחרי"), _f("a_priority", "priority", "עדיפות")]},
+
     {"id": "status_create_in_group_and_link", "trigger": "status_changes_to",
      "action": "create_in_group_and_link",
      "fields": [_f("t_status", "status", "סטטוס"),
@@ -703,6 +773,12 @@ _TRIGGER_TAGS = {
     "link_removed":             ("link",),
     "linked_status_changes_to": ("link", "status"),
     "subitem_done":             ("subitem", "status"),
+    "moved_to_group":           (),
+    "subitem_created":          ("subitem",),
+    "column_changed":           (),
+    "person_unassigned":        ("assign",),
+    "due_date_near":            ("date",),
+    "due_date_passed":          ("date",),
 }
 _ACTION_TAGS = {
     "notify_person":    ("notify",),
@@ -730,12 +806,15 @@ _COND_TAGS = {
 # else a template needs it asks for when it is filled in; these are the things
 # a person cannot answer in the form because they are the board's structure.
 NEEDS_HE = {
+    "column":           "עמודה מותאמת בלוח (לא מראה ולא קישור)",
     "connect":          "עמודת קישור בלוח",
     "connect_two_way":  "עמודת קישור דו־כיוונית בלוח",
     "group":            "לפחות קבוצה אחת בלוח",
     "people":           "לפחות משתמש אחד מוזמן ללוח",
 }
 _TRIGGER_NEEDS = {
+    "column_changed":           ("column",),
+    "moved_to_group":           ("group",),
     "link_added":               ("connect",),
     "link_removed":             ("connect",),
     "linked_status_changes_to": ("connect_two_way",),
@@ -824,7 +903,9 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None):
     r = recipe(recipe_id)
     if not r:
         return ""
-    trig = TRIGGERS[r["trigger"]].replace("{status}", "{t_status}").replace("{priority}", "{t_priority}")
+    trig = TRIGGERS[r["trigger"]]
+    for k in ("status", "priority", "group", "column", "days"):
+        trig = trig.replace("{" + k + "}", "{t_" + k + "}")
     act = ACTIONS[r["action"]]
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
               "fields", "target_group"):
@@ -924,8 +1005,15 @@ def validate_partial(recipe_id, config):
             continue                              # not filled in yet, and that is allowed
         if f["type"] == "text":
             v = (str(v)).strip()[:200]
-        elif f["type"] == "connect":
+        elif f["type"] in ("connect", "column"):
             v = (str(v)).strip()
+        elif f["type"] == "days":
+            try:
+                v = max(0, min(int(v), MAX_TRIGGER_DAYS))
+            except (TypeError, ValueError):
+                continue
+            clean[f["key"]] = v
+            continue
         elif f["type"] == "fields":
             v = [k for k in COPY_FIELDS if k in set(v or [])]
             if v:
@@ -998,6 +1086,15 @@ def validate(recipe_id, config):
         elif f["type"] == "fields":
             v = [k for k in COPY_FIELDS if k in set(v or [])]
             if not v:
+                return None, f"חסר ערך בשדה '{f['label']}'"
+        elif f["type"] == "column":
+            v = (str(v or "")).strip()
+            if not v:
+                return None, f"חסר ערך בשדה '{f['label']}'"
+        elif f["type"] == "days":
+            try:
+                v = max(0, min(int(v), MAX_TRIGGER_DAYS))
+            except (TypeError, ValueError):
                 return None, f"חסר ערך בשדה '{f['label']}'"
         elif f["type"] in ("person", "group", "item", "board", "target_group"):
             try:

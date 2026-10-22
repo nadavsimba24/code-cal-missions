@@ -585,5 +585,38 @@ A.toggleCopyField('status'); A.toggleCopyField('priority');
 ck('...and emptying it leaves the blank unfilled',
    A.building.values['a_fields']===undefined);
 
+
+/* ── מקור השינוי ומזהה הפעולה הקבוצתית ───────────────────────────────────
+   Two different questions a run row has to answer: what KIND of change set
+   this off, and was it one of many. */
+A.tab='history'; A.runsLoading=false; A.runOutcome=''; A.runAuto=0; A.batch=null;
+A.runCounts={total:3,ran:3,skipped:0,failed:0,retried:0};
+A.data={automations:[],can_manage:true,can_export:false};
+const RUN=(id,over)=>Object.assign({id,outcome:'ran',sentence:'כאשר הפריט מועבר לקבוצה «הושלמו», שנה סטטוס',
+  task_id:id*10,task_title:'פריט '+id,reason:'',depth:0,event_type:'moved_to_group',
+  source:'bulk',batch_id:'b1',version:1,is_retry:false,retried_at:null,
+  created_at:'2026-10-22T09:00:00',can_retry:false},over||{});
+A.runs=[RUN(1),RUN(2),RUN(3,{source:'item',batch_id:''})];
+let hist=A.historyHTML();
+ck('a bulk change says where it came from', hist.includes('פעולה מרובה'));
+ck('an ordinary edit is not badged — a badge on every row is one nobody reads',
+   !hist.includes('>עריכה<'));
+ck('a batch can be opened from the row', hist.includes(`Automations.showBatch('b1')`));
+A.showBatch('b1');
+hist=A.historyHTML();
+ck('...and shows only the items of that one action', hist.includes('פריט 1')
+   && hist.includes('פריט 2') && !hist.includes('פריט 3'));
+ck('...saying how many there were', hist.includes('2 פריטים'));
+ck('...and offering the way back', hist.includes('הצג הכל'));
+A.showBatch('b1');
+ck('pressing it again goes back', A.batch===null);
+A.runs=[RUN(9,{source:'date',batch_id:'',event_type:'due_date_passed'})];
+ck('the date sweep is named as a source of its own',
+   A.historyHTML().includes('תאריך יעד'));
+A.runs=[RUN(8,{source:'automation',batch_id:'',depth:1})];
+hist=A.historyHTML();
+ck('a cascade says both that it was one and that the engine wrote it',
+   hist.includes('שרשור') && hist.includes('>אוטומציה<'));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

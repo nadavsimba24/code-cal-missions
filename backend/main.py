@@ -282,6 +282,10 @@ def _migrate():
             conn.execute(text("ALTER TABLE notifications ADD COLUMN task_id INTEGER"))
         # automations: the management columns (owner, importance, status, counters)
         acols = {r[1] for r in conn.execute(text("PRAGMA table_info(automations)"))}
+        rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
+        for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)")]:
+            if rcols and name not in rcols:
+                conn.execute(text(f"ALTER TABLE automation_runs ADD COLUMN {name} {ddl}"))
         for name, ddl in [("name", "VARCHAR(120)"), ("description", "TEXT"),
                           ("status", "VARCHAR(16) DEFAULT 'active'"),
                           ("owner_id", "INTEGER"),
@@ -400,6 +404,8 @@ else:
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_failure_at TIMESTAMP",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS last_outcome VARCHAR(12)",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS template_version INTEGER DEFAULT 1",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS source VARCHAR(16)",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
         "UPDATE automations SET status = CASE WHEN is_active THEN 'active' ELSE 'paused' END WHERE status IS NULL",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS version INTEGER",
@@ -7646,7 +7652,15 @@ def create_task(data: dict, request: Request = None,
                         _mail.append(_item_mail(db, aid, task, board, actor, "assign",
                                                 _app_base_url(request)))
         # ── automations ── a new item can trigger rules (assign, set status, notify)
-        _run_automations(db, task, {"type": "item_created"}, actor_id)
+        _run_automations(db, task, _event("item_created", "create"), actor_id)
+        # a sub-item being created is an event on its PARENT, the way a sub-item
+        # finishing is — the rule acts on the parent, which is the item somebody
+        # is looking at
+        if task.parent_id:
+            _parent = db.query(Task).filter(Task.id == task.parent_id).first()
+            if _parent and not _parent.deleted_at:
+                _run_automations(db, _parent, _event("subitem_created", "create",
+                                                     subitem_id=task.id), actor_id)
         _bid, _tid = task.board_id, task.id
         db.commit()
         _send_item_mails(_mail)
@@ -8528,6 +8542,14 @@ AUTOMATION_IDENTITY_NAME = "מנוע האוטומציות"
 # ask for today, listed here on purpose: a recipe added later, or a row edited
 # by hand, cannot widen what the engine is allowed to do without this list
 # being changed too.
+# Columns a rule may not listen to. A mirror shows a value that lives on
+# ANOTHER item: "it changed" is that item's event and not this one's, and a
+# rule hung on it would fire from a board its owner may never have seen. The
+# specification puts it plainly — usable as a condition, never as a trigger.
+# A connect column is excluded for a different reason: linking and unlinking
+# are already their own two triggers, and listening to both would fire twice.
+AUTOMATION_UNWATCHABLE_COLUMNS = ("mirror", "connect", "formula")
+
 AUTOMATION_GRANTED_ACTIONS = frozenset({
     "notify_person", "notify_assignees", "assign_person", "set_status",
     "set_priority", "move_to_group", "create_subitem", "link_to_item",
@@ -8709,6 +8731,31 @@ def _restore_choice(db, task, field, value):
     return True
 
 
+# ── where a change came from, and whether it was one of many ────────────────
+# Two separate questions the log has to be able to answer, and one field could
+# answer neither. `source` is the KIND of change — somebody editing an item, a
+# bulk action, an import, another rule's own write. `batch` is the identity of
+# one action over many items: each item still gets its own event and its own
+# run row (a rule is about an item, and "12 items updated" hides the two it
+# skipped), and the shared id is what puts them back together afterwards.
+AUTOMATION_SOURCES = ("item", "create", "bulk", "automation", "import",
+                      "manual", "date", "link")
+
+
+def _event(kind, source="item", batch="", **params):
+    """One event, stamped with where it came from."""
+    ev = {"type": kind, "source": source if source in AUTOMATION_SOURCES else "item"}
+    if batch:
+        ev["batch"] = str(batch)[:36]
+    ev.update(params)
+    return ev
+
+
+def _new_batch():
+    """The id one bulk action's events share."""
+    return uuid.uuid4().hex[:32]
+
+
 def _automation_matches(a, event):
     r = recipes.recipe(a.recipe_id)
     if not r or r["trigger"] != event.get("type"):
@@ -8720,6 +8767,14 @@ def _automation_matches(a, event):
         return str(cfg.get("t_priority")) == str(event.get("priority"))
     if event["type"] == "linked_status_changes_to":
         return str(cfg.get("t_status")) == str(event.get("status"))
+    if event["type"] == "moved_to_group":
+        return str(cfg.get("t_group")) == str(event.get("group_id"))
+    if event["type"] == "column_changed":
+        return str(cfg.get("t_column")) == str(event.get("col"))
+    if event["type"] in ("due_date_near", "due_date_passed"):
+        # the sweep has already decided the day; what it asks here is whether
+        # this rule is the one that asked for that distance
+        return int(cfg.get("t_days") or 0) == int(event.get("days") or 0)
     return True
 
 
@@ -8792,6 +8847,22 @@ def _il_day():
     return now.strftime("%Y-%m-%d"), int((now.utcoffset() or timedelta()).total_seconds() // 60)
 
 
+def _cond_cell_raw(db, task, col):
+    """What a column condition reads off the item.
+
+    Everything but a mirror is in `custom_fields`. A mirror stores nothing — it
+    is the field of a LINKED item, read through the connect column each time —
+    so it is resolved here. The engine reads it as itself, with no viewer to
+    filter by: a rule is board configuration written by an admin, the same
+    stance _apply_automation_link takes.
+    """
+    cid = str(col.get("id") or "")
+    if col.get("type") != "mirror":
+        return (task.custom_fields or {}).get(cid)
+    cells = _mirror_cells(db, task, col, None, _board_columns(db, task.board_id))
+    return [c.get("text") for c in (cells or []) if c.get("text") not in (None, "")]
+
+
 def _column_cond_holds(db, task, spec):
     """A condition about one of the board's columns. None when it cannot be
     answered at all — the column is gone, or is no longer a kind of column
@@ -8810,7 +8881,7 @@ def _column_cond_holds(db, task, spec):
         # ask no longer exists, and guessing a new one is not the engine's call
         return None
     want = spec.get("value")
-    raw = (task.custom_fields or {}).get(str(spec.get("col")))
+    raw = _cond_cell_raw(db, task, col)
     today, off = _il_day()
     if kind == "check":
         got = bool(len(raw)) if isinstance(raw, list) else bool(raw)
@@ -9368,6 +9439,8 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             trigger_key=r.get("trigger") or "", action_key=r.get("action") or "",
             task_id=task.id, task_title=(task.title or "")[:300],
             event=event or {}, outcome=outcome, reason=(reason or "")[:400],
+            source=((event or {}).get("source") or "")[:16],
+            batch_id=((event or {}).get("batch") or "")[:36],
             # rule 4 — which version carried this out. The config is read once,
             # when the event arrives, so this is the version that decided it.
             version=_live_version(db, a),
@@ -9612,6 +9685,25 @@ def _automation_blockers(db, board, a):
             out.append({"kind": "dependency",
                         "text": f"סוג העמודה '{col.get('title') or spec.get('col')}' "
                                 f"שונה מאז שהתנאי נכתב"})
+    # the trigger's own placeholders are a dependency like any other: a rule
+    # listening to a column somebody deleted will never fire again, and one
+    # pointed at a column that has since become a mirror never should
+    for f in r.get("fields", []):
+        if not f["key"].startswith("t_"):
+            continue
+        v = cfg.get(f["key"])
+        if f["type"] == "column":
+            col = _find_col(db, a.board_id, str(v or ""))
+            if not col:
+                out.append({"kind": "dependency", "text": "העמודה שהכלל מאזין לה נמחקה"})
+            elif col.get("type") in AUTOMATION_UNWATCHABLE_COLUMNS:
+                out.append({"kind": "dependency",
+                            "text": f"עמודת {col.get('title') or v} אינה גורם מפעיל "
+                                    "— אפשר להשתמש בה כתנאי"})
+        elif f["type"] == "group":
+            if not db.query(Group).filter(Group.id == v,
+                                          Group.board_id == a.board_id).first():
+                out.append({"kind": "dependency", "text": "הקבוצה שהכלל מאזין לה נמחקה"})
     for one in acts:
         for f in recipes.action_fields(one["key"]):
             v = one["values"].get(f["key"])
@@ -9842,6 +9934,11 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
                 + (f" · {note}" if note else ""))
     row = _log_automation_run(db, board, a, task, event, "ran", note, depth, actor_id, retry_of)
     for ev in follow or []:
+        # whatever set this rule off, what IT writes comes from the engine —
+        # and it stays in the batch it was started by, so one bulk action reads
+        # as one action however many rules it set off
+        ev = {**ev, "source": "automation", **({"batch": event["batch"]}
+                                               if (event or {}).get("batch") else {})}
         _run_automations(db, task, ev, actor_id, depth + 1)
         # a rule that changed this item's status is a status change like any
         # other, so items linked to it hear about it too — bounded by the same
@@ -9851,10 +9948,10 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     return row
 
 
-def _run_one_automation(db, a, task, actor_id):
+def _run_one_automation(db, a, task, actor_id, trigger="due_date_arrives", days=0):
     """Run a single rule against one item — the date sweep's entry point, which
     picks its own items instead of reacting to an event."""
-    _fire_rule(db, a, task, {"type": "due_date_arrives"}, actor_id, 0)
+    _fire_rule(db, a, task, _event(trigger, "date", days=days), actor_id, 0)
 
 
 # How many fired item ids a date rule remembers. Bounded so the marker cannot
@@ -9862,8 +9959,25 @@ def _run_one_automation(db, a, task, actor_id):
 _DUE_FIRED_MAX = 500
 
 
+# The three distances from a due date a rule can be hung on, and how each one
+# decides. "במועד" is the date arriving; the other two are a number of days
+# before or after it, which is the "מרווח" the specification asks for.
+_DUE_TRIGGERS = ("due_date_arrives", "due_date_near", "due_date_passed")
+
+
+def _due_window_reached(trigger, days, due, now):
+    """Has this item reached the moment this rule is waiting for?"""
+    if trigger == "due_date_arrives":
+        return due <= now
+    if trigger == "due_date_near":
+        # from `days` before the date until the date itself — a reminder that
+        # only fires on the exact day would be missed by a board nobody opened
+        return (due - timedelta(days=days)) <= now <= due
+    return due + timedelta(days=days) <= now        # due_date_passed
+
+
 def _sweep_due_date_automations(db, board_id, actor_id):
-    """Fire "כאשר מגיע תאריך היעד" rules for items whose due date has passed.
+    """Fire the date rules for items whose moment has come.
 
     There is no scheduler here, so this runs when the board is read. Each rule
     remembers which items it already fired for, so re-opening a board cannot
@@ -9875,16 +9989,23 @@ def _sweep_due_date_automations(db, board_id, actor_id):
                 Automation.board_id == board_id,
                 Automation.is_active == True)                             # noqa: E712
                 .order_by(Automation.run_order, Automation.id).all()
-             if (recipes.recipe(a.recipe_id) or {}).get("trigger") == "due_date_arrives"]
+             if (recipes.recipe(a.recipe_id) or {}).get("trigger") in _DUE_TRIGGERS]
     if not rules:
         return
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # "לפני" reaches forward, so the window is the widest any rule asks for
+    ahead = max([int((a.config or {}).get("t_days") or 0) for a in rules
+                 if (recipes.recipe(a.recipe_id) or {}).get("trigger") == "due_date_near"],
+                default=0)
     due = db.query(Task).filter(Task.board_id == board_id, Task.is_archived == False,  # noqa: E712
-                                Task.due_date != None, Task.due_date <= now).all()     # noqa: E711
+                                Task.due_date != None,                            # noqa: E711
+                                Task.due_date <= now + timedelta(days=ahead)).all()
     if not due:
         return
     fired_any = False
     for a in rules:
+        trig = (recipes.recipe(a.recipe_id) or {}).get("trigger")
+        days = int((a.config or {}).get("t_days") or 0)
         state = dict(a.state or {})
         fired = list(state.get("fired") or [])
         seen = set(fired)
@@ -9892,13 +10013,15 @@ def _sweep_due_date_automations(db, board_id, actor_id):
             # a finished item is not "overdue" in any sense the user cares about
             if t.id in seen or _st_of(t) in ("done", "cancelled"):
                 continue
+            if not _due_window_reached(trig, days, t.due_date, now):
+                continue
             # rule 2 — the date arriving is the event, and an event from before
             # the rule was switched on is not one it gets to act on. Without
             # this, activating a due-date rule fires it at every item that was
             # already overdue, which reads as the rule inventing history.
             if a.activated_at and t.due_date and t.due_date < a.activated_at:
                 continue
-            _run_one_automation(db, a, t, actor_id)
+            _run_one_automation(db, a, t, actor_id, trig, days)
             fired.append(t.id)
             seen.add(t.id)
             fired_any = True
@@ -9932,7 +10055,8 @@ def _fan_out_linked_status(db, task, status_key, actor_id, depth=0):
         other = db.query(Task).filter(Task.id == other_id).first()
         if other is None:
             continue
-        _run_automations(db, other, {"type": "linked_status_changes_to",
+        _run_automations(db, other, {"source": "link",
+                                     "type": "linked_status_changes_to",
                                      "status": str(status_key),
                                      "source_task_id": task.id}, actor_id, depth + 1)
 
@@ -10202,6 +10326,10 @@ def _board_template_has(db, board):
     return {
         "connect": bool(conns),
         "connect_two_way": any(_is_two_way(c) for c in conns),
+        # a column a rule can LISTEN to — which is not every column (see
+        # AUTOMATION_UNWATCHABLE_COLUMNS)
+        "column": any(c.get("id") and c.get("type") not in AUTOMATION_UNWATCHABLE_COLUMNS
+                      for c in cols),
         "group": db.query(Group).filter(Group.board_id == board.id).count() > 0,
         "people": any(_can_be_assigned(db, board.id, u) for u in people),
     }
@@ -10644,6 +10772,8 @@ def _automation_run_json(db, row):
         "task_id": row.task_id, "task_title": row.task_title or "",
         "outcome": row.outcome or "ran", "reason": row.reason or "",
         "depth": row.depth or 0, "event_type": (row.event or {}).get("type") or "",
+        # where the change came from, and the batch it belonged to
+        "source": row.source or "", "batch_id": row.batch_id or "",
         "actor_id": row.actor_id, "actor_name": uname(row.actor_id),
         "is_retry": row.retry_of is not None, "retry_of": row.retry_of,
         "retried_at": row.retried_at.isoformat() if row.retried_at else None,
@@ -10869,6 +10999,12 @@ AUTOMATION_TRIGGER_READS = {
     "link_removed":             ["קישור בין לוחות"],
     "linked_status_changes_to": ["סטטוס של פריט מקושר"],
     "subitem_done":             ["סטטוס של תת־פריט"],
+    "moved_to_group":           ["קבוצה"],
+    "subitem_created":          ["תתי־פריטים"],
+    "column_changed":           ["עמודה מותאמת"],
+    "person_unassigned":        ["אחראים"],
+    "due_date_near":            ["תאריך יעד"],
+    "due_date_passed":          ["תאריך יעד"],
 }
 
 
@@ -11090,7 +11226,7 @@ def _column_cell_text(db, board, task, spec):
     if not col:
         return "העמודה אינה קיימת בלוח"
     kind = recipes.column_kind(col.get("type"))
-    raw = (task.custom_fields or {}).get(str(spec.get("col")))
+    raw = _cond_cell_raw(db, task, col)
     if kind == "check":
         return "מסומן" if (len(raw) if isinstance(raw, list) else raw) else "לא מסומן"
     vals = raw if isinstance(raw, list) else [raw]
@@ -11635,8 +11771,8 @@ def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(cu
                             old_value=f"פריט #{task.id}: {(task.title or '')[:200]}",
                             new_value=override, changed_by=user_id))
         trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
-        row = _fire_rule(db, a, task, {"type": trig, "manual": True}, user_id, 0,
-                         override=override)
+        row = _fire_rule(db, a, task, {"type": trig, "manual": True, "source": "manual"},
+                         user_id, 0, override=override)
         db.commit()
         if not row:
             raise HTTPException(400, "ההפעלה לא נרשמה")
@@ -12384,6 +12520,13 @@ def update_task(task_id: int, data: dict, request: Request = None,
         _was_status = _logged_status(task)
         _was_priority = _logged_priority(task)
         _before_assignees = {u.id for u in task.assignees}
+        _before_group = task.group_id
+        # what each watchable column said before the edit, so "ערך שדה השתנה"
+        # can be answered by comparison rather than by the request's say-so
+        _watchable = [c.get("id") for c in _board_columns(db, task.board_id)
+                      if c.get("id") and c.get("type") not in AUTOMATION_UNWATCHABLE_COLUMNS]
+        _before_fields = {c: (task.custom_fields or {}).get(c) for c in _watchable}
+        _field_delta = {}         # col id → (was, now), for "ערך שדה השתנה"
         _link_delta = {}          # col id → (added, removed), for the link triggers
         _link_report = []         # ids that did not take, and why
         if data.get("title") is not None and data["title"] != task.title:
@@ -12555,23 +12698,51 @@ def update_task(task_id: int, data: dict, request: Request = None,
                 _audit(db, task_id, "update", _f, _old, _new, actor)
         # ── automations ── fire on what actually changed, before the commit so a
         # rule's own writes land in the same transaction as the edit
+        for _cid, _was in _before_fields.items():
+            _now = (task.custom_fields or {}).get(_cid)
+            if _now != _was:
+                _field_delta[_cid] = (_was, _now)
+        _src = (data.get("source") if data.get("source") in AUTOMATION_SOURCES
+                else "item")
+        _batch = str(data.get("batch") or "")[:36]
+        _ev = lambda kind, **kw: _event(kind, _src, _batch, **kw)
+        # Every one of these is guarded on the value having actually MOVED. A
+        # save that re-sends what was already there is not a change, and a rule
+        # that fired on it would act on an edit nobody made.
         if _task_status_key(task) != _before_status:
-            _run_automations(db, task, {"type": "status_changes_to",
-                                        "status": _task_status_key(task)}, actor)
+            _run_automations(db, task, _ev("status_changes_to",
+                                           status=_task_status_key(task),
+                                           was=_before_status), actor)
         if _task_priority_key(task) != _before_priority:
-            _run_automations(db, task, {"type": "priority_changes_to",
-                                        "priority": _task_priority_key(task)}, actor)
-        if {u.id for u in task.assignees} - _before_assignees:
-            _run_automations(db, task, {"type": "person_assigned"}, actor)
+            _run_automations(db, task, _ev("priority_changes_to",
+                                           priority=_task_priority_key(task),
+                                           was=_before_priority), actor)
+        _after_assignees = {u.id for u in task.assignees}
+        if _after_assignees - _before_assignees:
+            _run_automations(db, task, _ev("person_assigned",
+                                           user_ids=sorted(_after_assignees
+                                                           - _before_assignees)), actor)
+        if _before_assignees - _after_assignees:
+            _run_automations(db, task, _ev("person_unassigned",
+                                           user_ids=sorted(_before_assignees
+                                                           - _after_assignees)), actor)
+        if task.group_id != _before_group:
+            _run_automations(db, task, _ev("moved_to_group", group_id=task.group_id,
+                                           from_group=_before_group), actor)
+        # one event per column whose VALUE moved — a mirror is not among them,
+        # and neither is a connect column, which has two triggers of its own
+        for _cid, (_was, _now) in _field_delta.items():
+            _run_automations(db, task, _ev("column_changed", col=_cid,
+                                           was=_was, now=_now), actor)
         # a link being made or unmade is an event in its own right, and one edit
         # can do both in the same cell (a replacement), so both are reported
         for _k, (_added, _removed) in _link_delta.items():
             if _added:
-                _run_automations(db, task, {"type": "link_added", "col": _k,
-                                            "item_ids": _added}, actor)
+                _run_automations(db, task, _ev("link_added", col=_k,
+                                               item_ids=_added), actor)
             if _removed:
-                _run_automations(db, task, {"type": "link_removed", "col": _k,
-                                            "item_ids": _removed}, actor)
+                _run_automations(db, task, _ev("link_removed", col=_k,
+                                               item_ids=_removed), actor)
         # a sub-item finishing is an event on its PARENT — the rule then acts
         # on the parent, which is what makes "עדכן שדה בפריט האב" every action
         # the catalog already has instead of one that writes somewhere else
@@ -12579,8 +12750,8 @@ def update_task(task_id: int, data: dict, request: Request = None,
                 and _st_of(task) == "done"):
             _parent = db.query(Task).filter(Task.id == task.parent_id).first()
             if _parent and not _parent.deleted_at:
-                _run_automations(db, _parent, {"type": "subitem_done",
-                                               "subitem_id": task.id}, actor)
+                _run_automations(db, _parent, _ev("subitem_done",
+                                                  subitem_id=task.id), actor)
         # and the items pointing at this one hear that its status moved
         if _task_status_key(task) != _before_status:
             _fan_out_linked_status(db, task, _task_status_key(task), actor)
@@ -13467,6 +13638,9 @@ def task_assignees(task_id: int, data: dict, request: Request = None,
         if data.get("action") == "remove":
             if was:
                 task.assignees.remove(user)
+                _run_automations(db, task, _event("person_unassigned", "item",
+                                                  user_id=user.id,
+                                                  user_ids=[user.id]), actor)
         else:
             if not was:
                 task.assignees.append(user)
@@ -13480,8 +13654,9 @@ def task_assignees(task_id: int, data: dict, request: Request = None,
                                 board_id=task.board_id, task_id=task_id)
                         _mail.append(_item_mail(db, user.id, task, board, actor, "assign",
                                                 _app_base_url(request)))
-                _run_automations(db, task, {"type": "person_assigned",
-                                            "user_id": user.id}, actor)
+                _run_automations(db, task, _event("person_assigned", "item",
+                                                  user_id=user.id,
+                                                  user_ids=[user.id]), actor)
         _bid = task.board_id
         db.commit()
         _send_item_mails(_mail)
@@ -13627,6 +13802,15 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             _now = _logged_status(task)
             if _now != _was:
                 _audit(db, task_id, "update", "status", _was, _now, actor)
+        # the two things a move can change, each only where it really moved —
+        # a drag that lands an item back where it started is not an event
+        if task.group_id != src_group:
+            _run_automations(db, task, _event("moved_to_group", "item",
+                                              group_id=task.group_id,
+                                              from_group=src_group), actor)
+        if "status" in data and _now != _was:
+            _run_automations(db, task, _event("status_changes_to", "item",
+                                              status=_task_status_key(task)), actor)
         db.commit()
         bus.publish("task.changed", board_id=_src_board, task_id=task_id, actor_id=actor)
         return {"status": "moved"}
@@ -13676,6 +13860,7 @@ def move_items_bulk(board_id: int, data: dict, actor_id: int = Depends(current_u
         if not moving:
             return {"moved": [], "unchanged": unchanged, "missing": missing, "order": []}
         src_groups = {t.group_id for t in moving}
+        was_group = {t.id: t.group_id for t in moving}     # before they are moved
         # they land at the end of the target group, in the order they were given
         tail = max([t.position or 0 for t in _group_items(db, board_id, gid)], default=-1)
         for i, t in enumerate(moving):
@@ -13685,6 +13870,14 @@ def move_items_bulk(board_id: int, data: dict, actor_id: int = Depends(current_u
         touched = {gid} | src_groups
         for g in touched:
             _renumber_group(db, board_id, g)       # dense 0..n-1, order preserved
+        # Rule: one action over many items is still one event PER ITEM — a rule
+        # is about an item, and a single event for twelve of them could not say
+        # which two it skipped. What they share is the batch id, which is what
+        # puts the twelve rows back together in the log afterwards.
+        batch = _new_batch()
+        for t in moving:
+            _run_automations(db, t, _event("moved_to_group", "bulk", batch,
+                                           group_id=gid, from_group=was_group[t.id]), actor_id)
         db.commit()
         order = [{"group_id": g,
                   "ids": [t.id for t in _group_items(db, board_id, g)]} for g in touched]
@@ -13694,7 +13887,8 @@ def move_items_bulk(board_id: int, data: dict, actor_id: int = Depends(current_u
         bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
         return {"moved": [{"id": t.id, "group_id": t.group_id, "position": t.position}
                           for t in moving],
-                "unchanged": unchanged, "missing": missing, "order": order}
+                "unchanged": unchanged, "missing": missing, "order": order,
+                "batch_id": batch}
 
 @app.post("/api/tasks/{parent_id}/subitems/reorder")
 def reorder_subitems(parent_id: int, data: dict, actor_id: int = Depends(current_user_id)):

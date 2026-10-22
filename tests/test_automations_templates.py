@@ -397,3 +397,42 @@ def test_a_group_that_was_deleted_stops_the_rule_rather_than_guessing(client, ad
     with Session(cityos_main.engine) as db:
         assert db.query(Task).filter(Task.board_id == far,
                                      Task.title == "פריט").count() == 0
+
+
+def test_a_board_with_no_column_to_listen_to_says_so(client, admin_id):
+    """"ערך שדה השתנה" needs a column that is not a mirror, a connect or a
+    formula — the three a rule may not be hung on."""
+    bare = _board(client, admin_id, "לוח בלי עמודות")
+    with Session(cityos_main.engine) as db:
+        b = db.query(cityos_main.Board).filter(cityos_main.Board.id == bare).first()
+        b.settings = {**(b.settings or {}), "columns": []}
+        db.commit()
+    rows = {t["id"]: t for t in _lib(client, bare, admin_id)["templates"]}
+    t = rows["column_changed_notify_assignees"]
+    assert t["available"] is False
+    assert t["missing"] == ["עמודה מותאמת בלוח (לא מראה ולא קישור)"], t["missing"]
+
+
+def test_a_board_with_an_ordinary_column_can_use_it(client, admin_id):
+    bid = _board(client, admin_id, "לוח עם עמודה")
+    cols = [c for c in client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"]
+            if str(c.get("id", "")).startswith("col_")]
+    cols.append({"id": "col_txt", "type": "text", "title": "הערה"})
+    client.patch(f"/api/boards/{bid}?actor_id={admin_id}", json={"columns": cols})
+    rows = {t["id"]: t for t in _lib(client, bid, admin_id)["templates"]}
+    assert rows["column_changed_notify_assignees"]["available"] is True
+
+
+def test_a_mirror_alone_is_not_a_column_to_listen_to(client, admin_id):
+    far = _board(client, admin_id, "יעד זמינות")
+    bid = _board(client, admin_id, "לוח מראה בלבד")
+    with Session(cityos_main.engine) as db:
+        b = db.query(cityos_main.Board).filter(cityos_main.Board.id == bid).first()
+        b.settings = {**(b.settings or {}), "columns": [
+            {"id": "col_link", "type": "connect", "title": "קישור",
+             "connect": {"board_ids": [far], "multi": True}},
+            {"id": "col_mir", "type": "mirror", "title": "מראה",
+             "mirror_of": {"connect": "col_link", "field": "status"}}]}
+        db.commit()
+    rows = {t["id"]: t for t in _lib(client, bid, admin_id)["templates"]}
+    assert rows["column_changed_notify_assignees"]["available"] is False

@@ -485,6 +485,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   border-radius:10px;padding:1px 7px}
 .au-recipe.au-off{opacity:.62;cursor:not-allowed;display:block;width:100%;text-align:start}
 .au-tmiss{margin-top:7px;font-size:12px;color:var(--red)}
+.ah-batch{cursor:pointer;border:none;font:inherit}
 .au-ccount{font-size:10.5px;font-weight:700;color:#fff;background:var(--primary);border-radius:9px;padding:1px 7px;margin-inline-end:5px;vertical-align:middle}
 .au-group-h{font-size:11.5px;font-weight:700;color:var(--text-muted);margin:14px 0 7px}
 .au-build{border:1px solid var(--primary);border-radius:10px;padding:14px;background:var(--bg);font-size:13.5px;line-height:2.1}
@@ -7396,6 +7397,10 @@ const Automations = {
   IMP:{critical:{he:'קריטית',cls:'crit'},high:{he:'גבוהה',cls:'high'},
        normal:{he:'רגילה',cls:'norm'},low:{he:'נמוכה',cls:'low'}},
   OUT:{ran:'הצליחה',skipped:'דילגה',failed:'נכשלה'},
+  /* where a change came from. "item" is an ordinary edit and is not labelled —
+     a badge on every row is a badge nobody reads. */
+  SRC:{item:'עריכה',create:'יצירת פריט',bulk:'פעולה מרובה',automation:'אוטומציה',
+       import:'ייבוא',manual:'הפעלה ידנית',date:'תאריך יעד',link:'קישור'},
   SORTS:{order:'סדר ביצוע (קדימות בפועל)',importance:'חשיבות (תצוגה בלבד)',updated:'עדכון אחרון',
          last_run:'הפעלה אחרונה',success:'שיעור הצלחה',name:'שם'},
 
@@ -7997,7 +8002,7 @@ const Automations = {
     }catch(e){ this.runs=[]; this.runCounts={}; toast('טעינת ההיסטוריה נכשלה'); }
     this.runsLoading=false; this.runsLoaded=true; this.render();
   },
-  setOutcome(v){ this.runOutcome=v; this.loadRuns(); },
+  setOutcome(v){ this.runOutcome=v; this.batch=null; this.loadRuns(); },
   setRunAuto(v){ this.runAuto=+v||0; this.loadRuns(); },
   historyFor(id){
     this.runAuto=id; this.runOutcome=''; this.tab='history';
@@ -8014,16 +8019,20 @@ const Automations = {
         <option value="0">כל האוטומציות</option>
         ${rules.map(a=>`<option value="${a.id}" ${this.runAuto===a.id?'selected':''}>${esc(a.sentence.replace(/[«»]/g,''))}</option>`).join('')}
       </select>`:'';
-    const rows=this.runs.length?this.runs.map(r=>this.runRow(r)).join('')
+    const shown=this.batch?this.runs.filter(r=>r.batch_id===this.batch):this.runs;
+    const rows=shown.length?shown.map(r=>this.runRow(r)).join('')
       :`<div class="empty" style="padding:40px"><i class="fa-solid fa-clock-rotate-left"></i><div>${
-         this.runOutcome||this.runAuto?'אין הפעלות בסינון הזה':'האוטומציות של הלוח עוד לא הופעלו'}</div></div>`;
+         this.runOutcome||this.runAuto||this.batch?'אין הפעלות בסינון הזה':'האוטומציות של הלוח עוד לא הופעלו'}</div></div>`;
+    const batchBar=this.batch?`<div class="au-chips"><span class="ah-tag"><i class="fa-solid fa-layer-group"></i>
+        פעולה מרובה אחת — ${shown.length} פריטים</span>
+        <button class="au-lnk" onclick="Automations.showBatch('${esc(this.batch)}')">הצג הכל</button></div>`:'';
     return `<div class="au-chips">${chip('','הכל',c.total)}${chip('ran','הופעלו',c.ran)}${chip('skipped','דילוגים',c.skipped)}${
         chip('failed','כשלים',c.failed)}${chip('retried','ניסיונות חוזרים',c.retried)}${sel}
         ${this.data.can_export?`<button class="btn btn-ghost" style="margin-inline-start:auto" onclick="Automations.exportRuns()"><i class="fa-solid fa-file-csv" style="color:var(--green)"></i> ייצוא הלוג</button>`:''}</div>
       <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i>
         כל הפעלה נרשמת — גם כלל שהתאים ולא היה לו מה לעשות. הפעלה שדילגה או נכשלה אפשר לנסות שוב.
         <button class="au-lnk" onclick="Automations.testLog(0)">לוג הבדיקות בנפרד</button></div>
-      <div class="logs-list">${rows}</div>`;
+      ${batchBar}<div class="logs-list">${rows}</div>`;
   },
 
   runRow(r){
@@ -8043,6 +8052,10 @@ const Automations = {
           ${r.version?`<span class="ah-tag" title="הגרסה שהייתה בתוקף כשהאירוע נקלט">גרסה ${r.version}</span>`:''}
           ${r.is_retry?'<span class="ah-tag"><i class="fa-solid fa-rotate-right"></i> ניסיון חוזר</span>':''}
           ${r.depth>0?'<span class="ah-tag" title="הופעלה בעקבות אוטומציה אחרת">שרשור</span>':''}
+          ${(Automations.SRC[r.source]&&r.source!=='item')
+            ?`<span class="ah-tag" title="מקור השינוי">${esc(Automations.SRC[r.source])}</span>`:''}
+          ${r.batch_id?`<button class="ah-tag ah-batch" title="כל הפריטים שהשתנו באותה פעולה"
+             onclick="Automations.showBatch('${esc(r.batch_id)}')"><i class="fa-solid fa-layer-group"></i> פעולה מרובה</button>`:''}
           ${r.retried_at?'<span class="ah-tag" title="כבר נוסתה שוב"><i class="fa-solid fa-check"></i> נוסתה שוב</span>':''}
         </div>
         <div class="ah-sent">${sent}</div>
@@ -8051,6 +8064,14 @@ const Automations = {
       <span class="ah-when" title="${esc(fdatetimeY(r.created_at))}">${esc(BoardLog.ago(r.created_at))}</span>
       ${can?`<button class="btn btn-ghost ah-retry" onclick="Automations.retry(${r.id})"><i class="fa-solid fa-rotate-right"></i> נסה שוב</button>`:''}
     </div>`;
+  },
+
+  /* Every item that changed in one bulk action, which is what the shared batch
+     id is for: the log keeps a row per item — a rule is about an item — and
+     this is how they read as the one action they were. */
+  showBatch(id){
+    this.batch=(this.batch===id)?null:id;
+    this.render();
   },
 
   /* A retry can change the item it ran on, so the board behind the page is
@@ -8743,6 +8764,17 @@ const Automations = {
     // picker awaits a fetch before it has anything to anchor to
     const anchor=e.currentTarget;
     const r=this.building.recipe, f=r&&r.fields.find(x=>x.key===key); if(!f)return;
+    if(f.type==='days'){
+      const cur=this.building.values[key];
+      openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
+        <input id="au-txt" class="au-in" type="number" min="0" max="365" style="max-width:120px"
+               placeholder="${esc(f.label)}" value="${esc(cur?cur.v:'')}"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setDays('${key}');}">
+        <button class="rm-item" onclick="Automations.setDays('${key}')"><i class="fa-solid fa-check"></i> אישור</button>
+      </div>`,'row-menu-pop');
+      setTimeout(()=>{const i=document.getElementById('au-txt'); if(i){i.focus();i.select();}},30);
+      return;
+    }
     if(f.type==='text'){
       const cur=this.building.values[key];
       openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
@@ -8787,6 +8819,13 @@ const Automations = {
     if(type==='person')   return this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
     if(type==='connect')  return customColumns().filter(c=>c.type==='connect')
                                  .map(c=>({v:c.id,label:c.title||c.id,color:''}));
+    /* a column a rule may LISTEN to. A mirror shows a value that lives on
+       another item, so "it changed" is that item's event — it stays usable as
+       a condition. A connect column already has two triggers of its own, and a
+       formula has no value of its own to change. */
+    if(type==='column')   return customColumns()
+                                 .filter(c=>!['mirror','connect','formula'].includes(c.type))
+                                 .map(c=>({v:c.id,label:c.title||c.id,color:''}));
     if(type==='board')    return this._linkBoards(connectId).map(b=>({v:b.id,label:b.name,color:''}));
     return [];
   },
@@ -8830,6 +8869,13 @@ const Automations = {
     openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
 
+  setDays(key){
+    const el=document.getElementById('au-txt');
+    const n=Math.max(0,Math.min(365,parseInt((el?el.value:'')||'',10)));
+    if(!isFinite(n)){ toast('יש להזין מספר ימים'); return; }
+    this.building.values[key]={v:n,label:String(n),color:''};
+    closeCellPops(); this.render();
+  },
   setField(key,idx){
     const it=(this._popItems||[])[idx]; if(!it)return;
     this.building.values[key]={v:it.v,label:it.label,color:it.color||''};
@@ -8911,7 +8957,7 @@ const Automations = {
         if(asDraft) continue;
         toast('יש להשלים את כל השדות'); return;
       }
-      config[f.key]=['person','group','item','board','target_group'].includes(f.type)
+      config[f.key]=['person','group','item','board','target_group','days'].includes(f.type)
                       ?+cur.v:cur.v;
     }
     // a condition still missing its value is refused here rather than sent: the
@@ -8948,7 +8994,7 @@ const Automations = {
           if(asDraft) continue;
           toast('יש להשלים את הערכים בפעולות הנוספות'); return;
         }
-        values[f.key]=['person','group','item','board','target_group'].includes(f.type)
+        values[f.key]=['person','group','item','board','target_group','days'].includes(f.type)
                         ?+cur.v:cur.v;
       }
       acts.push({key:a.key,values});
