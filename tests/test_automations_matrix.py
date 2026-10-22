@@ -544,16 +544,39 @@ def test_row7_retrying_a_cross_board_run_needs_rights_there(client, admin_id, gu
                        ).status_code == 200
 
 
-def test_row7_a_cross_board_rule_cannot_be_copied_onto_rights_nobody_gave(client, admin_id,
-                                                                          guinea_id):
+def test_row7_a_copy_does_not_carry_a_reference_its_author_may_not_have(client, admin_id,
+                                                                         guinea_id):
     """A copy is a new rule, written by whoever asked for it — so it is written
-    under their rights, not under the rights of whoever wrote the original."""
+    under their rights, not under the rights of whoever wrote the original.
+
+    The reference is what does not come with it (see _strip_unreachable_refs);
+    the copy itself is made, as a draft with a blank where the far board was.
+    Row 7 holds either way — what lands on the board is not a cross-board rule —
+    and the two places that would make it one are still shut: it cannot be
+    switched on with the blank, and filling the blank back in is refused.
+    """
     far, near, a = _far_reaching_rule(client, admin_id, guinea_id, "שכפול")
     me = f"user_id={guinea_id}"
     r = client.post(f"/api/automations/{a['id']}/duplicate?{me}")
-    assert r.status_code == 403 and "בכל הלוחות" in r.json()["detail"], r.text
+    assert r.status_code == 200, r.text
+    copy = r.json()
+    assert copy["status"] == "draft"
+    assert copy["config"].get("a_board") is None, copy["config"]
+    assert any("יעד ללא הרשאה" in x for x in copy["dropped_references"]), copy
+    assert copy["missing_fields"], copy
+
+    # and the blank is a wall, not a formality
+    assert client.patch(f"/api/automations/{copy['id']}?{me}",
+                        json={"status": "active"}).status_code == 400
+    back = client.patch(f"/api/automations/{copy['id']}?{me}",
+                        json={"config": {"a_connect": "col_link", "a_board": far,
+                                         "a_text": "פריט מרוחק"}})
+    assert back.status_code == 403 and "בכל הלוחות" in back.json()["detail"], back.text
+
+    # given rights there, the copy comes out whole
     _role(client, admin_id, far, guinea_id, "editor")
-    assert client.post(f"/api/automations/{a['id']}/duplicate?{me}").status_code == 200
+    whole = client.post(f"/api/automations/{a['id']}/duplicate?{me}").json()
+    assert whole["config"].get("a_board") == far and whole["dropped_references"] == []
 
 
 def test_row7_reading_it_and_pausing_it_are_never_blocked(client, admin_id, guinea_id):

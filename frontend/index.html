@@ -7803,14 +7803,16 @@ const Automations = {
             +'אוטומציה מושהית לא תופעל בעקבות שחזור.'});
   },
 
-  /* ---- בדיקה על פריט ----
-     The action really runs against the item you pick, inside a transaction the
-     server then rolls back. A test that only reasoned about the rule would miss
-     the two things worth testing: a status that no longer exists, and a
-     recipient who has left the board. */
+  /* ---- בדיקה על פריט, והפעלה ידנית ----
+     One panel, two jobs, and the difference is the point. A בדיקה works out
+     what WOULD happen and keeps it in a log of its own. A הפעלה ידנית happens:
+     so it goes through the same analysis first, shown as a preview, and only
+     the button under that preview actually runs the rule. Nothing on this
+     screen runs a rule on an item the person has not looked at. */
   async startTest(id,forReal){
     const a=(this.data.automations||[]).find(x=>x.id===id); if(!a)return;
-    this.testing={id:id,a:a,q:'',items:null,result:null,busy:false,real:!!forReal};
+    this.testing={id:id,a:a,q:'',items:null,result:null,busy:false,real:!!forReal,
+                  preview:null,pick:null,ovr:false,reason:''};
     this.render();
     await this.testItems();
   },
@@ -7830,19 +7832,43 @@ const Automations = {
   },
   async runTest(taskId){
     const t=this.testing; if(!t||t.busy)return;
-    t.busy=true; this.render();
+    t.busy=true; t.result=null; this.render();
     try{
-      const url='/api/automations/'+t.id+(t.real?'/run':'/test')+(meId()?'?user_id='+meId():'');
-      const d=await api(url,{method:'POST',headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({task_id:taskId})});
-      t.result=t.real?(d.run||null):(d||null);
-      if(t.real&&(t.result||{}).outcome==='ran'){
-        // it really changed the item — the board behind must not show the old one
-        try{ st.board=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); renderView(); }catch(e){}
-      }
+      // a manual run asks the Dry Run first — the preview is what the person
+      // confirms, and it is the same analysis the בדיקה panel shows
+      const d=await api('/api/automations/'+t.id+'/test'+(meId()?'?user_id='+meId():''),
+                        {method:'POST',headers:{'Content-Type':'application/json'},
+                         body:JSON.stringify({task_id:taskId})});
+      if(t.real){ t.preview=d||null; t.pick={id:taskId,title:(d||{}).task_title||''};
+                  t.ovr=false; t.reason=''; }
+      else t.result=d||null;
     }catch(e){ toast(e.detail||'הבדיקה נכשלה'); }
     t.busy=false;
     this.runsLoaded=false;          // the test is a line in the history now
+    this.render();
+  },
+  cancelPick(){ const t=this.testing; if(!t)return;
+                t.preview=null; t.pick=null; t.ovr=false; t.reason=''; this.render(); },
+  setOverride(on){ const t=this.testing; if(!t)return; t.ovr=!!on; this.render(); },
+  setOverrideReason(v){ const t=this.testing; if(t)t.reason=v; },
+  /* the button under the preview — this is the one that runs the rule */
+  async confirmRun(){
+    const t=this.testing; if(!t||t.busy||!t.pick)return;
+    t.busy=true; this.render();
+    try{
+      const body={task_id:t.pick.id};
+      if(t.ovr){ body.override=true; body.reason=t.reason||''; }
+      const d=await api('/api/automations/'+t.id+'/run'+(meId()?'?user_id='+meId():''),
+                        {method:'POST',headers:{'Content-Type':'application/json'},
+                         body:JSON.stringify(body)});
+      t.result=d.run||null; t.preview=null; t.pick=null;
+      if((t.result||{}).outcome==='ran'){
+        // it really changed the item — the board behind must not show the old one
+        try{ st.board=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); renderView(); }catch(e){}
+      }
+    }catch(e){ toast(e.detail||'ההפעלה נכשלה'); }
+    t.busy=false;
+    this.runsLoaded=false;
     this.render();
   },
 
@@ -8051,7 +8077,10 @@ const Automations = {
     const V={would_run:{he:'הכלל היה מתבצע',cls:'ok',ic:'fa-circle-check'},
              would_skip:{he:'הכלל לא היה עושה דבר',cls:'skip',ic:'fa-forward'},
              blocked:{he:'הכלל חסום',cls:'fail',ic:'fa-triangle-exclamation'}};
-    const r=t.result, v=r?(V[r.verdict]||V.would_skip):null;
+    const r=t.result;
+    /* the analysis: the Dry Run's own result, or — on a manual run — the
+       preview of the item they picked, waiting to be confirmed */
+    const an=t.real?t.preview:r, v=an?(V[an.verdict]||V.would_skip):null;
     const items=t.items===null?'<div class="spin"></div>'
       :(t.items.length?t.items.map(x=>`<button class="rm-item" style="width:100%" onclick="Automations.runTest(${x.id})">
             <i class="fa-solid ${t.real?'fa-bolt':'fa-vial'}" style="color:var(--primary)"></i> ${esc(x.title)}</button>`).join('')
@@ -8059,40 +8088,40 @@ const Automations = {
     const yn=ok=>`<i class="fa-solid ${ok?'fa-circle-check ok':'fa-circle-xmark no'}"></i>`;
     /* The Dry Run's whole point is that it is readable: the trigger, then each
        condition, then what would actually be written, then what is in the way. */
-    const found=r&&!t.real?`
+    const found=an?`
       <div class="au-res"><div class="au-res-row">
         <span class="ah-out ${v.cls}"><i class="fa-solid ${v.ic}"></i> ${v.he}</span>
-        <div class="ah-main"><div class="am-name">${esc(r.task_title||'')}</div>
-          <div class="au-res-msg">${esc(r.summary||'')}</div></div>
+        <div class="ah-main"><div class="am-name">${esc(an.task_title||'')}</div>
+          <div class="au-res-msg">${esc(an.summary||'')}</div></div>
       </div></div>
       <div class="imp-sec"><div class="imp-sec-t"><i class="fa-solid fa-bolt"></i> גורם מפעיל</div>
-        <div class="au-diff">${yn(r.trigger.matches)} <span>${esc(r.trigger.label||'')}</span>
-          ${r.trigger.note?`<span class="au-res-msg">${esc(r.trigger.note)}</span>`:''}</div></div>
-      ${(r.conditions||[]).length?`<div class="imp-sec"><div class="imp-sec-t"><i class="fa-solid fa-filter"></i> תנאים</div>
-        ${r.conditions.map(c=>`<div class="au-diff">${yn(c.ok)}
+        <div class="au-diff">${yn(an.trigger.matches)} <span>${esc(an.trigger.label||'')}</span>
+          ${an.trigger.note?`<span class="au-res-msg">${esc(an.trigger.note)}</span>`:''}</div></div>
+      ${(an.conditions||[]).length?`<div class="imp-sec"><div class="imp-sec-t"><i class="fa-solid fa-filter"></i> תנאים</div>
+        ${an.conditions.map(c=>`<div class="au-diff">${yn(c.ok)}
           <span class="au-diff-k">${esc(c.label)}</span>
           <span class="lg-pill new">${esc(c.expected)}</span>
           <span class="au-res-msg">בפריט: ${esc(c.actual)}</span></div>`).join('')}</div>`:''}
-      ${(r.actions||[]).length?`<div class="imp-sec"><div class="imp-sec-t"><i class="fa-solid fa-play"></i> פעולות וערכים צפויים</div>
-        ${r.actions.map(x=>`<div class="au-diff">${yn(!x.no_op)}
+      ${(an.actions||[]).length?`<div class="imp-sec"><div class="imp-sec-t"><i class="fa-solid fa-play"></i> פעולות וערכים צפויים</div>
+        ${an.actions.map(x=>`<div class="au-diff">${yn(!x.no_op)}
           <span class="au-diff-k">${esc(x.what)}</span>
           ${x.from?`<span class="lg-pill old">${esc(x.from)}</span><i class="fa-solid fa-arrow-left lg-arrow"></i>`:''}
           <span class="lg-pill new">${esc(x.to||'')}</span>
           ${x.note?`<span class="au-res-msg">${esc(x.note)}</span>`:''}</div>`).join('')}</div>`:''}
-      ${(r.missing_permissions||[]).length?`<div class="imp-sec imp-warn">
+      ${(an.missing_permissions||[]).length?`<div class="imp-sec imp-warn">
         <div class="imp-sec-t"><i class="fa-solid fa-user-slash"></i> הרשאות חסרות</div>
-        ${r.missing_permissions.map(x=>`<div class="imp-why">${esc(x)}</div>`).join('')}</div>`:''}
-      ${(r.broken_dependencies||[]).length?`<div class="imp-sec imp-warn">
+        ${an.missing_permissions.map(x=>`<div class="imp-why">${esc(x)}</div>`).join('')}</div>`:''}
+      ${(an.broken_dependencies||[]).length?`<div class="imp-sec imp-warn">
         <div class="imp-sec-t"><i class="fa-solid fa-link-slash"></i> תלויות חסרות</div>
-        ${r.broken_dependencies.map(x=>`<div class="imp-why">${esc(x)}</div>`).join('')}</div>`:''}
-      ${(r.conflicts||[]).length?`<div class="imp-sec imp-warn">
+        ${an.broken_dependencies.map(x=>`<div class="imp-why">${esc(x)}</div>`).join('')}</div>`:''}
+      ${(an.conflicts||[]).length?`<div class="imp-sec imp-warn">
         <div class="imp-sec-t"><i class="fa-solid fa-code-merge"></i> התנגשות</div>
-        <div class="imp-why">אוטומציות נוספות שמעדכנות אותם שדות: ${r.conflicts.map(o=>esc(o.name)).join(', ')}</div></div>`:''}
-      ${(r.loop_risk||[]).length?`<div class="imp-sec imp-warn">
+        <div class="imp-why">אוטומציות נוספות שמעדכנות אותם שדות: ${an.conflicts.map(o=>esc(o.name)).join(', ')}</div></div>`:''}
+      ${(an.loop_risk||[]).length?`<div class="imp-sec imp-warn">
         <div class="imp-sec-t"><i class="fa-solid fa-rotate"></i> סיכון ללולאה</div>
-        ${r.loop_risk.map(o=>`<div class="imp-why">${esc(o.name)}${o.cycle?' — מזינה את האוטומציה הזאת בחזרה':''}</div>`).join('')}</div>`:''}
-      <div class="au-res-msg" style="margin-top:8px"><i class="fa-solid fa-shield"></i>
-        הבדיקה לא שינתה מידע ולא שלחה התראה. היא נשמרת בלוג הבדיקות ל-${r.retention_days||30} ימים.</div>`:'';
+        ${an.loop_risk.map(o=>`<div class="imp-why">${esc(o.name)}${o.cycle?' — מזינה את האוטומציה הזאת בחזרה':''}</div>`).join('')}</div>`:''}
+      ${t.real?'':`<div class="au-res-msg" style="margin-top:8px"><i class="fa-solid fa-shield"></i>
+        הבדיקה לא שינתה מידע ולא שלחה התראה. היא נשמרת בלוג הבדיקות ל-${an.retention_days||30} ימים.</div>`}`:'';
     /* a manual run is the other panel: it really happened */
     const done=r&&t.real?`<div class="au-res"><div class="au-res-row">
         <span class="ah-out ${r.outcome==='ran'?'ok':r.outcome==='failed'?'fail':'skip'}">
@@ -8101,15 +8130,47 @@ const Automations = {
         <div class="ah-main"><div class="am-name">${esc(r.task_title||'')}</div>
           ${r.reason?`<div class="ah-why">${esc(r.reason)}</div>`:''}</div>
       </div></div>`:'';
+    /* ---- the confirmation ----
+       A manual run happens, so it is confirmed against the preview above and
+       never against a name in a list. A rule whose own conditions do not hold
+       on this item would simply skip; stepping over them is a system admin's
+       decision alone and takes a written reason, which goes to the Audit and
+       into the line the history keeps. */
+    const blocked=an&&((an.missing_permissions||[]).length||(an.broken_dependencies||[]).length);
+    const unmet=an&&(an.conditions||[]).some(c=>!c.ok);
+    const sysAdmin=!!(st.me&&st.me.role==='admin');
+    const confirm=(t.real&&t.pick&&!r)?`
+      <div class="imp-sec">
+        <div class="imp-sec-t"><i class="fa-solid fa-bolt"></i> אישור הפעלה על «${esc(t.pick.title)}»</div>
+        <div class="imp-why">${blocked
+          ? 'לא ניתן להפעיל — יש להסיר את החסימות שלמעלה.'
+          : unmet
+            ? (sysAdmin
+                ? 'תנאי הכלל אינם מתקיימים על הפריט הזה. ההפעלה תדלג, אלא אם תעקפו את התנאים.'
+                : 'תנאי הכלל אינם מתקיימים על הפריט הזה — ההפעלה תדלג. רק מנהל מערכת יכול לעקוף תנאים.')
+            : 'הפעולות שלמעלה יבוצעו על הפריט ויישארו.'}</div>
+        ${(unmet&&sysAdmin&&!blocked)?`
+          <label class="imp-why" style="display:flex;gap:7px;align-items:center;cursor:pointer">
+            <input type="checkbox" ${t.ovr?'checked':''} onchange="Automations.setOverride(this.checked)">
+            עקוף את תנאי הכלל (מנהל מערכת)</label>
+          ${t.ovr?`<div class="am-f"><label for="am-ovr">סיבה לעקיפה — תתועד ב־Audit</label>
+            <input id="am-ovr" class="am-in" maxlength="500" placeholder="למה הכלל צריך לרוץ על הפריט הזה"
+                   value="${esc(t.reason||'')}" oninput="Automations.setOverrideReason(this.value)"></div>`:''}`:''}
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" ${blocked?'disabled':''} onclick="Automations.confirmRun()">
+            <i class="fa-solid fa-bolt"></i> הפעל עכשיו</button>
+          <button class="btn btn-ghost" onclick="Automations.cancelPick()">בחירת פריט אחר</button>
+        </div>
+      </div>`:'';
     return `<div class="au-group-h">${t.real?'הפעלה ידנית':'בדיקה'} על פריט — ${esc(t.a.display_name)}</div>
       <div class="am-ed">
         <div class="au-sent" style="margin-bottom:10px">${esc(t.a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>')}</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px"><i class="fa-solid ${t.real?'fa-triangle-exclamation':'fa-circle-info'}"></i>
           ${t.real
-            ? 'הפעולה תרוץ על הפריט שתבחרו <b>ותישאר</b> — סטטוס, שיוך, התראות וקישורים ישתנו בפועל.'
+            ? 'בחירת פריט מציגה תצוגה מקדימה של מה שיקרה לו. ההפעלה עצמה מתבצעת רק באישור, ו<b>נשארת</b> — סטטוס, שיוך, התראות וקישורים ישתנו בפועל.'
             : 'הבדיקה מחשבת מה היה קורה. היא <b>אינה משנה מידע ואינה שולחת התראה</b>.'}</div>
-        ${found}${done}
-        ${t.busy?'<div class="spin"></div>':`
+        ${found}${confirm}${done}
+        ${t.busy?'<div class="spin"></div>':(t.real&&t.pick&&!r)?'':`
           <div class="am-f"><label for="am-tq">${r?'בדיקה על פריט נוסף':'בחרו פריט'}</label>
             <input id="am-tq" class="am-in" placeholder="חיפוש פריט" value="${esc(t.q)}" oninput="Automations.testSearch(this.value)"></div>
           <div class="logs-list" style="margin-top:8px;max-height:230px;overflow:auto">${items}</div>`}

@@ -296,7 +296,40 @@ ck('...and about a loop', ts.includes('סיכון ללולאה') && ts.includes(
 A.testing.real=true;
 A.testing.result={outcome:'ran',task_title:'תיקון מדרכה',reason:''};
 ck('a manual run says it really happened', A.testHTML().includes('הכלל בוצע'));
-ck('...and warns it will stay', A.testHTML().includes('ותישאר'));
+ck('...and warns it will stay', A.testHTML().includes('נשארת'));
+
+/* ── the manual run is confirmed against a preview of the item it would run
+      on, and only a system admin is offered the condition override ── */
+A.testing={id:11,a:A.testing.a,q:'',items:[],result:null,busy:false,real:true,
+  pick:{id:7,title:'תיקון מדרכה'},ovr:false,reason:'',
+  preview:{verdict:'would_run',summary:'הכלל היה מתבצע',task_title:'תיקון מדרכה',
+    trigger:{label:'כאשר נוצר פריט חדש',matches:true,note:''},
+    conditions:[{label:'העדיפות היא «קריטית»',expected:'קריטית',actual:'רגילה',ok:false}],
+    actions:[{what:'שינוי סטטוס',to:'בוצע',from:'בתכנון',no_op:false,note:''}],
+    missing_permissions:[],broken_dependencies:[],conflicts:[],loop_risk:[]}};
+ts=A.testHTML();
+ck('a manual run shows the preview before it runs', ts.includes('פעולות וערכים צפויים')
+   && ts.includes('אישור הפעלה על'), ts.slice(0,400));
+ck('...naming the item it would run on', ts.includes('תיקון מדרכה'));
+ck('...and the button under it is the one that runs the rule',
+   ts.includes('Automations.confirmRun()'));
+ck('...with no "נשמרת בלוג הבדיקות" footnote — this one is not a test',
+   !ts.includes('נשמרת בלוג הבדיקות'));
+ck('a board admin is told the conditions hold and who may step over them',
+   ts.includes('רק מנהל מערכת יכול לעקוף') && !ts.includes('עקוף את תנאי הכלל'));
+st.me={id:1,role:'admin'};
+ts=A.testHTML();
+ck('a system admin is offered the override', ts.includes('עקוף את תנאי הכלל'));
+A.setOverride(true);
+ts=A.testHTML();
+ck('...and has to write a reason for it', ts.includes('סיבה לעקיפה'));
+A.testing.preview.missing_permissions=['דנה אינו חבר בלוח'];
+ts=A.testHTML();
+ck('a blocked preview offers no run at all', ts.includes('יש להסיר את החסימות')
+   && ts.includes('disabled'));
+ck('...and no override either — a reason does not restore a membership',
+   !ts.includes('עקוף את תנאי הכלל'));
+st.me={id:1,role:'member'};
 A.closePanel();
 
 // the impact preview, before switching a rule on

@@ -9625,7 +9625,7 @@ def _count_automation_usage(db, board_id, outcome):
         print(f"⚠️  automation usage not counted ({board_id}): {e}", flush=True)
 
 
-def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
+def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""):
     """Run one matching rule against one item, record what came of it, and let
     the result cascade.
 
@@ -9633,6 +9633,12 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
     The three outcomes the history distinguishes are decided here — the action
     did something (`ran`), it had nothing to do (`skipped`), or it blew up
     (`failed`).
+
+    `override` is a system admin's stated reason for running the rule on an item
+    its CONDITIONS do not cover — "רק אם העדיפות קריטית" on an item that is not.
+    Nothing else gives way with them: a permission that is missing and a
+    dependency that is gone are not conditions, and a reason typed into a box
+    does not bring back a deleted group or a membership somebody revoked.
     """
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board:
@@ -9662,6 +9668,11 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
     # which is the whole reason the history keeps the non-events.
     ok, why_not = _conditions_hold(db, board, task,
                                    (a.config or {}).get(recipes.CONDITION_KEY))
+    if not ok and override:
+        # it is in the history that the conditions were stepped over, and whose
+        # decision that was — a run nobody can tell apart from an ordinary one
+        # is not an audited override
+        ok, why_not = True, ""
     if not ok:
         a.last_run_at, a.last_outcome = now, "skipped"
         a.skip_count = (a.skip_count or 0) + 1
@@ -9710,6 +9721,9 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None):
     a.consecutive_failures = 0
     _clear_owner_notices(a)
     _count_automation_usage(db, a.board_id, "ran")
+    if override:
+        note = (f"התנאים נעקפו בידי מנהל מערכת · {override}"
+                + (f" · {note}" if note else ""))
     row = _log_automation_run(db, board, a, task, event, "ran", note, depth, actor_id, retry_of)
     for ev in follow or []:
         _run_automations(db, task, ev, actor_id, depth + 1)
@@ -10242,13 +10256,21 @@ def duplicate_automation(automation_id: int, user_id: int = Depends(current_user
             raise HTTPException(403, "רק מנהל הלוח יכול לשכפל אוטומציות")
         # the copy is a new rule, written by whoever asked for it — so it is
         # written under their rights, not those of whoever wrote the original
-        _check_automation_act(db, src, user_id)
+        cfg, dropped = _strip_unreachable_refs(db, src.board_id, src.recipe_id,
+                                               src.config, user_id)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         name = (src.name or _automation_label(db, b, src).replace("«", "").replace("»", ""))[:105]
-        a = Automation(board_id=src.board_id, recipe_id=src.recipe_id, config=dict(src.config or {}),
+        # Nothing of what the original DID comes with it: the run history and
+        # the test log belong to the rule that produced them, the counters start
+        # at nothing, and `state` — which is where a date rule remembers the
+        # items it has already fired for, and where the owner notices are marked
+        # as sent — is empty, so the copy repeats nothing and suppresses nothing.
+        a = Automation(board_id=src.board_id, recipe_id=src.recipe_id, config=cfg,
                        name=f"{name} (עותק)"[:120], description=src.description or "",
                        importance=src.importance or "normal", run_order=src.run_order or 0,
-                       owner_id=src.owner_id or user_id,
+                       # whoever asked for the copy answers for it — a handover
+                       # to the original's owner is a thing somebody decides
+                       owner_id=user_id,
                        created_by=user_id, updated_by=user_id, created_at=now, updated_at=now,
                        run_count=0, fail_count=0, skip_count=0, consecutive_failures=0,
                        last_outcome="", state={})
@@ -10258,7 +10280,7 @@ def duplicate_automation(automation_id: int, user_id: int = Depends(current_user
         _record_automation_version(db, b, a, user_id, note=f"שוכפלה מאוטומציה #{src.id}")
         db.commit()
         db.refresh(a)
-        return _automation_json(db, b, a)
+        return {**_automation_json(db, b, a), "dropped_references": dropped}
 
 
 @app.get("/api/automations/{automation_id}/versions")
@@ -11336,6 +11358,12 @@ def test_automation(automation_id: int, data: dict, user_id: int = Depends(curre
                 "changed_nothing": True, "notified_nobody": True, **found}
 
 
+# What a system admin stepping over a rule's conditions has to give, in
+# characters. The same bar the organisational stop holds: a box somebody can
+# satisfy with "x" records nothing a reader of the Audit can use.
+AUTOMATION_OVERRIDE_MIN_REASON = 10
+
+
 @app.post("/api/automations/{automation_id}/run")
 def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
     """Run a rule against one item for real — "הפעלה ידנית".
@@ -11345,6 +11373,16 @@ def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(cu
     away, and that is not a difference to hide in a parameter. It runs even on a
     paused rule — checking a rule by hand before switching it on is the point —
     but never while an emergency stop is holding, which is the point of that.
+
+    One item, never a selection: a manual run is a deliberate act on a thing
+    somebody looked at, and the screen shows them the Dry Run of exactly that
+    before the button that lands here is offered.
+
+    `override` steps over the rule's conditions, and is a system admin's alone:
+    a board admin asking for the rule to run where its own "רק אם" says it
+    should not is asking to be the rule, which is a decision for the person who
+    answers for the whole organisation. It takes a written reason and is in the
+    Audit under the rule, beside the handovers.
     """
     with Session(engine) as db:
         a = db.query(Automation).filter(Automation.id == automation_id).first()
@@ -11362,13 +11400,101 @@ def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(cu
             raise HTTPException(400, "יש לבחור פריט מהלוח הזה")
         # and the rule is not a way to write on an item they may not open
         _require_task_view(db, task.id, user_id)
+        override = ""
+        if data.get("override"):
+            if _ws_role(db, user_id) != "admin":
+                raise HTTPException(403, "רק מנהל מערכת יכול לעקוף את תנאי האוטומציה")
+            override = str(data.get("reason") or "").strip()[:500]
+            if len(override) < AUTOMATION_OVERRIDE_MIN_REASON:
+                raise HTTPException(400, "עקיפת תנאים מחייבת סיבה "
+                                         f"(לפחות {AUTOMATION_OVERRIDE_MIN_REASON} תווים)")
+            db.add(AuditLog(entity_type="automation", entity_id=a.id,
+                            action="override_conditions", field_name="conditions",
+                            old_value=f"פריט #{task.id}: {(task.title or '')[:200]}",
+                            new_value=override, changed_by=user_id))
         trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
-        row = _fire_rule(db, a, task, {"type": trig, "manual": True}, user_id, 0)
+        row = _fire_rule(db, a, task, {"type": trig, "manual": True}, user_id, 0,
+                         override=override)
         db.commit()
         if not row:
             raise HTTPException(400, "ההפעלה לא נרשמה")
         db.refresh(row)
         return {"run": _automation_run_json(db, row)}
+
+
+def _field_reach(db, board_id, ftype, v):
+    """The OTHER boards a filled-in field makes the rule write on."""
+    out = set()
+    if v in (None, "", []):
+        return out
+    if ftype == "board":
+        if str(v).lstrip("-").isdigit() and int(v) != board_id:
+            out.add(int(v))
+    elif ftype == "item":
+        t = db.query(Task).filter(Task.id == v).first()
+        if t and t.board_id != board_id:
+            out.add(t.board_id)
+    elif ftype == "connect":
+        col = _find_col(db, board_id, str(v))
+        for bid in (_connect_cfg(col).get("board_ids") or []) if col else []:
+            if str(bid).lstrip("-").isdigit() and int(bid) != board_id:
+                out.add(int(bid))
+    return out
+
+
+def _may_reach(db, actor_id, board_ids):
+    """Whether `actor_id` may write on all of them — the bar a cross-board rule
+    is held to, asked of a set of boards rather than of a rule."""
+    if actor_id is None or _ws_role(db, actor_id) == "admin":
+        return True
+    return all(_board_role(db, t, actor_id) in ("admin", "editor") for t in board_ids)
+
+
+def _strip_unreachable_refs(db, board_id, recipe_id, cfg, actor_id):
+    """A copy's cross-board references, minus the ones its author may not carry.
+
+    "הפניות חוצות לוחות יועתקו רק אם למשתמש קיימות ההרשאות הנדרשות". So the copy
+    is made — losing the work in a four-action rule over one reference would be
+    a strange way to enforce a permission — and the reference is what does not
+    come with it. What is left is a DRAFT with a blank where the far board was:
+    it cannot be switched on until somebody fills it in, and filling it in is
+    checked like anything else is.
+
+    An extra action that loses a reference is dropped whole. Half an action is
+    not a smaller action — it is an action nobody wrote.
+
+    Returns (config, what was dropped, in words).
+    """
+    cfg = dict(cfg or {})
+    dropped = []
+    r = recipes.recipe(recipe_id) or {}
+    name_of = lambda t: db.query(Board.name).filter(Board.id == t).scalar() or str(t)
+    for f in r.get("fields", []):
+        reach = _field_reach(db, board_id, f["type"], cfg.get(f["key"]))
+        if reach and not _may_reach(db, actor_id, reach):
+            cfg.pop(f["key"], None)
+            dropped.append(f"{f['label']} — אין לך הרשאה ב: "
+                           + ", ".join(sorted(name_of(t) for t in reach)))
+    kept = []
+    for extra in cfg.get(recipes.ACTIONS_KEY) or []:
+        if not isinstance(extra, dict):
+            continue
+        vals = extra.get("values") if isinstance(extra.get("values"), dict) else {}
+        reach = set()
+        for f in recipes.action_fields(extra.get("key")):
+            reach |= _field_reach(db, board_id, f["type"], vals.get(f["key"]))
+        if reach and not _may_reach(db, actor_id, reach):
+            dropped.append(f"הפעולה «{recipes.plain(recipes.ACTIONS.get(extra.get('key'), ''))}» "
+                           "— אין לך הרשאה ב: "
+                           + ", ".join(sorted(name_of(t) for t in reach)))
+            continue
+        kept.append(extra)
+    if recipes.ACTIONS_KEY in cfg:
+        if kept:
+            cfg[recipes.ACTIONS_KEY] = kept
+        else:
+            cfg.pop(recipes.ACTIONS_KEY)
+    return cfg, dropped
 
 
 def _automation_reach_blocked(db, board_id, recipe_id, cfg, actor_id):
@@ -11396,20 +11522,7 @@ def _automation_reach_blocked(db, board_id, recipe_id, cfg, actor_id):
                    for f in recipes.action_fields(extra.get("key"))]
     targets = set()
     for ftype, v in filled:
-        if not v:
-            continue
-        if ftype == "board":
-            if str(v).lstrip("-").isdigit():
-                targets.add(int(v))
-        elif ftype == "item":
-            t = db.query(Task).filter(Task.id == v).first()
-            if t and t.board_id != board_id:
-                targets.add(t.board_id)
-        elif ftype == "connect":
-            col = _find_col(db, board_id, str(v))
-            for bid in (_connect_cfg(col).get("board_ids") or []) if col else []:
-                if str(bid).lstrip("-").isdigit() and int(bid) != board_id:
-                    targets.add(int(bid))
+        targets |= _field_reach(db, board_id, ftype, v)
     blocked = [t for t in targets
                if _board_role(db, t, actor_id) not in ("admin", "editor")]
     return ", ".join((db.query(Board.name).filter(Board.id == t).scalar() or str(t))
