@@ -41,7 +41,7 @@ function world(){
                 links:{col:'',mode:'',item:0},adv:null,advIds:null}; };
   const V=new Function('st','api','withMe','meId','toast','showModal','closeModals',
     'askConfirm','renderTabs','renderView','refreshToolbar','boardViews','esc',
-    'document','advQuery','filtersActive','setTimeout','Router','Chat','advPrune',
+    'document','advQuery','filtersActive','boardIsCut','setTimeout','Router','Chat','advPrune',
     'clearFilters',
     viewsSrc+'\nreturn Views;')(
     st, async(url)=>(url.includes('/views')?{views:w.serverViews||[]}:{item_ids:[1,2]}),
@@ -50,7 +50,7 @@ function world(){
     ()=>w.tabs++, ()=>w.rendered++, ()=>{},
     ()=>['table','kanban'], x=>String(x==null?'':x),
     {getElementById:()=>null, querySelector:()=>null},
-    n=>({filter:n}), ()=>true, f=>f(),
+    n=>({filter:n}), ()=>true, ()=>true, f=>f(),
     {set:(b,i,v)=>w.url.push('#/board/'+b+(v?'/view/'+v:'')+(i?'/item/'+i:''))},
     {taskId:null},
     /* A rule whose column was deleted is pruned before the view is applied.
@@ -153,8 +153,11 @@ function world(){
   ck('saving with nothing filtered says so instead of keeping an empty view',
      true);   // filtersActive() is true in this world; the real guard is below
   const guard=src.slice(src.indexOf('  saveNew(){'), src.indexOf('  edit(id)'));
+  /* …and a board that is only SORTED has something to save too: the order is
+     half of what is on screen, and a view that could not keep it made
+     sorting a change nobody could hold on to. */
   ck('...and the guard is really there',
-     /filtersActive\(\)/.test(guard) && /אין מה לשמור/.test(guard), guard);
+     /boardIsCut\(\)/.test(guard) && /אין מה לשמור/.test(guard), guard);
 }
 
 // ── the lock: whose view is it, and what may be saved ─────────────────────
@@ -280,14 +283,41 @@ function world(){
   ck('...and resets the temporary adjustments', w.cleared===before+1 && st.filters.q==='');
 }
 {
-  // the one caller that must NOT reset: clearFilters has already done it
+  /* Clearing the filter does NOT leave the view. It used to: the tab went
+     dark and the board fell back to its own table, which answered a question
+     nobody asked — somebody emptying a view's filter is adjusting that view,
+     not walking out of it, and leaving took the adjustment with it so there
+     was nothing left to save. Leaving is now the only thing that leaves. */
+  const guard=src.slice(src.indexOf('function clearFilters()'),
+                        src.indexOf('function togglePop('));
+  ck('clearing a filter leaves the open view open', !/Views\.leave/.test(guard), guard);
+  ck('…and tells the tab strip, so the change can be saved',
+     /renderTabs\(\)/.test(guard), guard);
+}
+{
   const {st,V,w}=world();
   V.items=[{id:9,name:'טבלה',filters:{q:'באג'},can_edit:true}];
   V.apply(9);
-  const before=w.cleared;
-  V.leave({keep:true});
-  ck('clearFilters unlights the tab without asking for a second reset',
-     V.active===null && w.cleared===before);
+  /* The order the board is in is part of the cut. It was left out, so sorting
+     by a column changed the screen and changed nothing the view could see:
+     "שמור תצוגה" never lit and the sorted board could not be kept. */
+  ck('an unsorted view that has not been touched offers nothing to save', !V.dirty());
+  st.colSort={key:'due',dir:'asc'};
+  ck('sorting by a column is a change to the view', V.dirty(), V.current());
+  ck('…and the sort is part of what would be written',
+     V.current().colSort.key==='due' && V.current().colSort.dir==='asc', V.current());
+  st.colSort=null;
+  ck('…and putting it back makes the view clean again', !V.dirty());
+}
+{
+  const {st,V}=world();
+  V.items=[{id:9,name:'ממוין',filters:{q:'', colSort:{key:'due',dir:'asc'}},can_edit:true}];
+  V.apply(9);
+  ck('a view opens in the order it was saved under',
+     st.colSort && st.colSort.key==='due' && st.colSort.dir==='asc', st.colSort);
+  V.items.push({id:10,name:'ללא מיון',filters:{q:''},can_edit:true});
+  V.apply(10);
+  ck('…and one saved without an order opens without one', st.colSort===null, st.colSort);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
