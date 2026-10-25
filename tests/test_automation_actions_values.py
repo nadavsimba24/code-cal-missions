@@ -245,11 +245,24 @@ def test_a_wait_whose_item_is_gone_does_not_bring_the_queue_down(client, admin_i
                        "values": {"column": c["id"], "text": "אחרי"}}]})
     tid = _item(client, bid, admin_id)
     client.delete(f"/api/tasks/{tid}?user_id={admin_id}")
+    # Deleting the item now calls the wait off there and then — "מחיקת פריט:
+    # ביטול הפעלות ממתינות" — so by here there is nothing left queued.
+    with Session(cityos_main.engine) as db:
+        assert db.query(AutomationQueue).filter(
+            AutomationQueue.board_id == bid, AutomationQueue.done_at == None).count() == 0
+
+    # And the net under it: an item that disappears WITHOUT going through the
+    # endpoint — a purge, a migration — leaves a row pointing at nothing, and
+    # the drain must not come down on it.
+    tid2 = _item(client, bid, admin_id, "שני")
     with Session(cityos_main.engine) as db:
         row = db.query(AutomationQueue).filter(AutomationQueue.board_id == bid,
+                                               AutomationQueue.task_id == tid2,
                                                AutomationQueue.done_at == None).first()
+        assert row is not None, "nothing was waiting on the second item"
         row.event = {**row.event,
                      "after": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()}
+        cityos_main._hard_delete_task(db, tid2)
         db.commit()
     assert client.get(f"/api/boards/{bid}?user_id={admin_id}").status_code == 200
     with Session(cityos_main.engine) as db:

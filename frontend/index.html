@@ -15132,6 +15132,10 @@ async function deleteColumn(e,colId){
   };
   const opts={title:'מחיקת עמודה'+(c?` — ${c.title}`:''),
               note:'הנתונים בעמודה יוסרו מהתצוגה.',confirmText:'מחק עמודה'};
+  // "לפני מחיקת שדה ... המערכת תציג את האוטומציות התלויות, הבעלים, אופן השימוש
+  // וההשפעה הצפויה" — before, which is the whole of it: afterwards the rule is
+  // suspended and the person who stopped it has gone back to what they were doing.
+  const dep=await dependentsHTML('column',colId);
   // A connect column is the one whose deletion reaches off this board: it takes
   // the relationships with it, and for a two-way column the reverse disappears
   // from someone else's board too. Say so before, not after.
@@ -15142,7 +15146,30 @@ async function deleteColumn(e,colId){
     opts.noteHTML=connectImpactHTML(imp);
     opts.confirmText='מחק את העמודה והקישורים';
   }
+  if(dep){ opts.noteHTML=(opts.noteHTML||`<div class="ci-row">${esc(opts.note||'')}</div>`)+dep; opts.note=null; }
   askConfirm('האם אתה בטוח שברצונך למחוק?',go,opts);
+}
+
+/* The automations that point at the thing about to be removed: who owns each,
+   how it uses it, and what will happen to it. Returns '' when nothing depends
+   on it — and ALSO when the question could not be asked, because an empty
+   answer and an unanswered one are the same on screen and must not be. */
+async function dependentsHTML(kind,ref){
+  let d=null;
+  try{ d=await api(`/api/boards/${st.board.id}/automations/dependents`
+                   +`?kind=${kind}&ref=${encodeURIComponent(ref)}`); }
+  catch(err){ return `<div class="ci-row">לא ניתן היה לבדוק אילו אוטומציות תלויות ברכיב הזה.</div>`; }
+  if(!d||!(d.dependents||[]).length) return '';
+  const rows=d.dependents.map(a=>`<div class="ci-row">
+      <b>${esc(a.name||a.sentence)}</b>
+      ${a.board_id!==st.board.id?`<span class="ah-tag">בלוח ${esc(a.board_name||'')}</span>`:''}
+      <span class="ah-tag">${esc((a.uses||[]).join(' · '))}</span>
+      <span class="ah-tag">בעלים: ${esc(a.owner_name||'—')}</span>
+      <div style="color:var(--text-muted)">${esc(a.impact||'')}</div>
+    </div>`).join('');
+  return `<div class="ci-row"><b>${d.count} אוטומציות תלויות ברכיב הזה</b>`
+    +(d.active?` — ${d.active} פעילות יושהו`:'')+`</div>${rows}`
+    +`<div class="ci-row" style="color:var(--text-muted)">${esc(d.note||'')}</div>`;
 }
 /* What the admin is actually agreeing to. Counted by the server, because the
    cell this client holds was already filtered to what its viewer may see and
@@ -16075,13 +16102,16 @@ async function saveGroup(gid){
 async function deleteGroup(gid){
   const g=(st.board.groups||[]).find(x=>x.id===gid);
   const n=(st.board.tasks||[]).filter(t=>t.group_id===gid).length;
+  const dep=await dependentsHTML('group',gid);
   askConfirm('למחוק את הקבוצה'+(g?` "${g.name}"`:'')+'?',async()=>{
     try{
       await api('/api/groups/'+gid+'?actor_id='+meId(),{method:'DELETE'});
       toast('הקבוצה נמחקה');await openBoard(st.board.id);
     }catch(e){ toast((e&&e.detail)||'שגיאה במחיקה'); }
   },{title:'מחיקת קבוצה',confirmText:'מחק',
-     note:n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`:'הקבוצה ריקה.'});
+     note:dep?null:(n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`:'הקבוצה ריקה.'),
+     noteHTML:dep?`<div class="ci-row">${n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`
+                                          :'הקבוצה ריקה.'}</div>`+dep:null});
 }
 
 /* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */

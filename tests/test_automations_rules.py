@@ -9,6 +9,8 @@
   5. Losing a permission the rule needs suspends it. What a reader has no
      permission to see is hidden in the log and in the export too.
 """
+from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 import main as cityos_main
 from models import Automation, AutomationRun, Board, Notification, Task, User
@@ -154,7 +156,15 @@ def test_rule4_dependencies_are_rechecked_before_every_run(client, admin_id):
     client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
     assert _runs(client, bid, admin_id)["runs"][0]["outcome"] == "ran"
 
-    client.delete(f"/api/groups/{gid}?actor_id={admin_id}")
+    # The group is removed straight out of the table, bypassing the endpoint
+    # that would now suspend the rule for us. That is the point of this test:
+    # the engine's own re-check is the net UNDER the warning, and it has to
+    # hold for a dependency that disappeared without anyone being asked —
+    # a restore, a migration, somebody's SQL.
+    with Session(cityos_main.engine) as db:
+        from models import Group
+        db.query(Group).filter(Group.id == gid).delete()
+        db.commit()
     tid2 = _item(client, bid, admin_id, "שני")
     client.patch(f"/api/tasks/{tid2}", json={"status": "done", "user_id": admin_id})
     runs = _runs(client, bid, admin_id)["runs"]
@@ -173,8 +183,14 @@ def test_rule4_the_engine_does_not_borrow_the_creators_reach(client, admin_id, g
     client.patch(f"/api/boards/{near}?actor_id={admin_id}", json={"columns": cols})
     _add(client, near, admin_id, "created_create_and_link",
          {"a_connect": "col_link", "a_board": far, "a_text": "פריט"})
-    # the far board is deleted — the creator's rights would not have helped either
-    client.delete(f"/api/boards/{far}?actor_id={admin_id}")
+    # The far board goes straight to the bin in the table, around the endpoint
+    # that would now suspend the rule outright: what is being tested here is
+    # the grant the engine reads at run time, not the warning in front of it.
+    with Session(cityos_main.engine) as db:
+        from models import Board as _B
+        tb = db.query(_B).filter(_B.id == far).first()
+        tb.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
     _item(client, near, admin_id)
     runs = _runs(client, near, admin_id)["runs"]
     assert runs[0]["outcome"] == "skipped", runs[0]

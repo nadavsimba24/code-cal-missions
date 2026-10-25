@@ -5797,6 +5797,12 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     break
             if not out:
                 raise HTTPException(400, "חובה סטטוס אחד לפחות")
+            # A rename keeps the key, so only a key that is GONE is a deletion —
+            # which is the whole of "שינוי שם רכיב — המשך לפי מזהה קבוע".
+            was = {x["key"]: x.get("label") or x["key"] for x in _board_statuses(b)}
+            for key, label in was.items():
+                if key not in {x["key"] for x in out}:
+                    _suspend_dependents(db, b, "status", key, actor_id, label)
             s = dict(b.settings or {})
             s["statuses"] = out
             b.settings = s
@@ -5910,6 +5916,18 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             _drop_links_for_columns(db, [cid for cid, c in old_cols.items()
                                          if c.get("type") == "connect"
                                          and cid not in {x["id"] for x in cols}])
+            # "מחיקת שדה — השהיה והודעה", and "שינוי סוג שדה — בדיקת תאימות;
+            # השהיה אם אינו תואם". A rename is neither: the id carries on and
+            # the sentence simply shows the new name.
+            now_by_id = {x["id"]: x for x in cols}
+            for cid, prev in old_cols.items():
+                nxt = now_by_id.get(cid)
+                title = prev.get("title") or cid
+                if nxt is None:
+                    _suspend_dependents(db, b, "column", cid, actor_id, title)
+                elif not _column_types_compatible(prev.get("type"), nxt.get("type")):
+                    _suspend_dependents(db, b, "column", cid, actor_id,
+                                        f"{title} (שונתה מ{prev.get('type')} ל{nxt.get('type')})")
             s = dict(b.settings or {})
             s["columns"] = cols
             # a deleted column can't linger in the sub-item-only set
@@ -6094,9 +6112,19 @@ def delete_board(board_id: int, user_id: int = Depends(current_user_id)):
             raise HTTPException(403, "רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו")
         if b.deleted_at:
             return {"status": "deleted", "id": board_id, "days_left": RECYCLE_BIN_DAYS}
+        # "מחיקת לוח — ביטול אוטומציות והפעלות; השהיית אוטומציות תלויות בלוחות
+        # אחרים". Three separate things, in this order, while the board is still
+        # readable: afterwards there is no board to work any of them out from.
+        _stopped = _retire_board_automations(db, b, user_id)
+        _elsewhere = _suspend_dependents(db, b, "board", b.id, user_id, b.name)
         b.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
         b.deleted_by = user_id
         db.commit()
+        if _stopped or _elsewhere:
+            return {"status": "deleted", "id": board_id,
+                    "restorable_until_days": RECYCLE_BIN_DAYS,
+                    "automations_stopped": _stopped,
+                    "automations_suspended_elsewhere": _elsewhere}
         return {"status": "deleted", "id": board_id,
                 "restorable_until_days": RECYCLE_BIN_DAYS}
 
@@ -9736,6 +9764,13 @@ def _shown_value(db, board, ftype, v):
         return db.query(User.name).filter(User.id == v).scalar() or "—"
     if ftype == "group":
         return db.query(Group.name).filter(Group.id == v).scalar() or "—"
+    if ftype == "column":
+        # "שינוי שם רכיב — המשך לפי מזהה קבוע והצגת השם החדש". The rule stores
+        # the id and the sentence reads the title off the board every time, so
+        # a column renamed this morning reads correctly this afternoon — and a
+        # column that is GONE says so rather than showing a dead id.
+        col = _find_col(db, board.id, str(v)) if board else None
+        return (col or {}).get("title") or (f"{v} (נמחקה)" if v else "—")
     if ftype in ("connect", "connect_opt"):
         col = _find_col(db, board.id, str(v)) if board else None
         # blank is a value here and it has a reading: the column the link that
@@ -10972,6 +11007,235 @@ def _automation_blockers(db, board, a):
     return out
 
 
+# ── תלויות: מה תלוי במה, לפני שמוחקים ──────────────────────────────────────
+# A rule points at other configuration: a column, a status value, a group, a
+# link column, a board. Any of those can be deleted by somebody who has never
+# opened the automations screen — and until this existed, the rule found out at
+# its next firing, which on a quiet board is next week.
+#
+# So the order is reversed: the dependents are worked out BEFORE the deletion
+# and shown, and the deletion then suspends them, writes it down and tells the
+# people answerable. What it never does is guess a replacement: a new column
+# called "אזור" is not the "אזור" somebody deleted last week, and re-pointing a
+# rule by name would silently make it act on different data.
+AUTOMATION_DEP_KINDS = ("column", "status", "group", "board")
+AUTOMATION_DEP_HE = {"column": "עמודה", "status": "ערך סטטוס",
+                     "group": "קבוצה", "board": "לוח יעד"}
+
+
+def _column_types_compatible(was, now):
+    """Whether a rule written against the old column type can go on reading it.
+
+    "שינוי סוג שדה — בדיקת תאימות; השהיה אם אינו תואם". Compatibility is by
+    KIND, not by type name: text and email are both text as far as an operator
+    is concerned, and a rule asking "is it empty" does not care which. The
+    three that are never compatible with anything are the derived ones — a
+    mirror and a formula have no value of their own to be changed, and a
+    connect column is a relationship rather than a cell.
+    """
+    if was == now:
+        return True
+    if was in AUTOMATION_UNWATCHABLE_COLUMNS or now in AUTOMATION_UNWATCHABLE_COLUMNS:
+        return False
+    return recipes.column_kind(was) == recipes.column_kind(now)
+
+
+def _rule_uses(db, a, kind, ref):
+    """How this rule uses that thing — the phrases, empty when it does not.
+
+    One scan over everything a rule can point at: the trigger's placeholders,
+    its conditions, every action's fields and both sides of a field mapping.
+    Written as one function because a dependency the preview misses is worse
+    than no preview — it is a deletion somebody was told was safe.
+    """
+    r = recipes.recipe(a.recipe_id) or {}
+    cfg = a.config or {}
+    ref_s, used = str(ref), []
+
+    def same(v):
+        return v is not None and str(v) == ref_s
+
+    # the trigger's own placeholders
+    for f in r.get("fields", []):
+        if not f["key"].startswith("t_"):
+            continue
+        v = cfg.get(f["key"])
+        if ((kind == "column" and f["type"] == "column" and same(v))
+                or (kind == "status" and f["type"] == "status" and same(v))
+                or (kind == "group" and f["type"] == "group" and same(v))):
+            used.append("גורם מפעיל")
+    # the conditions
+    for c in cfg.get(recipes.CONDITION_KEY) or []:
+        spec = c.get("value") if isinstance(c.get("value"), dict) else {}
+        if kind == "column" and same(spec.get("col")):
+            used.append("תנאי")
+        elif kind == "status" and c.get("kind") == "status" and same(c.get("value")):
+            used.append("תנאי")
+        elif kind == "group" and c.get("kind") == "group" and same(c.get("value")):
+            used.append("תנאי")
+    # every action, including the extras
+    for one in recipes.action_list(a.recipe_id, cfg):
+        vals = one["values"]
+        for f in recipes.action_fields(one["key"]):
+            v = vals.get(f["key"])
+            if kind == "column" and f["type"] in ("column", "connect", "connect_opt") and same(v):
+                used.append("פעולה")
+            elif kind == "status" and f["type"] == "status" and same(v):
+                used.append("פעולה")
+            elif kind == "group" and f["type"] in ("group", "target_group") and same(v):
+                used.append("פעולה")
+            elif kind == "board" and f["type"] == "board" and same(v):
+                used.append("פעולה")
+            elif kind == "column" and f["type"] == "map":
+                for pair in (v if isinstance(v, list) else []):
+                    if same(pair.get("from")) or same(pair.get("to")):
+                        used.append("מיפוי שדות")
+    # a condition about a person column, which names a column like any other
+    for one in recipes.action_list(a.recipe_id, cfg):
+        for f in recipes.action_fields(one["key"]):
+            spec = one["values"].get(f["key"])
+            if (kind == "column" and f["type"] == "recipient"
+                    and isinstance(spec, dict) and spec.get("kind") == "field"
+                    and same(spec.get("value"))):
+                used.append("נמעני ההתראה")
+    return list(dict.fromkeys(used))
+
+
+def _automation_dependents(db, board, kind, ref, viewer=None):
+    """Every rule that would be broken by removing that thing.
+
+    For a board, the rules looked at are the ones on OTHER boards pointing at
+    it — "השהיית אוטומציות תלויות בלוחות אחרים" — because the rules ON it are
+    going with it anyway, and the ones somebody needs warning about are the
+    ones that will still be there tomorrow.
+    """
+    if kind == "board":
+        rows = (db.query(Automation)
+                  .filter(Automation.board_id != int(ref),
+                          Automation.status != "deleting").all())
+        # never across an organisation: another tenant's rules are not this
+        # person's business, whatever they point at
+        ours = {b.id for b in db.query(Board).filter(
+            Board.organization_id == board.organization_id).all()}
+        rows = [a for a in rows if a.board_id in ours]
+    else:
+        rows = (db.query(Automation)
+                  .filter(Automation.board_id == board.id,
+                          Automation.status != "deleting").all())
+    out = []
+    for a in rows:
+        uses = _rule_uses(db, a, kind, ref)
+        if not uses:
+            continue
+        home = (board if a.board_id == board.id
+                else db.query(Board).filter(Board.id == a.board_id).first())
+        state = _automation_owner_state(db, home or board, a) or {}
+        out.append({
+            "id": a.id, "board_id": a.board_id,
+            "board_name": (home.name if home else ""),
+            "name": a.name or "",
+            "sentence": _automation_label(db, home or board, a),
+            "status": a.status, "owner_id": state.get("owner_id"),
+            "owner_name": state.get("owner_name") or "—",
+            "needs_owner": bool(state.get("needs_owner")),
+            "uses": uses,
+            "impact": ("תושהה — " + ", ".join(uses)) if a.status == "active"
+                      else "מושהית כבר · התלות תירשם"})
+    return sorted(out, key=lambda x: (x["board_id"] != board.id, x["id"]))
+
+
+def _retire_board_automations(db, board, actor_id):
+    """Take a deleted board's own rules out of service, and call off their runs.
+
+    Not deleted: "מחיקת לוח" puts the board in the recycle bin, and a restore is
+    supposed to be lossless. What must not survive is the board going on
+    AUTOMATING while it is in the bin — so the rules stop, their waiting runs
+    are cancelled, and the history stays exactly where it is.
+
+    They stay stopped on the way back. "שחזור — האוטומציות נשארות מושהות עד
+    בדיקה ואישור": coming back is not the same as having been checked, and
+    switching a board's rules on by themselves is the one thing a restore has
+    no business doing.
+    """
+    stopped = 0
+    for a in db.query(Automation).filter(Automation.board_id == board.id).all():
+        rows = [r for r in _queue_waiting_for(db, a.id, ("pending", "frozen"))]
+        if rows:
+            _queue_set_state(db, rows, "cancelled", "הלוח נמחק", actor_id)
+        if a.status not in ("active", "draft"):
+            continue
+        if a.status == "active":
+            _set_automation_status(a, "paused")
+            stopped += 1
+            db.add(AuditLog(entity_type="automation", entity_id=a.id,
+                            action="board_deleted", field_name="status",
+                            old_value="active", new_value="paused · הלוח נמחק",
+                            changed_by=actor_id))
+    return stopped
+
+
+def _cancel_waiting_for_tasks(db, task_ids, actor_id, why):
+    """Call off every run still waiting on these items, and say so in the log.
+
+    A cancellation is written down for the same reason a run is: a thing that
+    was going to happen and now will not is exactly what somebody comes to the
+    history to find.
+    """
+    ids = [i for i in (task_ids or []) if i]
+    if not ids:
+        return 0
+    rows = [r for r in db.query(AutomationQueue)
+            .filter(AutomationQueue.task_id.in_(ids),
+                    AutomationQueue.done_at == None).all()                # noqa: E711
+            if (r.state or "pending") in ("pending", "frozen")]
+    if rows:
+        _queue_set_state(db, rows, "cancelled", why, actor_id)
+    return len(rows)
+
+
+def _suspend_dependents(db, board, kind, ref, actor_id, what=""):
+    """Carry out the deletion's half of the bargain: suspend, record, tell.
+
+    Returns how many rules were stopped. Called from the endpoints that remove
+    the thing, not from the engine — the engine's own re-check is the safety
+    net underneath this, and this is the part that happens AT the deletion so
+    nobody has to wait for a firing to learn about it.
+    """
+    he = AUTOMATION_DEP_HE.get(kind, kind)
+    label = f"{he} '{what or ref}' נמחקה"
+    hit = 0
+    for dep in _automation_dependents(db, board, kind, ref):
+        a = db.query(Automation).filter(Automation.id == dep["id"]).first()
+        if a is None:
+            continue
+        home = db.query(Board).filter(Board.id == a.board_id).first() or board
+        # the Audit, whatever the rule's state: "התלות תירשם" is a promise to
+        # a rule that was already stopped as much as to one that was running
+        db.add(AuditLog(entity_type="automation", entity_id=a.id,
+                        action="dependency_broken", field_name=f"תלות — {he}",
+                        old_value=str(what or ref),
+                        new_value=f"{label} · {', '.join(dep['uses'])}",
+                        changed_by=actor_id))
+        if a.status != "active":
+            continue
+        _suspend_blocked(db, a, home, "dependency", label)
+        hit += 1
+        # "השהיה והודעה לבעלים ולמנהלי הלוח" — BOTH, and _suspend_blocked tells
+        # one or the other. The board's managers are the people who can appoint
+        # a new owner or repair the rule, and a notice that stopped at an owner
+        # on leave is how a suspended board stays suspended for a quarter.
+        told = set(_automation_tell(db, a, home))
+        for uid in [m.user_id for m in db.query(BoardMember)
+                    .filter(BoardMember.board_id == a.board_id,
+                            BoardMember.role == "admin").all()]:
+            if uid in told:
+                continue
+            _notify(db, uid, "automation", "אוטומציה הושהתה — תלות נמחקה",
+                    f"האוטומציה בלוח '{home.name}' הושהתה: {label}. "
+                    f"{_automation_label(db, home, a)}", board_id=a.board_id)
+    return hit
+
+
 def _suspend_blocked(db, a, board, kind, why):
     """Something the rule needs is gone, so the rule stops.
 
@@ -12185,6 +12449,38 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
                                           or _zone(DEFAULT_TZ_NAME) or _IL_TZ)}
 
 
+@app.get("/api/boards/{board_id}/automations/dependents")
+def automation_dependents(board_id: int, kind: str = "", ref: str = "",
+                          user_id: int = Depends(current_user_id)):
+    """What would break if that thing were removed — asked BEFORE removing it.
+
+    "לפני מחיקת שדה, ערך סטטוס, קבוצה, עמודת קישור או לוח, המערכת תציג את
+    האוטומציות התלויות, הבעלים, אופן השימוש וההשפעה הצפויה."
+
+    An unknown `kind` is refused rather than answered with an empty list: an
+    empty list here reads as "nothing depends on this", which is the one wrong
+    answer a confirmation dialog must never be given.
+    """
+    if kind not in AUTOMATION_DEP_KINDS:
+        raise HTTPException(400, f"סוג תלות לא מוכר — {', '.join(AUTOMATION_DEP_KINDS)}")
+    if not str(ref or "").strip():
+        raise HTTPException(400, "חסר מזהה הרכיב הנמחק")
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות באוטומציות הלוח")
+        deps = _automation_dependents(db, b, kind, ref, viewer=user_id)
+        return {"kind": kind, "ref": str(ref), "what": AUTOMATION_DEP_HE[kind],
+                "dependents": deps, "count": len(deps),
+                "active": len([d for d in deps if d["status"] == "active"]),
+                # said once, here, rather than written into each screen that
+                # asks: the engine is what decides, and it never guesses
+                "note": "מחיקה תשהה את האוטומציות המושפעות ותודיע לבעלים "
+                        "ולמנהלי הלוח. לא ייבחר שדה חלופי לפי שם."}
+
+
 @app.get("/api/boards/{board_id}/automations/templates")
 def automation_templates(board_id: int, q: str = "", tags: str = "", only: str = "",
                          user_id: int = Depends(current_user_id)):
@@ -12240,9 +12536,17 @@ def automation_templates(board_id: int, q: str = "", tags: str = "", only: str =
 
 
 @app.get("/api/boards/{board_id}/automations")
-def list_board_automations(board_id: int, user_id: int = Depends(current_user_id)):
+def list_board_automations(board_id: int, include_deleting: bool = False,
+                           user_id: int = Depends(current_user_id)):
     """Every rule on the board. Visible to any member; editable only by admins —
-    the client uses can_manage to decide whether to render the controls."""
+    the client uses can_manage to decide whether to render the controls.
+
+    A rule in "בתהליך מחיקה" is NOT here. "ההגדרה לא תוצג ברשימה הרגילה, אך
+    תישמר לפי מדיניות המידע ותהיה זמינה למנהל מערכת לצורכי Audit" — so it is
+    kept, and `include_deleting` hands it back to a SYSTEM admin and to nobody
+    else. A board admin is not that person: the point of keeping it is that the
+    board it was on can no longer make it disappear.
+    """
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b or b.deleted_at:
@@ -12254,9 +12558,12 @@ def list_board_automations(board_id: int, user_id: int = Depends(current_user_id
         if _can_manage_automations(db, b, user_id):
             _sweep_automation_ownership(db, b, user_id)
             _drain_automation_queue(db, b.id, user_id)
-        rows = (db.query(Automation).filter(Automation.board_id == board_id)
-                  .order_by(Automation.run_order, Automation.activated_at,
-                                  Automation.id).all())
+        show_gone = bool(include_deleting) and _ws_role(db, user_id) == "admin"
+        q = db.query(Automation).filter(Automation.board_id == board_id)
+        if not show_gone:
+            q = q.filter(Automation.status != "deleting")
+        rows = q.order_by(Automation.run_order, Automation.activated_at,
+                          Automation.id).all()
         out = [_automation_json(db, b, a) for a in rows]
         return {"automations": out, "counts": _automation_counts(out),
                 "can_export": _can_export_automations(db, b, user_id),
@@ -15106,11 +15413,17 @@ def delete_task(task_id: int, user_id: int = Depends(current_user_id)):
         # never left orphaned under an item that is no longer there.
         _bid = task.board_id
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        _gone = [task_id]
         for sub in db.query(Task).filter(Task.parent_id == task_id).all():
             sub.deleted_at = now
             sub.deleted_by = user_id
+            _gone.append(sub.id)
         task.deleted_at = now
         task.deleted_by = user_id
+        # "מחיקת פריט או פריט אב — ביטול הפעלות ממתינות שלו ושל תתי־הפריטים".
+        # Cancelled rather than frozen: a frozen run waits for somebody to let
+        # it go, and there is nothing here to let it go onto.
+        _cancel_waiting_for_tasks(db, _gone, user_id, "הפריט נמחק")
         _audit(db, task_id, "delete", field="item", old=task.title, new=None, user_id=user_id)
         db.commit()
         bus.publish("task.deleted", board_id=_bid, task_id=task_id, actor_id=user_id)
@@ -15956,6 +16269,11 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             if not tb:
                 raise HTTPException(404, "לוח היעד לא נמצא")
             _require_board_edit(db, target, actor)
+            # "העברת פריט ללוח אחר — ביטול הפעלות ממתינות ב־MVP". The waiting
+            # run belongs to a rule on the board the item is leaving, and the
+            # item it was promised about is not the item that arrives: a
+            # different board, different columns, different statuses.
+            _cancel_waiting_for_tasks(db, [task_id], actor, "הפריט הועבר ללוח אחר")
             groups = db.query(Group).filter(Group.board_id == target).order_by(Group.position).all()
             wanted = data.get("group_id")
             grp = next((g for g in groups if g.id == wanted), None) or (groups[0] if groups else None)
@@ -16221,6 +16539,10 @@ def delete_group_api(group_id: int, actor_id: int = Depends(current_user_id)):
         _require_board_edit(db, g.board_id, actor_id)   # board editors+ only
         # Detach tasks instead of deleting them — they fall back to "ללא קבוצה"
         _bid = g.board_id
+        # "מחיקת ... קבוצה — השהיה והודעה לבעלים ולמנהלי הלוח", and worked out
+        # while the group is still there: afterwards there is nothing to match
+        _suspend_dependents(db, db.query(Board).filter(Board.id == _bid).first(),
+                            "group", group_id, actor_id, g.name)
         for t in db.query(Task).filter(Task.group_id == group_id).all():
             t.group_id = None
         db.delete(g)

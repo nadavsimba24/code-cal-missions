@@ -443,9 +443,18 @@ def test_a_missing_dependency_suspends_the_rule_as_the_status_table_says(client,
     row = _get(client, bid, a["id"], admin_id)
     assert row["status"] == "paused_error", row["status"]
     assert row["is_active"] is False
-    # the firing that found it is still in the history, with the reason
-    runs = client.get(f"/api/boards/{bid}/automations/runs?user_id={admin_id}").json()["runs"]
-    assert runs[0]["outcome"] == "skipped" and "נמחקה" in runs[0]["reason"], runs[0]
+    # It is stopped by the DELETION now, not by the first firing that trips over
+    # the hole — so there is no skipped run to read, and the thing to check is
+    # that the Audit says what broke. The engine's own re-check is still there
+    # underneath; it is tested where the dependency vanishes without going
+    # through an endpoint (see test_automations_rules.py).
+    with Session(cityos_main.engine) as db:
+        from models import AuditLog
+        marks = db.query(AuditLog).filter(AuditLog.entity_type == "automation",
+                                          AuditLog.entity_id == a["id"],
+                                          AuditLog.action == "dependency_broken").all()
+    assert marks, "the broken dependency was not written down"
+    assert "קבוצה" in (marks[0].field_name or ""), marks[0].field_name
 
 
 def test_the_four_causes_of_a_suspension_all_reach_the_same_status(client, admin_id,

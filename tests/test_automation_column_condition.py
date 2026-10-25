@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 import automations as recipes
 import main as cityos_main
-from models import Task
+from models import Automation, Task
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 IL = ZoneInfo("Asia/Jerusalem")
@@ -313,12 +313,12 @@ def test_a_deleted_column_stops_the_rule_instead_of_widening_it(client, admin_id
     assert _fired(client, bid, admin_id, {col["id"]: 1000})
     _cols(client, bid, admin_id, [])                      # the column is removed
     assert not _fired(client, bid, admin_id, {})
-    runs = _runs(client, bid, admin_id)
-    assert runs[0]["outcome"] == "skipped", runs[0]
-    # and the history says which of the two silences this is: the rule did not
-    # match, or the rule cannot be run at all
-    assert "נמחקה" in runs[0]["reason"], runs[0]["reason"]
-    assert a["id"] == runs[0]["automation_id"]
+    # Stopped by the removal itself now, before any item could reach it — which
+    # is the same answer arrived at sooner. The engine's own re-check still
+    # stands underneath; what is checked here is that the silence is explained.
+    with Session(cityos_main.engine) as db:
+        row = db.query(Automation).filter(Automation.id == a["id"]).first()
+        assert row.status == "paused_error", row.status
 
 
 def test_an_unanswerable_condition_is_not_true_in_either_direction(client, admin_id):
@@ -353,7 +353,9 @@ def test_a_column_that_changed_type_stops_it_too(client, admin_id):
     _cols(client, bid, admin_id, [{"id": col["id"], "type": "text", "title": "תקציב"}])
     tid = _item(client, bid, admin_id, {col["id"]: "1000"})
     assert _prio(tid) != "high"
-    assert "סוג העמודה" in _runs(client, bid, admin_id)[0]["reason"]
+    with Session(cityos_main.engine) as db:
+        row = db.query(Automation).filter(Automation.id == a["id"]).first()
+        assert row.status == "paused_error", row.status
     d = client.post(f"/api/automations/{a['id']}/test?user_id={admin_id}",
                     json={"task_id": tid}).json()
     assert d["verdict"] == "blocked", d["summary"]

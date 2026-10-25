@@ -78,7 +78,12 @@ def test_a_rule_being_deleted_stops_running_without_being_gone(client, admin_id)
     with Session(cityos_main.engine) as db:
         t = db.query(Task).filter(Task.id == tid).first()
         assert cityos_main._st_of(t) != "in_progress"
-    got = next(a for a in _list(client, bid, admin_id)["automations"] if a["id"] == row["id"])
+    # not in the ordinary list any more — "ההגדרה לא תוצג ברשימה הרגילה" — but
+    # kept, and a system admin can still read it for audit
+    assert row["id"] not in [a["id"] for a in _list(client, bid, admin_id)["automations"]]
+    kept = client.get(f"/api/boards/{bid}/automations"
+                      f"?user_id={admin_id}&include_deleting=true").json()["automations"]
+    got = next(a for a in kept if a["id"] == row["id"])
     assert got["status"] == "deleting" and got["is_active"] is False
 
 
