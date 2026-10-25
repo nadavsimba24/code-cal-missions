@@ -787,5 +787,38 @@ ck('a board that is running says nothing',
      A.menuHTML(row,'importance').includes('אינה משפיעה על סדר הביצוע'));
 }
 
+/* ── 9.3: the chain — one change and everything it set off ─────────────── */
+{
+  A.tab='history'; A.runsLoading=false; A.runOutcome=''; A.runAuto=0;
+  A.batch=null; A.chain=null;
+  A.runCounts={total:3,ran:3,skipped:0,failed:0,retried:0};
+  A.data={automations:[],can_manage:true,can_export:false};
+  const R=(id,over)=>Object.assign({id,outcome:'ran',sentence:'כאשר הסטטוס משתנה ל«בוצע», שנה עדיפות',
+    task_id:id*10,task_title:'פריט '+id,reason:'',depth:0,event_type:'status_changes_to',
+    source:'item',batch_id:'',chain_id:'c1',version:1,is_retry:false,retried_at:null,
+    created_at:'2026-10-22T09:00:00',can_retry:false},over||{});
+  A.runs=[R(1),R(2,{depth:1,source:'automation'}),R(3,{chain_id:'c2'})];
+  let h=A.historyHTML();
+  ck('a chain of more than one firing can be opened from the row',
+     h.includes(`Automations.showChain('c1')`));
+  ck('...and a chain of one is not offered — a button on every row is one nobody reads',
+     !h.includes(`Automations.showChain('c2')`));
+  A.showChain('c1');
+  h=A.historyHTML();
+  ck('...showing only what that one change set off',
+     h.includes('פריט 1') && h.includes('פריט 2') && !h.includes('פריט 3'));
+  ck('...saying how many firings came of it', h.includes('2 הפעלות'));
+  A.showChain('c1');
+  ck('pressing it again goes back', A.chain===null);
+  /* the two ids are different questions and must not filter each other away */
+  A.runs=[R(1,{batch_id:'b9'}),R(2,{batch_id:'b9',chain_id:'c2'})];
+  A.showBatch('b9');
+  ck('a batch of twelve items is twelve chains, not one',
+     A.chain===null && A.historyHTML().includes('פריט 2'));
+  A.showChain('c2');
+  ck('...and opening one chain leaves the batch filter', A.batch===null);
+  A.chain=null; A.batch=null;
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

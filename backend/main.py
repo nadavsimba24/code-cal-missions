@@ -293,7 +293,7 @@ def _migrate():
                 conn.execute(text(f"ALTER TABLE automation_queue ADD COLUMN {name} {ddl}"))
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
         for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)"),
-                          ("event_id", "VARCHAR(32)")]:
+                          ("event_id", "VARCHAR(32)"), ("chain_id", "VARCHAR(32)")]:
             if rcols and name not in rcols:
                 conn.execute(text(f"ALTER TABLE automation_runs ADD COLUMN {name} {ddl}"))
         for name, ddl in [("name", "VARCHAR(120)"), ("description", "TEXT"),
@@ -426,6 +426,7 @@ else:
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS source VARCHAR(16)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS event_id VARCHAR(32)",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS chain_id VARCHAR(32)",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS automation_id INTEGER",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS version INTEGER",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS state VARCHAR(10) DEFAULT 'pending'",
@@ -8526,10 +8527,27 @@ def _st_of(t):
 # them, so an item never lands in a half-automated state.
 import automations as recipes   # noqa: E402  (pure data — no app imports)
 
+# ── מניעת לולאות והפעלה כפולה ──────────────────────────────────────────────
 # An action can itself be a trigger (set status → a status rule). That is
-# deliberate and useful, but two rules can point at each other, so cascades are
-# bounded rather than trusted.
-AUTOMATION_MAX_DEPTH = 3
+# deliberate and useful, and it is also the one way this feature can eat a
+# board: two rules pointing at each other go round forever, and "forever" here
+# means every item rewritten a hundred times before anybody notices.
+#
+# A CHAIN is one change and everything the rules did because of it. It carries
+# an id of its own — not the event id, which names one step of it, and not the
+# batch id, which says this was one of a hundred items. Three ids because they
+# answer three different questions, and a log that answered them with one field
+# could answer none.
+#
+# Two ceilings bound a chain. Ten firings, because an action that has set off
+# nine more is no longer reacting to the change. Five minutes, because a chain
+# still going five minutes later is not going to stop on its own either.
+AUTOMATION_CHAIN_MAX_RUNS = 10
+AUTOMATION_CHAIN_MAX_SECONDS = 300
+# The nesting ceiling is the same number on purpose. Two different ceilings
+# would mean the published one is not the one that binds, and the number people
+# are told is ten.
+AUTOMATION_MAX_DEPTH = AUTOMATION_CHAIN_MAX_RUNS
 
 # How many rows the run history keeps per board. Old rows fall off the front so
 # a busy board's log cannot grow without limit.
@@ -8848,9 +8866,14 @@ def _event(kind, source="item", batch="", **params):
 
     The id is what an API caller is handed back: "what did my call set off" is
     answerable afterwards by asking the run log for it.
+
+    A fresh event also opens a fresh CHAIN — this is a change somebody made, not
+    a step inside one that was already running. A rule's own follow-on events
+    inherit their parent's chain instead (see _fire_rule), which is what makes
+    the chain mean "one edit and its consequences".
     """
     ev = {"type": kind, "source": source if source in AUTOMATION_SOURCES else "item",
-          "id": uuid.uuid4().hex[:24]}
+          "id": uuid.uuid4().hex[:24], "chain": uuid.uuid4().hex[:24]}
     if batch:
         ev["batch"] = str(batch)[:36]
     ev.update(params)
@@ -8869,6 +8892,55 @@ def _fires(event):
 def _new_batch():
     """The id one bulk action's events share."""
     return uuid.uuid4().hex[:32]
+
+
+def _moment(v):
+    """An ISO string back into an aware moment, or None if it is not one."""
+    try:
+        d = datetime.fromisoformat(str(v))
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _chain_of(db, event):
+    """The ledger of one chain: what has already run in it, and how much of its
+    allowance is left.
+
+    Kept on the session rather than in a table. A chain is one request's worth
+    of cascade and dies with it; the only part that outlives the request is a
+    delayed action, and that carries its tally in the queue row instead — see
+    _queue_resume, where a wait is deliberately not a way of resetting this.
+    """
+    ev = event or {}
+    book = db.info.setdefault("_automation_chains", {})
+    cid = ev.get("chain") or ""
+    c = book.get(cid)
+    if c is None:
+        c = book[cid] = {
+            "id": cid,
+            # what a wait, or a caller continuing somebody else's chain, says
+            # has already been spent
+            "runs": max(0, int(ev.get("chain_runs") or 0)),
+            "started": _moment(ev.get("chain_started")) or datetime.now(timezone.utc),
+            "fired": set(),      # (automation_id, task_id) — once per item per chain
+            "events": set(),     # (event_id, automation_id) — once per event, ever
+            "stopped": "",       # the reason it was cut, once it has been
+        }
+    return c
+
+
+def _chain_spent(c):
+    """Whether the chain has used up an allowance — and which one, in words
+    somebody reading the log can act on."""
+    if c["runs"] >= AUTOMATION_CHAIN_MAX_RUNS:
+        return (f"חשד ללולאה — שרשרת האוטומציות הגיעה ל-{AUTOMATION_CHAIN_MAX_RUNS} "
+                f"הפעלות ונעצרה")
+    if ((datetime.now(timezone.utc) - c["started"]).total_seconds()
+            >= AUTOMATION_CHAIN_MAX_SECONDS):
+        return (f"חשד ללולאה — שרשרת האוטומציות רצה יותר מ-"
+                f"{AUTOMATION_CHAIN_MAX_SECONDS // 60} דקות ונעצרה")
+    return ""
 
 
 def _automation_matches(a, event):
@@ -10338,6 +10410,7 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             source=((event or {}).get("source") or "")[:16],
             batch_id=((event or {}).get("batch") or "")[:36],
             event_id=((event or {}).get("id") or "")[:32],
+            chain_id=((event or {}).get("chain") or "")[:32],
             # rule 4 — which version carried this out. The config is read once,
             # when the event arrives, so this is the version that decided it.
             version=_live_version(db, a),
@@ -10876,14 +10949,19 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         # whatever set this rule off, what IT writes comes from the engine —
         # and it stays in the batch it was started by, so one bulk action reads
         # as one action however many rules it set off
-        ev = {**ev, "source": "automation", **({"batch": event["batch"]}
-                                               if (event or {}).get("batch") else {})}
+        # — and it stays in the CHAIN it was started by, which is what makes the
+        # ten-firing ceiling count a cascade rather than each step of one. Its
+        # own id is new: it is a different event, inside the same chain.
+        ev = {**ev, "source": "automation", "id": uuid.uuid4().hex[:24],
+              "chain": (event or {}).get("chain") or "",
+              **({"batch": event["batch"]} if (event or {}).get("batch") else {})}
         _run_automations(db, task, ev, actor_id, depth + 1)
         # a rule that changed this item's status is a status change like any
-        # other, so items linked to it hear about it too — bounded by the same
-        # depth, or two rules pointing at each other would ping-pong
+        # other, so items linked to it hear about it too — inside the same
+        # chain, or two rules pointing at each other would ping-pong
         if ev.get("type") == "status_changes_to":
-            _fan_out_linked_status(db, task, ev.get("status"), actor_id, depth + 1)
+            _fan_out_linked_status(db, task, ev.get("status"), actor_id, depth + 1,
+                                   chain=ev.get("chain"))
     return row
 
 
@@ -11012,7 +11090,7 @@ def _due_key(task_id, moment):
     return f"{int(task_id)}@{moment.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M')}"
 
 
-def _fan_out_linked_status(db, task, status_key, actor_id, depth=0):
+def _fan_out_linked_status(db, task, status_key, actor_id, depth=0, chain=""):
     """Tell every item linked TO this one that its status changed.
 
     Only through two-way columns. A one-way link is stored in the cell of the
@@ -11037,6 +11115,8 @@ def _fan_out_linked_status(db, task, status_key, actor_id, depth=0):
         _run_automations(db, other, {"source": "link",
                                      "type": "linked_status_changes_to",
                                      "status": str(status_key),
+                                     "id": uuid.uuid4().hex[:24],
+                                     "chain": chain or uuid.uuid4().hex[:24],
                                      "source_task_id": task.id}, actor_id, depth + 1)
 
 
@@ -11050,6 +11130,13 @@ def _run_automations(db, task, event, actor_id, depth=0):
     # nothing off did nothing.
     if not _fires(event):
         return
+    # Every event gets an id and a chain even when the caller handed over a bare
+    # dictionary. The guard cannot depend on a dozen call sites each remembering
+    # to stamp one, and the one that forgets is the one that loops.
+    if not (event or {}).get("id") or not (event or {}).get("chain"):
+        event = {**(event or {}),
+                 "id": (event or {}).get("id") or uuid.uuid4().hex[:24],
+                 "chain": (event or {}).get("chain") or uuid.uuid4().hex[:24]}
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board or board.deleted_at:
         return
@@ -11062,16 +11149,27 @@ def _run_automations(db, task, event, actor_id, depth=0):
                .order_by(Automation.run_order, Automation.activated_at,
                                   Automation.id).all())
     matching = [a for a in rules if _automation_matches(a, event)]
-    if depth >= AUTOMATION_MAX_DEPTH:
-        # The cascade has gone as far as it is allowed to go. What would have run
-        # here is recorded as skipped rather than dropped: a chain that stops
-        # half way is exactly what someone opens the history to understand.
+    chain = _chain_of(db, event)
+    if chain["stopped"]:
+        # already cut, and once is the record. A stopped chain that went on
+        # writing a row for every rule it met on the way down would bury the one
+        # line that says what happened under a hundred that repeat it.
+        return
+    # "חריגה תעצור את השרשרת ותתועד כחשד ללולאה" — both ceilings, and the depth
+    # that is the same number said a third way.
+    cut = _chain_spent(chain) or (
+        f"חשד ללולאה — שרשרת האוטומציות הגיעה לעומק המקסימלי "
+        f"({AUTOMATION_MAX_DEPTH} הפעלות) ונעצרה" if depth >= AUTOMATION_MAX_DEPTH else "")
+    if cut:
+        chain["stopped"] = cut
+        # What would have run here is recorded as skipped rather than dropped: a
+        # chain that stops half way is exactly what someone opens the history to
+        # understand.
         for a in matching:
-            _log_automation_run(db, board, a, task, event, "skipped",
-                                "שרשרת האוטומציות הגיעה לעומק המקסימלי", depth, actor_id)
+            _log_automation_run(db, board, a, task, event, "skipped", cut, depth, actor_id)
             # "מושהית עקב שגיאה" names a loop as one of its causes: a rule that
-            # keeps being cut off by the ceiling is in one, and leaving it active
-            # means the board reads as automated while this never completes
+            # keeps being cut off is in one, and leaving it active means the
+            # board reads as automated while this never completes
             st = dict(a.state or {})
             st["loop_hits"] = (st.get("loop_hits") or 0) + 1
             a.state = st
@@ -11079,11 +11177,27 @@ def _run_automations(db, task, event, actor_id, depth=0):
                 _set_automation_status(a, "paused_error")
                 _notify_owner_once(db, a, board, "loop",
                                    "אוטומציה הושהתה — לולאה",
-                                   f"האוטומציה בלוח '{board.name}' נקטעה שוב ושוב בעומק "
-                                   f"המקסימלי של שרשרת האוטומציות והושהתה: "
+                                   f"האוטומציה בלוח '{board.name}' נקטעה שוב ושוב בתקרת "
+                                   f"שרשרת האוטומציות והושהתה: "
                                    f"{_automation_label(db, board, a)}")
         return
     for a in matching:
+        # "אותו אירוע לא יפעיל אותה אוטומציה יותר מפעם אחת". A replayed event is
+        # not a second reason to act — it is the same reason, arriving twice.
+        if (event.get("id"), a.id) in chain["events"]:
+            _log_automation_run(db, board, a, task, event, "skipped",
+                                "האירוע הזה כבר הפעיל את האוטומציה", depth, actor_id)
+            continue
+        # "ואותה אוטומציה לא תפעל שוב על אותו פריט באותה שרשרת". This is the one
+        # that stops the ordinary two-rule ping-pong, and it is per ITEM: a rule
+        # fanning out over five items is doing its job, not looping.
+        if (a.id, task.id) in chain["fired"]:
+            _log_automation_run(db, board, a, task, event, "skipped",
+                                "האוטומציה כבר רצה על הפריט הזה בשרשרת הזו", depth, actor_id)
+            continue
+        chain["events"].add((event.get("id"), a.id))
+        chain["fired"].add((a.id, task.id))
+        chain["runs"] += 1
         _fire_rule(db, a, task, event, actor_id, depth)
 
 
@@ -11349,6 +11463,10 @@ def _queue_resume(db, a, task, event, index, minutes, human=None, owner=None):
         approved_by=human,
         created_at=datetime.now(timezone.utc).replace(tzinfo=None),
         event={**{k: v for k, v in (event or {}).items() if not k.startswith("_")},
+               # the chain comes with it, and so does what it has already spent:
+               # otherwise a wait would be a way of resetting the loop guard,
+               # which is precisely what a loop would reach for
+               "chain_runs": _chain_of(db, event)["runs"],
                "type": "resume", "automation_id": a.id,
                "from": int(index), "after": after.isoformat(),
                "human": human, "owner": owner,
@@ -11725,6 +11843,9 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
            "tokens": recipes.tokens_catalog(),
            "wait": {"min_minutes": recipes.MIN_WAIT_MINUTES,
                     "max_days": recipes.MAX_WAIT_DAYS},
+           "chain": {"max_runs": AUTOMATION_CHAIN_MAX_RUNS,
+                     "max_seconds": AUTOMATION_CHAIN_MAX_SECONDS,
+                     "max_depth": AUTOMATION_MAX_DEPTH},
            "map": {"max_pairs": recipes.MAX_MAP_PAIRS,
                    "builtins": [{"key": k, "label": MAP_BUILTIN_HE[k], "kind": v}
                                 for k, v in MAP_BUILTINS.items()]}}
@@ -12172,6 +12293,11 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
                 # may mean, and the engine is not the one to decide they did
                 # not. What it must not be is a surprise.
                 _warn = _same_field_warning(db, b, a)
+                # "המערכת תנסה לזהות תלות מעגלית בשמירה" — shown here with it,
+                # and for the same reason: a warning, because the engine cannot
+                # prove two rules will really feed each other, and because the
+                # run-time guard binds whatever was decided here.
+                _warn += _cycle_warning(db, b, a)
             _set_automation_status(a, want)
         _prev_owner = a.owner_id
         for k, v in _automation_meta(db, a.board_id, data).items():
@@ -12307,7 +12433,7 @@ def _automation_run_json(db, row):
         "depth": row.depth or 0, "event_type": (row.event or {}).get("type") or "",
         # where the change came from, and the batch it belonged to
         "source": row.source or "", "batch_id": row.batch_id or "",
-        "event_id": row.event_id or "",
+        "event_id": row.event_id or "", "chain_id": row.chain_id or "",
         "actor_id": row.actor_id, "actor_name": uname(row.actor_id),
         "is_retry": row.retry_of is not None, "retry_of": row.retry_of,
         "retried_at": row.retried_at.isoformat() if row.retried_at else None,
@@ -12324,7 +12450,7 @@ def _automation_run_json(db, row):
 
 @app.get("/api/boards/{board_id}/automations/runs")
 def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 0,
-                         event_id: str = "", batch_id: str = "",
+                         event_id: str = "", batch_id: str = "", chain_id: str = "",
                          limit: int = 150, user_id: int = Depends(current_user_id)):
     """Every attempt the board's rules made, newest first.
 
@@ -12353,6 +12479,8 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
             q = q.filter(AutomationRun.event_id == str(event_id)[:32])
         if batch_id:
             q = q.filter(AutomationRun.batch_id == str(batch_id)[:36])
+        if chain_id:
+            q = q.filter(AutomationRun.chain_id == str(chain_id)[:32])
         rows = q.order_by(AutomationRun.id.desc()).limit(max(1, min(limit, 500))).all()
         # an item-level restriction holds in the history too — see _redact_run
         seen = {}
@@ -12742,38 +12870,98 @@ def _automation_impact(db, board, a, viewer=None):
             "loop_risk": _automation_loop_risk(db, board, a)}
 
 
-def _automation_loop_risk(db, board, a):
-    """Rules whose trigger is the very thing this rule's action produces.
+# What each action puts back into the engine as a trigger. This map is the
+# whole of the save-time cycle check: it is a guess from the SHAPE of two rules,
+# not a proof that they will feed each other, which is why what it produces is a
+# warning and never a refusal.
+AUTOMATION_PRODUCES = {
+    "set_status": "status_changes_to", "set_priority": "priority_changes_to",
+    "assign_person": "person_assigned", "unassign_person": "person_unassigned",
+    "move_to_group": "moved_to_group", "set_column": "column_changed",
+    "clear_column": "column_changed", "create_subitem": "subitem_created",
+    "link_to_item": "link_added", "create_and_link": "link_added",
+    "create_in_group_and_link": "link_added", "create_mapped_and_link": "link_added",
+}
 
-    Not a proof of a loop — two rules can feed each other harmlessly — but it is
-    the shape a loop has, and it is worth seeing before switching one on rather
-    than from the depth-ceiling skips afterwards.
+
+def _rule_produces(a):
+    """Every trigger this rule's actions could raise — all of them, because any
+    one action is enough to start the rule on the other side."""
+    return {AUTOMATION_PRODUCES[x["key"]]
+            for x in recipes.action_list(a.recipe_id, a.config or {})
+            if x["key"] in AUTOMATION_PRODUCES}
+
+
+def _automation_loop_risk(db, board, a):
+    """Rules whose trigger is the very thing this rule's action produces — and
+    which of them lead back here.
+
+    `cycle` is not "does this rule answer that one directly". A → B → C → A is a
+    loop that a pairwise check finds nothing wrong with at any of its three
+    steps, which is exactly the one somebody builds without noticing. So the
+    board's rules are walked as a graph and the question asked is whether there
+    is a way back, however long.
+
+    Still not a proof: two rules can produce and listen for the same thing and
+    never actually meet, because their conditions never both hold. It is the
+    shape a loop has, and it is worth seeing before switching one on rather than
+    from the suspected-loop cuts afterwards.
     """
-    r = recipes.recipe(a.recipe_id) or {}
-    PRODUCES = {"set_status": "status_changes_to", "set_priority": "priority_changes_to",
-                "assign_person": "person_assigned", "link_to_item": "link_added",
-                "create_and_link": "link_added",
-                "create_in_group_and_link": "link_added",
-                "create_mapped_and_link": "link_added"}
-    # every action the rule carries, because any one of them is enough to start
-    # the rule on the other side
-    produces = {PRODUCES[x["key"]] for x in recipes.action_list(a.recipe_id, a.config or {})
-                if x["key"] in PRODUCES}
+    produces = _rule_produces(a)
     if not produces:
         return []
+    others = db.query(Automation).filter(Automation.board_id == board.id,
+                                         Automation.id != a.id).all()
+    # trigger → the rules that listen for it, over the whole board
+    listens = {}
+    for o in others + [a]:
+        ro = recipes.recipe(o.recipe_id) or {}
+        listens.setdefault(ro.get("trigger"), []).append(o)
+
+    def reaches_a(start):
+        """Is there a path from this rule back to the one being checked?"""
+        seen, stack = {start.id}, [start]
+        while stack:
+            cur = stack.pop()
+            for t in _rule_produces(cur):
+                for nxt in listens.get(t, []):
+                    if nxt.id == a.id:
+                        return True
+                    if nxt.id not in seen:
+                        seen.add(nxt.id)
+                        stack.append(nxt)
+        return False
+
     out = []
-    for o in db.query(Automation).filter(Automation.board_id == board.id,
-                                         Automation.id != a.id).all():
+    for o in others:
         ro = recipes.recipe(o.recipe_id) or {}
         if ro.get("trigger") not in produces:
             continue
-        # and does IT produce what this one listens for? then it is a cycle
-        back = {PRODUCES.get(x["key"]) for x in recipes.action_list(o.recipe_id, o.config or {})}
         out.append({"id": o.id,
                     "name": o.name or _automation_label(db, board, o)
-                                      .replace("«", "").replace("»", ""),
+                                      .replace("\u00ab", "").replace("\u00bb", ""),
                     "status": o.status or ("active" if o.is_active else "paused"),
-                    "cycle": r.get("trigger") in back})
+                    "cycle": reaches_a(o)})
+    return out
+
+
+def _cycle_warning(db, board, a):
+    """The circular dependencies found at save time, as sentences.
+
+    "המערכת תנסה לזהות תלות מעגלית בשמירה; זיהוי בזמן ריצה גובר על כל הגדרה" —
+    tries, and says so, and lets the activation through either way. What binds
+    is the chain guard at run time, which does not care what was saved or by
+    whom: it counts firings and it cuts.
+    """
+    out = []
+    for r in _automation_loop_risk(db, board, a):
+        if not r.get("cycle"):
+            continue
+        out.append({
+            "id": r["id"], "name": r["name"], "cycle": True,
+            "text": (f"\u00ab{r['name']}\u00bb יכולה להחזיר את הכלל הזה לפעולה — תלות מעגלית. "
+                     f"השרשרת תיעצר מעצמה אחרי {AUTOMATION_CHAIN_MAX_RUNS} הפעלות "
+                     f"ותתועד כחשד ללולאה")})
     return out
 
 

@@ -125,9 +125,11 @@ def test_one_rule_setting_off_another_is_the_engines_own_source(client, admin_id
     assert cascaded and {r["source"] for r in cascaded} == {"automation"}
 
 
-def test_a_cascade_still_stops_at_the_depth_ceiling(client, admin_id):
-    """The one qualification the table puts on an automation as a source."""
-    bid = _board(client, admin_id, "לוח תקרה")
+def test_a_cascade_four_rules_deep_is_allowed_to_finish(client, admin_id):
+    """What the ceiling is NOT for. Four rules in a row is a long chain, not a
+    loop, and until the spec named its number this was cut off at three — which
+    read in the log exactly like the runaway it was not."""
+    bid = _board(client, admin_id, "לוח שרשרת ארוכה")
     _add(client, bid, admin_id, "status_set_priority",
          {"t_status": "done", "a_priority": "critical"})
     _add(client, bid, admin_id, "priority_assign_person",
@@ -137,9 +139,32 @@ def test_a_cascade_still_stops_at_the_depth_ceiling(client, admin_id):
     tid = _item(client, bid, admin_id)["id"]
     client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
     runs = _runs(client, bid, admin_id)
-    assert any(r["depth"] >= cityos_main.AUTOMATION_MAX_DEPTH for r in runs)
-    stopped = [r for r in runs if "עומק" in (r["reason"] or "")]
-    assert stopped and stopped[0]["outcome"] == "skipped"
+    assert len([r for r in runs if r["outcome"] == "ran"]) == 4, runs
+    assert not [r for r in runs if "לולאה" in (r["reason"] or "")], runs
+
+
+def test_a_cascade_still_stops_at_the_ceiling(client, admin_id):
+    """The one qualification the table puts on an automation as a source — and
+    the ceiling is now the chain's own, with the number the spec names: ten
+    firings and five minutes, after which the chain is cut and the cut is
+    written down as a suspected loop."""
+    bid = _board(client, admin_id, "לוח תקרה")
+    _add(client, bid, admin_id, "status_set_priority",
+         {"t_status": "done", "a_priority": "critical"})
+    tid = _item(client, bid, admin_id)["id"]
+    with Session(cityos_main.engine) as db:
+        t = db.query(Task).filter(Task.id == tid).first()
+        # a chain that has already spent its allowance — which is what the tenth
+        # rule in a runaway is looking at when it asks to run
+        cityos_main._run_automations(
+            db, t, cityos_main._event("status_changes_to", "item", status="done",
+                                      chain_runs=cityos_main.AUTOMATION_CHAIN_MAX_RUNS),
+            admin_id)
+        db.commit()
+    runs = _runs(client, bid, admin_id)
+    stopped = [r for r in runs if "לולאה" in (r["reason"] or "")]
+    assert stopped and stopped[0]["outcome"] == "skipped", runs
+    assert not [r for r in runs if r["outcome"] == "ran"], runs
 
 
 # ── the sources that are not ───────────────────────────────────────────────

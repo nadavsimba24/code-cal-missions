@@ -8450,7 +8450,7 @@ const Automations = {
     }catch(e){ this.runs=[]; this.runCounts={}; toast('טעינת ההיסטוריה נכשלה'); }
     this.runsLoading=false; this.runsLoaded=true; this.render();
   },
-  setOutcome(v){ this.runOutcome=v; this.batch=null; this.loadRuns(); },
+  setOutcome(v){ this.runOutcome=v; this.batch=this.chain=null; this.loadRuns(); },
   setRunAuto(v){ this.runAuto=+v||0; this.loadRuns(); },
   historyFor(id){
     this.runAuto=id; this.runOutcome=''; this.tab='history';
@@ -8467,13 +8467,20 @@ const Automations = {
         <option value="0">כל האוטומציות</option>
         ${rules.map(a=>`<option value="${a.id}" ${this.runAuto===a.id?'selected':''}>${esc(a.sentence.replace(/[«»]/g,''))}</option>`).join('')}
       </select>`:'';
-    const shown=this.batch?this.runs.filter(r=>r.batch_id===this.batch):this.runs;
+    // the two ids filter the same list and are not the same question: a batch
+    // is "this one action, over all its items", a chain is "this one change and
+    // everything the rules did because of it"
+    const shown=this.batch?this.runs.filter(r=>r.batch_id===this.batch)
+      :this.chain?this.runs.filter(r=>r.chain_id===this.chain):this.runs;
     const rows=shown.length?shown.map(r=>this.runRow(r)).join('')
       :`<div class="empty" style="padding:40px"><i class="fa-solid fa-clock-rotate-left"></i><div>${
-         this.runOutcome||this.runAuto||this.batch?'אין הפעלות בסינון הזה':'האוטומציות של הלוח עוד לא הופעלו'}</div></div>`;
+         this.runOutcome||this.runAuto||this.batch||this.chain?'אין הפעלות בסינון הזה':'האוטומציות של הלוח עוד לא הופעלו'}</div></div>`;
     const batchBar=this.batch?`<div class="au-chips"><span class="ah-tag"><i class="fa-solid fa-layer-group"></i>
         פעולה מרובה אחת — ${shown.length} פריטים</span>
         <button class="au-lnk" onclick="Automations.showBatch('${esc(this.batch)}')">הצג הכל</button></div>`:'';
+    const chainBar=this.chain?`<div class="au-chips"><span class="ah-tag"><i class="fa-solid fa-link"></i>
+        שרשרת אחת — ${shown.length} הפעלות משינוי אחד</span>
+        <button class="au-lnk" onclick="Automations.showChain('${esc(this.chain)}')">הצג הכל</button></div>`:'';
     return this.freezeHTML()+`<div class="au-chips">${chip('','הכל',c.total)}${chip('ran','הופעלו',c.ran)}${chip('skipped','דילוגים',c.skipped)}${
         chip('failed','כשלים',c.failed)}${chip('retried','ניסיונות חוזרים',c.retried)}${sel}
         ${this.data.can_export?`<button class="btn btn-ghost" style="margin-inline-start:auto" onclick="Automations.exportRuns()"><i class="fa-solid fa-file-csv" style="color:var(--green)"></i> ייצוא הלוג</button>`:''}</div>
@@ -8481,7 +8488,7 @@ const Automations = {
         כל הפעלה נרשמת — גם כלל שהתאים ולא היה לו מה לעשות. הפעלה שדילגה או נכשלה אפשר לנסות שוב.
         <button class="au-lnk" onclick="Automations.testLog(0)">לוג הבדיקות בנפרד</button></div>
       ${this.tzLine()}
-      ${batchBar}<div class="logs-list">${rows}</div>`;
+      ${batchBar}${chainBar}<div class="logs-list">${rows}</div>`;
   },
 
   runRow(r){
@@ -8505,6 +8512,9 @@ const Automations = {
             ?`<span class="ah-tag" title="מקור השינוי">${esc(Automations.SRC[r.source])}</span>`:''}
           ${r.batch_id?`<button class="ah-tag ah-batch" title="כל הפריטים שהשתנו באותה פעולה"
              onclick="Automations.showBatch('${esc(r.batch_id)}')"><i class="fa-solid fa-layer-group"></i> פעולה מרובה</button>`:''}
+          ${r.chain_id&&(this.runs||[]).filter(x=>x.chain_id===r.chain_id).length>1
+            ?`<button class="ah-tag" title="כל מה שהשינוי הזה הפעיל"
+             onclick="Automations.showChain('${esc(r.chain_id)}')"><i class="fa-solid fa-link"></i> שרשרת</button>`:''}
           ${r.retried_at?'<span class="ah-tag" title="כבר נוסתה שוב"><i class="fa-solid fa-check"></i> נוסתה שוב</span>':''}
         </div>
         <div class="ah-sent">${sent}</div>
@@ -8519,7 +8529,16 @@ const Automations = {
      id is for: the log keeps a row per item — a rule is about an item — and
      this is how they read as the one action they were. */
   showBatch(id){
-    this.batch=(this.batch===id)?null:id;
+    this.batch=(this.batch===id)?null:id; this.chain=null;
+    this.render();
+  },
+
+  /* One change and everything the rules did because of it. Worth having next
+     to the batch filter rather than instead of it: a bulk edit of twelve items
+     is one batch and twelve chains, and "why did this item move" is answered
+     by the chain, not by the batch. */
+  showChain(id){
+    this.chain=(this.chain===id)?null:id; this.batch=null;
     this.render();
   },
 

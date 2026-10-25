@@ -293,25 +293,28 @@ def test_the_five_statuses_are_the_five_in_the_spec(client):
 
 
 def test_a_loop_suspends_the_rule_as_the_status_table_says(client, admin_id):
-    """"מושהית עקב שגיאה" names a loop among its causes."""
+    """"מושהית עקב שגיאה" names a loop among its causes.
+
+    A rule cut off once is a rule that happened to be at the end of a long
+    chain. A rule cut off five times running is in a loop, and leaving it
+    active means the board reads as automated while this never completes.
+    """
     bid = _board(client, admin_id)
-    _add(client, bid, admin_id, "status_set_priority",
-         {"t_status": "done", "a_priority": "critical"})            # depth 1
-    _add(client, bid, admin_id, "priority_assign_person",
-         {"t_priority": "critical", "a_person": admin_id})          # depth 2
-    _add(client, bid, admin_id, "assigned_set_status",
-         {"a_status": "in_progress"})                               # depth 3
-    _add(client, bid, admin_id, "status_notify_assignees",
-         {"t_status": "in_progress"})                               # cut off by the ceiling
-    for i in range(cityos_main.AUTOMATION_FAIL_CUTOFF + 1):
+    a = _add(client, bid, admin_id, "status_set_priority",
+             {"t_status": "done", "a_priority": "critical"})
+    for i in range(cityos_main.AUTOMATION_FAIL_CUTOFF):
         tid = _item(client, bid, admin_id, f"פריט {i}")
-        client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
+        with Session(cityos_main.engine) as db:
+            t = db.query(Task).filter(Task.id == tid).first()
+            cityos_main._run_automations(
+                db, t, cityos_main._event("status_changes_to", "item", status="done",
+                                          chain_runs=cityos_main.AUTOMATION_CHAIN_MAX_RUNS),
+                admin_id)
+            db.commit()
     with Session(cityos_main.engine) as db:
-        rows = db.query(Automation).filter(Automation.board_id == bid).all()
-        hit = [r for r in rows if (r.state or {}).get("loop_hits")]
-    assert hit, "nothing recorded being cut off by the depth ceiling"
-    assert any(r.status == "paused_error" for r in hit), \
-        [(r.id, r.status, (r.state or {}).get("loop_hits")) for r in hit]
+        row = db.query(Automation).filter(Automation.id == a["id"]).first()
+        assert (row.state or {}).get("loop_hits"), "nothing recorded being cut off"
+        assert row.status == "paused_error", row.status
 
 
 def test_a_rule_in_deletion_stops_listening(client, admin_id):

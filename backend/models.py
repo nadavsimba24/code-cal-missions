@@ -539,6 +539,11 @@ class AutomationRun(Base):
     # The id of the event itself — what the API hands back so a caller can ask
     # afterwards what their call set off.
     event_id = Column(String(32), default="", index=True)
+    # The chain this firing belongs to: one change and everything the rules did
+    # because of it. A third question again — not "what kind of change" and not
+    # "was this one of a batch", but "what did this one edit set off", which is
+    # the question somebody asks when a board moved under them.
+    chain_id = Column(String(32), default="", index=True)
     outcome = Column(String(12), default="ran")      # ran | skipped | failed
     # a "בדיקה על פריט": the action really ran, inside a transaction that was
     # then rolled back, so the outcome is real but nothing it did survived
