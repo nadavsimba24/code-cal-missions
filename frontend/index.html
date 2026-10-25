@@ -561,6 +561,17 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-pick.on{background:var(--primary);border-color:var(--primary);color:#fff}
 .au-chips{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-bottom:11px}
 .au-chip{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:5px 12px;font:inherit;font-size:12px;color:var(--text-muted);cursor:pointer}
+.au-search{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:5px 12px;font:inherit;font-size:12px;color:var(--text);min-width:200px}
+/* ציר זמן: one line per thing that happened, in the order it happened */
+.tl-list{max-height:60vh;overflow:auto;padding:4px 0}
+.tl-step{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-inline-start:2px solid var(--border);margin-inline-start:8px}
+.tl-step.bad{border-inline-start-color:var(--orange)}
+.tl-step>i{color:var(--text-muted);margin-top:2px}
+.tl-step.bad>i{color:var(--orange)}
+.tl-step>div{flex:1;min-width:0}
+.tl-text{font-size:13px}
+.tl-sub{font-size:11.5px;color:var(--text-muted);word-break:break-word}
+.tl-at{font-size:11px;color:var(--text-muted);white-space:nowrap}
 .au-chip b{font-weight:700;color:var(--text)}
 .au-chip:hover{background:var(--row-hover)}
 .au-chip.on{background:var(--primary);border-color:var(--primary);color:#fff}
@@ -8457,15 +8468,27 @@ const Automations = {
     this.runsLoading=true; this.render();
     const qs=[]; if(meId())qs.push('user_id='+meId());
     if(this.runOutcome)qs.push('outcome='+this.runOutcome);
+    if(this.runStatus)qs.push('status='+this.runStatus);
+    if(this.runQ)qs.push('q='+encodeURIComponent(this.runQ));
     if(this.runAuto)qs.push('automation_id='+this.runAuto);
     try{
       const d=await api('/api/boards/'+st.board.id+'/automations/runs'+(qs.length?'?'+qs.join('&'):''));
       this.runs=d.runs||[]; this.runCounts=d.counts||{};
+      this.runStatuses=d.statuses||[];
       if(d.can_export!==undefined) this.data.can_export=d.can_export;
     }catch(e){ this.runs=[]; this.runCounts={}; toast('טעינת ההיסטוריה נכשלה'); }
     this.runsLoading=false; this.runsLoaded=true; this.render();
   },
-  setOutcome(v){ this.runOutcome=v; this.batch=this.chain=null; this.loadRuns(); },
+  setOutcome(v){ this.runOutcome=v; this.runStatus=''; this.batch=this.chain=null; this.loadRuns(); },
+  /* The fine status and the coarse outcome are one control, not two: choosing
+     "דולגה - נתון חסר" while "דילוגים" is also on would be two filters free to
+     disagree, and one of them would always be winning silently. */
+  setRunStatus(v){ this.runStatus=v; this.runOutcome=''; this.batch=this.chain=null; this.loadRuns(); },
+  setRunQ(v){
+    this.runQ=String(v||'').trim();
+    clearTimeout(this._runQT);
+    this._runQT=setTimeout(()=>this.loadRuns(),250);
+  },
   setRunAuto(v){ this.runAuto=+v||0; this.loadRuns(); },
   historyFor(id){
     this.runAuto=id; this.runOutcome=''; this.tab='history';
@@ -8477,6 +8500,17 @@ const Automations = {
     if(this.runsLoading) return '<div class="spin"></div>';
     const c=this.runCounts||{};
     const chip=(v,he,n)=>`<button class="au-chip ${this.runOutcome===v?'on':''}" onclick="Automations.setOutcome('${v}')">${he}${n===undefined?'':` <b>${n||0}</b>`}</button>`;
+    /* Eleven statuses do not belong in eleven chips — the five that answer
+       "did it work" stay chips, and the detail goes in a picker beside them,
+       showing only the ones this board actually has. */
+    const stats=(this.runStatuses||[]).filter(x=>(c[x.key]||0)>0||this.runStatus===x.key);
+    const stsel=stats.length?`<select onchange="Automations.setRunStatus(this.value)">
+        <option value="">כל הסטטוסים</option>
+        ${stats.map(x=>`<option value="${x.key}" ${this.runStatus===x.key?'selected':''}>${
+            esc(x.he)} (${c[x.key]||0})</option>`).join('')}
+      </select>`:'';
+    const search=`<input class="au-search" type="search" placeholder="חיפוש בפריט, בכלל ובסיבה"
+        value="${esc(this.runQ||'')}" oninput="Automations.setRunQ(this.value)">`;
     const rules=this.data.automations||[];
     const sel=rules.length>1?`<select onchange="Automations.setRunAuto(this.value)">
         <option value="0">כל האוטומציות</option>
@@ -8489,7 +8523,8 @@ const Automations = {
       :this.chain?this.runs.filter(r=>r.chain_id===this.chain):this.runs;
     const rows=shown.length?shown.map(r=>this.runRow(r)).join('')
       :`<div class="empty" style="padding:40px"><i class="fa-solid fa-clock-rotate-left"></i><div>${
-         this.runOutcome||this.runAuto||this.batch||this.chain?'אין הפעלות בסינון הזה':'האוטומציות של הלוח עוד לא הופעלו'}</div></div>`;
+         this.runOutcome||this.runStatus||this.runQ||this.runAuto||this.batch||this.chain
+           ?'אין הפעלות בסינון הזה':'האוטומציות של הלוח עוד לא הופעלו'}</div></div>`;
     const batchBar=this.batch?`<div class="au-chips"><span class="ah-tag"><i class="fa-solid fa-layer-group"></i>
         פעולה מרובה אחת — ${shown.length} פריטים</span>
         <button class="au-lnk" onclick="Automations.showBatch('${esc(this.batch)}')">הצג הכל</button></div>`:'';
@@ -8497,13 +8532,13 @@ const Automations = {
         שרשרת אחת — ${shown.length} הפעלות משינוי אחד</span>
         <button class="au-lnk" onclick="Automations.showChain('${esc(this.chain)}')">הצג הכל</button></div>`:'';
     return this.freezeHTML()+`<div class="au-chips">${chip('','הכל',c.total)}${chip('ran','הופעלו',c.ran)}${chip('skipped','דילוגים',c.skipped)}${
-        chip('failed','כשלים',c.failed)}${chip('retried','ניסיונות חוזרים',c.retried)}${sel}
+        chip('failed','כשלים',c.failed)}${chip('retried','ניסיונות חוזרים',c.retried)}${stsel}${sel}${search}
         ${this.data.can_export?`<button class="btn btn-ghost" style="margin-inline-start:auto" onclick="Automations.exportRuns()"><i class="fa-solid fa-file-csv" style="color:var(--green)"></i> ייצוא הלוג</button>`:''}</div>
       <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i>
         כל הפעלה נרשמת — גם כלל שהתאים ולא היה לו מה לעשות. הפעלה שדילגה או נכשלה אפשר לנסות שוב.
         <button class="au-lnk" onclick="Automations.testLog(0)">לוג הבדיקות בנפרד</button></div>
       ${this.tzLine()}
-      ${batchBar}${chainBar}<div class="logs-list">${rows}</div>`;
+      ${batchBar}${chainBar}<div class="logs-list">${rows}</div>${this.timelineHTML()}`;
   },
 
   runRow(r){
@@ -8516,8 +8551,13 @@ const Automations = {
       ? `<button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${r.task_id})">${esc(r.task_title||'—')}</button>`
       : `<span class="ah-tag">${esc(r.task_title||'הפריט נמחק')}</span>`;
     const can=r.can_retry&&this.data.can_manage;
+    /* The fine status is the headline where there is one: "דילוג" was the same
+       word for a false condition, a missing value and a chain that was cut. */
+    const head=r.status_he||o.he;
+    const ic=r.status==='queued'?'fa-hourglass-half'
+            :r.status==='loop_stopped'?'fa-rotate-left':o.ic;
     return `<div class="ah-row">
-      <span class="ah-out ${o.cls}"><i class="fa-solid ${o.ic}"></i> ${o.he}</span>
+      <span class="ah-out ${o.cls}" title="${esc(r.status||'')}"><i class="fa-solid ${ic}"></i> ${esc(head)}</span>
       <div class="ah-main">
         <div class="ah-l1">${item}
           ${r.version?`<span class="ah-tag" title="הגרסה שהייתה בתוקף כשהאירוע נקלט">גרסה ${r.version}</span>`:''}
@@ -8531,6 +8571,12 @@ const Automations = {
             ?`<button class="ah-tag" title="כל מה שהשינוי הזה הפעיל"
              onclick="Automations.showChain('${esc(r.chain_id)}')"><i class="fa-solid fa-link"></i> שרשרת</button>`:''}
           ${r.retried_at?'<span class="ah-tag" title="כבר נוסתה שוב"><i class="fa-solid fa-check"></i> נוסתה שוב</span>':''}
+          ${(r.attempt||1)>1?`<span class="ah-tag" title="מספר הניסיון">ניסיון ${r.attempt}</span>`:''}
+          ${r.error_code?`<span class="ah-tag" title="קוד שגיאה לתמיכה">${esc(r.error_code)}</span>`:''}
+          ${r.ref?`<button class="ah-tag" title="העתקת מזהה לתמיכה"
+             onclick="Automations.copyRef('${esc(r.ref)}')"><i class="fa-solid fa-copy"></i> מזהה</button>`:''}
+          ${r.status==='queued'?'':`<button class="ah-tag" title="ציר זמן מפורט"
+             onclick="Automations.timeline(${r.id})"><i class="fa-solid fa-stream"></i> ציר זמן</button>`}
         </div>
         <div class="ah-sent">${sent}</div>
         ${r.reason?`<div class="ah-why"><i class="fa-solid fa-circle-info"></i> ${esc(r.reason)}</div>`:''}
@@ -8545,6 +8591,8 @@ const Automations = {
       </div>
       <span class="ah-when" title="${esc(fdatetimeY(r.created_at))}">${esc(BoardLog.ago(r.created_at))}</span>
       ${can?`<button class="btn btn-ghost ah-retry" onclick="Automations.retry(${r.id})"><i class="fa-solid fa-rotate-right"></i> נסה שוב</button>`:''}
+      ${r.can_cancel&&r.queue_id?`<button class="btn btn-ghost ah-retry" style="color:var(--red)"
+         onclick="Automations.cancelQueued(${r.queue_id})"><i class="fa-solid fa-ban"></i> בטל</button>`:''}
     </div>`;
   },
 
@@ -8556,6 +8604,60 @@ const Automations = {
   boardName(id){
     const b=(st.boards||[]).find(x=>x.id===id);
     return b?(b.name||('#'+id)):('#'+id);
+  },
+
+  /* «העתקת מזהה לתמיכה». One string with all three ids in it, because the
+     person on the other end of the ticket needs the run, the chain it was part
+     of and the event that started it, and asking somebody to copy three boxes
+     is asking to be sent two. */
+  async copyRef(ref){
+    try{ await navigator.clipboard.writeText(ref); toast('המזהה הועתק'); }
+    catch(e){ toast(ref); }
+  },
+
+  async cancelQueued(qid){
+    askConfirm('לבטל את ההפעלה הממתינה?',async()=>{
+      try{
+        await api('/api/automation-queue/'+qid+'/cancel?user_id='+meId(),{method:'POST'});
+        toast('ההפעלה בוטלה'); await this.loadRuns();
+      }catch(e){ toast((e&&e.detail)||'הביטול נכשל'); }
+    },{title:'ביטול הפעלה ממתינה',confirmText:'בטל את ההפעלה',
+       note:'מה שנותר מהכלל לא יבוצע. ההפעלות שכבר קרו נשארות כפי שהן.'});
+  },
+
+  /* «ציר זמן מפורט» — built by the server, because the parts live in four
+     places and a client reassembling them would be a second account of what
+     happened, free to disagree with the first. */
+  async timeline(id){
+    this.tl={id,loading:true,steps:[]}; this.render();
+    try{
+      const d=await api('/api/automation-runs/'+id+'/timeline?user_id='+meId());
+      this.tl={id,loading:false,steps:d.timeline||[],ref:d.ref||''};
+    }catch(e){ this.tl=null; toast((e&&e.detail)||'לא ניתן לטעון את ציר הזמן'); }
+    this.render();
+  },
+  closeTimeline(){ this.tl=null; this.render(); },
+
+  timelineHTML(){
+    const t=this.tl; if(!t) return '';
+    const IC={event:'fa-bolt',condition:'fa-filter',action:'fa-play',
+              created:'fa-plus',end:'fa-flag-checkered'};
+    const body=t.loading?'<div class="spin"></div>'
+      :(t.steps||[]).map(s=>`<div class="tl-step ${esc(s.kind)}${
+          s.held===false||String(s.status||'').startsWith('failed')?' bad':''}">
+        <i class="fa-solid ${IC[s.kind]||'fa-circle'}"></i>
+        <div><div class="tl-text">${esc(s.text||'')}</div>
+          ${s.old!==undefined&&s.old!==null?`<div class="tl-sub">${esc(String(s.old))} ← ${esc(String(s.new==null?'':s.new))}</div>`:''}
+          ${s.output!==undefined&&s.output!==null?`<div class="tl-sub">${esc(JSON.stringify(s.output).slice(0,200))}</div>`:''}
+        </div>
+        <span class="tl-at">${s.at?esc(fdatetime(s.at)):''}</span>
+      </div>`).join('');
+    return `<div class="modal-back" onclick="Automations.closeTimeline()">
+      <div class="modal" onclick="event.stopPropagation()" style="max-width:640px">
+        <div class="modal-head"><b>ציר זמן של ההפעלה</b>
+          ${t.ref?`<button class="ah-tag" onclick="Automations.copyRef('${esc(t.ref)}')"><i class="fa-solid fa-copy"></i> ${esc(t.ref)}</button>`:''}
+          <button class="btn btn-ghost" onclick="Automations.closeTimeline()">סגור</button></div>
+        <div class="tl-list">${body}</div></div></div>`;
   },
 
   showBatch(id){

@@ -545,6 +545,24 @@ class AutomationRun(Base):
     # the question somebody asks when a board moved under them.
     chain_id = Column(String(32), default="", index=True)
     outcome = Column(String(12), default="ran")      # ran | skipped | failed
+    # The fine status out of eleven — see main.RUN_STATUSES. `outcome` stays
+    # the coarse three it always was and is DERIVED from this one: everything
+    # already built on "ran / skipped / failed" goes on meaning what it meant,
+    # and the questions three answers could never tell apart — a false
+    # condition against a missing value, a crash against a refusal — are
+    # answerable without rewriting any of it.
+    status = Column(String(24), default="", index=True)
+    # Three moments, because the gap between the first two is the queue and the
+    # gap between the last two is the work, and one timestamp hid both.
+    queued_at = Column(DateTime, nullable=True)      # the event arrived
+    started_at = Column(DateTime, nullable=True)     # the rule began
+    finished_at = Column(DateTime, nullable=True)    # and ended
+    attempt = Column(Integer, default=1)             # 1, or n for the nth retry
+    error_code = Column(String(40), default="")      # groupable; `reason` is prose
+    # Which sub-item the event was about, where it was about one. The run acts
+    # on whichever of the two the rule names (see _acting_item) and `task_id`
+    # is that one — this says what set it off.
+    subitem_id = Column(Integer, nullable=True)
     # a "בדיקה על פריט": the action really ran, inside a transaction that was
     # then rolled back, so the outcome is real but nothing it did survived
     is_test = Column(Boolean, default=False)

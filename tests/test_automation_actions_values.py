@@ -211,7 +211,14 @@ def test_what_comes_after_a_wait_waits(client, admin_id):
                                              AutomationQueue.done_at == None).all()
         assert len(q) == 1 and (q[0].event or {}).get("type") == "resume"
     runs = _runs(client, bid, admin_id)
-    assert "ממתינות" in (runs[0]["reason"] or ""), runs[0]
+    # Two rows now, and they say different things. The run that happened is a
+    # PARTIAL success — some of it went, the rest is held — and the part that
+    # is held has a row of its own, "ממתינה", which is what makes it something
+    # somebody can see and call off from the log.
+    done = [r for r in runs if r["status"] != "queued"]
+    assert done and "ממתינות" in (done[0]["reason"] or ""), done
+    assert done[0]["status"] == "partial", done[0]
+    assert [r for r in runs if r["status"] == "queued"], [r["status"] for r in runs]
 
 
 def test_a_wait_that_is_over_comes_back_and_finishes_the_rule(client, admin_id):

@@ -882,5 +882,77 @@ ck('a board that is running says nothing',
   st.boards=[];
 }
 
+/* ── 12.1: the log screen — fine status, search, support id, cancel ────── */
+{
+  A.tab='history'; A.runsLoading=false; A.runOutcome=''; A.runStatus=''; A.runQ='';
+  A.runAuto=0; A.batch=null; A.chain=null; A.tl=null;
+  A.data={automations:[],can_manage:true,can_export:false};
+  A.runStatuses=[{key:'succeeded',he:'הצליחה',outcome:'ran'},
+                 {key:'skipped_missing',he:'דולגה - נתון חסר לפי הגדרה',outcome:'skipped'},
+                 {key:'queued',he:'ממתינה',outcome:'skipped'}];
+  A.runCounts={total:3,ran:1,skipped:2,failed:0,retried:0,
+               succeeded:1,skipped_missing:1,queued:1,loop_stopped:0};
+  const R=(over)=>Object.assign({id:1,outcome:'ran',status:'succeeded',status_he:'הצליחה',
+    sentence:'כאשר הסטטוס משתנה, שנה עדיפות',task_id:5,task_title:'מקור',reason:'',
+    depth:0,event_type:'status_changes_to',source:'item',batch_id:'',chain_id:'c1',
+    event_id:'e1',version:1,is_retry:false,retried_at:null,attempt:1,error_code:'',
+    ref:'run:1 chain:c1',created_at:'2026-10-25T09:00:00',can_retry:false,
+    result:{}},over||{});
+
+  A.runs=[R({}),R({id:2,outcome:'skipped',status:'skipped_missing',
+                   status_he:'דולגה - נתון חסר לפי הגדרה',error_code:'dependency',
+                   reason:'אין פריט מקושר',ref:'run:2 chain:c1'})];
+  let h=A.historyHTML();
+  ck('the row leads with the fine status, not with "דילוג"',
+     h.includes('דולגה - נתון חסר לפי הגדרה') && !h.includes('>דילוג<'));
+  ck('the error code is on the row for support', h.includes('dependency'));
+  ck('the support id can be copied', h.includes("Automations.copyRef('run:2 chain:c1')"));
+  ck('a timeline can be opened per run', h.includes('Automations.timeline(2)'));
+
+  ck('only the statuses this board actually has are offered',
+     h.includes('דולגה - נתון חסר לפי הגדרה (1)') && !h.includes('נעצרה עקב חשד ללולאה'));
+  ck('there is a search box', h.includes('Automations.setRunQ'));
+
+  /* the two filters are one control */
+  A.loadRuns=async()=>{};
+  A.render=()=>{};
+  A.setOutcome('failed');
+  ck('choosing an outcome clears the fine status', A.runStatus==='');
+  A.setRunStatus('queued');
+  ck('...and choosing a fine status clears the outcome', A.runOutcome==='');
+
+  /* a waiting run is on the log and can be called off */
+  A.runStatus=''; A.runOutcome='';
+  A.runs=[R({id:-7,queue_id:7,status:'queued',status_he:'ממתינה',outcome:'skipped',
+             can_cancel:true,can_retry:false,ref:'queue:7 chain:c1'})];
+  h=A.historyHTML();
+  ck('a run that has not gone yet is on the log', h.includes('ממתינה'));
+  ck('...and can be called off from there', h.includes('Automations.cancelQueued(7)'));
+  ck('...and is not offered a timeline it does not have yet',
+     !h.includes('Automations.timeline(-7)'));
+  A.runs=[R({id:3,status:'queued',status_he:'ממתינה',can_cancel:false,queue_id:9})];
+  ck('somebody who may not manage the board is not offered the cancel',
+     !A.historyHTML().includes('Automations.cancelQueued(9)'));
+
+  /* the timeline itself */
+  A.tl={id:1,loading:false,ref:'run:1',steps:[
+    {kind:'event',at:'2026-10-25T09:00:00',text:'אירוע «status_changes_to» נקלט',
+     old:'todo',new:'done'},
+    {kind:'condition',at:'2026-10-25T09:00:00',held:false,text:'התנאי לא התקיים: יש אחראי'},
+    {kind:'action',at:'2026-10-25T09:00:00',status:'succeeded',text:'1. שנה עדיפות',
+     output:'בוצע'},
+    {kind:'end',at:'2026-10-25T09:00:01',status:'partial',text:'הצליחה חלקית'}]};
+  const tl=A.timelineHTML();
+  ck('the timeline reads in order',
+     tl.indexOf('נקלט')<tl.indexOf('התנאי לא התקיים')
+     && tl.indexOf('התנאי לא התקיים')<tl.indexOf('שנה עדיפות')
+     && tl.indexOf('שנה עדיפות')<tl.indexOf('הצליחה חלקית'));
+  ck('...showing the old and new value', tl.includes('todo') && tl.includes('done'));
+  ck('...and marking the condition that said no', tl.includes('tl-step condition bad'));
+  ck('the timeline carries the support id too', tl.includes('run:1'));
+  A.tl=null;
+  ck('and nothing of it renders when it is not open', A.timelineHTML()==='');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

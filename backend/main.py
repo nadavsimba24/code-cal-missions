@@ -294,7 +294,10 @@ def _migrate():
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
         for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)"),
                           ("event_id", "VARCHAR(32)"), ("chain_id", "VARCHAR(32)"),
-                          ("result", "JSON")]:
+                          ("result", "JSON"), ("status", "VARCHAR(24)"),
+                          ("queued_at", "DATETIME"), ("started_at", "DATETIME"),
+                          ("finished_at", "DATETIME"), ("attempt", "INTEGER DEFAULT 1"),
+                          ("error_code", "VARCHAR(40)"), ("subitem_id", "INTEGER")]:
             if rcols and name not in rcols:
                 conn.execute(text(f"ALTER TABLE automation_runs ADD COLUMN {name} {ddl}"))
         for name, ddl in [("name", "VARCHAR(120)"), ("description", "TEXT"),
@@ -429,6 +432,13 @@ else:
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS event_id VARCHAR(32)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS chain_id VARCHAR(32)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS result JSONB",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS status VARCHAR(24)",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS queued_at TIMESTAMP",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS attempt INTEGER DEFAULT 1",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS error_code VARCHAR(40)",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS subitem_id INTEGER",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS automation_id INTEGER",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS version INTEGER",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS state VARCHAR(10) DEFAULT 'pending'",
@@ -8764,9 +8774,14 @@ class _Skipped(Exception):
     "why did nothing happen?" is the question the log exists to answer.
     """
 
-    def __init__(self, reason):
+    def __init__(self, reason, status="skipped_condition"):
         super().__init__(reason)
         self.reason = reason
+        # "דולגה - התנאי לא התקיים" and "דולגה - נתון חסר לפי הגדרה" are two
+        # different silences and somebody reading the log is usually trying to
+        # tell them apart. The default is the common one; the places that know
+        # better say so.
+        self.status = status
 
 
 _safe_startup(_ensure_automation_identity)
@@ -8866,6 +8881,16 @@ def _restore_choice(db, task, field, value):
 # skipped), and the shared id is what puts them back together afterwards.
 AUTOMATION_SOURCES = ("item", "create", "bulk", "api", "automation", "import",
                       "migration", "repair", "manual", "date", "link")
+AUTOMATION_SOURCE_HE = {
+    "item": "עריכה", "create": "יצירת פריט", "bulk": "עריכה מרובה", "api": "API",
+    "automation": "אוטומציה אחרת", "import": "ייבוא", "migration": "מיגרציה",
+    "repair": "תיקון מערכתי", "manual": "הפעלה ידנית", "date": "תאריך יעד",
+    "link": "קישור",
+}
+
+
+def _src_he(src):
+    return AUTOMATION_SOURCE_HE.get(src or "", src or "")
 
 # Which sources set a rule off, and which do not — the heart of the table.
 #
@@ -9438,7 +9463,7 @@ def _condition_holds(db, task, kind, v):
     return False
 
 
-def _conditions_hold(db, board, task, conds, group_op="and"):
+def _conditions_hold(db, board, task, conds, group_op="and", verdicts=None):
     """(ok, why_not) for the one group of conditions a rule carries.
 
     Over AND the first condition that does not hold decides, and it is named —
@@ -9451,16 +9476,27 @@ def _conditions_hold(db, board, task, conds, group_op="and"):
     or let through by something it did itself.
     """
     rows = list(conds or [])
+    verdicts.clear() if isinstance(verdicts, list) else None
     if not rows:
         return True, ""
+    # "תוצאת כל תנאי" — each of them, not only the one that decided. Over AND
+    # the interesting one is the first that failed; over OR it is the one that
+    # passed; and over either, "which of the four" is the question.
+    held = []
+    for c in rows:
+        ok = _condition_holds(db, task, c.get("kind"), c.get("value"))
+        held.append(ok)
+        if isinstance(verdicts, list):
+            verdicts.append({
+                "kind": c.get("kind"), "held": bool(ok),
+                "text": (_condition_phrases(db, board, [c]) or [""])[0]})
     if str(group_op) == "or":
-        for c in rows:
-            if _condition_holds(db, task, c.get("kind"), c.get("value")):
-                return True, ""
+        if any(held):
+            return True, ""
         phrases = _condition_phrases(db, board, rows) or []
         return False, ("אף תנאי אינו מתקיים על הפריט: " + " או ".join(phrases))
-    for c in rows:
-        if not _condition_holds(db, task, c.get("kind"), c.get("value")):
+    for c, ok in zip(rows, held):
+        if not ok:
             phrase = (_condition_phrases(db, board, [c]) or [""])[0]
             return False, f"התנאי אינו מתקיים על הפריט: {phrase}"
     return True, ""
@@ -9852,18 +9888,29 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
     nothing happen?" is still the question the log exists to answer, and with
     four actions "why did only some of it happen?" is the same question.
     """
-    out, skipped, made = [], [], []
+    out, skipped, made, steps = [], [], [], []
     label = _automation_label(db, board, a)
     # a notification names the rule; the board's own screens show the sentence
     told = notice or _automation_plain_name(db, board, a)
     acts = recipes.action_list(a.recipe_id, a.config or {})[start:]
     clash = []
     for i, one in enumerate(acts):
+        # "קלט, יעד ופלט של כל פעולה" — written for every one of them,
+        # whatever came of it. A step that is missing from the list is a step
+        # nobody can tell apart from one that was never reached.
+        step = {"index": start + i + 1, "key": one["key"],
+                "label": recipes.plain(recipes.ACTIONS.get(one["key"], one["key"])),
+                "input": {k: _plain_json(v) for k, v in (one["values"] or {}).items()},
+                "target": {"task_id": task.id, "board_id": task.board_id},
+                "output": None, "status": "succeeded"}
+        steps.append(step)
         try:
-            out.extend(_run_one_action(db, one["key"], one["values"],
+            produced = _run_one_action(db, one["key"], one["values"],
                                        task, actor_id, board, told, event,
                                        human=human, owner=owner,
-                                       rule=a, records=made) or [])
+                                       rule=a, records=made) or []
+            out.extend(produced)
+            step["output"] = [_plain_json(e) for e in produced] or "בוצע"
             clash += _note_conflict(event, task, a, one["key"], told)
         except _Waiting as w:
             # What is left of the rule goes to the queue with the moment it may
@@ -9874,14 +9921,21 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
                           human=human, owner=owner)
             note = (f"{len(acts) - 1 - i} פעולות ממתינות · "
                     f"ההמשך בעוד {_duration_he(w.minutes)}")
+            step["status"] = "queued"
+            step["output"] = f"ההמשך בעוד {_duration_he(w.minutes)}"
             if skipped:
                 note += " · " + " · ".join(dict.fromkeys(skipped))
-            return out, note, made
+            return out, note, {"created": made, "steps": steps, "waiting": True}
         except _Skipped as sk:
             skipped.append(sk.reason)
+            step["status"] = sk.status
+            step["output"] = sk.reason
         except (_Waiting, Exception) as e:
             if isinstance(e, _Waiting):
                 raise
+            step["status"] = ("failed_permanent" if isinstance(e, _Refused)
+                              else "failed_temporary")
+            step["output"] = str(e)
             # "כשל עוצר את הפעולות הבאות" — and says which one it was, because
             # "the rule failed" over ten actions is not an answer anybody can
             # act on. Nothing before it survives either: the rule runs inside
@@ -9890,7 +9944,11 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
             # rolled back — the same database transaction).
             raise _Failed(start + i + 1, len(acts) + start, one["key"], e)
     if acts and len(skipped) == len(acts):
-        raise _Skipped(" · ".join(dict.fromkeys(skipped)))
+        # every one of them had nothing to do — and the kind of nothing is the
+        # first one's, since they all agreed
+        kinds = {x.get("status") for x in steps if x.get("status", "").startswith("skip")}
+        raise _Skipped(" · ".join(dict.fromkeys(skipped)),
+                       kinds.pop() if len(kinds) == 1 else "skipped_condition")
     note = ""
     if skipped:
         done = len(acts) - len(skipped)
@@ -9902,7 +9960,29 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
         # not what my rule set it to" had no answer once the rule was running.
         # It does now, on the row of the rule that wrote last.
         note = (note + " · " if note else "") + " · ".join(dict.fromkeys(clash))
-    return out, note, made
+    return out, note, {"created": made, "steps": steps,
+                       # "הצליחה חלקית" — some of it worked and some of it had
+                       # nothing to do, which used to be filed as a success
+                       "partial": bool(skipped)}
+
+
+def _plain_json(v):
+    """A value the log can hold: JSON-safe, bounded, and never a model object.
+
+    The step record goes into a JSON column and is read back by a screen. A
+    date, a set, or an ORM row in there is a log row that fails to serialise —
+    which would make an action's failure into the LOG's failure, and the log
+    is never allowed to be the reason the work fails.
+    """
+    if v is None or isinstance(v, (bool, int, float)):
+        return v
+    if isinstance(v, str):
+        return v[:300]
+    if isinstance(v, dict):
+        return {str(k)[:60]: _plain_json(x) for k, x in list(v.items())[:20]}
+    if isinstance(v, (list, tuple, set)):
+        return [_plain_json(x) for x in list(v)[:20]]
+    return str(v)[:300]
 
 
 def _note_conflict(event, task, a, act_key, told):
@@ -10258,7 +10338,7 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             why = "אין פריט מקושר להעתיק אליו"
             if recipes.pick_value("on_missing", cfg.get("on_missing")) == "fail":
                 raise _Refused(why)
-            raise _Skipped(why)
+            raise _Skipped(why, "skipped_missing")
         moved = 0
         for other in db.query(Task).filter(Task.id.in_(ids)).all():
             if other.deleted_at or other.id == task.id:
@@ -10640,7 +10720,8 @@ def _live_version(db, a):
 
 
 def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
-                        actor_id=None, retry_of=None, result=None):
+                        actor_id=None, retry_of=None, result=None, status="",
+                        started=None, conditions=None, error_code="", attempt=1):
     """Record one attempt, whatever came of it.
 
     Never raises: the history is a record of the work, never a reason for the
@@ -10656,9 +10737,21 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             trigger_key=r.get("trigger") or "", action_key=r.get("action") or "",
             task_id=task.id, task_title=(task.title or "")[:300],
             event={k: v for k, v in (event or {}).items() if not k.startswith("_")},
-            outcome=outcome, reason=(reason or "")[:400],
-            # "בלוג ההפעלה יישמרו ... מיפוי השדות ומזהה הפריט שנוצר"
-            result={"created": list(result)} if result else {},
+            outcome=_run_outcome(status, outcome), status=status or "",
+            reason=(reason or "")[:400], error_code=(error_code or "")[:40],
+            attempt=max(1, int(attempt or 1)),
+            # the three moments. The event carries when it ARRIVED, which on a
+            # cascade is when the change that started it did, not when this
+            # rule's turn came round.
+            queued_at=_moment_naive((event or {}).get("at")) or (started or _now_naive()),
+            started_at=started or _now_naive(),
+            finished_at=_now_naive(),
+            subitem_id=(event or {}).get("subitem_id"),
+            # "בלוג ההפעלה יישמרו ... מיפוי השדות ומזהה הפריט שנוצר" — and the
+            # old and new value, and every condition's verdict, and every
+            # action's input, target and output. One JSON bag rather than six
+            # more columns: it is read as a whole, by one screen.
+            result=_run_result(event, result, conditions),
             source=((event or {}).get("source") or "")[:16],
             batch_id=((event or {}).get("batch") or "")[:36],
             event_id=((event or {}).get("id") or "")[:32],
@@ -10679,6 +10772,42 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
     except Exception as e:                         # noqa: BLE001
         print(f"⚠️  automation run log failed ({a.id}): {e}", flush=True)
         return None
+
+
+def _now_naive():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _moment_naive(v):
+    d = _moment(v)
+    return d.replace(tzinfo=None) if d else None
+
+
+def _run_result(event, result, conditions):
+    """The structured half of a log row: what was read, what was done, what
+    came of it. Empty keys are left out so a row stays readable."""
+    ev = event or {}
+    bag = {}
+    if isinstance(result, dict):
+        if result.get("created"):
+            bag["created"] = result["created"]
+        if result.get("steps"):
+            bag["steps"] = result["steps"]
+    elif result:
+        bag["created"] = list(result)
+    if conditions:
+        bag["conditions"] = list(conditions)
+    # "ערך קודם וחדש" — whatever this kind of event calls them. A status change
+    # carries `was`/`status`, a column change `was`/`now`, and neither name is
+    # worth making a screen learn.
+    old = ev.get("was") if "was" in ev else ev.get("old")
+    new = next((ev[k] for k in ("now", "status", "priority", "group_id", "new")
+                if k in ev), None)
+    if old is not None:
+        bag["old"] = _plain_json(old)
+    if new is not None:
+        bag["new"] = _plain_json(new)
+    return bag
 
 
 def _prune_automation_runs(db, board_id):
@@ -11371,6 +11500,14 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     # "להעביר לפעולות את מזהה פריט האב ולאפשר עדכון של תת־הפריט או פריט האב"
     task = _acting_item(db, a, task, event)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    started = now
+    # "מספר ניסיונות" — a retry is the n+1th try at the same thing, not a
+    # first try that happens to look like one
+    tries = 1
+    if retry_of:
+        prev = db.query(AutomationRun).filter(AutomationRun.id == retry_of).first()
+        tries = (prev.attempt or 1) + 1 if prev else 2
+    verdicts = []
     # rule 4 — re-checked here, on every single firing, and never taken on trust
     # from when the rule was written
     blockers = _automation_blockers(db, board, a)
@@ -11381,7 +11518,10 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         a.skip_count = (a.skip_count or 0) + 1
         _count_automation_usage(db, a.board_id, "skipped")
         row = _log_automation_run(db, board, a, task, event, "skipped", why,
-                                  depth, actor_id, retry_of)
+                                  depth, actor_id, retry_of,
+                                  status="skipped_missing", started=started,
+                                  error_code=("permission" if lost else "dependency"),
+                                  attempt=tries)
         # the firing is recorded as a skip either way — it is what happened to
         # this event — and the rule itself is taken out of service, which is
         # what the status table asks of both causes
@@ -11396,7 +11536,7 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     ok, why_not = _conditions_hold(db, board, task,
                                    (a.config or {}).get(recipes.CONDITION_KEY),
                                    (a.config or {}).get(recipes.CONDITION_GROUP_KEY)
-                                   or "and")
+                                   or "and", verdicts)
     if not ok and override:
         # it is in the history that the conditions were stepped over, and whose
         # decision that was — a run nobody can tell apart from an ordinary one
@@ -11407,7 +11547,9 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         a.skip_count = (a.skip_count or 0) + 1
         _count_automation_usage(db, a.board_id, "skipped")
         return _log_automation_run(db, board, a, task, event, "skipped", why_not,
-                                   depth, actor_id, retry_of)
+                                   depth, actor_id, retry_of,
+                                   status="skipped_condition", started=started,
+                                   conditions=verdicts, attempt=tries)
     # rule 3 — the engine acts as itself, not as whoever tripped the rule and not
     # as whoever wrote it. `actor_id` stays the record of who tripped it.
     engine_id = _automation_identity(db)
@@ -11438,17 +11580,31 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         a.skip_count = (a.skip_count or 0) + 1
         _count_automation_usage(db, a.board_id, "skipped")
         return _log_automation_run(db, board, a, task, event, "skipped", sk.reason,
-                                   depth, actor_id, retry_of)
+                                   depth, actor_id, retry_of,
+                                   status=sk.status, started=started,
+                                   conditions=verdicts, attempt=tries)
     except Exception as e:                         # noqa: BLE001
         print(f"⚠️  automation {a.id} ({a.recipe_id}) failed: {e}", flush=True)
         a.last_run_at, a.last_failure_at, a.last_outcome = now, now, "failed"
         a.fail_count = (a.fail_count or 0) + 1
         a.consecutive_failures = (a.consecutive_failures or 0) + 1
         _count_automation_usage(db, a.board_id, "failed")
+        # "נכשלה - זמני" against "נכשלה - קבוע", and the difference is whether
+        # trying again could possibly end differently. A refusal is a decision
+        # the engine made on what it read and will make again; a crash is a
+        # crash, and the next attempt may well get through.
+        cause = e.cause if isinstance(e, _Failed) else e
+        permanent = isinstance(cause, _Refused)
         row = _log_automation_run(db, board, a, task, event, "failed",
                                   e.reason if isinstance(e, _Failed)
                                   else f"{type(e).__name__}: {e}",
-                                  depth, actor_id, retry_of)
+                                  depth, actor_id, retry_of,
+                                  status=("failed_permanent" if permanent
+                                          else "failed_temporary"),
+                                  started=started, conditions=verdicts,
+                                  error_code=("refused" if permanent
+                                              else type(cause).__name__),
+                                  attempt=tries)
         _suspend_if_broken(db, a, board)
         return row
     a.last_run_at = a.last_success_at = now
@@ -11461,7 +11617,14 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         note = (f"התנאים נעקפו בידי מנהל מערכת · {override}"
                 + (f" · {note}" if note else ""))
     row = _log_automation_run(db, board, a, task, event, "ran", note, depth, actor_id,
-                              retry_of, result=_made)
+                              retry_of, result=_made, started=started,
+                              conditions=verdicts, attempt=tries,
+                              # "הצליחה חלקית": some of it worked and some of it
+                              # had nothing to do, or the rest is waiting
+                              status=("partial" if (isinstance(_made, dict)
+                                                    and (_made.get("partial")
+                                                         or _made.get("waiting")))
+                                      else "succeeded"))
     for ev in follow or []:
         # whatever set this rule off, what IT writes comes from the engine —
         # and it stays in the batch it was started by, so one bulk action reads
@@ -11683,7 +11846,8 @@ def _run_automations(db, task, event, actor_id, depth=0):
         # chain that stops half way is exactly what someone opens the history to
         # understand.
         for a in matching:
-            _log_automation_run(db, board, a, task, event, "skipped", cut, depth, actor_id)
+            _log_automation_run(db, board, a, task, event, "skipped", cut, depth, actor_id,
+                                status="loop_stopped", error_code="loop")
             # "מושהית עקב שגיאה" names a loop as one of its causes: a rule that
             # keeps being cut off is in one, and leaving it active means the
             # board reads as automated while this never completes
@@ -11703,14 +11867,16 @@ def _run_automations(db, task, event, actor_id, depth=0):
         # not a second reason to act — it is the same reason, arriving twice.
         if (event.get("id"), a.id) in chain["events"]:
             _log_automation_run(db, board, a, task, event, "skipped",
-                                "האירוע הזה כבר הפעיל את האוטומציה", depth, actor_id)
+                                "האירוע הזה כבר הפעיל את האוטומציה", depth, actor_id,
+                                status="cancelled", error_code="duplicate_event")
             continue
         # "ואותה אוטומציה לא תפעל שוב על אותו פריט באותה שרשרת". This is the one
         # that stops the ordinary two-rule ping-pong, and it is per ITEM: a rule
         # fanning out over five items is doing its job, not looping.
         if (a.id, task.id) in chain["fired"]:
             _log_automation_run(db, board, a, task, event, "skipped",
-                                "האוטומציה כבר רצה על הפריט הזה בשרשרת הזו", depth, actor_id)
+                                "האוטומציה כבר רצה על הפריט הזה בשרשרת הזו", depth, actor_id,
+                                status="cancelled", error_code="duplicate_in_chain")
             continue
         chain["events"].add((event.get("id"), a.id))
         chain["fired"].add((a.id, task.id))
@@ -12041,7 +12207,8 @@ def _log_queue_cancel(db, row, why, actor_id=None):
             return
         _log_automation_run(db, board, a, task, row.event or {}, "skipped",
                             f"המשך מושהה בוטל: {why}", 0,
-                            actor_id or row.approved_by)
+                            actor_id or row.approved_by,
+                            status="cancelled", error_code="cancelled")
     except Exception as e:                         # noqa: BLE001
         print(f"⚠️  queue cancel not logged ({row.id}): {e}", flush=True)
 
@@ -12201,7 +12368,11 @@ def _log_queue_skip(db, row, why, actor_id=None):
         if a and board and task:
             _log_automation_run(db, board, a, task, row.event or {}, "skipped",
                                 f"המשך מושהה דולג: {why}", 0,
-                                actor_id or row.approved_by)
+                                actor_id or row.approved_by,
+                                # "דולגה לאחר השהיה - התנאים השתנו" — its own
+                                # status, because it is the one skip that is
+                                # about the gap rather than about the rule
+                                status="skipped_changed", error_code="changed_under_wait")
     except Exception as e:                         # noqa: BLE001
         print(f"⚠️  queue skip not logged ({row.id}): {e}", flush=True)
 
@@ -12943,6 +13114,44 @@ def delete_automation(automation_id: int, cancel_pending: bool = False,
 # ── Run history (היסטוריית הפעלות) ───────────────────────────────────
 RUN_OUTCOMES = ("ran", "skipped", "failed")
 
+# ── סטטוסי הפעלה ───────────────────────────────────────────────────────────
+# Eleven, where there were three. The three answered "did it work"; they could
+# not answer the questions somebody actually arrives with — did it skip because
+# the condition was false or because a value it needed was not there, and is
+# this failure worth trying again or will it do the same thing every time.
+#
+# They sit UNDER the three rather than replacing them: `outcome` is derived
+# from `status`, so every chip, filter and count already built on "ran /
+# skipped / failed" goes on meaning exactly what it meant.
+RUN_STATUSES = ("queued", "running", "succeeded", "partial",
+                "skipped_condition", "skipped_missing", "skipped_changed",
+                "failed_temporary", "failed_permanent", "cancelled", "loop_stopped")
+RUN_STATUS_HE = {
+    "queued": "ממתינה",
+    "running": "בתהליך",
+    "succeeded": "הצליחה",
+    "partial": "הצליחה חלקית",
+    "skipped_condition": "דולגה - התנאי לא התקיים",
+    "skipped_missing": "דולגה - נתון חסר לפי הגדרה",
+    "skipped_changed": "דולגה לאחר השהיה - התנאים השתנו",
+    "failed_temporary": "נכשלה - זמני",
+    "failed_permanent": "נכשלה - קבוע",
+    "cancelled": "בוטלה",
+    "loop_stopped": "נעצרה עקב חשד ללולאה",
+}
+RUN_OUTCOME_OF = {
+    "queued": "skipped", "running": "ran",
+    "succeeded": "ran", "partial": "ran",
+    "skipped_condition": "skipped", "skipped_missing": "skipped",
+    "skipped_changed": "skipped", "cancelled": "skipped", "loop_stopped": "skipped",
+    "failed_temporary": "failed", "failed_permanent": "failed",
+}
+
+
+def _run_outcome(status, fallback="ran"):
+    """The coarse three, from the fine eleven."""
+    return RUN_OUTCOME_OF.get(status or "", fallback)
+
 
 def _can_see_run_item(db, row, user_id):
     """May this reader see the item this run acted on?
@@ -12975,6 +13184,11 @@ def _redact_run(row_json):
     row_json["sentence"] = "—"
     row_json["reason"] = ""
     row_json["task_id"] = None
+    row_json["subitem_id"] = None
+    # everything the schema added is read off real data: the old value, the new
+    # one, each condition's verdict against this item, what each action wrote.
+    # All of it goes out with the title.
+    row_json["result"] = {}
     row_json["redacted"] = True
     row_json["can_retry"] = False
     return row_json
@@ -12997,6 +13211,21 @@ def _redact_test(row_json):
     return row_json
 
 
+def _iso(d):
+    return d.isoformat() if d else None
+
+
+def _default_status(row):
+    """The fine status for a row written before there were any.
+
+    The coarse outcome is all such a row has, so it reads as the plainest
+    member of its family rather than being left blank — a blank status in a
+    status filter is a row nobody can find.
+    """
+    return {"ran": "succeeded", "failed": "failed_temporary"}.get(
+        row.outcome or "", "skipped_condition")
+
+
 def _automation_run_json(db, row):
     uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
     return {
@@ -13004,7 +13233,15 @@ def _automation_run_json(db, row):
         "sentence": row.sentence or "",
         "trigger": row.trigger_key or "", "action": row.action_key or "",
         "task_id": row.task_id, "task_title": row.task_title or "",
+        "subitem_id": row.subitem_id,
         "outcome": row.outcome or "ran", "reason": row.reason or "",
+        # the fine status and the words for it, so no screen has to carry the
+        # eleven translations and drift from this one
+        "status": row.status or _default_status(row),
+        "status_he": RUN_STATUS_HE.get(row.status or _default_status(row), ""),
+        "attempt": row.attempt or 1, "error_code": row.error_code or "",
+        "queued_at": _iso(row.queued_at), "started_at": _iso(row.started_at),
+        "finished_at": _iso(row.finished_at or row.created_at),
         "depth": row.depth or 0, "event_type": (row.event or {}).get("type") or "",
         # where the change came from, and the batch it belonged to
         "source": row.source or "", "batch_id": row.batch_id or "",
@@ -13021,12 +13258,19 @@ def _automation_run_json(db, row):
         # a test was rolled back on purpose, so "try again" would do it for real
         "can_retry": (row.outcome in ("skipped", "failed")) and row.automation_id is not None
                      and not row.is_test,
+        # "העתקת מזהה לתמיכה" — one string, because the three ids somebody
+        # needs are the run, the event that caused it and the chain it was in,
+        # and asking a person to copy three boxes is asking for two of them
+        "ref": f"run:{row.id}"
+               + (f" chain:{row.chain_id}" if row.chain_id else "")
+               + (f" event:{row.event_id}" if row.event_id else ""),
     }
 
 
 @app.get("/api/boards/{board_id}/automations/runs")
 def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 0,
                          event_id: str = "", batch_id: str = "", chain_id: str = "",
+                         status: str = "", q: str = "",
                          limit: int = 150, user_id: int = Depends(current_user_id)):
     """Every attempt the board's rules made, newest first.
 
@@ -13044,20 +13288,30 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
         # the history somebody is looking at is not one step behind
         if _can_manage_automations(db, b, user_id):
             _drain_automation_queue(db, board_id, user_id)
-        q = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
+        rows_q = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
         if outcome in RUN_OUTCOMES:
-            q = q.filter(AutomationRun.outcome == outcome)
+            rows_q = rows_q.filter(AutomationRun.outcome == outcome)
         elif outcome == "retried":
-            q = q.filter(AutomationRun.retry_of != None)                   # noqa: E711
+            rows_q = rows_q.filter(AutomationRun.retry_of != None)         # noqa: E711
+        if status in RUN_STATUSES:
+            rows_q = rows_q.filter(AutomationRun.status == status)
         if automation_id:
-            q = q.filter(AutomationRun.automation_id == automation_id)
+            rows_q = rows_q.filter(AutomationRun.automation_id == automation_id)
         if event_id:
-            q = q.filter(AutomationRun.event_id == str(event_id)[:32])
+            rows_q = rows_q.filter(AutomationRun.event_id == str(event_id)[:32])
         if batch_id:
-            q = q.filter(AutomationRun.batch_id == str(batch_id)[:36])
+            rows_q = rows_q.filter(AutomationRun.batch_id == str(batch_id)[:36])
         if chain_id:
-            q = q.filter(AutomationRun.chain_id == str(chain_id)[:32])
-        rows = q.order_by(AutomationRun.id.desc()).limit(max(1, min(limit, 500))).all()
+            rows_q = rows_q.filter(AutomationRun.chain_id == str(chain_id)[:32])
+        # free text over the three things somebody actually remembers: what the
+        # item was called, what the rule says, and why nothing happened
+        needle = str(q or "").strip()[:80]
+        if needle:
+            like = f"%{needle}%"
+            rows_q = rows_q.filter(or_(AutomationRun.task_title.ilike(like),
+                                       AutomationRun.sentence.ilike(like),
+                                       AutomationRun.reason.ilike(like)))
+        rows = rows_q.order_by(AutomationRun.id.desc()).limit(max(1, min(limit, 500))).all()
         # an item-level restriction holds in the history too — see _redact_run
         seen = {}
         for r in rows:
@@ -13067,11 +13321,165 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
         counts = {k: base.filter(AutomationRun.outcome == k).count() for k in RUN_OUTCOMES}
         counts["retried"] = base.filter(AutomationRun.retry_of != None).count()   # noqa: E711
         counts["total"] = sum(counts[k] for k in RUN_OUTCOMES)
-        return {"runs": [_automation_run_json(db, r) if seen.get(r.task_id, True)
-                         else _redact_run(_automation_run_json(db, r))
-                         for r in rows], "counts": counts,
+        for st in RUN_STATUSES:
+            counts[st] = base.filter(AutomationRun.status == st).count()
+        out = [_automation_run_json(db, r) if seen.get(r.task_id, True)
+               else _redact_run(_automation_run_json(db, r)) for r in rows]
+        # "ממתינה" is one of the eleven, and "ביטול הפעלה ממתינה" is something
+        # the log screen does — so a run that has not gone yet belongs ON the
+        # log, not only in a queue view somebody has to know about.
+        waiting = _queued_as_runs(db, b, user_id,
+                                  needle=needle, only=status, chain_id=chain_id)
+        counts["queued"] = len(waiting)
+        if not status or status == "queued":
+            out = waiting + out
+        return {"runs": out, "counts": counts,
+                "statuses": [{"key": k, "he": RUN_STATUS_HE[k],
+                              "outcome": RUN_OUTCOME_OF[k]} for k in RUN_STATUSES],
                 "can_manage": _can_manage_automations(db, b, user_id),
                 "can_export": _can_export_automations(db, b, user_id)}
+
+
+def _queued_as_runs(db, board, user_id, needle="", only="", chain_id=""):
+    """The runs that have not gone yet, in the shape of log rows.
+
+    A waiting run has no AutomationRun of its own — it is half a rule held
+    against a moment — so it is rendered from the queue row. Given the same
+    keys the real rows have, the screen does not need two renderers, and
+    `queue_id` is the handle that lets it be called off.
+    """
+    if only and only != "queued":
+        return []
+    rows = [r for r in db.query(AutomationQueue)
+            .filter(AutomationQueue.board_id == board.id,
+                    AutomationQueue.done_at == None)                      # noqa: E711
+            .order_by(AutomationQueue.resume_at, AutomationQueue.id).all()
+            if (r.event or {}).get("type") == "resume"
+            and (r.state or "pending") in ("pending", "frozen")]
+    out = []
+    for r in rows:
+        if chain_id and (r.event or {}).get("chain") != chain_id:
+            continue
+        a = (db.query(Automation).filter(Automation.id == r.automation_id).first()
+             if r.automation_id else None)
+        t = (db.query(Task).filter(Task.id == r.task_id)
+               .execution_options(include_deleted=True).first())
+        if a is None or t is None:
+            continue
+        sentence = _automation_label(db, board, a)
+        if needle and needle not in (t.title or "") and needle not in sentence:
+            continue
+        row = {
+            "id": -r.id,            # negative: it is not an AutomationRun id
+            "queue_id": r.id, "automation_id": a.id, "recipe_id": a.recipe_id,
+            "sentence": sentence,
+            "trigger": (recipes.recipe(a.recipe_id) or {}).get("trigger") or "",
+            "action": (recipes.recipe(a.recipe_id) or {}).get("action") or "",
+            "task_id": t.id, "task_title": t.title or "",
+            "subitem_id": (r.event or {}).get("subitem_id"),
+            "outcome": "skipped", "status": "queued",
+            "status_he": RUN_STATUS_HE["queued"], "reason": r.note or "",
+            "error_code": "", "attempt": 1, "depth": 0,
+            "event_type": "resume", "source": (r.event or {}).get("source") or "",
+            "batch_id": r.batch_id or "", "event_id": (r.event or {}).get("id") or "",
+            "chain_id": (r.event or {}).get("chain") or "",
+            "result": {}, "actor_id": r.approved_by, "actor_name": "",
+            "is_retry": False, "retry_of": None, "retried_at": None,
+            "queued_at": _iso(r.created_at), "started_at": None,
+            "finished_at": None, "created_at": _iso(r.created_at),
+            "resume_at": _iso(r.resume_at), "frozen": (r.state == "frozen"),
+            "version": r.version, "is_test": False, "can_retry": False,
+            "can_cancel": _can_manage_automations(db, board, user_id),
+            "ref": f"queue:{r.id}" + (f" chain:{(r.event or {}).get('chain')}"
+                                      if (r.event or {}).get("chain") else ""),
+        }
+        if not _can_see_item_row(db, t, user_id):
+            row = _redact_run(row)
+            row["can_cancel"] = False
+        out.append(row)
+    return out
+
+
+def _can_see_item_row(db, t, user_id):
+    """The item-level check the log already applies, against a Task in hand."""
+    role = _board_role(db, t.board_id, user_id)
+    return role is not None and _item_perm(t, user_id, role) != "none"
+
+
+@app.post("/api/automation-queue/{queue_id}/cancel")
+def cancel_queued_run(queue_id: int, user_id: int = Depends(current_user_id)):
+    """Call off a run that has not gone yet, from the log screen.
+
+    A board manager's call, like every other control on that screen — and the
+    cancellation is written into the history, because a thing that was going
+    to happen and now will not is exactly what somebody comes looking for.
+    """
+    with Session(engine) as db:
+        row = db.query(AutomationQueue).filter(AutomationQueue.id == queue_id).first()
+        if not row or row.done_at is not None:
+            raise HTTPException(404, "ההפעלה הממתינה אינה קיימת")
+        b = db.query(Board).filter(Board.id == row.board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לבטל הפעלה ממתינה")
+        _queue_set_state(db, [row], "cancelled", "בוטלה מהלוג", user_id)
+        db.commit()
+        return {"status": "cancelled", "queue_id": queue_id}
+
+
+@app.get("/api/automation-runs/{run_id}/timeline")
+def automation_run_timeline(run_id: int, user_id: int = Depends(current_user_id)):
+    """One run as a sequence: the event arriving, each condition's verdict,
+    each action with what it was given and what it did, and the end.
+
+    Built here rather than in the screen. The parts live in four places — the
+    event, the conditions, the steps, the three timestamps — and a client
+    reassembling a story out of them would be a second implementation of what
+    happened, free to disagree with this one.
+    """
+    with Session(engine) as db:
+        row = db.query(AutomationRun).filter(AutomationRun.id == run_id).first()
+        if not row:
+            raise HTTPException(404, "run not found")
+        b = db.query(Board).filter(Board.id == row.board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_view_automations(db, b, user_id):
+            raise HTTPException(403, "אין לך הרשאה לצפות בהיסטוריית ההפעלות")
+        # the detail here is read off the item itself — every condition's real
+        # value, every value an action wrote — so the item's own permission is
+        # the bar, and a redacted row has no timeline to give
+        if not _can_see_run_item(db, row, user_id):
+            raise HTTPException(403, "אין לך הרשאה לפריט שההפעלה הזו פעלה עליו")
+        res = row.result or {}
+        ev = row.event or {}
+        out = [{"kind": "event", "at": _iso(row.queued_at),
+                "text": f"אירוע «{ev.get('type') or row.trigger_key or '—'}» נקלט"
+                        + (f" · {_src_he(row.source)}" if row.source else ""),
+                "old": res.get("old"), "new": res.get("new")}]
+        for c in res.get("conditions") or []:
+            out.append({"kind": "condition", "at": _iso(row.started_at),
+                        "held": bool(c.get("held")),
+                        "text": ("התנאי התקיים: " if c.get("held")
+                                 else "התנאי לא התקיים: ") + (c.get("text") or
+                                                              c.get("kind") or "")})
+        for st in res.get("steps") or []:
+            out.append({"kind": "action", "at": _iso(row.started_at),
+                        "status": st.get("status") or "",
+                        "text": f"{st.get('index')}. {st.get('label') or st.get('key')}",
+                        "input": st.get("input"), "target": st.get("target"),
+                        "output": st.get("output")})
+        for made in res.get("created") or []:
+            out.append({"kind": "created", "at": _iso(row.finished_at),
+                        "text": f"נוצר «{made.get('title') or made.get('task_id')}»",
+                        "task_id": made.get("task_id"), "board_id": made.get("board_id")})
+        out.append({"kind": "end", "at": _iso(row.finished_at),
+                    "status": row.status or _default_status(row),
+                    "text": (RUN_STATUS_HE.get(row.status or _default_status(row), "")
+                             + (f" · {row.reason}" if row.reason else ""))})
+        return {"run_id": row.id, "ref": f"run:{row.id}",
+                "timeline": out}
 
 
 @app.post("/api/automation-runs/{run_id}/retry")
@@ -13146,18 +13554,22 @@ def export_automation_runs(board_id: int, outcome: str = "", automation_id: int 
         buf = io.StringIO()
         buf.write("﻿")
         w = csv.writer(buf)
-        w.writerow(["מועד", "תוצאה", "האוטומציה", "גרסה", "הפריט", "הסיבה",
-                    "גורם מפעיל", "פעולה", "עומק", "ניסיון חוזר", "מי הפעיל"])
+        w.writerow(["מועד", "תוצאה", "סטטוס", "האוטומציה", "גרסה", "הפריט", "הסיבה",
+                    "קוד שגיאה", "ניסיון", "גורם מפעיל", "פעולה", "עומק",
+                    "ניסיון חוזר", "מי הפעיל", "מקור", "שרשרת", "אירוע"])
         for r in rows:
             ok = seen.get(r.task_id, True)
             w.writerow([(r.created_at.isoformat() if r.created_at else "")[:19].replace("T", " "),
                         _OUT_HE.get(r.outcome, r.outcome or ""),
+                        RUN_STATUS_HE.get(r.status or _default_status(r), ""),
                         (r.sentence or "").replace("«", "").replace("»", "") if ok else "—",
                         r.version or "",
                         (r.task_title or "") if ok else "פריט שאין לך הרשאה אליו",
                         (r.reason or "") if ok else "",
+                        r.error_code or "", r.attempt or 1,
                         r.trigger_key or "", r.action_key or "", r.depth or 0,
-                        "כן" if r.retry_of else "", uname(r.actor_id)])
+                        "כן" if r.retry_of else "", uname(r.actor_id),
+                        _src_he(r.source), r.chain_id or "", r.event_id or ""])
         return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition":
                                  f'attachment; filename="automation-runs-{board_id}.csv"'})
