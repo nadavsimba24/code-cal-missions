@@ -437,6 +437,14 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .tb-search .tb-q-clear.show{display:grid;place-items:center}
 /* dropdown controls */
 .tb-ctl{position:relative}
+/* the filter control's second door — see the markup. Joined to the button
+   rather than standing beside it, so the two read as one control. */
+#ctl-arrange{display:inline-flex;align-items:center}
+#ctl-arrange>.tb-btn{padding-inline-end:5px}
+.tb-caret{display:inline-flex;align-items:center;padding:8px 8px 8px 7px;border:0;background:none;
+  border-radius:6px;font-size:10px;color:var(--text-muted);cursor:pointer;font-family:inherit}
+.tb-caret:hover{background:var(--row-hover);color:var(--primary)}
+#ctl-arrange.on .tb-caret{color:var(--primary-hover)}
 .tb-ctl.on .tb-btn{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .tb-badge{display:none;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--primary);color:#fff;font-size:11px;font-weight:700;align-items:center;justify-content:center}
 .tb-ctl.on .tb-badge{display:inline-flex}
@@ -2002,7 +2010,7 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 /* One control: an outlined box holding whatever it holds and a chevron at its
    far edge. A native select draws its own arrow in a different place in every
    browser, so the arrow is drawn here and the select is left bare inside. */
-.adv-box{display:inline-flex;align-items:center;gap:8px;min-width:0;height:40px;
+.adv-box{position:relative;display:inline-flex;align-items:center;gap:8px;min-width:0;height:40px;
   padding:0 11px;border:1px solid var(--border-strong);border-radius:9px;
   background:var(--surface);transition:border-color .12s,box-shadow .12s}
 .adv-box:hover{border-color:var(--text-light)}
@@ -2032,7 +2040,15 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .adv-chip-x{border:0;background:none;color:var(--text-light);cursor:pointer;font-size:13px;
   line-height:1;padding:0 1px;flex-shrink:0}
 .adv-chip-x:hover{color:var(--danger,#e2445c)}
-.adv-box-val.picked .adv-bare{width:0;flex:0 0 0;opacity:0}
+/* The chip stands where the select's text would be, and the select is laid
+   OVER the whole box, invisible — so clicking anywhere on it opens the same
+   list the chip came from. It was shrunk to zero width instead, which left a
+   box with nothing in it to click: once a value was picked it could not be
+   changed, only cleared. The chip lets the click through; its × does not. */
+.adv-box-val.picked .adv-bare{position:absolute;inset:0;width:100%;height:100%;
+  opacity:0;cursor:pointer}
+.adv-box-val.picked .adv-chip{flex:1;pointer-events:none}
+.adv-chip-x{position:relative;z-index:2;pointer-events:auto}
 .adv-in{font:inherit;font-size:13.5px;border:0;outline:none;background:none;color:var(--text);
   min-width:0;flex:1;height:100%}
 .adv-date{display:flex;gap:9px;align-items:center;flex:1 1 300px;min-width:0}
@@ -2072,9 +2088,6 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .modal h2.adv-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-inline-end:50px}
 .adv-shown{font-size:13.5px;font-weight:400;color:var(--text-light);margin-inline-start:4px}
 .adv-shown b{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums}
-.adv-help{border:0;background:none;color:var(--text-light);cursor:help;font-size:14px;
-  padding:0 4px;vertical-align:middle}
-.adv-help:hover{color:var(--primary)}
 /* the window's own two actions, opposite the title — clearing is a word,
    saving is the one outlined thing up there */
 .adv-h-acts{margin-inline-start:auto;display:inline-flex;align-items:center;gap:16px;
@@ -2560,17 +2573,19 @@ body, body *{ font-weight:400!important; }
         <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
         <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
       </div>
+      <!-- One filter control with two doors: the button opens the panel of
+           values, the caret beside it opens the builder straight away. Not a
+           second filter button — it carries no label and no badge of its own,
+           and the badge on "סינון" goes on counting whatever is in the filter
+           whichever door wrote it. The panel's foot still leads to the builder
+           too, for somebody who gets there and finds that picking values is
+           not enough; this is the way in for somebody who already knows it. -->
       <div class="tb-ctl" id="ctl-arrange">
         <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון <span class="tb-badge" id="badge-arrange"></span></button>
+        <button class="tb-caret" title="סינון מתקדם — עמודה, אופרטור, ערך, וקבוצות של וגם/או"
+                aria-label="סינון מתקדם" onclick="event.stopPropagation();closePops();Adv.open()"><i class="fa-solid fa-chevron-down"></i></button>
         <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
       </div>
-      <!-- The advanced builder has no button of its own in the toolbar. It is
-           reached from the foot of the filter panel, which is where somebody
-           is standing when they find that picking values is not enough for
-           what they want to ask. Two buttons side by side were two doors into
-           one filter: the panel and the builder edit the same condition tree,
-           and the badge on "סינון" already counts whatever is in it, whichever
-           of the two wrote it. -->
       <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
       <div style="flex:1"></div>
       <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
@@ -11417,6 +11432,12 @@ const Adv = {
     if(!st.board){ toast('פתחו לוח'); return; }
     // edited on a copy: closing with ✕ leaves the board filtered as it was
     this.draft=JSON.parse(JSON.stringify(st.filters.adv||{op:'and',rules:[]}));
+    /* A filter with nothing in it opens ON one empty condition rather than on
+       the sentence "אין תנאים". The first thing anybody does here is pick a
+       column, and making them ask for the row before they can do it is a
+       click that answers nothing. It costs nothing to offer, because an
+       unfinished condition is dropped on the way out — see apply. */
+    if(!(this.draft.rules||[]).length) this.draft.rules=[this.newRule()];
     showModal(this.html());
     document.getElementById('modal').classList.add('modal-wide');
   },
@@ -11443,9 +11464,14 @@ const Adv = {
 
   // ── editing ──
   setOp(path,op){ this.node(path).op=op; this.redraw(); },
-  addRule(path){
+  // the condition a new row starts as: the board's first column, that kind's
+  // first question, and no value yet
+  newRule(){
     const f=advFields()[0];
-    this.node(path).rules.push({field:f?f.id:'title', op:advOps(f?f.kind:'text')[0][0], v:'', v2:''});
+    return {field:f?f.id:'title', op:advOps(f?f.kind:'text')[0][0], v:'', v2:''};
+  },
+  addRule(path){
+    this.node(path).rules.push(this.newRule());
     this.redraw();
     this.focusLast(path);
   },
@@ -11607,7 +11633,9 @@ const Adv = {
     const all=((st.board&&st.board.tasks)||[]);
     if(typeof Paged!=='undefined'&&Paged.on)return Paged.total?`מתוך ${Paged.total} פריטים`:'';
     if(!all.length)return '';
-    const n=all.filter(t=>advMatch(t,this.draft)).length;
+    // counted against the tree as it will be ASKED — an unfinished condition is
+    // dropped on the way out, so counting it would predict the wrong board
+    const n=all.filter(t=>advMatch(t,this.asked(this.draft))).length;
     return n>=all.length?`מציג את כל ${all.length} הפריטים`
                         :`מציג <b>${n}</b> מתוך <b>${all.length}</b> פריטים`;
   },
@@ -11635,9 +11663,6 @@ const Adv = {
     return `<h2 class="adv-h"><i class="fa-solid fa-filter-circle-check" style="color:var(--primary)"></i>
         <span>סינון מתקדם</span>
         <span class="adv-shown" id="adv-count">${this.preview()}</span>
-        <button class="adv-help" tabindex="-1"
-          title="כל תנאי הוא עמודה, שאלה וערך. «וגם» מצמצם — כל התנאים חייבים להתקיים; «או» מרחיב — די באחד מהם. קבוצה היא סוגריים: היא נשאלת כשאלה אחת."
-          ><i class="fa-regular fa-circle-question"></i></button>
         <span class="adv-h-acts">
           <button class="adv-link muted" onclick="Adv.clear()">נקה הכול</button>
           <button class="adv-save" onclick="Adv.saveView()">${onView?'שמירה בתצוגה זו':'שמירה כתצוגה'}</button>
@@ -11661,8 +11686,21 @@ const Adv = {
   // what is built travels with you: going back to the quick panel applies it
   // rather than throwing it away, since the two edit the same tree
   async toQuick(){ await this.apply(); togglePop('arrange'); },
+  /* The tree as it will be ASKED: without the conditions that are still
+     missing a value. Such a condition matches every item — it filters
+     nothing — so leaving it in buys a badge that counts a question nobody is
+     asking, and a saved view that carries it. A group left empty by the
+     dropping goes too: an empty group matches everything, which inside an
+     "או" is the same bug one level up. */
+  asked(node){
+    if(!node)return null;
+    if(node.rules===undefined) return this.ruleDone(node)?node:null;
+    const kids=(node.rules||[]).map(k=>this.asked(k)).filter(Boolean);
+    return kids.length?{op:node.op,rules:kids}:null;
+  },
   async apply(){
-    st.filters.adv=advCount(this.draft)?this.draft:null;
+    const tree=this.asked(this.draft);
+    st.filters.adv=advCount(tree)?tree:null;
     closeModals(); refreshToolbar(); renderView();
     /* The board is already filtered — the local engine answered instantly,
        which is what a filter has to do. This asks the server the same

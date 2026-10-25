@@ -234,7 +234,10 @@ def test_the_window_actions_sit_opposite_the_title():
     head = SRC[i:SRC.index("\n  },", i)]
     assert "adv-h-acts" in head and "נקה הכול" in head, "the header actions are gone"
     assert "Adv.saveView()" in head, "the cut can no longer be saved as a view"
-    assert "adv-help" in head, "nothing explains וגם / או / קבוצה"
+    # …and nothing else up there. The ? carried its explanation in a title
+    # attribute, which showed nothing on hover where it was placed — a help
+    # affordance that does not help is worse than none.
+    assert "adv-help" not in SRC, "the question mark is back"
 
 
 def test_saving_a_view_applies_the_draft_first():
@@ -245,3 +248,46 @@ def test_saving_a_view_applies_the_draft_first():
     assert "await this.apply()" in body, "a draft can be saved without being applied"
     assert "Views.update()" in body and "Views.saveNew()" in body, \
         "saving no longer answers the question the tab strip answers"
+
+
+def test_the_builder_opens_on_a_row_and_never_applies_a_blank_one():
+    """The first thing anybody does here is pick a column; asking for the row
+    before they can do it is a click that answers nothing. It costs nothing to
+    offer, because a condition still missing its value matches every item —
+    applying it would buy a badge counting a question nobody is asking, and a
+    saved view that carries it — so it is dropped on the way out."""
+    adv = SRC[SRC.index("const Adv = {"):]
+    i = adv.index("  open(){")
+    body = adv[i:adv.index("\n  },", i)]
+    assert "this.newRule()" in body, "the builder opens on no conditions again"
+    i = adv.index("  async apply(){")
+    body = adv[i:adv.index("\n  },", i)]
+    assert "this.asked(this.draft)" in body, "a half-built condition reaches the board"
+    i = adv.index("  preview(){")
+    body = adv[i:adv.index("\n  },", i)]
+    assert "this.asked(this.draft)" in body, \
+        "the count predicts a board the apply will not produce"
+
+
+def test_the_value_list_can_be_opened_after_a_value_is_in_it():
+    """The chip stands where the select's text would be and the select is laid
+    OVER the whole box, invisible. Shrunk to zero width instead, the box had
+    nothing in it to click: a value once picked could only be cleared, never
+    changed."""
+    assert ".adv-box-val.picked .adv-bare{position:absolute" in SRC, \
+        "the value select is back to being shrunk away"
+    assert ".adv-box{position:relative" in SRC, "the overlay has nothing to sit in"
+    assert ".adv-chip-x{position:relative;z-index:2;pointer-events:auto}" in SRC, \
+        "the × that clears a value is behind the select"
+
+
+def test_the_builder_has_a_door_from_the_toolbar():
+    """One filter control with two doors: the button opens the panel of
+    values, the caret beside it opens the builder straight away. Not a second
+    filter button — no label, no badge of its own — so the badge on «סינון»
+    goes on counting the whole filter whichever door wrote it."""
+    assert 'class="tb-caret"' in SRC, "the way straight to the builder is gone"
+    assert "ctl-adv" not in SRC and "badge-adv" not in SRC, \
+        "the caret grew into a second filter button with a badge of its own"
+    i = SRC.index('class="tb-caret"')
+    assert "Adv.open()" in SRC[i:i + 400], "the caret opens something else"

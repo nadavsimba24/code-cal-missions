@@ -99,8 +99,37 @@ function world(){
   const [Adv, st, log] = world();
   Adv.open();
   ck('the builder opens', log.modals===1);
+  /* On one empty condition rather than on the sentence "אין תנאים": the first
+     thing anybody does here is pick a column, and asking for the row first is
+     a click that answers nothing. */
+  ck('...on one empty condition, ready to be filled in',
+     Adv.draft.rules.length===1 && Adv.draft.rules[0].v==='', Adv.draft);
   ck('...on a copy, so closing with ✕ leaves the board as it was',
-     JSON.stringify(Adv.draft)==='{"op":"and","rules":[]}', Adv.draft);
+     st.filters.adv===null, st.filters.adv);
+}
+{
+  /* …and an empty row costs nothing, because an unfinished condition never
+     reaches the board: it matches every item, so applying it would buy a
+     badge counting a question nobody is asking. */
+  const [Adv, st] = world();
+  Adv.open();
+  Adv.apply();
+  ck('opening and applying without filling anything in filters nothing',
+     st.filters.adv===null, st.filters.adv);
+  Adv.open();
+  Adv.setField('0','col_a'); Adv.setRuleOp('0','eq'); Adv.setV('0','v','תקוע');
+  Adv.addRule('');                       // …and a second one left half-built
+  Adv.apply();
+  ck('the finished condition is applied and the half-built one is dropped',
+     st.filters.adv && st.filters.adv.rules.length===1
+     && st.filters.adv.rules[0].v==='תקוע', st.filters.adv);
+}
+{
+  const [Adv, st] = world();
+  st.filters.adv={op:'and',rules:[{field:'col_a',op:'eq',v:'תקוע',v2:''}]};
+  Adv.open();
+  ck('a filter that already has conditions opens on those, not on a blank row',
+     Adv.draft.rules.length===1 && Adv.draft.rules[0].v==='תקוע', Adv.draft);
 }
 {
   const [Adv, st, log] = world();
@@ -113,9 +142,9 @@ function world(){
 // ── every edit the builder offers ─────────────────────────────────────────
 {
   const [Adv, st, log] = world();
-  Adv.open();
+  Adv.open();                              // …which already offers one row
   Adv.addRule('');
-  ck('a condition can be added', Adv.draft.rules.length===1, Adv.draft);
+  ck('a condition can be added', Adv.draft.rules.length===2, Adv.draft);
   Adv.setField('0','col_a');
   Adv.setRuleOp('0','eq');
   Adv.setV('0','v','תקוע');
@@ -123,15 +152,15 @@ function world(){
      Adv.draft.rules[0].field==='col_a' && Adv.draft.rules[0].op==='eq'
      && Adv.draft.rules[0].v==='תקוע', Adv.draft.rules[0]);
   Adv.addGroup('');
-  ck('a group can be added', Adv.draft.rules.length===2 && Adv.draft.rules[1].rules, Adv.draft);
-  Adv.addRule('1');
-  Adv.setField('1.0','status');
-  ck('...and a condition inside it', Adv.draft.rules[1].rules.length===1
-     && Adv.draft.rules[1].rules[0].field==='status', Adv.draft.rules[1]);
-  Adv.setOp('1','or');
-  ck('...with וגם/או of its own', Adv.draft.rules[1].op==='or');
-  Adv.del('1');
-  ck('anything can be deleted', Adv.draft.rules.length===1, Adv.draft);
+  ck('a group can be added', Adv.draft.rules.length===3 && Adv.draft.rules[2].rules, Adv.draft);
+  Adv.addRule('2');
+  Adv.setField('2.0','status');
+  ck('...and a condition inside it', Adv.draft.rules[2].rules.length===1
+     && Adv.draft.rules[2].rules[0].field==='status', Adv.draft.rules[2]);
+  Adv.setOp('2','or');
+  ck('...with וגם/או of its own', Adv.draft.rules[2].op==='or');
+  Adv.del('2');
+  ck('anything can be deleted', Adv.draft.rules.length===2, Adv.draft);
 }
 
 // ── applying, and clearing ────────────────────────────────────────────────
@@ -177,8 +206,8 @@ function world(){
      The first condition of every group opens with "כאשר" and the rest carry
      the group's own word, so the filter reads straight down. */
   const [Adv] = world();
-  Adv.open();
-  Adv.addRule(''); Adv.addRule('');
+  Adv.open();                              // …which already offers one row
+  Adv.addRule('');
   const html = Adv.bodyHTML();
   ck('the first condition opens with כאשר', /adv-joiner">כאשר</.test(html), html.slice(0,300));
   /* …and every one after it carries the group's own word, as the word itself
@@ -197,8 +226,7 @@ function world(){
   /* A condition whose value is still empty matches EVERY item: it widens the
      filter rather than narrowing it, and it used to do that in silence. */
   const [Adv] = world();
-  Adv.open();
-  Adv.addRule('');
+  Adv.open();                              // the row it opens on is one of these
   ck('a condition with no value is counted as not filtering', Adv.todo(Adv.draft)===1);
   ck('…and says so on its own row', /adv-rule adv-todo/.test(Adv.bodyHTML()));
   ck('…and once above the tree, for the row that scrolled off',
@@ -218,7 +246,10 @@ function world(){
   const [Adv, st] = world();
   st.board.tasks=[{id:1,title:'א'},{id:2,title:'ב'},{id:3,title:'ג'}];
   Adv.open();
-  ck('with nothing to filter by, the whole board survives',
+  /* …counted against the tree as it will be ASKED. The row it opens on has no
+     value yet, so it is not part of the question and the count must not
+     pretend it is. */
+  ck('with nothing filled in yet, the whole board survives',
      /את כל 3 הפריטים/.test(Adv.preview()), Adv.preview());
   ck('…and the count is drawn beside the title, not under the list',
      /id="adv-count"/.test(Adv.html()) && !/id="adv-count"/.test(Adv.bodyHTML()));
@@ -291,9 +322,11 @@ function world(){
   const [Adv, st, log] = world();
   Adv.open();
   const head = Adv.html();
-  ck('the title row carries the count, the help and the two actions',
-     /id="adv-count"/.test(head) && /adv-help/.test(head)
-     && /נקה הכול/.test(head) && /adv-save/.test(head), head.slice(0,400));
+  ck('the title row carries the count and the two actions',
+     /id="adv-count"/.test(head) && /נקה הכול/.test(head)
+     && /adv-save/.test(head), head.slice(0,400));
+  ck('…and nothing else — the ? that showed no hover is gone',
+     !/adv-help/.test(head), head.slice(0,400));
   ck('…and the foot is down to applying and cancelling',
      /החל סינון/.test(head) && /ביטול/.test(head) && !/mfoot[\s\S]*נקה הכול/.test(head));
 }
