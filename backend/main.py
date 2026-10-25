@@ -10996,6 +10996,55 @@ def _create_linked_item(db, task, col, board_id, title, actor_id, group=None):
 _runs_logged = 0
 
 
+def _etag(db, a):
+    """The token a client echoes back to say which version it was looking at.
+
+    The NEWEST version row of any kind, draft included — every field worth
+    fighting over is in _VERSIONED, so every change that could be overwritten
+    moves this. `updated_at` would be the other candidate and is worse: two
+    saves in the same second share it.
+    """
+    try:
+        return int(db.query(func.max(AutomationVersion.version))
+                     .filter(AutomationVersion.automation_id == a.id).scalar() or 0)
+    except Exception:                              # noqa: BLE001
+        return 0
+
+
+def _check_etag(db, a, data=None, given=None):
+    """Refuse a write aimed at a version that has since moved on.
+
+    "בדיקת גרסה למניעת דריסה". Optional on purpose: every existing caller
+    sends nothing, and a check nobody can satisfy is a product that stops
+    working on deploy. When a caller DOES name a version, it is held to it.
+
+    The refusal carries what the rule says now, so the client can show the
+    difference rather than the word "conflict" — being told you lost without
+    being told to what is barely better than not being told.
+    """
+    if given is None and isinstance(data, dict):
+        given = data.get("expected_version", data.get("etag"))
+    if given in (None, ""):
+        return
+    try:
+        want = int(given)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "גרסה לא תקינה בבקשה")
+    now = _etag(db, a)
+    if want == now:
+        return
+    b = db.query(Board).filter(Board.id == a.board_id).first()
+    raise HTTPException(409, {
+        "message": "האוטומציה השתנתה מאז שנטענה אצלך — רעננו והחילו מחדש",
+        "expected_version": want, "current_version": now,
+        "current": {"etag": now, "name": a.name or "",
+                    "status": a.status, "owner_id": a.owner_id,
+                    "run_order": a.run_order, "importance": a.importance,
+                    "sentence": _automation_label(db, b, a) if b else "",
+                    "updated_by": a.updated_by,
+                    "updated_at": _iso(a.updated_at)}})
+
+
 def _live_version(db, a):
     """The newest published version — the one in force when an event arrives."""
     try:
@@ -12685,6 +12734,9 @@ def _automation_json(db, board, a):
     sentence = _automation_label(db, board, a)
     return {
         "id": a.id, "board_id": a.board_id, "recipe_id": a.recipe_id,
+        # what a client echoes back on a write to say which version it was
+        # looking at — see _check_etag
+        "etag": _etag(db, a),
         "sentence": sentence,
         # what the list shows as the rule's heading: its name if it has one, and
         # the sentence itself if it does not, so a row is never nameless
@@ -13976,6 +14028,79 @@ def _automation_status_from(data, current="active"):
     return current
 
 
+@app.post("/api/boards/{board_id}/automations/validate")
+def validate_automation(board_id: int, data: dict,
+                        user_id: int = Depends(current_user_id)):
+    """Would this save, and would it be a good idea — without saving it.
+
+    Everything the save does, short of writing: the recipe's own placeholders,
+    the values the board can actually carry, the people, the field mapping,
+    the boards it would reach — and then the things that are not errors but
+    somebody should see before they commit, which are the same two the
+    activation shows.
+
+    It answers 200 with `valid: false` rather than 400. A 400 is what SAVE
+    does; this is what a screen calls while somebody is still typing, and a
+    screen cannot show a list of what is missing if the call threw.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        # the same bar as saving: validating is a way of asking what the board
+        # holds, and it reports people and columns by name
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לאמת אוטומציות")
+        existing = None
+        if data.get("automation_id"):
+            existing = (db.query(Automation)
+                          .filter(Automation.id == data["automation_id"],
+                                  Automation.board_id == board_id).first())
+            if existing is None:
+                raise HTTPException(404, "automation not found")
+        recipe_id = str(data.get("recipe_id")
+                        or (existing.recipe_id if existing else "")).strip()
+        cfg_in = (data.get("config") if "config" in data
+                  else (existing.config if existing else {})) or {}
+        if not recipes.recipe(recipe_id):
+            return {"valid": False, "errors": ["מתכון לא מוכר"],
+                    "missing_fields": [], "warnings": [], "sentence": ""}
+        errors, warnings = [], []
+        clean, err = recipes.validate(recipe_id, cfg_in)
+        if err:
+            errors.append(err)
+        missing = recipes.missing_fields(recipe_id, cfg_in)
+        # the three checks that need the board rather than the catalog
+        for fn, args in ((_check_automation_person, (db, board_id, clean or cfg_in)),
+                         (_check_automation_map, (db, board_id, recipe_id,
+                                                  clean or cfg_in)),
+                         (_check_automation_reach, (db, board_id, recipe_id,
+                                                    clean or cfg_in, user_id))):
+            try:
+                fn(*args)
+            except HTTPException as e:
+                errors.append(str(e.detail))
+            except Exception as e:                 # noqa: BLE001
+                errors.append(f"{type(e).__name__}: {e}")
+        # a rule shaped enough to describe gets the warnings an activation gets
+        probe = Automation(id=(existing.id if existing else 0), board_id=board_id,
+                           recipe_id=recipe_id, config=clean or cfg_in,
+                           name=(data.get("name") or (existing.name if existing else "")),
+                           status="draft", is_active=False,
+                           run_order=(existing.run_order if existing else RUN_ORDER_DEFAULT),
+                           owner_id=user_id, created_by=user_id)
+        try:
+            warnings = _same_field_warning(db, b, probe) + _cycle_warning(db, b, probe)
+        except Exception:                          # noqa: BLE001
+            warnings = []
+        return {"valid": not errors and not missing,
+                "errors": errors, "missing_fields": missing,
+                "warnings": warnings,
+                "sentence": _automation_label(db, b, probe),
+                "blockers": [x["text"] for x in _automation_blockers(db, b, probe)]
+                            if not errors and not missing else []}
+
+
 @app.post("/api/boards/{board_id}/automations")
 def create_automation(board_id: int, data: dict, request: Request = None,
                       user_id: int = Depends(current_user_id)):
@@ -14031,7 +14156,8 @@ def create_automation(board_id: int, data: dict, request: Request = None,
 
 
 @app.post("/api/automations/{automation_id}/duplicate")
-def duplicate_automation(automation_id: int, user_id: int = Depends(current_user_id)):
+def duplicate_automation(automation_id: int, data: dict = None,
+                         user_id: int = Depends(current_user_id)):
     """Copy a rule, as a draft.
 
     A copy that started running the moment it was made would double every action
@@ -14045,6 +14171,7 @@ def duplicate_automation(automation_id: int, user_id: int = Depends(current_user
         b = db.query(Board).filter(Board.id == src.board_id).first()
         if not b or b.deleted_at or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לשכפל אוטומציות")
+        _check_etag(db, src, data)
         # the copy is a new rule, written by whoever asked for it — so it is
         # written under their rights, not those of whoever wrote the original
         cfg, dropped = _strip_unreachable_refs(db, src.board_id, src.recipe_id,
@@ -14072,6 +14199,9 @@ def duplicate_automation(automation_id: int, user_id: int = Depends(current_user
         db.add(a)
         db.flush()
         _record_automation_version(db, b, a, user_id, note=f"שוכפלה מאוטומציה #{src.id}")
+        _audit_automation(db, a, "create", "duplicate",
+                          before=f"אוטומציה #{src.id}",
+                          after=_automation_label(db, b, a), actor_id=user_id)
         db.commit()
         db.refresh(a)
         return {**_automation_json(db, b, a), "dropped_references": dropped}
@@ -14118,6 +14248,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לשנות אוטומציות")
+        _check_etag(db, a, data)
         before = _snapshot_automation(a)
         _was_status, _was_order = a.status, (a.run_order, a.importance)
         _was_name = (a.name or "", a.description or "")
@@ -14225,6 +14356,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
 
 @app.delete("/api/automations/{automation_id}")
 def delete_automation(automation_id: int, cancel_pending: bool = False,
+                      expected_version: int = None,
                       user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         a = db.query(Automation).filter(Automation.id == automation_id).first()
@@ -14242,6 +14374,7 @@ def delete_automation(automation_id: int, cancel_pending: bool = False,
                 "detail": f"לאוטומציה {len(waiting)} הפעלות ממתינות — "
                           "מחיקה תבטל אותן",
                 "pending": len(waiting), "needs": "cancel_pending"})
+        _check_etag(db, a, given=expected_version)
         _queue_set_state(db, waiting, "cancelled", "האוטומציה נמחקה", user_id)
         # the rule goes; what it did stays. Each history row already carries the
         # sentence and the item title, so it still reads without the rule behind it
@@ -14840,6 +14973,7 @@ def export_automation_runs(board_id: int, outcome: str = "", automation_id: int 
 
 @app.post("/api/automations/{automation_id}/restore/{version}")
 def restore_automation_version(automation_id: int, version: int,
+                               data: dict = None,
                                user_id: int = Depends(current_user_id)):
     """Offer an earlier version's configuration back — as a draft.
 
@@ -14857,6 +14991,7 @@ def restore_automation_version(automation_id: int, version: int,
             raise HTTPException(403, "רק מנהל הלוח יכול לשחזר גרסה")
         if not _can_export_automations(db, b, user_id):
             raise HTTPException(403, "שחזור גרסה דורש הרשאת נתונים")
+        _check_etag(db, a, data)
         v = (db.query(AutomationVersion)
                .filter(AutomationVersion.automation_id == automation_id,
                        AutomationVersion.version == version).first())
@@ -14882,6 +15017,9 @@ def restore_automation_version(automation_id: int, version: int,
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         _record_automation_version(db, b, a, user_id, before=before, draft=want,
                                    note=f"טיוטה משוחזרת מגרסה {version}")
+        _audit_automation(db, a, "version", "restore",
+                          before=f"גרסה {version}", after="נשמרה כטיוטה",
+                          actor_id=user_id)
         db.commit()
         db.refresh(a)
         return _automation_json(db, b, a)
@@ -15576,6 +15714,7 @@ def publish_automation_draft(automation_id: int, data: dict = None,
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול להפעיל גרסה")
+        _check_etag(db, a, data)
         v = (db.query(AutomationVersion)
                .filter(AutomationVersion.automation_id == automation_id,
                        AutomationVersion.version == (a.draft_version or 0),
@@ -15608,13 +15747,17 @@ def publish_automation_draft(automation_id: int, data: dict = None,
             a.activated_at = v.published_at
         _record_automation_version(db, b, a, user_id, before=before,
                                    note=f"גרסה {v.version} הופעלה")
+        _audit_automation(db, a, "version", "publish",
+                          before=f"טיוטה {v.version}", after="הופעלה",
+                          actor_id=user_id, version=v.version)
         db.commit()
         db.refresh(a)
         return _automation_json(db, b, a)
 
 
 @app.post("/api/automations/{automation_id}/discard-draft")
-def discard_automation_draft(automation_id: int, user_id: int = Depends(current_user_id)):
+def discard_automation_draft(automation_id: int, data: dict = None,
+                             user_id: int = Depends(current_user_id)):
     """Throw the waiting edit away. The live rule never moved, so there is
     nothing to undo — the draft version stays in the history, marked as one."""
     with Session(engine) as db:
@@ -15624,11 +15767,15 @@ def discard_automation_draft(automation_id: int, user_id: int = Depends(current_
         b = db.query(Board).filter(Board.id == a.board_id).first()
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לבטל טיוטה")
+        _check_etag(db, a, data)
         if not a.draft_version:
             raise HTTPException(400, "אין טיוטה לבטל")
+        _was = a.draft_version
         a.draft_version = None
         a.updated_by = user_id
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        _audit_automation(db, a, "version", "draft",
+                          before=f"טיוטה {_was}", after="בוטלה", actor_id=user_id)
         db.commit()
         db.refresh(a)
         return _automation_json(db, b, a)
@@ -16487,6 +16634,9 @@ def order_automations(board_id: int, data: dict, user_id: int = Depends(current_
             a.updated_by, a.updated_at = user_id, now
             _record_automation_version(db, b, a, user_id, before=before,
                                        note=f"סדר הביצוע שונה ל-{pos + 1}")
+            _audit_automation(db, a, "order", "run_order",
+                              before=before.get("run_order"), after=pos,
+                              actor_id=user_id)
             moved += 1
         db.commit()
         return {"order": order, "moved": moved,
