@@ -74,7 +74,12 @@ def _dependents(client, bid, admin_id, kind, ref):
 
 
 def _notes(client, uid):
-    return client.get(f"/api/notifications?user_id={uid}", headers=AS(uid)).json()["notifications"]
+    """Asked with a limit above the endpoint's default of 30: a test that
+    compares a before and an after on a busy user otherwise watches a list
+    that has stopped changing, and reads every assertion as "nothing
+    happened"."""
+    return client.get(f"/api/notifications?user_id={uid}&limit=100",
+                      headers=AS(uid)).json()["notifications"]
 
 
 def _col_rule(client, bid, admin_id, col):

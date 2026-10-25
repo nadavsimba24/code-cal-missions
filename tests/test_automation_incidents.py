@@ -44,8 +44,8 @@ def _add(client, bid, admin_id, recipe_id, config, **extra):
 
 
 def _notes(client, uid):
-    return client.get(f"/api/notifications?user_id={uid}", headers=AS(uid)
-                      ).json()["notifications"]
+    return client.get(f"/api/notifications?user_id={uid}&limit=100",
+                      headers=AS(uid)).json()["notifications"]
 
 
 def _incidents(client, bid, admin_id, **q):

@@ -20,7 +20,8 @@ def _captured(monkeypatch):
 
 
 def _notifs(client, uid):
-    return client.get(f"/api/notifications?user_id={uid}").json()["notifications"]
+    return client.get(f"/api/notifications?user_id={uid}&limit=100"
+                      ).json()["notifications"]
 
 
 def test_a_new_workspace_member_is_told(client, admin_id, guinea_id, monkeypatch):

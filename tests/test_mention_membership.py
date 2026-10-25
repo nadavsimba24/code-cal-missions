@@ -30,7 +30,7 @@ def _task(client, admin_id, title="פריט לבדיקת תיוג"):
 def _unread_for(client, uid):
     """Mention notifications this user holds. The endpoint returns
     {notifications: [...], unread_count: n}, not a bare list."""
-    r = client.get(f"/api/notifications?user_id={uid}")
+    r = client.get(f"/api/notifications?user_id={uid}&limit=100")
     if r.status_code != 200:
         return []
     return [n for n in (r.json().get("notifications") or []) if n.get("type") == "mention"]

@@ -8634,6 +8634,43 @@ AUTOMATION_RUN_LOG_MAX = 500
 # The five states a rule can be in. Only "active" runs — see _set_automation_status.
 AUTOMATION_STATUSES = ("draft", "active", "paused", "paused_error", "deleting")
 AUTOMATION_IMPORTANCE = ("critical", "high", "normal", "low")
+# ── הנוסחים ────────────────────────────────────────────────────────────────
+# Five states, five sentences, written once. Assembled at each call site they
+# drift: three screens end up saying three different things about the same
+# state, and the one a person acts on is whichever they happened to open.
+# Served with the row rather than looked up by the client, so a screen cannot
+# hold a stale copy of a wording that changed.
+AUTOMATION_SAY = {
+    "activated": "האוטומציה נשמרה והופעלה. היא תחול על אירועים חדשים מעכשיו",
+    "dependency": "האוטומציה הושהתה משום שרכיב נדרש נמחק. "
+                  "יש לבחור חלופה ולהפעיל מחדש",
+    "permission": "לא ניתן להפעיל את האוטומציה. חסרה הרשאת עריכה ביעד",
+    "loop": "שרשרת הפעולות נעצרה כדי למנוע הפעלה מעגלית. פרטים זמינים בלוג",
+    "condition": "האוטומציה נבדקה אך הפעולות לא בוצעו משום שהתנאים לא התקיימו",
+}
+
+
+def _say_for_rule(a):
+    """Which of the five a rule's current state calls for, if any."""
+    st = (a.state or {}) if hasattr(a, "state") else {}
+    if a.status == "paused_error":
+        told = (st.get("told") or {})
+        if "permission" in told:
+            return AUTOMATION_SAY["permission"]
+        if st.get("loop_hits"):
+            return AUTOMATION_SAY["loop"]
+        return AUTOMATION_SAY["dependency"]
+    if a.status == "active":
+        return AUTOMATION_SAY["activated"]
+    return ""
+
+
+def _say_for_run(status):
+    return {"skipped_condition": AUTOMATION_SAY["condition"],
+            "loop_stopped": AUTOMATION_SAY["loop"],
+            "skipped_missing": AUTOMATION_SAY["dependency"]}.get(status or "", "")
+
+
 AUTOMATION_STATUS_HE = {"draft": "טיוטה", "active": "פעילה", "paused": "מושהית",
                         "paused_error": "מושהית עקב שגיאה",
                         "deleting": "בתהליך מחיקה"}
@@ -12737,6 +12774,9 @@ def _automation_json(db, board, a):
         # what a client echoes back on a write to say which version it was
         # looking at — see _check_etag
         "etag": _etag(db, a),
+        # the standard sentence for the state this rule is in — see
+        # AUTOMATION_SAY
+        "say": _say_for_rule(a),
         "sentence": sentence,
         # what the list shows as the rule's heading: its name if it has one, and
         # the sentence itself if it does not, so a row is never nameless
@@ -14518,6 +14558,7 @@ def _automation_run_json(db, row):
         # eleven translations and drift from this one
         "status": row.status or _default_status(row),
         "status_he": RUN_STATUS_HE.get(row.status or _default_status(row), ""),
+        "say": _say_for_run(row.status),
         "attempt": row.attempt or 1, "error_code": row.error_code or "",
         "queued_at": _iso(row.queued_at), "started_at": _iso(row.started_at),
         "finished_at": _iso(row.finished_at or row.created_at),
@@ -16489,6 +16530,41 @@ def automations_health(user_id: int = Depends(current_user_id)):
                         "note": "יעדי הביצועים מסעיף 14 לא נמסרו — המדידות "
                                 "מפורסמות, הסף לא מוגדר"},
         }
+
+
+@app.post("/api/admin/automations/outbox/replay")
+def replay_dead_events(data: dict = None, user_id: int = Depends(current_user_id)):
+    """Put dead-lettered events back in the queue to be sent again.
+
+    "ניתן לעיבוד חוזר בטוח" — safe because delivery here is at-least-once by
+    design and every consumer keys off an idempotency key, so a replay that
+    arrives twice is the same event arriving twice, which is already the
+    normal case this system is built for.
+
+    The attempt counter is reset with the row, or it would die again on the
+    first pass without being tried even once.
+    """
+    with Session(engine) as db:
+        _require_sys_admin(db, user_id)
+        data = data or {}
+        q = db.query(EventOutbox).filter(EventOutbox.dead_at != None)   # noqa: E711
+        if data.get("board_id"):
+            q = q.filter(EventOutbox.board_id == int(data["board_id"]))
+        if data.get("ids"):
+            q = q.filter(EventOutbox.id.in_([int(x) for x in data["ids"]]))
+        rows = q.order_by(EventOutbox.id).limit(500).all()
+        for r in rows:
+            r.dead_at, r.attempts, r.last_error = None, 0, None
+        boards = {r.board_id for r in rows}
+        db.flush()
+        sent = sum(_drain_outbox(db, bid) for bid in boards) if boards else 0
+        db.add(AuditLog(entity_type="automation_export", entity_id=0,
+                        action="export", field_name="outbox_replay",
+                        old_value=f"{len(rows)} הודעות",
+                        new_value=f"{sent} נשלחו מחדש", changed_by=user_id))
+        db.commit()
+        return {"replayed": len(rows), "sent": sent,
+                "boards": sorted(b for b in boards if b)}
 
 
 @app.post("/api/admin/automations/freeze")
