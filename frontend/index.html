@@ -561,6 +561,11 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-pick.on{background:var(--primary);border-color:var(--primary);color:#fff}
 .au-chips{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-bottom:11px}
 .au-chip{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:5px 12px;font:inherit;font-size:12px;color:var(--text-muted);cursor:pointer}
+/* a standard sentence about a rule's state, beside the rule */
+.au-say{display:flex;gap:6px;align-items:baseline;margin-top:6px;padding:6px 9px;border-radius:6px;font-size:12.5px;background:var(--surface);border-inline-start:3px solid var(--border)}
+.au-say>i{color:var(--text-muted)}
+.au-say-dependency,.au-say-permission{border-inline-start-color:var(--orange)}
+.au-say-loop{border-inline-start-color:var(--red)}
 .inc-band{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
 .inc-row{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-inline-start:3px solid var(--orange);border-radius:8px;background:var(--surface)}
 .inc-row.esc{border-inline-start-color:var(--red)}
@@ -8068,6 +8073,24 @@ const Automations = {
     </div>`;
   },
 
+  /* The five standard sentences, where the row they are about is. Written
+     once on the server and served with the row (see AUTOMATION_SAY), so a
+     screen cannot hold a stale copy of a wording that changed — and rendered
+     here rather than assembled, for the same reason.
+
+     role="status" because it explains why a rule is not doing anything, which
+     is exactly what a reader who cannot see the orange border needs told.
+     The link appears only where the server says this reader may open the log:
+     a message that sends somebody to a 403 is worse than one that sends them
+     nowhere. */
+  sayHTML(a){
+    if(!a||!a.say) return '';
+    const link=a.say_log&&a.say_link
+      ? ` <button class="au-lnk" onclick="Automations.historyFor(${a.id})">פתח את הלוג</button>`:'';
+    return `<div class="au-say au-say-${esc(a.say_kind||'')}" role="status" dir="auto">
+      <i class="fa-solid fa-circle-info" aria-hidden="true"></i> ${esc(a.say)}${link}</div>`;
+  },
+
   headBitsHTML(a){
     const st=this.ST[a.status]||this.ST.active, imp=this.IMP[a.importance]||this.IMP.normal;
     /* Three carriers, never one: the colour, the icon and the word. "ודא
@@ -8778,6 +8801,7 @@ const Automations = {
         </div>
         <div class="ah-sent">${sent}</div>
         ${r.reason?`<div class="ah-why"><i class="fa-solid fa-circle-info"></i> ${esc(r.reason)}</div>`:''}
+        ${r.say?`<div class="ah-why" role="status" dir="auto">${esc(r.say)}</div>`:''}
         ${(((r.result||{}).created)||[]).map(c=>`<div class="ah-why">
            <i class="fa-solid fa-plus" style="color:var(--green)"></i> נוצר
            <button class="lg-item" title="פתח את הפריט"
@@ -8966,7 +8990,7 @@ const Automations = {
         ${a.description?`<div class="am-desc"><i class="fa-solid fa-quote-right" style="font-size:9px"></i> ${esc(a.description)}</div>`:''}
         ${pend}
         <div class="am-own">${owner}${by}${upd}${a.needs_owner?' · <b style="color:var(--red)">'+esc(a.owner_problem||'')+'</b>':''}</div>
-        ${lack}${this.metricsHTML(a)}
+        ${this.sayHTML(a)}${lack}${this.metricsHTML(a)}
       </div>
       ${this.actsHTML(a,can)}
     </div>`;
@@ -9187,7 +9211,7 @@ const Automations = {
     try{
       const d=await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
                 {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:on})});
-      toast(on?'האוטומציה הופעלה':'האוטומציה כובתה');
+      toast((d&&d.said)||(on?'האוטומציה הופעלה':'האוטומציה כובתה'));
       // "לפני הפעלה תוצג אזהרה על כתיבה אפשרית לאותו שדה" — shown and not
       // refused: two rules writing one field is a thing somebody may mean.
       // What it must not be is a surprise.

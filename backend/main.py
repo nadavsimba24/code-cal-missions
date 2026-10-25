@@ -8651,18 +8651,31 @@ AUTOMATION_SAY = {
 
 
 def _say_for_rule(a):
-    """Which of the five a rule's current state calls for, if any."""
+    """Which of the five a rule's current STATE calls for, if any.
+
+    Deliberately not the activation sentence. "נשמרה והופעלה. היא תחול על
+    אירועים חדשים מעכשיו" is about a moment, and returned as a state it is a
+    screen telling somebody something untrue every time they open it — the
+    rule has been running since March. That one is said in the answer to the
+    call that did it (see `said`) and never again.
+
+    The order matters where more than one could be true: a permission that is
+    gone is the one somebody can do something about, a loop is the one that
+    needs reading, and a dependency is what is left.
+    """
     st = (a.state or {}) if hasattr(a, "state") else {}
-    if a.status == "paused_error":
-        told = (st.get("told") or {})
-        if "permission" in told:
-            return AUTOMATION_SAY["permission"]
-        if st.get("loop_hits"):
-            return AUTOMATION_SAY["loop"]
-        return AUTOMATION_SAY["dependency"]
-    if a.status == "active":
-        return AUTOMATION_SAY["activated"]
-    return ""
+    if a.status != "paused_error":
+        return ""
+    kind = st.get("suspend_kind") or ""
+    if kind == "permission" or "permission" in (st.get("told") or {}):
+        return AUTOMATION_SAY["permission"]
+    if kind == "loop" or st.get("loop_hits"):
+        return AUTOMATION_SAY["loop"]
+    return AUTOMATION_SAY["dependency"]
+
+
+def _say_kind(text):
+    return next((k for k, v in AUTOMATION_SAY.items() if v == text), "")
 
 
 def _say_for_run(status):
@@ -12142,6 +12155,12 @@ def _suspend_blocked(db, a, board, kind, why):
     if a.status != "active":
         return
     _set_automation_status(a, "paused_error")
+    # Which of the two it was, kept on the rule — the message a person is
+    # shown has to name the right one, and "a permission is gone" and "a
+    # column is gone" are different things to go and do.
+    st = dict(a.state or {})
+    st["suspend_kind"] = kind
+    a.state = st
     # "השהיה עקב שגיאה מקפיאה הפעלות ממתינות" — held rather than cancelled:
     # the rule is broken, not wrong, and fixing it should not have cost
     # somebody the work it had already promised
@@ -12678,6 +12697,8 @@ def _run_automations(db, task, event, actor_id, depth=0):
             st["loop_hits"] = (st.get("loop_hits") or 0) + 1
             a.state = st
             if st["loop_hits"] >= AUTOMATION_FAIL_CUTOFF and a.status == "active":
+                st["suspend_kind"] = "loop"
+                a.state = dict(st)
                 _set_automation_status(a, "paused_error")
                 _notify_owner_once(db, a, board, "loop",
                                    "אוטומציה הושהתה — לולאה",
@@ -12758,8 +12779,21 @@ def _can_export_automations(db, board, user_id):
     return _cap(db, user_id, "export_automation_log")
 
 
-def _automation_json(db, board, a):
+# Which of the five sentences promises the reader something the log holds.
+# The loop wording says so in as many words; the other two are states a reader
+# diagnoses from the skipped runs. A success says nothing and a condition is
+# already a row in the log somebody is looking at.
+_SAY_LINKS = ("loop", "dependency", "permission")
+
+
+def _say_links(text):
+    return _say_kind(text) in _SAY_LINKS
+
+
+def _automation_json(db, board, a, may_log=None):
     r = recipes.recipe(a.recipe_id) or {}
+    _may_log = (may_log if may_log is not None
+                else (board is not None and _can_view_automations(db, board, None)))
     uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
     iso = lambda d: d.isoformat() if d else None
     _own = _automation_owner_state(db, board, a) if board else {"needs_owner": False, "reason": ""}
@@ -12774,9 +12808,17 @@ def _automation_json(db, board, a):
         # what a client echoes back on a write to say which version it was
         # looking at — see _check_etag
         "etag": _etag(db, a),
-        # the standard sentence for the state this rule is in — see
-        # AUTOMATION_SAY
-        "say": _say_for_rule(a),
+        # the standard sentence for the state this rule is in, what kind it
+        # is, and — where the sentence promises details — where they are. The
+        # link is only offered to somebody who may actually open the log: a
+        # message that sends a person to a 403 is worse than one that does not
+        # send them anywhere.
+        **(lambda t: {"say": t, "say_kind": _say_kind(t),
+                      "say_log": bool(t) and _say_links(t) and _may_log,
+                      "say_link": (f"/api/boards/{a.board_id}/automations/runs"
+                                   f"?automation_id={a.id}"
+                                   if t and _say_links(t) and _may_log else "")}
+         )(_say_for_rule(a)),
         "sentence": sentence,
         # what the list shows as the rule's heading: its name if it has one, and
         # the sentence itself if it does not, so a row is never nameless
@@ -13932,7 +13974,8 @@ def list_board_automations(board_id: int, include_deleting: bool = False,
             q = q.filter(Automation.status != "deleting")
         rows = q.order_by(Automation.run_order, Automation.activated_at,
                           Automation.id).all()
-        out = [_automation_json(db, b, a) for a in rows]
+        _may_log = _can_view_automations(db, b, user_id)
+        out = [_automation_json(db, b, a, may_log=_may_log) for a in rows]
         return {"automations": out, "counts": _automation_counts(out),
                 "can_export": _can_export_automations(db, b, user_id),
                 "people": _automation_people(db, board_id, out),
@@ -14186,13 +14229,15 @@ def create_automation(board_id: int, data: dict, request: Request = None,
         if a.owner_id != user_id:
             _audit_owner_change(db, a, user_id, a.owner_id, user_id)
         _record_automation_version(db, b, a, user_id)
+        _said = (AUTOMATION_SAY["activated"] if a.status == "active" else "")
         _record_grants(db, a, user_id)
         _audit_automation(db, a, "create", "automation",
                           after=_automation_label(db, b, a),
                           actor_id=user_id, request=request)
         db.commit()
         db.refresh(a)
-        return _automation_json(db, b, a)
+        # "הפעלה מוצלחת" is a moment, not a state — said here and nowhere else
+        return {**_automation_json(db, b, a), "said": _said}
 
 
 @app.post("/api/automations/{automation_id}/duplicate")
@@ -14290,6 +14335,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
             raise HTTPException(403, "רק מנהל הלוח יכול לשנות אוטומציות")
         _check_etag(db, a, data)
         before = _snapshot_automation(a)
+        _said = ""
         _was_status, _was_order = a.status, (a.run_order, a.importance)
         _was_name = (a.name or "", a.description or "")
         _warn = []
@@ -14328,6 +14374,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
                 # prove two rules will really feed each other, and because the
                 # run-time guard binds whatever was decided here.
                 _warn += _cycle_warning(db, b, a)
+                _said = AUTOMATION_SAY["activated"]
             _set_automation_status(a, want)
         _prev_owner = a.owner_id
         for k, v in _automation_meta(db, a.board_id, data).items():
@@ -14379,7 +14426,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
                 a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 db.commit()
                 db.refresh(a)
-                return {**_automation_json(db, b, a), "warnings": _warn}
+                return {**_automation_json(db, b, a), "warnings": _warn, "said": _said}
             a.config = cfg
             _record_grants(db, a, user_id)
             _audit_automation(db, a, "update", "config",
@@ -14391,7 +14438,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
         _record_automation_version(db, b, a, user_id, before=before)
         db.commit()
         db.refresh(a)
-        return {**_automation_json(db, b, a), "warnings": _warn}
+        return {**_automation_json(db, b, a), "warnings": _warn, "said": _said}
 
 
 @app.delete("/api/automations/{automation_id}")
@@ -14558,7 +14605,7 @@ def _automation_run_json(db, row):
         # eleven translations and drift from this one
         "status": row.status or _default_status(row),
         "status_he": RUN_STATUS_HE.get(row.status or _default_status(row), ""),
-        "say": _say_for_run(row.status),
+        **(lambda t: {"say": t, "say_kind": _say_kind(t)})(_say_for_run(row.status)),
         "attempt": row.attempt or 1, "error_code": row.error_code or "",
         "queued_at": _iso(row.queued_at), "started_at": _iso(row.started_at),
         "finished_at": _iso(row.finished_at or row.created_at),

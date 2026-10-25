@@ -1093,5 +1093,43 @@ ck('a board that is running says nothing',
   A.audit=null; A.auditAction=''; A.tab='manage';
 }
 
+/* ── 17.4: the five sentences, where the row they are about is ────────── */
+{
+  const row=(over)=>Object.assign({id:11,status:'paused_error',is_active:false,
+    trigger:'status_changes_to',action:'notify_person',display_name:'סגירת קריאה',
+    name:'סגירת קריאה',sentence:'כאשר הסטטוס משתנה ל«בוצע», שלח התראה',
+    description:'',importance:'normal',run_order:1,owner_id:5,owner_name:'דנה',
+    owner_is_creator:false,needs_owner:false,created_by:4,created_by_name:'יואב',
+    updated_by_name:'',last_outcome:'failed',run_count:1,fail_count:1,skip_count:0,
+    success_rate:0,needs_attention:true,missing_fields:[]},over||{});
+
+  ck('a rule with nothing to say says nothing', A.sayHTML(row({say:''}))==='');
+  const dep=A.sayHTML(row({say:'האוטומציה הושהתה משום שרכיב נדרש נמחק. יש לבחור חלופה ולהפעיל מחדש',
+                           say_kind:'dependency',say_log:true,say_link:'/x'}));
+  ck('a missing dependency is shown', dep.includes('רכיב נדרש נמחק'));
+  ck('...announced rather than only coloured', dep.includes('role="status"'));
+  ck('...isolated for RTL', dep.includes('dir="auto"'));
+  ck('...and carries the way to the log', dep.includes('Automations.historyFor(11)'));
+  ck('...with a class the stylesheet can colour by kind',
+     dep.includes('au-say-dependency'));
+
+  const loop=A.sayHTML(row({say:'שרשרת הפעולות נעצרה כדי למנוע הפעלה מעגלית. פרטים זמינים בלוג',
+                            say_kind:'loop',say_log:true,say_link:'/x'}));
+  ck('the loop sentence keeps the promise it makes',
+     loop.includes('פרטים זמינים בלוג') && loop.includes('פתח את הלוג'));
+
+  const shut=A.sayHTML(row({say:'לא ניתן להפעיל את האוטומציה. חסרה הרשאת עריכה ביעד',
+                            say_kind:'permission',say_log:false,say_link:''}));
+  ck('somebody who may not open the log is not sent there',
+     shut.includes('חסרה הרשאת עריכה') && !shut.includes('historyFor'));
+
+  /* escaping is checked against the app's real esc, not this file's
+     pass-through stub — see the 13 block above for why */
+  ck('a message goes through the escaper',
+     grabConst('Automations').slice(
+       grabConst('Automations').indexOf('sayHTML('),
+       grabConst('Automations').indexOf('headBitsHTML(')).includes('esc(a.say)'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
