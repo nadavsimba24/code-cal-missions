@@ -319,3 +319,29 @@ def test_a_copy_is_a_new_tab_and_grants_nothing(client, board):
     theirs = [v for v in _list(client, bid, blind) if v["id"] == c["id"]][0]
     assert board["col"] not in theirs["filters"]["cols"]["widths"]
     assert board["col"] not in theirs["filters"]["cols"]["order"]
+
+
+def test_the_order_a_view_is_sorted_by_is_a_fact_about_that_column(client, board):
+    """A view carries the order the board was in when it was saved, and the
+    order is a fact about the column that decides it: which budget is the
+    largest is readable off a board sorted by budget, without one figure on
+    screen. So a sort by a column this reader may not see comes off on the way
+    out, the way a width or a place in the order already does, and the board
+    opens in its own order instead."""
+    bid, blind, owner = board["bid"], board["blind"], board["owner"]
+    vid = _mk(client, bid, owner, "לפי תקציב",
+              filters=dict(CUT, colSort={"key": board["col"], "dir": "desc"})).json()["id"]
+
+    mine = [v for v in _list(client, bid, owner) if v["id"] == vid][0]
+    assert mine["filters"]["colSort"]["key"] == board["col"], \
+        "the owner lost the order their own view was saved in"
+
+    theirs = [v for v in _list(client, bid, blind) if v["id"] == vid][0]
+    assert theirs["filters"].get("colSort") is None, \
+        "a view orders the board by a column its reader may not see"
+
+    # …and a sort by a column they CAN see travels untouched
+    vid2 = _mk(client, bid, owner, "לפי תאריך",
+               filters=dict(CUT, colSort={"key": "due", "dir": "asc"})).json()["id"]
+    theirs2 = [v for v in _list(client, bid, blind) if v["id"] == vid2][0]
+    assert theirs2["filters"]["colSort"] == {"key": "due", "dir": "asc"}

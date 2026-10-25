@@ -123,7 +123,11 @@ def test_the_configuration_is_defined_as_what_is_kept(client, admin_id):
     into everybody's tab. This case fails when the list grows, which is the
     point: adding to it is a decision, not a side effect."""
     assert set(cityos_main.VIEW_CONFIG_KEYS) == {
-        "view", "cols", "adv", "people", "status", "priority", "links", "sort"}
+        "view", "cols", "adv", "people", "status", "priority", "links",
+        # two keys for ordering, both of them ordering: "sort" is the toolbar's
+        # old four fixed fields, carried by views saved before the column
+        # headers took it over; "colSort" is the one every column offers now.
+        "sort", "colSort"}
     assert "q" not in cityos_main.VIEW_CONFIG_KEYS
 
 

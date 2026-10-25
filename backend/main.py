@@ -30,6 +30,7 @@ import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
     AutomationTestRun, AutomationQueue, AutomationCreation, AutomationActionKey,
+    AutomationIncident,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
@@ -2440,6 +2441,11 @@ VIEW_CONFIG_KEYS = (
     "adv",         # the condition tree
     "people", "status", "priority", "links",   # the toolbar's own filters
     "sort",
+    # …and the column the board is ordered BY, which the spec's "sort" always
+    # meant. It was missing, so a view could hold a filter and not the order it
+    # was read in: sorting by a column changed the screen and changed nothing
+    # the view could see, and the sorted board could not be kept.
+    "colSort",
 )
 
 
@@ -8659,6 +8665,30 @@ AUTOMATION_FAIL_RATE = 0.5
 AUTOMATION_FAIL_RATE_WINDOW = 20      # the last n runs the rate is read over
 AUTOMATION_FAIL_RATE_MIN = 6          # and the fewest that may decide anything
 
+# ── טיפול והתראות ──────────────────────────────────────────────────────────
+# Twenty items edited at once is twenty failures and ONE problem. So identical
+# failures coalesce into an incident and the owner hears about it once every
+# half hour — not once per run, which is how a real problem ends up buried
+# under its own notifications and nobody reads any of them.
+AUTOMATION_NOTICE_WINDOW_MIN = 30
+
+# And if nobody says they are on it, it goes up. Four WORKING hours to the
+# board's managers, one working day to the system administrator — working,
+# because a rule that broke at five on Thursday has not been ignored for four
+# hours by nine on Friday morning. Nobody was there.
+AUTOMATION_ESCALATE_BOARD_HOURS = 4
+WORK_DAYS = tuple(int(x) for x in os.getenv("WORK_DAYS", "6,0,1,2,3").split(","))
+WORK_START_HOUR = int(os.getenv("WORK_START_HOUR", "8"))
+WORK_END_HOUR = int(os.getenv("WORK_END_HOUR", "17"))
+WORK_HOURS_PER_DAY = max(1, WORK_END_HOUR - WORK_START_HOUR)
+
+# ── שמירת נתונים ───────────────────────────────────────────────────────────
+# "לוגי הפעלה יישמרו 12 חודשים ונתוני Audit שבע שנים כברירת מחדל, בכפוף
+# למדיניות הארגון" — a default, not the law, which is why both are readable
+# off the organisation's settings.
+AUTOMATION_RUN_RETENTION_DAYS = 365
+AUDIT_RETENTION_DAYS = 365 * 7
+
 # Failures in a row that take a rule out of service. A rule that cannot work is
 # worse than no rule: it looks configured while quietly doing nothing, so it is
 # suspended and its owner is told, rather than failing forever in the log.
@@ -11471,6 +11501,149 @@ def _suspend_dependents(db, board, kind, ref, actor_id, what=""):
     return hit
 
 
+def _working_hours(start, end, tzname=None):
+    """How many WORKING hours lie between two moments.
+
+    Counted rather than estimated: walking the span hour by hour is a handful
+    of iterations for anything this is asked about, and it gets the week's
+    edges right — an incident opened at five on Thursday and read on Sunday
+    morning has had an hour of Thursday and whatever Sunday has given it, not
+    sixty-four hours of silence somebody failed to answer.
+    """
+    if start is None or end is None or end <= start:
+        return 0.0
+    zone = _zone(tzname) if tzname else _zone(DEFAULT_TZ_NAME)
+    a = (start if start.tzinfo else start.replace(tzinfo=timezone.utc)).astimezone(zone)
+    b = (end if end.tzinfo else end.replace(tzinfo=timezone.utc)).astimezone(zone)
+    total = 0.0
+    cur = a
+    # bounded: a year of hourly steps is still under ten thousand, and nothing
+    # asks this about spans anywhere near that
+    for _ in range(24 * 400):
+        if cur >= b:
+            break
+        nxt = min(cur + timedelta(hours=1), b)
+        if (cur.weekday() in WORK_DAYS
+                and WORK_START_HOUR <= cur.hour < WORK_END_HOUR):
+            total += (nxt - cur).total_seconds() / 3600.0
+        cur = nxt
+    return total
+
+
+# ── אירועי טיפול ───────────────────────────────────────────────────────────
+
+def _incident_signature(status, error_code):
+    """What makes two failures "the same failure" for coalescing."""
+    return f"{status or 'failed'}:{error_code or '-'}"[:80]
+
+
+def _open_incident(db, a, board, row, suspended=False, exhausted=False):
+    """Record this failure against its incident, and tell the owner if the
+    half-hour window has passed.
+
+    Never raises: the handling of a failure must not become a second failure.
+    """
+    try:
+        sig = _incident_signature(getattr(row, "status", ""),
+                                  getattr(row, "error_code", ""))
+        now = _now_naive()
+        inc = (db.query(AutomationIncident)
+                 .filter(AutomationIncident.automation_id == a.id,
+                         AutomationIncident.signature == sig,
+                         AutomationIncident.status != "resolved").first())
+        fresh = inc is None
+        if fresh:
+            state = _automation_owner_state(db, board, a) or {}
+            inc = AutomationIncident(
+                board_id=a.board_id, automation_id=a.id, signature=sig,
+                error_code=getattr(row, "error_code", "") or "",
+                status="open", count=0, opened_at=now,
+                owner_id=state.get("owner_id"))
+            db.add(inc)
+        inc.count = (inc.count or 0) + 1
+        inc.last_seen_at = now
+        inc.last_run_id = getattr(row, "id", None)
+        inc.suspended = bool(inc.suspended or suspended)
+        inc.attempts_exhausted = bool(inc.attempts_exhausted or exhausted)
+        db.flush()
+        # "כשלים זהים יאוחדו להתראה אחת לכל 30 דקות"
+        if (inc.notified_at is not None
+                and (now - inc.notified_at) < timedelta(minutes=AUTOMATION_NOTICE_WINDOW_MIN)):
+            return inc
+        inc.notified_at = now
+        head = ("אוטומציה הושהתה" if suspended
+                else "אוטומציה מיצתה ניסיונות חוזרים" if exhausted
+                else "אוטומציה נכשלה")
+        body = (f"בלוח '{board.name}': {_automation_label(db, board, a)}. "
+                f"{getattr(row, 'reason', '') or ''}"
+                + (f" · {inc.count} כשלים מאז {_iso(inc.opened_at)}"
+                   if (inc.count or 0) > 1 else ""))
+        for uid in _automation_tell(db, a, board):
+            _notify(db, uid, "automation", head, body, board_id=a.board_id)
+        return inc
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  incident not recorded ({getattr(a, 'id', '?')}): {e}", flush=True)
+        return None
+
+
+def _sweep_incidents(db, board, actor_id=None):
+    """Chase the incidents nobody has picked up.
+
+    Run when the list is read, like every other sweep here — there is no
+    scheduler, and the person opening this screen is exactly who the chasing
+    is for.
+    """
+    now = datetime.now(timezone.utc)
+    tz = _board_tz(db, board)
+    for inc in (db.query(AutomationIncident)
+                  .filter(AutomationIncident.board_id == board.id,
+                          AutomationIncident.status == "open").all()):
+        hours = _working_hours(inc.opened_at, now, tz)
+        a = (db.query(Automation).filter(Automation.id == inc.automation_id).first()
+             if inc.automation_id else None)
+        label = _automation_label(db, board, a) if a else "אוטומציה שנמחקה"
+        if not inc.escalated and hours >= AUTOMATION_ESCALATE_BOARD_HOURS:
+            inc.escalated, inc.escalated_at = "board", _now_naive()
+            for uid in [m.user_id for m in db.query(BoardMember)
+                        .filter(BoardMember.board_id == board.id,
+                                BoardMember.role == "admin").all()]:
+                _notify(db, uid, "automation", "הסלמה — כשל אוטומציה ללא טיפול",
+                        f"בלוח '{board.name}' יש כשל שלא סומן בטיפול "
+                        f"{AUTOMATION_ESCALATE_BOARD_HOURS} שעות עבודה: {label}",
+                        board_id=board.id)
+        elif inc.escalated == "board" and hours >= WORK_HOURS_PER_DAY:
+            inc.escalated, inc.escalated_at = "system", _now_naive()
+            for uid in [u.id for u in db.query(User)
+                        .filter(User.is_active == True).all()                # noqa: E712
+                        if _ws_role(db, u.id) == "admin"]:
+                _notify(db, uid, "automation", "הסלמה — כשל אוטומציה ללא טיפול יום עבודה",
+                        f"בלוח '{board.name}' יש כשל שלא טופל יום עבודה שלם: {label}",
+                        board_id=board.id)
+
+
+def _incident_json(db, inc):
+    nm = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+    a = (db.query(Automation).filter(Automation.id == inc.automation_id).first()
+         if inc.automation_id else None)
+    b = db.query(Board).filter(Board.id == inc.board_id).first()
+    return {
+        "id": inc.id, "board_id": inc.board_id, "automation_id": inc.automation_id,
+        "sentence": _automation_label(db, b, a) if (a and b) else "אוטומציה שנמחקה",
+        "signature": inc.signature or "", "error_code": inc.error_code or "",
+        "status": inc.status or "open", "note": inc.note or "",
+        "count": inc.count or 0, "suspended": bool(inc.suspended),
+        "attempts_exhausted": bool(inc.attempts_exhausted),
+        "opened_at": _iso(inc.opened_at), "last_seen_at": _iso(inc.last_seen_at),
+        "notified_at": _iso(inc.notified_at),
+        "escalated": inc.escalated or "", "escalated_at": _iso(inc.escalated_at),
+        "owner_id": inc.owner_id, "owner_name": nm(inc.owner_id),
+        "acked_by": inc.acked_by, "acked_name": nm(inc.acked_by),
+        "acked_at": _iso(inc.acked_at),
+        "resolved_by": inc.resolved_by, "resolved_at": _iso(inc.resolved_at),
+        "last_run_id": inc.last_run_id,
+    }
+
+
 def _suspend_blocked(db, a, board, kind, why):
     """Something the rule needs is gone, so the rule stops.
 
@@ -11528,7 +11701,7 @@ def _failure_rate(db, a):
     return len([x for x in seen if x == "failed"]) / len(seen), len(seen)
 
 
-def _suspend_if_broken(db, a, board):
+def _suspend_if_broken(db, a, board, row=None):
     """Take a rule out of service once it has failed AUTOMATION_FAIL_CUTOFF times
     in a row, and tell whoever is responsible for it.
 
@@ -11548,6 +11721,8 @@ def _suspend_if_broken(db, a, board):
     _queue_set_state(db, [r for r in _queue_waiting_for(db, a.id, ("pending",))],
                      "frozen", "האוטומציה הושהתה עקב שגיאות חוזרות")
     a.consecutive_failures = max(a.consecutive_failures or 0, AUTOMATION_FAIL_CUTOFF)
+    if row is not None:
+        _open_incident(db, a, board, row, suspended=True)
     for who in _automation_tell(db, a, board):
         _notify(db, who, "automation", "אוטומציה הושהתה עקב שגיאות",
                 f"האוטומציה בלוח '{board.name}' {why} והושהתה: "
@@ -11742,10 +11917,17 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
                                   attempt=tries, result=report)
         # "כשל זמני ... יגרור עד שלושה ניסיונות" — and a permanent one will not,
         # because the engine will decide the same thing in a minute
-        if not permanent:
+        exhausted = not permanent and tries > AUTOMATION_MAX_AUTO_RETRIES
+        if not permanent and not exhausted:
             _queue_retry(db, a, task, event, tries + 1,
                          (report or {}).get("failed_at") or 1)
-        _suspend_if_broken(db, a, board)
+        # "כשל קבוע, מיצוי ניסיונות או השהיה אוטומטית ישלחו התראה מיידית
+        # לבעלים" — the first two here, the third inside _suspend_if_broken.
+        # A temporary failure with retries still to come is NOT one of them:
+        # it may well fix itself in a minute, and a message about it is noise.
+        if permanent or exhausted:
+            _open_incident(db, a, board, row, exhausted=exhausted)
+        _suspend_if_broken(db, a, board, row)
         return row
     a.last_run_at = a.last_success_at = now
     a.last_outcome = "ran"
@@ -12836,6 +13018,92 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
         return {"timezone": cfg.get("timezone") or "",
                 "effective_timezone": str(_zone(cfg.get("timezone"))
                                           or _zone(DEFAULT_TZ_NAME) or _IL_TZ)}
+
+
+@app.get("/api/boards/{board_id}/automations/incidents")
+def automation_incidents(board_id: int, include_resolved: bool = False,
+                         user_id: int = Depends(current_user_id)):
+    """The failures on this board that somebody has to do something about.
+
+    Reading this list is also what chases the ones nobody has picked up: there
+    is no scheduler here, and the person opening this screen is exactly who
+    the escalation is for.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        # managing, not merely viewing: an incident carries the reason a rule
+        # failed, which is a sentence about real data
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לראות את הטיפול בכשלים")
+        _sweep_incidents(db, b, user_id)
+        q = db.query(AutomationIncident).filter(AutomationIncident.board_id == board_id)
+        if not include_resolved:
+            q = q.filter(AutomationIncident.status != "resolved")
+        rows = q.order_by(AutomationIncident.id.desc()).limit(200).all()
+        db.commit()
+        return {"incidents": [_incident_json(db, i) for i in rows],
+                "counts": {k: len([i for i in rows if (i.status or "open") == k])
+                           for k in ("open", "acknowledged", "resolved")}}
+
+
+AUTOMATION_INCIDENT_STATUSES = ("open", "acknowledged", "resolved")
+
+
+@app.patch("/api/automation-incidents/{incident_id}")
+def update_automation_incident(incident_id: int, data: dict,
+                               user_id: int = Depends(current_user_id)):
+    """Say you are on it, say what you found, or close it.
+
+    Closing asks for a successful run first — "תיקון ייסגר רק לאחר הפעלה
+    מוצלחת אחת לפחות". Without that, "טופל" is a button for making the red go
+    away, and the next person finds a board that says everything is fine.
+    """
+    with Session(engine) as db:
+        inc = db.query(AutomationIncident).filter(
+            AutomationIncident.id == incident_id).first()
+        if not inc:
+            raise HTTPException(404, "incident not found")
+        b = db.query(Board).filter(Board.id == inc.board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח או בעל האוטומציה יכול לטפל בכשל")
+        now = _now_naive()
+        changed = []
+        want = str(data.get("status") or "").strip()
+        if want and want not in AUTOMATION_INCIDENT_STATUSES:
+            raise HTTPException(400, "סטטוס טיפול לא מוכר")
+        if want == "resolved" and (inc.status or "open") != "resolved":
+            ok = (db.query(AutomationRun.id)
+                    .filter(AutomationRun.automation_id == inc.automation_id,
+                            AutomationRun.outcome == "ran",
+                            AutomationRun.created_at > inc.opened_at).first())
+            if not ok:
+                raise HTTPException(400, "אפשר לסגור רק אחרי הפעלה מוצלחת אחת לפחות "
+                                         "מאז שהכשל נפתח")
+        if want and want != (inc.status or "open"):
+            changed.append(("status", inc.status or "open", want))
+            inc.status = want
+            if want == "acknowledged":
+                inc.acked_by, inc.acked_at = user_id, now
+            elif want == "resolved":
+                inc.resolved_by, inc.resolved_at = user_id, now
+        if "note" in data:
+            note = str(data.get("note") or "").strip()[:2000]
+            if note != (inc.note or ""):
+                changed.append(("note", inc.note or "", note))
+                inc.note = note
+        # "כל שינוי טיפול יתועד"
+        for field, was, now_v in changed:
+            db.add(AuditLog(entity_type="automation_incident", entity_id=inc.id,
+                            action="handling", field_name=field,
+                            old_value=str(was)[:400], new_value=str(now_v)[:400],
+                            changed_by=user_id))
+        db.commit()
+        db.refresh(inc)
+        return _incident_json(db, inc)
 
 
 @app.get("/api/boards/{board_id}/automations/dependents")

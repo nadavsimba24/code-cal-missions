@@ -178,7 +178,11 @@ def test_TC20_nothing_groups_by_a_column_value():
     saved configuration has no key that could express anything else."""
     assert "group" not in cityos_main.VIEW_CONFIG_KEYS
     assert set(cityos_main.VIEW_CONFIG_KEYS) == {
-        "view", "cols", "adv", "people", "status", "priority", "links", "sort"}
+        "view", "cols", "adv", "people", "status", "priority", "links",
+        # two keys for ordering, both of them ordering: "sort" is the toolbar's
+        # old four fixed fields, carried by views saved before the column
+        # headers took it over; "colSort" is the one every column offers now.
+        "sort", "colSort"}
 
 
 def test_TC20_no_ai_reaches_the_views(client, admin_id):

@@ -29,6 +29,8 @@ sys.path.insert(0, str(ROOT / "backend"))
 import main as cityos_main  # noqa: E402
 from models import SavedView  # noqa: E402
 
+SRC = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+
 CUT = {"view": "table", "q": "באג", "people": [], "status": "", "priority": "high",
        "sort": "", "links": {"col": "", "mode": "", "item": 0},
        "adv": {"op": "and", "rules": [
@@ -392,3 +394,36 @@ def test_a_shared_link_to_a_view_that_is_not_yours_says_so():
     body = src[i:j]
     assert "Views.load(boardId)" in body, "the views are not waited for"
     assert "התצוגה אינה זמינה" in body
+
+
+def test_a_view_keeps_the_order_it_was_saved_in():
+    """The spec lists sort among what a view holds, and the column sort — the
+    one every column header offers — was not in the kept list. So a view could
+    carry a filter and not the order it was read in: sorting by a column
+    changed the screen and changed nothing the view could see. "שמור תצוגה"
+    never lit, and the sorted board could not be kept."""
+    assert "colSort" in cityos_main.VIEW_CONFIG_KEYS, \
+        "a view can no longer hold the order the board is in"
+    i = SRC.index("  current(){")
+    body = SRC[i:SRC.index("\n  },", i)]
+    assert "colSort" in body, "the sort is back out of the cut a view compares"
+    i = SRC.index("  apply(v){")
+    body = SRC[i:SRC.index("\n  },", i)]
+    assert "st.colSort=" in body, "a view no longer restores the order it saved"
+    i = SRC.index("function columnSort(")
+    body = SRC[i:SRC.index("\n}", i)]
+    assert "refreshToolbar()" in body, \
+        "sorting no longer reaches the tab strip, so the save button cannot light"
+
+
+def test_clearing_a_filter_stays_in_the_view():
+    """It used to leave: the tab went dark and the board fell back to its own
+    table. That answered a question nobody asked — somebody emptying a view's
+    filter is adjusting that view, not walking out of it — and leaving took
+    the adjustment with it, so there was nothing left to save."""
+    i = SRC.index("function clearFilters()")
+    body = SRC[i:SRC.index("function togglePop(", i)]
+    assert "Views.leave" not in body, "clearing a filter throws you out of the view again"
+    assert "renderTabs()" in body, "the strip is not told, so the change cannot be saved"
+    assert "function boardIsCut()" in SRC, \
+        "nothing knows that a sort alone is a cut worth clearing or keeping"
