@@ -626,6 +626,67 @@ class AutomationActionKey(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class AutomationActionExecution(Base):
+    """One ACTION of one run — the row the run's JSON could not be.
+
+    The same facts already travel inside AutomationRun.result["steps"], which
+    the log screen reads and which stays exactly where it is. What JSON cannot
+    do is answer a question across runs: "which action fails most often on
+    this board", "how long does create_and_link actually take", "show me
+    every notification this rule sent last month". Those are a GROUP BY, and a
+    list inside a column is not something to group by.
+
+    `idempotency_key` is the same key the engine writes to
+    AutomationActionKey, carried here so a row can be matched to the thing
+    that stopped it running twice.
+    """
+    __tablename__ = "automation_action_executions"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("automation_runs.id"), nullable=True, index=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=True, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, index=True)
+    action_index = Column(Integer, default=1)      # 1-based, the order it ran in
+    action_key = Column(String(40), default="", index=True)
+    idempotency_key = Column(String(120), default="", index=True)
+    status = Column(String(24), default="")        # one of main.RUN_STATUSES
+    input = Column(JSON, default=dict)             # what the action was given
+    target = Column(JSON, default=dict)            # what it was pointed at
+    output = Column(JSON, default=dict)            # what came of it
+    error_code = Column(String(40), default="")
+    error = Column(Text, default="")
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class AutomationAuthorizationGrant(Base):
+    """What a rule is allowed to reach on ANOTHER board, as a row.
+
+    Until this, the grant was a constant in the source: the set of actions and
+    fields approved for automation, plus the link column's own list of target
+    boards. All of that is still checked — but a constant can only ever be
+    read. There was no way to look at a rule and see what it had been given,
+    and no way to take it back short of editing the rule.
+
+    A row per (rule, target board, action). Revoking one stops that rule from
+    writing there, and the rule is suspended at its next firing with the
+    reason — rather than quietly doing less than it says.
+    """
+    __tablename__ = "automation_grants"
+    __table_args__ = (UniqueConstraint("automation_id", "target_board_id", "action_key",
+                                       name="uq_automation_grant"),)
+    id = Column(Integer, primary_key=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=False, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    target_board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    action_key = Column(String(40), default="", index=True)
+    fields = Column(JSON, default=list)            # the field keys it may write
+    granted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    granted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    revoked_at = Column(DateTime, nullable=True, index=True)
+    revoked_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
 class AutomationIncident(Base):
     """One rule, one kind of failure, from the first notice to the fix.
 
@@ -1223,3 +1284,12 @@ def init_db(db_url="sqlite:///cityos.db"):
     engine = create_engine(db_url, echo=False, pool_pre_ping=True)
     Base.metadata.create_all(engine)
     return engine
+
+
+# ── 17.1: the specification's names for two tables that were already here ──
+# Renaming a live table for a word is how a migration loses rows, so the names
+# are bound to the classes instead. `AutomationExecution` IS `automation_runs`
+# and `AutomationScheduledExecution` IS `automation_queue` — the same rows,
+# reachable under either name.
+AutomationExecution = AutomationRun
+AutomationScheduledExecution = AutomationQueue

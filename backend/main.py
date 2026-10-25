@@ -32,6 +32,7 @@ from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
     AutomationTestRun, AutomationQueue, AutomationCreation, AutomationActionKey,
     AutomationIncident, EventOutbox,
+    AutomationActionExecution, AutomationAuthorizationGrant,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
@@ -10071,6 +10072,10 @@ def _run_action_inner(db, a, task, actor_id, board, event=None, human=None, owne
                 raise
             step["status"] = ("failed_permanent" if isinstance(e, _Refused)
                               else "failed_temporary")
+            # the groupable half, beside the prose — the same split the run row
+            # makes, so a step and the run that holds it answer alike
+            step["error_code"] = ("refused" if isinstance(e, _Refused)
+                                  else type(e).__name__)
             step["output"] = _scrub_secrets(str(e))
             # "כשל עוצר את הפעולות הבאות" — and says which one it was, because
             # "the rule failed" over ten actions is not an answer anybody can
@@ -10140,6 +10145,38 @@ def _idem_mark(db, a, task, key):
         except Exception:                          # noqa: BLE001
             pass
         print(f"⚠️  idempotency key not stored ({key}): {e}", flush=True)
+
+
+def _log_action_rows(db, a, task, run, steps):
+    """One row per action of this run, for the questions JSON cannot answer.
+
+    Written beside AutomationRun.result["steps"] and not instead of it: the
+    log screen reads the JSON and a table is a GROUP BY. Never raises — the
+    bookkeeping must not be able to fail work that already happened.
+    """
+    if run is None or not steps:
+        return
+    try:
+        for st in steps:
+            db.add(AutomationActionExecution(
+                run_id=getattr(run, "id", None),
+                automation_id=getattr(a, "id", None),
+                board_id=task.board_id, task_id=task.id,
+                action_index=int(st.get("index") or 1),
+                action_key=(st.get("key") or "")[:40],
+                idempotency_key=(st.get("key_id") or "")[:120],
+                status=(st.get("status") or "")[:24],
+                input=_plain_json(st.get("input") or {}),
+                target=_plain_json(st.get("target") or {}),
+                output={"value": _plain_json(st.get("output"))},
+                error_code=("" if not str(st.get("status") or "").startswith("failed")
+                            else (st.get("error_code") or "")[:40]),
+                error=("" if not str(st.get("status") or "").startswith("failed")
+                       else _scrub_secrets(str(st.get("output") or ""))[:600]),
+                started_at=getattr(run, "started_at", None),
+                finished_at=getattr(run, "finished_at", None)))
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  action rows not written ({getattr(a, 'id', '?')}): {e}", flush=True)
 
 
 def _plain_json(v):
@@ -10671,6 +10708,69 @@ def _live_links(db, task, col):
         return [i for i in _linked_ids(db, task.id, col["id"]) if isinstance(i, int)]
     return [i for i in ((task.custom_fields or {}).get(col["id"]) or [])
             if isinstance(i, int)]
+
+
+def _record_grants(db, a, actor_id=None):
+    """Write down what this rule is allowed to reach on other boards.
+
+    One row per (rule, target board, action), and only for the actions that
+    actually leave this board. Re-derived on every save, so a rule edited to
+    point somewhere else does not keep the old permission — and a row that is
+    no longer derivable is revoked rather than deleted, because "who had this
+    and when was it taken away" is the question a grant exists to answer.
+    """
+    try:
+        want = {}
+        for one in recipes.action_list(a.recipe_id, a.config or {}):
+            tgt = one["values"].get("board")
+            if not tgt:
+                continue
+            try:
+                tgt = int(tgt)
+            except (TypeError, ValueError):
+                continue
+            if tgt == a.board_id:
+                continue                       # its own board needs no grant
+            want[(tgt, one["key"])] = sorted(
+                AUTOMATION_ACTION_FIELDS.get(one["key"], ()))
+        now = _now_naive()
+        have = {(g.target_board_id, g.action_key): g
+                for g in db.query(AutomationAuthorizationGrant)
+                .filter(AutomationAuthorizationGrant.automation_id == a.id).all()}
+        for key, fields in want.items():
+            g = have.get(key)
+            if g is None:
+                db.add(AutomationAuthorizationGrant(
+                    automation_id=a.id, board_id=a.board_id,
+                    target_board_id=key[0], action_key=key[1], fields=fields,
+                    granted_by=actor_id, granted_at=now))
+            elif g.revoked_at is None:
+                g.fields = fields
+        for key, g in have.items():
+            if key not in want and g.revoked_at is None:
+                g.revoked_at, g.revoked_by = now, actor_id
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  grant not recorded ({getattr(a, 'id', '?')}): {e}", flush=True)
+
+
+def _grant_revoked(db, automation_id, target_board_id, action_key):
+    """Whether somebody has taken this grant away.
+
+    Only an explicitly revoked row refuses. A rule with no row at all is a
+    rule written before grants were data, and refusing those would have taken
+    every existing cross-board automation out of service on deploy.
+    """
+    if not automation_id:
+        return False
+    try:
+        return (db.query(AutomationAuthorizationGrant.id)
+                  .filter(AutomationAuthorizationGrant.automation_id == automation_id,
+                          AutomationAuthorizationGrant.target_board_id == target_board_id,
+                          AutomationAuthorizationGrant.action_key == action_key,
+                          AutomationAuthorizationGrant.revoked_at != None)   # noqa: E711
+                  .first() is not None)
+    except Exception:                              # noqa: BLE001
+        return False
 
 
 def _cross_board_refusal(db, board, target_board_id, col=None):
@@ -11537,6 +11637,9 @@ def _automation_blockers(db, board, a):
                 tb = db.query(Board).filter(Board.id == v, Board.deleted_at == None).first()  # noqa: E711
                 if not tb:
                     out.append({"kind": "dependency", "text": "לוח היעד נמחק"})
+                elif _grant_revoked(db, getattr(a, "id", None), int(v), one["key"]):
+                    out.append({"kind": "permission",
+                                "text": f"מענק ההרשאה ללוח '{tb.name}' בוטל"})
                 else:
                     # the grant, read now: the same organisation, and a board
                     # the link column is still configured for. Both are things
@@ -12210,6 +12313,7 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
                                   error_code=("refused" if permanent
                                               else type(cause).__name__),
                                   attempt=tries, result=report)
+        _log_action_rows(db, a, task, row, (report or {}).get("steps"))
         # "כשל זמני ... יגרור עד שלושה ניסיונות" — and a permanent one will not,
         # because the engine will decide the same thing in a minute
         exhausted = not permanent and tries > AUTOMATION_MAX_AUTO_RETRIES
@@ -12245,6 +12349,9 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
                                                     and (_made.get("partial")
                                                          or _made.get("waiting")))
                                       else "succeeded"))
+    # one row per action, beside the JSON on the run — see _log_action_rows
+    _log_action_rows(db, a, task, row, (_made or {}).get("steps")
+                     if isinstance(_made, dict) else None)
     for ev in follow or []:
         # whatever set this rule off, what IT writes comes from the engine —
         # and it stays in the batch it was started by, so one bulk action reads
@@ -13914,6 +14021,7 @@ def create_automation(board_id: int, data: dict, request: Request = None,
         if a.owner_id != user_id:
             _audit_owner_change(db, a, user_id, a.owner_id, user_id)
         _record_automation_version(db, b, a, user_id)
+        _record_grants(db, a, user_id)
         _audit_automation(db, a, "create", "automation",
                           after=_automation_label(db, b, a),
                           actor_id=user_id, request=request)
@@ -14102,6 +14210,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
                 db.refresh(a)
                 return {**_automation_json(db, b, a), "warnings": _warn}
             a.config = cfg
+            _record_grants(db, a, user_id)
             _audit_automation(db, a, "update", "config",
                               before=(before or {}).get("sentence") or "הגדרה קודמת",
                               after=_automation_label(db, b, a),
