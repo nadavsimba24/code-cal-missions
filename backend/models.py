@@ -553,11 +553,40 @@ class AutomationRun(Base):
     # answerable afterwards.
     version = Column(Integer, nullable=True)
     reason = Column(Text, default="")                # why it skipped, or what failed
+    # What the actions actually produced — today, the items a rule created
+    # somewhere else: which board, which group, what travelled with them and
+    # the id of each. A creation nobody can point at afterwards is a creation
+    # nobody can undo, and the reason text is not a thing code can follow.
+    result = Column(JSON, default=dict)
     depth = Column(Integer, default=0)               # 0 = the change itself, >0 = a cascade
     actor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     retry_of = Column(Integer, ForeignKey("automation_runs.id"), nullable=True)
     retried_at = Column(DateTime, nullable=True)     # set on the run a retry replayed
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class AutomationCreation(Base):
+    """One item a rule created on another board, for one source item.
+
+    "ב־MVP ייווצר לכל היותר פריט יעד אחד עבור אותו פריט מקור ואותה אוטומציה" —
+    and this is where that is remembered. Not the run log: the log is pruned to
+    the newest rows per board, so a busy source board would start duplicating
+    on the target board the moment the first run scrolled off the end.
+
+    Kept per (rule, source item). Per rule because two rules are two different
+    intentions and neither is the other's duplicate; per source item because a
+    cap per rule would mean a rule that fired once and never again.
+    """
+    __tablename__ = "automation_creations"
+    id = Column(Integer, primary_key=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=False, index=True)
+    source_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    target_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=True)
+    group_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (UniqueConstraint("automation_id", "source_task_id",
+                                       name="uq_automation_creation"),)
 
 
 class AutomationVersion(Base):

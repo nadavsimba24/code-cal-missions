@@ -29,7 +29,7 @@ import filter_ast
 import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
-    AutomationTestRun, AutomationQueue,
+    AutomationTestRun, AutomationQueue, AutomationCreation,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
@@ -293,7 +293,8 @@ def _migrate():
                 conn.execute(text(f"ALTER TABLE automation_queue ADD COLUMN {name} {ddl}"))
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
         for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)"),
-                          ("event_id", "VARCHAR(32)"), ("chain_id", "VARCHAR(32)")]:
+                          ("event_id", "VARCHAR(32)"), ("chain_id", "VARCHAR(32)"),
+                          ("result", "JSON")]:
             if rcols and name not in rcols:
                 conn.execute(text(f"ALTER TABLE automation_runs ADD COLUMN {name} {ddl}"))
         for name, ddl in [("name", "VARCHAR(120)"), ("description", "TEXT"),
@@ -427,6 +428,7 @@ else:
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS event_id VARCHAR(32)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS chain_id VARCHAR(32)",
+        "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS result JSONB",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS automation_id INTEGER",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS version INTEGER",
         "ALTER TABLE automation_queue ADD COLUMN IF NOT EXISTS state VARCHAR(10) DEFAULT 'pending'",
@@ -7704,7 +7706,8 @@ def create_task(data: dict, request: Request = None,
         if task.parent_id:
             _parent = db.query(Task).filter(Task.id == task.parent_id).first()
             if _parent and not _parent.deleted_at:
-                _sub = _event("subitem_created", _src, subitem_id=task.id)
+                _sub = _event("subitem_created", _src, subitem_id=task.id,
+                              parent_id=_parent.id)
                 _event_ids.append(_sub["id"])
                 _run_automations(db, _parent, _sub, actor_id)
         _bid, _tid = task.board_id, task.id
@@ -9551,15 +9554,29 @@ def _check_automation_map(db, board_id, recipe_id, cfg):
             raise HTTPException(400, "מיפוי שדות אינו תקין — " + " · ".join(bad[:3]))
 
 
-def _copy_mapped_fields(db, src, dst, mapping, actor_id):
-    """Carry the mapped values across. Returns how many moved."""
+def _copy_mapped_fields(db, src, dst, mapping, actor_id, board_id=None):
+    """Carry the mapped values across. Returns how many moved.
+
+    A value the target field cannot hold is a REFUSAL, not a shrug. The caller
+    creates the item and fills it in one savepoint, so raising here is what
+    makes "אם שדה חובה אינו ניתן למילוי, הפריט לא ייווצר" true: the half-filled
+    item goes back with the exception rather than sitting on somebody else's
+    board looking finished.
+
+    A source side that is simply EMPTY is still not a failure — there is
+    nothing to carry and nothing went wrong.
+    """
     moved = 0
     for pair in mapping or []:
         a, b = pair.get("from"), pair.get("to")
         val = _map_read(db, src, a)
         if val in (None, "", []):
             continue                   # nothing to carry is not a failure
-        if _map_write(db, dst, b, val, actor_id):
+        ok, err = _map_write(db, dst, b, val, actor_id,
+                             board_id if board_id is not None else dst.board_id)
+        if err:
+            raise _Refused(f"השדה '{b}' בלוח היעד אינו יכול לקבל את הערך — {err}")
+        if ok:
             moved += 1
     return moved
 
@@ -9580,13 +9597,22 @@ def _map_read(db, task, name):
     return (task.custom_fields or {}).get(str(name))
 
 
-def _map_write(db, task, name, value, actor_id):
+def _map_write(db, task, name, value, actor_id, board_id=None):
+    """(wrote anything, error) for one mapped value.
+
+    The error is the half this did not have. A custom column used to be written
+    RAW — a word straight into a number column, where the mapping had been
+    approved at save time on the types and then ignored at run time on the
+    value. The column decides what it can hold (see _coerce_cell), here as
+    everywhere else.
+    """
+    bid = board_id if board_id is not None else task.board_id
     if name == "title":
         task.title = str(value)[:500]
     elif name == "status":
-        return bool(_apply_status_key(db, task, value))
+        return bool(_apply_status_key(db, task, value)), ""
     elif name == "priority":
-        return bool(_apply_priority_key(db, task, value))
+        return bool(_apply_priority_key(db, task, value)), ""
     elif name == "due":
         task.due_date = value
     elif name == "description":
@@ -9601,12 +9627,18 @@ def _map_write(db, task, name, value, actor_id):
             if u is not None:
                 task.assignees.append(u)
                 added += 1
-        return bool(added)
+        return bool(added), ""
     else:
+        col = _find_col(db, bid, str(name))
+        if not col:
+            return False, "העמודה אינה קיימת בלוח היעד"
+        stored, err = _coerce_cell(db, bid, col, value)
+        if err:
+            return False, err
         cf = dict(task.custom_fields or {})
-        cf[str(name)] = value
+        cf[str(name)] = stored
         task.custom_fields = cf
-    return True
+    return True, ""
 
 
 def _coerce_cell(db, board_id, col, value):
@@ -9764,7 +9796,12 @@ def _automation_label(db, board, a):
 
 def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None,
                 notice="", start=0):
-    """Perform the rule's actions, in order. Returns (follow-up events, note).
+    """Perform the rule's actions, in order.
+
+    Returns (follow-up events, note, made) — `made` being what the actions
+    PRODUCED, which until there were actions that create things was always
+    nothing. The run log keeps it: "it worked" is not an answer when what it
+    did was put an item on somebody else's board.
 
     The events let a rule trigger another, bounded by AUTOMATION_MAX_DEPTH.
 
@@ -9780,7 +9817,7 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
     nothing happen?" is still the question the log exists to answer, and with
     four actions "why did only some of it happen?" is the same question.
     """
-    out, skipped = [], []
+    out, skipped, made = [], [], []
     label = _automation_label(db, board, a)
     # a notification names the rule; the board's own screens show the sentence
     told = notice or _automation_plain_name(db, board, a)
@@ -9790,7 +9827,8 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
         try:
             out.extend(_run_one_action(db, one["key"], one["values"],
                                        task, actor_id, board, told, event,
-                                       human=human, owner=owner) or [])
+                                       human=human, owner=owner,
+                                       rule=a, records=made) or [])
             clash += _note_conflict(event, task, a, one["key"], told)
         except _Waiting as w:
             # What is left of the rule goes to the queue with the moment it may
@@ -9803,7 +9841,7 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
                     f"ההמשך בעוד {_duration_he(w.minutes)}")
             if skipped:
                 note += " · " + " · ".join(dict.fromkeys(skipped))
-            return out, note
+            return out, note, made
         except _Skipped as sk:
             skipped.append(sk.reason)
         except (_Waiting, Exception) as e:
@@ -9829,7 +9867,7 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
         # not what my rule set it to" had no answer once the rule was running.
         # It does now, on the row of the rule that wrote last.
         note = (note + " · " if note else "") + " · ".join(dict.fromkeys(clash))
-    return out, note
+    return out, note, made
 
 
 def _note_conflict(event, task, a, act_key, told):
@@ -10067,12 +10105,17 @@ def _recipient_ids(db, board, task, spec, human=None, owner=None):
 
 
 def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
-                    human=None, owner=None):
+                    human=None, owner=None, rule=None, records=None):
     """One action of a rule. Raises _Skipped where there is nothing to do.
 
     `cfg` is the action's own values, keyed by the bare field name — see
     automations.action_list, which reads the recipe's `a_*` placeholders and an
     extra action's stored values into that one shape.
+
+    `rule` is the Automation itself, which an action only needs when it has to
+    remember something ACROSS firings — today that is the once-per-source-item
+    cap on creating an item somewhere else. `records` is where an action notes
+    what it produced, for the run log to keep.
     """
     out = []
     # the text an action writes may be built from the item it is acting on
@@ -10252,11 +10295,17 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         bad = _map_problems(db, task.board_id, cfg.get("board"), cfg.get("map"))
         if bad:
             raise _Skipped("מיפוי שדות אינו תקין — " + " · ".join(bad[:2]))
+        _creation_guard(db, rule, task)
         made = _create_linked_item(db, task, col, cfg.get("board"),
                                    text(cfg.get("text")), actor_id, group=grp)
         if made is None:
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
-        _copy_mapped_fields(db, task, made, cfg.get("map"), actor_id)
+        # "יצירת הפריט והזנת השדות יבוצעו כפעולה אטומית" — a value the target
+        # field cannot hold raises here, and the rule's savepoint takes the
+        # item it just created back with it
+        _copy_mapped_fields(db, task, made, cfg.get("map"), actor_id,
+                            board_id=cfg.get("board"))
+        _note_creation(db, rule, task, made, records, group=grp, mapping=cfg.get("map"))
         out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
     elif act == "wait":
         # handled a level up, where the rest of the actions are — see _run_action
@@ -10275,10 +10324,12 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         col = _find_col(db, task.board_id, cfg.get("connect"))
         if not col or col.get("type") != "connect":
             raise _Skipped("עמודת הקישור אינה קיימת בלוח")
+        _creation_guard(db, rule, task)
         made = _create_linked_item(db, task, col, cfg.get("board"),
                                    text(cfg.get("text")), actor_id)
         if made is None:
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
+        _note_creation(db, rule, task, made, records)
         out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
     elif act == "create_in_group_and_link":
         col = _find_col(db, task.board_id, cfg.get("connect"))
@@ -10288,13 +10339,14 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                                      Group.board_id == cfg.get("board")).first()
         if not grp:
             raise _Skipped("הקבוצה שנבחרה אינה קיימת בלוח היעד")
+        _creation_guard(db, rule, task)
+        fields = [k for k in (cfg.get("fields") or []) if k in recipes.COPY_FIELDS]
         made = _create_linked_item(db, task, col, cfg.get("board"),
                                    text(cfg.get("text")), actor_id, group=grp)
         if made is None:
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
-        _copy_item_fields(db, task, made,
-                          [k for k in (cfg.get("fields") or []) if k in recipes.COPY_FIELDS],
-                          actor_id)
+        _copy_item_fields(db, task, made, fields, actor_id)
+        _note_creation(db, rule, task, made, records, group=grp, fields=fields)
         out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
     return out
 
@@ -10432,6 +10484,77 @@ def _apply_automation_link(db, task, col, ids, actor_id):
     return True
 
 
+def _creation_guard(db, rule, task):
+    """Refuse a second target item for this source item under this rule.
+
+    Raised as a skip rather than a failure: nothing went wrong — the thing the
+    rule exists to do is already done, and saying so is the whole point of
+    keeping the non-events in the history.
+    """
+    row = _already_created(db, rule, task)
+    if row is not None:
+        raise _Skipped(f"דולגה - פריט יעד כבר קיים (#{row.target_task_id})")
+
+
+def _note_creation(db, rule, task, made, records, group=None, fields=None, mapping=None):
+    """Remember it, and write down what it was.
+
+    Both halves matter and they are not the same half: the ledger is what stops
+    the next firing, the record is what lets somebody find the item afterwards.
+    """
+    _remember_creation(db, rule, task, made, group.id if group is not None else None)
+    if records is None:
+        return
+    one = {"task_id": made.id, "title": made.title, "board_id": made.board_id,
+           "group_id": made.group_id}
+    if fields:
+        one["fields"] = list(fields)
+    if mapping:
+        one["map"] = [{"from": x.get("from"), "to": x.get("to")} for x in mapping]
+    records.append(one)
+
+
+def _already_created(db, a, task):
+    """The item this rule already made for this source item, if it is still a
+    row in the database.
+
+    "ב־MVP ייווצר לכל היותר פריט יעד אחד עבור אותו פריט מקור ואותה אוטומציה.
+    אירוע חוזר או ניסיון חוזר לא ייצור כפילות" — a repeat event, a retry, a
+    status that left the value and came back: all the same answer.
+
+    A target in the recycle bin still counts. It can be restored, and a rule
+    that made a second one while the first was waiting to come back would have
+    produced exactly the duplicate this exists to prevent. Only a target that
+    is GONE from the table releases the ledger — there is nothing left to
+    duplicate then.
+    """
+    if a is None or getattr(a, "id", None) is None or task is None:
+        return None
+    row = (db.query(AutomationCreation)
+             .filter(AutomationCreation.automation_id == a.id,
+                     AutomationCreation.source_task_id == task.id).first())
+    if row is None:
+        return None
+    still = (db.query(Task.id).filter(Task.id == row.target_task_id)
+               .execution_options(include_deleted=True).first())
+    if still is None:
+        db.delete(row)
+        db.flush()
+        return None
+    return row
+
+
+def _remember_creation(db, a, task, made, group_id=None):
+    """Write the ledger row, so the next firing knows there is nothing to do."""
+    if a is None or getattr(a, "id", None) is None or made is None:
+        return
+    db.add(AutomationCreation(automation_id=a.id, source_task_id=task.id,
+                              target_task_id=made.id, board_id=made.board_id,
+                              group_id=group_id if group_id is not None else made.group_id,
+                              created_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+    db.flush()
+
+
 def _create_linked_item(db, task, col, board_id, title, actor_id, group=None):
     """Make an item on the connect column's target board and link it back.
 
@@ -10482,7 +10605,7 @@ def _live_version(db, a):
 
 
 def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
-                        actor_id=None, retry_of=None):
+                        actor_id=None, retry_of=None, result=None):
     """Record one attempt, whatever came of it.
 
     Never raises: the history is a record of the work, never a reason for the
@@ -10499,6 +10622,8 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             task_id=task.id, task_title=(task.title or "")[:300],
             event={k: v for k, v in (event or {}).items() if not k.startswith("_")},
             outcome=outcome, reason=(reason or "")[:400],
+            # "בלוג ההפעלה יישמרו ... מיפוי השדות ומזהה הפריט שנוצר"
+            result={"created": list(result)} if result else {},
             source=((event or {}).get("source") or "")[:16],
             batch_id=((event or {}).get("batch") or "")[:36],
             event_id=((event or {}).get("id") or "")[:32],
@@ -10937,6 +11062,30 @@ def _count_automation_usage(db, board_id, outcome):
         print(f"⚠️  automation usage not counted ({board_id}): {e}", flush=True)
 
 
+def _acting_item(db, a, task, event):
+    """The item this rule acts on when the event was about a sub-item.
+
+    A sub-item event reaches the PARENT's rules — that is how the trigger is
+    built, and "כאשר תת־פריט הושלם, סמן את האב" is the common case. But
+    updating the SUB-ITEM is a real intention too, and the rule now says which.
+
+    Resolved here, before the conditions and before the log, so one answer runs
+    through the whole firing: a rule whose conditions were read off the parent
+    and whose action landed on the child would be unexplainable from the
+    history. The event keeps both ids either way.
+    """
+    sub = (event or {}).get("subitem_id")
+    if not sub:
+        return task
+    if recipes.pick_value("on", (a.config or {}).get("t_on")) != "subitem":
+        return task
+    t = (db.query(Task)
+           .filter(Task.id == sub, Task.deleted_at == None).first())    # noqa: E711
+    # never off the board: a rule is the board's configuration, and an item
+    # somewhere else is not something it was given
+    return t if t is not None and t.board_id == task.board_id else task
+
+
 def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""):
     """Run one matching rule against one item, record what came of it, and let
     the result cascade.
@@ -10955,6 +11104,8 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board:
         return None
+    # "להעביר לפעולות את מזהה פריט האב ולאפשר עדכון של תת־הפריט או פריט האב"
+    task = _acting_item(db, a, task, event)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     # rule 4 — re-checked here, on every single firing, and never taken on trust
     # from when the rule was written
@@ -11006,12 +11157,12 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         # untouched by this one failing.
         sp = db.begin_nested()
         try:
-            follow, note = _run_action(db, a, task, engine_id, board, event,
-                                       human=actor_id, owner=a.owner_id or a.created_by,
-                                       # what a notification calls the rule: its
-                                       # own name where it has one, and only
-                                       # then the sentence
-                                       notice=(a.name or "").strip())
+            follow, note, _made = _run_action(
+                db, a, task, engine_id, board, event,
+                human=actor_id, owner=a.owner_id or a.created_by,
+                # what a notification calls the rule: its own name where it has
+                # one, and only then the sentence
+                notice=(a.name or "").strip())
             sp.commit()
         except BaseException:
             sp.rollback()
@@ -11045,7 +11196,8 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     if override:
         note = (f"התנאים נעקפו בידי מנהל מערכת · {override}"
                 + (f" · {note}" if note else ""))
-    row = _log_automation_run(db, board, a, task, event, "ran", note, depth, actor_id, retry_of)
+    row = _log_automation_run(db, board, a, task, event, "ran", note, depth, actor_id,
+                              retry_of, result=_made)
     for ev in follow or []:
         # whatever set this rule off, what IT writes comes from the engine —
         # and it stays in the batch it was started by, so one bulk action reads
@@ -11864,10 +12016,11 @@ def _resume_rule(db, ev, task, row=None):
         # rest of the rule was promised about the item it was
         return "skipped", why_not
     try:
-        follow, note = _run_action(db, held, task, _automation_identity(db), board,
-                                   {k: v for k, v in ev.items() if k != "type"},
-                                   human=ev.get("human"), owner=ev.get("owner"),
-                                   start=int(ev.get("from") or 0))
+        follow, note, _made = _run_action(
+            db, held, task, _automation_identity(db), board,
+            {k: v for k, v in ev.items() if k != "type"},
+            human=ev.get("human"), owner=ev.get("owner"),
+            start=int(ev.get("from") or 0))
     except Exception as e:             # noqa: BLE001
         _log_automation_run(db, board, a, task, ev, "failed",
                             e.reason if isinstance(e, _Failed)
@@ -11877,7 +12030,7 @@ def _resume_rule(db, ev, task, row=None):
                         "המשך אחרי המתנה"
                         + (" · לפי הגרסה שבה נוצרה ההמתנה" if moved else "")
                         + (f" · {note}" if note else ""),
-                        0, ev.get("human"))
+                        0, ev.get("human"), result=_made)
     return "done", ""
 
 
@@ -11952,6 +12105,12 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
            "on_missing": {"options": list(recipes.ON_MISSING),
                           "default": recipes.ON_MISSING_DEFAULT,
                           "labels": recipes.ON_MISSING_HE},
+           # a sub-item rule writes on the parent or on the sub-item — the
+           # nearest thing this model has to "שדות פריט ושדות תת־פריט בנפרד",
+           # since a sub-item is an item on the same board with the same columns
+           "on": {"options": list(recipes.ON_TARGETS),
+                  "default": recipes.ON_TARGETS_DEFAULT,
+                  "labels": recipes.ON_TARGETS_HE},
            "chain": {"max_runs": AUTOMATION_CHAIN_MAX_RUNS,
                      "max_seconds": AUTOMATION_CHAIN_MAX_SECONDS,
                      "max_depth": AUTOMATION_MAX_DEPTH},
@@ -12543,6 +12702,7 @@ def _automation_run_json(db, row):
         # where the change came from, and the batch it belonged to
         "source": row.source or "", "batch_id": row.batch_id or "",
         "event_id": row.event_id or "", "chain_id": row.chain_id or "",
+        "result": row.result or {},
         "actor_id": row.actor_id, "actor_name": uname(row.actor_id),
         "is_retry": row.retry_of is not None, "retry_of": row.retry_of,
         "retried_at": row.retried_at.isoformat() if row.retried_at else None,
@@ -14806,7 +14966,8 @@ def update_task(task_id: int, data: dict, request: Request = None,
             _parent = db.query(Task).filter(Task.id == task.parent_id).first()
             if _parent and not _parent.deleted_at:
                 _run_automations(db, _parent, _ev("subitem_done",
-                                                  subitem_id=task.id), actor)
+                                                  subitem_id=task.id,
+                                                  parent_id=_parent.id), actor)
         # and the items pointing at this one hear that its status moved
         if _task_status_key(task) != _before_status:
             _fan_out_linked_status(db, task, _task_status_key(task), actor)

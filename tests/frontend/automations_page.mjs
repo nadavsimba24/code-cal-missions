@@ -852,5 +852,35 @@ ck('a board that is running says nothing',
   A.building=null; A.caps=null;
 }
 
+/* ── 10.1: what a creation left behind, on a board you cannot see ──────── */
+{
+  A.tab='history'; A.runsLoading=false; A.runOutcome=''; A.runAuto=0;
+  A.batch=null; A.chain=null;
+  A.runCounts={total:1,ran:1,skipped:0,failed:0,retried:0};
+  A.data={automations:[],can_manage:true,can_export:false};
+  st.boards=[{id:9,name:'לוח יעד'}];
+  const R=(over)=>Object.assign({id:1,outcome:'ran',sentence:'כאשר הסטטוס משתנה, צור פריט',
+    task_id:5,task_title:'מקור',reason:'',depth:0,event_type:'status_changes_to',
+    source:'item',batch_id:'',chain_id:'c1',version:1,is_retry:false,retried_at:null,
+    created_at:'2026-10-25T09:00:00',can_retry:false,result:{}},over||{});
+  A.runs=[R({result:{created:[{task_id:77,title:'משימת יעד',board_id:9,group_id:3,
+                               fields:['priority']}]}})];
+  let h=A.historyHTML();
+  ck('the log says what was created', h.includes('נוצר') && h.includes('משימת יעד'));
+  ck('...and on which board, because it is not the one you are looking at',
+     h.includes('לוח יעד'));
+  ck('...and that something travelled with it', h.includes('1 שדות הועתקו'));
+  ck('the created item opens from the log', h.includes('BoardLog.goto(77)'));
+  A.runs=[R({result:{created:[{task_id:78,title:'ממופה',board_id:9,
+                               map:[{from:'a',to:'b'},{from:'c',to:'d'}]}]}})];
+  ck('a mapping is counted as a mapping, not as a copy',
+     A.historyHTML().includes('2 שדות ממופים'));
+  A.runs=[R({outcome:'skipped',reason:'דולגה - פריט יעד כבר קיים (#77)'})];
+  h=A.historyHTML();
+  ck('a second firing says the target already exists', h.includes('פריט יעד כבר קיים'));
+  ck('...and shows nothing as created, because nothing was', !h.includes('נוצר'));
+  st.boards=[];
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

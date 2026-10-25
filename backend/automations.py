@@ -691,7 +691,7 @@ ACTIONS = {
     "move_to_group":    "העבר את הפריט לקבוצה {group}",
     "create_subitem":   "צור תת־פריט בשם {text}",
     "link_to_item":     "קשר את הפריט אל {item} בעמודה {connect}",
-    "create_and_link":  "צור פריט בשם {text} בלוח {board} וקשר אותו בעמודה {connect}",
+    "create_and_link":  "צור פריט בשם {text} בלוח {board} וקשר אותו לפריט המקור בעמודה {connect}",
     # ── and the three the template library asked for ──
     "post_update":      "הוסף עדכון לשיחת הפריט: {text}",
     "copy_to_linked":   "העתק {fields} {targets}",
@@ -701,7 +701,7 @@ ACTIONS = {
     # somebody already built is not re-asked a question it was never asked.
     "create_in_group_and_link":
         "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, העתק {fields} "
-        "וקשר אותו בעמודה {connect}",
+        "וקשר אותו לפריט המקור בעמודה {connect}",
     # ── the rest of the MVP table ──
     "set_column":       "עדכן את העמודה {column} ל{text}",
     "clear_column":     "נקה את העמודה {column}",
@@ -718,7 +718,7 @@ ACTIONS = {
     # asked, which is the versioning rule in practice.
     "create_mapped_and_link":
         "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, מפה {map} "
-        "וקשר אותו בעמודה {connect}",
+        "וקשר אותו לפריט המקור בעמודה {connect}",
 }
 MIN_WAIT_MINUTES = 1
 MAX_WAIT_DAYS = 30
@@ -807,11 +807,26 @@ ON_MISSING = ("skip", "fail")
 ON_MISSING_DEFAULT = "skip"
 ON_MISSING_HE = {"skip": "דלג בשקט", "fail": "רשום ככשל"}
 
+# ── תתי־פריטים: על מי הכלל פועל ────────────────────────────────────────────
+# A sub-item event reaches the PARENT's rules: that is how the trigger is built,
+# and for most rules the parent is the right thing to write on — "כאשר תת־פריט
+# הושלם, סמן את האב". But "עדכן את תת־הפריט" is a real intention too, and until
+# now there was no way to say it. The default stays the parent, which is what
+# every rule written before this choice existed meant.
+# It wears the trigger's `t_` prefix rather than the action's `a_`, and that is
+# not a cosmetic choice: an `a_` field IS one of the action's own, read straight
+# out of the catalog by action_list. This one qualifies which item the EVENT is
+# taken to be about, which every action of the rule then inherits.
+ON_TARGETS = ("parent", "subitem")
+ON_TARGETS_DEFAULT = "parent"
+ON_TARGETS_HE = {"parent": "על פריט האב", "subitem": "על תת־הפריט"}
+
 # key → (allowed values, default). A "pick" field is never missing: silence is
 # the default, which is what lets a rule written before the choice existed go on
 # running with the reading the spec gives it.
 PICKS = {"targets": (TARGETS, TARGETS_DEFAULT),
-         "on_missing": (ON_MISSING, ON_MISSING_DEFAULT)}
+         "on_missing": (ON_MISSING, ON_MISSING_DEFAULT),
+         "on": (ON_TARGETS, ON_TARGETS_DEFAULT)}
 
 # The field types that may be blank. Everything else a recipe declares has to be
 # filled before the rule can be switched on.
@@ -825,7 +840,7 @@ def pick_key(f):
     return k[2:] if k.startswith(("a_", "t_")) else k
 
 
-PICK_HE = {"targets": TARGETS_HE, "on_missing": ON_MISSING_HE}
+PICK_HE = {"targets": TARGETS_HE, "on_missing": ON_MISSING_HE, "on": ON_TARGETS_HE}
 
 
 def pick_label(f, v):
@@ -1202,11 +1217,15 @@ RECIPES = [
     # A sub-item finishing reaches the rule as an event on the PARENT, so
     # "עדכן שדה בפריט האב" is every action the catalog already has.
     {"id": "subitem_done_set_status", "trigger": "subitem_done", "action": "set_status",
-     "fields": [_f("a_status", "status", "סטטוס בפריט האב")]},
+     "fields": [_f("a_status", "status", "סטטוס בפריט האב"), _f("t_on", "pick", "על מי לפעול")]},
     {"id": "subitem_done_set_priority", "trigger": "subitem_done", "action": "set_priority",
-     "fields": [_f("a_priority", "priority", "עדיפות בפריט האב")]},
+     "fields": [_f("a_priority", "priority", "עדיפות בפריט האב"), _f("t_on", "pick", "על מי לפעול")]},
     {"id": "subitem_done_notify_assignees", "trigger": "subitem_done",
-     "action": "notify_assignees", "fields": []},
+     "action": "notify_assignees", "fields": [_f("t_on", "pick", "על מי לפעול")]},
+    # "לאפשר ... יצירת תת־פריט נוסף" — the third thing a sub-item rule can do,
+    # next to updating the sub-item and updating its parent
+    {"id": "subitem_done_create_subitem", "trigger": "subitem_done",
+     "action": "create_subitem", "fields": [_f("a_text", "text", "שם תת־הפריט")]},
     {"id": "link_added_copy_to_linked", "trigger": "link_added", "action": "copy_to_linked",
      # the column is optional and means "whichever one the link was made in"
      # when it is left blank — the event names it by id either way, so the
@@ -1226,9 +1245,9 @@ RECIPES = [
      "action": "notify_person",
      "fields": [_f("t_group", "group", "קבוצה"), _f("a_person", "recipient", "נמען")]},
     {"id": "subitem_created_notify_assignees", "trigger": "subitem_created",
-     "action": "notify_assignees", "fields": []},
+     "action": "notify_assignees", "fields": [_f("t_on", "pick", "על מי לפעול")]},
     {"id": "subitem_created_set_status", "trigger": "subitem_created", "action": "set_status",
-     "fields": [_f("a_status", "status", "סטטוס בפריט האב")]},
+     "fields": [_f("a_status", "status", "סטטוס בפריט האב"), _f("t_on", "pick", "על מי לפעול")]},
     {"id": "column_changed_notify_person", "trigger": "column_changed",
      "action": "notify_person",
      "fields": [_f("t_column", "column", "עמודה"), _f("a_person", "recipient", "נמען")]},
@@ -1431,6 +1450,15 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and"):
     more = [p for p in (action_phrases or []) if p]
     if more:
         act = act + " וגם " + " וגם ".join(more)
+    # A field the templates do not mention gets a slot of its own at the end.
+    # Otherwise it is invisible on a screen that renders the sentence and fills
+    # its blanks — a field nobody can set, and a default nobody was shown.
+    # Generic rather than a special case: the next field added to a recipe gets
+    # the same treatment without anyone remembering to arrange it.
+    tail = [f["key"] for f in r.get("fields", [])
+            if "{" + f["key"] + "}" not in trig + act]
+    if tail:
+        act = act + " · " + " · ".join("{" + k + "}" for k in tail)
     return f"{trig}, {clause + ', ' if clause else ''}{act}"
 
 

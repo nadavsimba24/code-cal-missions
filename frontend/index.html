@@ -8534,6 +8534,14 @@ const Automations = {
         </div>
         <div class="ah-sent">${sent}</div>
         ${r.reason?`<div class="ah-why"><i class="fa-solid fa-circle-info"></i> ${esc(r.reason)}</div>`:''}
+        ${(((r.result||{}).created)||[]).map(c=>`<div class="ah-why">
+           <i class="fa-solid fa-plus" style="color:var(--green)"></i> נוצר
+           <button class="lg-item" title="פתח את הפריט"
+             onclick="BoardLog.goto(${c.task_id})">${esc(c.title||('#'+c.task_id))}</button>
+           ${c.board_id?`<span class="ah-tag">לוח ${esc(Automations.boardName(c.board_id))}</span>`:''}
+           ${(c.map||[]).length?`<span class="ah-tag" title="מיפוי השדות שנשמר בלוג">${c.map.length} שדות ממופים</span>`
+             :(c.fields||[]).length?`<span class="ah-tag">${c.fields.length} שדות הועתקו</span>`:''}
+         </div>`).join('')}
       </div>
       <span class="ah-when" title="${esc(fdatetimeY(r.created_at))}">${esc(BoardLog.ago(r.created_at))}</span>
       ${can?`<button class="btn btn-ghost ah-retry" onclick="Automations.retry(${r.id})"><i class="fa-solid fa-rotate-right"></i> נסה שוב</button>`:''}
@@ -8543,6 +8551,13 @@ const Automations = {
   /* Every item that changed in one bulk action, which is what the shared batch
      id is for: the log keeps a row per item — a rule is about an item — and
      this is how they read as the one action they were. */
+  /* A creation lands on ANOTHER board, which is the whole reason the log keeps
+     it: the person reading this one cannot see where the item went. */
+  boardName(id){
+    const b=(st.boards||[]).find(x=>x.id===id);
+    return b?(b.name||('#'+id)):('#'+id);
+  },
+
   showBatch(id){
     this.batch=(this.batch===id)?null:id; this.chain=null;
     this.render();
