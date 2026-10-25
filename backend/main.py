@@ -9444,6 +9444,16 @@ def _automation_plain_name(db, board, a):
     return " · ".join([x for x in (trig, act) if x]) or "אוטומציה"
 
 
+class _Refused(Exception):
+    """An action the rule may not carry out, said in words.
+
+    Different from _Skipped, which is "there was nothing to do": this is "there
+    was something to do and the rule is not allowed to, or was told to treat
+    this as a failure". It ends as a failure — and because somebody is going to
+    read it, it carries a sentence rather than a class name.
+    """
+
+
 class _Failed(Exception):
     """An action blew up. Which one, out of how many, and what went wrong."""
 
@@ -9454,9 +9464,12 @@ class _Failed(Exception):
     @property
     def reason(self):
         what = recipes.plain(recipes.ACTIONS.get(self.key, self.key))
+        # a refusal already reads as a sentence; a crash needs its type naming,
+        # because "list index out of range" on its own tells nobody anything
+        cause = (str(self.cause) if isinstance(self.cause, _Refused)
+                 else f"{type(self.cause).__name__}: {self.cause}")
         return (f"נכשלה בפעולה {self.index} מתוך {self.total} «{what}» — "
-                f"{type(self.cause).__name__}: {self.cause} · "
-                "הפעולות הבאות לא בוצעו")
+                f"{cause} · הפעולות הבאות לא בוצעו")
 
 
 class _Waiting(Exception):
@@ -9691,9 +9704,12 @@ def _shown_value(db, board, ftype, v):
         return db.query(User.name).filter(User.id == v).scalar() or "—"
     if ftype == "group":
         return db.query(Group.name).filter(Group.id == v).scalar() or "—"
-    if ftype == "connect":
+    if ftype in ("connect", "connect_opt"):
         col = _find_col(db, board.id, str(v)) if board else None
-        return (col or {}).get("title") or "—"
+        # blank is a value here and it has a reading: the column the link that
+        # set the rule off was made in
+        return (col or {}).get("title") or ("עמודת הקישור שבאירוע"
+                                            if ftype == "connect_opt" else "—")
     if ftype == "item":
         return db.query(Task.title).filter(Task.id == v).scalar() or "—"
     if ftype == "board":
@@ -9714,6 +9730,9 @@ def _action_phrases(db, board, extras, quote=True):
         shown = {}
         for f in recipes.action_fields(key):
             v = values.get(f["key"])
+            if f["type"] == "pick":
+                shown[f["key"]] = recipes.pick_label(f, v)
+                continue
             if v in (None, ""):
                 continue
             text = _shown_value(db, board, f["type"], v)
@@ -9734,6 +9753,10 @@ def _automation_label(db, board, a):
                             cfg.get(recipes.CONDITION_GROUP_KEY) or "and")
     r = recipes.recipe(a.recipe_id)
     for f in (r or {}).get("fields", []):
+        if f["type"] == "pick":
+            text = text.replace("{" + f["key"] + "}",
+                                recipes.pick_label(f, cfg.get(f["key"])))
+            continue
         shown = _shown_value(db, board, f["type"], cfg.get(f["key"]))
         text = text.replace("{" + f["key"] + "}", f"«{shown}»")
     return text
@@ -10132,15 +10155,41 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                        attachments=[], mentions=[], likes=[], seen_by=[]))
     elif act == "copy_to_linked":
         picked = [k for k in (cfg.get("fields") or []) if k in recipes.COPY_FIELDS]
-        ids = [i for i in ((event or {}).get("item_ids") or []) if isinstance(i, int)]
         if not picked:
             raise _Skipped("לא נבחרו שדות להעתקה")
+        # the link column, by id — named in the rule where the author pinned
+        # one, and otherwise the column the link that set this off was made in.
+        # Never by title: two columns can be called "קישור".
+        col_id = str(cfg.get("connect") or (event or {}).get("col") or "")
+        col = _find_col(db, task.board_id, col_id) if col_id else None
+        if not col or col.get("type") != "connect":
+            raise _Skipped("עמודת הקישור אינה קיימת בלוח")
+        live = _live_links(db, task, col)
+        named = [i for i in ((event or {}).get("item_ids") or []) if isinstance(i, int)]
+        # "יעד אחד או כולם", and one is the default — see recipes.TARGETS
+        if recipes.pick_value("targets", cfg.get("targets")) == "all":
+            ids = live[:MAX_COPY_TO_LINKED]
+        else:
+            # the one the event named, where it is still linked; otherwise the
+            # first link the cell holds, so a manual run has a target too
+            ids = ([i for i in named if i in live] or live)[:1]
         if not ids:
-            raise _Skipped("אין פריט מקושר להעתיק אליו")
+            # "היעדר פריט מקושר יגרום לדילוג או לכשל לפי הגדרה מפורשת" — the
+            # author's decision, because for one rule this is a non-event and
+            # for the next it is the whole point of the rule
+            why = "אין פריט מקושר להעתיק אליו"
+            if recipes.pick_value("on_missing", cfg.get("on_missing")) == "fail":
+                raise _Refused(why)
+            raise _Skipped(why)
         moved = 0
-        for other in db.query(Task).filter(Task.id.in_(ids[:MAX_COPY_TO_LINKED])).all():
+        for other in db.query(Task).filter(Task.id.in_(ids)).all():
             if other.deleted_at or other.id == task.id:
                 continue
+            # the grant, per target and now: the board still there, still ours,
+            # still one the column points at
+            no = _cross_board_refusal(db, board, other.board_id, col)
+            if no:
+                raise _Refused(no)
             moved += _copy_item_fields(db, task, other, picked, actor_id)
         if not moved:
             raise _Skipped("לפריט המקושר כבר יש את הערכים האלה")
@@ -10256,6 +10305,46 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
 MAX_COPY_TO_LINKED = 25
 
 
+def _live_links(db, task, col):
+    """The items this cell links to RIGHT NOW.
+
+    "עדכון יחול על הפריטים המקושרים בפועל בזמן ההפעלה" — not on the ids the
+    event carried. Between the trigger and the action there can be a wait of
+    thirty days, or simply an earlier action in the same rule, and an item
+    unlinked in that time is not an item this rule has any business writing to.
+    """
+    if _is_two_way(col):
+        return [i for i in _linked_ids(db, task.id, col["id"]) if isinstance(i, int)]
+    return [i for i in ((task.custom_fields or {}).get(col["id"]) or [])
+            if isinstance(i, int)]
+
+
+def _cross_board_refusal(db, board, target_board_id, col=None):
+    """Why this rule may NOT write onto that board — "" when it may.
+
+    "פעולה בין לוחות מחייבת מענק הרשאה פעיל ללוח ולשדות היעד", and the grant is
+    three separate things that are all read here, now:
+
+      the board still exists · a deleted board is not a target
+      the same organisation  · whatever a column was configured for once, one
+                               tenant's rule does not write into another's data
+      the column still points at it · the link column IS the grant for a
+                               cross-board write, and an admin narrowing it is
+                               revoking that grant
+    """
+    tb = db.query(Board).filter(Board.id == target_board_id).first()
+    if not tb or tb.deleted_at:
+        return "לוח היעד נמחק"
+    if board is not None and (tb.organization_id or 0) != (board.organization_id or 0):
+        return f"לוח '{tb.name}' שייך לארגון אחר"
+    if col is not None:
+        allowed = {int(x) for x in (_connect_cfg(col).get("board_ids") or [])
+                   if str(x).lstrip("-").isdigit()}
+        if int(target_board_id) not in allowed:
+            return f"לוח '{tb.name}' אינו מאושר יותר לעמודת הקישור"
+    return ""
+
+
 def _copy_item_fields(db, src, dst, fields, actor_id):
     """Copy the named built-ins from one item to another. Returns how many moved.
 
@@ -10360,6 +10449,9 @@ def _create_linked_item(db, task, col, board_id, title, actor_id, group=None):
         return None
     tb = db.query(Board).filter(Board.id == board_id).first()
     if not tb or tb.deleted_at:
+        return None
+    src = db.query(Board).filter(Board.id == task.board_id).first()
+    if _cross_board_refusal(db, src, board_id, col):
         return None
     grp = group or (db.query(Group).filter(Group.board_id == board_id)
                     .order_by(Group.position, Group.id).first())
@@ -10715,6 +10807,16 @@ def _automation_blockers(db, board, a):
                 col = _find_col(db, a.board_id, str(v))
                 if not col or col.get("type") != "connect":
                     out.append({"kind": "dependency", "text": "עמודת הקישור אינה קיימת בלוח"})
+            elif f["type"] == "connect_opt":
+                # blank is a value — "the column the link was made in" — and a
+                # rule that leaves it blank cannot have lost it. One that PINNED
+                # a column has, and a cross-board rule whose link column is gone
+                # is not a smaller rule, it is a broken one.
+                if str(v or "").strip():
+                    col = _find_col(db, a.board_id, str(v))
+                    if not col or col.get("type") != "connect":
+                        out.append({"kind": "dependency",
+                                    "text": "עמודת הקישור שהכלל מעתיק דרכה נמחקה"})
             elif f["type"] == "item":
                 if not db.query(Task).filter(Task.id == v, Task.deleted_at == None).first():  # noqa: E711
                     out.append({"kind": "dependency", "text": "הפריט שהכלל מקשר אליו נמחק"})
@@ -10735,14 +10837,13 @@ def _automation_blockers(db, board, a):
                 if not tb:
                     out.append({"kind": "dependency", "text": "לוח היעד נמחק"})
                 else:
-                    # the grant is per board too: the rule may only reach a board the
-                    # connect column is still configured for
+                    # the grant, read now: the same organisation, and a board
+                    # the link column is still configured for. Both are things
+                    # an admin can take away after the rule was written.
                     col = _find_col(db, a.board_id, str(one["values"].get("connect") or ""))
-                    allowed = {int(x) for x in (_connect_cfg(col).get("board_ids") or [])
-                               if str(x).lstrip("-").isdigit()} if col else set()
-                    if int(v) not in allowed:
-                        out.append({"kind": "permission",
-                                    "text": f"לוח '{tb.name}' אינו מאושר יותר לעמודת הקישור"})
+                    no = _cross_board_refusal(db, board, int(v), col)
+                    if no:
+                        out.append({"kind": "permission", "text": no})
     return out
 
 
@@ -11843,6 +11944,14 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
            "tokens": recipes.tokens_catalog(),
            "wait": {"min_minutes": recipes.MIN_WAIT_MINUTES,
                     "max_days": recipes.MAX_WAIT_DAYS},
+           # "כשיש מספר יעדים, המגדיר יבחר במפורש" — so the screen has to be
+           # able to offer the choice, and to know which way silence reads
+           "targets": {"options": list(recipes.TARGETS),
+                       "default": recipes.TARGETS_DEFAULT,
+                       "labels": recipes.TARGETS_HE},
+           "on_missing": {"options": list(recipes.ON_MISSING),
+                          "default": recipes.ON_MISSING_DEFAULT,
+                          "labels": recipes.ON_MISSING_HE},
            "chain": {"max_runs": AUTOMATION_CHAIN_MAX_RUNS,
                      "max_seconds": AUTOMATION_CHAIN_MAX_SECONDS,
                      "max_depth": AUTOMATION_MAX_DEPTH},
@@ -13730,6 +13839,23 @@ def _check_automation_reach(db, board_id, recipe_id, cfg, actor_id):
     if names:
         raise HTTPException(403, "אוטומציה בין לוחות דורשת הרשאה בכל הלוחות שהיא נוגעת בהם. "
                                  f"אין לך הרשאה ב: {names}")
+    # "אוטומציה בין לוחות תתבסס על עמודת קישור או על יצירת פריט בלוח יעד שהוגדר
+    # מראש" — so the two have to agree at the moment of writing, not only when
+    # the rule first fires. A target the column does not point at is a rule
+    # that can never work, and saving it to find that out from the run log a
+    # week later is the worst way to be told.
+    src = db.query(Board).filter(Board.id == board_id).first()
+    for one in recipes.action_list(recipe_id, cfg or {}):
+        tgt = one["values"].get("board")
+        if not tgt:
+            continue
+        col = _find_col(db, board_id, str(one["values"].get("connect") or ""))
+        try:
+            no = _cross_board_refusal(db, src, int(tgt), col)
+        except (TypeError, ValueError):
+            no = "לוח היעד אינו מזוהה"
+        if no:
+            raise HTTPException(400, no)
 
 
 def _check_automation_act(db, a, actor_id):

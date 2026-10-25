@@ -8850,7 +8850,16 @@ const Automations = {
     // a template that arrives with conditions seeds them, values still blank —
     // the same fill-in-the-blanks the rest of the screen asks for
     const seeded=((r&&r.conditions)||[]).map(c=>({kind:c.kind,v:null,label:''}));
-    this.building={recipe:r,values:{},meta:{name:'',description:''},
+    // a choice starts on its default rather than on a blank: "יעד אחד" is what
+    // the engine does with silence, and a blank that quietly means something
+    // is the one thing a fill-in-the-blanks screen must not have
+    const picks={};
+    ((r&&r.fields)||[]).filter(f=>f.type==='pick').forEach(f=>{
+      const spec=(this.caps||{})[String(f.key).replace(/^[at]_/,'')]||{};
+      if(spec.default!==undefined)
+        picks[f.key]={v:spec.default,label:(spec.labels||{})[spec.default]||spec.default};
+    });
+    this.building={recipe:r,values:picks,meta:{name:'',description:''},
                    conds:seeded.length?seeded:carried,acts:[]};
     this.tab='create'; this.render();
   },
@@ -8989,7 +8998,7 @@ const Automations = {
     if(f.type==='wait'){ this.pickWait(anchor,key,{actIdx:i,key}); return; }
     if(f.type==='map'){ toast('מיפוי שדות נערך דרך ה-API בשלב זה'); return; }
     if(f.type==='target_group'){ await this.pickActTargetGroup(anchor,i,key); return; }
-    const items=this._optionsFor(f.type,connect);
+    const items=this._optionsFor(f.type,connect,f.key);
     this._popItems=items;
     const body=items.length
       ? items.map((it,j)=>`<button class="rm-item" onclick="Automations.setActValue(${i},'${key}',${j})">${
@@ -9386,7 +9395,7 @@ const Automations = {
     // "השדות להעתקה" is a set, not a choice: the picker stays open and the
     // blank reads them back as one phrase
     if(f.type==='fields'){ this.pickCopyFields(anchor,key); return; }
-    const items=this._optionsFor(f.type,(this.building.values['a_connect']||{}).v);
+    const items=this._optionsFor(f.type,(this.building.values['a_connect']||{}).v,f.key);
     // referenced by index so a name with quotes can never break out of the handler
     this._popItems=items;
     const body=items.length
@@ -9402,7 +9411,7 @@ const Automations = {
      own blanks and an extra action's blanks are the same question asked twice —
      and a second answer that drifted from the first would be a picker offering
      a person the rule cannot name. */
-  _optionsFor(type,connectId){
+  _optionsFor(type,connectId,fkey){
     if(type==='status')   return boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
     if(type==='priority') return boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
     if(type==='group')    return (st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
@@ -9417,6 +9426,21 @@ const Automations = {
                                  .filter(c=>!['mirror','connect','formula'].includes(c.type))
                                  .map(c=>({v:c.id,label:c.title||c.id,color:''}));
     if(type==='board')    return this._linkBoards(connectId).map(b=>({v:b.id,label:b.name,color:''}));
+    /* The link column a copy is written through. Blank is an option and not an
+       empty state: it means "whichever column the link that set this off was
+       made in", which is what the rule did before it could be pinned. */
+    if(type==='connect_opt') return [{v:'',label:'עמודת הקישור שבאירוע',color:''}]
+      .concat(customColumns().filter(c=>c.type==='connect')
+              .map(c=>({v:c.id,label:c.title||c.id,color:''})));
+    /* יעד אחד או כולם, ומה קורה כשאין. Served rather than written down here:
+       the engine is the one that decides which way silence reads, and a screen
+       that guessed would offer a default the engine does not honour. */
+    if(type==='pick'){
+      const key=String(fkey||'').replace(/^[at]_/,'');
+      const spec=(this.caps||{})[key];
+      if(!spec) return [];
+      return (spec.options||[]).map(o=>({v:o,label:(spec.labels||{})[o]||o,color:''}));
+    }
     return [];
   },
   /* The connect column a link action is written against: the one it names

@@ -694,7 +694,7 @@ ACTIONS = {
     "create_and_link":  "צור פריט בשם {text} בלוח {board} וקשר אותו בעמודה {connect}",
     # ── and the three the template library asked for ──
     "post_update":      "הוסף עדכון לשיחת הפריט: {text}",
-    "copy_to_linked":   "העתק {fields} לפריט המקושר",
+    "copy_to_linked":   "העתק {fields} {targets}",
     # the fuller form of create_and_link: it says which group on the target
     # board, and which of the item's own fields travel with it. A separate
     # action rather than three more placeholders on the old one — a rule
@@ -786,6 +786,64 @@ def _f(key, type_, label):
     return {"key": key, "type": type_, "label": label}
 
 
+# ── בין לוחות: יעד אחד או כולם, ומה קורה כשאין ─────────────────────────────
+# A rule that writes to a linked item has to answer two questions a rule on its
+# own board never faced: WHICH linked item when there is more than one, and what
+# "there is none" means. Both are the author's to answer and both have a default
+# that is the safe reading of silence.
+#
+# "כולם" is not the default. A rule written when one item was linked, running a
+# month later when there are nine, should not quietly have become nine writes —
+# that is the difference between a rule doing more than it was asked and a rule
+# doing less, and only one of those is recoverable.
+TARGETS = ("one", "all")
+TARGETS_DEFAULT = "one"
+TARGETS_HE = {"one": "לפריט מקושר אחד", "all": "לכל הפריטים המקושרים"}
+
+# And a missing link is not obviously either thing. For a rule that copies a
+# nice-to-have it is a non-event; for a rule that IS the link it is a failure
+# somebody has to see. The engine is not the one to decide which.
+ON_MISSING = ("skip", "fail")
+ON_MISSING_DEFAULT = "skip"
+ON_MISSING_HE = {"skip": "דלג בשקט", "fail": "רשום ככשל"}
+
+# key → (allowed values, default). A "pick" field is never missing: silence is
+# the default, which is what lets a rule written before the choice existed go on
+# running with the reading the spec gives it.
+PICKS = {"targets": (TARGETS, TARGETS_DEFAULT),
+         "on_missing": (ON_MISSING, ON_MISSING_DEFAULT)}
+
+# The field types that may be blank. Everything else a recipe declares has to be
+# filled before the rule can be switched on.
+OPTIONAL_TYPES = ("pick", "connect_opt")
+
+
+def pick_key(f):
+    """Which choice a pick field carries — by its key, with the a_ prefix a
+    recipe placeholder wears stripped off."""
+    k = f["key"]
+    return k[2:] if k.startswith(("a_", "t_")) else k
+
+
+PICK_HE = {"targets": TARGETS_HE, "on_missing": ON_MISSING_HE}
+
+
+def pick_label(f, v):
+    """A choice as the sentence says it. Never quoted like a value somebody
+    typed — it is part of the sentence, not a thing filled into it."""
+    key = pick_key(f)
+    return PICK_HE.get(key, {}).get(pick_value(key, v), "")
+
+
+def pick_value(key, v):
+    """A choice, or the default when nothing — or nothing recognisable — was
+    chosen. Never an error: a value the catalog no longer offers reads as the
+    default rather than taking the rule out of service."""
+    allowed, default = PICKS.get(key, ((), ""))
+    s = str(v or "").strip()
+    return s if s in allowed else default
+
+
 # ── more than one action ("אז… וגם…") ───────────────────────────────────────
 # A recipe pairs one trigger with one action, and that single action was the
 # whole "then". Four things that have to happen together on one event were four
@@ -838,7 +896,10 @@ ACTION_FIELDS = {
                          _f("target_group", "target_group", "הקבוצה בלוח היעד"),
                          _f("text", "text", "שם הפריט החדש"),
                          _f("map", "map", "מיפוי שדות")],
-    "copy_to_linked":   [_f("fields", "fields", "השדות להעתקה")],
+    "copy_to_linked":   [_f("fields", "fields", "השדות להעתקה"),
+                         _f("connect", "connect_opt", "עמודת הקישור"),
+                         _f("targets", "pick", "יעד"),
+                         _f("on_missing", "pick", "כשאין פריט מקושר")],
     "create_in_group_and_link":
                         [_f("connect", "connect", "עמודת הקישור"),
                          _f("board", "board", "לוח היעד"),
@@ -915,6 +976,11 @@ def _coerce_field(f, v, require):
             return None, "ערך דינמי לא מוכר: {{" + bad[0] + "}}"
     elif f["type"] == "connect":
         v = str(v or "").strip()          # a column id, not a number
+    elif f["type"] == "connect_opt":
+        # blank is a value: "whichever column the link was made in"
+        return str(v or "").strip(), None
+    elif f["type"] == "pick":
+        return pick_value(pick_key(f), v), None
     elif f["type"] == "recipient":
         v, err = recipient_value(v)
         if err:
@@ -1142,7 +1208,13 @@ RECIPES = [
     {"id": "subitem_done_notify_assignees", "trigger": "subitem_done",
      "action": "notify_assignees", "fields": []},
     {"id": "link_added_copy_to_linked", "trigger": "link_added", "action": "copy_to_linked",
-     "fields": [_f("a_fields", "fields", "השדות להעתקה")]},
+     # the column is optional and means "whichever one the link was made in"
+     # when it is left blank — the event names it by id either way, so the
+     # target is never found by name
+     "fields": [_f("a_fields", "fields", "השדות להעתקה"),
+                _f("a_connect", "connect_opt", "עמודת הקישור"),
+                _f("a_targets", "pick", "יעד"),
+                _f("a_on_missing", "pick", "כשאין פריט מקושר")]},
     {"id": "assigned_post_update", "trigger": "person_assigned", "action": "post_update",
      "fields": [_f("a_text", "text", "תוכן העדכון")]},
     # ── the new sources, each paired with the actions that read naturally ──
@@ -1353,7 +1425,7 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and"):
         trig = trig.replace("{" + k + "}", "{t_" + k + "}")
     act = ACTIONS[r["action"]]
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
-              "fields", "target_group", "column", "days", "map"):
+              "fields", "target_group", "column", "days", "map", "targets", "on_missing"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
     clause = conditions_clause(cond_phrases, group_op)
     more = [p for p in (action_phrases or []) if p]
@@ -1452,8 +1524,11 @@ def validate_partial(recipe_id, config):
             v = (str(v)).strip()[:200]
             if unknown_tokens(v):
                 continue              # a half-typed token is simply not kept
-        elif f["type"] in ("connect", "column"):
+        elif f["type"] in ("connect", "column", "connect_opt"):
             v = (str(v)).strip()
+        elif f["type"] == "pick":
+            clean[f["key"]] = pick_value(pick_key(f), v)
+            continue
         elif f["type"] == "days":
             try:
                 v = max(0, min(int(v), MAX_TRIGGER_DAYS))
@@ -1520,11 +1595,13 @@ def missing_fields(recipe_id, config):
         return ["מתכון לא מוכר"]
     cfg = config or {}
     out = [f["label"] for f in r["fields"]
-           if cfg.get(f["key"]) in (None, "", [])]
+           if f["type"] not in OPTIONAL_TYPES and cfg.get(f["key"]) in (None, "", [])]
     for i, extra in enumerate((cfg.get(ACTIONS_KEY) or []), start=2):
         key = str((extra or {}).get("key") or "")
         values = (extra or {}).get("values") or {}
         for f in action_fields(key):
+            if f["type"] in OPTIONAL_TYPES:
+                continue                      # blank is a value, not a blank
             if values.get(f["key"]) in (None, "", []):
                 out.append(f"{f['label']} (פעולה {i})")
     return out
@@ -1554,6 +1631,10 @@ def validate(recipe_id, config):
             v = (str(v or "")).strip()          # a column id, not a number
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"
+        elif f["type"] == "connect_opt":
+            v = (str(v or "")).strip()          # blank means "the one in the event"
+        elif f["type"] == "pick":
+            v = pick_value(pick_key(f), v)
         elif f["type"] == "recipient":
             v, rerr = recipient_value(v)
             if rerr:

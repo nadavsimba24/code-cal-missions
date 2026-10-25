@@ -820,5 +820,37 @@ ck('a board that is running says nothing',
   A.chain=null; A.batch=null;
 }
 
+/* ── 10: בין לוחות — one target or all, and which column ───────────────── */
+{
+  A.caps={targets:{options:['one','all'],default:'one',
+                   labels:{one:'לפריט מקושר אחד',all:'לכל הפריטים המקושרים'}},
+          on_missing:{options:['skip','fail'],default:'skip',
+                      labels:{skip:'דלג בשקט',fail:'רשום ככשל'}}};
+  const t=A._optionsFor('pick',null,'a_targets');
+  ck('the target choice is served, not written into the screen',
+     t.length===2 && t[0].v==='one' && t[0].label==='לפריט מקושר אחד');
+  ck('...and so is what happens when there is no link',
+     A._optionsFor('pick',null,'a_on_missing').map(x=>x.v).join()==='skip,fail');
+  ck('a choice the engine has not published offers nothing rather than guessing',
+     A._optionsFor('pick',null,'a_nonesuch').length===0);
+  const c=A._optionsFor('connect_opt',null,'a_connect');
+  ck('the link column may be left to the event, and that is an option not a blank',
+     c.length>0 && c[0].v==='' && c[0].label.includes('שבאירוע'));
+
+  /* a new rule opens on the default rather than on an empty slot */
+  A.recipes=[{id:'link_added_copy_to_linked',sentence:'כאשר נוצר קשר, העתק {a_fields} {a_targets}',
+              fields:[{key:'a_fields',type:'fields',label:'השדות להעתקה'},
+                      {key:'a_targets',type:'pick',label:'יעד'},
+                      {key:'a_on_missing',type:'pick',label:'כשאין פריט מקושר'}]}];
+  A.mode='catalog'; A.scratch={conds:[]};
+  A.pick('link_added_copy_to_linked');
+  ck('a new rule starts on «יעד אחד», which is what the engine does with silence',
+     (A.building.values['a_targets']||{}).v==='one');
+  ck('...and on a quiet skip', (A.building.values['a_on_missing']||{}).v==='skip');
+  ck('the blank the author still has to fill is the one that has no default',
+     A.building.values['a_fields']===undefined);
+  A.building=null; A.caps=null;
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
