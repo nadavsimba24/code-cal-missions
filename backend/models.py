@@ -626,6 +626,45 @@ class AutomationActionKey(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class AutomationIncident(Base):
+    """One rule, one kind of failure, from the first notice to the fix.
+
+    A notification used to be where the handling of a broken rule started and
+    also where it ended: the owner was told once and after that nothing in the
+    system knew whether anybody had looked. A rule that broke on Thursday
+    afternoon and a rule that broke and was fixed in ten minutes read exactly
+    the same from outside.
+
+    One row per (automation, failure kind) while it is open. `count` is how
+    many runs hit it — twenty items edited at once is twenty failures and ONE
+    problem — and `notified_at` is what keeps that from being twenty messages.
+    """
+    __tablename__ = "automation_incidents"
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=True, index=True)
+    # what kind of failure this is: the status and the error code together, so
+    # two different things going wrong with one rule are two incidents
+    signature = Column(String(80), default="", index=True)
+    error_code = Column(String(40), default="")
+    status = Column(String(16), default="open")      # open | acknowledged | resolved
+    note = Column(Text, default="")
+    count = Column(Integer, default=1)
+    suspended = Column(Boolean, default=False)       # the rule was taken out of service
+    attempts_exhausted = Column(Boolean, default=False)
+    opened_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    last_seen_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    notified_at = Column(DateTime, nullable=True)    # the half-hour window
+    escalated = Column(String(10), default="")       # "" | board | system
+    escalated_at = Column(DateTime, nullable=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    acked_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    acked_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    last_run_id = Column(Integer, nullable=True)
+
+
 class AutomationVersion(Base):
     """What a rule looked like after each change — the גרסאות list.
 

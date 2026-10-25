@@ -49,7 +49,12 @@ def _setup(client, admin_id, tag, two_way=True):
 
 
 def _notes(client, uid):
-    return client.get(f"/api/notifications?user_id={uid}", headers=AS(uid)).json()["notifications"]
+    """Counted off the endpoint, which returns the newest 30. A test that
+    compares a before and an after has to ask for more than the cap, or a busy
+    user's list stops changing and every assertion here reads as "nothing
+    happened"."""
+    return client.get(f"/api/notifications?user_id={uid}&limit=100",
+                      headers=AS(uid)).json()["notifications"]
 
 
 # ── the recipes exist and validate ──────────────────────────────────────────

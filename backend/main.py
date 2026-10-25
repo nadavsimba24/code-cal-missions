@@ -5,6 +5,7 @@ import os, sys, json, uuid, csv, io, re, secrets, threading, time, urllib.parse,
 import concurrent.futures
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
+from datetime import tzinfo as tzinfo_cls
 from zoneinfo import ZoneInfo
 from enum import Enum
 from typing import Optional
@@ -10946,8 +10947,37 @@ def _run_result(event, result, conditions):
     return bag
 
 
+def _retention_days(db, board_id, key, default):
+    """How long this organisation keeps that kind of record.
+
+    "בכפוף למדיניות הארגון" — the twelve months and the seven years are
+    defaults, and an organisation with its own policy says so once, here,
+    rather than in each place that deletes something.
+    """
+    try:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        org = (db.query(Organization).filter(Organization.id == b.organization_id).first()
+               if b and b.organization_id else None)
+        v = ((org.settings or {}).get("retention") or {}).get(key) if org else None
+        return max(1, int(v)) if v else default
+    except Exception:                              # noqa: BLE001
+        return default
+
+
 def _prune_automation_runs(db, board_id):
-    """Keep the newest AUTOMATION_RUN_LOG_MAX rows for the board."""
+    """Drop what the retention policy no longer covers, newest kept.
+
+    Two bounds and the stricter wins. The age is the policy — twelve months by
+    default — and the row count is a safety rail under it, so one board having
+    a very bad month cannot fill the table while every row is still inside its
+    year.
+    """
+    days = _retention_days(db, board_id, "automation_runs_days",
+                           AUTOMATION_RUN_RETENTION_DAYS)
+    cutoff = _now_naive() - timedelta(days=days)
+    (db.query(AutomationRun)
+       .filter(AutomationRun.board_id == board_id, AutomationRun.created_at < cutoff)
+       .delete(synchronize_session=False))
     n = db.query(AutomationRun).filter(AutomationRun.board_id == board_id).count()
     if n <= AUTOMATION_RUN_LOG_MAX:
         return
@@ -11510,11 +11540,17 @@ def _working_hours(start, end, tzname=None):
     morning has had an hour of Thursday and whatever Sunday has given it, not
     sixty-four hours of silence somebody failed to answer.
     """
-    if start is None or end is None or end <= start:
+    if start is None or end is None:
         return 0.0
-    zone = _zone(tzname) if tzname else _zone(DEFAULT_TZ_NAME)
+    # Both sides are normalised BEFORE anything is compared: one of these
+    # almost always arrives naive out of the database and the other aware off
+    # the clock, and comparing them raises rather than being wrong quietly.
+    zone = (tzname if isinstance(tzname, tzinfo_cls)
+            else _zone(tzname)) or _zone(DEFAULT_TZ_NAME) or timezone.utc
     a = (start if start.tzinfo else start.replace(tzinfo=timezone.utc)).astimezone(zone)
     b = (end if end.tzinfo else end.replace(tzinfo=timezone.utc)).astimezone(zone)
+    if b <= a:
+        return 0.0
     total = 0.0
     cur = a
     # bounded: a year of hourly steps is still under ten thousand, and nothing
@@ -11537,9 +11573,16 @@ def _incident_signature(status, error_code):
     return f"{status or 'failed'}:{error_code or '-'}"[:80]
 
 
-def _open_incident(db, a, board, row, suspended=False, exhausted=False):
-    """Record this failure against its incident, and tell the owner if the
-    half-hour window has passed.
+def _open_incident(db, a, board, row, suspended=False, exhausted=False, notify=False):
+    """Record this failure against its incident, and tell the owner if there is
+    something worth telling them and the half-hour window has passed.
+
+    Recording and NOTIFYING are separate on purpose. Every failure is recorded,
+    so `count` means what it says and the incident's clock starts at the first
+    one. Only three of them are worth a message — "כשל קבוע, מיצוי ניסיונות או
+    השהיה אוטומטית" — because a temporary failure with two retries still to
+    come may well fix itself in a minute, and a message about it is noise that
+    teaches people to ignore the next one.
 
     Never raises: the handling of a failure must not become a second failure.
     """
@@ -11566,12 +11609,14 @@ def _open_incident(db, a, board, row, suspended=False, exhausted=False):
         inc.suspended = bool(inc.suspended or suspended)
         inc.attempts_exhausted = bool(inc.attempts_exhausted or exhausted)
         db.flush()
+        if not notify:
+            return inc
         # "כשלים זהים יאוחדו להתראה אחת לכל 30 דקות"
         if (inc.notified_at is not None
                 and (now - inc.notified_at) < timedelta(minutes=AUTOMATION_NOTICE_WINDOW_MIN)):
             return inc
         inc.notified_at = now
-        head = ("אוטומציה הושהתה" if suspended
+        head = ("אוטומציה הושהתה עקב שגיאות" if suspended
                 else "אוטומציה מיצתה ניסיונות חוזרים" if exhausted
                 else "אוטומציה נכשלה")
         body = (f"בלוח '{board.name}': {_automation_label(db, board, a)}. "
@@ -11721,8 +11766,12 @@ def _suspend_if_broken(db, a, board, row=None):
     _queue_set_state(db, [r for r in _queue_waiting_for(db, a.id, ("pending",))],
                      "frozen", "האוטומציה הושהתה עקב שגיאות חוזרות")
     a.consecutive_failures = max(a.consecutive_failures or 0, AUTOMATION_FAIL_CUTOFF)
+    # the suspension's own notice goes through the incident, so a rule that
+    # failed permanently AND was suspended in the same breath produces one
+    # message rather than two saying the same thing
     if row is not None:
-        _open_incident(db, a, board, row, suspended=True)
+        _open_incident(db, a, board, row, suspended=True, notify=True)
+        return
     for who in _automation_tell(db, a, board):
         _notify(db, who, "automation", "אוטומציה הושהתה עקב שגיאות",
                 f"האוטומציה בלוח '{board.name}' {why} והושהתה: "
@@ -11921,12 +11970,10 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         if not permanent and not exhausted:
             _queue_retry(db, a, task, event, tries + 1,
                          (report or {}).get("failed_at") or 1)
-        # "כשל קבוע, מיצוי ניסיונות או השהיה אוטומטית ישלחו התראה מיידית
-        # לבעלים" — the first two here, the third inside _suspend_if_broken.
-        # A temporary failure with retries still to come is NOT one of them:
-        # it may well fix itself in a minute, and a message about it is noise.
-        if permanent or exhausted:
-            _open_incident(db, a, board, row, exhausted=exhausted)
+        # recorded always, said out loud for the two of the three that happen
+        # here — the third is the automatic suspension, below
+        _open_incident(db, a, board, row, exhausted=exhausted,
+                       notify=permanent or exhausted)
         _suspend_if_broken(db, a, board, row)
         return row
     a.last_run_at = a.last_success_at = now
@@ -12941,6 +12988,15 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
            # "עד שלושה ניסיונות לאחר דקה, חמש דקות ו־15 דקות", and the rate a
            # rule is taken out of service at — published, because a screen that
            # said "ינוסה שוב" without knowing when would be guessing
+           # how a failure is handled once it has happened: when the owner
+           # hears, how often, and when it stops being only theirs
+           "handling": {"notice_window_minutes": AUTOMATION_NOTICE_WINDOW_MIN,
+                        "escalate_board_hours": AUTOMATION_ESCALATE_BOARD_HOURS,
+                        "work_hours_per_day": WORK_HOURS_PER_DAY,
+                        "work_days": list(WORK_DAYS),
+                        "statuses": list(AUTOMATION_INCIDENT_STATUSES)},
+           "retention": {"automation_runs_days": AUTOMATION_RUN_RETENTION_DAYS,
+                         "audit_days": AUDIT_RETENTION_DAYS},
            "retry": {"delays": list(AUTOMATION_RETRY_DELAYS),
                      "max_auto": AUTOMATION_MAX_AUTO_RETRIES,
                      "fail_rate": AUTOMATION_FAIL_RATE,
@@ -12981,6 +13037,14 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
         return {**out, "board_id": b.id, "columns": cols}
 
 
+def _org_retention(cfg):
+    """What this organisation keeps, with the defaults filled in."""
+    keep = dict((cfg or {}).get("retention") or {})
+    return {"automation_runs_days": int(keep.get("automation_runs_days")
+                                        or AUTOMATION_RUN_RETENTION_DAYS),
+            "audit_days": int(keep.get("audit_days") or AUDIT_RETENTION_DAYS)}
+
+
 @app.get("/api/organization/settings")
 def org_settings(user_id: int = Depends(current_user_id)):
     """The organisation's own preferences. `timezone` is the one it holds today
@@ -12992,7 +13056,8 @@ def org_settings(user_id: int = Depends(current_user_id)):
                 "effective_timezone": str(_zone(cfg.get("timezone"))
                                           or _zone(DEFAULT_TZ_NAME) or _IL_TZ),
                 "default_timezone": DEFAULT_TZ_NAME,
-                "due_default_hour": DUE_DEFAULT_HOUR}
+                "due_default_hour": DUE_DEFAULT_HOUR,
+                "retention": _org_retention(cfg)}
 
 
 @app.patch("/api/organization/settings")
@@ -13003,6 +13068,21 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
         org = db.query(Organization).order_by(Organization.id).first()
         if not org:
             raise HTTPException(404, "לא נמצא ארגון")
+        if "retention" in data:
+            # "בכפוף למדיניות הארגון" — an organisation may keep less, and may
+            # not keep an Audit for less than the law it is subject to, which
+            # is why the floor is here rather than in a comment
+            want = data.get("retention") or {}
+            cfg = dict(getattr(org, "settings", None) or {})
+            keep = dict(cfg.get("retention") or {})
+            for key, floor in (("automation_runs_days", 1), ("audit_days", 365)):
+                if key in want:
+                    try:
+                        keep[key] = max(floor, int(want[key]))
+                    except (TypeError, ValueError):
+                        raise HTTPException(400, f"ערך שמירה לא תקין בשדה '{key}'")
+            cfg["retention"] = keep
+            org.settings = cfg
         if "timezone" in data:
             tzn = str(data["timezone"] or "").strip()
             if tzn and not _zone(tzn):
@@ -13017,7 +13097,8 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
         cfg = getattr(org, "settings", None) or {}
         return {"timezone": cfg.get("timezone") or "",
                 "effective_timezone": str(_zone(cfg.get("timezone"))
-                                          or _zone(DEFAULT_TZ_NAME) or _IL_TZ)}
+                                          or _zone(DEFAULT_TZ_NAME) or _IL_TZ),
+                "retention": _org_retention(cfg)}
 
 
 @app.get("/api/boards/{board_id}/automations/incidents")
@@ -13774,6 +13855,11 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
         # the history somebody is looking at is not one step behind
         if _can_manage_automations(db, b, user_id):
             _drain_automation_queue(db, board_id, user_id)
+            # and the retention policy applies to the log somebody is looking
+            # at: pruning only on write leaves a quiet board holding rows well
+            # past the year it is allowed to keep them
+            _prune_automation_runs(db, board_id)
+            db.commit()
         rows_q = db.query(AutomationRun).filter(AutomationRun.board_id == board_id)
         if outcome in RUN_OUTCOMES:
             rows_q = rows_q.filter(AutomationRun.outcome == outcome)
@@ -14116,22 +14202,52 @@ def export_automation_runs(board_id: int, outcome: str = "", automation_id: int 
         buf = io.StringIO()
         buf.write("﻿")
         w = csv.writer(buf)
-        w.writerow(["מועד", "תוצאה", "סטטוס", "האוטומציה", "גרסה", "הפריט", "הסיבה",
+        # "ייצוא יכלול מזהה הפעלה, אוטומציה, לוח, פריט, זמנים, סטטוס, מספר
+        # ניסיונות וקודי שגיאה" — all of it, in that order, so a file handed to
+        # somebody outside the product is readable without the product
+        w.writerow(["מזהה הפעלה", "מועד", "נקלט", "התחיל", "הסתיים",
+                    "תוצאה", "סטטוס", "לוח", "האוטומציה", "מזהה אוטומציה", "גרסה",
+                    "הפריט", "מזהה פריט", "תת־פריט", "הסיבה",
                     "קוד שגיאה", "ניסיון", "גורם מפעיל", "פעולה", "עומק",
-                    "ניסיון חוזר", "מי הפעיל", "מקור", "שרשרת", "אירוע"])
+                    "ניסיון חוזר", "מי הפעיל", "מקור", "שרשרת", "אירוע",
+                    "ערכים עסקיים"])
+        at = lambda d: (d.isoformat() if d else "")[:19].replace("T", " ")
         for r in rows:
             ok = seen.get(r.task_id, True)
-            w.writerow([(r.created_at.isoformat() if r.created_at else "")[:19].replace("T", " "),
+            # "ערכי שדות עסקיים ייכללו רק לפי הרשאת המייצא" — the old and new
+            # value, and what each action wrote, are the item's data. They go
+            # in the file only for a reader who may see the item.
+            res = (r.result or {}) if ok else {}
+            vals = ""
+            if res.get("old") is not None or res.get("new") is not None:
+                vals = f"{res.get('old', '')} ← {res.get('new', '')}"
+            w.writerow([r.id, at(r.created_at), at(r.queued_at), at(r.started_at),
+                        at(r.finished_at or r.created_at),
                         _OUT_HE.get(r.outcome, r.outcome or ""),
                         RUN_STATUS_HE.get(r.status or _default_status(r), ""),
+                        b.name,
                         (r.sentence or "").replace("«", "").replace("»", "") if ok else "—",
-                        r.version or "",
+                        r.automation_id or "", r.version or "",
                         (r.task_title or "") if ok else "פריט שאין לך הרשאה אליו",
+                        (r.task_id or "") if ok else "",
+                        (r.subitem_id or "") if ok else "",
                         (r.reason or "") if ok else "",
                         r.error_code or "", r.attempt or 1,
                         r.trigger_key or "", r.action_key or "", r.depth or 0,
                         "כן" if r.retry_of else "", uname(r.actor_id),
-                        _src_he(r.source), r.chain_id or "", r.event_id or ""])
+                        _src_he(r.source), r.chain_id or "", r.event_id or "",
+                        vals])
+        # "הפעלה תתועד ב־Audit" — a file leaving the system is an event, and
+        # the thing worth recording is who, how much, and how much of it they
+        # were allowed to see
+        hidden = len([r for r in rows if not seen.get(r.task_id, True)])
+        db.add(AuditLog(entity_type="automation_export", entity_id=board_id,
+                        action="export", field_name="automation_runs",
+                        old_value=f"outcome={outcome or 'all'} automation={automation_id or 'all'}",
+                        new_value=f"{len(rows)} שורות"
+                                  + (f" · {hidden} מוסתרות" if hidden else ""),
+                        changed_by=user_id))
+        db.commit()
         return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition":
                                  f'attachment; filename="automation-runs-{board_id}.csv"'})

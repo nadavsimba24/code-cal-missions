@@ -989,5 +989,46 @@ ck('a board that is running says nothing',
   ck('declining it sends nothing', !asked.some(x=>x.includes('/retry ')));
 }
 
+/* ── 12.3: the failures somebody has to do something about ────────────── */
+{
+  A.tab='history'; A.runsLoading=false; A.runOutcome=''; A.runStatus=''; A.runQ='';
+  A.runAuto=0; A.batch=null; A.chain=null; A.tl=null; A.runs=[]; A.runCounts={total:0};
+  A.runStatuses=[]; A.data={automations:[],can_manage:true,can_export:false};
+
+  A.incidents=[];
+  ck('a board with nothing wrong shows no band', A.incidentsHTML()==='');
+
+  A.incidents=[
+    {id:1,sentence:'כאשר נוצר פריט, שנה עדיפות',status:'open',count:7,
+     error_code:'RuntimeError',suspended:true,attempts_exhausted:false,
+     escalated:'',note:'',acked_name:''},
+    {id:2,sentence:'כלל שני',status:'acknowledged',count:1,error_code:'refused',
+     suspended:false,attempts_exhausted:true,escalated:'system',
+     note:'ממתין לספק',acked_name:'דנה'},
+    {id:3,sentence:'כלל סגור',status:'resolved',count:2,error_code:'',escalated:''}];
+  let h=A.incidentsHTML();
+  ck('an open failure is on the band', h.includes('כאשר נוצר פריט, שנה עדיפות'));
+  ck('...saying how many runs hit it, not how many problems there are',
+     h.includes('7 כשלים'));
+  ck('...and that the rule is out of service', h.includes('הושהתה'));
+  ck('one somebody owns says who and what they found',
+     h.includes('ממתין לספק') && h.includes('דנה'));
+  ck('...and that it was escalated, and to whom', h.includes('מנהל המערכת'));
+  ck('a resolved one is off the band', !h.includes('כלל סגור'));
+  ck('«אני מטפל» is offered on an open one',
+     h.includes("Automations.setIncident(1,{status:'acknowledged'})"));
+  ck('...and not on one already acknowledged',
+     !h.includes("Automations.setIncident(2,{status:'acknowledged'})"));
+  ck('closing and noting are offered on both',
+     h.includes("Automations.setIncident(1,{status:'resolved'})")
+     && h.includes('Automations.noteIncident(2)'));
+
+  A.data={automations:[],can_manage:false,can_export:false};
+  h=A.incidentsHTML();
+  ck('somebody who cannot manage the board sees the state and no buttons',
+     h.includes('כאשר נוצר פריט') && !h.includes('Automations.setIncident('));
+  A.incidents=[];
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
