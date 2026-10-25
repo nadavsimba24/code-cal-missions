@@ -7593,13 +7593,22 @@ const Automations = {
 
   tabsHTML(){
     const n=(this.data.automations||[]).length, h=this.runCounts.total||0;
-    const b=(id,he,ic,badge)=>`<button class="lg-tab ${this.tab===id?'on':''}" onclick="Automations.setTab('${id}')">
-        <i class="fa-solid ${ic}"></i> ${he}${badge?` <span class="au-count">${badge}</span>`:''}</button>`;
+    const b=(id,he,ic,badge)=>`<button class="lg-tab ${this.tab===id?'on':''}"
+        role="tab" aria-selected="${this.tab===id?'true':'false'}"
+        aria-label="${esc(he)}${badge?` — ${badge}`:''}"
+        onclick="Automations.setTab('${id}')">
+        <i class="fa-solid ${ic}" aria-hidden="true"></i> ${he}${
+          badge?` <span class="au-count">${badge}</span>`:''}</button>`;
     /* Audit is its own tab and not a filter on the history: they answer two
        different questions, and folding them together would mean scrolling
        past a hundred runs to find who switched a rule off. Only for somebody
        who manages the board — the server refuses anyone else anyway. */
-    return `<div class="lg-tabs">${b('create','יצירה','fa-plus')}${b('manage','ניהול','fa-sliders',n)}${
+    /* "יצירה ועריכה מלאה בדסקטופ בלבד". A rule is a sentence with eight
+       blanks, and filling those on a phone is how somebody switches on a
+       thing they did not mean. Reading all of it stays — that is what a
+       phone is for here. */
+    return `<div class="lg-tabs" role="tablist" aria-label="מסכי האוטומציות">${
+      this.isPhone()?'':b('create','יצירה','fa-plus')}${b('manage','ניהול','fa-sliders',n)}${
       b('history','היסטוריית הפעלות','fa-clock-rotate-left',h)}${
       this.data.can_manage?b('audit','Audit','fa-shield-halved'):''}</div>`;
   },
@@ -7608,6 +7617,15 @@ const Automations = {
   createHTML(){
     if(!this.data.can_manage)
       return '<div class="empty" style="padding:34px"><i class="fa-solid fa-lock"></i><div>רק מנהל הלוח יכול ליצור אוטומציות</div></div>';
+    /* Explained rather than half-offered: a builder squeezed onto a phone is
+       a builder somebody finishes badly, and the rule then runs by itself on
+       everybody's items. */
+    if(this.isPhone())
+      return `<div class="empty" style="padding:34px"><i class="fa-solid fa-desktop"></i>
+        <div><b>יצירה ועריכה זמינות בדסקטופ</b></div>
+        <div style="font-size:12.5px;color:var(--text-muted);max-width:360px;margin:6px auto 0">
+          בנייד אפשר לצפות באוטומציות, בבעלים, בסטטוסים, בהיסטוריית ההפעלות
+          ובכשלים — ולהשהות אוטומציה שפועלת לא כשורה.</div></div>`;
     if(this.building) return this.buildHTML();
     const seg=(id,he,ic)=>`<button class="au-seg-b ${this.mode===id?'on':''}" onclick="Automations.setMode('${id}')"><i class="fa-solid ${ic}"></i> ${he}</button>`;
     return `<div class="au-seg">${seg('templates','תבניות','fa-wand-magic-sparkles')}${seg('scratch','אוטומציה מאפס','fa-pen-ruler')}</div>`+
@@ -7800,11 +7818,15 @@ const Automations = {
     if(o.rows===null) return '<div class="spin"></div>';
     const rows=o.rows.map((x,i)=>`<div class="au-ordrow">
         <span class="au-ordn">${i+1}</span>
-        <div style="flex:1">${esc(x.name)}
+        <div style="flex:1" dir="auto"><bdi>${esc(x.name)}</bdi>
           ${x.shares_number?'<span class="oa-flag" title="שתי אוטומציות על אותו מספר — הסדר ביניהן נקבע לפי מזהה">מספר כפול</span>':''}
           <div class="au-res-msg">${esc((this.ST&&this.ST[x.status]&&this.ST[x.status].he)||x.status)}</div></div>
-        ${o.can?`<button class="am-ico" title="למעלה" ${i?'':'disabled'} onclick="Automations.orderMove(${i},-1)"><i class="fa-solid fa-arrow-up"></i></button>
-        <button class="am-ico" title="למטה" ${i<o.rows.length-1?'':'disabled'} onclick="Automations.orderMove(${i},1)"><i class="fa-solid fa-arrow-down"></i></button>`:''}
+        ${o.can?`<button class="am-ico" title="למעלה" ${i?'':'disabled'}
+          aria-label="העבר למעלה את ${esc(x.name)}"
+          onclick="Automations.orderMove(${i},-1)"><i class="fa-solid fa-arrow-up" aria-hidden="true"></i></button>
+        <button class="am-ico" title="למטה" ${i<o.rows.length-1?'':'disabled'}
+          aria-label="העבר למטה את ${esc(x.name)}"
+          onclick="Automations.orderMove(${i},1)"><i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>`:''}
       </div>`).join('')
       ||'<div class="au-hint" style="margin:0">אין אוטומציות בלוח</div>';
     return `<div class="au-group-h">סדר ביצוע</div>
@@ -8048,7 +8070,11 @@ const Automations = {
 
   headBitsHTML(a){
     const st=this.ST[a.status]||this.ST.active, imp=this.IMP[a.importance]||this.IMP.normal;
-    return `<span class="am-st ${st.cls}" title="${esc(st.what||'סטטוס האוטומציה')}"><i class="fa-solid ${st.ic}"></i> ${st.he}</span>
+    /* Three carriers, never one: the colour, the icon and the word. "ודא
+       ... שגיאות שאינן מסתמכות על צבע בלבד" — and the label is what a reader
+       who gets none of the three visually still hears. */
+    return `<span class="am-st ${st.cls}" title="${esc(st.what||'סטטוס האוטומציה')}"
+        aria-label="סטטוס: ${esc(st.he)}${st.what?' — '+esc(st.what):''}"><i class="fa-solid ${st.ic}" aria-hidden="true"></i> ${st.he}</span>
       <span class="am-imp ${imp.cls}" title="חשיבות: ${imp.he} — למיון ולסינון בלבד, אינה משפיעה על סדר הביצוע">${imp.he}</span>
       <span class="am-ord" title="סדר ביצוע ${a.run_order||0} — מספר נמוך רץ ראשון כשאותו אירוע מפעיל כמה אוטומציות. זה מה שקובע קדימות בפועל.">סדר ${a.run_order||0}</span>`;
   },
@@ -8061,6 +8087,13 @@ const Automations = {
      here can be undone, and a screenful of checkboxes is the wrong place for
      the one thing that cannot. */
   picked:new Set(), bulkRes:null,
+
+  /* Asked in four places, so asked once here — and guarded, because this
+     object is also loaded on its own by the harnesses, where the page's
+     globals are whatever the test handed in. A missing answer reads as
+     "desktop", which is the one that offers MORE: a screen that wrongly
+     hides the builder is a screen somebody cannot use at all. */
+  isPhone(){ return typeof isMobile==='function' && !!isMobile(); },
 
   pickToggle(id){
     if(this.picked.has(id))this.picked.delete(id); else this.picked.add(id);
@@ -8151,9 +8184,18 @@ const Automations = {
   actsHTML(a,can){
     if(!can) return '';
     const on=a.status==='active';
-    return `<div class="am-acts">
-      <button class="am-ico" title="${on?'השהה':'הפעל'}" onclick="Automations.toggle(${a.id},${!on})"><i class="fa-solid ${on?'fa-pause':'fa-play'}"></i></button>
-      <button class="am-ico" title="פעולות" onclick="Automations.menu(event,${a.id})"><i class="fa-solid fa-ellipsis"></i></button>
+    const name=(a.display_name||'').replace(/[«»]/g,'');
+    /* The one write a phone keeps. It is the one somebody reaches for a phone
+       to do — a rule is doing damage and it has to stop now — and every other
+       control here changes what a rule DOES, which is a desktop decision. */
+    const stop=`<button class="am-ico" title="${on?'השהה':'הפעל'}"
+        aria-label="${on?'השהה':'הפעל'} את ${esc(name)}"
+        onclick="Automations.toggle(${a.id},${!on})"><i class="fa-solid ${
+          on?'fa-pause':'fa-play'}" aria-hidden="true"></i></button>`;
+    if(this.isPhone()) return `<div class="am-acts">${stop}</div>`;
+    return `<div class="am-acts">${stop}
+      <button class="am-ico" title="פעולות" aria-label="פעולות על ${esc(name)}"
+        onclick="Automations.menu(event,${a.id})"><i class="fa-solid fa-ellipsis" aria-hidden="true"></i></button>
     </div>`;
   },
 
@@ -8646,7 +8688,11 @@ const Automations = {
   historyHTML(){
     if(this.runsLoading) return '<div class="spin"></div>';
     const c=this.runCounts||{};
-    const chip=(v,he,n)=>`<button class="au-chip ${this.runOutcome===v?'on':''}" onclick="Automations.setOutcome('${v}')">${he}${n===undefined?'':` <b>${n||0}</b>`}</button>`;
+    const chip=(v,he,n)=>`<button class="au-chip ${this.runOutcome===v?'on':''}"
+        aria-pressed="${this.runOutcome===v?'true':'false'}"
+        aria-label="${esc(he)}${n===undefined?'':` — ${n||0}`}"
+        onclick="Automations.setOutcome('${v}')">${he}${
+          n===undefined?'':` <b>${n||0}</b>`}</button>`;
     /* Eleven statuses do not belong in eleven chips — the five that answer
        "did it work" stay chips, and the detail goes in a picker beside them,
        showing only the ones this board actually has. */
@@ -8656,7 +8702,9 @@ const Automations = {
         ${stats.map(x=>`<option value="${x.key}" ${this.runStatus===x.key?'selected':''}>${
             esc(x.he)} (${c[x.key]||0})</option>`).join('')}
       </select>`:'';
-    const search=`<input class="au-search" type="search" placeholder="חיפוש בפריט, בכלל ובסיבה"
+    const search=`<input class="au-search" type="search" dir="auto"
+        aria-label="חיפוש בהיסטוריית ההפעלות — בפריט, בכלל ובסיבה"
+        placeholder="חיפוש בפריט, בכלל ובסיבה"
         value="${esc(this.runQ||'')}" oninput="Automations.setRunQ(this.value)">`;
     const rules=this.data.automations||[];
     const sel=rules.length>1?`<select onchange="Automations.setRunAuto(this.value)">
@@ -8705,7 +8753,9 @@ const Automations = {
     const ic=r.status==='queued'?'fa-hourglass-half'
             :r.status==='loop_stopped'?'fa-rotate-left':o.ic;
     return `<div class="ah-row">
-      <span class="ah-out ${o.cls}" title="${esc(r.status||'')}"><i class="fa-solid ${ic}"></i> ${esc(head)}</span>
+      <span class="ah-out ${o.cls}" role="status" title="${esc(r.status||'')}"
+        aria-label="תוצאה: ${esc(head)}${r.reason?' — '+esc(r.reason):''}"><i class="fa-solid ${
+          ic}" aria-hidden="true"></i> ${esc(head)}</span>
       <div class="ah-main">
         <div class="ah-l1">${item}
           ${r.version?`<span class="ah-tag" title="הגרסה שהייתה בתוקף כשהאירוע נקלט">גרסה ${r.version}</span>`:''}
@@ -8880,8 +8930,14 @@ const Automations = {
   },
 
   ruleRow(a,can){
-    // «value» markers come from the server — render them as highlighted chips
-    const sent=esc(a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>');
+    /* «value» markers come from the server — rendered as highlighted chips,
+       and each value wrapped so a Latin one inside a Hebrew sentence does not
+       drag the punctuation around it to the wrong end of the line.
+       "הצג את משפט האוטומציה גם כטקסט רציף נגיש": the same sentence without
+       the markers goes on the element as its label, because a screen reader
+       reading a row of highlighted fragments reads fragments. */
+    const plain=String(a.sentence||'').replace(/[«»]/g,'');
+    const sent=esc(a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b><bdi>'+v+'</bdi></b>');
     // rule 3 — the edit is waiting; what runs is still the version below it
     const pend=a.draft_version?`<div class="au-pend">
         <div><i class="fa-solid fa-pen-ruler"></i> <b>גרסה ${a.draft_version} ממתינה להפעלה</b>
@@ -8904,8 +8960,9 @@ const Automations = {
       ${can?`<input type="checkbox" class="au-pick-box" ${this.picked.has(a.id)?'checked':''}
              onclick="Automations.pickToggle(${a.id})" title="בחר לפעולה מרובה">`:''}
       <div class="am-main">
-        <div class="am-head">${this.headBitsHTML(a)}<span class="am-name">${esc(a.display_name)}</span>${gap}</div>
-        <div class="au-sent" style="margin-top:5px">${sent}</div>
+        <div class="am-head">${this.headBitsHTML(a)}<span class="am-name"><bdi>${esc(a.display_name)}</bdi></span>${gap}</div>
+        <div class="au-sent" style="margin-top:5px" dir="auto"
+             aria-label="${esc(plain)}">${sent}</div>
         ${a.description?`<div class="am-desc"><i class="fa-solid fa-quote-right" style="font-size:9px"></i> ${esc(a.description)}</div>`:''}
         ${pend}
         <div class="am-own">${owner}${by}${upd}${a.needs_owner?' · <b style="color:var(--red)">'+esc(a.owner_problem||'')+'</b>':''}</div>
@@ -9113,6 +9170,20 @@ const Automations = {
   },
 
   async toggle(id,on){
+    /* "השהיה לאחר אישור" — on a phone, where the control is a thumb's width
+       from everything else and the consequence is a board that stops
+       automating. The desktop has the sentence, the metrics and the menu
+       around it; a phone has the row. */
+    if(this.isPhone()&&!this._okToggle){
+      const a=(this.data.automations||[]).find(x=>x.id===id)||{};
+      askConfirm(on?'להפעיל את האוטומציה?':'להשהות את האוטומציה?',
+        ()=>{ this._okToggle=true; this.toggle(id,on).finally(()=>{this._okToggle=false;}); },
+        {title:on?'הפעלת אוטומציה':'השהיית אוטומציה',danger:!on,
+         confirmText:on?'הפעל':'השהה',
+         note:(a.display_name||'')+(on?' — תתחיל לפעול על אירועים חדשים.'
+              :' — תפסיק לפעול עד שמישהו יפעיל אותה מחדש. מה שכבר קרה נשאר.')});
+      return;
+    }
     try{
       const d=await api('/api/automations/'+id+(meId()?'?user_id='+meId():''),
                 {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:on})});
@@ -17665,6 +17736,30 @@ const Train = {
 
 /* ============ modal helpers ============ */
 function showModal(html){const m=document.getElementById('modal');m.classList.remove('modal-wide','modal-80','modal-narrow');m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+html;m.classList.add('open');document.getElementById('overlay').classList.add('open');if(typeof closeSidebarMobile==='function')closeSidebarMobile();}
+/* Escape closes whatever is open. Until this, every dialog in the product —
+   the automations screen among them — could only be dismissed with a mouse,
+   which is a keyboard trap for anybody who got into it with a keyboard.
+
+   Three guards, and each is a real case: a field with its own Escape (an
+   inline editor reverting a value) gets to keep it; a handler that already
+   dealt with the key is not second-guessed; and a confirm dialog on top of a
+   modal closes the confirm first, not both. */
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape'||e.defaultPrevented) return;
+  const t=e.target||{};
+  const tag=(t.tagName||'').toLowerCase();
+  if(tag==='input'||tag==='textarea'||tag==='select'||t.isContentEditable) return;
+  const m=document.getElementById('modal');
+  if(!m||!m.classList.contains('open')) return;
+  e.preventDefault();
+  if(m.classList.contains('confirm-modal')&&window._confirmCancel){ window._confirmCancel(); return; }
+  // a panel drawn inside a screen closes before the screen does, the same way
+  // the backdrop click does — otherwise Escape on an open timeline throws away
+  // the log behind it as well
+  if(window.Automations&&Automations.tl){ Automations.closeTimeline(); return; }
+  closeModals();
+});
+
 function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide','modal-80','modal-narrow');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
 /* styled confirmation dialog (replaces native confirm) */
 function askConfirm(message,onYes,opts){
