@@ -4463,10 +4463,17 @@ const Views = {
      restores half of what was saved. */
   current(){
     const f=st.filters||{};
+    const cs=st.colSort&&st.colSort.key?{key:st.colSort.key,dir:st.colSort.dir||'desc'}:null;
     return {view:st.view||'table', q:f.q||'', people:(f.people||[]).slice(),
             status:f.status||'', priority:f.priority||'', sort:f.sort||'',
             links:Object.assign({col:'',mode:'',item:0}, f.links||{}),
-            adv:f.adv||null};
+            adv:f.adv||null,
+            /* The order the board is in is part of what somebody saved. It
+               was left out, so sorting by a column changed the screen and
+               changed nothing the view could see: "שמור תצוגה" never lit, and
+               the sorted board could not be kept. A view is what is on
+               screen, and the order is half of that. */
+            colSort:cs};
   },
   /* Takes the view, or its id. The tab strip can only hand over an id — it
      is HTML, and an onclick carries a number — so a method that took the
@@ -4497,6 +4504,9 @@ const Views = {
                 priority:c.priority||'', sort:c.sort||'',
                 links:Object.assign({col:'',mode:'',item:0}, c.links||{}),
                 adv:pruned.tree, advIds:null};
+    // the order it was saved under, and nothing when it was saved under none
+    const cs=c.colSort;
+    st.colSort=(cs&&cs.key)?{key:cs.key,dir:cs.dir==='asc'?'asc':'desc'}:null;
     const qi=document.getElementById('tb-q'); if(qi)qi.value=st.filters.q;
     if(c.view&&boardViews().includes(c.view)) st.view=c.view;
     this.active=v.id;
@@ -4539,13 +4549,13 @@ const Views = {
      onto the board's own table would show the main table filtered by a view
      that is no longer open, which is the same screen under a different name.
 
-     `keep` is for the one caller that is not leaving: clearFilters has
-     already emptied the cut itself and only needs the tab unlit. Calling the
-     reset from inside it would be a loop. */
-  leave(opts){
+     Leaving is now the only thing that calls this. Clearing the filter used
+     to as well, to unlight the tab, and that was the bug: emptying a view's
+     cut threw the person out of the view they were adjusting. */
+  leave(){
     if(this.active==null)return;
     this.active=null; this.base=null; this.stale=false; this.failed=null;
-    if(!(opts&&opts.keep)) clearFilters();
+    clearFilters();
     Router.set(st.board&&st.board.id, Chat.taskId, null);
     renderTabs();
   },
@@ -4567,7 +4577,7 @@ const Views = {
   // ── saving ──
   saveNew(){
     if(!st.board){ toast('פתחו לוח'); return; }
-    if(!filtersActive()){ toast('אין מה לשמור — הלוח לא מסונן'); return; }
+    if(!boardIsCut()){ toast('אין מה לשמור — הלוח לא מסונן ולא ממוין'); return; }
     this._dialog(null);
   },
   edit(id){ const v=this.items.find(x=>x.id===id); if(v)this._dialog(v); },
@@ -6963,7 +6973,10 @@ function columnSort(e,key){
   if(cs.key!==key) st.colSort={key,dir:'desc'};        // 1st click → יורד
   else if(cs.dir==='desc') st.colSort={key,dir:'asc'}; // 2nd click → עולה
   else st.colSort=null;                                 // 3rd click → ביטול מיון
-  renderView();
+  /* …and the strip is told. The order is part of the cut a view holds, so a
+     sort is a change to the open view — without this the board re-sorted and
+     the tab went on claiming nothing had happened. */
+  refreshToolbar(); renderView();
 }
 function sortBtn(key){
   const cs=st.colSort||{};
@@ -6980,6 +6993,13 @@ function sortBtn(key){
 function filtersActive(){const f=st.filters;
   return !!(f.q||f.people.length||f.status||f.priority||f.sort||(f.links&&f.links.mode)
             ||advCount(f.adv));}
+/* Filtering AND ordering — everything "נקה סינון" undoes, which is what the
+   button should appear for and what a view has something to save.
+   Deliberately not folded into filtersActive: that one also decides whether a
+   large board re-asks the SERVER, and a sort is answered in the browser. A
+   board that re-fetched its first page because somebody clicked a column
+   header would throw away the rows they had scrolled to. */
+function boardIsCut(){ return filtersActive() || !!(st.colSort&&st.colSort.key); }
 /* ===== the states a board can be in, and what each one offers =====
 
    Four of them look alike and are not, and offering the wrong action in any
@@ -7093,8 +7113,13 @@ function setSearch(v){
 }
 function clearFilters(){st.filters={q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null};st.colSort=null;const i=document.getElementById('tb-q');if(i)i.value='';closePops();
   _qfScroll=0;                        // the panel reopens at its first column
-  // nothing is filtered any more, so no saved cut is what is on screen
-  if(typeof Views!=='undefined')Views.leave({keep:true});
+  /* The open view STAYS open. Clearing used to leave it — the tab went dark
+     and the board fell back to "טבלה ראשית" — which answered a question
+     nobody asked: somebody emptying a view's filter is adjusting that view,
+     not walking out of it, and leaving took the adjustment with it. There was
+     then nothing to save, because the view it belonged to was no longer open.
+     Emptying the cut is a change to the view like any other: the tab stays
+     lit, the change is marked, and saving it is offered. */
   refreshToolbar();renderTabs();renderView();}
 function togglePop(name){const ctl=document.getElementById('ctl-'+name);if(!ctl)return;const open=ctl.classList.contains('open');closePops();if(!open){renderPop(name);ctl.classList.add('open');}}
 function closePops(){document.querySelectorAll('.tb-ctl.open').forEach(c=>c.classList.remove('open'));}
@@ -8677,7 +8702,26 @@ const Automations = {
   /* A retry can change the item it ran on, so the board behind the page is
      refetched — otherwise the row here says "הופעלה" while the table still
      shows the old status. */
+  /* «Retry ידני יציג את הפעולות שנותרו ויחייב אישור» — the confirmation is
+     only worth asking for if it is in front of something, so the plan is
+     fetched first and the dialog shows which actions are being left alone. */
   async retry(runId){
+    let plan=null;
+    try{ plan=await api('/api/automation-runs/'+runId+'/retry-plan'
+                        +(meId()?'?user_id='+meId():'')); }catch(e){}
+    if(plan&&(plan.done||[]).length){
+      const li=x=>`<div class="ci-row">${x.index}. ${esc(x.label)}${
+        x.status?` <span class="ah-tag">${esc(x.status)}</span>`:''}</div>`;
+      const ok=await new Promise(res=>askConfirm('להפעיל שוב מהפעולה שנכשלה?',
+        ()=>res(true),
+        {title:`ניסיון חוזר · פעולה ${plan.from_index} ואילך`,confirmText:'הפעל שוב',
+         onCancel:()=>res(false),
+         noteHTML:`<div class="ci-row"><b>יבוצעו:</b></div>${(plan.remaining||[]).map(li).join('')}
+           <div class="ci-row"><b>לא יבוצעו שוב — כבר הצליחו:</b></div>${(plan.done||[]).map(li).join('')}
+           <div class="ci-row" style="color:var(--text-muted)">${esc(plan.restart_warning||'')}
+             <button class="au-lnk" onclick="Automations.restartRun(${runId})">הפעלה מחדש מההתחלה</button></div>`}));
+      if(!ok) return;
+    }
     let out=null;
     try{
       const d=await api('/api/automation-runs/'+runId+'/retry'+(meId()?'?user_id='+meId():''),
@@ -8691,6 +8735,25 @@ const Automations = {
     }
     await this.load();
     await this.loadRuns();
+  },
+
+  /* A different thing with a different name, and the warning is the point: it
+     runs the actions that already worked, so an item that was created is
+     created again and a notification that went out goes out again. */
+  restartRun(runId){
+    closeModals();
+    askConfirm('להפעיל את כל הכלל מחדש?',async()=>{
+      try{
+        await api('/api/automation-runs/'+runId+'/retry?from_start=true&confirm=true'
+                  +(meId()?'&user_id='+meId():''),
+                  {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+        toast('הכלל הופעל מחדש');
+        try{ st.board=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); renderView(); }catch(e){}
+        await this.loadRuns();
+      }catch(e){ toast((e&&e.detail)||'ההפעלה מחדש נכשלה'); }
+    },{title:'הפעלה מחדש מההתחלה',confirmText:'הפעל הכול מחדש',
+       note:'הפעולות שכבר הצליחו יבוצעו שוב — פריטים שנוצרו ייווצרו פעם נוספת '
+            +'והתראות יישלחו שוב. זו הפעלה חדשה עם מזהה משלה.'});
   },
 
   ruleRow(a,can){
@@ -11844,7 +11907,7 @@ function refreshToolbar(){
   const c=document.getElementById('ctl-arrange');
   if(c){c.classList.toggle('on',!!total);const b=document.getElementById('badge-arrange');if(b)b.textContent=total||'';}
   const qc=document.getElementById('tb-q-clear'); if(qc)qc.classList.toggle('show',!!f.q);
-  const cl=document.getElementById('tb-clear'); if(cl)cl.classList.toggle('show',filtersActive());
+  const cl=document.getElementById('tb-clear'); if(cl)cl.classList.toggle('show',boardIsCut());
   /* A large board re-asks the server. Every filter in the app ends here,
      which is why the re-ask lives here and not at each of the dozen places
      that change one — a dozen copies of this would drift, and the one that
@@ -17483,7 +17546,11 @@ function closeModals(){const m=document.getElementById('modal');m.classList.remo
 /* styled confirmation dialog (replaces native confirm) */
 function askConfirm(message,onYes,opts){
   opts=opts||{};
-  window._confirmYes=async()=>{closeModals();try{await onYes();}catch(e){}};
+  window._confirmYes=async()=>{window._confirmNo=null;closeModals();try{await onYes();}catch(e){}};
+  /* A caller that waits for an answer needs to hear "no" as well as "yes" —
+     without this, a dialog somebody dismissed left a promise pending forever
+     and the caller never ran its cleanup. */
+  window._confirmNo=opts.onCancel||null;
   showModal(`<div class="confirm-box">
     <div class="confirm-ic ${opts.danger===false?'':'danger'}"><i class="fa-solid ${opts.icon||'fa-triangle-exclamation'}"></i></div>
     <h2 style="border:none;padding:0 0 6px;text-align:center">${esc(opts.title||'אישור')}</h2>
@@ -17492,12 +17559,18 @@ function askConfirm(message,onYes,opts){
     ${opts.noteHTML?`<div class="confirm-note confirm-note-rich">${opts.noteHTML}</div>`:''}
     <div class="confirm-actions">
       <button class="btn ${opts.danger===false?'btn-primary':'btn-danger'}" onclick="window._confirmYes()">${esc(opts.confirmText||'מחק')}</button>
-      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+      <button class="btn btn-ghost" onclick="window._confirmCancel()">ביטול</button>
     </div>
   </div>`);
   document.getElementById('modal').classList.add('confirm-modal');
   document.getElementById('overlay').classList.add('confirm-overlay');
 }
+
+window._confirmCancel=function(){
+  const no=window._confirmNo; window._confirmNo=null;
+  closeModals();
+  if(no) try{ no(); }catch(e){}
+};
 
 // simple info dialog (single OK button) — for messages that are too long/important for a toast
 function alertModal(title,message,icon){

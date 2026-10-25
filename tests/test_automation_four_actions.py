@@ -354,13 +354,24 @@ def test_one_action_working_makes_the_rule_a_run(client, admin_id):
     assert _task(tid)["priority"] == "high"
 
 
-# ── a rule that fails halfway leaves nothing behind ─────────────────────────
+# ── a rule that fails halfway keeps what it had done ────────────────────────
 
-def test_an_action_that_blows_up_takes_the_whole_rule_with_it(client, admin_id, guinea_id,
-                                                              monkeypatch):
-    """The savepoint. Without it the first action was written, the second
-    raised, and the history said "failed" over a board that had been half
-    changed — the one state nobody can reason about afterwards."""
+def test_an_action_that_blows_up_stops_the_rest_and_keeps_what_worked(client, admin_id,
+                                                                      guinea_id,
+                                                                      monkeypatch):
+    """The savepoint is the ACTION's, not the rule's — and it read the other
+    way round until 12.2.
+
+    The old reading was "a rule never half-happens": one savepoint around the
+    whole list, so an action that raised took its predecessors with it. 12.2
+    rules that out — "Retry מתחיל בפעולה הראשונה שנכשלה ואינו חוזר על פעולות
+    שהצליחו" has nothing to resume from if the successes were undone.
+
+    So: an ACTION never half-happens, a rule may, nothing after the failure
+    runs, and the row says precisely which half went through. Which is the
+    state somebody CAN reason about — the one they could not was a failure
+    with no record of how far it got.
+    """
     bid = _board(client, admin_id)
     _member(client, admin_id, bid, guinea_id)
     _add(client, bid, admin_id, "created_set_priority",
@@ -378,13 +389,14 @@ def test_an_action_that_blows_up_takes_the_whole_rule_with_it(client, admin_id, 
     monkeypatch.setattr(cityos_main, "_apply_status_key", real)
 
     t = _task(tid)
-    assert t["priority"] != "high", "the first action survived a rule that failed"
-    assert t["assignees"] == [], "the second action survived a rule that failed"
+    assert t["priority"] == "high", "the first action was undone"
+    assert t["assignees"] != [], "the second action was undone"
     runs = _runs(client, bid, admin_id)
     assert runs and runs[0]["outcome"] == "failed", runs
-    # the item itself is still there — the savepoint is the RULE's, not the
-    # event's: creating the item is not undone by a rule that could not run
-    assert t["status"] is not None
+    # and the third is recorded as the one that stopped it
+    steps = (runs[0]["result"] or {}).get("steps") or []
+    assert [x["status"] for x in steps] == ["succeeded", "succeeded",
+                                            "failed_temporary"], steps
 
 
 # ── what the screens are built from ─────────────────────────────────────────

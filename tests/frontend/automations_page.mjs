@@ -954,5 +954,40 @@ ck('a board that is running says nothing',
   ck('and nothing of it renders when it is not open', A.timelineHTML()==='');
 }
 
+/* ── 12.2: the retry asks before it acts ──────────────────────────────── */
+{
+  const asked=[];
+  const A2=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','avatarInner',
+    'boardStatusList','boardPriorityList','customColumns','meId','api','openCellPop',
+    'closeCellPops','askConfirm','showModal','closeModals','document','renderView','localStorage',
+    grabConst('Automations')+' return Automations;')(
+    st, x=>String(x==null?'':x), ()=>{}, {ago:()=>'עכשיו',goto(){}}, ()=>'01/01/2026',
+    ()=>'01/01/2026', ()=>'', ()=>[], ()=>[], ()=>[], ()=>1,
+    async(p,o)=>{
+      if(p.includes('/retry-plan')) return {run_id:5,from_index:3,attempt:1,
+        done:[{index:1,key:'set_priority',label:'שנה עדיפות',status:'succeeded'},
+              {index:2,key:'post_update',label:'הוסף עדכון',status:'succeeded'}],
+        remaining:[{index:3,key:'set_status',label:'שנה סטטוס',status:'failed_temporary'}],
+        can_retry:true,restart_warning:'הפעלה מחדש תבצע גם את מה שכבר הצליח'};
+      asked.push(p+' '+((o||{}).method||'GET'));
+      return {run:{outcome:'ran'}};
+    },
+    (a,html)=>{}, ()=>{}, (msg,yes,opts)=>{asked.push('CONFIRM '+(opts||{}).title);
+                                           asked.push('NOTE '+((opts||{}).noteHTML||''));
+                                           if((opts||{}).onCancel)(opts.onCancel)();},
+    ()=>{}, ()=>{}, {getElementById:()=>null}, ()=>{}, localStorage);
+  A2.load=async()=>{}; A2.loadRuns=async()=>{}; A2.render=()=>{};
+  await A2.retry(5);
+  const note=asked.find(x=>x.startsWith('NOTE '))||'';
+  ck('a manual retry asks first', asked.some(x=>x.startsWith('CONFIRM')));
+  ck('...naming the action it will start at',
+     (asked.find(x=>x.startsWith('CONFIRM'))||'').includes('3'));
+  ck('...listing what is still to do', note.includes('שנה סטטוס'));
+  ck('...and what it will leave alone', note.includes('שנה עדיפות') && note.includes('הוסף עדכון'));
+  ck('...with the double-impact warning beside the way to do it anyway',
+     note.includes('כבר הצליח') && note.includes('Automations.restartRun(5)'));
+  ck('declining it sends nothing', !asked.some(x=>x.includes('/retry ')));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

@@ -607,6 +607,25 @@ class AutomationCreation(Base):
                                        name="uq_automation_creation"),)
 
 
+class AutomationActionKey(Base):
+    """One action, done once — the idempotency key the retry rules rest on.
+
+    "לכל פעולה מפתח Idempotency ייחודי. יצירת פריט או שליחת התראה שהצליחו לא
+    יחזרו על עצמן." Resuming at the failed action is the plan; this is what
+    holds when the plan is wrong — a replayed event, a double click, a retry
+    aimed a step too early.
+
+    Scoped to the CHAIN, so a genuinely new change gets a clean sheet: without
+    that the guard would quietly turn every rule into a once-per-item rule.
+    """
+    __tablename__ = "automation_action_keys"
+    id = Column(Integer, primary_key=True)
+    key = Column(String(120), nullable=False, unique=True, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=True, index=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class AutomationVersion(Base):
     """What a rule looked like after each change — the גרסאות list.
 

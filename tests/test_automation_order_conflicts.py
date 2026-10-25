@@ -335,11 +335,21 @@ def test_a_failure_stops_the_actions_after_it_and_says_where(client, admin_id,
     assert "הפעולות הבאות לא בוצעו" in runs[0]["reason"]
 
 
-def test_nothing_the_rule_had_already_done_survives_its_failure(client, admin_id,
-                                                                 monkeypatch):
-    """The one case the specification allows a completed action to be rolled
-    back: the same database transaction. Here they always are — the rule runs
-    inside one savepoint — so a rule never half-happens."""
+def test_what_the_rule_had_already_done_survives_its_failure(client, admin_id,
+                                                             monkeypatch):
+    """This read the other way round until 12.2, and the reversal is deliberate.
+
+    The savepoint used to be the RULE's, so a failure on action three took
+    actions one and two back with it, on the reading that "a rule never
+    half-happens" and that 9.1's "ללא rollback אלא אם באותה טרנזקציה" allowed
+    it, since everything here is one transaction.
+
+    12.2 settles it the other way: "Retry מתחיל בפעולה הראשונה שנכשלה ואינו
+    חוזר על פעולות שהצליחו" has nothing to resume from if the successes were
+    undone, and "יצירת פריט שהצליחה לא תחזור על עצמה" says the created item is
+    still there. So the savepoint is per ACTION: one of them never half-
+    happens, a rule may, and the log says exactly which half.
+    """
     bid = _board(client, admin_id, "לוח כשל חלקי")
     _add(client, bid, admin_id, "created_set_priority",
          {"a_priority": "critical",
@@ -356,10 +366,15 @@ def test_nothing_the_rule_had_already_done_survives_its_failure(client, admin_id
     monkeypatch.undo()
     with Session(cityos_main.engine) as db:
         assert db.query(Task).filter(Task.board_id == bid,
-                                     Task.title == "נוצר לפני הכשל").count() == 0
-        # and the item itself is untouched by the action that did run
+                                     Task.title == "נוצר לפני הכשל").count() == 1
         assert cityos_main._task_priority_key(
-            db.query(Task).filter(Task.id == tid).first()) != "critical"
+            db.query(Task).filter(Task.id == tid).first()) == "critical"
+    # and the row says which action stopped it, so the half is not a mystery
+    runs = _runs(client, bid, admin_id)
+    assert runs[0]["status"] == "failed_temporary", runs[0]
+    steps = (runs[0]["result"] or {}).get("steps") or []
+    assert [x["status"] for x in steps] == ["succeeded", "succeeded",
+                                            "failed_temporary"], steps
 
 
 def test_the_order_is_one_to_nine_hundred_and_ninety_nine(client, admin_id):

@@ -29,7 +29,7 @@ import filter_ast
 import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
-    AutomationTestRun, AutomationQueue, AutomationCreation,
+    AutomationTestRun, AutomationQueue, AutomationCreation, AutomationActionKey,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
@@ -2548,6 +2548,23 @@ def _redact_view_cols(filters, unseen):
     return dict(filters, cols=out)
 
 
+def _redact_view_sort(filters, unseen):
+    """…and the column the view is ORDERED by, for the same reason.
+
+    The order rows come back in is a fact about the column that decides it —
+    which budget is the largest is readable off a board sorted by budget,
+    without one figure on screen. A view saved by somebody who can see the
+    column opens for somebody who cannot, so the sort comes off on the way
+    out and the board opens in its own order.
+    """
+    if not unseen or not isinstance(filters, dict):
+        return filters
+    cs = filters.get("colSort")
+    if isinstance(cs, dict) and str(cs.get("key")) in unseen:
+        return dict(filters, colSort=None)
+    return filters
+
+
 def _merge_view_cols(incoming, stored, unseen):
     """What to store when somebody who sees only part of the table saves it.
 
@@ -2685,7 +2702,9 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
                 return dict(vj, filters={}, blocked=True, needs_fix=[])
             # A column the cut names and the board no longer has. Reported to
             # everyone, unlike `blocked`: the column is gone for all of them.
-            return dict(vj, filters=_redact_view_cols(vj["filters"], unseen),
+            return dict(vj,
+                        filters=_redact_view_sort(
+                            _redact_view_cols(vj["filters"], unseen), unseen),
                         blocked=False, needs_fix=_view_needs_fix(_b, v))
         # Where a normal entry lands. Resolved here and not by the client,
         # because the two reasons it can be wrong are both the server's to
@@ -8598,6 +8617,9 @@ AUTOMATION_RUN_LOG_MAX = 500
 # The five states a rule can be in. Only "active" runs — see _set_automation_status.
 AUTOMATION_STATUSES = ("draft", "active", "paused", "paused_error", "deleting")
 AUTOMATION_IMPORTANCE = ("critical", "high", "normal", "low")
+AUTOMATION_STATUS_HE = {"draft": "טיוטה", "active": "פעילה", "paused": "מושהית",
+                        "paused_error": "מושהית עקב שגיאה",
+                        "deleting": "בתהליך מחיקה"}
 
 # ── סדר ביצוע ───────────────────────────────────────────────────────────────
 # Where a rule sits in the order its board fires in: 1 goes first, 999 last,
@@ -8617,6 +8639,26 @@ def _order_key(a):
     """The order the engine fires rules in, as a sort key."""
     return (a.run_order if a.run_order is not None else RUN_ORDER_DEFAULT,
             a.activated_at or datetime.max, a.id)
+# ── ניסיון חוזר ────────────────────────────────────────────────────────────
+# A lock, a connection that was not there for a second — worth trying again.
+# A deleted group, a value the column refuses, a membership somebody revoked —
+# not: the engine will reach the same conclusion in a minute, in five and in
+# fifteen, and all it will have produced is three more rows in the log.
+#
+# The spacing is the point. A minute rides out a blip; fifteen is long enough
+# that a real outage is not being hammered, and short enough that somebody
+# arriving in the morning finds the work done rather than a queue.
+AUTOMATION_RETRY_DELAYS = (1, 5, 15)            # minutes, in order
+AUTOMATION_MAX_AUTO_RETRIES = 3
+
+# "שיעור כשלים מעל הסף" — a RATE, which is a different question from a run of
+# consecutive failures. A rule failing two runs in three is broken even while
+# it keeps getting the occasional one through, and the consecutive counter
+# never trips for it.
+AUTOMATION_FAIL_RATE = 0.5
+AUTOMATION_FAIL_RATE_WINDOW = 20      # the last n runs the rate is read over
+AUTOMATION_FAIL_RATE_MIN = 6          # and the fewest that may decide anything
+
 # Failures in a row that take a rule out of service. A rule that cannot work is
 # worse than no rule: it looks configured while quietly doing nothing, so it is
 # suspended and its owner is told, rather than failing forever in the log.
@@ -9898,21 +9940,40 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
         # "קלט, יעד ופלט של כל פעולה" — written for every one of them,
         # whatever came of it. A step that is missing from the list is a step
         # nobody can tell apart from one that was never reached.
-        step = {"index": start + i + 1, "key": one["key"],
+        kid = _idem_key(a, task, event, start + i + 1)
+        step = {"index": start + i + 1, "key": one["key"], "key_id": kid,
                 "label": recipes.plain(recipes.ACTIONS.get(one["key"], one["key"])),
                 "input": {k: _plain_json(v) for k, v in (one["values"] or {}).items()},
                 "target": {"task_id": task.id, "board_id": task.board_id},
                 "output": None, "status": "succeeded"}
         steps.append(step)
+        # "יצירת פריט או שליחת התראה שהצליחו לא יחזרו על עצמן". Resuming at the
+        # failed action is the plan; this is what holds when the plan is wrong.
+        if _idem_done(db, kid):
+            skipped.append("הפעולה כבר בוצעה בהפעלה קודמת")
+            step["status"], step["output"] = "skipped_condition", "כבר בוצעה"
+            continue
+        # The savepoint is the ACTION's, not the rule's. An action that raised
+        # half way through its own writes must not leave them — but an action
+        # that WORKED has to survive the one after it failing, or "Retry מתחיל
+        # בפעולה הראשונה שנכשלה ואינו חוזר על פעולות שהצליחו" is not a thing
+        # that can be done: there would be nothing left to resume from.
+        sp = db.begin_nested()
         try:
             produced = _run_one_action(db, one["key"], one["values"],
                                        task, actor_id, board, told, event,
                                        human=human, owner=owner,
                                        rule=a, records=made) or []
+            sp.commit()
+            _idem_mark(db, a, task, kid)
             out.extend(produced)
             step["output"] = [_plain_json(e) for e in produced] or "בוצע"
             clash += _note_conflict(event, task, a, one["key"], told)
         except _Waiting as w:
+            try:
+                sp.rollback()
+            except Exception:                      # noqa: BLE001
+                pass
             # What is left of the rule goes to the queue with the moment it may
             # come back, and this firing ends here. Deliberately not a thread
             # and not a sleep: a request may not be held for thirty days, and a
@@ -9927,10 +9988,15 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
                 note += " · " + " · ".join(dict.fromkeys(skipped))
             return out, note, {"created": made, "steps": steps, "waiting": True}
         except _Skipped as sk:
+            sp.rollback()
             skipped.append(sk.reason)
             step["status"] = sk.status
             step["output"] = sk.reason
         except (_Waiting, Exception) as e:
+            try:
+                sp.rollback()
+            except Exception:                      # noqa: BLE001
+                pass
             if isinstance(e, _Waiting):
                 raise
             step["status"] = ("failed_permanent" if isinstance(e, _Refused)
@@ -9942,13 +10008,21 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
             # one savepoint, so a failure takes the whole of it back (the one
             # case the specification allows for a completed action to be
             # rolled back — the same database transaction).
-            raise _Failed(start + i + 1, len(acts) + start, one["key"], e)
+            # the steps so far travel WITH the failure: the log row for a
+            # failed rule is exactly where somebody asks which half happened,
+            # and it is also where the retry reads its starting point from
+            bad = _Failed(start + i + 1, len(acts) + start, one["key"], e)
+            bad.report = {"created": made, "steps": steps,
+                          "failed_at": start + i + 1}
+            raise bad
     if acts and len(skipped) == len(acts):
         # every one of them had nothing to do — and the kind of nothing is the
         # first one's, since they all agreed
         kinds = {x.get("status") for x in steps if x.get("status", "").startswith("skip")}
-        raise _Skipped(" · ".join(dict.fromkeys(skipped)),
-                       kinds.pop() if len(kinds) == 1 else "skipped_condition")
+        done = _Skipped(" · ".join(dict.fromkeys(skipped)),
+                        kinds.pop() if len(kinds) == 1 else "skipped_condition")
+        done.report = {"created": made, "steps": steps}
+        raise done
     note = ""
     if skipped:
         done = len(acts) - len(skipped)
@@ -9964,6 +10038,38 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
                        # "הצליחה חלקית" — some of it worked and some of it had
                        # nothing to do, which used to be filed as a success
                        "partial": bool(skipped)}
+
+
+def _idem_key(a, task, event, index):
+    """The identity of one action, in one chain, on one item.
+
+    Four parts and each is load-bearing: a different chain is a different
+    change, a different rule is a different intention, a different item is
+    different work, and a different index is a different action.
+    """
+    return f"{(event or {}).get('chain') or '-'}:{getattr(a, 'id', 0)}:{task.id}:{index}"[:120]
+
+
+def _idem_done(db, key):
+    return db.query(AutomationActionKey.id).filter(
+        AutomationActionKey.key == key).first() is not None
+
+
+def _idem_mark(db, a, task, key):
+    """Write the key down. Never raises: a bookkeeping failure must not turn an
+    action that WORKED into a rule that failed."""
+    try:
+        sp = db.begin_nested()
+        db.add(AutomationActionKey(key=key, board_id=task.board_id,
+                                   automation_id=getattr(a, "id", None),
+                                   created_at=_now_naive()))
+        sp.commit()
+    except Exception as e:                         # noqa: BLE001
+        try:
+            sp.rollback()
+        except Exception:                          # noqa: BLE001
+            pass
+        print(f"⚠️  idempotency key not stored ({key}): {e}", flush=True)
 
 
 def _plain_json(v):
@@ -11397,6 +11503,31 @@ def _suspend_blocked(db, a, board, kind, why):
                 board_id=a.board_id)
 
 
+def _failure_rate(db, a):
+    """(rate, how many runs it was read over) for this rule's recent history.
+
+    "שיעור כשלים מעל הסף" is a different question from a run of consecutive
+    failures, and the consecutive counter never trips for the case that matters
+    most: a rule failing two runs in three, getting the occasional one through,
+    looking alive on the list and quietly doing a third of its job.
+
+    Read over the last AUTOMATION_FAIL_RATE_WINDOW runs and only once there are
+    AUTOMATION_FAIL_RATE_MIN of them — one bad run out of two is 50% and means
+    nothing at all.
+    """
+    rows = (db.query(AutomationRun.outcome)
+              .filter(AutomationRun.automation_id == a.id,
+                      AutomationRun.is_test == False)                  # noqa: E712
+              .order_by(AutomationRun.id.desc())
+              .limit(AUTOMATION_FAIL_RATE_WINDOW).all())
+    # a skip is not a failure: a rule whose condition is usually false is
+    # working exactly as written
+    seen = [r[0] for r in rows if r[0] in ("ran", "failed")]
+    if not seen:
+        return 0.0, 0
+    return len([x for x in seen if x == "failed"]) / len(seen), len(seen)
+
+
 def _suspend_if_broken(db, a, board):
     """Take a rule out of service once it has failed AUTOMATION_FAIL_CUTOFF times
     in a row, and tell whoever is responsible for it.
@@ -11404,16 +11535,23 @@ def _suspend_if_broken(db, a, board):
     Only an active rule is suspended — a rule someone already paused, or a draft,
     has nothing to be taken away.
     """
-    if a.status != "active" or (a.consecutive_failures or 0) < AUTOMATION_FAIL_CUTOFF:
+    if a.status != "active":
         return
+    run_of = (a.consecutive_failures or 0) >= AUTOMATION_FAIL_CUTOFF
+    rate, seen = _failure_rate(db, a)
+    over = seen >= AUTOMATION_FAIL_RATE_MIN and rate >= AUTOMATION_FAIL_RATE
+    if not run_of and not over:
+        return
+    why = (f"נכשלה {AUTOMATION_FAIL_CUTOFF} פעמים ברצף" if run_of
+           else f"שיעור הכשלים הוא {round(rate * 100)}% מתוך {seen} הפעלות אחרונות")
     _set_automation_status(a, "paused_error")
     _queue_set_state(db, [r for r in _queue_waiting_for(db, a.id, ("pending",))],
                      "frozen", "האוטומציה הושהתה עקב שגיאות חוזרות")
-    a.consecutive_failures = AUTOMATION_FAIL_CUTOFF      # keep the count that suspended it
+    a.consecutive_failures = max(a.consecutive_failures or 0, AUTOMATION_FAIL_CUTOFF)
     for who in _automation_tell(db, a, board):
         _notify(db, who, "automation", "אוטומציה הושהתה עקב שגיאות",
-                f"האוטומציה בלוח '{board.name}' נכשלה {AUTOMATION_FAIL_CUTOFF} פעמים "
-                f"ברצף והושהתה: {_automation_label(db, board, a)}",
+                f"האוטומציה בלוח '{board.name}' {why} והושהתה: "
+                f"{_automation_label(db, board, a)}",
                 board_id=a.board_id)
 
 
@@ -11479,7 +11617,8 @@ def _acting_item(db, a, task, event):
     return t if t is not None and t.board_id == task.board_id else task
 
 
-def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""):
+def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override="",
+               start=0):
     """Run one matching rule against one item, record what came of it, and let
     the result cascade.
 
@@ -11554,25 +11693,19 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     # as whoever wrote it. `actor_id` stays the record of who tripped it.
     engine_id = _automation_identity(db)
     try:
-        # The rule's actions are one step. A rule may carry up to
-        # recipes.MAX_ACTIONS of them, and without a savepoint an action that
-        # raised halfway down the list left the ones before it written and the
-        # history saying "failed" — a rule that half-happened, which is the
-        # single hardest thing to work out afterwards. The savepoint is the
-        # rule's own: the event that tripped it, and every other rule, are
-        # untouched by this one failing.
-        sp = db.begin_nested()
-        try:
-            follow, note, _made = _run_action(
-                db, a, task, engine_id, board, event,
-                human=actor_id, owner=a.owner_id or a.created_by,
-                # what a notification calls the rule: its own name where it has
-                # one, and only then the sentence
-                notice=(a.name or "").strip())
-            sp.commit()
-        except BaseException:
-            sp.rollback()
-            raise
+        # The savepoint is per ACTION now and lives inside _run_action. It used
+        # to be the rule's, so a failure on action three took actions one and
+        # two back with it — which read well ("a rule never half-happens") and
+        # makes the retry rule impossible: "Retry מתחיל בפעולה הראשונה שנכשלה
+        # ואינו חוזר על פעולות שהצליחו" has nothing to resume from if the
+        # successes were undone. So an ACTION never half-happens, a rule may,
+        # and what it did is on the row for somebody to see.
+        follow, note, _made = _run_action(
+            db, a, task, engine_id, board, event,
+            human=actor_id, owner=a.owner_id or a.created_by,
+            # what a notification calls the rule: its own name where it has
+            # one, and only then the sentence
+            notice=(a.name or "").strip(), start=start)
     except _Skipped as sk:
         # an attempt all the same: "הפעלה אחרונה" is when it last tried, which is
         # a different question from when it last did something
@@ -11582,7 +11715,8 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         return _log_automation_run(db, board, a, task, event, "skipped", sk.reason,
                                    depth, actor_id, retry_of,
                                    status=sk.status, started=started,
-                                   conditions=verdicts, attempt=tries)
+                                   conditions=verdicts, attempt=tries,
+                                   result=getattr(sk, "report", None))
     except Exception as e:                         # noqa: BLE001
         print(f"⚠️  automation {a.id} ({a.recipe_id}) failed: {e}", flush=True)
         a.last_run_at, a.last_failure_at, a.last_outcome = now, now, "failed"
@@ -11595,6 +11729,7 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
         # crash, and the next attempt may well get through.
         cause = e.cause if isinstance(e, _Failed) else e
         permanent = isinstance(cause, _Refused)
+        report = getattr(e, "report", None)
         row = _log_automation_run(db, board, a, task, event, "failed",
                                   e.reason if isinstance(e, _Failed)
                                   else f"{type(e).__name__}: {e}",
@@ -11604,7 +11739,12 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
                                   started=started, conditions=verdicts,
                                   error_code=("refused" if permanent
                                               else type(cause).__name__),
-                                  attempt=tries)
+                                  attempt=tries, result=report)
+        # "כשל זמני ... יגרור עד שלושה ניסיונות" — and a permanent one will not,
+        # because the engine will decide the same thing in a minute
+        if not permanent:
+            _queue_retry(db, a, task, event, tries + 1,
+                         (report or {}).get("failed_at") or 1)
         _suspend_if_broken(db, a, board)
         return row
     a.last_run_at = a.last_success_at = now
@@ -12156,6 +12296,35 @@ def _queue_resume(db, a, task, event, index, minutes, human=None, owner=None):
                "source": (event or {}).get("source") or "automation"}))
 
 
+def _queue_retry(db, a, task, event, attempt, from_index):
+    """Put a temporary failure back in the queue, at the next delay.
+
+    "עד שלושה ניסיונות לאחר דקה, חמש דקות ו־15 דקות" — and no more: a fourth
+    would be the same answer a fourth time, and what the board needs by then
+    is somebody looking at it rather than another row in the log.
+
+    It carries where to start from, so the retry does not repeat the actions
+    that already worked, and the ORIGINAL event, so the chain — and with it
+    every idempotency key — is the one the first attempt used.
+    """
+    if attempt > AUTOMATION_MAX_AUTO_RETRIES + 1 or a.status != "active":
+        return
+    mins = AUTOMATION_RETRY_DELAYS[min(attempt - 2, len(AUTOMATION_RETRY_DELAYS) - 1)]
+    after = datetime.now(timezone.utc) + timedelta(minutes=mins)
+    db.add(AutomationQueue(
+        board_id=a.board_id, task_id=task.id,
+        automation_id=a.id, version=_live_version(db, a),
+        state="pending", resume_at=after.replace(tzinfo=None),
+        batch_id=((event or {}).get("batch") or "")[:36],
+        created_at=_now_naive(),
+        event={**{k: v for k, v in (event or {}).items() if not k.startswith("_")},
+               "type": "retry", "automation_id": a.id,
+               "from": max(0, int(from_index) - 1),
+               "attempt": int(attempt), "after": after.isoformat(),
+               "was": (event or {}).get("was"),
+               "source": (event or {}).get("source") or "automation"}))
+
+
 def _queue_pending(db, board_id):
     """The rows still waiting to go out. A frozen one is not among them — it is
     held, and comes back only when somebody says so."""
@@ -12328,10 +12497,20 @@ def _drain_automation_queue(db, board_id, actor_id=None, force=False):
     now = datetime.now(timezone.utc)
     for row in pending[:max(1, AUTOMATION_QUEUE_SLICE)]:
         ev = row.event or {}
-        if ev.get("type") == "resume" and not _wait_is_over(ev, now):
+        if ev.get("type") in ("resume", "retry") and not _wait_is_over(ev, now):
             continue                   # its moment has not come; it stays queued
         t = db.query(Task).filter(Task.id == row.task_id).first()
-        if ev.get("type") == "resume":
+        if ev.get("type") == "retry":
+            state, why = _retry_now(db, ev, t, row, actor_id)
+            if state == "frozen":
+                row.state, row.note = "frozen", why[:400]
+                continue
+            if state == "cancelled":
+                _queue_set_state(db, [row], "cancelled", why, actor_id)
+                sent += 1
+                continue
+            row.state = "done"
+        elif ev.get("type") == "resume":
             if t is None or t.deleted_at:
                 # "מחיקת פריט גורמת לביטול מתועד"
                 _queue_set_state(db, [row], "cancelled", "הפריט נמחק", actor_id)
@@ -12382,6 +12561,37 @@ def _wait_is_over(ev, now):
         return datetime.fromisoformat(str(ev.get("after"))) <= now
     except (TypeError, ValueError):
         return True                    # unreadable: better late than never
+
+
+def _retry_now(db, ev, task, row, actor_id=None):
+    """One automatic retry, when its minute has come.
+
+    Everything is read again — this is a firing like any other and goes through
+    _fire_rule, which re-checks the dependencies, the permissions and the
+    conditions. What it carries over is the starting point and the attempt
+    number, so it picks up at the action that failed and the log can count.
+    """
+    a = db.query(Automation).filter(Automation.id == ev.get("automation_id")).first()
+    if a is None or task is None or task.deleted_at:
+        return "cancelled", "האוטומציה או הפריט אינם קיימים"
+    board = db.query(Board).filter(Board.id == a.board_id).first()
+    if not board or board.deleted_at:
+        return "cancelled", "הלוח נמחק"
+    if _automation_freeze(db, a.board_id) is not None:
+        return "frozen", "השהיית חירום בלוח"
+    if a.status != "active":
+        # a rule somebody has already been told to look at does not need the
+        # queue going on trying it in the background
+        return "cancelled", ("האוטומציה אינה פעילה — "
+                             f"{AUTOMATION_STATUS_HE.get(a.status, a.status)}")
+    prev = (db.query(AutomationRun)
+              .filter(AutomationRun.automation_id == a.id,
+                      AutomationRun.task_id == task.id)
+              .order_by(AutomationRun.id.desc()).first())
+    _fire_rule(db, a, task, ev, actor_id or ev.get("human"), 0,
+               retry_of=prev.id if prev else None,
+               start=max(0, int(ev.get("from") or 0)))
+    return "done", ""
 
 
 def _version_config(db, a, version):
@@ -12546,6 +12756,14 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
            "on": {"options": list(recipes.ON_TARGETS),
                   "default": recipes.ON_TARGETS_DEFAULT,
                   "labels": recipes.ON_TARGETS_HE},
+           # "עד שלושה ניסיונות לאחר דקה, חמש דקות ו־15 דקות", and the rate a
+           # rule is taken out of service at — published, because a screen that
+           # said "ינוסה שוב" without knowing when would be guessing
+           "retry": {"delays": list(AUTOMATION_RETRY_DELAYS),
+                     "max_auto": AUTOMATION_MAX_AUTO_RETRIES,
+                     "fail_rate": AUTOMATION_FAIL_RATE,
+                     "fail_rate_min": AUTOMATION_FAIL_RATE_MIN,
+                     "consecutive": AUTOMATION_FAIL_CUTOFF},
            "chain": {"max_runs": AUTOMATION_CHAIN_MAX_RUNS,
                      "max_seconds": AUTOMATION_CHAIN_MAX_SECONDS,
                      "max_depth": AUTOMATION_MAX_DEPTH},
@@ -13482,8 +13700,71 @@ def automation_run_timeline(run_id: int, user_id: int = Depends(current_user_id)
                 "timeline": out}
 
 
+def _retry_from(row):
+    """Which action a retry of this row should start at — 1-based, 1 meaning
+    the beginning. The failed step where there is one; otherwise the start,
+    because a run that skipped never got as far as an action."""
+    res = row.result or {}
+    at = res.get("failed_at")
+    if at:
+        return int(at)
+    bad = next((st for st in (res.get("steps") or [])
+                if str(st.get("status") or "").startswith("failed")), None)
+    return int(bad["index"]) if bad else 1
+
+
+@app.get("/api/automation-runs/{run_id}/retry-plan")
+def automation_retry_plan(run_id: int, user_id: int = Depends(current_user_id)):
+    """What a retry of this run would actually do — before anybody presses it.
+
+    "Retry ידני יציג את הפעולות שנותרו ויחייב אישור". The confirmation is only
+    worth asking for if it is in front of something: which actions already
+    worked and will be left alone, which one failed, and what is still to do.
+    """
+    with Session(engine) as db:
+        row = db.query(AutomationRun).filter(AutomationRun.id == run_id).first()
+        if not row:
+            raise HTTPException(404, "run not found")
+        b = db.query(Board).filter(Board.id == row.board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול להפעיל אוטומציה שוב")
+        if not _can_see_run_item(db, row, user_id):
+            raise HTTPException(403, "אין לך הרשאה לפריט שההפעלה הזו פעלה עליו")
+        a = (db.query(Automation).filter(Automation.id == row.automation_id).first()
+             if row.automation_id else None)
+        acts = recipes.action_list(a.recipe_id, a.config or {}) if a else []
+        start = _retry_from(row)
+        steps = {st.get("index"): st for st in (row.result or {}).get("steps") or []}
+        plan = []
+        for i, one in enumerate(acts, start=1):
+            st = steps.get(i) or {}
+            plan.append({"index": i, "key": one["key"],
+                         "label": recipes.plain(recipes.ACTIONS.get(one["key"], one["key"])),
+                         "status": st.get("status") or "",
+                         "output": st.get("output")})
+        return {
+            "run_id": row.id, "attempt": row.attempt or 1,
+            "status": row.status or _default_status(row),
+            "from_index": start,
+            "done": [x for x in plan if x["index"] < start],
+            "remaining": [x for x in plan if x["index"] >= start],
+            "can_retry": bool(a) and row.outcome in ("skipped", "failed")
+                         and not row.is_test,
+            "auto_retries_left": max(0, AUTOMATION_MAX_AUTO_RETRIES
+                                     - max(0, (row.attempt or 1) - 1))
+                                 if row.status == "failed_temporary" else 0,
+            # "הפעלה מחדש מההתחלה היא פעולה נפרדת ... ואזהרת השפעה כפולה"
+            "restart_warning": ("הפעלה מחדש מההתחלה תבצע גם את הפעולות שכבר "
+                                "הצליחו — פריטים שנוצרו ייווצרו שוב והתראות "
+                                "יישלחו שוב. זו הפעלה חדשה עם מזהה משלה."),
+        }
+
+
 @app.post("/api/automation-runs/{run_id}/retry")
-def retry_automation_run(run_id: int, user_id: int = Depends(current_user_id)):
+def retry_automation_run(run_id: int, from_start: bool = False, confirm: bool = False,
+                         user_id: int = Depends(current_user_id)):
     """Run the rule again against the same item, replaying the same trigger.
 
     Only a run that did not do anything — skipped or failed — can be retried;
@@ -13516,7 +13797,20 @@ def retry_automation_run(run_id: int, user_id: int = Depends(current_user_id)):
         # the rule on it again would be the same answer, out loud
         _require_task_view(db, task.id, user_id)
         event = row.event or {"type": (recipes.recipe(a.recipe_id) or {}).get("trigger")}
-        made = _fire_rule(db, a, task, event, user_id, 0, retry_of=row.id)
+        start = 0
+        if from_start:
+            # A separate action, and it says so before it does it. A new chain
+            # means new idempotency keys, which is exactly what makes it run
+            # the whole rule again — and exactly why it is not the default.
+            if not confirm:
+                raise HTTPException(400, "הפעלה מחדש מההתחלה תחזור על פעולות שכבר "
+                                         "הצליחו — השפעה כפולה. יש לאשר במפורש")
+            event = {**event, "chain": uuid.uuid4().hex[:24],
+                     "id": uuid.uuid4().hex[:24]}
+        else:
+            # "מתחיל בפעולה הראשונה שנכשלה ואינו חוזר על פעולות שהצליחו"
+            start = max(0, _retry_from(row) - 1)
+        made = _fire_rule(db, a, task, event, user_id, 0, retry_of=row.id, start=start)
         row.retried_at = datetime.now(timezone.utc).replace(tzinfo=None)
         db.commit()
         if not made:
