@@ -1030,5 +1030,68 @@ ck('a board that is running says nothing',
   A.incidents=[];
 }
 
+/* ── 13: the Audit tab — who did what TO the rules ────────────────────── */
+{
+  A.tab='audit'; A.auditLoading=false; A.auditAction='';
+  A.data={automations:[],can_manage:true,can_export:false};
+  A.auditActions=[{key:'create',he:'יצירה'},{key:'pause',he:'השהיה'}];
+  A.audit=[
+    {id:1,action:'create',action_he:'יצירה',user_name:'משה כהן',service:'',
+     field:'automation',before:'',after:'כאשר נוצר פריט, שנה עדיפות',reason:'',
+     version:1,ip:'',created_at:'2026-10-25T09:00:00'},
+    {id:2,action:'manual_run',action_he:'הפעלה ידנית',user_name:'דנה',service:'',
+     field:'run',before:'',after:'פריט #5',reason:'דחוף לקראת ביקורת',
+     version:3,ip:'10.0.0.4',created_at:'2026-10-25T10:00:00'},
+    {id:3,action:'pause',action_he:'השהיה',user_name:'שירות האוטומציות',
+     service:'automation',field:'status',before:'active',after:'paused_error',
+     reason:'',version:3,ip:'',created_at:'2026-10-25T11:00:00'}];
+  let h=A.auditHTML();
+  ck('the trail says what was done, in words', h.includes('יצירה') && h.includes('הפעלה ידנית'));
+  ck('...by whom', h.includes('משה כהן') && h.includes('דנה'));
+  ck('...from what to what', h.includes('active') && h.includes('paused_error'));
+  ck('...the reason where one was asked for', h.includes('דחוף לקראת ביקורת'));
+  ck('...and which version it was done to', h.includes('גרסה 3'));
+  ck('a row the engine wrote says it was a service, not a person',
+     h.includes('automation'));
+  ck('an address appears only on the row that has one',
+     h.includes('10.0.0.4') && h.split('10.0.0.4').length===2);
+  ck('it says out loud that this is not the run log', h.includes('אינו לוג ההפעלות'));
+  ck('it can be filtered by action', h.includes('Automations.setAuditAction'));
+
+  /* Injection, against the app's REAL esc — the stub the rest of this file
+     uses passes text through, which would make this check pass on nothing. */
+  {
+    const realEsc=x=>String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const A3=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY',
+      'avatarInner','boardStatusList','boardPriorityList','customColumns','meId','api',
+      'openCellPop','closeCellPops','askConfirm','showModal','closeModals','document',
+      'renderView','localStorage', grabConst('Automations')+' return Automations;')(
+      st, realEsc, ()=>{}, {ago:()=>'עכשיו',goto(){}}, ()=>'01/01/2026',
+      ()=>'01/01/2026', ()=>'', ()=>[], ()=>[], ()=>[], ()=>1, async()=>({}),
+      ()=>{}, ()=>{}, ()=>{}, ()=>{}, ()=>{}, {getElementById:()=>null}, ()=>{},
+      localStorage);
+    A3.auditLoading=false; A3.auditAction=''; A3.auditActions=[];
+    A3.data={automations:[],can_manage:true};
+    A3.audit=[{id:4,action:'create',action_he:'יצירה',
+               user_name:'<img src=x onerror=alert(1)>',service:'',field:'',
+               before:'',after:'<script>alert(2)</script>',reason:'<b>לא</b>',
+               version:1,ip:'',created_at:'2026-10-25T09:00:00'}];
+    const bad=A3.auditHTML();
+    ck('nothing in the trail is rendered as markup',
+       !bad.includes('<img src=x') && !bad.includes('<script>alert')
+       && !bad.includes('<b>לא</b>'));
+    ck('...and it is still readable, not dropped',
+       bad.includes('&lt;img src=x') && bad.includes('&lt;b&gt;לא'));
+  }
+
+  A.audit=[];
+  ck('a board nobody has touched says so', A.auditHTML().includes('עוד לא נרשמה פעולה'));
+  A.auditAction='pause';
+  ck('...and a filter that found nothing says something else',
+     A.auditHTML().includes('אין רשומות בסינון הזה'));
+  A.audit=null; A.auditAction=''; A.tab='manage';
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

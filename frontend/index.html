@@ -7578,11 +7578,14 @@ const Automations = {
     if(t!=='manage'){ this.picked=new Set(); this.bulkRes=null; }
     this.render();
     if(t==='history'&&!this.runsLoaded) this.loadRuns();
+    if(t==='audit'&&!this.audit) this.loadAudit();
   },
 
   render(){
     const m=document.getElementById('modal'); if(!m||!m.classList.contains('open'))return;
-    const body=this.tab==='create'?this.createHTML():this.tab==='history'?this.historyHTML():this.manageHTML();
+    const body=this.tab==='create'?this.createHTML()
+      :this.tab==='history'?this.historyHTML()
+      :this.tab==='audit'?this.auditHTML():this.manageHTML();
     m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+
       `<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות — ${esc(st.board.name)}</h2>
       <div class="mbody">${this.tabsHTML()}${body}</div>`;
@@ -7592,8 +7595,13 @@ const Automations = {
     const n=(this.data.automations||[]).length, h=this.runCounts.total||0;
     const b=(id,he,ic,badge)=>`<button class="lg-tab ${this.tab===id?'on':''}" onclick="Automations.setTab('${id}')">
         <i class="fa-solid ${ic}"></i> ${he}${badge?` <span class="au-count">${badge}</span>`:''}</button>`;
+    /* Audit is its own tab and not a filter on the history: they answer two
+       different questions, and folding them together would mean scrolling
+       past a hundred runs to find who switched a rule off. Only for somebody
+       who manages the board — the server refuses anyone else anyway. */
     return `<div class="lg-tabs">${b('create','יצירה','fa-plus')}${b('manage','ניהול','fa-sliders',n)}${
-      b('history','היסטוריית הפעלות','fa-clock-rotate-left',h)}</div>`;
+      b('history','היסטוריית הפעלות','fa-clock-rotate-left',h)}${
+      this.data.can_manage?b('audit','Audit','fa-shield-halved'):''}</div>`;
   },
 
   /* ---- יצירה ---- a template, or the same thing assembled by hand ---- */
@@ -8495,6 +8503,54 @@ const Automations = {
       this.editing=null;
     }catch(e){ toast(e.detail||'לא ניתן לשמור'); return; }
     await this.load(); this.render();
+  },
+
+  /* ---- Audit ---- who did what TO the rules, which the run log cannot say ---- */
+  async loadAudit(){
+    this.auditLoading=true; this.render();
+    const qs=[]; if(meId())qs.push('user_id='+meId());
+    if(this.auditAction)qs.push('action='+this.auditAction);
+    try{
+      const d=await api('/api/boards/'+st.board.id+'/automations/audit'
+                        +(qs.length?'?'+qs.join('&'):''));
+      this.audit=d.audit||[]; this.auditActions=d.actions||[];
+    }catch(e){ this.audit=[]; toast((e&&e.detail)||'טעינת ה-Audit נכשלה'); }
+    this.auditLoading=false; this.render();
+  },
+  setAuditAction(v){ this.auditAction=v; this.loadAudit(); },
+
+  auditHTML(){
+    if(this.auditLoading) return '<div class="spin"></div>';
+    const sel=`<select onchange="Automations.setAuditAction(this.value)">
+        <option value="">כל הפעולות</option>
+        ${(this.auditActions||[]).map(x=>`<option value="${esc(x.key)}" ${
+            this.auditAction===x.key?'selected':''}>${esc(x.he)}</option>`).join('')}
+      </select>`;
+    const rows=(this.audit||[]).length?(this.audit||[]).map(r=>`<div class="ah-row">
+      <span class="ah-out ${r.action==='delete'?'fail':r.action==='create'?'ok':'skip'}">${
+        esc(r.action_he||r.action)}</span>
+      <div class="ah-main">
+        <div class="ah-l1">
+          <b>${esc(r.user_name)}</b>
+          ${r.service?`<span class="ah-tag" title="בוצע בידי שירות ולא בידי אדם">${esc(r.service)}</span>`:''}
+          ${r.version?`<span class="ah-tag">גרסה ${r.version}</span>`:''}
+          ${r.field?`<span class="ah-tag">${esc(r.field)}</span>`:''}
+          ${r.ip?`<span class="ah-tag" title="כתובת מקור, לפי מדיניות הארגון">${esc(r.ip)}</span>`:''}
+        </div>
+        ${(r.before||r.after)?`<div class="ah-sent">${esc(r.before)}${
+          r.before&&r.after?' ← ':''}${esc(r.after)}</div>`:''}
+        ${r.reason?`<div class="ah-why"><i class="fa-solid fa-circle-info"></i> ${esc(r.reason)}</div>`:''}
+      </div>
+      <span class="ah-when" title="${esc(fdatetimeY(r.created_at))}">${
+        esc(BoardLog.ago(r.created_at))}</span>
+    </div>`).join('')
+      :`<div class="empty" style="padding:40px"><i class="fa-solid fa-shield-halved"></i>
+         <div>${this.auditAction?'אין רשומות בסינון הזה':'עוד לא נרשמה פעולה על האוטומציות של הלוח'}</div></div>`;
+    return `<div class="au-chips">${sel}</div>
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:8px">
+        <i class="fa-solid fa-circle-info"></i>
+        זה אינו לוג ההפעלות — כאן נרשם מי שינה את הכללים עצמם, מתי, וממה למה.</div>
+      <div class="logs-list">${rows}</div>`;
   },
 
   /* ---- טיפול בכשלים ---- who is on it, and what they found ---- */

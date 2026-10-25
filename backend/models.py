@@ -1112,6 +1112,20 @@ class AuditLog(Base):
     # change made in monday last year would write that value onto the item now.
     # Same shape as Comment.origin, for the same reason.
     origin = Column(JSON, nullable=True)
+    # ── what an automation's trail needs that an item's does not ──
+    # Why it was done, where it was asked for — a system admin stepping over a
+    # rule's conditions has to say, and the sentence belongs here rather than
+    # buried in a run's reason text.
+    reason = Column(Text, nullable=True)
+    # The caller's address, stored ONLY where the organisation asked for it:
+    # an address is personal data and most have not.
+    ip = Column(String(45), nullable=True)
+    # Which version of the rule this was done to, so a row can be placed in
+    # the history rather than merely dated.
+    version = Column(Integer, nullable=True)
+    # "משתמש או שירות": a suspension nobody chose was not done by a person,
+    # and writing a person's name against it would be a lie.
+    actor_service = Column(String(40), nullable=True)
     changer = relationship("User", foreign_keys=[changed_by])
 
 

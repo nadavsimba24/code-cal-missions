@@ -294,6 +294,11 @@ def _migrate():
             if qcols and name not in qcols:
                 conn.execute(text(f"ALTER TABLE automation_queue ADD COLUMN {name} {ddl}"))
         rcols = {r[1] for r in conn.execute(text("PRAGMA table_info(automation_runs)"))}
+        lcols = {r[1] for r in conn.execute(text("PRAGMA table_info(audit_logs)"))}
+        for name, ddl in [("reason", "TEXT"), ("ip", "VARCHAR(45)"),
+                          ("version", "INTEGER"), ("actor_service", "VARCHAR(40)")]:
+            if lcols and name not in lcols:
+                conn.execute(text(f"ALTER TABLE audit_logs ADD COLUMN {name} {ddl}"))
         for name, ddl in [("source", "VARCHAR(16)"), ("batch_id", "VARCHAR(36)"),
                           ("event_id", "VARCHAR(32)"), ("chain_id", "VARCHAR(32)"),
                           ("result", "JSON"), ("status", "VARCHAR(24)"),
@@ -434,6 +439,10 @@ else:
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS event_id VARCHAR(32)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS chain_id VARCHAR(32)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS result JSONB",
+        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason TEXT",
+        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip VARCHAR(45)",
+        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS version INTEGER",
+        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS actor_service VARCHAR(40)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS status VARCHAR(24)",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS queued_at TIMESTAMP",
         "ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS started_at TIMESTAMP",
@@ -9940,6 +9949,21 @@ def _automation_label(db, board, a):
 
 def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None,
                 notice="", start=0):
+    """Thin wrapper: whose work this is, cleared on every way out.
+
+    The marker has to come off even when an action raises, or the next thing
+    this session writes — a person's own edit, moments later — would be filed
+    against a rule that is no longer running.
+    """
+    try:
+        return _run_action_inner(db, a, task, actor_id, board, event, human, owner,
+                                 notice, start)
+    finally:
+        db.info.pop("_acting_rule", None)
+
+
+def _run_action_inner(db, a, task, actor_id, board, event=None, human=None, owner=None,
+                      notice="", start=0):
     """Perform the rule's actions, in order.
 
     Returns (follow-up events, note, made) — `made` being what the actions
@@ -9963,6 +9987,9 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
     """
     out, skipped, made, steps = [], [], [], []
     label = _automation_label(db, board, a)
+    # whose work the item's own log will show for the length of these actions
+    db.info["_acting_rule"] = (getattr(a, "id", None),
+                               (a.name or "").strip() or _automation_plain_name(db, board, a))
     # a notification names the rule; the board's own screens show the sentence
     told = notice or _automation_plain_name(db, board, a)
     acts = recipes.action_list(a.recipe_id, a.config or {})[start:]
@@ -10022,7 +10049,7 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
             sp.rollback()
             skipped.append(sk.reason)
             step["status"] = sk.status
-            step["output"] = sk.reason
+            step["output"] = _scrub_secrets(sk.reason)
         except (_Waiting, Exception) as e:
             try:
                 sp.rollback()
@@ -10032,7 +10059,7 @@ def _run_action(db, a, task, actor_id, board, event=None, human=None, owner=None
                 raise
             step["status"] = ("failed_permanent" if isinstance(e, _Refused)
                               else "failed_temporary")
-            step["output"] = str(e)
+            step["output"] = _scrub_secrets(str(e))
             # "כשל עוצר את הפעולות הבאות" — and says which one it was, because
             # "the rule failed" over ten actions is not an answer anybody can
             # act on. Nothing before it survives either: the rule runs inside
@@ -10875,7 +10902,11 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
             task_id=task.id, task_title=(task.title or "")[:300],
             event={k: v for k, v in (event or {}).items() if not k.startswith("_")},
             outcome=_run_outcome(status, outcome), status=status or "",
-            reason=(reason or "")[:400], error_code=(error_code or "")[:40],
+            # "לסנן מידע חסוי משגיאות" — a driver that puts a connection
+            # string in its message would otherwise put a password in a log
+            # that is exported
+            reason=_scrub_secrets((reason or ""))[:400],
+            error_code=(error_code or "")[:40],
             attempt=max(1, int(attempt or 1)),
             # the three moments. The event carries when it ARRIVED, which on a
             # cascade is when the change that started it did, not when this
@@ -10956,8 +10987,9 @@ def _retention_days(db, board_id, key, default):
     """
     try:
         b = db.query(Board).filter(Board.id == board_id).first()
-        org = (db.query(Organization).filter(Organization.id == b.organization_id).first()
-               if b and b.organization_id else None)
+        org = ((db.query(Organization).filter(Organization.id == b.organization_id).first()
+                if b and b.organization_id else None)
+               or db.query(Organization).order_by(Organization.id).first())
         v = ((org.settings or {}).get("retention") or {}).get(key) if org else None
         return max(1, int(v)) if v else default
     except Exception:                              # noqa: BLE001
@@ -11019,6 +11051,139 @@ def _automation_owner_state(db, board, a):
         return {"owner_id": owner_id, "needs_owner": True,
                 "reason": f"{u.name} אינו מנהל הלוח יותר"}
     return {"owner_id": owner_id, "needs_owner": False, "reason": ""}
+
+
+# ── Audit של האוטומציות ────────────────────────────────────────────────────
+# Separate from the run log, and about a different question. The run log keeps
+# what the rules DID; this keeps what people did TO them — and a rule rewritten
+# on Tuesday reads exactly like a rule that has always said this in a log that
+# only has runs in it.
+AUTOMATION_AUDIT_ACTIONS = (
+    "create", "update", "version", "owner", "order", "dry_run", "manual_run",
+    "activate", "pause", "retry", "permissions", "delete", "freeze", "export",
+    "dependency_broken", "transfer_owner", "board_deleted", "handling",
+)
+AUTOMATION_AUDIT_HE = {
+    "create": "יצירה", "update": "שינוי הגדרה", "version": "גרסה",
+    "owner": "העברת בעלות", "order": "סדר וחשיבות", "dry_run": "Dry Run",
+    "manual_run": "הפעלה ידנית", "activate": "הפעלה", "pause": "השהיה",
+    "retry": "ניסיון חוזר", "permissions": "שינוי הרשאות", "delete": "מחיקה",
+    "freeze": "השבתת חירום", "export": "ייצוא",
+    "dependency_broken": "תלות נשברה", "transfer_owner": "העברת בעלות",
+    "board_deleted": "הלוח נמחק", "handling": "טיפול בכשל",
+}
+
+# ── סינון סודות ────────────────────────────────────────────────────────────
+# A driver that puts a connection string in its exception message puts a
+# password into the run log, and the run log is exported. Matched on the
+# SHAPES secrets come in rather than on a list of forbidden words, because the
+# next secret will have a name nobody thought of.
+_SECRET_PATTERNS = [
+    # key=value and "key": "value", for the words that name a secret
+    re.compile(r'(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|apikey|'
+               r'authorization|auth|bearer|sas|connectionstring|conn[_-]?str)\b'
+               r'(\s*[:=]\s*|"\s*:\s*")([^\s,;"\'}\]]+)'),
+    re.compile(r'\bBearer\s+[A-Za-z0-9._\-]{12,}'),          # a bearer token
+    re.compile(r'\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{4,}'),  # JWT
+    re.compile(r'\bAKIA[0-9A-Z]{12,}\b'),                     # an AWS key id
+    re.compile(r'(?i)\b[a-z0-9+/]{40,}={0,2}\b'),             # a long opaque blob
+]
+_SECRET_MASK = "***"
+
+
+def _scrub_secrets(txt):
+    """The same text with anything shaped like a secret taken out.
+
+    Deliberately NOT "drop the whole message": "RuntimeError: connect failed"
+    is what somebody needs to act on, and throwing it away to be safe makes
+    the log useless, which is its own kind of unsafe.
+    """
+    if not txt:
+        return txt
+    out = str(txt)
+    for rx in _SECRET_PATTERNS:
+        if rx.groups >= 3:
+            out = rx.sub(lambda m: f"{m.group(1)}{m.group(2)}{_SECRET_MASK}", out)
+        else:
+            out = rx.sub(_SECRET_MASK, out)
+    return out
+
+
+def _same_org(db, board, user_id):
+    """Whether this reader belongs to the board's organisation at all.
+
+    Checked separately from the board role because the two answer different
+    questions, and a role row that outlived a move between organisations
+    would otherwise be a way in.
+    """
+    if user_id is None:
+        return True
+    u = db.query(User).filter(User.id == user_id).first()
+    if u is None:
+        return False
+    if board.organization_id is None or u.organization_id is None:
+        return True                     # single-tenant install: nothing to separate
+    return int(board.organization_id) == int(u.organization_id)
+
+
+def _audit_ip_allowed(db, board_id):
+    """Whether this organisation asked for caller addresses to be kept.
+
+    Off by default: an address is personal data, and "we log everything" is a
+    decision somebody has to take rather than one a default takes for them.
+    """
+    try:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        # a board with no organisation of its own is this install's only one —
+        # the policy still applies to it, or "we asked for addresses" would be
+        # a setting that silently does nothing on most of the boards here
+        org = ((db.query(Organization).filter(Organization.id == b.organization_id).first()
+                if b and b.organization_id else None)
+               or db.query(Organization).order_by(Organization.id).first())
+        return bool(((org.settings or {}).get("audit") or {}).get("store_ip")) if org else False
+    except Exception:                              # noqa: BLE001
+        return False
+
+
+def _client_ip(request):
+    if request is None:
+        return ""
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    return (fwd or getattr(getattr(request, "client", None), "host", "") or "")[:45]
+
+
+def _audit_automation(db, a, action, field="", before=None, after=None,
+                      actor_id=None, reason="", request=None, service="",
+                      board_id=None, version=None):
+    """One row of the automations' own trail. Never raises.
+
+    `before`/`after` are SUMMARIES, not the whole configuration: the trail is
+    read by a person asking what changed, and a rule's full JSON on every row
+    is both unreadable and the easiest place for a secret somebody pasted into
+    a text field to end up.
+    """
+    try:
+        bid = board_id if board_id is not None else getattr(a, "board_id", None)
+        db.add(AuditLog(
+            entity_type="automation",
+            entity_id=getattr(a, "id", 0) or 0,
+            action=action if action in AUTOMATION_AUDIT_ACTIONS else "update",
+            field_name=(field or "")[:200],
+            old_value=_scrub_secrets(None if before is None else str(before)[:600]),
+            new_value=_scrub_secrets(None if after is None else str(after)[:600]),
+            reason=_scrub_secrets((reason or "")[:600]) or None,
+            version=version if version is not None else (
+                _live_version(db, a) if getattr(a, "id", None) else None),
+            actor_service=(service or None),
+            ip=(_client_ip(request) if bid and _audit_ip_allowed(db, bid) else None),
+            # the board the rule belonged to, stamped on the row so a DELETED
+            # rule's trail can still be found — there is nothing left to join
+            # to once the automation row is gone, and that trail is precisely
+            # the one somebody comes looking for
+            origin=({"board_id": int(bid)} if bid else None),
+            changed_by=actor_id))
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  automation audit not written ({action}): {e}", flush=True)
 
 
 def _automation_tell(db, a, board):
@@ -13057,7 +13222,8 @@ def org_settings(user_id: int = Depends(current_user_id)):
                                           or _zone(DEFAULT_TZ_NAME) or _IL_TZ),
                 "default_timezone": DEFAULT_TZ_NAME,
                 "due_default_hour": DUE_DEFAULT_HOUR,
-                "retention": _org_retention(cfg)}
+                "retention": _org_retention(cfg),
+                "audit": dict(cfg.get("audit") or {"store_ip": False})}
 
 
 @app.patch("/api/organization/settings")
@@ -13068,6 +13234,14 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
         org = db.query(Organization).order_by(Organization.id).first()
         if not org:
             raise HTTPException(404, "לא נמצא ארגון")
+        if "audit" in data:
+            want = data.get("audit") or {}
+            cfg = dict(getattr(org, "settings", None) or {})
+            au = dict(cfg.get("audit") or {})
+            if "store_ip" in want:
+                au["store_ip"] = bool(want["store_ip"])
+            cfg["audit"] = au
+            org.settings = cfg
         if "retention" in data:
             # "בכפוף למדיניות הארגון" — an organisation may keep less, and may
             # not keep an Audit for less than the law it is subject to, which
@@ -13098,7 +13272,86 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
         return {"timezone": cfg.get("timezone") or "",
                 "effective_timezone": str(_zone(cfg.get("timezone"))
                                           or _zone(DEFAULT_TZ_NAME) or _IL_TZ),
-                "retention": _org_retention(cfg)}
+                "retention": _org_retention(cfg),
+                "audit": dict(cfg.get("audit") or {"store_ip": False})}
+
+
+@app.get("/api/boards/{board_id}/automations/audit")
+def automation_audit(board_id: int, automation_id: int = 0, action: str = "",
+                     limit: int = 200, user_id: int = Depends(current_user_id)):
+    """Who did what to this board's rules — the trail the run log cannot keep.
+
+    Separate from the history of runs on purpose, and read by a different
+    question: not "what did the rules do" but "who changed this one, and when,
+    and from what to what".
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        # "להפריד בין Tenants" — the audit is the single most attractive thing
+        # on this system to read about somebody else, so the organisation is
+        # checked here and not only the board role
+        if not _same_org(db, b, user_id):
+            raise HTTPException(403, "הלוח אינו בארגון שלך")
+        if not _can_manage_automations(db, b, user_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לצפות ב-Audit של האוטומציות")
+        want = max(1, min(limit, 500))
+        ids = {x[0] for x in db.query(Automation.id)
+               .filter(Automation.board_id == board_id).all()}
+        q = db.query(AuditLog).filter(AuditLog.entity_type.in_(
+            ("automation", "automation_export")))
+        if automation_id:
+            q = q.filter(AuditLog.entity_id == automation_id,
+                         AuditLog.entity_type == "automation")
+        if action:
+            q = q.filter(AuditLog.action == action)
+
+        def ours(r):
+            """Is this row about THIS board?
+
+            Three ways it can be, and the order matters: the rule is still
+            here, or the row remembers which board it was written for (which
+            is what survives the rule being deleted), or it is an export,
+            which is filed against the board itself.
+            """
+            if r.entity_type == "automation_export":
+                return r.entity_id == board_id
+            if r.entity_id in ids:
+                return True
+            og = r.origin if isinstance(r.origin, dict) else None
+            return bool(og) and og.get("board_id") == board_id
+
+        # read in pages rather than all at once: the table is every entity's
+        # audit, and a board's own rows can be sparse in it
+        keep, seen_rows, page = [], 0, 0
+        while len(keep) < want and page < 20:
+            batch = (q.order_by(AuditLog.id.desc())
+                      .offset(page * want * 5).limit(want * 5).all())
+            if not batch:
+                break
+            keep += [r for r in batch if ours(r)]
+            seen_rows += len(batch)
+            page += 1
+        keep = keep[:want]
+        uname = lambda uid: (db.query(User.name).filter(User.id == uid).scalar() or "") if uid else ""
+        return {"audit": [{
+            "id": r.id, "automation_id": (r.entity_id if r.entity_type == "automation"
+                                          else None),
+            "entity": r.entity_type,
+            "action": r.action or "", "action_he": AUTOMATION_AUDIT_HE.get(r.action, r.action or ""),
+            "field": r.field_name or "",
+            "before": r.old_value or "", "after": r.new_value or "",
+            "reason": r.reason or "", "version": r.version,
+            "ip": r.ip or "",
+            "user_id": r.changed_by,
+            "user_name": (uname(r.changed_by) or r.actor_service
+                          or ("שירות האוטומציות" if r.actor_service else "מערכת")),
+            "service": r.actor_service or "",
+            "created_at": _iso(r.created_at),
+        } for r in keep],
+            "actions": [{"key": k, "he": AUTOMATION_AUDIT_HE[k]}
+                        for k in AUTOMATION_AUDIT_ACTIONS]}
 
 
 @app.get("/api/boards/{board_id}/automations/incidents")
@@ -13439,7 +13692,8 @@ def _automation_status_from(data, current="active"):
 
 
 @app.post("/api/boards/{board_id}/automations")
-def create_automation(board_id: int, data: dict, user_id: int = Depends(current_user_id)):
+def create_automation(board_id: int, data: dict, request: Request = None,
+                      user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b or b.deleted_at:
@@ -13482,6 +13736,9 @@ def create_automation(board_id: int, data: dict, user_id: int = Depends(current_
         if a.owner_id != user_id:
             _audit_owner_change(db, a, user_id, a.owner_id, user_id)
         _record_automation_version(db, b, a, user_id)
+        _audit_automation(db, a, "create", "automation",
+                          after=_automation_label(db, b, a),
+                          actor_id=user_id, request=request)
         db.commit()
         db.refresh(a)
         return _automation_json(db, b, a)
@@ -13558,7 +13815,8 @@ def automation_versions(automation_id: int, user_id: int = Depends(current_user_
 
 
 @app.patch("/api/automations/{automation_id}")
-def update_automation(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
+def update_automation(automation_id: int, data: dict, request: Request = None,
+                      user_id: int = Depends(current_user_id)):
     """Switch a rule on/off, change what it was built with, or hand it over.
 
     Two speeds on purpose. Metadata — the name, the description, the importance,
@@ -13575,6 +13833,8 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
         if not b or not _can_manage_automations(db, b, user_id):
             raise HTTPException(403, "רק מנהל הלוח יכול לשנות אוטומציות")
         before = _snapshot_automation(a)
+        _was_status, _was_order = a.status, (a.run_order, a.importance)
+        _was_name = (a.name or "", a.description or "")
         _warn = []
         if "is_active" in data or "status" in data:
             want = _automation_status_from(data, a.status or "active")
@@ -13617,6 +13877,26 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
             setattr(a, k, v)
         if "owner_id" in data and a.owner_id != _prev_owner:
             _audit_owner_change(db, a, _prev_owner, a.owner_id, user_id)
+            _audit_automation(db, a, "owner", "owner_id", before=_prev_owner,
+                              after=a.owner_id, actor_id=user_id, request=request)
+        # Each of these is its own line in the trail. "update" over all of them
+        # would be true and useless: "who switched this on" and "who renamed
+        # it" are different questions, asked by different people.
+        if a.status != _was_status:
+            _audit_automation(db, a, "activate" if a.status == "active"
+                              else "delete" if a.status == "deleting" else "pause",
+                              "status", before=_was_status, after=a.status,
+                              reason=str(data.get("reason") or ""),
+                              actor_id=user_id, request=request)
+        if (a.run_order, a.importance) != _was_order:
+            _audit_automation(db, a, "order", "run_order/importance",
+                              before=f"{_was_order[0]}/{_was_order[1]}",
+                              after=f"{a.run_order}/{a.importance}",
+                              actor_id=user_id, request=request)
+        if (a.name or "", a.description or "") != _was_name:
+            _audit_automation(db, a, "update", "name",
+                              before=_was_name[0], after=a.name or "",
+                              actor_id=user_id, request=request)
         if "config" in data:
             # An ACTIVE rule's configuration never changes under the save. It is
             # written as a draft and the live rule goes on running until someone
@@ -13635,12 +13915,19 @@ def update_automation(automation_id: int, data: dict, user_id: int = Depends(cur
                 snap = _snapshot_automation(a)
                 snap["config"] = cfg
                 _record_automation_version(db, b, a, user_id, before=before, draft=snap)
+                _audit_automation(db, a, "version", "config",
+                                  before="הגרסה הפעילה", after="נשמרה טיוטת גרסה",
+                                  actor_id=user_id, request=request)
                 a.updated_by = user_id
                 a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 db.commit()
                 db.refresh(a)
                 return {**_automation_json(db, b, a), "warnings": _warn}
             a.config = cfg
+            _audit_automation(db, a, "update", "config",
+                              before=(before or {}).get("sentence") or "הגדרה קודמת",
+                              after=_automation_label(db, b, a),
+                              actor_id=user_id, request=request)
         a.updated_by = user_id
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         _record_automation_version(db, b, a, user_id, before=before)
@@ -13673,6 +13960,11 @@ def delete_automation(automation_id: int, cancel_pending: bool = False,
         # sentence and the item title, so it still reads without the rule behind it
         (db.query(AutomationRun).filter(AutomationRun.automation_id == a.id)
            .update({AutomationRun.automation_id: None}, synchronize_session=False))
+        # written BEFORE the delete, while there is still a rule to describe —
+        # and it outlives it, which is the whole point of a separate trail
+        _audit_automation(db, a, "delete", "automation",
+                          before=_automation_label(db, b, a), after="נמחקה",
+                          actor_id=user_id, board_id=a.board_id)
         db.delete(a)
         db.commit()
         return {"status": "deleted", "id": automation_id}
@@ -14166,6 +14458,11 @@ def retry_automation_run(run_id: int, from_start: bool = False, confirm: bool = 
             start = max(0, _retry_from(row) - 1)
         made = _fire_rule(db, a, task, event, user_id, 0, retry_of=row.id, start=start)
         row.retried_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        _audit_automation(db, a, "retry", "run",
+                          before=f"הפעלה #{row.id}",
+                          after=("הפעלה מחדש מההתחלה" if from_start
+                                 else f"המשך מפעולה {start + 1}"),
+                          actor_id=user_id)
         db.commit()
         if not made:
             raise HTTPException(400, "ההפעלה החוזרת לא נרשמה")
@@ -15163,7 +15460,7 @@ def compare_automation_versions(automation_id: int, a: int = 0, b: int = 0,
                 "groups": groups, "identical": not groups}
 
 
-@app.post("/api/automations/{automation_id}/test")
+@app.post("/api/automations/{automation_id}/test")   # noqa: E302
 def test_automation(automation_id: int, data: dict, user_id: int = Depends(current_user_id)):
     """A Dry Run on one item: would it fire, and what exactly would it do.
 
@@ -15204,6 +15501,9 @@ def test_automation(automation_id: int, data: dict, user_id: int = Depends(curre
             tested_by=user_id,
             created_at=datetime.now(timezone.utc).replace(tzinfo=None))
         db.add(row)
+        _audit_automation(db, a, "dry_run", "test",
+                          after=f"פריט #{task.id} · {found['verdict']}",
+                          actor_id=user_id)
         _prune_test_runs(db)
         db.commit()
         db.refresh(row)
@@ -15269,6 +15569,9 @@ def run_automation_now(automation_id: int, data: dict, user_id: int = Depends(cu
         trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
         row = _fire_rule(db, a, task, {"type": trig, "manual": True, "source": "manual"},
                          user_id, 0, override=override)
+        _audit_automation(db, a, "manual_run", "run",
+                          after=f"פריט #{task.id}: {(task.title or '')[:120]}",
+                          reason=override, actor_id=user_id)
         db.commit()
         if not row:
             raise HTTPException(400, "ההפעלה לא נרשמה")
@@ -15663,7 +15966,8 @@ def _freeze_json(db, f):
 
 
 @app.post("/api/admin/automations/freeze")
-def admin_automations_freeze(data: dict, user_id: int = Depends(current_user_id)):
+def admin_automations_freeze(data: dict, request: Request = None,
+                             user_id: int = Depends(current_user_id)):
     """Stop automations — one board's, or the whole organisation's.
 
     An organisation-wide stop takes two things a board-level one does not: a
@@ -15710,6 +16014,17 @@ def admin_automations_freeze(data: dict, user_id: int = Depends(current_user_id)
                         old_value=None,
                         new_value=f"{'ארגון' if scope == 'org' else board.name}: {reason}"[:2000],
                         changed_by=user_id))
+        # and on the automations' own trail, where somebody looking at a board
+        # that has gone quiet will actually be looking
+        for one in db.query(Automation).filter(
+                Automation.board_id == board.id).all() if board else []:
+            _audit_automation(db, one, "freeze", scope,
+                              after="האוטומציות בלוח הושבתו", reason=reason,
+                              actor_id=user_id, request=request)
+        if not board:
+            _audit_automation(db, None, "freeze", scope,
+                              after="האוטומציות בארגון הושבתו", reason=reason,
+                              actor_id=user_id, request=request, board_id=None)
         # the affected rules are counted for the report, not switched: releasing
         # the freeze has to put the board back exactly as it was
         n = db.query(Automation).filter(Automation.is_active == True)           # noqa: E712
@@ -16541,10 +16856,19 @@ def _can_comment(db, board, user):
     return True
 
 def _audit(db, entity_id, action, field=None, old=None, new=None, user_id=None):
+    # "לוג הפריט מציג שהשינוי בוצע על ידי האוטומציה ואת שמה" — its NAME. One
+    # engine account against every change reads as "מערכת" twelve times over
+    # and answers nothing. The rule in force is marked on the session for the
+    # length of its own actions (see _run_action), so none of the dozen call
+    # sites below has to carry it.
+    rule = db.info.get("_acting_rule") if hasattr(db, "info") else None
     db.add(AuditLog(entity_type="task", entity_id=entity_id, action=action,
                     field_name=field,
                     old_value=(None if old is None else str(old)),
                     new_value=(None if new is None else str(new)),
+                    origin=({"source": "automation", "automation_id": rule[0],
+                             "author": rule[1]} if rule else None),
+                    actor_service=("automation" if rule else None),
                     changed_by=user_id))
 
 def _serialize_comment(c, db):
@@ -16895,10 +17219,20 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
                         "old": vals[0], "new": vals[1],
                         "origin": (og or {}).get("source") or "",
                         "user_id": l.changed_by,
-                        "user_name": (u.name if u else None) or (og or {}).get("author") or "מערכת",
+                        # a rule's own name where a rule did it, the engine
+                        # account's otherwise — "מערכת" says nothing twelve
+                        # times over on a board with twelve rules
+                        "user_name": ((og or {}).get("author")
+                                      or (u.name if u else None) or "מערכת"),
                         # imported history is read-only — see the note in
                         # _board_activity_rows
-                        "can_undo": l.action == "update" and not og,
+                        # An imported row offers no undo: the change happened
+                        # in monday and reverting it would write that value
+                        # onto the item now. An AUTOMATION's change is the
+                        # opposite case — the person looking at what a rule did
+                        # to their item is exactly who wants it back.
+                        "can_undo": (l.action == "update"
+                                     and (og or {}).get("source") in (None, "", "automation")),
                         "created_at": l.created_at})
         return {"activity": out}
 
@@ -17009,7 +17343,8 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
                     # that value onto the item now — from a button that looks
                     # exactly like every other undo on the page.
                     "origin": (og or {}).get("source") or "",
-                    "can_undo": l.action == "update" and not og,
+                    "can_undo": (l.action == "update"
+                                 and (og or {}).get("source") in (None, "", "automation")),
                     "created_at": l.created_at})
         if len(out) >= limit:
             break
