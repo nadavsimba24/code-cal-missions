@@ -31,7 +31,7 @@ import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
     AutomationTestRun, AutomationQueue, AutomationCreation, AutomationActionKey,
-    AutomationIncident,
+    AutomationIncident, EventOutbox,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
@@ -8692,6 +8692,18 @@ WORK_START_HOUR = int(os.getenv("WORK_START_HOUR", "8"))
 WORK_END_HOUR = int(os.getenv("WORK_END_HOUR", "17"))
 WORK_HOURS_PER_DAY = max(1, WORK_END_HOUR - WORK_START_HOUR)
 
+# ── Outbox ─────────────────────────────────────────────────────────────────
+# How many times a business event is tried before it is set aside. Three,
+# because a bus that has refused three times is down rather than busy, and a
+# row retried forever is a row nobody ever looks at.
+OUTBOX_MAX_ATTEMPTS = 3
+
+# ── מכסות ──────────────────────────────────────────────────────────────────
+# The share of the month's allowance at which somebody is told. Not a wall:
+# warning at four fifths is what gives an organisation time to decide, and
+# deciding is the only thing that can actually be done about a quota.
+AUTOMATION_QUOTA_WARN = 0.8
+
 # ── שמירת נתונים ───────────────────────────────────────────────────────────
 # "לוגי הפעלה יישמרו 12 חודשים ונתוני Audit שבע שנים כברירת מחדל, בכפוף
 # למדיניות הארגון" — a default, not the law, which is why both are readable
@@ -10942,6 +10954,64 @@ def _log_automation_run(db, board, a, task, event, outcome, reason="", depth=0,
         return None
 
 
+def _emit(db, kind, board_id=None, task_id=None, automation_id=None,
+          run_id=None, **payload):
+    """Record a business event, to be sent once the transaction has landed.
+
+    Written INSIDE the caller's transaction on purpose: an event that went out
+    before the commit announces something that may yet be rolled back, and one
+    sent after it in a separate step is lost if the process dies in between.
+    The row is the only version of this that is true in both directions.
+
+    Never raises: announcing the work must not be able to fail the work.
+    """
+    try:
+        seq = 1
+        if task_id:
+            last = (db.query(func.max(EventOutbox.seq))
+                      .filter(EventOutbox.task_id == task_id).scalar())
+            seq = int(last or 0) + 1
+        db.add(EventOutbox(kind=kind, board_id=board_id, task_id=task_id,
+                           automation_id=automation_id, run_id=run_id,
+                           seq=seq, payload=_plain_json(payload or {}),
+                           created_at=_now_naive()))
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  outbox not written ({kind}): {e}", flush=True)
+
+
+def _drain_outbox(db, board_id=None, limit=200):
+    """Send what has not gone out, oldest first. Returns how many went.
+
+    Ascending by id, which for one item is ascending by `seq` — they were
+    written in the order they happened and they leave in the same order.
+
+    At-least-once: a row is marked sent only after the bus has taken it, so a
+    crash in between means it goes again. Every consumer in this module keys
+    off an idempotency key, which is what makes the second one harmless.
+    """
+    q = (db.query(EventOutbox)
+           .filter(EventOutbox.sent_at == None,                     # noqa: E711
+                   EventOutbox.dead_at == None))                    # noqa: E711
+    if board_id is not None:
+        q = q.filter(EventOutbox.board_id == board_id)
+    sent = 0
+    for row in q.order_by(EventOutbox.id).limit(max(1, limit)).all():
+        try:
+            bus.publish(row.kind, board_id=row.board_id, task_id=row.task_id,
+                        **(row.payload or {}))
+            row.sent_at = _now_naive()
+            sent += 1
+        except Exception as e:                     # noqa: BLE001
+            row.attempts = (row.attempts or 0) + 1
+            row.last_error = str(e)[:400]
+            if row.attempts >= OUTBOX_MAX_ATTEMPTS:
+                # the dead-letter queue: set aside, counted, and visible —
+                # never deleted, because the one thing worse than an event
+                # that did not arrive is one nobody can find afterwards
+                row.dead_at = _now_naive()
+    return sent
+
+
 def _now_naive():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -12150,6 +12220,11 @@ def _fire_rule(db, a, task, event, actor_id, depth=0, retry_of=None, override=""
     if override:
         note = (f"התנאים נעקפו בידי מנהל מערכת · {override}"
                 + (f" · {note}" if note else ""))
+    # "פרסם אירועים עסקיים לאחר שמירה מוצלחת" — written here, inside the same
+    # transaction as everything the rule just did, and sent once it has landed
+    _emit(db, "automation.ran", board_id=a.board_id, task_id=task.id,
+          automation_id=a.id, chain=(event or {}).get("chain") or "",
+          event_id=(event or {}).get("id") or "")
     row = _log_automation_run(db, board, a, task, event, "ran", note, depth, actor_id,
                               retry_of, result=_made, started=started,
                               conditions=verdicts, attempt=tries,
@@ -12225,6 +12300,9 @@ def _sweep_due_date_automations(db, board_id, actor_id):
     # the same read that sweeps the dates delivers what has come due in the
     # queue — a rule that waited is waiting on the same clock
     _drain_automation_queue(db, board_id, actor_id)
+    # and anything the module announced that never made it out — the sweep is
+    # the nearest thing this build has to a worker tick
+    _drain_outbox(db, board_id)
     rules = [a for a in db.query(Automation).filter(
                 Automation.board_id == board_id,
                 Automation.is_active == True)                             # noqa: E712
@@ -12356,6 +12434,13 @@ def _run_automations(db, task, event, actor_id, depth=0):
         return
     if _automation_freeze(db, task.board_id) is not None:
         return                                     # an emergency stop is holding
+    # Past the month's allowance, the work WAITS. It is put in the same
+    # durable queue a wait uses, with no moment to come back at — it goes out
+    # when the month turns or somebody raises the limit. Deferred, never
+    # dropped, which is the whole of "ללא אובדן אירועים".
+    if depth == 0 and _quota_blocked(db):
+        _defer_over_quota(db, task, event, actor_id)
+        return
     # "סדר ביצוע" — which rule goes first when one event trips several. The id is
     # the tiebreak, so rules nobody ordered still run oldest-first as before.
     rules = (db.query(Automation)
@@ -12690,6 +12775,22 @@ def _queue_resume(db, a, task, event, index, minutes, human=None, owner=None):
                "source": (event or {}).get("source") or "automation"}))
 
 
+def _defer_over_quota(db, task, event, actor_id=None):
+    """Hold one event until there is allowance for it. Never raises."""
+    try:
+        db.add(AutomationQueue(
+            board_id=task.board_id, task_id=task.id, state="pending",
+            created_at=_now_naive(), note="מעל מכסת הארגון — ממתין",
+            event={**{k: v for k, v in (event or {}).items()
+                      if not k.startswith("_")},
+                   "over_quota": True},
+            approved_by=actor_id))
+        _emit(db, "automation.deferred", board_id=task.board_id, task_id=task.id,
+              reason="quota")
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  over-quota event not deferred ({task.id}): {e}", flush=True)
+
+
 def _queue_retry(db, a, task, event, attempt, from_index):
     """Put a temporary failure back in the queue, at the next delay.
 
@@ -12776,17 +12877,54 @@ def _log_queue_cancel(db, row, why, actor_id=None):
         print(f"⚠️  queue cancel not logged ({row.id}): {e}", flush=True)
 
 
+def _org_quota(db):
+    """(limit, enforced) for this organisation — its own, or the default."""
+    try:
+        org = db.query(Organization).order_by(Organization.id).first()
+        q = ((org.settings or {}).get("quota") or {}) if org else {}
+        return (max(1, int(q.get("monthly_runs") or AUTOMATION_MONTHLY_QUOTA)),
+                bool(q.get("enforce")))
+    except Exception:                              # noqa: BLE001
+        return AUTOMATION_MONTHLY_QUOTA, False
+
+
 def _automation_quota(db):
-    """This month's allowance, what is left of it, and what has gone."""
+    """This month's allowance, what is left of it, and what has gone.
+
+    `warning` at four fifths and `blocked` past the whole of it, and the two
+    are different things on purpose: a warning is what gives somebody time to
+    decide, and deciding is the only thing that can actually be done about a
+    quota. The block is off unless the organisation asked for it — see
+    _quota_blocked.
+    """
     period = datetime.now(timezone.utc).strftime("%Y-%m")
+    limit, enforce = _org_quota(db)
     used = 0
     try:
         for row in db.query(AutomationUsage).filter(AutomationUsage.period == period).all():
             used += (row.ran or 0) + (row.skipped or 0) + (row.failed or 0)
     except Exception:                              # noqa: BLE001
         used = 0
-    return {"period": period, "limit": AUTOMATION_MONTHLY_QUOTA, "used": used,
-            "left": max(0, AUTOMATION_MONTHLY_QUOTA - used)}
+    return {"period": period, "limit": limit, "used": used,
+            "left": max(0, limit - used),
+            "enforce": enforce, "warn_at": AUTOMATION_QUOTA_WARN,
+            "warning": used >= limit * AUTOMATION_QUOTA_WARN,
+            "blocked": bool(enforce and used >= limit)}
+
+
+def _quota_blocked(db):
+    """Whether the organisation has asked for work past its allowance to WAIT.
+
+    "ניהול עומסים ללא אובדן אירועים" — deferred, never dropped: the event goes
+    to the same durable queue a wait uses and goes out when the month turns or
+    somebody raises the limit. Off by default, because a hard stop in the
+    middle of a month quietly un-automates every board that depends on a rule,
+    and that is a decision for a person.
+    """
+    try:
+        return _automation_quota(db)["blocked"]
+    except Exception:                              # noqa: BLE001
+        return False
 
 
 def _import_estimate(db, board):
@@ -12922,6 +13060,8 @@ def _drain_automation_queue(db, board_id, actor_id=None, force=False):
                 _log_queue_skip(db, row, why, actor_id)
             row.state = "done"
         elif t is not None and not t.deleted_at:
+            if ev.get("over_quota") and _quota_blocked(db):
+                continue               # still over: it keeps its place in line
             _run_automations(db, t, ev, actor_id or row.approved_by)
             row.state = "done"
         else:
@@ -13223,7 +13363,10 @@ def org_settings(user_id: int = Depends(current_user_id)):
                 "default_timezone": DEFAULT_TZ_NAME,
                 "due_default_hour": DUE_DEFAULT_HOUR,
                 "retention": _org_retention(cfg),
-                "audit": dict(cfg.get("audit") or {"store_ip": False})}
+                "audit": dict(cfg.get("audit") or {"store_ip": False}),
+                "quota": {"monthly_runs": int((cfg.get("quota") or {}).get("monthly_runs")
+                                              or AUTOMATION_MONTHLY_QUOTA),
+                          "enforce": bool((cfg.get("quota") or {}).get("enforce"))}}
 
 
 @app.patch("/api/organization/settings")
@@ -13234,6 +13377,26 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
         org = db.query(Organization).order_by(Organization.id).first()
         if not org:
             raise HTTPException(404, "לא נמצא ארגון")
+        if "quota" in data:
+            want = data.get("quota") or {}
+            cfg = dict(getattr(org, "settings", None) or {})
+            qa = dict(cfg.get("quota") or {})
+            if "monthly_runs" in want:
+                # null puts the organisation back on the default rather than
+                # pinning it to today's number — "the default" has to stay a
+                # thing an organisation can choose, or raising it centrally
+                # would never reach anyone who had once set a figure
+                if want["monthly_runs"] in (None, "", 0):
+                    qa.pop("monthly_runs", None)
+                else:
+                    try:
+                        qa["monthly_runs"] = max(1, int(want["monthly_runs"]))
+                    except (TypeError, ValueError):
+                        raise HTTPException(400, "מכסה חודשית חייבת להיות מספר")
+            if "enforce" in want:
+                qa["enforce"] = bool(want["enforce"])
+            cfg["quota"] = qa
+            org.settings = cfg
         if "audit" in data:
             want = data.get("audit") or {}
             cfg = dict(getattr(org, "settings", None) or {})
@@ -13273,7 +13436,10 @@ def set_org_settings(data: dict, user_id: int = Depends(current_user_id)):
                 "effective_timezone": str(_zone(cfg.get("timezone"))
                                           or _zone(DEFAULT_TZ_NAME) or _IL_TZ),
                 "retention": _org_retention(cfg),
-                "audit": dict(cfg.get("audit") or {"store_ip": False})}
+                "audit": dict(cfg.get("audit") or {"store_ip": False}),
+                "quota": {"monthly_runs": int((cfg.get("quota") or {}).get("monthly_runs")
+                                              or AUTOMATION_MONTHLY_QUOTA),
+                          "enforce": bool((cfg.get("quota") or {}).get("enforce"))}}
 
 
 @app.get("/api/boards/{board_id}/automations/audit")
@@ -13549,6 +13715,7 @@ def list_board_automations(board_id: int, include_deleting: bool = False,
         if _can_manage_automations(db, b, user_id):
             _sweep_automation_ownership(db, b, user_id)
             _drain_automation_queue(db, b.id, user_id)
+            _drain_outbox(db, b.id)
         show_gone = bool(include_deleting) and _ws_role(db, user_id) == "admin"
         q = db.query(Automation).filter(Automation.board_id == board_id)
         if not show_gone:
@@ -14147,6 +14314,7 @@ def list_automation_runs(board_id: int, outcome: str = "", automation_id: int = 
         # the history somebody is looking at is not one step behind
         if _can_manage_automations(db, b, user_id):
             _drain_automation_queue(db, board_id, user_id)
+            _drain_outbox(db, board_id)
             # and the retention policy applies to the log somebody is looking
             # at: pruning only on write leaves a quiet board holding rows well
             # past the year it is allowed to keep them
@@ -15963,6 +16131,97 @@ def _freeze_json(db, f):
             "released_at": f.released_at.isoformat() if f.released_at else None,
             "released_by_name": uname(f.released_by),
             "release_reason": f.release_reason or ""}
+
+
+@app.get("/api/admin/automations/health")
+def automations_health(user_id: int = Depends(current_user_id)):
+    """What the engine is actually doing, across every board.
+
+    One place, because the questions are asked together: is anything stuck, is
+    anything lost, is anything going round, and how close is the organisation
+    to its allowance. A system administrator's view — these counts span boards
+    that belong to different people.
+    """
+    with Session(engine) as db:
+        _require_sys_admin(db, user_id)
+        now = _now_naive()
+
+        def qcount(state):
+            rows = db.query(AutomationQueue).filter(AutomationQueue.done_at == None)  # noqa: E711
+            if state == "cancelled":
+                rows = db.query(AutomationQueue).filter(
+                    AutomationQueue.state == "cancelled")
+                return rows.count()
+            return len([r for r in rows.all() if (r.state or "pending") == state])
+
+        waits = [r for r in db.query(AutomationQueue)
+                 .filter(AutomationQueue.done_at == None).all()            # noqa: E711
+                 if (r.event or {}).get("type") == "resume"]
+        retries = [r for r in db.query(AutomationQueue)
+                   .filter(AutomationQueue.done_at == None).all()          # noqa: E711
+                   if (r.event or {}).get("type") == "retry"]
+        oldest = (db.query(func.min(EventOutbox.created_at))
+                    .filter(EventOutbox.sent_at == None,                   # noqa: E711
+                            EventOutbox.dead_at == None).scalar())         # noqa: E711
+        # durations, read off the rows that carry both ends
+        durs = sorted(
+            int((r.finished_at - r.started_at).total_seconds() * 1000)
+            for r in db.query(AutomationRun)
+            .filter(AutomationRun.started_at != None,                      # noqa: E711
+                    AutomationRun.finished_at != None)                     # noqa: E711
+            .order_by(AutomationRun.id.desc()).limit(500).all())
+        pick = lambda p: (durs[min(len(durs) - 1, int(len(durs) * p))] if durs else None)
+        counts = {k: db.query(AutomationRun)
+                    .filter(AutomationRun.outcome == k).count()
+                  for k in RUN_OUTCOMES}
+        tried = counts["ran"] + counts["failed"]
+        return {
+            "queue": {"pending": qcount("pending"), "frozen": qcount("frozen"),
+                      "cancelled": qcount("cancelled"), "dead": qcount("dead"),
+                      "slice": AUTOMATION_QUEUE_SLICE,
+                      "pause_seconds": AUTOMATION_QUEUE_PAUSE},
+            "outbox": {
+                "unsent": db.query(EventOutbox).filter(
+                    EventOutbox.sent_at == None,                           # noqa: E711
+                    EventOutbox.dead_at == None).count(),                  # noqa: E711
+                "dead": db.query(EventOutbox).filter(
+                    EventOutbox.dead_at != None).count(),                  # noqa: E711
+                "sent": db.query(EventOutbox).filter(
+                    EventOutbox.sent_at != None).count(),                  # noqa: E711
+                "oldest_unsent_seconds": (int((now - oldest).total_seconds())
+                                          if oldest else None),
+                "max_attempts": OUTBOX_MAX_ATTEMPTS},
+            # There is no worker process. Saying so is the honest answer: the
+            # queues are drained by the reads that touch a board, and a board
+            # nobody opens is a board nothing moves on.
+            "workers": {"processes": 0, "drain": "on-read",
+                        "note": "אין Worker נפרד — התורים מתנקזים בקריאות ללוח"},
+            "retry": {"in_flight": len(retries),
+                      "delays_minutes": list(AUTOMATION_RETRY_DELAYS),
+                      "max_auto": AUTOMATION_MAX_AUTO_RETRIES},
+            "waits": {"pending": len([r for r in waits
+                                      if (r.state or "pending") == "pending"]),
+                      "frozen": len([r for r in waits if r.state == "frozen"])},
+            "loops": {"stopped": db.query(AutomationRun).filter(
+                          AutomationRun.status == "loop_stopped").count(),
+                      "max_runs": AUTOMATION_CHAIN_MAX_RUNS,
+                      "max_seconds": AUTOMATION_CHAIN_MAX_SECONDS},
+            "incidents": {k: db.query(AutomationIncident).filter(
+                              AutomationIncident.status == k).count()
+                          for k in AUTOMATION_INCIDENT_STATUSES},
+            "quota": _automation_quota(db),
+            "performance": {**counts, "tried": tried,
+                            "success_rate": (round(counts["ran"] / tried, 3)
+                                             if tried else None),
+                            "p50_ms": pick(0.5), "p95_ms": pick(0.95),
+                            "sampled": len(durs)},
+            # "עמוד ביעדי הביצועים ובמכסות המוגדרים בסעיף 14" — the numbers
+            # were not given to this build. An empty target is a visible gap;
+            # a guessed one is a false pass, so nothing is guessed here.
+            "targets": {"source": "unset",
+                        "note": "יעדי הביצועים מסעיף 14 לא נמסרו — המדידות "
+                                "מפורסמות, הסף לא מוגדר"},
+        }
 
 
 @app.post("/api/admin/automations/freeze")

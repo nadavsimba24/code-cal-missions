@@ -665,6 +665,39 @@ class AutomationIncident(Base):
     last_run_id = Column(Integer, nullable=True)
 
 
+class EventOutbox(Base):
+    """A business event, written in the same transaction as the change.
+
+    The live path is an in-memory fan-out to whoever has a stream open: right
+    for a screen, wrong for a record. An event raised while the loop is
+    shutting down, or while nobody is listening, is simply gone — and the
+    write it was announcing has already been committed, so a board that missed
+    the announcement looks exactly like a board where nothing happened.
+
+    Written here first and sent afterwards, which makes delivery at-least-once
+    rather than at-most-once. The second delivery is harmless because every
+    consumer here already has an idempotency key (see AutomationActionKey).
+
+    `seq` is per ITEM and starts at 1: "moved to done" then "moved back" and
+    the other way round are different stories about the same item, and a
+    global counter cannot say which one happened.
+    """
+    __tablename__ = "event_outbox"
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(40), nullable=False, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, index=True)
+    automation_id = Column(Integer, ForeignKey("automations.id"), nullable=True)
+    run_id = Column(Integer, nullable=True)
+    seq = Column(Integer, default=1)               # per task_id, in order
+    payload = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    sent_at = Column(DateTime, nullable=True, index=True)
+    attempts = Column(Integer, default=0)
+    dead_at = Column(DateTime, nullable=True)      # the dead-letter queue
+    last_error = Column(Text, nullable=True)
+
+
 class AutomationVersion(Base):
     """What a rule looked like after each change — the גרסאות list.
 
