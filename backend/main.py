@@ -10474,9 +10474,20 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             raise _Skipped("הפריט נמצא בקבוצה הזו כבר")
         task.group_id = g.id
     elif act == "create_subitem":
-        db.add(Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
+        _sub = Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
                     title=text(cfg.get("text")) or "תת־פריט", status=TaskStatus.TODO,
-                    priority=Priority.MEDIUM, created_by=actor_id))
+                    priority=Priority.MEDIUM, created_by=actor_id)
+        db.add(_sub)
+        db.flush()
+        # The sub-item's own log says where it came from. Without this it was
+        # the one thing on the board with no history at all — a row that
+        # appeared, with the rule that made it recorded only in the run log of
+        # a board somebody would have to think to open. Every other creation
+        # here is audited; this one was not.
+        _audit(db, _sub.id, "create", field="item", old=None, new=_sub.title,
+               user_id=actor_id)
+        out.append({"type": "subitem_created", "subitem_id": _sub.id,
+                    "parent_id": task.id})
     elif act == "post_update":
         # An update written by the engine, under the engine's own name. Not a
         # notification: a notification is gone once it is read, and "מה קרה כאן"
@@ -16756,25 +16767,35 @@ def update_task(task_id: int, data: dict, request: Request = None,
             task.custom_fields = _cfu
             task.priority = Priority.MEDIUM
         if data.get("status"):
-            try:
-                nv = TaskStatus(data["status"])
-                # Naming a status IS choosing one, so the "nothing picked yet"
-                # flag goes — but only once the value is accepted, or a rejected
-                # status would still make the cell claim one was chosen. Only the
-                # board UI used to clear it, by sending it in custom_fields, so a
-                # status set through the API, an import or a script left the cell
-                # reading "טרם הוגדר" while task.status said otherwise.
-                _cfu = dict(task.custom_fields or {})
-                if _cfu.pop("status_unset", None) is not None:
-                    task.custom_fields = _cfu
-                task.status = nv
-                # Nothing else follows from a status. It does not move the item
-                # between groups, and finishing the last sub-item does not finish
-                # the parent — both were rules nobody wrote, on every board, absent
-                # from the board's own automations list and with no switch. Each
-                # has a recipe waiting in the catalog for a board that wants it.
-            except ValueError:
+            # A BOARD-DEFINED status first — "מאושר" on a requests board is a
+            # key like x_approved, not one of the seven engine values, and
+            # TaskStatus() throws on it. This branch used to be the enum alone
+            # with a silent `pass` on the error, so setting such a status
+            # through the API did nothing at all and said nothing about it:
+            # the move endpoint and the priority branch beside this one had
+            # both already learned the vocabulary, and this one had not.
+            if _apply_status_key(db, task, data["status"]):
                 pass
+            else:
+                try:
+                    nv = TaskStatus(data["status"])
+                    # Naming a status IS choosing one, so the "nothing picked yet"
+                    # flag goes — but only once the value is accepted, or a rejected
+                    # status would still make the cell claim one was chosen. Only the
+                    # board UI used to clear it, by sending it in custom_fields, so a
+                    # status set through the API, an import or a script left the cell
+                    # reading "טרם הוגדר" while task.status said otherwise.
+                    _cfu = dict(task.custom_fields or {})
+                    if _cfu.pop("status_unset", None) is not None:
+                        task.custom_fields = _cfu
+                    task.status = nv
+                    # Nothing else follows from a status. It does not move the item
+                    # between groups, and finishing the last sub-item does not finish
+                    # the parent — both were rules nobody wrote, on every board, absent
+                    # from the board's own automations list and with no switch. Each
+                    # has a recipe waiting in the catalog for a board that wants it.
+                except ValueError:
+                    pass
         elif "status" in data and data["status"] in (None, ""):
             # Back to "טרם הוגדר" — the grey default every item starts on.
             # The cell could always SHOW it and nothing could ever put an item
