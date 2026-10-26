@@ -38,6 +38,18 @@ function advObject(){
   throw new Error('unbalanced: Adv');
 }
 
+/* One box as it stands in the dialog: the outline, the select inside it that
+   holds the value, and the chevron the pointer is now allowed to hit. */
+function boxOf(options, sel_i, log){
+  const options2 = options.map((o,i)=>({
+    value:o.v, textContent:o.label, selected:i===sel_i,
+    getAttribute:k=>(k in o ? o[k] : null)}));
+  const sel = {options:options2, value:options[sel_i].v,
+               dispatchEvent(e){ log.fired=(log.fired||[]).concat(e.type+':'+sel.value); }};
+  return {offsetWidth:230, querySelector:q=>q==='select'?sel:null, _sel:sel};
+}
+const ev = () => ({target:null, preventDefault(){}, stopPropagation(){}});
+
 let pass=0, fail=0;
 const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+JSON.stringify(x):''))); };
 
@@ -62,6 +74,7 @@ function world(){
     'st','esc','showModal','closeModals','document','refreshToolbar','renderView',
     'advAskServer','toast','boardStatusList','boardPriorityList','filterMode','STATUS_OPTS',
     'advMatch','advIcon','avatarInner','Paged','togglePop','Views',
+    'openCellPop','closeCellPops',
     body + '\n' + advObject() + '\nreturn Adv;')(
     st,
     x => String(x==null?'':x),
@@ -83,7 +96,17 @@ function world(){
     u => `<i data-face="${(u&&u.id)==null?'':u.id}"></i>`,
     {on:false,total:0},
     () => { log.quick++; },
-    {active:null, update(){ log.viewSaved='update'; }, saveNew(){ log.viewSaved='new'; }});
+    {active:null, update(){ log.viewSaved='update'; }, saveNew(){ log.viewSaved='new'; }},
+    /* The menu a box opens — the system's own popover. Stubbed down to what
+       the builder does with it: the markup it was handed, and the rows it
+       then wires up. */
+    (anchor,html,cls)=>{
+      const btns=(html.match(/data-i="(\d+)"/g)||[])
+        .map(m=>({dataset:{i:m.replace(/\D/g,'')}, onclick:null}));
+      log.pop={anchor,html,cls,btns};
+      return {querySelectorAll:()=>btns, querySelector:()=>null};
+    },
+    ()=>{ log.popClosed=(log.popClosed||0)+1; });
   /* The panel's own half of the same tree. advChanged is the redraw-and-ask
      step, which is not what these checks are about — they are about the two
      doors opening on one filter. */
@@ -341,6 +364,67 @@ function world(){
   ck('saving as a view applies the draft first',
      st.filters.adv && st.filters.adv.rules.length===1, st.filters.adv);
   ck('…and with no view open, makes a new one', log.viewSaved==='new', log.viewSaved);
+}
+
+// ── the box opens the list, all of it ────────────────────────────────────
+{
+  /* The chevron is part of the control, not an ornament beside it. Clicking
+     the words opened the list and clicking the arrow two pixels away did
+     nothing, which is a control that works in one half of itself. The click
+     is taken by the BOX now, so every part of it opens the same menu. */
+  const [Adv] = world();
+  Adv.open();
+  Adv.setField('0','col_a');          // a column whose value is picked from a list too
+  const html = Adv.bodyHTML();
+  const boxes = html.match(/class="adv-box adv-sel[^"]*"[^>]*/g) || [];
+  ck('every box that holds a list takes the click itself',
+     boxes.length>=3 && boxes.every(b=>/onclick="Adv\.pick\(event,this\)"/.test(b)), boxes[0]);
+  ck('…including the chevron inside it, which is not an ornament',
+     /adv-cv/.test(html) && !/adv-cv[^>]*onclick/.test(html));
+}
+{
+  /* …and what opens is OUR menu, in the system's own styling — .row-menu and
+     .rm-item, the rows every other menu in the product is made of. The
+     browser's native list could not be styled at all: a grey OS rectangle
+     with no colours, no faces and no tick, in a dialog built out of all three. */
+  const [Adv, st, log] = world();
+  Adv.open();
+  const box = boxOf([{v:'',label:'בחרו ערך…'},
+                     {v:'תקוע',label:'תקוע','data-color':'#e2445c'},
+                     {v:'בעבודה',label:'בעבודה','data-color':'#fdab3d'}], 1, log);
+  Adv.pick(ev(), box);
+  ck('the list is the system\'s own menu, not the browser\'s',
+     /class="row-menu adv-menu/.test(log.pop.html) && /rm-item adv-opt/.test(log.pop.html),
+     log.pop.html.slice(0,160));
+  ck('…every value drawn as the board draws it, in its own colour',
+     (log.pop.html.match(/adv-chip-dot/g)||[]).length===2, log.pop.html);
+  ck('…the one in force marked as such', /adv-opt on/.test(log.pop.html));
+  ck('…and the list no narrower than the box it came out of',
+     /min-width:230px/.test(log.pop.html));
+}
+{
+  /* Choosing writes back to the select and fires its change — the handler
+     that was already on the row. One source of what can be picked, and no
+     second copy of it to drift. */
+  const [Adv, st, log] = world();
+  Adv.open();
+  const box = boxOf([{v:'',label:'בחרו ערך…'},{v:'תקוע',label:'תקוע'}], 0, log);
+  Adv.pick(ev(), box);
+  log.pop.btns[1].onclick();
+  ck('choosing a row sets the value and fires the row\'s own handler',
+     box._sel.value==='תקוע' && (log.fired||[]).join()==='change:תקוע', log.fired);
+  ck('…and closes the menu behind it', log.popClosed===1, log.popClosed);
+}
+{
+  /* A person is a face in the list as well as in the box, and a column is its
+     own type's icon — the same two things the row beside it is drawn with. */
+  const [Adv] = world();
+  Adv.open();
+  const html = Adv.bodyHTML();
+  ck('the column list carries each column\'s icon', /<option value="col_a" data-ic="fa-font"/.test(html), html.slice(0,400));
+  Adv.setField('0','assignees'); Adv.setRuleOp('0','has');
+  ck('…and the people list carries who each one is',
+     /data-uid="me"/.test(Adv.bodyHTML()), Adv.bodyHTML().slice(0,400));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

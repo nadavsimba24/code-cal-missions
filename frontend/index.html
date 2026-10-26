@@ -2042,7 +2042,15 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .adv-box:focus-within{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
 .adv-bare{appearance:none;-webkit-appearance:none;border:0;outline:none;background:none;
   font:inherit;font-size:13.5px;color:var(--text);cursor:pointer;min-width:0;
-  padding:0;height:100%;text-overflow:ellipsis}
+  padding:0;height:100%;text-overflow:ellipsis;
+  /* The click belongs to the BOX, not to the select inside it: the chevron is
+     part of the control and not decoration beside it, and clicking it did
+     nothing while clicking the words two pixels away opened the list. With
+     the select deaf to the pointer, every part of the box opens the same
+     menu — ours, in the system's own styling. The select stays for the value
+     and for the keyboard, which still moves through it as it always did. */
+  pointer-events:none}
+.adv-sel{cursor:pointer}
 .adv-cv{color:var(--text-light);font-size:10px;pointer-events:none;flex-shrink:0;margin-inline-start:auto}
 .adv-box-field{flex:0 1 230px;padding-inline-start:5px}
 .adv-box-field .adv-bare{font-weight:600}
@@ -2065,15 +2073,28 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .adv-chip-x{border:0;background:none;color:var(--text-light);cursor:pointer;font-size:13px;
   line-height:1;padding:0 1px;flex-shrink:0}
 .adv-chip-x:hover{color:var(--danger,#e2445c)}
-/* The chip stands where the select's text would be, and the select is laid
-   OVER the whole box, invisible — so clicking anywhere on it opens the same
-   list the chip came from. It was shrunk to zero width instead, which left a
-   box with nothing in it to click: once a value was picked it could not be
-   changed, only cleared. The chip lets the click through; its × does not. */
-.adv-box-val.picked .adv-bare{position:absolute;inset:0;width:100%;height:100%;
-  opacity:0;cursor:pointer}
-.adv-box-val.picked .adv-chip{flex:1;pointer-events:none}
+/* The chip stands where the select's text would be, and the select goes out of
+   sight behind it — it holds the value and the keyboard, nothing more, since
+   the box above takes the click. Its × is the one thing in there that is not
+   the box: it clears the value rather than opening the list. */
+.adv-box-val.picked .adv-bare{position:absolute;inset:0;width:100%;height:100%;opacity:0}
+.adv-box-val.picked .adv-chip{flex:1}
 .adv-chip-x{position:relative;z-index:2;pointer-events:auto}
+/* The list a box opens. It is the system's own menu — .row-menu and .rm-item,
+   the same rows as every other menu in the product — because the browser's
+   native list could not be styled at all: a grey OS rectangle with no colours,
+   no faces and no tick, in the middle of a dialog built out of both. */
+.adv-menu{max-height:min(52vh,340px);overflow-y:auto;padding:5px}
+.adv-opt{font-size:13.5px}
+.adv-opt .adv-chip-dot{width:10px;height:10px}
+.adv-opt .av{margin:0}
+.adv-opt-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:start}
+.adv-opt .adv-opt-v{visibility:hidden;margin-inline-start:auto;color:var(--primary);font-size:12px;width:auto}
+.adv-opt.on{background:var(--primary-soft)}
+.adv-opt.on .adv-opt-t{font-weight:700}
+.adv-opt.on .adv-opt-v{visibility:visible}
+/* "בחרו ערך…" — the row that empties the box rather than filling it */
+.adv-opt.muted .adv-opt-t{color:var(--text-light)}
 .adv-in{font:inherit;font-size:13.5px;border:0;outline:none;background:none;color:var(--text);
   min-width:0;flex:1;height:100%}
 .adv-date{display:flex;gap:9px;align-items:center;flex:1 1 300px;min-width:0}
@@ -11915,11 +11936,41 @@ const Adv = {
   /* One control: an outlined box with whatever it holds and a chevron at its
      far edge. The select inside is bare — a native select draws its arrow in a
      different place in every browser, and three rows of them never lined up. */
-  box(cls,inner){ return `<span class="adv-box ${cls}">${inner}<i class="fa-solid fa-chevron-down adv-cv"></i></span>`; },
+  box(cls,inner){ return `<span class="adv-box adv-sel ${cls}" onclick="Adv.pick(event,this)">${inner}<i class="fa-solid fa-chevron-down adv-cv"></i></span>`; },
+  /* …and opens the list itself. Built from the select's own <option>s, so
+     there is one source of what can be picked and no second copy of it to
+     drift: choosing a row writes the value back to the select and fires its
+     change, which is the handler that was already there. */
+  pick(ev,box){
+    if(ev&&ev.target&&ev.target.closest&&ev.target.closest('.adv-chip-x'))return;   // the × clears, it does not open
+    ev.preventDefault(); ev.stopPropagation();
+    const sel=box.querySelector('select'); if(!sel)return;
+    const opts=Array.prototype.slice.call(sel.options);
+    // a value is drawn here the way the board draws it, and the way the chip
+    // in the box already does: a person by their face, a status by its colour
+    const rows=opts.map((o,i)=>{
+      const color=o.getAttribute('data-color'), uid=o.getAttribute('data-uid'), ic=o.getAttribute('data-ic');
+      const lead = uid!=null ? `<span class="av av-xs">${avatarInner(uid==='me'?(st.me||{}):{id:Number(uid)})}</span>`
+                 : color ? `<span class="adv-chip-dot" style="background:${esc(color)}"></span>`
+                 : ic ? `<i class="fa-solid ${esc(ic)}"></i>` : '';
+      return `<button class="rm-item adv-opt${o.selected?' on':''}${o.value===''?' muted':''}" data-i="${i}">
+          ${lead}<span class="adv-opt-t">${esc(o.textContent||'')}</span>
+          <i class="fa-solid fa-check adv-opt-v"></i></button>`;
+    }).join('');
+    const pop=openCellPop(box,`<div class="row-menu adv-menu" style="min-width:${Math.round(box.offsetWidth)}px"
+        onclick="event.stopPropagation()">${rows}</div>`,'row-menu-pop');
+    pop.querySelectorAll('.adv-opt').forEach(b=>{ b.onclick=()=>{
+      closeCellPops();
+      sel.value=opts[+b.dataset.i].value;
+      sel.dispatchEvent(new Event('change'));    // the row's own onchange — setField / setRuleOp / setV
+    }; });
+    const on=pop.querySelector('.adv-opt.on');
+    if(on&&on.scrollIntoView) on.scrollIntoView({block:'nearest'});
+  },
   ruleHTML(r,path){
     const f=advField(r.field), kind=f?f.kind:'text';
     const n=advOpArity(kind,r.op);
-    const fields=advFields().map(x=>`<option value="${esc(x.id)}" ${x.id===r.field?'selected':''}>${esc(x.label)}</option>`).join('');
+    const fields=advFields().map(x=>`<option value="${esc(x.id)}" data-ic="${esc(advIcon(x))}" ${x.id===r.field?'selected':''}>${esc(x.label)}</option>`).join('');
     const ops=advOps(kind).map(o=>`<option value="${o[0]}" ${o[0]===r.op?'selected':''}>${esc(o[1])}</option>`).join('');
     const val=(which,v)=>{
       // built per input, because the option kept for a value no longer
@@ -11940,13 +11991,14 @@ const Adv = {
         return this.box('adv-box-val'+(picked?' picked':''),
           chip+`<select class="adv-bare" aria-label="ערך" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
             <option value="">בחרו ערך…</option>
-            ${choices.map(c=>`<option value="${esc(c.v)}" ${String(v)===String(c.v)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`);
+            ${choices.map(c=>`<option value="${esc(c.v)}" ${kind==='people'?`data-uid="${esc(c.v)}"`
+                :(c.color?`data-color="${esc(c.color)}"`:'')} ${String(v)===String(c.v)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`);
       }
       if(kind==='date')
         return `<span class="adv-date">
           ${this.box('',`<select class="adv-bare" aria-label="תאריך" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
             <option value="">תאריך מדויק</option>
-            ${ADV_DATES.map(d=>`<option value="${d[0]}" ${v===d[0]?'selected':''}>${esc(d[1])}</option>`).join('')}
+            ${ADV_DATES.map(d=>`<option value="${d[0]}" data-ic="fa-calendar-day" ${v===d[0]?'selected':''}>${esc(d[1])}</option>`).join('')}
           </select>`)}
           <span class="adv-box"><input type="date" class="adv-in" value="${/^\d{4}-\d{2}-\d{2}$/.test(v||'')?esc(v):''}"
                  onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()"></span>
