@@ -32,10 +32,10 @@ let pass=0, fail=0;
 const ck=(n,c,extra='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console.log('  FAIL '+n+(extra?'  → '+extra:''))); };
 
 // ── it is offered as a type at all ─────────────────────────────────────────
-const {COLUMN_TYPES, COL_DEFAULTS, FIELD_TYPE_HE} = new Function(
+const {COLUMN_TYPES, COL_DEFAULTS, FORM_FIELD_TYPE_HE} = new Function(
   [grabConst('COLUMN_TYPES','[',']'), grabConst('COL_DEFAULTS','{','}'),
-   /^const FIELD_TYPE_HE=.*$/m.exec(src)[0],
-   'return {COLUMN_TYPES, COL_DEFAULTS, FIELD_TYPE_HE};'].join('\n'))();
+   /^const FORM_FIELD_TYPE_HE=.*$/m.exec(src)[0],
+   'return {COLUMN_TYPES, COL_DEFAULTS, FORM_FIELD_TYPE_HE};'].join('\n'))();
 
 const t = COLUMN_TYPES.find(c=>c.type==='email');
 ck('the type is offered in the column picker', !!t);
@@ -43,7 +43,7 @@ ck('with a name, an icon and a description',
    !!(t && t.he && t.ic && t.desc), JSON.stringify(t));
 ck('a new e-mail column starts with a title of its own', !!COL_DEFAULTS.email);
 ck('and a form field on one is labelled, not left as a bare type name',
-   !!FIELD_TYPE_HE.email);
+   !!FORM_FIELD_TYPE_HE.email);
 ck('no other type answers to the same name',
    COLUMN_TYPES.filter(c=>c.he===t.he).length===1);
 

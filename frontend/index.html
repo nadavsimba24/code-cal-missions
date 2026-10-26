@@ -7,6 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/><path d='M32 38 L39 49 L30 45 Z' fill='%23d6ecff'/></svg>">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/></svg>">
 <script src="sortable.min.js"></script>
+<script src="form-paper.js"></script>
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3410,6 +3411,17 @@ const Auth = {
     setDevUser(id); localStorage.setItem('cc_uid',id);
     st.me=u;
     try{ await api('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }catch(e){}
+    /* Somebody sent here to sign in, from a page outside the app — the
+       public form is the one that does this. The same `next` the other two
+       identity sources carry, honoured by the only door dev mode has.
+       Single-slash paths only: anything else is an open redirect wearing
+       our own domain (see entra._safe_next, which says it at the server). */
+    try{
+      const nxt=new URLSearchParams(location.search).get('next');
+      if(nxt && nxt.startsWith('/') && !nxt.startsWith('//')){
+        location.replace(nxt); return;
+      }
+    }catch(e){}
     document.getElementById('login').classList.remove('open');
     await loadDirectory();
     renderMe(); await enterApp();
@@ -4518,6 +4530,12 @@ const Views = {
   apply(v){
     if(typeof v==='number'||typeof v==='string') v=this.items.find(x=>x.id==v);
     if(!v)return;
+    /* A form is a view of the board and it is not a CUT of it: there are no
+       filters to restore, no columns and no sort. Everything below this line
+       reads those, so a form never reaches it — it opens its own editor over
+       the board, and leaves the board's filters exactly where they were. */
+    if(v.kind==='form'){ FormEditor.open(v.form_id, v.id); return; }
+    if(FormEditor.isOpen()) FormEditor.close();
     const c=v.filters||{};
     /* A view outlives the columns it was built on. Rules whose column is
        gone come out of the tree before anything is filtered — see advPrune
@@ -4588,6 +4606,7 @@ const Views = {
      to as well, to unlight the tab, and that was the bug: emptying a view's
      cut threw the person out of the view they were adjusting. */
   leave(){
+    if(FormEditor.isOpen()){ FormEditor.close(); return; }
     if(this.active==null)return;
     this.active=null; this.base=null; this.stale=false; this.failed=null;
     clearFilters();
@@ -4732,17 +4751,25 @@ const Views = {
     /* A rename sends the name alone. It is not a configuration change, the
        version does not move for it, and sending the cut on screen with it
        would turn "fix a typo" into "save my adjustments for everybody". */
+    const row=id?this.items.find(x=>x.id===id):null;
     const body=id ? {name}
                   : {name, filters:(this._pending||this.current())};
     try{
+      /* A form's name is the view's name, and it is written through the form:
+         the view endpoint refuses a form, so that there is one door onto a
+         form and the rules are checked once. */
       const v=id
-        ? await api('/api/views/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)})
+        ? (row&&row.kind==='form'
+            ? await api('/api/forms/'+row.form_id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)})
+            : await api('/api/views/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)}))
         : await api('/api/boards/'+st.board.id+'/views',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)});
       closeModals();
       this._pending=null;
       await this.load(st.board.id);
       if(!id){ this.apply(v.id); }
-      renderTabs();
+      if(row&&row.kind==='form'&&FormEditor.id===row.form_id&&FormEditor.form)
+        FormEditor.form.name=v.name;         // the open editor carries the name too
+      renderTabs(); renderView();
       toast(id?'השם עודכן':'התצוגה נוצרה');
     }catch(e){
       const msg=(e&&(e.detail&&e.detail.detail||e.detail))||'שמירת התצוגה נכשלה';
@@ -4793,21 +4820,27 @@ const Views = {
   },
   del(id){
     const v=this.items.find(x=>x.id===id);
-    askConfirm(`למחוק את התצוגה "${v?v.name:''}"?`, async()=>{
+    const isForm=!!(v&&v.kind==='form');
+    askConfirm(`למחוק את ${isForm?'הטופס':'התצוגה'} "${v?v.name:''}"?`, async()=>{
       try{
-        await api('/api/views/'+id,{method:'DELETE',headers:{'Content-Type':'application/json'},body:withMe({})});
+        await api(isForm?('/api/forms/'+v.form_id):('/api/views/'+id),
+                  {method:'DELETE',headers:{'Content-Type':'application/json'},body:withMe({})});
         if(this.active===id)this.active=null;
+        if(isForm&&FormEditor.id===v.form_id) FormEditor.close();
         await this.load(st.board.id);
-        toast('התצוגה נמחקה');
-      }catch(e){ toast((e&&e.detail)||'מחיקת התצוגה נכשלה'); }
+        toast(isForm?'הטופס נמחק':'התצוגה נמחקה');
+      }catch(e){ toast((e&&e.detail)||'המחיקה נכשלה'); }
     /* The name, and the one thing somebody about to press this needs to be
        sure of. "למחוק את התצוגה? פריטי הלוח לא יימחקו" — a view is a way of
        reading the board, and the word "מחיקה" beside a board full of work is
        frightening in a way the action does not deserve. The note says what is
        NOT happening, because that is the question being asked silently. */
-    },{title:'מחיקת תצוגה',
-       note:'פריטי הלוח לא יימחקו — רק התצוגה הזאת, והיא תיעלם מהלוח של כל מי שרואה אותה. '
-            +'בעל הלוח יוכל לשחזר אותה דרך לוג הלוח.'});
+    },{title:isForm?'מחיקת טופס':'מחיקת תצוגה',
+       note:(isForm
+         ? 'שדות הלוח והרשומות שנוצרו מהטופס לא יימחקו — רק הטופס עצמו, '
+         : 'פריטי הלוח לא יימחקו — רק התצוגה הזאת, ')
+            +'והוא ייעלם מהלוח של כל מי שרואה אותו. '
+            +'בעל הלוח יוכל לשחזר אותו דרך לוג הלוח.'});
   },
   /* One tab, and what it has to say about itself before it is opened.
 
@@ -4824,6 +4857,12 @@ const Views = {
      column — that is the whole point of the block. */
   tabIcons(v){
     const bits=[];
+    if(v.kind==='form'){
+      bits.push(`<i class="fa-solid fa-file-lines tab-view-ic" role="img" aria-label="טופס"></i>`);
+      if(v.form_status&&v.form_status!=='PUBLISHED')
+        bits.push(`<i class="fa-solid fa-circle-half-stroke tab-view-ic" role="img" aria-label="${v.form_status==='DRAFT'?'טיוטה':'מושבת'}"></i>`);
+      return bits.join('');
+    }
     if(v.pinned) bits.push(`<i class="fa-solid fa-thumbtack tab-view-ic" role="img" aria-label="תצוגה מוצמדת"></i>`);
     if(v.locked) bits.push(`<i class="fa-solid fa-lock tab-view-ic" role="img" aria-label="תצוגה נעולה"></i>`);
     if(v.blocked) bits.push(`<i class="fa-solid fa-ban tab-view-ic tab-view-ic-off" role="img" aria-label="התצוגה אינה זמינה לך"></i>`);
@@ -4838,6 +4877,12 @@ const Views = {
      matrix, and the two would disagree the first time either moved. */
   actionsFor(v){
     const out=[];
+    /* A form is renamed and deleted like any tab, and the other three do not
+       apply to it: there is no cut to duplicate, and the lock and the pin are
+       written through the view endpoint, which refuses a form outright. An
+       action the server would refuse is not drawn — see the note above. */
+    if(v.kind==='form')
+      return v.can_edit ? [['rename','שינוי שם','fa-pen'],['delete','מחיקה','fa-trash']] : [];
     if(v.can_edit) out.push(['rename','שינוי שם','fa-pen']);
     if(v.can_duplicate) out.push(['duplicate','שכפול','fa-copy']);
     if(v.can_lock) out.push([v.locked?'unlock':'lock',
@@ -4850,7 +4895,10 @@ const Views = {
   tabsHTML(){
     if(!this.items.length)return '';
     return this.items.map(v=>{
-      const on=this.active===v.id, moved=on&&this.dirty();
+      const on=(v.kind==='form')
+        ? (typeof FormEditor!=='undefined'&&FormEditor.viewId===v.id)
+        : this.active===v.id;
+      const moved=on&&v.kind!=='form'&&this.dirty();
       /* An action nobody may perform is not drawn greyed out — it is not
          drawn. "אין להציג פעולה שאינה אפשרית כאילו היא פעילה", and a menu
          button opening an empty menu is exactly that mistake one level up. */
@@ -4914,12 +4962,10 @@ function renderTabs(){
      Two active tabs is the same as none: there was no telling which one you
      were looking at. While a saved view is open, the board's own view tabs
      are all unlit, because the thing you are on is the view. */
-  const onSaved=(typeof Views!=='undefined')&&Views.active!=null;
+  const onSaved=(typeof Views!=='undefined')
+    && (Views.active!=null || (typeof FormEditor!=='undefined'&&FormEditor.isOpen()));
   const tabs=enabled.map(id=>{const v=VIEW_META[id];
     return `<div class="tab ${(!onSaved&&st.view===id)?'active':''}" ${(!onSaved&&st.view===id)?'aria-current="page"':''} onclick="setView('${id}')"><i class="fa-solid ${v.ic}"></i> ${v.he}</div>`;}).join('');
-  const formTab=st.board&&st.board.form
-    ? `<div class="tab" onclick="openForms()"><i class="fa-solid fa-file-lines"></i> טפסים</div>`
-    : '';
   /* On a phone the strip became a sideways-scrolling row where the view you
      want is usually off-screen and the one you are on is easy to lose. The same
      choice as a native select: one tap, the whole list, and the current view
@@ -4958,7 +5004,7 @@ function renderTabs(){
     saveBtn=`<button class="tab-save" title="שמירת החיתוך הנוכחי כתצוגה" onclick="Views.saveNew()">
          <i class="fa-regular fa-bookmark"></i> שמור תצוגה</button>`;
   }
-  document.getElementById('tabs').innerHTML = dd + tabs + formTab + saved + saveBtn +
+  document.getElementById('tabs').innerHTML = dd + tabs + saved + saveBtn +
     (typeof Views!=='undefined'&&Views.failedHTML?Views.failedHTML():'') +
     `
      <div class="tab-add-wrap" id="tab-add-wrap">
@@ -4974,9 +5020,10 @@ function renderTabs(){
    ordinary button opening the same popover every other menu here uses: styled
    by this file, showing each view's icon, and marking the current one.
 
-   Forms is listed but is not a view — it opens a panel over the board that the
-   user then closes, landing back where they were — so it is separated by a rule
-   and never becomes the button's label. */
+   Only the board's own ways of DRAWING it are here. A saved cut and a form
+   are tabs on the strip rather than rows in this list: both are things
+   somebody made and named, and this picker answers "how am I looking at this
+   board", which they do not change. */
 function openViewPicker(e){
   e.stopPropagation();
   const rows=boardViews().map(id=>{
@@ -4985,11 +5032,7 @@ function openViewPicker(e){
       <i class="fa-solid ${v.ic}"></i><span class="rm-grow">${esc(v.he)}</span>
       ${on?'<i class="fa-solid fa-check rm-check"></i>':''}</button>`;
   }).join('');
-  const forms=(st.board&&st.board.form)
-    ? `<div class="rm-sep"></div><button class="rm-item" onclick="closeCellPops();openForms()">
-         <i class="fa-solid fa-file-lines"></i><span class="rm-grow">טפסים</span></button>`
-    : '';
-  openCellPop(e.currentTarget,`<div class="row-menu">${rows}${forms}</div>`,'row-menu-pop view-pick-pop');
+  openCellPop(e.currentTarget,`<div class="row-menu">${rows}</div>`,'row-menu-pop view-pick-pop');
 }
 /* Clicking one of the board's own view tabs.
 
@@ -5020,9 +5063,17 @@ function renderAddViewPop(){
      for the same rule on the per-view menu). */
   const mayAdd=st.board&&(st.board.my_role==='admin'||st.board.my_role==='editor');
   const types=VIEWS.filter(v=>!VIEWS_WIP.has(v.id)&&v.id!=='table');
+  /* Two things this button can add now, and they are the same kind of thing:
+     a tab on the board that somebody made and named. A table is a way of
+     reading what is already there; a form is a way of putting something in.
+     Both take the right to edit the board, and neither is offered without
+     it — see FormEditor.create for the other half of that. */
   pop.innerHTML = (mayAdd?`<button class="pop-row pop-row-act" onclick="closeAddView();Views.createTable()">
       <i class="fa-solid fa-table-list" style="width:16px;color:var(--primary)"></i>
-      <span>טבלה</span></button>`:'')
+      <span>טבלה</span></button>
+    <button class="pop-row pop-row-act" id="pop-add-form" onclick="closeAddView();FormEditor.create()">
+      <i class="fa-solid fa-file-lines" style="width:16px;color:var(--primary)"></i>
+      <span>טופס</span></button>`:'')
     + (types.length?'<div class="pop-title">תצוגות בלוח</div>':'')
     + types.map(v=>{
     const on=enabled.has(v.id);
@@ -5030,10 +5081,6 @@ function renderAddViewPop(){
       <input type="checkbox" ${on?'checked':''} onchange="toggleBoardView('${v.id}',this.checked)">
       <i class="fa-solid ${v.ic}" style="width:16px;color:var(--text-light)"></i><span>${v.he}</span>
     </label>`;}).join('');
-  pop.innerHTML += `<label class="pop-row">
-      <input type="checkbox" ${st.board&&st.board.form?'checked':''} onchange="toggleBoardForms(this.checked)">
-      <i class="fa-solid fa-file-lines" style="width:16px;color:var(--text-light)"></i><span>טפסים</span>
-    </label>`;
 }
 function closeAddView(){const w=document.getElementById('tab-add-wrap');if(w)w.classList.remove('open');}
 document.addEventListener('click',e=>{if(!e.target.closest('#tab-add-wrap'))closeAddView();});
@@ -5050,17 +5097,6 @@ async function toggleBoardView(id,on){
     renderView();
     toast(on?'תצוגה נוספה':'תצוגה הוסרה');
   }catch(e){toast('שגיאה בעדכון תצוגות');}
-}
-async function toggleBoardForms(on){
-  if(!st.board)return;
-  try{
-    const form = on ? {fields: currentForm().map(f=>({key:f.key,required:!!f.required,visible:f.visible!==false,min:f.min,max:f.max}))} : null;
-    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({form})});
-    st.board.form=form;
-    renderTabs();
-    const w=document.getElementById('tab-add-wrap');if(w){w.classList.add('open');renderAddViewPop();}
-    toast(on?'טפסים נוספו ללוח':'טפסים הוסרו מהלוח');
-  }catch(e){toast('רק מנהל לוח יכול לערוך טפסים');}
 }
 
 /* ============ new board (לוח חדש) ============ */
@@ -5764,6 +5800,14 @@ function importReportWindow(){
 let _viewScrollKey=null;
 function renderView(){
   const el=document.getElementById('view');
+  /* A form is opened over the board, so it is drawn instead of it — before
+     any of the table machinery below, none of which has anything to say
+     about a form. The scroll/image bookkeeping is skipped with it on
+     purpose: it exists to stop a re-rendered GRID from flickering. */
+  if(typeof FormEditor!=='undefined' && FormEditor.isOpen()){
+    FormEditor.paint(el);
+    return;
+  }
   const key=(st.board?st.board.id:'-')+'/'+st.view;
   const same=(key===_viewScrollKey);
   // rebuilding innerHTML drops the scroll offset — remember it first
@@ -6107,7 +6151,7 @@ function linkNamesOf(t,colId){
 
 const ADV_KINDS = {
   // what the column holds -> how it can be asked about
-  text:'text', email:'text', long_text:'text',
+  text:'text', email:'text', long_text:'text', phone:'text',
   status:'status', dropdown:'status', priority:'status',
   number:'number', rating:'number', formula:'number',
   people:'people', created_by:'people', assignees:'people',
@@ -12786,7 +12830,9 @@ async function saveSubOnly(ids,msg){
 const COLUMN_TYPES=[
   {type:'status',he:'סטטוס',ic:'fa-circle-half-stroke',desc:'תווית צבעונית'},
   {type:'text',he:'טקסט',ic:'fa-font',desc:'טקסט חופשי'},
+  {type:'long_text',he:'טקסט ארוך',ic:'fa-align-right',desc:'פסקה — כמה שורות'},
   {type:'email',he:'דוא"ל',ic:'fa-envelope',desc:'כתובת דוא"ל'},
+  {type:'phone',he:'טלפון',ic:'fa-phone',desc:'מספר טלפון'},
   {type:'people',he:'אנשים',ic:'fa-user-group',desc:'שיוך משתמשים'},
   {type:'dropdown',he:'רשימה נפתחת',ic:'fa-list-check',desc:'בחירה מרשימת אפשרויות'},
   {type:'date',he:'תאריך',ic:'fa-calendar-day',desc:'תאריך בודד'},
@@ -13301,6 +13347,16 @@ function builtinCellHTML(key,t){
 function customCellHTML(c,t){
   const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
   if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
+  /* A paragraph in a grid cell is still one line wide — the full text is in
+     the title and in the item's own panel. An <input> rather than a textarea
+     on purpose: a row that grows to four lines because one cell holds four
+     breaks the alignment of every other column in it. */
+  if(c.type==='long_text') return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':String(v).replace(/\n/g,' '))}" title="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
+  /* Like the email cell, and for the same reason: the value is a way of
+     reaching somebody, so the cell offers to do it. `tel:` on a phone dials;
+     on a desktop it hands off to whatever is registered, or does nothing,
+     which is no worse than the text alone. */
+  if(c.type==='phone')  return `<td class="cell cell-custom"><div class="cc-mailwrap">${v?`<a class="cc-mail" href="tel:${esc(String(v).replace(/[^0-9+]/g,''))}" title="התקשר" onclick="event.stopPropagation()"><i class="fa-solid fa-phone"></i></a>`:''}<input class="cc-inp" type="tel" dir="ltr" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></div></td>`;
   if(c.type==='email')  return `<td class="cell cell-custom"><div class="cc-mailwrap">${v?`<a class="cc-mail" href="mailto:${esc(v)}" title="שלח דוא&quot;ל" onclick="event.stopPropagation()"><i class="fa-solid fa-envelope"></i></a>`:''}<input class="cc-inp" type="email" value="${esc(v==null?'':v)}" placeholder="—" onchange="setEmailCell(${id},'${c.id}',this)"></div></td>`;
   if(c.type==='number') return `<td class="cell cell-custom"><input class="cc-inp cc-num" ${cc} inputmode="decimal" data-raw="${v==null?'':esc(v)}" value="${esc(fnum(v,c))}" placeholder="—" onfocus="numFocus(this)" onblur="numBlur(this)" onchange="setNumCell(${id},'${c.id}',this)"></td>`;
   if(c.type==='date')   return `<td class="cell cell-custom">${dateCellHTML(v,`setCell(${id},'${c.id}',this.value||null)`)}</td>`;
@@ -15563,10 +15619,18 @@ async function deleteColumn(e,colId){
   const c=customColumns().find(x=>x.id===colId);
   const go=async()=>{
     const cols=customColumns().filter(x=>x.id!==colId);
-    await saveColumns(cols);toast('העמודה נמחקה');
+    // the id goes back as the explicit consent the server is holding out for
+    await saveColumns(cols,[colId]);toast('העמודה נמחקה');
   };
   const opts={title:'מחיקת עמודה'+(c?` — ${c.title}`:''),
               note:'הנתונים בעמודה יוסרו מהתצוגה.',confirmText:'מחק עמודה'};
+  /* A form asks about this column, and deleting it changes that form. Said
+     before — the question is not deleted with the field, it stops being
+     asked, and a form that required it cannot be published until somebody
+     deals with it. Counted by the server for the same reason the link count
+     is: this client's view of the board has already been filtered. */
+  const forms=await formUsersHTML(colId);
+  if(forms){ opts.noteHTML=(opts.noteHTML||`<div class="ci-row">${esc(opts.note||'')}</div>`)+forms; opts.note=null; }
   // "לפני מחיקת שדה ... המערכת תציג את האוטומציות התלויות, הבעלים, אופן השימוש
   // וההשפעה הצפויה" — before, which is the whole of it: afterwards the rule is
   // suspended and the person who stopped it has gone back to what they were doing.
@@ -15583,6 +15647,29 @@ async function deleteColumn(e,colId){
   }
   if(dep){ opts.noteHTML=(opts.noteHTML||`<div class="ci-row">${esc(opts.note||'')}</div>`)+dep; opts.note=null; }
   askConfirm('האם אתה בטוח שברצונך למחוק?',go,opts);
+}
+
+/* The forms that ask about the column about to be removed. '' when none —
+   and ALSO '' when the question could not be asked, because an empty answer
+   and an unanswered one must not read the same. */
+async function formUsersHTML(colId){
+  let imp=null;
+  try{ imp=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/impact`); }
+  catch(err){ return `<div class="ci-row">לא ניתן היה לבדוק אילו טפסים משתמשים בשדה הזה.</div>`; }
+  const f=(imp&&imp.forms)||[];
+  if(!f.length) return '';
+  const req=f.filter(x=>x.required&&x.visible).length;
+  const rows=f.map(x=>`<div class="ci-row">
+      <b>${esc(x.name||'')}</b>
+      <span class="ah-tag">${esc(FORM_STATUS_HE[x.status]||x.status||'')}</span>
+      <span class="ah-tag">שאלה: ${esc(x.label||'')}</span>
+      ${x.required?'<span class="ah-tag">חובה</span>':''}
+    </div>`).join('');
+  return `<div class="ci-row"><b>${f.length===1?'טופס אחד משתמש':f.length+' טפסים משתמשים'} בשדה הזה</b></div>${rows}`
+    +`<div class="ci-row" style="color:var(--text-muted)">
+        השאלות לא יימחקו — הן יפסיקו להישאל, והנוסח שלהן יישמר כדי שאפשר יהיה
+        לקשר אותן לשדה אחר.${req?' טופס עם שאלת חובה כזאת לא יוכל להתפרסם עד שתטופל.':''}
+      </div>`;
 }
 
 /* The automations that point at the thing about to be removed: who owns each,
@@ -15633,9 +15720,15 @@ function connectImpactHTML(imp){
   }
   return rows.map(r=>`<div class="ci-row">${r}</div>`).join('');
 }
-async function saveColumns(cols){
+/* `confirm` names the columns whose removal — or retype — the person has
+   already been shown and agreed to. The server refuses the write with a 409
+   otherwise, and carries the impact in the refusal: a client that has not
+   shown the warning cannot sail past it by forgetting to. */
+async function saveColumns(cols, confirm){
   try{
-    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({columns:cols})});
+    const body={columns:cols};
+    if(confirm&&confirm.length) body.confirm_columns=confirm;
+    const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)});
     st.board.columns=r.columns;
     /* The server keeps an allow-list of column types and drops anything it does
        not know — quietly, with a 200. A browser holding a newer index.html than
@@ -15650,7 +15743,27 @@ async function saveColumns(cols){
     // the board, so the loaded items have to be refreshed to show them
     if((r.columns||[]).some(c=>c.type==='item_id')) await refreshBoardItems();
     renderView();
-  }catch(e){toast(String(e.message||'').includes('403')?'רק מנהל הלוח יכול לערוך עמודות':'שגיאה בשמירת עמודות');}
+  }catch(e){
+    /* The server refused because a form asks about a column this change
+       removes or retypes, and nobody has said so out loud. The refusal
+       carries the impact, so the question can be asked here — once, in one
+       place, for every path that edits columns. Answering it resends the
+       same change with the consent attached. */
+    if(e&&e.status===409&&e.detail&&Array.isArray(e.detail.columns)){
+      const cs=e.detail.columns;
+      const rows=cs.map(c=>`<div class="ci-row"><b>${esc(c.title||c.col_id)}</b>
+          <span class="ah-tag">${c.removed?'נמחק':'שינוי סוג ל'+esc(c.new_type||'')}</span>
+          ${(c.forms||[]).map(x=>`<span class="ah-tag">${esc(x.name||'')}${
+            x.required?' · חובה':''}</span>`).join('')}</div>`).join('');
+      askConfirm(esc(e.detail.message||'השדות נמצאים בשימוש בטפסים'),
+        ()=>saveColumns(cols, cs.map(c=>c.col_id)),
+        {title:'שדה בשימוש בטופס', confirmText:'המשך בכל זאת',
+         noteHTML:rows+`<div class="ci-row" style="color:var(--text-muted)">
+            השאלות לא יימחקו — הן יפסיקו להישאל, והנוסח שלהן יישמר.</div>`});
+      return;
+    }
+    toast(String(e.message||'').includes('403')?'רק מנהל הלוח יכול לערוך עמודות':'שגיאה בשמירת עמודות');
+  }
 }
 /* Open/close a parent's sub-items. Triggered from the caret AND from the
    "N תת-פריטים" badge, so the caret is looked up on the row rather than assumed
@@ -16549,130 +16662,1152 @@ async function deleteGroup(gid){
                                           :'הקבוצה ריקה.'}</div>`+dep:null});
 }
 
-/* ============ Form Builder (מחולל טפסים מבוסס סכמת הלוח) ============ */
-const FIELD_TYPE_HE={text:'טקסט חופשי',email:'דוא"ל',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'קישור'};
-function formSchema(){
-  const f=[
-    {key:'title',label:'שם הפריט',type:'text',locked:true},
-    {key:'assignees',label:'אחראים',type:'people'},
-    {key:'status',label:'סטטוס',type:'status'},
-    {key:'priority',label:'עדיפות',type:'priority'},
-    {key:'due_date',label:'תאריך יעד',type:'date'},
-  ];
-  // derived columns (creator, creation time, item id, formula) are filled by the
-  // system, so a form has nothing to ask for — offering them stored a value the
-  // grid then ignored
-  customColumns().forEach(c=>{ if(!DERIVED_COLS.includes(c.type)) f.push({key:c.id,label:c.title,type:c.type,col:c}); });
-  return f;
-}
-function currentForm(){
-  const schema=formSchema(), byKey=Object.fromEntries(schema.map(f=>[f.key,f]));
-  const saved=(st.board.form&&st.board.form.fields)||null;
-  if(!saved) return schema.map(f=>({...f,required:f.key==='title',visible:true}));
-  const out=[], used=new Set();
-  saved.forEach(sf=>{ const base=byKey[sf.key]; if(base){ out.push({...base,required:!!sf.required,visible:sf.visible!==false,min:sf.min,max:sf.max}); used.add(sf.key); }});
-  schema.forEach(f=>{ if(!used.has(f.key)) out.push({...f,required:f.key==='title',visible:true}); });
-  out.sort((a,b)=>(a.key==='title'?-1:b.key==='title'?1:0));
-  return out;
-}
-const Forms={
-  fields:[],
-  isAdmin(){ return st.board&&st.board.my_role==='admin'; },
-  open(){ if(!st.board)return; this.fields=currentForm(); if(this.isAdmin())this.builder(); else this.fill(); },
-  builder(){
-    showModal(`<h2><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> מחולל טפסים — ${esc(st.board.name)}</h2>
+/* FormPaper lives in frontend/form-paper.js — loaded above, and loaded by
+   the public fill page too. One renderer, one file. */
+
+/* ============ Form View — עורך הטופס ============
+
+   A form is a view of the board, so it lives on the same strip as the saved
+   cuts and is reached the same way: Views.apply routes a row whose kind is
+   "form" to here instead of applying a cut. It draws over the board, into
+   #view, and leaves the way it came.
+
+   What it replaced: one form per board, kept as a key in the board's own
+   settings, rebuilt from the live columns every time it opened — so renaming
+   a column renamed the question, and there was nowhere to put a second form.
+   Nothing here reads a column for anything but its TYPE; the wording is the
+   form's own and is stored with it. */
+const FORM_STATUS_HE={DRAFT:'טיוטה', PUBLISHED:'מפורסם', DISABLED:'מושבת'};
+const FORM_FIELD_TYPE_HE={text:'טקסט חופשי',long_text:'טקסט ארוך',phone:'טלפון',email:'דוא"ל',people:'אנשים',status:'סטטוס',priority:'עדיפות',date:'תאריך',dropdown:'רשימה נפתחת',number:'מספר',rating:'דירוג',checkbox:'סימון',timeline:'ציר זמן',files:'קבצים',accounts:'קישור',connect:'קישור'};
+/* The five every item has, whatever the board's columns are. The same list
+   the server keeps in FORM_BUILTIN_FIELDS — it decides, this one only draws,
+   and a key missing from the server's list is refused on save rather than
+   quietly accepted here. */
+const FORM_BUILTIN_FIELDS=[
+  {key:'title',    label:'שם הפריט', type:'text'},
+  {key:'assignees',label:'אחראים',   type:'people'},
+  {key:'status',   label:'סטטוס',    type:'status'},
+  {key:'priority', label:'עדיפות',   type:'priority'},
+  {key:'due_date', label:'תאריך יעד',type:'date'},
+];
+
+/* Where every form-level setting lives on the loaded form, and what the
+   server calls it. One map, read by both directions: an edit writes through
+   it, and a save's answer is merged back through it. Two copies of this
+   knowledge would disagree the first time either moved. */
+const FORM_SETTING_PATH={
+  name:[null,'name'], status:[null,'status'], access:[null,'access'],
+  record_submitter:[null,'record_submitter'],
+  display_title:['design','display_title'], display_description:['design','display_description'],
+  font_family:['design','font_family'], font_size:['design','font_size'],
+  text_align:['design','text_align'], theme_color:['design','theme_color'],
+  background_color:['design','background_color'], text_color:['design','text_color'],
+  show_logo:['design','show_logo'],
+  submit_label:['design','submit_label'],
+  show_branding:['design','show_branding'],
+  success_title:['success','title'], success_message:['success','message'],
+  success_allow_another:['success','allow_another'],
+  success_redirect_url:['success','redirect_url'],
+};
+const FORM_SAVE_HE={pending:'שינויים ממתינים', saving:'שומר…', saved:'נשמר',
+                    error:'השמירה נכשלה'};
+/* How long a burst of typing is allowed to be before it is sent. Long enough
+   that a sentence is one save rather than forty, short enough that somebody
+   who stops typing and looks up sees "נשמר" rather than wondering. */
+const FORM_AUTOSAVE_MS=700;
+
+/* The ten kinds of question, as the field that answers them. Mirrors
+   FORM_FIELD_TYPES on the server, which is the one that decides; this list
+   also says what each one is CALLED and which of them carry a vocabulary.
+
+   Single and multi select are two different board columns — one value out of
+   a coloured list, or several out of a plain one — and that is settled when
+   the FIELD is made, because it is the column's nature and not the form's. */
+const FORM_NEW_FIELD_TYPES=[
+  {type:'text',      he:'טקסט',        ic:'fa-font'},
+  {type:'long_text', he:'טקסט ארוך',   ic:'fa-align-right'},
+  {type:'number',    he:'מספר',        ic:'fa-hashtag'},
+  {type:'status',    he:'בחירה יחידה', ic:'fa-circle-half-stroke', opts:true},
+  {type:'dropdown',  he:'בחירה מרובה', ic:'fa-list-check',         opts:true},
+  {type:'checkbox',  he:'כן/לא',       ic:'fa-square-check'},
+  {type:'date',      he:'תאריך',       ic:'fa-calendar-day'},
+  {type:'phone',     he:'טלפון',       ic:'fa-phone'},
+  {type:'email',     he:'דוא"ל',       ic:'fa-envelope'},
+  {type:'files',     he:'קובץ',        ic:'fa-paperclip'},
+];
+/* Where a hint inside the box means anything. A checkbox, a date picker, a
+   file drop and a list of options are all drawn by the browser or by their
+   own options — a placeholder on one is a field nobody will ever read, so it
+   is not offered. "Placeholder כאשר רלוונטי" is exactly this list. */
+const FORM_PLACEHOLDER_TYPES=['text','long_text','number','phone','email'];
+
+const FormEditor={
+  id:null, viewId:null, form:null, loading:false, error:null,
+  sel:null,          // the selected component id — null means the form itself
+  preview:false,     // the canvas shows the respondent's form, fillable
+  pub:null,          // what the preview endpoint answered
+  pubDone:null,      // the preview was sent and passed — show its thank-you
+  pubBusy:false,
+  busy:false,        // a structural change is in flight
+
+  /* ── Autosave ──
+     One request at a time, and the local model is the truth.
+
+     Every edit lands on `this.form` immediately and is queued here as a
+     field. `seq` counts edits; `inflight` holds the seq a request was sent
+     under; `acked` the newest one an answer has confirmed. An answer older
+     than `acked` is dropped on the floor — the same rule Paged.load follows,
+     for the same reason: a slower answer must not overwrite a newer one.
+
+     On failure the queued fields go BACK into the queue, under anything that
+     arrived since, and the state says so. Nothing is rolled back on screen:
+     what somebody typed is still what they meant, and the only honest thing
+     to do with it is keep it and say it is not saved yet. */
+  save:{seq:0, acked:0, inflight:0, form:{}, comps:{}, timer:null,
+        state:'saved', error:null},
+
+  isOpen(){ return this.id!=null; },
+  errText(e,fallback){ return (e&&(e.detail&&e.detail.detail||e.detail))||fallback; },
+  /* Is there anything on screen that the server has not got? `saving` counts:
+     the request is out and may yet fail. */
+  unsaved(){ const s=this.save; return s.state==='pending'||s.state==='saving'||s.state==='error'; },
+
+  resetSave(){ clearTimeout(this.save.timer);
+    this.save={seq:0, acked:0, inflight:0, form:{}, comps:{}, timer:null,
+               state:'saved', error:null}; },
+
+  // ── opening, loading, leaving ──
+  async create(){
+    if(!st.board){ toast('פתחו לוח'); return; }
+    if(this.busy) return;
+    this.busy=true; renderTabs();
+    try{
+      const f=await api('/api/boards/'+st.board.id+'/forms',
+        {method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})});
+      this.busy=false;
+      await Views.load(st.board.id);
+      await this.open(f.id, f.view_id);
+      toast('נוצר טופס: '+(f.name||''));
+    }catch(e){
+      this.busy=false; renderTabs();
+      toast(this.errText(e,'יצירת הטופס נכשלה'));
+    }
+  },
+
+  async open(formId, viewId){
+    if(!st.board) return;
+    if(typeof Chat!=='undefined' && Chat.taskId) Chat.close();
+    this.id=formId; this.viewId=viewId||null;
+    this.form=null; this.error=null; this.loading=true;
+    this.sel=null; this.preview=false; this.pub=null;
+    this.resetSave();
+    Views.active=null; Views.base=null;
+    Router.set(st.board.id, null, this.viewId);
+    renderTabs(); renderView();
+    await this.reload();
+  },
+
+  async reload(){
+    const want=this.id;
+    this.loading=true; this.error=null; renderView();
+    try{
+      const f=await api('/api/forms/'+want);
+      if(this.id!==want) return;
+      this.form=f; this.loading=false; this.resetSave();
+    }catch(e){
+      if(this.id!==want) return;
+      this.loading=false; this.form=null;
+      this.error=(e&&e.status===403) ? 'אין לך הרשאה לערוך את הטופס הזה.'
+        : (e&&e.status===404) ? 'הטופס לא נמצא — ייתכן שנמחק.'
+        : this.errText(e,'טעינת הטופס נכשלה.');
+    }
+    renderTabs(); renderView();
+  },
+
+  /* Leaving. Anything queued is sent first and waited for — the way out is
+     not the place to discover that a save was still pending. Only if that
+     send FAILS is there a question to ask, and then it is asked plainly:
+     the work is still on screen, and leaving is what loses it. */
+  async close(){
+    if(!this.isOpen()) return;
+    if(this.save.state==='pending'||this.save.state==='saving'){
+      clearTimeout(this.save.timer);
+      await this.flush();
+    }
+    if(this.save.state==='error'){
+      askConfirm('יש שינויים שלא נשמרו. לצאת מהעורך בכל זאת?', ()=>this.leave(),
+        {title:'יציאה מהעורך', confirmText:'צאו בלי לשמור',
+         note:'השינויים שלא נשמרו יאבדו. אפשר להישאר ולנסות לשמור שוב.'});
+      return;
+    }
+    this.leave();
+  },
+  leave(){
+    this.resetSave();
+    this.id=null; this.viewId=null; this.form=null;
+    this.error=null; this.loading=false; this.sel=null; this.preview=false;
+    Router.set(st.board&&st.board.id, null, null);
+    renderTabs(); renderView();
+  },
+
+  // ── the autosave queue ──
+  localSet(key, value){
+    const p=FORM_SETTING_PATH[key]; if(!p||!this.form) return;
+    if(p[0]) this.form[p[0]][p[1]]=value; else this.form[p[1]]=value;
+  },
+  localGet(key){
+    const p=FORM_SETTING_PATH[key]; if(!p||!this.form) return undefined;
+    return p[0]?this.form[p[0]][p[1]]:this.form[p[1]];
+  },
+
+  /* A form-level edit: on screen now, on the queue now, on the wire shortly. */
+  edit(key, value){
+    if(!this.form) return;
+    this.localSet(key, value);
+    this.save.form[key]=value;
+    this.touch();
+  },
+  /* A component edit, queued per component so two fields of one question are
+     one request and two questions are two. */
+  editComp(cid, key, value){
+    const c=(this.form&&this.form.components||[]).find(x=>x.id===cid);
+    if(!c) return;
+    c[key]=value;
+    (this.save.comps[cid]=this.save.comps[cid]||{})[key]=value;
+    this.touch();
+  },
+  touch(){
+    const s=this.save;
+    s.seq++;
+    /* `saving` stays: the request out now is about to be followed by this
+       one. `error` stays too — the queue still holds work that failed, and
+       replacing the words "השמירה נכשלה" with "שינויים ממתינים" the moment
+       somebody types again would quietly retract a warning that is still
+       true. The timer below retries either way. */
+    if(s.state!=='saving' && s.state!=='error') s.state='pending';
+    this.paintBar();
+    clearTimeout(s.timer);
+    s.timer=setTimeout(()=>this.flush(), FORM_AUTOSAVE_MS);
+  },
+  /* Send what is queued, now, and wait for it. Used where waiting is the
+     point: leaving the editor, and a structural change that must land after
+     the edit it follows. */
+  async flushNow(){ clearTimeout(this.save.timer); await this.flush(); },
+
+  async flush(){
+    const s=this.save;
+    if(!this.form || !this.isOpen()) return;
+    if(s.inflight) return;                      // one at a time; see below
+    const form=s.form, comps=s.comps;
+    const nothing=!Object.keys(form).length && !Object.keys(comps).length;
+    if(nothing){
+      if(s.state!=='error'){ s.state='saved'; s.error=null; this.paintBar(); }
+      return;
+    }
+    s.form={}; s.comps={};
+    const mine=s.inflight=s.seq;
+    s.state='saving'; s.error=null; this.paintBar();
+    const fid=this.id;
+    try{
+      if(Object.keys(form).length){
+        const f=await api('/api/forms/'+fid,
+          {method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(form)});
+        this.mergeForm(f, fid);
+      }
+      for(const cid of Object.keys(comps)){
+        const c=await api('/api/forms/'+fid+'/components/'+cid,
+          {method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(comps[cid])});
+        this.mergeComp(+cid, c, fid);
+      }
+      s.inflight=0;
+      if(this.id!==fid) return;                 // the editor moved on
+      if(mine<s.acked) return;                  // an older answer than one already seen
+      s.acked=mine;
+      if(Object.keys(s.form).length||Object.keys(s.comps).length){
+        return this.flush();                    // more arrived while this was out
+      }
+      s.state='saved'; s.error=null;
+    }catch(e){
+      s.inflight=0;
+      if(this.id!==fid) return;
+      /* Back on the queue, UNDER anything that arrived since: a field edited
+         again while this request was failing is newer than what we are
+         putting back, and must win. */
+      s.form=Object.assign({}, form, s.form);
+      for(const cid of Object.keys(comps))
+        s.comps[cid]=Object.assign({}, comps[cid], s.comps[cid]);
+      s.state='error';
+      s.error=this.errText(e,'השמירה נכשלה');
+    }
+    this.paintBar();
+  },
+
+  async retry(){ this.save.state='pending'; this.save.error=null; await this.flushNow(); },
+
+  /* What a save's answer is allowed to change on screen.
+
+     Not the fields that are queued: those hold something newer than what the
+     server was told, and writing the answer over them is exactly the race
+     this guards. Everything else — the version, the publication stamp, a name
+     the server numbered differently — comes back. */
+  mergeForm(f, fid){
+    if(!this.form || this.id!==fid) return;
+    const pend=this.save.form;
+    this.form.config_version=f.config_version;
+    this.form.published_at=f.published_at;
+    this.form.published_by=f.published_by;
+    this.form.public_token=f.public_token;
+    Object.keys(FORM_SETTING_PATH).forEach(k=>{
+      if(k in pend) return;                     // newer on screen than on the wire
+      const p=FORM_SETTING_PATH[k];
+      const v=p[0]?(f[p[0]]||{})[p[1]]:f[p[1]];
+      if(v!==undefined) this.localSet(k, v);
+    });
+  },
+  mergeComp(cid, c, fid){
+    if(!this.form || this.id!==fid) return;
+    const pend=this.save.comps[cid]||{};
+    const mineRow=(this.form.components||[]).find(x=>x.id===cid);
+    if(!mineRow) return;
+    Object.keys(c).forEach(k=>{ if(!(k in pend)) mineRow[k]=c[k]; });
+  },
+
+  // ── structural changes: straight to the server, after whatever is queued ──
+  async send(path, opts, fallback){
+    this.busy=true; renderView();
+    try{
+      const r=await api(path, opts);
+      this.busy=false;
+      return r;
+    }catch(e){
+      this.busy=false;
+      toast(this.errText(e,fallback));
+      await this.reload();
+      return null;
+    }
+  },
+
+  available(){
+    const used=new Set(((this.form&&this.form.components)||[])
+      .filter(c=>c.kind==='question').map(c=>c.field_key));
+    const out=FORM_BUILTIN_FIELDS.filter(f=>!used.has(f.key)).map(f=>({...f}));
+    (customColumns()||[]).forEach(c=>{
+      if(DERIVED_COLS.includes(c.type)||used.has(c.id))return;
+      out.push({key:c.id, label:c.title, type:c.type});
+    });
+    return out;
+  },
+  fieldOf(key){
+    const b=FORM_BUILTIN_FIELDS.find(f=>f.key===key);
+    if(b) return b;
+    const c=(customColumns()||[]).find(x=>x.id===key);
+    return c?{key:c.id,label:c.title,type:c.type}:null;
+  },
+  selected(){ return (this.form&&this.form.components||[]).find(c=>c.id===this.sel)||null; },
+  select(cid){ this.sel=(this.sel===cid?null:cid); renderView(); },
+
+  /* Two ways to a question, in one menu: a field the board already has, or a
+     field made here and then asked about. The second is the board's admin's
+     to take — adding a column changes the board for everyone who reads it —
+     so it is offered to them and to nobody else. */
+  addMenu(ev){
+    ev&&ev.stopPropagation();
+    const fields=this.available();
+    const rows=fields.length
+      ? fields.map(f=>`<button class="rm-item" onclick="closeCellPops();FormEditor.addQuestion('${esc(f.key)}')">
+          <i class="fa-solid fa-circle-question"></i><span class="rm-grow">${esc(f.label)}</span>
+          <span class="fv-menu-t">${esc(FORM_FIELD_TYPE_HE[f.type]||f.type)}</span></button>`).join('')
+      : `<div class="fv-menu-none">כל שדות הלוח כבר בטופס</div>`;
+    const mayAddField=st.board&&st.board.my_role==='admin';
+    const mk=mayAddField
+      ? `<div class="rm-sep"></div><button class="rm-item" onclick="closeCellPops();FormEditor.newFieldDialog()">
+           <i class="fa-solid fa-circle-plus"></i><span class="rm-grow">שדה חדש בלוח…</span></button>`
+      : '';
+    openCellPop(ev.currentTarget||ev.target,
+      `<div class="row-menu fv-menu" onclick="event.stopPropagation()">${rows}${mk}</div>`,'row-menu-pop');
+  },
+
+  /* ── מסלול 2: שדה חדש מתוך העורך ──
+     The field and the question are made by ONE request, because they are one
+     act: a browser that made the column and then failed to make the question
+     would leave the board a column nobody asked for, and there is no order of
+     two requests that does not have a bad half. The server does both in one
+     transaction; a refusal leaves the board exactly as it was. */
+  newFieldDialog(){
+    const t=FORM_NEW_FIELD_TYPES[0];
+    showModal(`<h2><i class="fa-solid fa-circle-plus" style="color:var(--primary)"></i> שדה חדש בלוח</h2>
       <div class="mbody">
-        <div id="fb-list">${this.builderRows()}</div>
+        <div class="field"><label for="nf-title">שם השדה בלוח</label>
+          <input id="nf-title" maxlength="60" autocomplete="off" placeholder="לדוגמה: כתובת הנכס"
+                 oninput="FormEditor._nfErr('')"
+                 onkeydown="if(event.key==='Enter')FormEditor.createField()">
+          <div class="fv-note">כך ייקרא השדה בלוח. נוסח השאלה בטופס נפרד ממנו, ואפשר לשנות אותו אחר כך.</div></div>
+        <div class="field"><label for="nf-type">סוג</label>
+          <select id="nf-type" onchange="FormEditor._nfType(this.value)">
+            ${FORM_NEW_FIELD_TYPES.map(x=>`<option value="${x.type}">${esc(x.he)}</option>`).join('')}
+          </select></div>
+        <div class="field" id="nf-opts-wrap" ${t.opts?'':'hidden'}>
+          <label for="nf-opts">אפשרויות — אחת בכל שורה</label>
+          <textarea id="nf-opts" rows="4" placeholder="תאורה&#10;ניקיון&#10;מים וביוב"></textarea></div>
+        <div class="field-err" id="nf-err" role="alert" hidden></div>
       </div>
       <div class="mfoot">
-        <button class="btn btn-primary" onclick="Forms.save()"><i class="fa-solid fa-floppy-disk"></i> שמור טופס</button>
-        <button class="btn btn-ghost" onclick="Forms.fill(true)"><i class="fa-solid fa-eye"></i> תצוגה מקדימה</button>
-        <div style="flex:1"></div>
-        <button class="btn btn-ghost" onclick="Forms.reset()">איפוס</button>
+        <button class="btn btn-primary" id="nf-ok" onclick="FormEditor.createField()">
+          <i class="fa-solid fa-check"></i> יצירה והוספה לטופס</button>
+        <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
       </div>`);
+    setTimeout(()=>{const n=document.getElementById('nf-title'); if(n)n.focus();},40);
+  },
+  _nfType(type){
+    const t=FORM_NEW_FIELD_TYPES.find(x=>x.type===type);
+    const w=document.getElementById('nf-opts-wrap');
+    if(w) w.hidden=!(t&&t.opts);
+    this._nfErr('');
+  },
+  _nfErr(msg){
+    const e=document.getElementById('nf-err');
+    if(!e) return msg&&toast(msg);
+    e.textContent=msg||''; e.hidden=!msg;
+  },
+  async createField(){
+    const title=((document.getElementById('nf-title')||{}).value||'').trim();
+    const type=((document.getElementById('nf-type')||{}).value||'text');
+    if(!title) return this._nfErr('לשדה צריך שם');
+    const t=FORM_NEW_FIELD_TYPES.find(x=>x.type===type);
+    const body={type, title, label:title};
+    if(t&&t.opts){
+      const raw=((document.getElementById('nf-opts')||{}).value||'');
+      body.options=raw.split('\n').map(x=>x.trim()).filter(Boolean);
+      if(!body.options.length) return this._nfErr('שדה בחירה צריך אפשרות אחת לפחות');
+    }
+    const ok=document.getElementById('nf-ok');
+    if(ok) ok.disabled=true;
+    await this.flushNow();
+    try{
+      const r=await api('/api/forms/'+this.id+'/fields',
+        {method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)});
+      /* The board on screen gains the column, so the question resolves its
+         type without a round trip for the whole board. */
+      if(st.board) st.board.columns=(st.board.columns||[]).concat([r.column]);
+      this.form.components.push(r.component);
+      this.sel=r.component.id;
+      closeModals();
+      renderView();
+      toast('נוצר שדה "'+title+'" ונוספה שאלה');
+    }catch(e){
+      if(ok) ok.disabled=false;
+      this._nfErr(this.errText(e,'יצירת השדה נכשלה'));
+    }
+  },
+
+  async addQuestion(key){
+    const fl=this.fieldOf(key); if(!fl) return;
+    await this.flushNow();
+    const r=await this.send('/api/forms/'+this.id+'/components',
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:withMe({kind:'question', field_key:key, label:fl.label})},
+      'הוספת השאלה נכשלה');
+    if(r){ this.form.components.push(r); this.sel=r.id; renderView(); }
+  },
+  async addContent(kind){
+    await this.flushNow();
+    const r=await this.send('/api/forms/'+this.id+'/components',
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:withMe({kind, content:kind==='heading'?'כותרת':''})},
+      'הוספת הרכיב נכשלה');
+    if(r){ this.form.components.push(r); this.sel=r.id; renderView(); }
+  },
+
+  removeRow(cid){
+    const c=(this.form.components||[]).find(x=>x.id===cid);
+    const what=c&&c.kind==='question'?'השאלה':'הרכיב';
+    askConfirm(`להסיר את ${what} מהטופס?`, async()=>{
+      delete this.save.comps[cid];            // nothing to save about a row that is going
+      await this.flushNow();
+      const r=await this.send('/api/forms/'+this.id+'/components/'+cid,
+        {method:'DELETE',headers:{'Content-Type':'application/json'},body:withMe({})},
+        'הסרת הרכיב נכשלה');
+      if(!r) return;
+      this.form.components=this.form.components.filter(x=>x.id!==cid);
+      if(this.sel===cid) this.sel=null;
+      renderView();
+    },{note:'שדות הלוח והרשומות אינם מושפעים.'});
+  },
+
+  async reorder(order){
+    await this.flushNow();
+    const r=await this.send('/api/forms/'+this.id+'/components/order',
+      {method:'PUT',headers:{'Content-Type':'application/json'},body:withMe({order})},
+      'שינוי הסדר נכשל');
+    if(!r) return;
+    const by={}; (this.form.components||[]).forEach(c=>by[c.id]=c);
+    this.form.components=(r.order||[]).map(id=>by[id]).filter(Boolean);
+    renderView();
+  },
+
+  async setStatus(status){
+    await this.flushNow();
+    const r=await this.send('/api/forms/'+this.id,
+      {method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({status})},
+      'שינוי מצב הטופס נכשל');
+    if(!r) return;
+    this.form=r;
+    await Views.load(st.board.id);
+    closeModals(); renderTabs(); renderView();
+    toast(status==='PUBLISHED'?'הטופס פורסם':'הטופס הושבת');
+  },
+
+  /* The name is a form setting like any other and goes through the queue —
+     but the TAB carries it too, so the strip is refreshed once it lands. */
+  renameFromBar(value){
+    const name=(value||'').trim();
+    if(!this.form) return;
+    if(!name){ toast('לתצוגה צריך שם'); renderView(); return; }
+    if(name===this.form.name) return;
+    this.edit('name', name);
+    this.flushNow().then(()=>{
+      if(this.save.state!=='error' && st.board) Views.load(st.board.id).then(renderTabs);
+    });
+  },
+
+  // ── preview ──
+  async togglePreview(){
+    this.preview=!this.preview;
+    this.pubDone=null;
+    if(!this.preview){ renderView(); return; }
+    await this.flushNow();           // preview what is saved, not what was typed
+    this.pub=null; renderView();
+    try{ this.pub=await api('/api/forms/'+this.id+'/preview'); }
+    catch(e){ this.pub=null; toast(this.errText(e,'התצוגה המקדימה נכשלה')); }
+    renderView();
+  },
+
+  /* Sending the preview. The same validation the public route runs, through
+     a door that writes nothing — so what is being tested is the form, not a
+     rehearsal of it. A manager's endpoint by the form's id, never by the
+     public token: reached the other way it would be a way to run a closed
+     form's submission, which is what the gate exists to stop. */
+  async tryPreview(){
+    if(!this.pub || this.pubBusy) return;
+    const form=document.getElementById('fv-pform'); if(!form) return;
+    (this.pub.components||[]).forEach(c=>this.pErr(c.id,''));
+    const {answers, missing, bad}=FormPaper.collect(this.pub, form);
+    if(missing.length||bad.length){
+      missing.forEach(m=>this.pErr(m.id,'שדה חובה'));
+      bad.forEach(x=>this.pErr(x.id,x.why));
+      toast('יש תשובות שצריך לתקן');
+      return;
+    }
+    this.pubBusy=true;
+    try{
+      await api('/api/forms/'+this.id+'/preview/submit',
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:withMe({answers})});
+      this.pubBusy=false;
+      this.pubDone=true;
+      renderView();
+      toast('הטופס עבר את הבדיקות — לא נוצרה רשומה');
+    }catch(e){
+      this.pubBusy=false;
+      const d=e&&e.detail;
+      /* Beside each question, the way the public page does it — this is the
+         same answer the respondent would get. */
+      if(d&&typeof d==='object'&&Array.isArray(d.errors)){
+        d.errors.forEach(x=>this.pErr(x.question_id, x.message));
+        toast(d.message||'יש תשובות שצריך לתקן');
+        return;
+      }
+      toast(this.errText(e,'הבדיקה נכשלה'));
+    }
+  },
+  pErr(cid, msg){
+    const box=document.getElementById('fa-'+cid+'-e');
+    const inp=document.getElementById('fa-'+cid);
+    if(box){ box.textContent=msg||''; box.hidden=!msg; }
+    if(inp&&inp.classList) inp.classList.toggle('bad', !!msg);
+  },
+  /* The success screen, as the respondent will read it — the same two
+     strings the settings pane sets, so "what does it say afterwards" is
+     answerable without publishing anything. */
+  thanksHTML(){
+    const s=(this.pub&&this.pub.success)||{};
+    return `<div class="fv-paper fv-thanks" style="${FormPaper.styleAttr((this.pub||{}).design)}">
+      <i class="fa-solid fa-circle-check fv-thanks-i"></i>
+      <div class="fv-paper-t">${esc(s.title||'תודה')}</div>
+      <div class="fv-paper-d">${esc(s.message||'הפנייה נקלטה.')}</div>
+      <div class="fv-note"><i class="fa-solid fa-flask"></i>
+        תצוגה מקדימה — לא נוצרה רשומה בלוח.</div>
+      <button class="btn btn-ghost" onclick="FormEditor.pubDone=null;renderView()">
+        <i class="fa-solid fa-rotate-right"></i> מילוי שוב</button>
+    </div>`;
+  },
+
+  /* ── פרסום ושיתוף ──
+     Three states and one address. Publishing a draft mints the address, and
+     nothing before that moment has one — so there is no link to show, and
+     saying so is more useful than showing a box with nothing in it.
+
+     Disabling keeps everything: the questions, the design, the address and
+     every record the form already collected. "סגור" is a state, not a
+     deletion, and switching it back on returns the form to the same link. */
+  share(){
+    const f=this.form; if(!f) return;
+    const live=f.status==='PUBLISHED';
+    const url=f.public_url?(location.origin+f.public_url):'';
+    const admin=st.board&&st.board.my_role==='admin';
+    showModal(`<h2><i class="fa-solid fa-share-nodes" style="color:var(--primary)"></i> פרסום ושיתוף</h2>
+      <div class="mbody">
+        <div class="fv-share-state">מצב הטופס:
+          <span class="fv-badge fv-badge-${esc(f.status)}">${esc(FORM_STATUS_HE[f.status]||f.status)}</span></div>
+        <div class="field"><label for="fv-acc">מי רשאי למלא</label>
+          <select id="fv-acc" ${admin?'':'disabled'}
+                  onchange="FormEditor.setAccess(this.value)">
+            <option value="AUTHENTICATED" ${f.access==='AUTHENTICATED'?'selected':''}>כל משתמש מחובר</option>
+            <option value="PUBLIC_LINK" ${f.access==='PUBLIC_LINK'?'selected':''}>כל מי שמחזיק בקישור</option>
+          </select>
+          <div class="fv-note"><i class="fa-solid fa-circle-info"></i>
+            ${f.access==='PUBLIC_LINK'
+              ? 'כל מי שמחזיק בקישור יוכל למלא, גם בלי חשבון. מילוי הטופס אינו מעניק גישה ללוח.'
+              : 'רק מי שמחובר למערכת יוכל למלא. מילוי הטופס אינו מעניק גישה ללוח.'}</div>
+        </div>
+        ${url
+          ? `<div class="field"><label for="fv-link">קישור לטופס</label>
+               <div class="fv-link-row">
+                 <input id="fv-link" dir="ltr" readonly value="${esc(url)}"
+                        onclick="this.select()">
+                 <button class="btn btn-ghost" id="fv-copy" onclick="FormEditor.copyLink()">
+                   <i class="fa-solid fa-copy"></i> העתקה</button>
+               </div>
+               ${live?'':`<div class="fv-note"><i class="fa-solid fa-triangle-exclamation"></i>
+                 הקישור קיים אך הטופס אינו פעיל — מי שייכנס אליו יקבל הודעה שהטופס נסגר.</div>`}
+             </div>`
+          : `<div class="fv-note"><i class="fa-solid fa-circle-info"></i>
+               הקישור נוצר עם הפרסום הראשון, ונשאר אותו קישור גם אם הטופס יושבת ויופעל שוב.</div>`}
+      </div>
+      <div class="mfoot">
+        ${admin
+          ? `<button class="btn btn-primary" onclick="FormEditor.setStatus('${live?'DISABLED':'PUBLISHED'}')">
+               <i class="fa-solid ${live?'fa-circle-pause':'fa-paper-plane'}"></i> ${live?'השבתת הטופס':'פרסום הטופס'}</button>`
+          : `<span class="fv-note">רק מנהל הלוח יכול לפרסם או להשבית.</span>`}
+        <button class="btn btn-ghost" onclick="closeModals()">סגירה</button>
+      </div>`);
+  },
+
+  async setAccess(access){
+    await this.flushNow();
+    const r=await this.send('/api/forms/'+this.id,
+      {method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({access})},
+      'שינוי הגישה נכשל');
+    if(!r) { closeModals(); return; }
+    this.form=r; renderView(); this.share();
+  },
+
+  /* Copy, with the fallback that still works where the clipboard API does
+     not — an http origin, an older browser. The input is there either way,
+     so the worst case is "select it yourself" rather than nothing. */
+  async copyLink(){
+    const el=document.getElementById('fv-link'); if(!el) return;
+    const btn=document.getElementById('fv-copy');
+    const done=()=>{ if(btn) btn.innerHTML='<i class="fa-solid fa-check"></i> הועתק';
+                     toast('הקישור הועתק'); };
+    try{
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        await navigator.clipboard.writeText(el.value); return done();
+      }
+      el.select(); document.execCommand('copy'); done();
+    }catch(e){ el.select(); toast('העתיקו עם Ctrl+C'); }
+  },
+
+  // ── painting ──
+  paint(el){
+    el.innerHTML=this.css()+this.html();
     this.attachSort();
   },
-  builderRows(){
-    return this.fields.map((f,i)=>`<div class="fb-row" data-key="${f.key}">
-      <i class="fa-solid fa-grip-vertical fb-drag ${f.locked?'locked':''}"></i>
-      <div class="fb-info"><div class="fb-label">${esc(f.label)}</div><div class="fb-type">${FIELD_TYPE_HE[f.type]||f.type}${['people','dropdown'].includes(f.type)?' · בחירה מרובה':(f.type==='status'||f.type==='priority')?' · ערך אחד':''}</div></div>
-      ${f.type==='date'?`<div class="fb-constraint"><input type="date" title="מתאריך" value="${f.min||''}" onchange="Forms.setCon(${i},'min',this.value)"><span>–</span><input type="date" title="עד תאריך" value="${f.max||''}" onchange="Forms.setCon(${i},'max',this.value)"></div>`:''}
-      <label class="fb-tog" title="שדה חובה"><input type="checkbox" ${f.required?'checked':''} ${f.locked?'disabled':''} onchange="Forms.set(${i},'required',this.checked)"> חובה</label>
-      <label class="fb-tog" title="הצג בטופס"><input type="checkbox" ${f.visible?'checked':''} ${f.locked?'disabled':''} onchange="Forms.set(${i},'visible',this.checked)"> מוצג</label>
-    </div>`).join('');
+  /* The save indicator alone. A full repaint on every keystroke would take
+     the focus out of the field being typed into, which is the one thing an
+     autosaving editor must never do. */
+  paintBar(){
+    const el=document.getElementById('fv-save');
+    if(!el) return;
+    const s=this.save;
+    el.className='fv-save fv-save-'+s.state;
+    el.setAttribute('title', s.error||'');
+    el.innerHTML=`<i class="fa-solid ${ {pending:'fa-circle',saving:'fa-spinner fa-spin',
+        saved:'fa-circle-check',error:'fa-triangle-exclamation'}[s.state] }"></i>`
+      +`<span>${esc(FORM_SAVE_HE[s.state]||'')}</span>`
+      +(s.state==='error'?`<button class="fv-retry" onclick="FormEditor.retry()">ניסיון חוזר</button>`:'');
   },
-  set(i,k,v){ this.fields[i][k]=v; },
-  setCon(i,k,v){ this.fields[i][k]=v||undefined; },
-  attachSort(){ const el=document.getElementById('fb-list'); if(!el||!window.Sortable)return;
-    sortableOn(el,{handle:'.fb-drag',draggable:'.fb-row',filter:'.locked',animation:150,ghostClass:'sortable-ghost',onEnd:()=>{
-      const order=[...el.querySelectorAll('.fb-row')].map(r=>r.dataset.key);
-      this.fields.sort((a,b)=>order.indexOf(a.key)-order.indexOf(b.key));
-      this.fields.sort((a,b)=>(a.key==='title'?-1:b.key==='title'?1:0));
-    }}); },
-  async save(){
-    const fields=this.fields.map(f=>({key:f.key,required:!!f.required,visible:f.visible!==false,min:f.min,max:f.max}));
-    try{ await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({form:{fields}})});
-      st.board.form={fields}; renderTabs(); toast('הטופס נשמר'); closeModals(); }
-    catch(e){ toast('רק מנהל לוח יכול לשמור טופס'); }
+
+  html(){
+    if(this.loading&&!this.form)
+      return `<div class="fv-wrap"><div class="spin" role="status" aria-label="טוען את הטופס"></div>
+        <div class="fv-loading">טוען את הטופס…</div></div>`;
+    if(this.error)
+      return `<div class="fv-wrap"><div class="empty">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <div class="fv-err-msg">${esc(this.error)}</div>
+        <div class="fv-err-acts">
+          <button class="btn btn-primary" onclick="FormEditor.reload()"><i class="fa-solid fa-rotate-right"></i> נסו שוב</button>
+          <button class="btn btn-ghost" onclick="FormEditor.close()"><i class="fa-solid fa-arrow-right"></i> חזרה ללוח</button>
+        </div></div></div>`;
+    if(!this.form) return '';
+    return `<div class="fv-wrap">${this.barHTML()}
+      <div class="fv-panes">
+        ${this.outlineHTML()}
+        ${this.canvasHTML()}
+        ${this.inspectHTML()}
+      </div></div>`;
   },
-  reset(){ this.fields=formSchema().map(f=>({...f,required:f.key==='title',visible:true})); document.getElementById('fb-list').innerHTML=this.builderRows(); this.attachSort(); },
-  fill(preview){
-    const visible=this.fields.filter(f=>f.visible!==false);
-    showModal(`<h2><i class="fa-solid fa-file-lines" style="color:var(--primary)"></i> ${esc(st.board.name)} — טופס חדש${preview?' · תצוגה מקדימה':''}</h2>
-      <div class="mbody">${visible.map(f=>this.fieldInput(f)).join('')||'<div class="empty">אין שדות מוצגים</div>'}</div>
-      <div class="mfoot">
-        <button class="btn btn-primary" onclick="Forms.submit(${preview?'true':'false'})"><i class="fa-solid fa-paper-plane"></i> ${preview?'שליחה (הדגמה)':'צור פריט'}</button>
-        <button class="btn btn-ghost" onclick="${this.isAdmin()?'Forms.builder()':'closeModals()'}">${this.isAdmin()?'חזרה לעריכה':'ביטול'}</button>
-      </div>`);
+
+  barHTML(){
+    const f=this.form;
+    return `<div class="fv-bar">
+      <button class="btn btn-ghost fv-back" onclick="FormEditor.close()">
+        <i class="fa-solid fa-arrow-right"></i> חזרה ללוח</button>
+      <i class="fa-solid fa-file-lines fv-id-ic" aria-hidden="true"></i>
+      <input class="fv-name" id="fv-name" maxlength="80" aria-label="שם התצוגה"
+             value="${esc(f.name)}" onchange="FormEditor.renameFromBar(this.value)"
+             onkeydown="if(event.key==='Enter')this.blur()">
+      <span class="fv-badge fv-badge-${esc(f.status)}">${esc(FORM_STATUS_HE[f.status]||f.status)}</span>
+      <span class="fv-save fv-save-${this.save.state}" id="fv-save" role="status" aria-live="polite"></span>
+      <div class="fv-bar-sp"></div>
+      <button class="btn btn-ghost ${this.preview?'on':''}" onclick="FormEditor.togglePreview()"
+              aria-pressed="${this.preview?'true':'false'}">
+        <i class="fa-solid fa-eye"></i> תצוגה מקדימה</button>
+      <button class="btn btn-ghost ${this.sel==null?'on':''}" onclick="FormEditor.sel=null;renderView()">
+        <i class="fa-solid fa-sliders"></i> הגדרות</button>
+      <button class="btn btn-primary" onclick="FormEditor.share()">
+        <i class="fa-solid fa-share-nodes"></i> פרסום ושיתוף</button>
+    </div>`;
   },
-  fieldInput(f){
-    const req=f.required?' <span style="color:var(--red)">*</span>':'', id='ff-'+f.key;
-    let inp='';
-    if(f.type==='text') inp=`<input id="${id}" ${f.key==='title'?'placeholder="שם הפריט…"':''}>`;
-    else if(f.type==='email') inp=`<input id="${id}" type="email" dir="ltr" placeholder="name@example.com">`;
-    else if(f.type==='number') inp=`<input id="${id}" type="number">`;
-    else if(f.type==='date') inp=`<input id="${id}" type="date" ${f.min?`min="${f.min}"`:''} ${f.max?`max="${f.max}"`:''}>${(f.min||f.max)?`<div style="font-size:11px;color:var(--text-light);margin-top:3px">מוגבל ${f.min?'מ־'+f.min:''} ${f.max?'עד '+f.max:''}</div>`:''}`;
-    else if(f.type==='checkbox') inp=`<input id="${id}" type="checkbox" style="width:auto">`;
-    else if(f.type==='rating') inp=`<select id="${id}"><option value="">—</option>${[1,2,3,4,5].map(n=>`<option value="${n}">${'★'.repeat(n)}</option>`).join('')}</select>`;
-    // built-in status field → the board's vocabulary (value = enum key);
-    // a status column → that column's own vocabulary (value = option index)
-    else if(f.type==='status') inp=f.col
-      ? `<select id="${id}"><option value="">—</option>${statusColOpts(f.col).map((o,i)=>`<option value="${i}">${esc(o.label)}</option>`).join('')}</select>`
-      : `<select id="${id}">${boardStatusList().map(s=>`<option value="${s.key}">${esc(s.he)}</option>`).join('')}</select>`;
-    // built-in priority field → the board's vocabulary, exactly like status
-    else if(f.type==='priority') inp=`<select id="${id}">${boardPriorityList().map(p=>`<option value="${p.key}">${esc(p.he)}</option>`).join('')}</select>`;
-    else if(f.type==='people') inp=`<div class="ff-multi" id="${id}">${boardPeople().map(u=>`<label class="ff-chip"><input type="checkbox" value="${u.id}"> <span class="av" style="width:20px;height:20px;font-size:9px;margin:0">${avatarInner(u)}</span> ${esc(u.name)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין חברי לוח לשיוך</span>'}</div>`;
-    else if(f.type==='dropdown') inp=`<div class="ff-multi" id="${id}">${((f.col&&f.col.options)||[]).map(o=>`<label class="ff-chip"><input type="checkbox" value="${esc(o)}"> ${esc(o)}</label>`).join('')||'<span style="color:var(--text-light);font-size:12px">אין אפשרויות בעמודה</span>'}</div>`;
-    else inp=`<input id="${id}" placeholder="(${FIELD_TYPE_HE[f.type]||f.type})">`;
-    return `<div class="field"><label>${esc(f.label)}${req}</label>${inp}</div>`;
+
+  outlineHTML(){
+    const cs=this.form.components||[];
+    const rows=cs.length?cs.map(c=>{
+      const on=this.sel===c.id;
+      const fl=c.kind==='question'?this.fieldOf(c.field_key):null;
+      const gone=c.kind==='question'&&!fl;
+      const title=c.kind==='question'?(c.label||'(ללא נוסח)'):(c.content||(c.kind==='heading'?'כותרת':'טקסט'));
+      const ic=c.kind==='question'?'fa-circle-question':(c.kind==='heading'?'fa-heading':'fa-align-right');
+      return `<button class="fv-ol-row${on?' on':''}${gone?' gone':''}" data-id="${c.id}"
+                 aria-current="${on?'true':'false'}" onclick="FormEditor.select(${c.id})">
+        <i class="fa-solid fa-grip-vertical fv-drag" aria-hidden="true"></i>
+        <i class="fa-solid ${ic} fv-ol-ic" aria-hidden="true"></i>
+        <span class="fv-ol-nm">${esc(title)}</span>
+        ${c.kind==='question'&&c.required?'<span class="fv-ol-req" title="שדה חובה">*</span>':''}
+        ${c.kind==='question'&&c.visible===false?'<i class="fa-solid fa-eye-slash fv-ol-ic" title="מוסתר"></i>':''}
+      </button>`;}).join('')
+      : `<div class="fv-empty">אין עדיין רכיבים.</div>`;
+    return `<nav class="fv-outline" aria-label="רכיבי הטופס">
+      <div class="fv-sec-t">רכיבי הטופס</div>
+      <div id="fv-list" class="fv-ol">${rows}</div>
+      <div class="fv-add">
+        <button class="btn btn-ghost" onclick="FormEditor.addMenu(event)"><i class="fa-solid fa-plus"></i> שאלה</button>
+        <button class="btn btn-ghost" onclick="FormEditor.addContent('heading')"><i class="fa-solid fa-heading"></i> כותרת</button>
+        <button class="btn btn-ghost" onclick="FormEditor.addContent('text')"><i class="fa-solid fa-align-right"></i> טקסט</button>
+      </div></nav>`;
   },
-  async submit(preview){
-    const payload={board_id:st.board.id,custom_fields:{}}, missing=[];
-    const visible=this.fields.filter(f=>f.visible!==false);
-    for(const f of visible){
-      const el=document.getElementById('ff-'+f.key); if(!el)continue;
-      let val=null;
-      if(f.type==='people'||f.type==='dropdown'){ val=[...el.querySelectorAll('input:checked')].map(x=>f.type==='people'?+x.value:x.value); if(!val.length)val=null; }
-      else if(f.type==='checkbox'){ val=el.checked?true:null; }
-      else if(f.type==='rating'||f.type==='number'){ val=el.value===''?null:Number(el.value); }
-      else if(f.type==='status'&&f.col){ const o=el.value===''?null:statusColOpts(f.col)[+el.value]; val=o?{label:o.label,color:o.color}:null; }
-      else { val=el.value||null; }
-      if(f.required && (val==null||val===''||(Array.isArray(val)&&!val.length))){ missing.push(f.label); continue; }
-      if(f.key==='title') payload.title=val;
-      else if(f.key==='assignees') payload.assignee_ids=val||[];
-      else if(f.key==='status') payload.status=val;
-      else if(f.key==='priority') payload.priority=val;
-      else if(f.key==='due_date') payload.due_date=val?new Date(val+'T12:00:00').toISOString():null;
-      else if(val!=null) payload.custom_fields[f.key]=val;
+
+  /* The middle pane: the form as the person filling it in will read it.
+
+     In preview it is drawn from the PUBLIC projection — the same bytes the
+     respondent's page will get — so what is checked here is the real thing
+     and not a second rendering that agrees with it by luck. Editing draws
+     from the local model, with hidden questions shown greyed rather than
+     dropped: the builder has to see what they have hidden. */
+  /* The working copy, in the shape the public endpoint answers with.
+
+     This is what makes the canvas a preview of the published page rather
+     than a second drawing that resembles it: the editor resolves what only
+     it knows — a field's type, its vocabulary, whether the column still
+     exists — and from there the renderer is given exactly what a respondent's
+     browser will be given. */
+  doc(){
+    const f=this.form;
+    return {design:f.design, components:(f.components||[]).map(c=>{
+      if(c.kind!=='question') return {id:c.id, kind:c.kind, content:c.content,
+                                      settings:c.settings||{}};
+      const fl=this.fieldOf(c.field_key);
+      return {id:c.id, kind:'question', type:fl&&fl.type,
+              label:c.label, description:c.description, placeholder:c.placeholder,
+              required:!!c.required, settings:c.settings||{},
+              options:this.optionsFor(c.field_key, fl&&fl.type),
+              hidden:c.visible===false, gone:!fl};
+    })};
+  },
+
+  canvasHTML(){
+    let body;
+    if(this.preview){
+      /* Fillable, because the point of a preview is to find out what the
+         form does — including what it refuses. Submitting it runs the real
+         validation through a door that writes nothing. */
+      body=this.pub
+        ? (this.pubDone
+            ? this.thanksHTML()
+            : `<form id="fv-pform" novalidate onsubmit="event.preventDefault();FormEditor.tryPreview()">${
+                FormPaper.html(this.pub,{fill:true})}</form>`)
+        : `<div class="spin" role="status" aria-label="טוען תצוגה מקדימה"></div>`;
+    }else{
+      body=FormPaper.html(this.doc(),{editable:true, sel:this.sel,
+                                      fallbackTitle:this.form.name});
     }
-    if(missing.length){ toast('חסרים שדות חובה: '+missing.join(', ')); return; }
-    if(preview){ toast('תצוגה מקדימה — לא נוצר פריט'); closeModals(); return; }
-    if(!payload.title){ toast('צריך שם לפריט'); return; }
-    try{ await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(payload)}); closeModals(); toast('הפריט נוצר מהטופס'); await openBoard(st.board.id); }
-    catch(e){ toast('שגיאה ביצירת הפריט'); }
+    return `<section class="fv-canvas" aria-label="תצוגת הטופס">
+      ${body}
+      ${this.preview?`<div class="fv-note fv-preview-note"><i class="fa-solid fa-eye"></i>
+         כך רואה את הטופס מי שממלא אותו. אפשר למלא ולשלוח כאן כדי לבדוק את
+         הבדיקות — לא נוצרת רשומה בלוח. שאלות מוסתרות אינן נשלחות למשיב כלל.</div>`:''}
+    </section>`;
   },
+
+  optionsFor(key, type){
+    if(key==='status') return (typeof boardStatusList==='function'?boardStatusList():[])
+      .map(s=>({value:s.key,label:s.he||s.label||s.key}));
+    if(key==='priority') return (typeof boardPriorityList==='function'?boardPriorityList():[])
+      .map(s=>({value:s.key,label:s.he||s.label||s.key}));
+    const col=(customColumns()||[]).find(c=>c.id===key);
+    if(!col) return [];
+    if(col.type==='dropdown') return (col.options||[]).map(o=>({value:o,label:o}));
+    if(col.type==='status') return (typeof statusColOpts==='function'?statusColOpts(col):[])
+      .map(o=>({value:o.id||o.label,label:o.label}));
+    return [];
+  },
+
+  inspectHTML(){
+    const c=this.selected();
+    return `<aside class="fv-inspect" aria-label="הגדרות">
+      ${c?this.inspectComp(c):this.inspectForm()}</aside>`;
+  },
+  inspectComp(c){
+    const fl=c.kind==='question'?this.fieldOf(c.field_key):null;
+    const head=`<div class="fv-sec-t">${c.kind==='question'?'הגדרות השאלה'
+      :(c.kind==='heading'?'כותרת':'טקסט')}</div>`;
+    if(c.kind!=='question'){
+      const sg=(c.settings||{}), styles=[['normal','רגיל'],['bold','מודגש'],['italic','נטוי']];
+      return head+`<div class="field"><label for="fv-c-content">תוכן</label>
+        <textarea id="fv-c-content" rows="3"
+          oninput="FormEditor.editComp(${c.id},'content',this.value);FormEditor.syncLabel(${c.id})"
+        >${esc(c.content||'')}</textarea></div>
+        <div class="fv-row2">
+          <div class="field"><label for="fv-c-style">סגנון</label>
+            <select id="fv-c-style" onchange="FormEditor.setBlockStyle(${c.id},'style',this.value)">
+              ${styles.map(([v,he])=>`<option value="${v}" ${(sg.style||'normal')===v?'selected':''}>${he}</option>`).join('')}
+            </select></div>
+          ${c.kind==='heading'
+            ? `<div class="field"><label for="fv-c-level">רמת כותרת</label>
+                 <select id="fv-c-level" onchange="FormEditor.setBlockStyle(${c.id},'level',+this.value)">
+                   ${[[1,'גדולה'],[2,'בינונית'],[3,'קטנה']].map(([v,he])=>
+                     `<option value="${v}" ${(sg.level||2)===v?'selected':''}>${he}</option>`).join('')}
+                 </select></div>`
+            : ''}
+        </div>
+        <button class="btn btn-ghost danger" onclick="FormEditor.removeRow(${c.id})">
+          <i class="fa-solid fa-trash"></i> הסרה</button>`;
+    }
+    return head
+      +`<div class="fv-bound">שדה בלוח: <b>${esc(fl?fl.label:'(נמחק)')}</b>
+          <span class="fv-menu-t">${esc(fl?(FORM_FIELD_TYPE_HE[fl.type]||fl.type):'')}</span></div>`
+      +`<div class="field"><label for="fv-c-label">נוסח השאלה</label>
+          <input id="fv-c-label" maxlength="200" value="${esc(c.label||'')}"
+            oninput="FormEditor.editComp(${c.id},'label',this.value);FormEditor.syncLabel(${c.id})"></div>`
+      +`<div class="field"><label for="fv-c-desc">הסבר</label>
+          <textarea id="fv-c-desc" rows="2"
+            oninput="FormEditor.editComp(${c.id},'description',this.value)">${esc(c.description||'')}</textarea></div>`
+      +(FORM_PLACEHOLDER_TYPES.includes(fl&&fl.type)
+        ? `<div class="field"><label for="fv-c-ph">טקסט מנחה</label>
+             <input id="fv-c-ph" maxlength="200" value="${esc(c.placeholder||'')}"
+               oninput="FormEditor.editComp(${c.id},'placeholder',this.value)"></div>`
+        : '')
+      +`<label class="fv-chk"><input type="checkbox" ${c.required?'checked':''}
+          ${c.visible===false?'disabled':''}
+          onchange="FormEditor.editComp(${c.id},'required',this.checked)"> שדה חובה</label>`
+      +`<label class="fv-chk"><input type="checkbox" ${c.visible!==false?'checked':''}
+          onchange="FormEditor.setVisible(${c.id},this.checked)"> מוצג בטופס</label>`
+      +`<div class="fv-note">שאלה מוסתרת אינה נשלחת למי שממלא, ולכן אינה יכולה להיות חובה.</div>`
+      +`<button class="btn btn-ghost danger" onclick="FormEditor.removeRow(${c.id})">
+          <i class="fa-solid fa-trash"></i> הסרת השאלה</button>`;
+  },
+  /* Hiding wins over requiring — the server refuses the pair outright, so the
+     screen must not offer it. Clearing one clears the other in the same edit. */
+  /* `settings` is one JSON value, so a change to one key is a write of the
+     whole object — read what is there, put the key on it, queue it. */
+  setBlockStyle(cid, key, value){
+    const c=(this.form&&this.form.components||[]).find(x=>x.id===cid);
+    if(!c) return;
+    this.editComp(cid,'settings', Object.assign({}, c.settings||{}, {[key]:value}));
+    this.repaint();
+  },
+  setVisible(cid, on){
+    this.editComp(cid,'visible',on);
+    if(!on) this.editComp(cid,'required',false);
+    renderView();
+  },
+  /* The canvas carries the label too. Updated in place rather than by a
+     repaint, which would take the focus out of the field being typed into. */
+  syncLabel(cid){
+    const c=(this.form&&this.form.components||[]).find(x=>x.id===cid);
+    if(!c) return;
+    const row=document.querySelector('.fv-ol-row[data-id="'+cid+'"] .fv-ol-nm');
+    const txt=c.kind==='question'?(c.label||'(ללא נוסח)')
+      :(c.content||(c.kind==='heading'?'כותרת':'טקסט'));
+    if(row) row.textContent=txt;
+    const lab=document.getElementById('fvq-'+cid+'-l');
+    if(lab&&c.kind==='question') lab.textContent=c.label||'(ללא נוסח)';
+    /* By id, not by class. `.fv-blk-heading` is every heading on the page —
+       typing into the second one rewrote the first. */
+    const blk=document.getElementById('fvb-'+cid);
+    if(c.kind!=='question'&&blk){
+      const h=blk.querySelector('h3,p');
+      const empty=!(c.content||'').trim();
+      if(h) h.textContent=empty?(c.kind==='heading'?'(כותרת ריקה)':'(טקסט ריק)'):c.content;
+      blk.classList.toggle('fv-blk-empty', empty);
+    }
+  },
+  inspectForm(){
+    const f=this.form, d=f.design||{}, s=f.success||{};
+    const sizes=[['small','קטן'],['medium','בינוני'],['large','גדול']];
+    const aligns=[['right','לימין'],['center','למרכז'],['left','לשמאל']];
+    return `<div class="fv-sec-t">הטופס</div>
+      <div class="field"><label for="fv-dt">כותרת</label>
+        <input id="fv-dt" maxlength="200" value="${esc(d.display_title||'')}"
+               oninput="FormEditor.edit('display_title',this.value);FormEditor.repaint()"></div>
+      <div class="field"><label for="fv-dd">תיאור</label>
+        <textarea id="fv-dd" rows="3"
+          oninput="FormEditor.edit('display_description',this.value);FormEditor.repaint()">${esc(d.display_description||'')}</textarea></div>
+      <div class="field"><label>לוגו</label>
+        ${d.logo_token
+          ? `<div class="fv-logo-row"><img class="fv-logo-sm" src="/api/files/${esc(d.logo_token)}" alt="">
+               <button class="btn btn-ghost danger" onclick="FormEditor.removeLogo()">
+                 <i class="fa-solid fa-xmark"></i> הסרה</button></div>`
+          : `<button class="btn btn-ghost" onclick="document.getElementById('fv-logo-in').click()">
+               <i class="fa-solid fa-image"></i> העלאת לוגו</button>`}
+        <input type="file" id="fv-logo-in" accept="image/*" hidden
+               onchange="FormEditor.uploadLogo(this)"></div>
+      <div class="fv-sec-t">מראה</div>
+      <div class="fv-row2">
+        <div class="field"><label for="fv-tc">צבע ראשי</label>
+          <input id="fv-tc" type="color" class="fv-color" value="${esc(d.theme_color||'#0073ea')}"
+                 onchange="FormEditor.edit('theme_color',this.value);FormEditor.repaint()"></div>
+        <div class="field"><label for="fv-bc">צבע רקע</label>
+          <input id="fv-bc" type="color" class="fv-color" value="${esc(d.background_color||'#ffffff')}"
+                 onchange="FormEditor.edit('background_color',this.value);FormEditor.repaint()"></div>
+      </div>
+      <div class="fv-row2">
+        <div class="field"><label for="fv-fs">גודל טקסט</label>
+          <select id="fv-fs" onchange="FormEditor.edit('font_size',this.value);FormEditor.repaint()">
+            ${sizes.map(([v,he])=>`<option value="${v}" ${d.font_size===v?'selected':''}>${he}</option>`).join('')}
+          </select></div>
+        <div class="field"><label for="fv-al">יישור</label>
+          <select id="fv-al" onchange="FormEditor.edit('text_align',this.value);FormEditor.repaint()">
+            ${aligns.map(([v,he])=>`<option value="${v}" ${(d.text_align||'right')===v?'selected':''}>${he}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="field"><label for="fv-sb">טקסט כפתור השליחה</label>
+        <input id="fv-sb" maxlength="40" placeholder="שליחה" value="${esc(d.submit_label||'')}"
+               oninput="FormEditor.edit('submit_label',this.value);FormEditor.repaint()"></div>
+      ${f.can_hide_branding
+        ? `<label class="fv-chk"><input type="checkbox" ${d.show_branding!==false?'checked':''}
+             onchange="FormEditor.edit('show_branding',this.checked);FormEditor.repaint()">
+             הצגת מיתוג Missions</label>`
+        : `<div class="fv-note"><i class="fa-solid fa-circle-info"></i>
+             מיתוג Missions מוצג בטופס. להסרתו נדרשת הרשאה ממנהל המערכת.</div>`}
+      <div class="fv-sec-t">מסך הצלחה</div>
+      <div class="field"><label for="fv-st">כותרת</label>
+        <input id="fv-st" maxlength="200" value="${esc(s.title||'')}"
+               oninput="FormEditor.edit('success_title',this.value)"></div>
+      <div class="field"><label for="fv-sm">הודעה</label>
+        <textarea id="fv-sm" rows="3" oninput="FormEditor.edit('success_message',this.value)">${esc(s.message||'')}</textarea></div>
+      <label class="fv-chk"><input type="checkbox" ${s.allow_another?'checked':''}
+        onchange="FormEditor.edit('success_allow_another',this.checked)"> אפשרות לשלוח תשובה נוספת</label>`;
+  },
+
+  /* A design change is on the paper at once. Only the canvas is redrawn —
+     repainting the settings pane would take the focus out of the field being
+     typed into, which is how a colour picker becomes unusable. */
+  repaint(){
+    const el=document.querySelector('.fv-canvas');
+    if(!el){ renderView(); return; }
+    el.outerHTML=this.canvasHTML();
+    this.attachSort();
+  },
+
+  async uploadLogo(input){
+    const file=input&&input.files&&input.files[0];
+    if(!file) return;
+    input.value='';
+    if(!/^image\//.test(file.type)) return toast('אפשר להעלות תמונה בלבד');
+    this.busy=true; renderView();
+    try{
+      const fd=new FormData(); fd.append('file', file);
+      const r=await api('/api/upload',{method:'POST', body:fd});
+      const token=String(r.url||'').split('/').pop();
+      this.busy=false;
+      this.edit('logo_token', token);
+      this.edit('show_logo', true);
+      await this.flushNow();
+      renderView();
+    }catch(e){
+      this.busy=false;
+      toast(this.errText(e,'העלאת הלוגו נכשלה'));
+      renderView();
+    }
+  },
+  async removeLogo(){
+    this.edit('logo_token', null);
+    await this.flushNow();
+    renderView();
+  },
+
+  attachSort(){
+    this.paintBar();
+    if(!window.Sortable||typeof sortableOn!=='function')return;
+    if(this.preview) return;          // the respondent's form is not reorderable
+    const wire=(el,sel,handle)=>{
+      if(!el)return;
+      sortableOn(el,{handle, draggable:sel, animation:150, ghostClass:'sortable-ghost',
+        onEnd:()=>this.reorder([...el.querySelectorAll(sel)].map(r=>+r.dataset.id))});
+    };
+    wire(document.getElementById('fv-list'),  '.fv-ol-row', '.fv-drag');
+    wire(document.getElementById('fv-blocks'),'.fv-blk',    '.fv-bgrip');
+  },
+
+  css(){ return `<style>
+    .fv-wrap{padding:2px 2px 30px}
+    .fv-loading{text-align:center;color:var(--text-light);font-size:13px}
+    .fv-err-msg{margin-bottom:14px}
+    .fv-err-acts{display:flex;gap:8px;justify-content:center}
+    .fv-bar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+      background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+      padding:10px 14px;box-shadow:var(--shadow-sm);margin-bottom:14px}
+    .fv-bar-sp{flex:1}
+    .fv-id-ic{color:var(--primary)}
+    .fv-name{font-size:16px;font-weight:700;border:1px solid transparent;border-radius:7px;
+      padding:5px 8px;background:transparent;font-family:inherit;min-width:110px;max-width:300px}
+    .fv-name:hover{border-color:var(--border)}
+    .fv-name:focus{border-color:var(--primary);background:var(--bg);outline:none}
+    .fv-badge{font-size:11px;font-weight:700;border-radius:20px;padding:3px 10px;white-space:nowrap}
+    .fv-badge-DRAFT{background:var(--border);color:var(--text-muted)}
+    .fv-badge-PUBLISHED{background:rgba(0,200,117,.15);color:#037f4c}
+    .fv-badge-DISABLED{background:rgba(226,68,92,.13);color:var(--red)}
+    .fv-save{display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap}
+    .fv-save i{font-size:9px}
+    .fv-save-saved{color:var(--text-light)}
+    .fv-save-pending{color:var(--orange,#fdab3d)}
+    .fv-save-saving{color:var(--text-muted)}
+    .fv-save-error{color:var(--red);font-weight:600}
+    .fv-retry{margin-inline-start:6px;color:var(--primary);font-weight:600;text-decoration:underline}
+    .fv-bar .btn.on{background:var(--primary-soft);color:var(--primary-hover)}
+    .fv-panes{display:grid;grid-template-columns:250px 1fr 310px;gap:14px;align-items:start}
+    .fv-outline,.fv-canvas,.fv-inspect{background:var(--surface);border:1px solid var(--border);
+      border-radius:var(--radius);padding:14px;box-shadow:var(--shadow-sm)}
+    .fv-sec-t{font-size:13px;font-weight:700;color:var(--text-muted);margin-bottom:10px}
+    .fv-inspect .fv-sec-t:not(:first-child){margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+    .fv-ol{display:flex;flex-direction:column;gap:4px}
+    .fv-ol-row{display:flex;align-items:center;gap:7px;width:100%;text-align:inherit;
+      border:1px solid transparent;border-radius:7px;padding:7px 8px;font-size:13px}
+    .fv-ol-row:hover{background:var(--row-hover)}
+    .fv-ol-row.on{background:var(--primary-soft);border-color:var(--primary)}
+    .fv-ol-row.gone{color:var(--red)}
+    .fv-ol-nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .fv-ol-ic{color:var(--text-light);font-size:11px}
+    .fv-ol-req{color:var(--red);font-weight:700}
+    .fv-drag{color:var(--text-light);cursor:grab;font-size:11px}
+    .fv-empty{color:var(--text-light);font-size:13px;padding:18px;text-align:center;
+      border:1px dashed var(--border-strong);border-radius:8px}
+    .fv-add{display:flex;gap:5px;flex-wrap:wrap;margin-top:10px;padding-top:10px;
+      border-top:1px solid var(--border)}
+    .fv-add .btn{padding:6px 9px;font-size:12px}
+    /* The paper's own background is the form's, not the app's — the colour
+       is a setting, so FormPaper sets it inline and this only says how big
+       the sheet is. */
+    .fv-paper{border:1px solid var(--border);border-radius:10px;
+      padding:22px;max-width:620px;margin:0 auto}
+    .fv-logo-wrap{margin-bottom:14px}
+    .fv-logo{max-height:64px;max-width:70%;object-fit:contain}
+    .fv-logo-row{display:flex;align-items:center;gap:10px}
+    .fv-logo-sm{max-height:38px;max-width:120px;object-fit:contain;
+      border:1px solid var(--border);border-radius:6px;padding:3px;background:#fff}
+    .fv-brand{margin-top:18px;padding-top:12px;border-top:1px solid rgba(0,0,0,.08);
+      font-size:.75em;opacity:.6}
+    .fv-paper-h{border-bottom:2px solid var(--fv-accent);padding-bottom:12px;margin-bottom:16px}
+    .fv-paper-t{font-size:1.3em;font-weight:800}
+    .fv-paper-d{color:var(--text-muted);margin-top:5px;font-size:.9em}
+    .fv-blocks{min-height:40px}
+    .fv-blk{position:relative;border:1px solid transparent;border-radius:8px;
+      padding:9px 10px 9px 26px;margin-bottom:10px;cursor:pointer}
+    .fv-bgrip{position:absolute;inset-inline-start:7px;top:11px;color:var(--text-light);
+      font-size:11px;opacity:0;cursor:grab;transition:opacity .12s}
+    .fv-blk:hover .fv-bgrip,.fv-blk.sel .fv-bgrip{opacity:1}
+    .fv-blk-empty h3,.fv-blk-empty p{color:var(--text-light);font-style:italic}
+    .fv-blk:hover{border-color:var(--border-strong)}
+    .fv-blk.sel{border-color:var(--fv-accent);background:var(--surface)}
+    .fv-blk.hid{opacity:.5}
+    .fv-blk.gone{border-color:var(--red)}
+    .fv-blk-heading h3{font-size:1.05em;font-weight:800}
+    .fv-blk-text p{color:var(--text-muted);font-size:.92em}
+    .fv-q-l{display:block;font-weight:600;margin-bottom:5px;font-size:.92em}
+    .fv-req{color:var(--red);margin-inline-start:3px}
+    .fv-hid-t{font-size:10px;color:var(--text-light);border:1px solid var(--border);
+      border-radius:4px;padding:1px 5px;margin-inline-start:6px;font-weight:400}
+    .fv-gone-t{color:var(--red);border-color:var(--red)}
+    .fv-q-d{color:var(--text-light);font-size:.82em;margin-bottom:5px}
+    .fv-in{width:100%;border:1px solid var(--border-strong);border-radius:7px;padding:8px;
+      background:rgba(255,255,255,.65);font-family:inherit;font-size:.9em;
+      color:var(--text-light)}
+    .fv-in-cb{width:auto}
+    .fv-stars{color:var(--fv-accent);letter-spacing:3px}
+    .fv-drop,.fv-people{border-style:dashed;text-align:center}
+    .fv-paper-f{margin-top:18px}
+    .fv-submit{display:inline-block;background:var(--fv-accent);color:#fff;font-weight:700;
+      border-radius:7px;padding:9px 20px;font-size:.9em}
+    .fv-preview-note{margin-top:12px}
+    .fv-thanks{text-align:center}
+    .fv-thanks-i{font-size:34px;color:var(--green);display:block;margin-bottom:12px}
+    .fv-err{color:var(--red);font-size:.82em;margin-top:5px;font-weight:600}
+    .fv-in.bad{border-color:var(--red)}
+    .fv-unsupported{color:var(--text-light);font-size:.85em;border-style:dashed}
+    .fv-multi{display:flex;flex-direction:column;gap:2px;padding:6px}
+    .fv-opt{display:flex;align-items:center;gap:8px;padding:4px}
+    .fv-files-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+    .fv-note{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:7px;
+      padding:8px 10px;margin-top:10px;display:flex;gap:7px;align-items:flex-start}
+    .fv-bound{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:7px;
+      padding:7px 9px;margin-bottom:12px;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+    .fv-chk{display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:9px}
+    .fv-chk input{width:auto;margin:0}
+    .fv-row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .fv-color{height:36px;padding:3px}
+    .fv-menu{max-height:320px;overflow:auto}
+    .fv-menu-t{font-size:11px;color:var(--text-light)}
+    .fv-menu-none{padding:12px;font-size:12px;color:var(--text-light)}
+    .fv-share-state{font-size:13px;margin-bottom:12px;display:flex;align-items:center;gap:7px}
+    .fv-link-row{display:flex;gap:7px;align-items:center}
+    .fv-link-row input{flex:1;min-width:0}
+    @media(max-width:1100px){.fv-panes{grid-template-columns:1fr}
+      .fv-outline,.fv-inspect{order:2}.fv-canvas{order:1}}
+    @media(max-width:620px){
+      .fv-wrap{padding:0 0 24px}
+      .fv-bar{padding:9px 10px;gap:7px}
+      .fv-name{font-size:15px;max-width:none;flex:1 1 100%;order:-1}
+      .fv-bar .btn{padding:7px 9px;font-size:12px}
+      .fv-bar-sp{display:none}
+      .fv-outline,.fv-canvas,.fv-inspect{padding:11px}
+      .fv-paper{padding:14px;border-radius:8px}
+      .fv-row2{grid-template-columns:1fr}
+      .fv-blk{padding-inline-start:22px}
+      /* a handle that only shows on hover is a handle a finger cannot find */
+      .fv-bgrip{opacity:.55}}
+  </style>`; },
 };
-function openForms(){ Forms.open(); }
+
+/* A refresh or a closed tab while something is still queued. The browser's
+   own dialog is the only one available here, and it is the right one: it is
+   the last moment anybody can be told, and it is not ours to style. */
+window.addEventListener('beforeunload', e=>{
+  if(typeof FormEditor!=='undefined' && FormEditor.isOpen() && FormEditor.unsaved()){
+    e.preventDefault(); e.returnValue='';
+  }
+});
 
 /* ============ Item Conversation (שיחה / קבצים / לוגים) ============ */
 // server timestamps are naive UTC (no tz suffix) → mark as UTC so the browser

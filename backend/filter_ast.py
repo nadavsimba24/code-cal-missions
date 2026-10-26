@@ -59,7 +59,7 @@ ALL_OPS = {o for ops in OPS.values() for o in ops}
 
 # What a column type can be asked about. Mirrors ADV_KINDS in the frontend.
 KINDS = {
-    "text": "text", "email": "text", "long_text": "text",
+    "text": "text", "email": "text", "long_text": "text", "phone": "text",
     "status": "status", "dropdown": "status", "priority": "status",
     "number": "number", "rating": "number", "formula": "number",
     "people": "people", "created_by": "people", "assignees": "people",

@@ -6,7 +6,7 @@ Database Models
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float, Boolean,
     DateTime, ForeignKey, JSON, Enum as SAEnum, Table, LargeBinary,
-    UniqueConstraint
+    UniqueConstraint, CheckConstraint, ForeignKeyConstraint
 )
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
@@ -348,6 +348,252 @@ class BoardViewPrefs(Base):
     last_view_id = Column(Integer, ForeignKey("saved_views.id"), nullable=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+# ── תצוגת טופס (Form View) ───────────────────────────────────────────
+# The closed sets live here rather than in main.py because the CHECK
+# constraints below are generated FROM them. One list, so the database and
+# the server cannot drift apart about what a legal value is — a status the
+# code accepts and the table refuses is a bug that only appears in
+# production, and the reverse is a value nothing ever validates.
+FORM_STATUSES = ("DRAFT", "PUBLISHED", "DISABLED")
+FORM_ACCESS_MODES = ("AUTHENTICATED", "PUBLIC_LINK")
+FORM_COMPONENT_KINDS = ("question", "heading", "text")
+
+
+def _sql_in(values):
+    """`('A', 'B')` — the IN list for a CHECK, built from the tuple above."""
+    return "(" + ", ".join("'%s'" % v for v in values) + ")"
+
+
+class FormView(Base):
+    """A form that fills one board — the settings half of a `kind="form"` view.
+
+    "טופס הוא תצוגה של לוח ושייך ללוח אחד בלבד." The identity, the name on the
+    tab, the position in the strip, the lock, the bin and the configuration
+    version are all things a view already is, and they are not rebuilt here:
+    this row hangs off a `SavedView` whose `kind` is "form" and holds only what
+    a form has and a saved cut does not — how it is reached, how it looks, and
+    what it says once somebody has sent it.
+
+    `board_id` is carried here as well as on the view, and not for convenience:
+    it is half of the composite key `form_components` points at, which is what
+    makes "a question belongs to the same board as its form" a fact about the
+    shape of the data instead of a rule every writer has to remember. It is
+    written once, at creation, from the view's own board and never after.
+
+    The board itself is untouched by any of this. A form names columns; it does
+    not own them, and deleting a form deletes questions and nothing else —
+    "מחיקת טופס אינה מוחקת שדות או רשומות בלוח" is true because there is
+    nothing here that a column or an item hangs off.
+    """
+    __tablename__ = "form_views"
+    __table_args__ = (
+        # One form per view row. The pair is 1:1 and the database says so,
+        # rather than leaving a second settings row possible and a reader to
+        # pick between them.
+        UniqueConstraint("view_id", name="uq_form_view_view"),
+        # Exists only so a component can reference the PAIR — see the class
+        # below. Redundant as a uniqueness claim (id is the primary key) and
+        # necessary as a target: a composite foreign key needs a unique
+        # constraint on exactly the columns it names.
+        UniqueConstraint("id", "board_id", name="uq_form_view_board"),
+        CheckConstraint("status IN " + _sql_in(FORM_STATUSES),
+                        name="ck_form_view_status"),
+        CheckConstraint("access IN " + _sql_in(FORM_ACCESS_MODES),
+                        name="ck_form_view_access"),
+    )
+    id = Column(Integer, primary_key=True)
+    # The tab. NOT NULL with nothing defaulting it, which is the whole of
+    # "לא ניתן ליצור טופס ללא לוח": a form cannot exist before the view does,
+    # and a view cannot exist without a board.
+    view_id = Column(Integer, ForeignKey("saved_views.id"), nullable=False, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+
+    # ── state ──
+    # DRAFT → PUBLISHED → DISABLED, and back. A draft has never been reachable;
+    # a disabled form was and is not any more, which is a different answer to
+    # give somebody holding the link (410, not 404).
+    status = Column(String(10), nullable=False, default="DRAFT")
+    # AUTHENTICATED — any active account. PUBLIC_LINK — the token is the whole
+    # of the authorisation. Enforced at the endpoint, never by board role:
+    # "מילוי טופס אינו מעניק גישה ללוח", and the reverse holds too — having the
+    # board does not decide whether the form opens.
+    access = Column(String(16), nullable=False, default="AUTHENTICATED")
+    # The public identifier, and it is a CAPABILITY: whoever holds it can
+    # reach the form, so it is random and unguessable rather than derived from
+    # the board or the view. uuid4().hex, like UploadedFile.token.
+    #
+    # NULL until the first publish. A form nobody has published has no address
+    # — not a secret one, none — so there is nothing to leak early and nothing
+    # that quietly becomes live later. Minted once and then kept: disabling a
+    # form and publishing it again returns it to the same address, because
+    # "closed" is a state and not a new form.
+    public_token = Column(String(40), nullable=True, unique=True, index=True)
+
+    # ── where a submission lands ──
+    # A form with no group creates items with no group, which is legal and
+    # almost never meant. Nullable so a draft can be saved before the question
+    # is answered; required at publish, where it is a decision and not a
+    # default somebody never saw.
+    target_group_id = Column(Integer, ForeignKey("groups.id"), nullable=True)
+
+    # ── עיצוב ──
+    # Columns rather than a JSON blob, for the reason the last two entities
+    # were made into tables: a setting inside a column is something no screen
+    # can list, no migration can rename and no query can group by. The set is
+    # typography, alignment and branding, which is what the specification
+    # names; anything it adds later is one more column and one more line in
+    # _migrate.
+    display_title = Column(String(200), default="")
+    display_description = Column(Text, default="")
+    # Not a choice anybody makes. The product has one font stack — Figtree for
+    # the Latin, Rubik for the Hebrew (CONVENTIONS.md) — and "no free font
+    # selection" is in the specification. The column stays because rows were
+    # written with it; nothing reads it as a setting.
+    font_family = Column(String(60), default="Rubik")
+    font_size = Column(String(10), default="medium")        # small | medium | large
+    # Defaults to the direction the product is written in. The app is
+    # `<html dir="rtl" lang="he">`, so a form starts reading right to left and
+    # the other two are a deliberate change.
+    text_align = Column(String(10), default="right")        # right | center | left
+    theme_color = Column(String(7), default="#0073ea")      # monday blue — no purple
+    background_color = Column(String(7), default="#ffffff")
+    text_color = Column(String(7), default="#323338")
+    # Branding images are uploads, referenced by the token the upload returns
+    # rather than copied in: the bytes already have a home in uploaded_files.
+    logo_token = Column(String(40), nullable=True)
+    cover_token = Column(String(40), nullable=True)
+    show_logo = Column(Boolean, default=True)
+
+    # ── מסך הצלחה ──
+    # What the person who sent the form sees. Deliberately separate from the
+    # design above: it is the only screen some of them will ever read, and a
+    # form that says nothing after a submission reads as one that lost it.
+    success_title = Column(String(200), default="")
+    success_message = Column(Text, default="")
+    # Offer a second submission from the same screen. Off by default: most
+    # forms are filled once, and the invitation is what turns a form into a
+    # way to make twenty items by accident.
+    success_allow_another = Column(Boolean, default=False)
+    success_redirect_url = Column(String(500), nullable=True)
+    # What the button at the bottom says. Short on purpose: it is a button.
+    submit_label = Column(String(40), default="")
+
+    # ── מיתוג ──
+    # "מופעל by Missions" under the form. On by default and taken off only by
+    # somebody the system says may — see the hide_form_branding capability.
+    # Stored per form rather than per board: two forms on one board can be
+    # one for colleagues and one for the public, and only the second one is
+    # a place the product's name belongs.
+    show_branding = Column(Boolean, default=True)
+
+    # ── הגשה ──
+    # "זמן ההגשה ומזהה המשתמש המגיש כאשר נדרש". The record IS the submission —
+    # there is no submissions table, and a second one would start disagreeing
+    # with the board the first time somebody edited the item — so the two
+    # facts are the ones the item already carries: Task.created_at is when it
+    # was sent and Task.created_by is who sent it. This flag is the "כאשר
+    # נדרש": off, the submitter is not written even when there is one, which
+    # is what an anonymous form means. Task.form_view_id is the third fact,
+    # the one the item did not have: which form it came from.
+    record_submitter = Column(Boolean, default=True)
+
+    # ── פרסום ──
+    published_at = Column(DateTime, nullable=True)
+    published_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    view = relationship("SavedView")
+    # The components go with the form and nothing else does. delete-orphan is
+    # what makes removing a question from the list delete its row rather than
+    # leaving it parentless.
+    components = relationship("FormComponent", back_populates="form",
+                              order_by="FormComponent.position",
+                              cascade="all, delete-orphan")
+
+
+class FormComponent(Base):
+    """One row of a form, in the order the form puts it in.
+
+    Three kinds. A `question` is bound to a field of the board — that binding
+    is the only thing about it that belongs to the board. A `heading` and a
+    `text` are the form's own words and are bound to nothing.
+
+    "רכיבי הטופס נשמרים בסדר עצמאי מסדר השדות בלוח": `position` is the form's
+    order and the board's column order is not consulted anywhere. Two forms on
+    one board can ask the same questions in opposite orders, and reordering
+    either changes nothing about the board or about the other form.
+
+    The question's words are the form's, not the column's. `label` is stored,
+    never read from the column at display time — which is the single change
+    that makes "הגדרות השאלה עצמאיות מהלוח" true. The column still decides the
+    TYPE, because that is the data contract and not a wording: a question that
+    carried a type of its own could write a value the cell cannot read.
+    """
+    __tablename__ = "form_components"
+    __table_args__ = (
+        # The component's board is its form's board, and the database holds
+        # the pair together. Declarative only on SQLite, which does not
+        # enforce foreign keys unless asked — so the server checks it too
+        # (_form_field_or_400). On Postgres this is the real thing.
+        ForeignKeyConstraint(["form_id", "board_id"],
+                             ["form_views.id", "form_views.board_id"],
+                             name="fk_form_component_board",
+                             ondelete="CASCADE"),
+        CheckConstraint("kind IN " + _sql_in(FORM_COMPONENT_KINDS),
+                        name="ck_form_component_kind"),
+        # A question names a field; a heading and a text must not. Both halves
+        # are written out, because only one of them is the common mistake and
+        # the other is the one that would quietly orphan a binding.
+        CheckConstraint("(kind = 'question' AND field_key IS NOT NULL) "
+                        "OR (kind <> 'question' AND field_key IS NULL)",
+                        name="ck_form_component_field"),
+    )
+    id = Column(Integer, primary_key=True)
+    # No single-column foreign key of its own: the composite one above is the
+    # reference, and a second path to the same table would leave the
+    # relationship below with two ways to join and no way to choose.
+    form_id = Column(Integer, nullable=False, index=True)
+    # Not derived on read — it is the other half of that key.
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=False, index=True)
+    kind = Column(String(10), nullable=False, default="question")
+    # The board field this question is bound to — a column id from
+    # board.settings["columns"], or one of the built-in keys (title,
+    # assignees, status, priority, due_date). A column is not a row in this
+    # system, so there is no foreign key to point at and the check is the
+    # server's: see _form_field_or_400.
+    field_key = Column(String(80), nullable=True, index=True)
+    # Where it sits in the FORM. Not unique: a reorder that swapped two
+    # positions would have to pass through a state where both rows hold the
+    # same one, and a constraint that forbids the intermediate step forbids
+    # the operation.
+    position = Column(Integer, nullable=False, default=0)
+
+    # ── שאלה ──
+    label = Column(String(200), default="")
+    description = Column(Text, default="")
+    placeholder = Column(String(200), default="")
+    required = Column(Boolean, default=False)
+    # "גלוי" — a hidden question is not asked and not answered. Hiding wins
+    # over required, and the combination is refused on save rather than
+    # resolved at display: a form that cannot be submitted should not be a
+    # form that can be saved.
+    visible = Column(Boolean, default=True)
+    # Per-type constraints the question carries and the column does not — the
+    # date range the current builder already stores as min/max. JSON because
+    # the set differs per column type and a column per type would be mostly
+    # NULL; unlike the design settings above, nothing lists or groups by it.
+    settings = Column(JSON, default=dict)
+
+    # ── heading | text ──
+    content = Column(Text, default="")
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    form = relationship("FormView", back_populates="components")
+
+
 class Group(Base):
     __tablename__ = "groups"
     id = Column(Integer, primary_key=True)
@@ -392,6 +638,13 @@ class Task(Base):
     item_uid_board = Column(Integer)
     custom_fields = Column(JSON, default=dict)
     permissions = Column(JSON, default=dict)  # item-level per-user perms {"<uid>":"view|edit|none"}
+    # Which form this item arrived through, when it arrived through one. The
+    # other two facts a submission has — when, and by whom — are `created_at`
+    # and `created_by` above, which is why there is no submissions table: the
+    # record IS the submission, and a second row holding the same three facts
+    # would start disagreeing with this one the first time somebody edited the
+    # item. NULL on every item made the ordinary way.
+    form_view_id = Column(Integer, ForeignKey("form_views.id"), nullable=True, index=True)
     is_archived = Column(Boolean, default=False)
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -1260,6 +1513,23 @@ class UploadedFile(Base):
     data = Column(LargeBinary)
     size = Column(Integer)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # ── where an upload came from, when it came from a form ──
+    # A respondent uploads before they send, so there is a window in which a
+    # file exists and belongs to nothing. These two columns are what that
+    # window is made of, and what keeps it from being a way in.
+    #
+    # `form_view_id` is the upload's CONTEXT: a token minted for this form and
+    # for no other. Without it, a submission could name any token in this
+    # table — an attachment off somebody's board, a file from another form —
+    # and have it copied onto a new record. With it, the only files a
+    # submission can claim are the ones that submission uploaded. NULL on
+    # every ordinary attachment, which is what makes those unclaimable.
+    #
+    # `claimed_at` is when a submission took it. Set once: a file belongs to
+    # one record, so replaying a token cannot attach the same upload twice.
+    # NULL and old is what the sweeper collects — a form somebody abandoned.
+    form_view_id = Column(Integer, ForeignKey("form_views.id"), nullable=True, index=True)
+    claimed_at = Column(DateTime, nullable=True, index=True)
 
 
 class Notification(Base):

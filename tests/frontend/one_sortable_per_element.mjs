@@ -92,9 +92,15 @@ const lists=[["the groups, on the view that outlives them","handle:'.g-handle'"]
              ["the kanban columns","group:'kanban'"],
              ["the sidebar folders","group:'sb-folders'"],
              ["the sidebar boards","group:'sb-boards'"],
-             ["the form builder's rows","handle:'.fb-drag'"]];
+             /* The form editor drags the same list from two places — the
+                outline and the paper — through one `wire` helper, so the
+                marker is the helper's call and not a handle literal. */
+             ["the form editor's components","sortableOn(el,{handle, draggable:sel"]];
 for(const [what,marker] of lists){
   const i=src.indexOf(marker);
+  if(i<0){ ck(`${what} go through it`, false, 'marker not found: '+marker); continue; }
+  // the marker may BE the sortableOn call (one helper for several lists)
+  if(marker.startsWith('sortableOn(')){ ck(`${what} go through it`, true); continue; }
   const before=src.slice(Math.max(0,i-260), i);
   ck(`${what} go through it`, /sortableOn\($/.test(before.trimEnd()) || /sortableOn\([^;]*$/.test(before),
      before.slice(-70));

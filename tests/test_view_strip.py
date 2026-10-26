@@ -45,10 +45,14 @@ def test_the_delete_dialog_says_the_board_is_not_being_deleted():
     # searched the whole block, and the block holds a comment quoting the
     # requirement — so deleting the sentence from the message somebody
     # actually reads left the case green.
-    note = re.search(r"note:\s*'([^']*)'\s*(?:\+\s*'([^']*)')?", body)
-    assert note, "the dialog has no note"
-    text = (note.group(1) or "") + (note.group(2) or "")
+    # Two notes now: the strip carries forms as well as cuts, and what is NOT
+    # being deleted is a different sentence for each. Every quoted string in
+    # the note expression, so deleting one still fails the case.
+    tail = body[body.index("note:"):]
+    text = " ".join(re.findall(r"'([^']*)'", tail))
+    assert text, "the dialog has no note"
     assert "פריטי הלוח לא יימחקו" in text, text
+    assert "שדות הלוח והרשומות" in text, "a form's dialog does not say the board survives it"
     assert "לשחזר" in text, "nobody is told it can be brought back"
 def test_the_tabs_share_one_underline():
     """The open tab is marked by a border along its bottom edge, so every tab
@@ -107,7 +111,7 @@ def test_only_one_tab_is_lit_at_a_time():
     active tabs is the same as none: there was no telling which one you were
     looking at."""
     i = SRC.index("function renderTabs()")
-    body = SRC[i:SRC.index("const formTab", i)]
+    body = SRC[i:SRC.index("const cv=VIEW_META", i)]
     assert "onSaved" in body, "the board's own tabs stay lit under a saved view"
     flat = body.replace(" ", "")
     assert "(!onSaved&&st.view===id)?'active':''" in flat, flat[-300:]

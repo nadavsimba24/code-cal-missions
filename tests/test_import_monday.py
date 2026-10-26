@@ -109,7 +109,7 @@ def test_the_column_types_survive_the_trip(client):
     board = client.get(f"/api/boards/{bid}?user_id=1", headers=H).json()
     got = {c["title"]: c["type"] for c in board["columns"] if c["id"].startswith("col_")}
     assert got == {"סטטוס": "status", "תאריך": "date", "מספר": "number",
-                   "רשימה": "dropdown", "סימון": "checkbox", "תיאור": "text"}
+                   "רשימה": "dropdown", "סימון": "checkbox", "תיאור": "long_text"}
 
     by_title = {c["title"]: c["id"] for c in board["columns"] if c["id"].startswith("col_")}
     cf = board["tasks"][0]["custom_fields"]
@@ -321,8 +321,12 @@ def test_every_type_on_the_mapping_sheet_lands_where_the_sheet_says(client):
         "date": "date", "doc": "files", "dropdown": "dropdown", "email": "email",
         "file": "files", "formula": "text", "hour": "text",
         "item_assignees": "people", "item_id": "text", "last_updated": "text",
-        "link": "text", "location": "text", "long_text": "text", "mirror": "text",
-        "numbers": "number", "people": "people", "phone": "text",
+        # long_text and phone have columns of their own now. They used to
+        # flatten into text for want of anywhere to put them, and the sheet
+        # said so; a board imported today keeps the distinction it arrived
+        # with — see the allowlist in main.update_board.
+        "link": "text", "location": "text", "long_text": "long_text", "mirror": "text",
+        "numbers": "number", "people": "people", "phone": "phone",
         "rating": "rating", "status": "status", "tags": "dropdown", "text": "text",
         "timeline": "timeline", "week": "text", "world_clock": "text",
         "board_relation": "text",

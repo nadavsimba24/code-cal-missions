@@ -27,8 +27,10 @@ function grab(name){
   for(let j=i;j<src.length;j++){ if(src[j]==='{')d++; else if(src[j]==='}'){d--; if(!d) return src.slice(m.index,j+1);} }
   throw new Error('unbalanced: '+name);
 }
-function grabMethod(header){
-  const i=src.indexOf(header);
+/* `from` scopes the search. Two objects declare `  close(){` now — the form
+   editor's and the chat's — and this harness is about the chat. */
+function grabMethod(header, from){
+  const i=src.indexOf(header, from||0);
   if(i<0) throw new Error('not found: '+header);
   let d=0, j=src.indexOf('{', i);
   for(let k=j;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){ d--; if(!d) return src.slice(i,k+1); } }
@@ -106,7 +108,7 @@ function world({board=null, openItem=null}={}){
 
 // ── the panel's close is the one that saves the draft ──────────────────────
 {
-  const close = grabMethod('  close(){');
+  const close = grabMethod('  close(){', src.indexOf('const Chat'));
   ck('closing saves whatever was typed before clearing the item',
      close.indexOf('saveDraft()') < close.indexOf('this.taskId=null'), close);
   ck('...and takes the item out of the URL, so the address matches the screen',

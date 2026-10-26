@@ -34,9 +34,9 @@ def test_nonexistent_project_404(client):
     assert client.get("/api/projects/999999").status_code == 404
 
 
-def test_nonexistent_form_template_404(client):
-    """GET on a missing form template returns 404."""
-    assert client.get("/api/forms/templates/999999").status_code == 404
+def test_nonexistent_form_404(client):
+    """GET on a missing form returns 404."""
+    assert client.get("/api/forms/999999").status_code == 404
 
 
 def test_unknown_route_404(client):

@@ -44,9 +44,12 @@ TYPE_MAP = {
     # things that arrive as text, because that keeps the value readable and we
     # have nowhere better to put it
     "text":           "text",
-    "long_text":      "text",
-    "long-text":      "text",
-    "phone":          "text",
+    # these two have columns of their own now — see the allowlist in
+    # main.update_board. Flattening them into text was never right; it was
+    # where they went for want of anywhere better.
+    "long_text":      "long_text",
+    "long-text":      "long_text",
+    "phone":          "phone",
     "link":           "text",
     "location":       "text",
     "country":        "text",
@@ -104,7 +107,6 @@ RETYPED = {
     "button":         "כפתור — יובא כעמודת סטטוס",
     "link":           "קישור יובא כטקסט (תווית + כתובת)",
     "location":       "מיקום יובא כטקסט",
-    "phone":          "טלפון יובא כטקסט",
 }
 
 

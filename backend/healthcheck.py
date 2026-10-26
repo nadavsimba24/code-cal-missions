@@ -60,7 +60,7 @@ def get(p):
 eps = ["/api/status","/api/dashboard","/api/boards","/api/boards/1","/api/boards/8",
        "/api/tasks","/api/citizen-requests","/api/permits","/api/users","/api/departments",
        "/api/transport/stops","/api/infrastructure/assets","/api/swarm/agents",
-       "/api/forms/templates","/api/viz/board-insights","/api/viz/timeline",
+       "/api/boards/1/forms","/api/viz/board-insights","/api/viz/timeline",
        "/api/graph/context","/api/ai/models","/api/bim/bcf-topics"]
 ok=0
 for e in eps:

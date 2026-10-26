@@ -21,11 +21,11 @@ function grabConst(name, open, close){
 }
 const TYPES    = grabConst('COLUMN_TYPES','[',']');
 const DEFAULTS = grabConst('COL_DEFAULTS','{','}');
-const FIELDS   = /^const FIELD_TYPE_HE=.*$/m.exec(src)[0];
+const FIELDS   = /^const FORM_FIELD_TYPE_HE=.*$/m.exec(src)[0];
 
-const {COLUMN_TYPES, COL_DEFAULTS, FIELD_TYPE_HE} =
+const {COLUMN_TYPES, COL_DEFAULTS, FORM_FIELD_TYPE_HE} =
   new Function([TYPES, DEFAULTS, FIELDS,
-                'return {COLUMN_TYPES, COL_DEFAULTS, FIELD_TYPE_HE};'].join('\n'))();
+                'return {COLUMN_TYPES, COL_DEFAULTS, FORM_FIELD_TYPE_HE};'].join('\n'))();
 
 let pass=0, fail=0;
 const ck=(n,c,extra='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console.log('  FAIL '+n+(extra?'  → '+extra:''))); };
@@ -35,7 +35,7 @@ const connect  = COLUMN_TYPES.find(c=>c.type==='connect');
 
 ck('the accounts type is called קישור', accounts && accounts.he==='קישור', accounts&&accounts.he);
 ck('a new one is titled that too', COL_DEFAULTS.accounts==='קישור', COL_DEFAULTS.accounts);
-ck('the form builder calls it the same thing', FIELD_TYPE_HE.accounts==='קישור', FIELD_TYPE_HE.accounts);
+ck('the form builder calls it the same thing', FORM_FIELD_TYPE_HE.accounts==='קישור', FORM_FIELD_TYPE_HE.accounts);
 ck('and its own cell editor no longer says חשבון', !/<h2>חשבון מקושר<\/h2>/.test(src));
 
 // the word was already taken

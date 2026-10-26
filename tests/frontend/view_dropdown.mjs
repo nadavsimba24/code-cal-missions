@@ -16,9 +16,9 @@ function grab(name){
 }
 const VIEWS = /const VIEWS = \[[\s\S]*?\n\];/.exec(src)[0];
 
-let tabsHTML='', popHTML='', formsOpened=0;
+let tabsHTML='', popHTML='';
 global.document={ getElementById:()=>({ set innerHTML(v){ tabsHTML=v; }, get innerHTML(){ return tabsHTML; } }) };
-const st={view:'table',board:{views:['table','kanban','calendar','map'],form:null}};
+const st={view:'table',board:{views:['table','kanban','calendar','map']}};
 
 /* VIEWS_WIP is injected rather than read from the file. This harness is about
    how the picker DRAWS a list, so it wants the board's four views in it; the
@@ -29,7 +29,7 @@ const st={view:'table',board:{views:['table','kanban','calendar','map'],form:nul
    filtered. These cases are about the base views and the picker, so the
    strip is given no saved cuts and nothing filtered — which is the state the
    assertions below were written against. */
-const build = (wip, state) => new Function('document','st','esc','renderView','openForms','openCellPop','closeCellPops','VIEWS_WIP','Views','filtersActive', `
+const build = (wip, state) => new Function('document','st','esc','renderView','openCellPop','closeCellPops','VIEWS_WIP','Views','filtersActive','FormEditor', `
   ${VIEWS}
   const VIEW_META=Object.fromEntries(VIEWS.map(v=>[v.id,v]));
   ${grab('boardViewsRaw')}
@@ -38,8 +38,10 @@ const build = (wip, state) => new Function('document','st','esc','renderView','o
   ${grab('openViewPicker')}
   function setView(v){ st.view=v; renderTabs(); }
   return {renderTabs,openViewPicker,setView};
-`)(global.document, state, x=>String(x), ()=>{}, ()=>{formsOpened++;},
-   (a,h)=>{popHTML=h;}, ()=>{}, wip, {items:[], tabsHTML:()=>'', openView:()=>null, dirty:()=>false}, ()=>false);
+`)(global.document, state, x=>String(x), ()=>{},
+   (a,h)=>{popHTML=h;}, ()=>{}, wip,
+   {items:[], tabsHTML:()=>'', openView:()=>null, dirty:()=>false, active:null},
+   ()=>false, {isOpen:()=>false});
 const ctx = build(new Set(), st);
 
 const ev={stopPropagation(){},currentTarget:{}};
@@ -75,21 +77,24 @@ ctx.openViewPicker(ev);
 const marked=/<button class="rm-item on"[^>]*>[\s\S]*?<span class="rm-grow">([^<]*)<\/span>/.exec(popHTML);
 ck('...and so does the mark in the list', !!marked && marked[1].trim()==='קנבן', marked?marked[1]:'nothing marked');
 
-// ── forms is listed but is not a view ──
-st.board.form={}; ctx.renderTabs(); ctx.openViewPicker(ev);
-ck('a board with a form offers it', rowLabels().includes('טפסים'));
-ck('...separated from the views', /rm-sep/.test(popHTML));
-ck('...and it never becomes the button label', !/tab-dd-lbl">טפסים/.test(tabsHTML));
+/* ── a form is a tab, not a row in this picker ──
+   Forms used to be listed here, below a separator, because a form was a panel
+   over the board rather than a view of it. It is a view now: it lives on the
+   strip beside the saved cuts, with a name somebody gave it. This picker
+   answers "how am I looking at this board", which a form does not change. */
+ctx.renderTabs(); ctx.openViewPicker(ev);
+ck('a form is not offered as a way of drawing the board', !rowLabels().includes('טפסים'));
+ck('...and the picker needs no separator any more', !/rm-sep/.test(popHTML));
 
 // ── a board with only the table ──
-st.view='table'; st.board={views:['table'],form:null};
+st.view='table'; st.board={views:['table']};
 ctx.renderTabs(); ctx.openViewPicker(ev);
 ck('a single-view board still gets a working list', rowLabels().join(',')==='טבלה ראשית');
 
 // ── and the gate that hides the views still being built ──
 // Same picker, same board, a set that holds everything but the table: what the
 // board has turned on is unchanged, what it OFFERS is one view.
-const st2={view:'kanban',board:{views:['table','kanban','calendar','map'],form:null}};
+const st2={view:'kanban',board:{views:['table','kanban','calendar','map']}};
 const wip=build(new Set(['kanban','calendar','map','dashboard','gis','links']), st2);
 wip.renderTabs(); wip.openViewPicker(ev);
 ck('a view still in development is not offered', rowLabels().join(',')==='טבלה ראשית',

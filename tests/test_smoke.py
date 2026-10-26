@@ -15,7 +15,7 @@ READ_ENDPOINTS = [
     "/api/citizen-requests",
     "/api/kpis",
     "/api/work-plans",
-    "/api/forms/templates",
+    "/api/boards/1/forms",
     "/api/transport/stops",
     "/api/graph/context",
     "/api/viz/board-insights",

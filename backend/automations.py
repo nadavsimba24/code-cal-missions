@@ -77,6 +77,8 @@ FIELD_MATRIX = {
                    "rule": "אימות סוג"},
     "email":      {"trigger": True,  "condition": True,  "action": False, "kind": "text",
                    "rule": "אימות סוג"},
+    "phone":      {"trigger": True,  "condition": True,  "action": False, "kind": "text",
+                   "rule": "אימות סוג"},
     "number":     {"trigger": True,  "condition": True,  "action": False, "kind": "number",
                    "rule": "אימות סוג"},
     "rating":     {"trigger": True,  "condition": True,  "action": False, "kind": "number",

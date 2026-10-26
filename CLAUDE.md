@@ -48,13 +48,13 @@ cd backend && python main.py
 - `GET /api/dashboard` — aggregated stats (tasks, overdue, citizen requests, permits)
 - `GET /api/viz/board-insights` — per-board analytics for visualization
 - `GET /api/graph/context` — knowledge graph (tasks + users + boards connections)
-- `GET /api/forms/templates` — form templates (building permit, citizen request, event)
+- `GET /api/boards/{id}/forms` — the board's forms (a form is a view of a board)
 - `POST /api/swarm/think` — run AI agents (mode: single/all/coordinated)
 - `GET /api/bim/generate?board_id=X` — generate IFC 3D model from board tasks
 - `GET /api/bim/viewer-data` — Three.js-compatible JSON from latest IFC model
 - `GET /api/transport/stops` — bus stops as GeoJSON (SIRI integration)
 - `POST /api/tasks` — create task
-- `POST /api/forms/submit` — submit form data → creates task
+- `PATCH /api/forms/{id}` — save a form: name, status, access, design, components
 
 ## Frontend Architecture
 

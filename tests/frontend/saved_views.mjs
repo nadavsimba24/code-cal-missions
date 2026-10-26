@@ -42,7 +42,7 @@ function world(){
   const V=new Function('st','api','withMe','meId','toast','showModal','closeModals',
     'askConfirm','renderTabs','renderView','refreshToolbar','boardViews','esc',
     'document','advQuery','filtersActive','boardIsCut','setTimeout','Router','Chat','advPrune',
-    'clearFilters',
+    'clearFilters','FormEditor',
     viewsSrc+'\nreturn Views;')(
     st, async(url)=>(url.includes('/views')?{views:w.serverViews||[]}:{item_ids:[1,2]}),
     x=>JSON.stringify(x), ()=>7,
@@ -57,7 +57,11 @@ function world(){
        These cases are about the round trip, so nothing is pruned here —
        tests/frontend/filter_edge_cases.mjs runs the real advPrune. */
     n=>({tree:n, removed:w.pruned||[], denied:w.denied||[]}),
-    clearFilters);
+    clearFilters,
+    /* A form is a view of the board too, and apply() hands one to its editor
+       instead of restoring a cut. These cases are about the cuts, so the
+       editor is never open — tests/frontend/form_view.mjs runs the real one. */
+    {isOpen:()=>false, close(){}, open(){ w.formOpened=true; }});
   return {w, st, V};
 }
 

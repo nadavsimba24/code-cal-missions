@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>טופס | Missions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;800&family=Rubik:wght@400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+/* The product's own tokens, the handful this page uses. Not index.html's
+   stylesheet: that is 300KB written for an application with a sidebar, a
+   board and a identity, and this page has none of those. */
+:root{
+  --font:'Figtree','Rubik','Heebo','Segoe UI',system-ui,sans-serif;
+  --bg:#f6f7fb; --surface:#fff; --border:#e6e9ef; --border-strong:#d0d4dd;
+  --text:#323338; --text-muted:#676879; --text-light:#9699a6;
+  --primary:#0073ea; --red:#e2445c; --green:#00c875;
+  --radius:12px; --shadow-sm:0 2px 8px rgba(0,0,0,.06);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+  padding:28px 16px calc(28px + env(safe-area-inset-bottom));line-height:1.5}
+button{font-family:inherit;cursor:pointer;border:0;background:none}
+#app{width:100%;max-width:640px}
+
+/* the paper — the same class names FormPaper writes, so the markup it
+   produces here and in the editor is the same markup */
+.fv-paper{border:1px solid var(--border);border-radius:var(--radius);
+  padding:26px;box-shadow:var(--shadow-sm)}
+.fv-logo-wrap{margin-bottom:16px}
+.fv-logo{max-height:64px;max-width:70%;object-fit:contain}
+.fv-paper-h{border-bottom:2px solid var(--fv-accent);padding-bottom:13px;margin-bottom:18px}
+.fv-paper-t{font-size:1.35em;font-weight:800}
+.fv-paper-d{color:var(--text-muted);margin-top:6px;font-size:.9em}
+.fv-blocks{display:block}
+.fv-blk{border-radius:8px;padding:2px 0;margin-bottom:17px}
+.fv-blk-heading h3{font-weight:800;margin-top:6px}
+.fv-blk-text p{color:var(--text-muted);font-size:.92em}
+.fv-q-l{display:block;font-weight:600;margin-bottom:6px;font-size:.92em}
+.fv-req{color:var(--red);margin-inline-start:3px}
+.fv-q-d{color:var(--text-light);font-size:.82em;margin-bottom:6px}
+.fv-in{width:100%;border:1px solid var(--border-strong);border-radius:8px;
+  padding:11px;background:var(--surface);font-family:inherit;font-size:1em;
+  color:var(--text);min-height:44px}
+.fv-in:focus{outline:2px solid var(--fv-accent);outline-offset:1px;border-color:var(--fv-accent)}
+.fv-in-cb{width:22px;height:22px;min-height:0;accent-color:var(--fv-accent)}
+.fv-multi{display:flex;flex-direction:column;gap:2px;padding:6px}
+.fv-opt{display:flex;align-items:center;gap:9px;padding:8px 4px;min-height:44px;cursor:pointer}
+.fv-opt input{width:20px;height:20px;accent-color:var(--fv-accent)}
+.fv-files input[type=file]{padding:9px}
+.fv-files-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.fv-file{display:inline-flex;align-items:center;gap:6px;font-size:.8em;
+  background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 9px}
+.fv-file button{color:var(--text-light);font-size:.9em;min-width:28px;min-height:28px}
+.fv-file.err{border-color:var(--red);color:var(--red);background:#fff2f4}
+.fv-file.done{border-color:var(--green)}
+.fv-file.up{min-width:190px}
+.fv-file-sz{color:var(--text-light)}
+.fv-file-pc{color:var(--text-muted);font-variant-numeric:tabular-nums;min-width:34px;text-align:left}
+.fv-bar{display:block;flex:1;height:4px;border-radius:3px;background:var(--border);overflow:hidden}
+.fv-bar i{display:block;height:100%;background:var(--fv-accent);transition:width .15s}
+.fv-unsupported{color:var(--text-light);font-size:.85em;border-style:dashed}
+.fv-err{color:var(--red);font-size:.82em;margin-top:5px;font-weight:600}
+.fv-in.bad{border-color:var(--red)}
+.fv-paper-f{margin-top:22px}
+.fv-submit{display:inline-block;background:var(--fv-accent);color:#fff;font-weight:700;
+  border-radius:8px;padding:12px 26px;font-size:1em;min-height:46px}
+.fv-submit[disabled]{opacity:.55;cursor:progress}
+.fv-brand{margin-top:20px;padding-top:13px;border-top:1px solid rgba(0,0,0,.08);
+  font-size:.75em;opacity:.6}
+.fv-empty{color:var(--text-light);font-size:.9em;padding:22px;text-align:center}
+
+/* the states that are not a form */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:40px 28px;text-align:center;box-shadow:var(--shadow-sm)}
+.card i.big{font-size:40px;display:block;margin-bottom:16px;color:var(--text-light)}
+.card h1{font-size:19px;margin-bottom:9px}
+.card p{color:var(--text-muted);font-size:14px;margin-bottom:18px}
+.card .btn{display:inline-block;background:var(--primary);color:#fff;font-weight:700;
+  border-radius:8px;padding:11px 22px;font-size:14px;text-decoration:none;min-height:44px}
+.card.ok i.big{color:var(--green)}
+.card.gone i.big{color:var(--red)}
+.spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--primary);
+  border-radius:50%;animation:sp 1.2s linear infinite;margin:60px auto}
+@keyframes sp{to{transform:rotate(360deg)}}
+.err-top{background:#fff2f4;border:1px solid var(--red);color:var(--red);
+  border-radius:8px;padding:11px 13px;margin-bottom:14px;font-size:.88em;font-weight:600}
+@media(max-width:480px){
+  body{padding:12px 10px calc(16px + env(safe-area-inset-bottom))}
+  .fv-paper{padding:16px;border-radius:10px}
+  .card{padding:30px 18px}
+  .fv-submit{width:100%;text-align:center}
+}
+</style>
+</head>
+<body>
+<div id="app"><div class="spin" role="status" aria-label="טוען את הטופס"></div></div>
+
+<script src="form-paper.js"></script>
+<script>
+/* ============ The public fill page ============
+
+   The only code in this product that runs for somebody who is not a user, so
+   it is deliberately the smallest: it knows a token, it asks one endpoint
+   what to draw, and it posts back answers keyed by the ids that endpoint
+   gave it. It has never been told a board id, a column id or a member's
+   name, and there is nothing in here that could ask for one.
+
+   The server decides everything. The states below are the server's answers
+   rendered in words — 404, 410, 401 — and the required-field check before
+   sending is a courtesy, not the rule: the same check runs again there, and
+   that is the one that counts. */
+const TOKEN = decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] || '');
+const app = document.getElementById('app');
+let DOC = null, sending = false, SUBMISSION = null;
+
+/* One id per attempt, so a retry of the SAME send is recognised as one.
+
+   Minted when the form is drawn and kept across a failure: a network error
+   that dropped the answer on the way back leaves the server with a record
+   and this page with none, and pressing send again must not make a second.
+   The server keys off it through the mechanism it already had for exactly
+   this question. A new id is minted only when a new form is started. */
+const newSubmissionId = () =>
+  (crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : String(Date.now()) + Math.random().toString(16).slice(2);
+
+const api = async (path, opts) => {
+  const r = await fetch(path, opts || {});
+  let body = null;
+  try { body = await r.json(); } catch(e) {}
+  if (!r.ok) {
+    const e = new Error(String(r.status));
+    e.status = r.status;
+    e.detail = body && body.detail;
+    throw e;
+  }
+  return body;
+};
+const msgOf = (e, fallback) => {
+  const d = e && e.detail;
+  if (typeof d === 'string') return d;
+  if (d && typeof d === 'object' && d.message) return d.message;
+  return fallback;
+};
+
+function card(cls, icon, title, text, action){
+  app.innerHTML = `<div class="card ${cls}">
+    <i class="fa-solid ${icon} big"></i>
+    <h1>${fpEsc(title)}</h1>
+    <p>${fpEsc(text)}</p>
+    ${action || ''}</div>`;
+}
+
+/* The three answers that are not a form, in the words somebody holding a
+   link needs. "Not found" and "closed" are deliberately different: one of
+   them is worth telling, and the other would confirm that a guessed token
+   names something real if it said any more than it does. */
+function refusal(e){
+  if (e.status === 401){
+    const url = (e.detail && e.detail.login_url) || '/';
+    /* Straight through. A page that says "you need to sign in" above a
+       button that signs you in is one extra tap for no information — the
+       form is behind a login and this is what going through it looks like.
+       The address comes from the server, which is the only thing that knows
+       how this deployment signs people in, and it carries the way back. */
+    location.replace(url);
+    return;
+  }
+  if (e.status === 403)
+    return card('gone', 'fa-ban', 'אין לך גישה לטופס הזה',
+      msgOf(e, 'ייתכן שהחשבון שאיתו התחברת אינו רשום במערכת. פנו למי ששלח לך את הקישור.'));
+  if (e.status === 410)
+    return card('gone', 'fa-circle-pause', 'הטופס סגור',
+      'הטופס הזה כבר אינו מקבל פניות. אם לדעתך זו טעות, פנו למי ששלח לך את הקישור.');
+  if (e.status === 404)
+    return card('gone', 'fa-link-slash', 'הטופס לא נמצא',
+      'ייתכן שהקישור שגוי או שהטופס עדיין לא פורסם. בדקו את הכתובת, או פנו למי ששלח לך אותה.');
+  if (e.status === 429)
+    return card('gone', 'fa-hourglass-half', 'נשלחו יותר מדי פניות',
+      msgOf(e, 'נסו שוב בעוד כמה דקות.'));
+  card('gone', 'fa-triangle-exclamation', 'משהו השתבש',
+    msgOf(e, 'לא הצלחנו לטעון את הטופס.'),
+    `<button class="btn" onclick="load()">נסו שוב</button>`);
+}
+
+async function load(){
+  app.innerHTML = '<div class="spin" role="status" aria-label="טוען את הטופס"></div>';
+  try {
+    DOC = await api('/api/public/forms/' + encodeURIComponent(TOKEN));
+  } catch(e) { return refusal(e); }
+  draw();
+}
+
+function draw(){
+  SUBMISSION = newSubmissionId();
+  app.innerHTML = `<form id="fv-form" novalidate>${FormPaper.html(DOC, {
+    fill: true,
+    logoSrc: '/api/public/forms/' + encodeURIComponent(TOKEN) + '/logo',
+  })}</form>`;
+  document.title = (DOC.design && DOC.design.display_title) || 'טופס';
+  const form = document.getElementById('fv-form');
+  form.addEventListener('submit', ev => { ev.preventDefault(); send(); });
+  const btn = document.getElementById('fv-send');
+  if (btn) btn.addEventListener('click', send);
+  form.querySelectorAll('input[type=file]').forEach(wireFiles);
+}
+
+/* ── קבצים ──
+   A file goes up as it is picked, and what the answer carries is the token
+   that came back. Uploading at send time would mean one request that can
+   half-succeed, and a form that half-sent is the thing this is not allowed
+   to be: a failed upload here leaves the form on screen with the file not
+   attached, and nothing has been created anywhere.
+
+   The policy is the server's — it travels with the form — and it is checked
+   here first only so somebody is told before a megabyte crosses the wire.
+   Every one of the three is checked again on the way in. */
+const human = b => b < 1024 ? b + 'B'
+  : b < 1048576 ? (b/1024).toFixed(0) + 'KB' : (b/1048576).toFixed(1) + 'MB';
+
+function policy(){
+  const u = (DOC && DOC.uploads) || {};
+  return {maxBytes: (u.max_mb || 10) * 1048576, per: u.per_question || 5,
+          totalBytes: (u.total_mb || 25) * 1048576, types: u.types || []};
+}
+/* Every file on the form, across every file question — the total budget is
+   the submission's, not the question's. */
+function totalPicked(extra){
+  let n = extra || 0;
+  document.querySelectorAll('.fv-files input[type=file]').forEach(i =>
+    (i._tokens || []).forEach(t => { n += t.size || 0; }));
+  return n;
+}
+
+/* XHR and not fetch, for the one thing fetch still cannot do: tell somebody
+   how far a 9MB file has got. A progress bar is the difference between a
+   slow upload and a broken page. */
+function upload(file, onProgress){
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/api/public/forms/' + encodeURIComponent(TOKEN) + '/upload');
+    x.upload.onprogress = ev => {
+      if (ev.lengthComputable) onProgress(Math.round(ev.loaded / ev.total * 100));
+    };
+    x.onload = () => {
+      let body = null;
+      try { body = JSON.parse(x.responseText); } catch(e) {}
+      if (x.status >= 200 && x.status < 300) return resolve(body);
+      const e = new Error(String(x.status));
+      e.status = x.status; e.detail = body && body.detail;
+      reject(e);
+    };
+    x.onerror = () => reject(new Error('network'));
+    x.onabort = () => reject(Object.assign(new Error('abort'), {aborted: true}));
+    const fd = new FormData(); fd.append('file', file);
+    x.send(fd);
+    onProgress(0);
+    resolve._xhr = x;
+  });
+}
+
+function wireFiles(input){
+  input._tokens = [];
+  const list = document.getElementById(input.id + '-list');
+  const paint = () => {
+    list.querySelectorAll('.fv-file.done').forEach(n => n.remove());
+    input._tokens.forEach((t, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'fv-file done';
+      chip.innerHTML = `<i class="fa-solid fa-circle-check" style="color:var(--green)"></i>
+        ${fpEsc(t.name)} <span class="fv-file-sz">${fpEsc(human(t.size || 0))}</span>
+        <button type="button" aria-label="הסרת הקובץ ${fpEsc(t.name)}">
+          <i class="fa-solid fa-xmark"></i></button>`;
+      chip.querySelector('button').onclick = () => {
+        /* Removed from the form, not from the server. The upload stays
+           unclaimed and is swept with every other abandoned one — there is
+           no endpoint a stranger can use to delete by id, and there should
+           not be. */
+        input._tokens.splice(i, 1); paint();
+      };
+      list.insertBefore(chip, list.firstChild);
+    });
+  };
+
+  input.addEventListener('change', async () => {
+    const files = [...(input.files || [])];
+    input.value = '';
+    const p = policy();
+    for (const f of files){
+      if (input._tokens.length >= p.per){
+        fail(list, f, `אפשר לצרף עד ${p.per} קבצים לשאלה הזאת`); continue;
+      }
+      if (f.size > p.maxBytes){
+        fail(list, f, `הקובץ גדול מדי (עד ${human(p.maxBytes)})`); continue;
+      }
+      if (p.types.length && p.types.indexOf(f.type) < 0){
+        fail(list, f, 'סוג הקובץ אינו נתמך'); continue;
+      }
+      if (totalPicked(f.size) > p.totalBytes){
+        fail(list, f, `סך הקבצים בהגשה גדול מדי (עד ${human(p.totalBytes)})`); continue;
+      }
+
+      const chip = document.createElement('span');
+      chip.className = 'fv-file up';
+      chip.innerHTML = `<i class="fa-solid fa-arrow-up"></i> ${fpEsc(f.name)}
+        <span class="fv-file-pc" role="status">0%</span>
+        <span class="fv-bar"><i style="width:0%"></i></span>`;
+      list.appendChild(chip);
+      const pc = chip.querySelector('.fv-file-pc'), bar = chip.querySelector('.fv-bar i');
+      try {
+        const r = await upload(f, n => { pc.textContent = n + '%'; bar.style.width = n + '%'; });
+        input._tokens.push({token: r.token, name: r.name, size: r.size});
+        chip.remove(); paint();
+      } catch(e){
+        chip.remove();
+        fail(list, f, msgOf(e, 'ההעלאה נכשלה'));
+      }
+    }
+  });
+}
+
+/* A file that did not go up. Stays on screen with the reason on it until
+   somebody dismisses it — a toast would be gone before it was read, and the
+   form is still sendable without this file. */
+function fail(list, file, why){
+  const chip = document.createElement('span');
+  chip.className = 'fv-file err';
+  chip.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> ${fpEsc(file.name)} — ${
+    fpEsc(why)} <button type="button" aria-label="סגירה"><i class="fa-solid fa-xmark"></i></button>`;
+  chip.querySelector('button').onclick = () => chip.remove();
+  list.appendChild(chip);
+}
+
+function fieldError(id, msg){
+  const box = document.getElementById('fa-' + id + '-e');
+  const inp = document.getElementById('fa-' + id);
+  if (box){ box.textContent = msg || ''; box.hidden = !msg; }
+  if (inp) inp.classList.toggle('bad', !!msg);
+}
+
+async function send(){
+  if (sending || !DOC) return;
+  const form = document.getElementById('fv-form');
+  (DOC.components || []).forEach(c => c.kind === 'question' && fieldError(c.id, ''));
+  const top = document.getElementById('fv-top'); if (top) top.remove();
+
+  const {answers, missing, bad} = FormPaper.collect(DOC, form);
+  if (missing.length || bad.length){
+    missing.forEach(m => fieldError(m.id, 'שדה חובה'));
+    bad.forEach(x => fieldError(x.id, x.why));
+    banner(missing.length
+      ? 'חסרות תשובות לשדות חובה: ' + missing.map(m => m.label).join(', ')
+      : 'יש ערכים שצריך לתקן: ' + bad.map(x => x.label).join(', '));
+    const first = document.getElementById('fa-' + (missing[0] || bad[0]).id);
+    if (first) first.focus({preventScroll:false});
+    return;
+  }
+
+  /* The button is disabled AND a flag is set. The flag is the one that
+     holds: a second Enter in a text field fires submit without ever
+     touching the button. */
+  sending = true;
+  const btn = document.getElementById('fv-send');
+  if (btn){ btn.disabled = true; btn.textContent = 'שולח…'; }
+  try {
+    const r = await api('/api/public/forms/' + encodeURIComponent(TOKEN) + '/submit',
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({answers, submission_id: SUBMISSION})});
+    done(r);
+  } catch(e){
+    sending = false;
+    if (btn){ btn.disabled = false;
+              btn.textContent = (DOC.design && DOC.design.submit_label) || 'שליחה'; }
+    /* A form that was closed, or switched to members-only, while somebody
+       was filling it in. The server re-checks at the send — this is what
+       that looks like from here, and the answers stay on screen either way. */
+    if ([401, 403, 404, 410].indexOf(e.status) >= 0) return refusal(e);
+    /* Beside each question, by the id the server named. The answers stay
+       exactly where they are — nothing is re-rendered — so fixing one field
+       does not cost the other nine. */
+    const d = e && e.detail;
+    if (d && typeof d === 'object' && Array.isArray(d.errors)){
+      d.errors.forEach(x => fieldError(x.question_id, x.message));
+      banner(d.message || 'יש תשובות שצריך לתקן');
+      const first = document.getElementById('fa-' + d.errors[0].question_id);
+      if (first) first.focus({preventScroll:false});
+      return;
+    }
+    /* Anything else is the server having a bad day. The words are ours, not
+       its: a 500 carries a stack somewhere and none of it is the
+       respondent's business — and what they need to know is that it was not
+       their fault and that pressing send again is worth doing. */
+    banner(e.status >= 500
+      ? 'משהו השתבש אצלנו. התשובות שלך נשמרו במסך — נסו לשלוח שוב.'
+      : msgOf(e, 'השליחה נכשלה. נסו שוב.'));
+  }
+}
+
+function banner(text){
+  const form = document.getElementById('fv-form');
+  if (!form) return;
+  const d = document.createElement('div');
+  d.className = 'err-top'; d.id = 'fv-top'; d.setAttribute('role', 'alert');
+  d.textContent = text;
+  form.prepend(d);
+  d.scrollIntoView({block:'nearest', behavior:'smooth'});
+}
+
+function done(r){
+  r = r || {};
+  if (r.redirect_url){ location.replace(r.redirect_url); return; }
+  const again = r.allow_another
+    ? `<button class="btn" onclick="load()">שליחת תשובה נוספת</button>` : '';
+  card('ok', 'fa-circle-check', r.title || 'תודה',
+       r.message || 'הפנייה נקלטה.', again);
+}
+
+load();
+</script>
+</body>
+</html>

@@ -34,6 +34,8 @@ from models import (
     AutomationIncident, EventOutbox,
     AutomationActionExecution, AutomationAuthorizationGrant,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
+    FormView, FormComponent, FORM_STATUSES, FORM_ACCESS_MODES,
+    FORM_COMPONENT_KINDS,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -97,6 +99,15 @@ app.add_middleware(ConditionalGZip)
 # dev mode already accepts any user id from a header or a cookie, so it opens
 # nothing that was closed.
 PUBLIC_API_PATHS = {"/api/status", "/api/auth/dev-users"}
+# …and the one PREFIX. A published form is reached by a token, so its path
+# cannot be enumerated here — and the token is the only thing in it.
+#
+# This weakens the rule above, which is why there is exactly one of them and
+# why what is behind it does the work itself: every handler under this prefix
+# resolves the form and enforces its own status and access before it answers,
+# including for AUTHENTICATED forms, which call resolve_user by hand. The
+# prefix opens the PATH; it does not open the form.
+PUBLIC_API_PREFIXES = ("/api/public/forms/",)
 
 
 @app.middleware("http")
@@ -104,6 +115,7 @@ async def require_authentication(request, call_next):
     path = request.url.path
     if (path.startswith("/api/")
             and path not in PUBLIC_API_PATHS
+            and not path.startswith(PUBLIC_API_PREFIXES)
             and request.method != "OPTIONS"):
         try:
             with Session(engine) as db:
@@ -255,6 +267,99 @@ def _migrate():
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_saved_views_board_name "
                 "ON saved_views (board_id, lower(trim(name))) "
                 "WHERE deleted_at IS NULL"))
+        # ── tables the form view adds ──
+        # form_views and form_components are NEW tables, so create_all() has
+        # already built them with every column and CHECK in the model. What is
+        # left is the column on a table that predates them, and the one rule
+        # create_all cannot express.
+        # form_views gained two design columns after boards had forms on them
+        fvcols = {r[1] for r in conn.execute(text("PRAGMA table_info(form_views)"))}
+        if fvcols:
+            for name, ddl in [("submit_label", "VARCHAR(40) DEFAULT ''"),
+                              ("show_branding", "BOOLEAN DEFAULT 1")]:
+                if name not in fvcols:
+                    conn.execute(text(f"ALTER TABLE form_views ADD COLUMN {name} {ddl}"))
+            # The public address is minted at the first publish, so the column
+            # has to accept NULL — and it was created NOT NULL, back when a
+            # form was given an address it did not yet have a use for. SQLite
+            # cannot relax that in place, so the table is rebuilt: the
+            # documented create-copy-drop-rename, rows carried across BY NAME
+            # so the order of the columns here cannot matter. The same dance
+            # saved_views went through, a few dozen lines up.
+            notnull = {r[1] for r in conn.execute(text("PRAGMA table_info(form_views)"))
+                       if r[3] and r[1] == "public_token"}
+            if notnull:
+                names = ", ".join(r[1] for r in
+                                  conn.execute(text("PRAGMA table_info(form_views)")))
+                conn.execute(text("""CREATE TABLE form_views__new (
+                    id INTEGER PRIMARY KEY,
+                    view_id INTEGER NOT NULL REFERENCES saved_views(id),
+                    board_id INTEGER NOT NULL REFERENCES boards(id),
+                    status VARCHAR(10) NOT NULL DEFAULT 'DRAFT',
+                    access VARCHAR(16) NOT NULL DEFAULT 'AUTHENTICATED',
+                    public_token VARCHAR(40),
+                    target_group_id INTEGER REFERENCES groups(id),
+                    display_title VARCHAR(200),
+                    display_description TEXT,
+                    font_family VARCHAR(60),
+                    font_size VARCHAR(10),
+                    text_align VARCHAR(10),
+                    theme_color VARCHAR(7),
+                    background_color VARCHAR(7),
+                    text_color VARCHAR(7),
+                    logo_token VARCHAR(40),
+                    cover_token VARCHAR(40),
+                    show_logo BOOLEAN,
+                    success_title VARCHAR(200),
+                    success_message TEXT,
+                    success_allow_another BOOLEAN,
+                    success_redirect_url VARCHAR(500),
+                    submit_label VARCHAR(40),
+                    show_branding BOOLEAN,
+                    record_submitter BOOLEAN,
+                    published_at DATETIME,
+                    published_by INTEGER REFERENCES users(id),
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    CONSTRAINT uq_form_view_view UNIQUE (view_id),
+                    CONSTRAINT uq_form_view_board UNIQUE (id, board_id),
+                    CONSTRAINT ck_form_view_status
+                      CHECK (status IN ('DRAFT', 'PUBLISHED', 'DISABLED')),
+                    CONSTRAINT ck_form_view_access
+                      CHECK (access IN ('AUTHENTICATED', 'PUBLIC_LINK')))"""))
+                conn.execute(text(f"INSERT INTO form_views__new ({names}) "
+                                  f"SELECT {names} FROM form_views"))
+                conn.execute(text("DROP TABLE form_views"))
+                conn.execute(text("ALTER TABLE form_views__new RENAME TO form_views"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS "
+                                  "ix_form_views_public_token ON form_views (public_token)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_form_views_board_id "
+                                  "ON form_views (board_id)"))
+                print("[forms] form_views rebuilt — public_token now accepts NULL",
+                      flush=True)
+        fccols = {r[1] for r in conn.execute(text("PRAGMA table_info(form_components)"))}
+        if fccols:
+            # One question per field per form. Decided in the plan (7.7) and
+            # enforced here rather than only in the server, for the reason the
+            # view-name index exists: the check reads and then the insert
+            # writes, and two saves in that gap both pass. Partial, because
+            # heading and text rows carry no field and must not collide with
+            # each other.
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_form_component_field "
+                "ON form_components (form_id, field_key) "
+                "WHERE field_key IS NOT NULL"))
+        # An upload made for a form, before the form was sent — see the two
+        # columns on UploadedFile for what they stop.
+        ufcols = {r[1] for r in conn.execute(text("PRAGMA table_info(uploaded_files)"))}
+        for name, ddl in [("form_view_id", "INTEGER"), ("claimed_at", "DATETIME")]:
+            if ufcols and name not in ufcols:
+                conn.execute(text(f"ALTER TABLE uploaded_files ADD COLUMN {name} {ddl}"))
+        # Which form an item arrived through. NULL on every item made the
+        # ordinary way, which is all of them until a form is published.
+        tcols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
+        if "form_view_id" not in tcols:
+            conn.execute(text("ALTER TABLE tasks ADD COLUMN form_view_id INTEGER"))
         pcols = {r[1] for r in conn.execute(text("PRAGMA table_info(board_view_prefs)"))}
         if pcols and "last_view_id" not in pcols:
             conn.execute(text("ALTER TABLE board_view_prefs ADD COLUMN last_view_id INTEGER"))
@@ -403,6 +508,16 @@ else:
         "ALTER TABLE saved_views ADD COLUMN IF NOT EXISTS schema_version INTEGER DEFAULT 1",
         "ALTER TABLE saved_views ALTER COLUMN owner_id DROP NOT NULL",
         "ALTER TABLE board_view_prefs ADD COLUMN IF NOT EXISTS last_view_id INTEGER",
+        # the form view — see the SQLite side for what each one is for
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS form_view_id INTEGER",
+        "ALTER TABLE form_views ADD COLUMN IF NOT EXISTS submit_label VARCHAR(40) DEFAULT ''",
+        "ALTER TABLE form_views ADD COLUMN IF NOT EXISTS show_branding BOOLEAN DEFAULT TRUE",
+        # minted at the first publish — see the SQLite side for the long version
+        "ALTER TABLE form_views ALTER COLUMN public_token DROP NOT NULL",
+        "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS form_view_id INTEGER",
+        "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_form_component_field "
+        "ON form_components (form_id, field_key) WHERE field_key IS NOT NULL",
         # see the SQLite side for why this is an index and not only a check
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_saved_views_board_name "
         "ON saved_views (board_id, lower(trim(name))) WHERE deleted_at IS NULL",
@@ -819,7 +934,8 @@ _safe_startup(_backfill_auto_columns)
 # 'admin' always has every capability (implicit, never stored). These roles are
 # editable by a system admin from the SysAdmin → role-permissions panel.
 CAPABILITIES = ["manage_system", "create_environment", "create_board",
-                "view_automations", "export_automation_log"]
+                "view_automations", "export_automation_log",
+                "hide_form_branding"]
 CAP_HE = {
     "manage_system": "ניהול מערכת",
     "create_environment": "יצירת סביבה חדשה",
@@ -829,6 +945,10 @@ CAP_HE = {
     # takes data out of the system only where the second is.
     "view_automations": "צפייה באוטומציות של לוח (לחבר לוח)",
     "export_automation_log": "ייצוא נתוני אוטומציות ושחזור גרסה",
+    # Taking the product's name off a form somebody outside the organisation
+    # will read. A board admin builds the form; whether it may go out
+    # unbranded is the system's to say, which is what this table is for.
+    "hide_form_branding": "הסרת מיתוג Missions מטופס",
 }
 EDITABLE_ROLES = ["manager", "member", "viewer", "guest"]
 ROLE_HE_BE = {"admin": "מנהל מערכת", "manager": "מנהל", "member": "חבר צוות",
@@ -2702,6 +2822,11 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
                   .filter(SavedView.board_id == board_id,
                           SavedView.deleted_at.is_(None))      # the bin is its own endpoint
                   .order_by(SavedView.position, SavedView.id).all())
+        # A form is a view of this board, so it is in this list — but it is
+        # not a CUT of it, and everything below this line reads a cut. Its
+        # rows are projected separately and rejoined in strip order.
+        forms = {x.view_id: x for x in db.query(FormView).filter(
+            FormView.view_id.in_([v.id for v in rows])).all()} if rows else {}
         rows = [v for v in rows if _view_visible_to(v, user_id, role)]
         rows = _arrange_views(rows, _view_order_for(db, board_id, user_id))
         names = {}
@@ -2711,6 +2836,17 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
         unseen = _unseen_col_ids(_b, user_id, role)
         def one(v):
             vj = _view_json(v, db, names)
+            if _is_form_view(v):
+                # Identity and state, which is what a strip needs to draw a
+                # tab and decide whether to offer the pencil. No filters —
+                # there are none — and no token: that is a capability, and it
+                # is handed out by the management endpoints to the people the
+                # management endpoints let in.
+                fv = forms.get(v.id)
+                return dict(vj, filters={}, blocked=False, needs_fix=[],
+                            form_id=(fv.id if fv else None),
+                            form_status=(fv.status if fv else None),
+                            form_access=(fv.access if fv else None))
             # A cut that asks about a column this reader may not see is not
             # opened by them — and its filters do not travel either. The
             # message is deliberately general: naming the column, or showing
@@ -2743,6 +2879,10 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
                 "views": [dict(one(v),
                                # may write to it — the rights, and the lock,
                                # which only the board's owner writes through
+                               # The same question for a form as for a cut,
+                               # and the same answer: _may_edit_view is the
+                               # board's roles, which is exactly what
+                               # FORM_MANAGE_ROLE asks for.
                                can_edit=(_may_edit_view(v, user_id, role)
                                          and (not v.locked
                                               or _may_write_locked(role))),
@@ -2752,7 +2892,8 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
                                # creating one takes. Sent rather than derived,
                                # so the menu offers exactly what the server
                                # would accept and never draws a dead action.
-                               can_duplicate=(role in ("admin", "editor")),
+                               can_duplicate=(role in ("admin", "editor")
+                                              and not _is_form_view(v)),
                                # drawn as "yours" or "somebody's" — the strip
                                # offers a different thing to save in each case
                                is_owner=(v.owner_id == user_id))
@@ -2809,6 +2950,8 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         # was drawn while it was still there, and "מחיקה תיבדק שוב בזמן
         # הביצוע" is exactly about the gap between those two moments.
         v, role, may = _view_or_404(db, view_id, user_id)
+        if _is_form_view(v):
+            raise HTTPException(400, "זהו טופס ולא חיתוך — השתמשו ב‎/api/forms")
         if not may:
             raise HTTPException(403, "אפשר לערוך רק תצוגה שיצרת")
         # The lock, at both ends of the switch, is the board owner's alone.
@@ -2918,6 +3061,18 @@ def _within_restore_window(v):
     if gone.tzinfo is None:                 # SQLite hands back naive datetimes
         gone = gone.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - gone) <= timedelta(days=VIEW_RESTORE_DAYS)
+
+
+def _is_form_view(v):
+    """Is this view row a form? The one question the cut endpoints have to ask.
+
+    A form shares the table with the saved cuts because it IS a view of the
+    board — same strip, same name rule, same bin. It shares almost nothing
+    else: writing a cut's `filters` onto one, or duplicating it as though the
+    cut were the thing being copied, would quietly produce a form with no
+    questions. So the cut endpoints refuse it and name where to go instead.
+    """
+    return (v.kind or "saved") == "form"
 
 
 def _view_or_404(db, view_id, user_id, *, live=True):
@@ -3042,6 +3197,8 @@ def duplicate_saved_view(view_id: int, data: dict = None,
     """
     with Session(engine) as db:
         v, role, _may = _view_or_404(db, view_id, user_id)
+        if _is_form_view(v):
+            raise HTTPException(400, "זהו טופס ולא חיתוך — השתמשו ב‎/api/forms")
         if role not in ("admin", "editor"):
             raise HTTPException(403, "תצוגה שמורה היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
         b = db.query(Board).filter(Board.id == v.board_id).first()
@@ -3152,8 +3309,10 @@ def set_last_view(board_id: int, data: dict, user_id: int = Depends(current_user
                 v = (db.query(SavedView)
                        .filter(SavedView.id == want, SavedView.board_id == board_id,
                                SavedView.deleted_at.is_(None)).first())
-                # not a view they could open is not a view they were on
-                if v is not None and not _view_blocked_for(_b, v, user_id, role):
+                # not a view they could open is not a view they were on,
+                # and a form is not a view anybody lands ON
+                if (v is not None and not _is_form_view(v)
+                        and not _view_blocked_for(_b, v, user_id, role)):
                     keep = v.id
         row = (db.query(BoardViewPrefs)
                  .filter(BoardViewPrefs.board_id == board_id,
@@ -3209,6 +3368,1961 @@ def set_personal_view_order(board_id: int, data: dict,
         row.updated_at = datetime.now(timezone.utc)
         db.commit()
         return {"order": clean}
+
+
+# ── תצוגת טופס (Form View) ─────────────────────────────────────────────
+# A form is a view of a board, so the identity is a view: SavedView carries
+# the board, the name on the strip, the position, the lock, the bin and the
+# configuration version, and FormView carries what only a form has. The two
+# are written together and neither is useful alone, which is why nothing here
+# creates one without the other.
+#
+# Everything in this section is MANAGEMENT, and it is board-admin work.
+# Filling a form in is the other mechanism — different audience, different
+# gate, no board role at all ("הרשאות ניהול הטופס והרשאות מילויו הן מנגנונים
+# נפרדים") — and it is not here yet.
+
+# The column types the system computes for itself. A form has nothing to ask
+# about one, and an answer stored against it is a value the grid ignores.
+# Mirrors DERIVED_COLS in frontend/index.html — the same list, because the
+# builder and the server have to offer the same questions.
+FORM_DERIVED_TYPES = ("created_at", "created_by", "item_id", "formula", "mirror")
+# The five fields every item has, whatever its board's columns are.
+FORM_BUILTIN_FIELDS = ("title", "assignees", "status", "priority", "due_date")
+FORM_FONT_SIZES = ("small", "medium", "large")
+FORM_TEXT_ALIGNS = ("right", "center", "left")
+# Emphasis on a block of the form's own words. Three, and no more: "אין
+# להוסיף … CSS מותאם אישית" and a rich-text editor is that by another name.
+FORM_TEXT_STYLES = ("normal", "bold", "italic")
+# A heading's size, named by level rather than by pixels, so a form cannot
+# hold a size the stylesheet has no rule for.
+FORM_HEADING_LEVELS = (1, 2, 3)
+NEW_FORM_NAME = (os.environ.get("NEW_FORM_NAME") or "טופס חדש").strip()
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _form_field_keys(b):
+    """Every field of THIS board a question may bind to.
+
+    The one place that decides, and the whole of "שאלה יכולה להתייחס רק לשדה
+    מאותו לוח": a key that is not in this set is not a field of this board,
+    whether it belongs to another board or to nothing at all. A column is not
+    a row in this system — the board keeps its columns in `settings` — so
+    there is no foreign key that could say this, and the check has to.
+    """
+    keys = set(FORM_BUILTIN_FIELDS)
+    for c in ((b.settings or {}).get("columns") or []):
+        if c.get("type") in FORM_DERIVED_TYPES:
+            continue
+        cid = c.get("id")
+        if cid:
+            keys.add(str(cid))
+    return keys
+
+
+def _form_one_of(value, allowed, what):
+    v = str(value or "").strip()
+    if v not in allowed:
+        raise HTTPException(400, f"ערך לא תקין ל־{what}: {value}")
+    return v
+
+
+def _form_color(value, what):
+    v = str(value or "").strip()
+    if not _HEX_RE.match(v):
+        raise HTTPException(400, f"{what} אינו צבע תקין (#rrggbb): {value}")
+    return v
+
+
+def _form_url(value):
+    """A redirect the form may send somebody to, or nothing.
+
+    Only http and https. A redirect target is a string an admin types and a
+    stranger follows, and `javascript:` in that position is script running on
+    whoever submitted the form — the same reason _safe_media_type refuses to
+    echo back an active content type.
+    """
+    v = str(value or "").strip()
+    if not v:
+        return None
+    if not v.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "כתובת הפניה חייבת להתחיל ב־http:// או https://")
+    if len(v) > 500:
+        raise HTTPException(400, "כתובת ההפניה ארוכה מדי")
+    return v
+
+
+# ── מי רשאי מה ──
+# "הרשאות הניהול נגזרות מהרשאות הלוח הקיימות", so they are not a second
+# permission model: they are the board's own, read at the same two levels the
+# board already reads them at.
+#
+#   editor — build the form. Same right that puts a saved cut on the strip
+#            (create_saved_view), because that is what this is: a tab on a
+#            board, made by somebody who works on that board.
+#   admin  — publish it, and decide who may fill it in. Those two are the
+#            board's exposure, not its content, and exposure is already the
+#            admin's alone: visibility, column permissions, the timezone.
+#            An editor who could publish could hand the board an address.
+#
+# A viewer is neither. Reading the management side IS reading the board's
+# configuration — "משתמש שאינו מורשה אינו יכול לקרוא או לשנות את הגדרות
+# הניהול" — so every door below asks, including the ones that only read.
+FORM_MANAGE_ROLE = "editor"
+FORM_EXPOSE_ROLE = "admin"
+_FORM_REFUSALS = {
+    "editor": "ניהול טופס דורש הרשאת עריכה בלוח",
+    "admin": "רק מנהל הלוח יכול לפרסם טופס או לקבוע מי רשאי למלא אותו",
+}
+
+
+def _form_or_404(db, form_id, user_id, *, need=FORM_MANAGE_ROLE):
+    """The form, its view, its board and the caller's role on it.
+
+    Every management endpoint comes through here, which is what makes the
+    rule hold for a direct request and not only for the screen: there is no
+    path to a form that does not pass the board's own role check first.
+
+    A form in the bin is a form that is not there, the same way a deleted view
+    is: the row survives so a restore can bring the questions back, and every
+    door into it is closed meanwhile.
+    """
+    f = db.query(FormView).filter(FormView.id == form_id).first()
+    if not f:
+        raise HTTPException(404, "form not found")
+    v = db.query(SavedView).filter(SavedView.id == f.view_id).first()
+    if not v or v.deleted_at is not None:
+        raise HTTPException(404, "form not found")
+    b, role = _board_role_or_403(db, f.board_id, user_id)
+    _form_need(role, need)
+    return f, v, b, role
+
+
+def _form_need(role, need):
+    if _BROLE_ORDER.get(role, -1) < _BROLE_ORDER.get(need, 1):
+        raise HTTPException(403, _FORM_REFUSALS[need])
+
+
+def _form_component_json(c, board=None):
+    out = {"id": c.id, "kind": c.kind, "position": c.position}
+    if c.kind == "question" and board is not None:
+        # The field this question is bound to, as the board has it NOW. A
+        # question outlives the column it was written against, and the
+        # builder is the one person who can do something about that — so it
+        # is reported to them, in words, rather than left to be noticed when
+        # a respondent sees one question fewer than the form has.
+        live = _form_col_type(board, c.field_key)
+        if live is None:
+            out["orphaned"] = True
+            out["issue"] = "השדה נמחק מהלוח — השאלה אינה נשאלת"
+        elif live in ("status", "dropdown"):
+            col = _form_col(board, c.field_key)
+            opts = (_status_col_options((col or {}).get("options")) if live == "status"
+                    else (col or {}).get("options")) or []
+            if not opts:
+                out["issue"] = "לשדה אין אפשרויות בחירה — אי אפשר לענות על השאלה"
+    if c.kind == "question":
+        out.update(field_key=c.field_key, label=c.label or "",
+                   description=c.description or "", placeholder=c.placeholder or "",
+                   required=bool(c.required), visible=c.visible is not False,
+                   settings=c.settings or {})
+    else:
+        # a block's own emphasis, and a heading's level — the only design a
+        # single component carries
+        out["content"] = c.content or ""
+        out["settings"] = c.settings or {}
+    return out
+
+
+def _form_json(db, f, v, *, user_id=None, components=True):
+    out = {
+        "id": f.id, "view_id": v.id, "board_id": f.board_id,
+        # "שם תצוגה" — the name on the strip, which is the view's and is
+        # unique per board because the view's index says so.
+        "name": v.name,
+        "status": f.status, "access": f.access,
+        # The public identifier. Returned to a manager, who is the only one
+        # who ever sees this endpoint — a filler reaches the form BY the
+        # token and is never told anything about the board behind it.
+        "public_token": f.public_token,
+        # The address itself, so the screen has nothing to assemble and
+        # nothing to get wrong. None until the first publish.
+        "public_url": (FORM_PUBLIC_PATH + f.public_token) if f.public_token else None,
+        "target_group_id": f.target_group_id,
+        "design": {
+            "display_title": f.display_title or "",
+            "display_description": f.display_description or "",
+            "font_size": f.font_size or "medium",
+            "text_align": f.text_align or "right",
+            "theme_color": f.theme_color or "",
+            "background_color": f.background_color or "",
+            "text_color": f.text_color or "",
+            "logo_token": f.logo_token, "cover_token": f.cover_token,
+            "show_logo": f.show_logo is not False,
+            "submit_label": f.submit_label or "",
+            "show_branding": f.show_branding is not False,
+        },
+        # Whether this person may take the branding off, so the screen offers
+        # exactly what the server would accept — the same rule the view strip
+        # follows with can_edit.
+        "can_hide_branding": _cap(db, user_id, "hide_form_branding"),
+        "success": {
+            "title": f.success_title or "",
+            "message": f.success_message or "",
+            "allow_another": bool(f.success_allow_another),
+            "redirect_url": f.success_redirect_url,
+        },
+        "record_submitter": f.record_submitter is not False,
+        "published_at": _iso(f.published_at), "published_by": f.published_by,
+        # What a reader holds, so a save can say "this moved since". The
+        # view's counter, because the name lives there and a form whose only
+        # change was its name has still changed.
+        "config_version": v.config_version or 1,
+        "locked": bool(v.locked),
+        "updated_at": _iso(f.updated_at),
+    }
+    if components:
+        rows = (db.query(FormComponent)
+                  .filter(FormComponent.form_id == f.id)
+                  .order_by(FormComponent.position, FormComponent.id).all())
+        board = db.query(Board).filter(Board.id == f.board_id).first()
+        out["components"] = [_form_component_json(c, board) for c in rows]
+        # …and the same facts once more, as the one question the publish
+        # button needs answered: is there anything here that makes this form
+        # unpublishable as it stands?
+        out["blockers"] = [{"question_id": c["id"], "label": c.get("label", ""),
+                            "message": c["issue"]}
+                           for c in out["components"]
+                           if c.get("orphaned") and c.get("required")
+                           and c.get("visible") is not False]
+    return out
+
+
+def _form_components_in(db, f, b, items):
+    """Validate a whole component list, then write it — never half of it.
+
+    Whole, because a save refused in the middle leaves a form its author never
+    asked for: six questions saved, the seventh rejected, and a published form
+    now missing a field. Same rule the submission itself will follow.
+
+    Replace rather than merge. The list IS the form's order — "רכיבי הטופס
+    נשמרים בסדר עצמאי מסדר השדות בלוח" — so the index in what arrives is the
+    position, and a component that is not in it is one the author removed.
+    """
+    if not isinstance(items, list):
+        raise HTTPException(400, "components חייב להיות מערך")
+    if len(items) > 200:
+        raise HTTPException(400, "יותר מדי רכיבים בטופס (עד 200)")
+    allowed = _form_field_keys(b)
+    rows, seen = [], set()
+    for i, raw in enumerate(items):
+        rows.append(_form_component_in(f, allowed, raw, seen, position=i))
+    return rows
+
+
+def _form_component_in(f, allowed, raw, seen, *, position=0, onto=None):
+    """One component, validated against the board and against the form.
+
+    `seen` is the field keys already spoken for, so the duplicate rule works
+    the same whether the list arrives whole or a question is added to one.
+    `onto` updates an existing row instead of building a new one — a PATCH
+    that names three fields must leave the other four as they were, which a
+    rebuilt row would not.
+    """
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "כל רכיב חייב להיות אובייקט")
+    c = onto or FormComponent(form_id=f.id, board_id=f.board_id, position=position)
+    kind = (_form_one_of(raw.get("kind"), FORM_COMPONENT_KINDS, "kind")
+            if (onto is None or "kind" in raw) else c.kind)
+    c.kind = kind
+    if kind == "question":
+        key = str(raw.get("field_key") or (c.field_key if onto is not None else "") or "").strip()
+        if not key:
+            raise HTTPException(400, "שאלה חייבת להיות מקושרת לשדה")
+        # The cross-board refusal. The message deliberately does not say which
+        # board the field DOES belong to: whoever is asking either mistyped,
+        # or is probing for the column list of a board they were not invited
+        # to.
+        if key not in allowed:
+            raise HTTPException(
+                400, f"השדה '{key}' אינו שדה של הלוח הזה — שאלה יכולה "
+                     f"להתייחס רק לשדה מאותו לוח")
+        if key in seen:
+            raise HTTPException(400, f"השדה '{key}' מופיע יותר מפעם אחת בטופס")
+        seen.add(key)
+        required = bool(raw.get("required")) if ("required" in raw or onto is None) \
+            else bool(c.required)
+        visible = (raw.get("visible") is not False) if ("visible" in raw or onto is None) \
+            else (c.visible is not False)
+        # Hidden and required cannot both hold: the question is not asked, so
+        # the answer cannot arrive, so the form cannot be submitted. A state
+        # nothing can satisfy is refused at the save rather than resolved at
+        # the display — today's builder resolves it, silently, by filtering to
+        # the visible fields BEFORE checking required, and the requirement
+        # simply evaporates.
+        if required and not visible:
+            raise HTTPException(
+                400, f"שאלה מוסתרת אינה יכולה להיות חובה: "
+                     f"'{raw.get('label') or c.label or key}'")
+        c.field_key = key
+        c.required = required
+        c.visible = visible
+        if "label" in raw or onto is None:
+            c.label = str(raw.get("label") or "")[:200]
+        if "description" in raw or onto is None:
+            c.description = str(raw.get("description") or "")
+        if "placeholder" in raw or onto is None:
+            c.placeholder = str(raw.get("placeholder") or "")[:200]
+        if "settings" in raw or onto is None:
+            c.settings = _form_component_settings("question", raw.get("settings"))
+        c.content = ""
+    else:
+        # A heading and a text are the form's own words, bound to nothing.
+        # field_key goes back to NULL — which the table's CHECK insists on —
+        # so a question turned into a heading releases the field it held.
+        c.field_key = None
+        c.required = False
+        c.visible = True
+        if "content" in raw or onto is None:
+            c.content = str(raw.get("content") or "")
+        if "settings" in raw or onto is None:
+            c.settings = _form_component_settings(kind, raw.get("settings"))
+    return c
+
+
+def _form_component_settings(kind, raw):
+    """The settings a component of THIS kind may carry, and nothing else.
+
+    A whitelist per kind rather than a passed-through blob: the settings are
+    read by the renderer — on the respondent's page as much as in the editor —
+    and a key nothing validates is a key somebody can put anything in.
+
+    A question's are its constraints (the date range the builder already
+    stores). A heading's and a text's are emphasis, and a heading's size. That
+    is the whole of the design a single block carries; everything else about
+    how a form looks belongs to the form.
+    """
+    raw = raw if isinstance(raw, dict) else {}
+    out = {}
+    if kind == "question":
+        for k in ("min", "max"):
+            if raw.get(k) not in (None, ""):
+                out[k] = str(raw[k])[:40]
+        return out
+    style = str(raw.get("style") or "normal")
+    if style not in FORM_TEXT_STYLES:
+        raise HTTPException(400, f"סגנון טקסט לא תקין: {raw.get('style')}")
+    if style != "normal":
+        out["style"] = style
+    if kind == "heading":
+        # `or 2` would swallow a 0, which is a level nothing has a size for
+        lv = raw.get("level")
+        try:
+            level = 2 if lv in (None, "") else int(lv)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "רמת כותרת לא תקינה")
+        if level not in FORM_HEADING_LEVELS:
+            raise HTTPException(400, f"רמת כותרת לא תקינה: {raw.get('level')}")
+        out["level"] = level
+    return out
+
+
+def _form_seen_keys(db, form_id, *, exclude=None):
+    """Fields this form already asks about — the duplicate rule's memory."""
+    q = (db.query(FormComponent.field_key)
+           .filter(FormComponent.form_id == form_id,
+                   FormComponent.field_key.isnot(None)))
+    if exclude is not None:
+        q = q.filter(FormComponent.id != exclude)
+    return {k for (k,) in q.all()}
+
+
+def _form_repack(db, form_id):
+    """0..n-1, in the order the rows are already in.
+
+    Positions are the form's order and nothing reads the gaps, but a list that
+    goes 0, 1, 3, 7 after two removals is one that nobody can reason about
+    from the database — and an insert "at position 2" would mean two different
+    things depending on which gaps happened to be there.
+    """
+    rows = (db.query(FormComponent)
+              .filter(FormComponent.form_id == form_id)
+              .order_by(FormComponent.position, FormComponent.id).all())
+    for i, c in enumerate(rows):
+        if c.position != i:
+            c.position = i
+    return rows
+
+
+def _form_touched(db, f, v):
+    """Every write to a form moves the same two things."""
+    f.updated_at = datetime.now(timezone.utc)
+    v.config_version = (v.config_version or 1) + 1
+    v.updated_at = f.updated_at
+
+
+@app.post("/api/boards/{board_id}/forms")
+def create_form_view(board_id: int, data: dict = None,
+                     user_id: int = Depends(current_user_id)):
+    """A new form on this board — a view row and its settings, together.
+
+    Starts as a DRAFT called "טופס חדש" — a draft because a form nobody has
+    written yet is not one anybody should be able to reach, and named because
+    an unnamed tab cannot be told from the next unnamed tab. The name is
+    numbered if it is taken, the way a new table view is.
+    """
+    data = data or {}
+    with Session(engine) as db:
+        b, role = _board_role_or_403(db, board_id, user_id)
+        _form_need(role, FORM_MANAGE_ROLE)
+        if (data.get("name") or "").strip():
+            name = _check_view_name(db, board_id, data.get("name"))
+        else:
+            name = _free_name(db, board_id, NEW_FORM_NAME, "")
+        _check_view_room(db, board_id)
+        maxpos = (db.query(func.max(SavedView.position))
+                    .filter(SavedView.board_id == board_id).scalar())
+        v = SavedView(board_id=board_id, owner_id=user_id, name=name,
+                      kind="form", visibility="public",
+                      # A form holds no cut. Empty rather than absent, so
+                      # anything that reads `filters` on any view gets a dict.
+                      filters={}, schema_version=1,
+                      position=(maxpos + 1) if maxpos is not None else 0)
+        db.add(v)
+        db.flush()
+        # The first group, as the plan has it: a form with no target creates
+        # items with no group, which is legal and almost never meant. Still
+        # changeable, and still re-checked at publish.
+        first = (db.query(Group).filter(Group.board_id == board_id)
+                   .order_by(Group.position, Group.id).first())
+        f = FormView(view_id=v.id, board_id=board_id,
+                     status="DRAFT", access="AUTHENTICATED",
+                     # No address yet. A draft is not reachable, so there is
+                     # nothing for a token to be the key to — it is minted at
+                     # the first publish and never again.
+                     public_token=None,
+                     target_group_id=first.id if first else None,
+                     display_title=name)
+        db.add(f)
+        _commit_view(db, board_id,
+                     log=lambda: _log_view(db, v, "create", field="form",
+                                           new=v.name, actor=user_id))
+        db.refresh(f)
+        db.refresh(v)
+        return _form_json(db, f, v, user_id=user_id)
+
+
+@app.get("/api/boards/{board_id}/forms")
+def list_form_views(board_id: int, user_id: int = Depends(current_user_id)):
+    """Every live form on this board. Managers see them; nobody else needs to.
+
+    Two forms on one board is the ordinary case, not an edge one — the same
+    board takes a short public request and a long internal intake, and
+    "ההגדרות של טפסים שונים נשמרות בנפרד" is what lets the second exist
+    without disturbing the first.
+    """
+    with Session(engine) as db:
+        _b, role = _board_role_or_403(db, board_id, user_id)
+        _form_need(role, FORM_MANAGE_ROLE)
+        rows = (db.query(FormView, SavedView)
+                  .join(SavedView, SavedView.id == FormView.view_id)
+                  .filter(FormView.board_id == board_id,
+                          SavedView.deleted_at.is_(None))
+                  .order_by(SavedView.position, SavedView.id).all())
+        return {"forms": [_form_json(db, f, v, user_id=user_id, components=False)
+                          for f, v in rows]}
+
+
+@app.get("/api/forms/{form_id}")
+def get_form_view(form_id: int, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        f, v, _b, role = _form_or_404(db, form_id, user_id)
+        return _form_json(db, f, v, user_id=user_id)
+
+
+@app.patch("/api/forms/{form_id}")
+def update_form_view(form_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Save the form. Everything named in the body is written; the rest stands.
+
+    `components`, when present, REPLACES the list — see _form_components_in
+    for why it is not a merge.
+    """
+    with Session(engine) as db:
+        f, v, b, role = _form_or_404(db, form_id, user_id)
+        if v.locked and not _may_write_locked(role):
+            raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול לשנות אותו")
+
+        # ── שם תצוגה — the view's, under the view's rule ──
+        if data.get("name") is not None:
+            name = _check_view_name(db, f.board_id, data.get("name"), exclude_id=v.id)
+            if name != v.name:
+                _log_view(db, v, "rename", field="name", old=v.name, new=name, actor=user_id)
+                v.name = name
+
+        # ── מצב וגישה — the two closed sets the table also checks ──
+        # Taking the product's name off a form is not a design preference —
+        # it is an entitlement, and it is checked where it is spent. Turning
+        # it back ON is nobody's to be stopped from.
+        if "show_branding" in data and bool(data["show_branding"]) != bool(f.show_branding):
+            if not data["show_branding"] and not _cap(db, user_id, "hide_form_branding"):
+                raise HTTPException(403, "אין לך הרשאה להסיר את מיתוג Missions מטופס")
+            f.show_branding = bool(data["show_branding"])
+        if "access" in data:
+            want_access = _form_one_of(data["access"], FORM_ACCESS_MODES, "access")
+            if want_access != f.access:
+                _form_need(role, FORM_EXPOSE_ROLE)
+                f.access = want_access
+        if "status" in data:
+            want = _form_one_of(data["status"], FORM_STATUSES, "status")
+            if want != f.status:
+                # Publishing turns the token into a working address, and
+                # withdrawing one takes it away from whoever is mid-answer.
+                _form_need(role, FORM_EXPOSE_ROLE)
+                if want == "PUBLISHED":
+                    # A required question nobody can answer is a form nobody
+                    # can send. Refused at the publish, which is the last
+                    # moment it is still cheap: the alternative is a live
+                    # form that fails every submission with "שדה חובה" for a
+                    # question the respondent was never shown.
+                    dead = [c for c in db.query(FormComponent).filter(
+                                FormComponent.form_id == f.id,
+                                FormComponent.kind == "question").all()
+                            if c.required and c.visible is not False
+                            and _form_col_type(b, c.field_key) is None]
+                    if dead:
+                        raise HTTPException(400, {
+                            "message": "אי אפשר לפרסם: יש שאלות חובה ששדה הלוח שלהן נמחק",
+                            "errors": [{"question_id": c.id, "label": c.label or "",
+                                        "message": "השדה נמחק מהלוח"} for c in dead]})
+                    # The public address, minted here and only here. A form
+                    # that has been published before keeps the one it had:
+                    # disabling it and publishing it again is the same form
+                    # coming back, and a link somebody sent out last month
+                    # has to be the link that works.
+                    if not f.public_token:
+                        f.public_token = uuid.uuid4().hex
+                    # Where the record lands has to be answered before anybody
+                    # can send one. Defaulted rather than refused — the plan's
+                    # "ברירת מחדל לקבוצה הראשונה" — because a draft saved
+                    # before the board had groups is not an error the author
+                    # can act on.
+                    if f.target_group_id is None:
+                        first = (db.query(Group).filter(Group.board_id == f.board_id)
+                                   .order_by(Group.position, Group.id).first())
+                        if first is None:
+                            raise HTTPException(400, "אי אפשר לפרסם טופס ללוח בלי קבוצות")
+                        f.target_group_id = first.id
+                    f.published_at = datetime.now(timezone.utc)
+                    f.published_by = user_id
+                was, f.status = f.status, want
+                _log_view(db, v, "form_status", field="status",
+                          old=was, new=want, actor=user_id)
+        if "target_group_id" in data:
+            gid = data["target_group_id"]
+            if gid is None:
+                f.target_group_id = None
+            else:
+                g = db.query(Group).filter(Group.id == int(gid),
+                                           Group.board_id == f.board_id).first()
+                if not g:
+                    raise HTTPException(400, "הקבוצה אינה קבוצה של הלוח הזה")
+                f.target_group_id = g.id
+
+        # ── עיצוב ומסך הצלחה ──
+        # One table, so a field added to the model is a line here and nothing
+        # else. The kinds are the validation: a tuple is a closed set, and the
+        # strings name the handful of shapes a setting can have.
+        for key, kind in (("display_title", "text200"),
+                          ("display_description", "text"),
+                          ("font_family", "text60"),
+                          ("font_size", FORM_FONT_SIZES),
+                          ("text_align", FORM_TEXT_ALIGNS),
+                          ("theme_color", "color"),
+                          ("background_color", "color"),
+                          ("text_color", "color"),
+                          ("logo_token", "token"),
+                          ("cover_token", "token"),
+                          ("show_logo", "bool"),
+                          ("success_title", "text200"),
+                          ("success_message", "text"),
+                          ("success_allow_another", "bool"),
+                          ("success_redirect_url", "url"),
+                          ("submit_label", "text40"),
+                          ("record_submitter", "bool")):
+            if key not in data:
+                continue
+            val = data[key]
+            if isinstance(kind, tuple):
+                val = _form_one_of(val, kind, key)
+            elif kind == "color":
+                val = _form_color(val, key)
+            elif kind == "bool":
+                val = bool(val)
+            elif kind == "token":
+                val = (str(val).strip() or None) if val is not None else None
+            elif kind == "url":
+                val = _form_url(val)
+            else:
+                cap = int(kind[4:]) if len(kind) > 4 else 0
+                val = str(val or "")
+                if cap and len(val) > cap:
+                    raise HTTPException(400, f"{key} ארוך מדי (עד {cap} תווים)")
+            setattr(f, key, val)
+
+        # ── הרכיבים ──
+        if "components" in data:
+            rows = _form_components_in(db, f, b, data["components"])
+            # Validated above, every one of them, before the first delete.
+            (db.query(FormComponent)
+               .filter(FormComponent.form_id == f.id)
+               .delete(synchronize_session=False))
+            for c in rows:
+                db.add(c)
+
+        f.updated_at = datetime.now(timezone.utc)
+        # The shared configuration moved. A reader holding the old number can
+        # be told so rather than discovering it by saving over somebody.
+        v.config_version = (v.config_version or 1) + 1
+        v.updated_at = f.updated_at
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(400, "שמירת הטופס נדחתה — שם תפוס או שדה כפול")
+        db.refresh(f)
+        db.refresh(v)
+        return _form_json(db, f, v, user_id=user_id)
+
+
+@app.delete("/api/forms/{form_id}")
+def delete_form_view(form_id: int, user_id: int = Depends(current_user_id)):
+    """To the bin, and the board is not touched.
+
+    "מחיקת טופס אינה מוחקת שדות או רשומות בלוח" — and nothing here could: a
+    form names columns and never owns them, and the items it created belong to
+    the board the moment they exist. What goes is the tab, the same soft
+    delete a saved cut gets, so a form deleted by mistake can come back with
+    its questions rather than be rebuilt from memory.
+
+    Items already submitted keep pointing at it. Task.form_view_id is where
+    they came from, and that stays true after the form is gone.
+    """
+    with Session(engine) as db:
+        f, v, _b, role = _form_or_404(db, form_id, user_id)
+        if v.locked and not _may_write_locked(role):
+            raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול למחוק אותו")
+        v.deleted_at = datetime.now(timezone.utc)
+        v.deleted_by = user_id
+        _log_view(db, v, "delete", field="form", old=v.name, actor=user_id)
+        db.commit()
+        return {"status": "deleted", "id": f.id, "view_id": v.id}
+
+
+
+# ── רכיבים, אחד אחד ───────────────────────────────────────────────────
+# PATCH /api/forms/{id} with a `components` list replaces the lot, which is
+# what a builder that keeps the whole form in memory wants. These four are
+# for the builder that does not: add a question, change its wording, take one
+# out, drag the list into a different order. Each is one row, so two people
+# working on the same form do not overwrite each other's other edits.
+
+
+@app.post("/api/forms/{form_id}/components")
+def add_form_component(form_id: int, data: dict,
+                       user_id: int = Depends(current_user_id)):
+    """Append a component, or insert it at `position`."""
+    with Session(engine) as db:
+        f, v, b, role = _form_or_404(db, form_id, user_id)
+        if v.locked and not _may_write_locked(role):
+            raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול לשנות אותו")
+        rows = _form_repack(db, f.id)
+        if len(rows) >= 200:
+            raise HTTPException(400, "יותר מדי רכיבים בטופס (עד 200)")
+        c = _form_component_in(f, _form_field_keys(b), data,
+                               _form_seen_keys(db, f.id), position=len(rows))
+        at = data.get("position")
+        if at is not None:
+            try:
+                at = max(0, min(int(at), len(rows)))
+            except (TypeError, ValueError):
+                at = len(rows)
+            for other in rows[at:]:
+                other.position += 1
+            c.position = at
+        db.add(c)
+        _form_touched(db, f, v)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(400, "השדה כבר מופיע בטופס")
+        db.refresh(c)
+        return _form_component_json(c)
+
+
+# The ten kinds of question a form can ask, as board columns. Ordered the way
+# the specification lists them, which is also roughly the order somebody
+# reaches for them. Single Select is a `status` column — one value out of a
+# coloured vocabulary — and Multi Select is a `dropdown`, which takes several;
+# that difference is the board's, not the form's, so it is settled when the
+# FIELD is made and never afterwards.
+FORM_FIELD_TYPES = ("text", "long_text", "number", "status", "dropdown",
+                    "checkbox", "date", "phone", "email", "files")
+# The two that carry a vocabulary. Everything else ignores `options`.
+FORM_OPTION_TYPES = ("status", "dropdown")
+
+
+@app.post("/api/forms/{form_id}/fields")
+def add_form_field(form_id: int, data: dict, user_id: int = Depends(current_user_id)):
+    """Make a board column and the question that asks for it, in one write.
+
+    The second route into a question: the first picks a field the board
+    already has, this one makes the field as well. Two writes done in one
+    transaction and not two requests, because "יצירת שדה ושאלה תטופל באופן
+    עקבי גם במקרה של כשל" is a promise a client cannot keep — a browser that
+    creates the column and then fails to create the question leaves a column
+    nobody asked for, and one that tries the other order asks for a field
+    that does not exist yet and is refused.
+
+    Nothing is committed until both exist. A refusal — an unknown type, a
+    duplicate name, a vocabulary with no options in it — leaves the board
+    exactly as it was.
+
+    Board ADMIN, not editor: adding a column changes the board for everybody
+    who reads it, and that has been the admin's alone since columns existed
+    (see the columns branch of update_board). Adding a question about a column
+    that is already there stays an editor's job.
+    """
+    with Session(engine) as db:
+        f, v, b, role = _form_or_404(db, form_id, user_id)
+        if role != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול להוסיף שדה חדש ללוח")
+        if v.locked and not _may_write_locked(role):
+            raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול לשנות אותו")
+        ctype = _form_one_of(data.get("type"), FORM_FIELD_TYPES, "type")
+        title = str(data.get("title") or "").strip()[:60]
+        if not title:
+            raise HTTPException(400, "לשדה צריך שם")
+        cols = list((b.settings or {}).get("columns") or [])
+        # The board's own rule about two columns with one name. Checked here
+        # rather than left to the grid, because a form that asks two questions
+        # whose fields read the same is a form nobody can fill in correctly.
+        if any((c.get("title") or "").strip() == title for c in cols):
+            raise HTTPException(400, f"כבר יש בלוח עמודה בשם '{title}'")
+
+        opts = None
+        if ctype in FORM_OPTION_TYPES:
+            raw = data.get("options")
+            labels = [str(o).strip()[:40] for o in raw if str(o or "").strip()] \
+                if isinstance(raw, list) else []
+            # deduplicated, in the order they were typed
+            seen = set()
+            labels = [x for x in labels if not (x in seen or seen.add(x))]
+            if not labels:
+                raise HTTPException(400, "שדה בחירה צריך אפשרות אחת לפחות")
+            # a status column's vocabulary goes through the same normaliser a
+            # column edited by hand goes through, so each option gets the
+            # stable id its cells will point at
+            opts = (_status_col_options([{"label": x} for x in labels])
+                    if ctype == "status" else labels)
+
+        cid = "col_" + uuid.uuid4().hex[:8]
+        col = {"id": cid, "type": ctype, "title": title, "options": opts,
+               "formula": None, "connect": None, "mirror_of": None,
+               "copy_mode": None, "number": None, "perms": {}}
+        cols.append(col)
+        settings = dict(b.settings or {})
+        settings["columns"] = cols
+        b.settings = settings
+        db.flush()        # so _form_field_keys below sees the column that was just made
+
+        # …and now the question, through exactly the same validation an
+        # ordinary one goes through. If it refuses, the column goes with it:
+        # nothing here has been committed.
+        c = _form_component_in(
+            f, _form_field_keys(b),
+            {"kind": "question", "field_key": cid,
+             "label": data.get("label") or title,
+             "description": data.get("description") or "",
+             "placeholder": data.get("placeholder") or "",
+             "required": bool(data.get("required")),
+             "visible": data.get("visible") is not False},
+            _form_seen_keys(db, f.id),
+            position=len(_form_repack(db, f.id)))
+        db.add(c)
+        _form_touched(db, f, v)
+        _log_view(db, v, "form_field", field="column", new=title, actor=user_id)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(400, "יצירת השדה נדחתה")
+        db.refresh(c)
+        return {"column": col, "component": _form_component_json(c)}
+
+
+@app.patch("/api/forms/{form_id}/components/{component_id}")
+def update_form_component(form_id: int, component_id: int, data: dict,
+                          user_id: int = Depends(current_user_id)):
+    """Change one component. Fields the body does not name are left alone."""
+    with Session(engine) as db:
+        f, v, b, role = _form_or_404(db, form_id, user_id)
+        if v.locked and not _may_write_locked(role):
+            raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול לשנות אותו")
+        c = (db.query(FormComponent)
+               .filter(FormComponent.id == component_id,
+                       FormComponent.form_id == f.id).first())
+        if not c:
+            raise HTTPException(404, "component not found")
+        # Its own field is not a duplicate of itself — a PATCH that changes
+        # only the label must not trip the rule on the key it already holds.
+        _form_component_in(f, _form_field_keys(b), data,
+                           _form_seen_keys(db, f.id, exclude=c.id), onto=c)
+        c.updated_at = datetime.now(timezone.utc)
+        _form_touched(db, f, v)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(400, "השדה כבר מופיע בטופס")
+        db.refresh(c)
+        return _form_component_json(c)
+
+
+@app.delete("/api/forms/{form_id}/components/{component_id}")
+def delete_form_component(form_id: int, component_id: int,
+                          user_id: int = Depends(current_user_id)):
+    """Take a component out. The board keeps its column either way.
+
+    A hard delete, unlike the form itself: a question is a line in a list
+    somebody is editing, not a tab other people work off, and an undo for it
+    belongs in the builder rather than in a bin.
+    """
+    with Session(engine) as db:
+        f, v, _b, role = _form_or_404(db, form_id, user_id)
+        if v.locked and not _may_write_locked(role):
+            raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול לשנות אותו")
+        c = (db.query(FormComponent)
+               .filter(FormComponent.id == component_id,
+                       FormComponent.form_id == f.id).first())
+        if not c:
+            raise HTTPException(404, "component not found")
+        db.delete(c)
+        db.flush()
+        _form_repack(db, f.id)
+        _form_touched(db, f, v)
+        db.commit()
+        return {"status": "deleted", "id": component_id}
+
+
+@app.put("/api/forms/{form_id}/components/order")
+def set_form_component_order(form_id: int, data: dict,
+                             user_id: int = Depends(current_user_id)):
+    """The form's order, by id.
+
+    Ids that are not this form's are dropped and components the list forgets
+    keep their relative order after the ones it names — the same settling
+    rule the personal view order follows, and for the same reason: a list
+    dragged while somebody else added a question must settle, not fail.
+    """
+    with Session(engine) as db:
+        f, v, _b, role = _form_or_404(db, form_id, user_id)
+        if v.locked and not _may_write_locked(role):
+            raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול לשנות אותו")
+        want = data.get("order")
+        if not isinstance(want, list):
+            raise HTTPException(400, "order חייב להיות מערך של מזהי רכיבים")
+        rows = _form_repack(db, f.id)
+        by_id = {c.id: c for c in rows}
+        ordered, seen = [], set()
+        for i in want:
+            try:
+                i = int(i)
+            except (TypeError, ValueError):
+                continue
+            if i in by_id and i not in seen:
+                seen.add(i)
+                ordered.append(by_id[i])
+        ordered += [c for c in rows if c.id not in seen]
+        for i, c in enumerate(ordered):
+            c.position = i
+        _form_touched(db, f, v)
+        db.commit()
+        return {"order": [c.id for c in ordered]}
+
+
+# ── מה שהמשיב רואה ───────────────────────────────────────────────────
+# "הפרד בין הנתונים שמוחזרים למנהל לבין הנתונים שיוחזרו למשיב בטופס" — and
+# the separation is a different function rather than a flag on the same one,
+# because a flag is something a caller can forget to pass.
+#
+# What does NOT travel: the board id, the view id, the column ids, the column
+# titles, the board's members, the target group, who published it and when,
+# the configuration version, and every hidden component. A respondent is told
+# what to answer. Nothing in the answer tells them what they are answering
+# into, which is the whole of "מילוי טופס אינו מעניק גישה ללוח".
+#
+# The unauthenticated route that will serve this is task 4 of the plan. The
+# projection is here now because the rule about what crosses the line is
+# worth having before there is a line to cross — and it is reachable today as
+# the manager's own preview, which is the same bytes the respondent will get.
+
+_FORM_BUILTIN_TYPES = {"title": "text", "assignees": "people",
+                       "status": "status", "priority": "priority",
+                       "due_date": "date"}
+
+
+def _form_question_shape(b, key):
+    """(type, options) — what a browser needs to draw this question.
+
+    The type, because an input has to be an input OF something. The options,
+    where a choice cannot be made without them. A people question gets an
+    empty list on purpose: the board's members are exactly the thing a form
+    must not hand out, and who may be assigned is decided on submission by
+    _can_be_assigned, not by what the respondent was shown.
+    """
+    if key in _FORM_BUILTIN_TYPES:
+        t = _FORM_BUILTIN_TYPES[key]
+        if t == "status":
+            return t, [{"value": x["key"], "label": x.get("label") or x["key"]}
+                       for x in _board_statuses(b)]
+        if t == "priority":
+            return t, [{"value": x["key"], "label": x.get("label") or x["key"]}
+                       for x in _board_priorities(b)]
+        return t, []
+    col = next((c for c in ((b.settings or {}).get("columns") or [])
+                if str(c.get("id")) == str(key)), None)
+    if not col:
+        # The column was deleted out from under the question. Reported as its
+        # own state rather than guessed at — see the plan, 9.2.
+        return None, []
+    t = col.get("type") or "text"
+    if t == "status":
+        return t, [{"value": o["id"], "label": o["label"]}
+                   for o in (_status_col_options(col.get("options")) or [])]
+    if t == "dropdown":
+        return t, [{"value": o, "label": o} for o in (col.get("options") or [])]
+    return t, []
+
+
+def _form_public_json(db, f, b):
+    """The form as the person filling it in sees it, and nothing besides."""
+    rows = (db.query(FormComponent)
+              .filter(FormComponent.form_id == f.id)
+              .order_by(FormComponent.position, FormComponent.id).all())
+    out = []
+    for c in rows:
+        if c.kind != "question":
+            # `settings` travels with it: a heading's level and a block's
+            # emphasis are how the form READS, and the page that draws it for
+            # the respondent is the same renderer the editor uses. Leaving
+            # them behind would make the published form a near-miss of the
+            # one somebody designed.
+            out.append({"id": c.id, "kind": c.kind, "content": c.content or "",
+                        "settings": c.settings or {}})
+            continue
+        # A hidden question is not asked, so it is not sent. Hiding wins, and
+        # it wins here rather than in the browser: a field withheld by the
+        # page that drew it was never withheld at all.
+        if c.visible is False:
+            continue
+        t, options = _form_question_shape(b, c.field_key)
+        if t is None:
+            continue           # the field is gone; the question goes with it
+        q = {"id": c.id, "kind": "question", "type": t,
+             "label": c.label or "", "description": c.description or "",
+             "placeholder": c.placeholder or "", "required": bool(c.required),
+             "settings": c.settings or {}}
+        if options:
+            q["options"] = options
+        out.append(q)
+    return {
+        # The token, which the respondent already holds — it is how they got
+        # here — and no other identifier. Not the form id: it is a number
+        # beside other boards' numbers, and it is the key to the management
+        # endpoints above.
+        "token": f.public_token,
+        "status": f.status,
+        "access": f.access,
+        # Everything the page needs to look like the form that was designed,
+        # and nothing that says what is behind it. One renderer draws the
+        # editor's canvas, the preview and the published page, so this is the
+        # shape all three agree on.
+        "design": {
+            "display_title": f.display_title or "",
+            "display_description": f.display_description or "",
+            "font_size": f.font_size or "medium",
+            "text_align": f.text_align or "right",
+            "theme_color": f.theme_color or "",
+            "background_color": f.background_color or "",
+            "text_color": f.text_color or "",
+            "logo_token": f.logo_token if f.show_logo is not False else None,
+            "cover_token": f.cover_token,
+            "submit_label": f.submit_label or "",
+            "show_branding": f.show_branding is not False,
+        },
+        "success": {
+            "title": f.success_title or "", "message": f.success_message or "",
+            "allow_another": bool(f.success_allow_another),
+            "redirect_url": f.success_redirect_url,
+        },
+        "components": out,
+        # The file policy, so the page can say "too big" before a megabyte
+        # has crossed the wire — and say it in the same numbers the server
+        # will. It is told, not guessed: a second copy of these limits in a
+        # public page would be wrong the first time either moved. Every one
+        # of them is checked again on the way in; this is a courtesy.
+        "uploads": {"max_mb": FORM_UPLOAD_MAX_BYTES // (1024 * 1024),
+                    "per_question": FORM_UPLOAD_PER_QUESTION,
+                    "total_mb": FORM_UPLOAD_TOTAL_BYTES // (1024 * 1024),
+                    "types": sorted(FORM_UPLOAD_TYPES)},
+    }
+
+
+_FORM_LEGACY_LABELS = {"title": "שם הפריט", "assignees": "אחראים",
+                       "status": "סטטוס", "priority": "עדיפות",
+                       "due_date": "תאריך יעד"}
+
+
+def _migrate_board_forms():
+    """`board.settings["form"]` → a form view, once, on the way past.
+
+    The old shape was one form per board kept as a key in the board's own
+    settings: a list of {key, required, visible, min, max} and nothing else.
+    Everything a question SAID — its label, its help — was read off the live
+    column at display time, which is exactly the independence the
+    specification asks for and the old shape could not express.
+
+    So the label is copied FROM the column at the moment of the migration and
+    stored. That is the one irreversible step here, and it is the right one:
+    from this point on, renaming the column renames the column.
+
+    PUBLISHED, because the old form was reachable by anyone who could open
+    the board the moment the box was ticked — arriving as a draft would
+    silently take a working form off the air. AUTHENTICATED for the same
+    reason: it is the narrower of the two access modes, and the old form was
+    never reachable without an account.
+
+    Idempotent by construction: the key is removed as the rows are written,
+    so a board that has been through this has nothing left to find.
+    """
+    with Session(engine) as db:
+        try:
+            boards = [b for b in db.query(Board).all()
+                      if isinstance((b.settings or {}).get("form"), dict)]
+        except Exception:                                  # noqa: BLE001
+            return                                         # pre-migration database
+        made = 0
+        for b in boards:
+            legacy = (b.settings or {}).get("form") or {}
+            fields = legacy.get("fields")
+            allowed = _form_field_keys(b)
+            cols = {str(c.get("id")): c for c in ((b.settings or {}).get("columns") or [])}
+            maxpos = (db.query(func.max(SavedView.position))
+                        .filter(SavedView.board_id == b.id).scalar())
+            v = SavedView(board_id=b.id, owner_id=None,
+                          name=_free_name(db, b.id, NEW_FORM_NAME, ""),
+                          kind="form", visibility="public", filters={},
+                          position=(maxpos + 1) if maxpos is not None else 0)
+            db.add(v)
+            db.flush()
+            first = (db.query(Group).filter(Group.board_id == b.id)
+                       .order_by(Group.position, Group.id).first())
+            f = FormView(view_id=v.id, board_id=b.id,
+                         status="PUBLISHED", access="AUTHENTICATED",
+                         public_token=uuid.uuid4().hex,
+                         target_group_id=first.id if first else None,
+                         display_title=b.name or "",
+                         published_at=datetime.now(timezone.utc))
+            db.add(f)
+            db.flush()
+            seen, pos = set(), 0
+            for sf in (fields if isinstance(fields, list) else []):
+                key = str((sf or {}).get("key") or "").strip()
+                # A field the board no longer has is dropped rather than
+                # carried across as a question nothing can answer.
+                if key not in allowed or key in seen:
+                    continue
+                seen.add(key)
+                visible = (sf.get("visible") is not False)
+                col = cols.get(key)
+                settings = {k: sf[k] for k in ("min", "max")
+                            if sf.get(k) not in (None, "")}
+                db.add(FormComponent(
+                    form_id=f.id, board_id=b.id, kind="question", position=pos,
+                    field_key=key,
+                    label=(_FORM_LEGACY_LABELS.get(key)
+                           or (col or {}).get("title") or key)[:200],
+                    # Hidden and required together is a form nobody can send.
+                    # The old builder let it be saved and then quietly dropped
+                    # the requirement; here the visible half wins, out loud.
+                    required=bool(sf.get("required")) and visible,
+                    visible=visible, settings=settings))
+                pos += 1
+            st = dict(b.settings or {})
+            st.pop("form", None)
+            b.settings = st
+            made += 1
+        if made:
+            db.commit()
+            print(f"[forms] migrated {made} board form(s) out of board.settings",
+                  flush=True)
+
+
+_migrate_board_forms()
+
+
+# ── הגשה ─────────────────────────────────────────────────────────────
+# How many submissions one address will take from one caller, and over how
+# long. The first unauthenticated write this system has, so it is also the
+# first that can be repeated by somebody with nothing to lose: without a
+# ceiling, one PUBLIC_LINK form is a way to put ten thousand rows on a board.
+#
+# In memory and per process, which is the honest description of what it is: a
+# cost on the obvious abuse, not a distributed quota. The caller is hashed
+# rather than stored — an address is personal data and keeping one is the
+# organisation's decision (see _audit_ip_allowed), which this is not asking
+# for.
+# What a respondent may attach, and what of. An ALLOWLIST — "סוגים:
+# allowlist, לא blocklist" — because the caller has no account and the list
+# of things that are not dangerous is the shorter one to be right about.
+FORM_UPLOAD_MAX_BYTES = int(os.getenv("FORM_UPLOAD_MAX_MB", "10")) * 1024 * 1024
+FORM_UPLOAD_PER_QUESTION = int(os.getenv("FORM_UPLOAD_PER_QUESTION", "5"))
+FORM_UPLOAD_TOTAL_BYTES = int(os.getenv("FORM_UPLOAD_TOTAL_MB", "25")) * 1024 * 1024
+# How long a file uploaded for a form that was never sent is kept. Long
+# enough that somebody can fill a long form in two sittings; short enough
+# that an abandoned draft is not storage nobody will ever account for.
+FORM_UPLOAD_TTL_HOURS = int(os.getenv("FORM_UPLOAD_TTL_HOURS", "24"))
+FORM_UPLOAD_TYPES = {
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/heic",
+    "application/pdf", "text/plain", "text/csv",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+FORM_SUBMIT_MAX = int(os.getenv("FORM_SUBMIT_MAX", "20"))
+FORM_SUBMIT_WINDOW = int(os.getenv("FORM_SUBMIT_WINDOW_SEC", "600"))
+_form_hits = {}
+
+
+def _form_rate_ok(token, request):
+    if FORM_SUBMIT_MAX <= 0:
+        return True
+    import hashlib
+    key = hashlib.sha256(
+        f"{token}|{_client_ip(request)}".encode("utf-8")).hexdigest()[:32]
+    now = time.time()
+    hits = [t for t in _form_hits.get(key, []) if now - t < FORM_SUBMIT_WINDOW]
+    if len(hits) >= FORM_SUBMIT_MAX:
+        _form_hits[key] = hits
+        return False
+    hits.append(now)
+    _form_hits[key] = hits
+    # the table is bounded by callers, not by traffic: a key with nothing
+    # left in its window is a key nobody is holding
+    if len(_form_hits) > 5000:
+        for k, v in list(_form_hits.items()):
+            if not any(now - t < FORM_SUBMIT_WINDOW for t in v):
+                _form_hits.pop(k, None)
+    return True
+
+
+# ── ולידציה של ערך, לפי הסוג שהעמודה מצהירה עליו ──────────────────
+# The client is told the type so it can draw the right input. It is not
+# believed about anything: the type checked here is the COLUMN's, read from
+# the board, and the options are the column's own. A request that names a
+# board, a field or a user is naming things it does not get to choose.
+_FORM_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
+# Digits, and the handful of characters people put between them. Not a
+# country-by-country rule: this is a municipality's contact field, and
+# refusing a number because of where the spaces are is worse than storing it.
+_FORM_PHONE_RE = re.compile(r"^[0-9+()\-. ]{6,24}$")
+FORM_TEXT_MAX = int(os.getenv("FORM_TEXT_MAX", "5000"))
+FORM_LONG_TEXT_MAX = int(os.getenv("FORM_LONG_TEXT_MAX", "20000"))
+
+
+def _form_empty(val):
+    """Is there no answer here?
+
+    `False` is an answer and `0` is an answer. `if not val` would call both of
+    them missing, which is how a "no" on a checkbox and a zero in a number
+    field quietly become blanks — so emptiness is spelled out instead of
+    inferred from truthiness.
+    """
+    if val is None:
+        return True
+    if isinstance(val, str):
+        return val.strip() == ""
+    if isinstance(val, (list, tuple, dict)):
+        return len(val) == 0
+    return False            # False and 0 are values
+
+
+def _form_bad(label, why):
+    raise HTTPException(400, f"'{label}': {why}")
+
+
+def _form_value(db, b, c, ctype, val, label):
+    """One answer, checked against the field it is going to be written to.
+
+    Returns the value to store. Raises 400 naming the question — never the
+    column, the board or anything else behind it.
+    """
+    # ── text-shaped ──
+    if ctype in ("text", "long_text", "title"):
+        if not isinstance(val, (str, int, float)):
+            _form_bad(label, "ערך טקסט לא תקין")
+        v = str(val).strip()
+        cap = FORM_LONG_TEXT_MAX if ctype == "long_text" else FORM_TEXT_MAX
+        if len(v) > cap:
+            _form_bad(label, f"הטקסט ארוך מדי (עד {cap} תווים)")
+        return v
+    if ctype == "email":
+        v = str(val).strip()
+        if not _FORM_EMAIL_RE.match(v) or len(v) > 254:
+            _form_bad(label, "כתובת דוא\"ל לא תקינה")
+        return v
+    if ctype == "phone":
+        v = str(val).strip()
+        if not _FORM_PHONE_RE.match(v) or sum(ch.isdigit() for ch in v) < 6:
+            _form_bad(label, "מספר טלפון לא תקין")
+        return v
+
+    # ── number ──
+    if ctype in ("number", "rating"):
+        if isinstance(val, bool):
+            _form_bad(label, "נדרש מספר")
+        try:
+            n = float(val)
+        except (TypeError, ValueError):
+            _form_bad(label, "נדרש מספר")
+        if n != n or n in (float("inf"), float("-inf")):
+            _form_bad(label, "נדרש מספר")
+        if ctype == "rating" and not (0 <= n <= 5):
+            _form_bad(label, "דירוג בין 0 ל‎-5")
+        return int(n) if float(n).is_integer() else n
+
+    # ── boolean ──
+    if ctype == "checkbox":
+        if isinstance(val, bool):
+            return val
+        if str(val).lower() in ("true", "1", "yes", "on"):
+            return True
+        if str(val).lower() in ("false", "0", "no", "off", ""):
+            return False
+        _form_bad(label, "ערך כן/לא לא תקין")
+
+    # ── date ──
+    if ctype == "date":
+        v = str(val).strip()
+        try:
+            day = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            _form_bad(label, "תאריך לא תקין")
+        # the range the question itself carries, if it carries one
+        st = c.settings or {}
+        iso = day.date().isoformat()
+        if st.get("min") and iso < str(st["min"]):
+            _form_bad(label, f"התאריך מוקדם מ‎-{st['min']}")
+        if st.get("max") and iso > str(st["max"]):
+            _form_bad(label, f"התאריך מאוחר מ‎-{st['max']}")
+        return iso
+
+    # ── one of a list ──
+    if ctype == "status":
+        col = _form_col(b, c.field_key)
+        if col is None:                        # the board's own status field
+            keys = {x["key"] for x in _board_statuses(b)}
+            if str(val) not in keys:
+                _form_bad(label, "הערך אינו אחת האפשרויות")
+            return str(val)
+        opts = _status_col_options(col.get("options")) or []
+        hit = next((o for o in opts if str(o["id"]) == str(val)
+                    or o["label"] == str(val)), None)
+        if not hit:
+            _form_bad(label, "הערך אינו אחת האפשרויות")
+        # a status cell points at the option, so renaming it later carries
+        # this answer with it — see the import, which learned the same thing
+        return {"id": hit["id"], "label": hit["label"], "color": hit.get("color")}
+    if ctype == "priority":
+        keys = {x["key"] for x in _board_priorities(b)}
+        if str(val) not in keys:
+            _form_bad(label, "הערך אינו אחת האפשרויות")
+        return str(val)
+
+    # ── several of a list ──
+    if ctype == "dropdown":
+        col = _form_col(b, c.field_key)
+        allowed = [str(o) for o in ((col or {}).get("options") or [])]
+        vals = val if isinstance(val, list) else [val]
+        out = []
+        for v in vals:
+            v = str(v)
+            if v not in allowed:
+                _form_bad(label, "אחת האפשרויות שנבחרו אינה קיימת")
+            if v not in out:
+                out.append(v)
+        return out
+
+    # ── people ──
+    # Only members of the board may be named on it — the same gate every
+    # other door uses, and the reason a form never hands out the member list.
+    if ctype in ("people", "assignees"):
+        vals = val if isinstance(val, list) else [val]
+        ids = []
+        for v in vals:
+            try:
+                uid = int(v)
+            except (TypeError, ValueError):
+                _form_bad(label, "ערך אנשים לא תקין")
+            if not _can_be_assigned(db, b.id, uid):
+                _form_bad(label, "אחד האנשים שנבחרו אינו חבר בלוח")
+            if uid not in ids:
+                ids.append(uid)
+        return ids
+
+    # A column type a form has no way to collect. Reached only by a request
+    # that made one up, since the projection never offered it.
+    _form_bad(label, "סוג שדה שאינו נתמך בטופס")
+
+
+def _form_col(b, key):
+    return next((c for c in ((b.settings or {}).get("columns") or [])
+                 if str(c.get("id")) == str(key)), None)
+
+
+_FORM_BUILTIN_COL_TYPE = {"title": "title", "assignees": "assignees",
+                          "status": "status", "priority": "priority",
+                          "due_date": "date"}
+
+
+def _form_thanks(f, replay=False):
+    """What a respondent gets back: the screen the form was given, and
+    nothing else. Not the item id — somebody who filled a form in has no
+    business holding a reference to a row on a board they cannot see.
+
+    A replay gets the same answer as the send it repeats. It IS that send:
+    saying "already submitted" would be telling somebody their work did not
+    land when it did.
+    """
+    return {"ok": True, "duplicate": bool(replay),
+            "title": f.success_title or "",
+            "message": f.success_message or "",
+            "allow_another": bool(f.success_allow_another),
+            "redirect_url": f.success_redirect_url}
+
+
+def _form_col_type(b, key):
+    """The type the FIELD declares — the board's word, never the client's."""
+    if key in _FORM_BUILTIN_COL_TYPE:
+        return _FORM_BUILTIN_COL_TYPE[key]
+    return (_form_col(b, key) or {}).get("type")
+
+
+def _form_column_uses(db, board_id, col_ids):
+    """Which forms ask about these columns, and how badly they need them.
+
+    A column is the board's, but a form's question is bound to one — so
+    deleting a column is a change to every form that asks about it, and
+    whoever is about to do it is entitled to know that before rather than
+    after. Live forms only: a form in the bin asks nobody anything.
+    """
+    if not col_ids:
+        return {}
+    rows = (db.query(FormComponent, FormView, SavedView)
+              .join(FormView, FormView.id == FormComponent.form_id)
+              .join(SavedView, SavedView.id == FormView.view_id)
+              .filter(FormComponent.board_id == board_id,
+                      FormComponent.field_key.in_([str(c) for c in col_ids]),
+                      SavedView.deleted_at.is_(None)).all())
+    out = {}
+    for c, f, v in rows:
+        out.setdefault(str(c.field_key), []).append({
+            "form_id": f.id, "name": v.name, "status": f.status,
+            "label": c.label or "", "required": bool(c.required),
+            "visible": c.visible is not False})
+    return out
+
+
+def _form_column_gone(db, board_id, col_ids, actor_id):
+    """A column a form asked about is gone — leave the question, disable it.
+
+    The decision taken when this was planned, and it is the one the saved
+    views already take with a filter rule whose column was deleted: removing
+    beats answering falsely. Deleting the question would throw away its
+    wording, its help text and its place in the order, and leave the builder
+    with no way to see what was lost. So the binding stays, and is DEAD:
+
+      the respondent is never sent it      (_form_public_json)
+      an answer to it is never read        (_form_validate)
+      the builder sees it, flagged         (_form_json)
+      a required one blocks publishing     (update_form_view)
+
+    "ודא שלא נשאר מיפוי פעיל לשדה שאינו קיים" is those four together: the
+    mapping is still written down, and there is no door at which it is live.
+    """
+    uses = _form_column_uses(db, board_id, col_ids)
+    for key, forms in uses.items():
+        for u in forms:
+            fv = db.query(FormView).filter(FormView.id == u["form_id"]).first()
+            v = db.query(SavedView).filter(SavedView.id == fv.view_id).first() if fv else None
+            if v is not None:
+                _log_view(db, v, "form_field_gone", field="column",
+                          old=key, new=u["label"], actor=actor_id)
+    return uses
+
+
+# What a question's `settings` may still mean once its column is a different
+# type. A date range on a text field is a rule nothing will ever apply, and
+# leaving it is how a form grows settings that silently do nothing.
+_FORM_SETTING_FOR_TYPE = {"date": ("min", "max")}
+
+
+def _form_settings_resweep(db, board_id, changed):
+    """Drop question settings a changed column can no longer carry."""
+    if not changed:
+        return 0
+    rows = (db.query(FormComponent)
+              .filter(FormComponent.board_id == board_id,
+                      FormComponent.field_key.in_([str(c) for c in changed])).all())
+    touched = 0
+    for c in rows:
+        keep = _FORM_SETTING_FOR_TYPE.get(changed[str(c.field_key)], ())
+        now = {k: v for k, v in (c.settings or {}).items() if k in keep}
+        if now != (c.settings or {}):
+            c.settings = now
+            touched += 1
+    return touched
+
+
+def _form_claim_files(db, f, val, label):
+    """The upload tokens a respondent sent → the rows they are allowed to mean.
+
+    Three things have to be true of every token, and the first is the one
+    that matters: it was uploaded FOR THIS FORM. An attachment off a board
+    carries no form id; an upload for a different form carries a different
+    one; and a token already used by an earlier submission carries a claim.
+    None of the three is a file this submission may point at, and changing an
+    id in the request is exactly the attempt this refuses.
+
+    Refused and not quietly dropped. A silent drop means somebody sends a
+    form with a file on it and gets a record without one — and the only
+    reading of a token that is not theirs is that something is wrong.
+
+    Returns (cell, rows) — the value the board understands, and the rows to
+    stamp once the record exists.
+    """
+    toks = [str(t) for t in (val if isinstance(val, list) else [val]) if t]
+    if len(toks) > FORM_UPLOAD_PER_QUESTION:
+        raise HTTPException(400, f"אפשר לצרף עד {FORM_UPLOAD_PER_QUESTION} קבצים "
+                                 f"לשאלה '{label}'")
+    cell, rows = [], []
+    for t in toks:
+        row = (db.query(UploadedFile)
+                 .filter(UploadedFile.token == t,
+                         UploadedFile.form_view_id == f.id,
+                         UploadedFile.claimed_at.is_(None)).first())
+        if not row:
+            raise HTTPException(400, f"אחד הקבצים בשאלה '{label}' אינו זמין יותר — "
+                                     f"העלו אותו שוב")
+        rows.append(row)
+        cell.append({"name": row.name, "url": f"/api/files/{row.token}",
+                     "type": row.content_type})
+    return cell, rows
+
+
+def _form_idem_key(f, submission_id):
+    """The key a replay of ONE send collides with, or None.
+
+    `AutomationActionKey` is the system's existing once-only guard — a unique
+    column, which is what makes it a rule rather than a read-then-write race —
+    and a form submission is the same question it was built for: "did this
+    exact attempt already happen?" Scoped to the form, so an id a client
+    reuses across two forms is two different attempts.
+
+    Optional on purpose. A caller that sends no id gets no protection, which
+    is the honest description of what it asked for; the page always sends
+    one.
+    """
+    sid = str(submission_id or "").strip()
+    if not sid or len(sid) > 64:
+        return None
+    return f"form:{f.id}:{sid}"[:120]
+
+
+def _form_errors_400(errors):
+    """Every question that is wrong, keyed by the question — one answer.
+
+    One at a time would mean a person fixing a form field by field, each time
+    paying a round trip to be told about the next one. And keyed by id rather
+    than spelled into a sentence, so the page can put each message beside the
+    question it belongs to instead of printing a paragraph at the top.
+
+    The message names the question's LABEL and nothing else. Never the
+    column, never the board, never what the value was compared against —
+    every one of those is something the asker is not entitled to learn by
+    guessing at it.
+    """
+    raise HTTPException(400, {
+        "message": "יש תשובות שצריך לתקן",
+        "errors": errors,
+    })
+
+
+def _form_validate(db, f, b, answers, *, claim):
+    """Check a whole submission and return what it would write.
+
+    The one place that decides whether a submission is valid, used by the
+    real thing and by the manager's dry run — so "test the validation without
+    creating a record" is the SAME validation and not a second one that
+    agrees with it today.
+
+    `claim` is the only difference between the two callers: a dry run checks
+    that the files are this form's and unclaimed, and does not take them.
+
+    Returns (payload, cf, claimed). Raises 400 with every problem at once.
+    """
+    rows = (db.query(FormComponent)
+              .filter(FormComponent.form_id == f.id, FormComponent.kind == "question")
+              .order_by(FormComponent.position, FormComponent.id).all())
+    allowed = _form_field_keys(b)
+
+    # Every id in the request has to be a question OF THIS FORM. Not dropped
+    # quietly: an id that is not here means the sender is holding a form that
+    # has since changed, and telling them to reload is the only answer that
+    # does not lose what they typed to a silence. The message says nothing
+    # about what the id might have been.
+    known = {str(c.id) for c in rows}
+    if [k for k in answers if str(k) not in known]:
+        raise HTTPException(400, "הטופס השתנה מאז שנפתח — רעננו את הדף ונסו שוב")
+
+    errors, payload, cf, claimed = [], {}, {}, []
+
+    def bad(c, msg):
+        errors.append({"question_id": c.id, "label": c.label or "", "message": msg})
+
+    for c in rows:
+        # A hidden question is not asked, so an answer to it is not read —
+        # whatever arrived under its id. The same rule the projection applies
+        # on the way out, applied again on the way in, because the page that
+        # drew the form is not the thing that enforces it.
+        if c.visible is False:
+            continue
+        # A question whose column has since been deleted asks about nothing.
+        if c.field_key not in allowed:
+            continue
+        label = c.label or c.field_key
+        val = answers.get(str(c.id), answers.get(c.id))
+        ctype = _form_col_type(b, c.field_key)
+        if _form_empty(val):
+            # A required checkbox means a box that has to be ticked — an
+            # unticked one arrives as `false`, which is an answer and not a
+            # blank, so it is refused by its own rule rather than by being
+            # mistaken for nothing.
+            if c.required:
+                bad(c, "שדה חובה")
+            continue
+        try:
+            if ctype == "files":
+                cell, frows = _form_claim_files(db, f, val, label)
+                if c.required and not cell:
+                    bad(c, "שדה חובה")
+                    continue
+                cf[c.field_key] = cell
+                claimed.extend(frows)
+                continue
+            value = _form_value(db, b, c, ctype, val, label)
+        except HTTPException as exc:
+            # Collected rather than thrown: the person filling the form is
+            # owed every problem at once. Only a 400 — a 410 or a 429 from
+            # underneath is about the form and not about this answer.
+            if exc.status_code != 400:
+                raise
+            msg = exc.detail if isinstance(exc.detail, str) else "ערך לא תקין"
+            # _form_value prefixes the label; the page puts it beside the
+            # question, so the prefix would read it twice
+            bad(c, msg.split("': ", 1)[-1] if msg.startswith("'") else msg)
+            continue
+        if c.required and ctype == "checkbox" and value is False:
+            bad(c, "שדה חובה")
+            continue
+        if c.field_key == "title":
+            payload["title"] = value[:500]
+        elif c.field_key == "assignees":
+            payload["assignee_ids"] = value
+        elif c.field_key in ("status", "priority", "due_date"):
+            payload[c.field_key] = value
+        else:
+            cf[c.field_key] = value
+    if errors:
+        _form_errors_400(errors)
+    # The budget for the whole submission, not per file. Five files of ten
+    # megabytes each is fifty megabytes on one record, which is nobody's
+    # intention and everybody's disk.
+    total = sum(r.size or 0 for r in claimed)
+    if total > FORM_UPLOAD_TOTAL_BYTES:
+        raise HTTPException(413, f"סך הקבצים בהגשה גדול מדי "
+                                 f"(עד {FORM_UPLOAD_TOTAL_BYTES // (1024*1024)}MB)")
+    return payload, cf, (claimed if claim else [])
+
+
+def _form_submit(db, f, b, answers, user, request, submission_id=None):
+    """One valid submission, one record. Never half of one.
+
+    Everything is checked before anything is written — "הגשה תקינה יוצרת
+    רשומה אחת, ללא רשומה חלקית" — and every failure comes back as one 400
+    naming every question that is wrong, rather than one at a time.
+
+    Answers are keyed by COMPONENT id. The respondent was never told a column
+    id and does not need one; this is the only place that maps between them.
+    """
+    # A send that already happened. Checked before the work and claimed
+    # inside the transaction below, so two requests racing each other end
+    # with one record and one of them told it was the second.
+    idem = _form_idem_key(f, submission_id)
+    if idem and db.query(AutomationActionKey.id).filter(
+            AutomationActionKey.key == idem).first():
+        return _form_thanks(f, replay=True)
+    if not _form_rate_ok(f.public_token, request):
+        raise HTTPException(429, "נשלחו יותר מדי פניות מהכתובת הזאת. נסו שוב בעוד כמה דקות.")
+
+    payload, cf, claimed = _form_validate(db, f, b, answers, claim=True)
+
+    # A record has to be called something. A form that does not ask for the
+    # item's name gets the form's own name — said here rather than left to
+    # create_task's "Untitled", which is not a sentence anybody wants to read
+    # on a board.
+    title = payload.get("title") or (f.display_title or "").strip() \
+        or (db.query(SavedView.name).filter(SavedView.id == f.view_id).scalar() or "פנייה")
+
+    prio, prio_cf = _resolve_priority(b, payload.get("priority"))
+    # "כאשר נדרש": an anonymous form records nobody, and a form that has been
+    # told not to record the submitter records nobody either.
+    actor = user.id if (user is not None and f.record_submitter is not False) else None
+
+    task = Task(board_id=b.id, group_id=f.target_group_id, title=title,
+                priority=prio or "medium", created_by=actor, form_view_id=f.id)
+    if payload.get("due_date"):
+        try:
+            task.due_date = datetime.fromisoformat(
+                str(payload["due_date"]).replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    if payload.get("status"):
+        try:
+            task.status = TaskStatus(payload["status"])
+        except ValueError:
+            pass
+
+    # already checked against _can_be_assigned, one by one, with a refusal
+    # rather than a silent drop — see _form_value
+    ids = list(payload.get("assignee_ids") or [])
+    if ids:
+        task.assignees = db.query(User).filter(User.id.in_(ids)).all()
+    _filter_people_values(db, b.id, cf, None)       # invited members only
+    for col in ((b.settings or {}).get("columns") or []):
+        if col.get("type") in ("mirror", "connect"):
+            cf.pop(col["id"], None)     # not a cell a form writes
+    if not payload.get("status"):
+        cf.setdefault("status_unset", True)
+    if not payload.get("priority"):
+        cf.setdefault("priority_unset", True)
+    elif prio_cf:
+        for k, v in prio_cf.items():
+            if v is not None:
+                cf.setdefault(k, v)
+    if cf:
+        task.custom_fields = cf
+
+    maxpos = (db.query(func.max(Task.position))
+                .filter(Task.board_id == b.id, Task.parent_id == None,
+                        Task.group_id == f.target_group_id).scalar())
+    task.position = (maxpos + 1) if maxpos is not None else 0
+    db.add(task)
+    db.flush()
+    _ensure_item_uid(db, task)
+    # Who did this, when there is no account to name. The mechanism exists —
+    # AuditLog.origin was built for an imported monday author — and its
+    # presence is also what stops the row from offering an undo.
+    db.add(AuditLog(entity_type="task", entity_id=task.id, action="create",
+                    field_name="item", new_value=task.title, changed_by=actor,
+                    origin={"source": "form", "form_view_id": f.id,
+                            "authenticated": user is not None}))
+    # Claimed now, in the transaction that creates the record — so a
+    # submission that fails anywhere above leaves the files unclaimed and
+    # re-sendable, and one that succeeds leaves them unusable by anybody else.
+    now = datetime.now(timezone.utc)
+    for row in claimed:
+        row.claimed_at = now
+    if idem:
+        # In the same transaction as the record. The unique index is the
+        # guard: two requests that got past the read above both try to write
+        # it, one of them loses, and the loser's whole submission — record,
+        # cells, file claims — goes with it.
+        db.add(AutomationActionKey(key=idem, board_id=b.id,
+                                   created_at=now.replace(tzinfo=None)))
+    made = _event("item_created", "form")
+    _run_automations(db, task, made, actor)
+    tid = task.id
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _form_thanks(f, replay=True)
+    bus.publish("task.created", board_id=b.id, task_id=tid, actor_id=actor)
+    return _form_thanks(f)
+
+
+# Where a published form lives. One constant, so the address the manager
+# copies and the route that answers it cannot drift apart.
+FORM_PUBLIC_PATH = "/forms/"
+
+
+def _login_url(next_path):
+    """Where to send somebody who has to sign in first, and come back here.
+
+    Which door that is depends on how this deployment authenticates, and the
+    server is the only one that knows: the form page is served to strangers
+    and is told the address rather than working it out, so there is no second
+    copy of the auth configuration living in a public page.
+
+    The path is checked the same way entra._safe_next checks one — a `next`
+    that is not a single-slash path on this site is an open redirect wearing
+    our domain.
+    """
+    nxt = next_path if (next_path or "").startswith("/") \
+        and not (next_path or "").startswith("//") else "/"
+    mode = auth_mode()
+    if mode == "entra":
+        return "/auth/login?" + urllib.parse.urlencode({"next": nxt})
+    if mode == "easyauth":
+        # Azure's own sign-in, which the ingress terminates before anything
+        # here runs. Its parameter name is not ours to choose.
+        return "/.auth/login/aad?" + urllib.parse.urlencode({"post_login_redirect_uri": nxt})
+    # dev: identity comes from a header the SPA's picker sets, and the picker
+    # lives in the app — so the app is the door, and it is handed the same
+    # `next` the other two get. Auth.login reads it and goes there once
+    # somebody has been picked.
+    return "/?" + urllib.parse.urlencode({"next": nxt})
+
+
+def _public_form_or_refuse(db, token, request):
+    """The form behind this token — or the refusal, in the right words.
+
+    THE gate. Every public door goes through it, which is what makes the rule
+    hold at submission time and not only when the page was opened: a
+    respondent who had the form on screen when it was disabled gets here
+    again when they press send, and is refused here again.
+
+    The refusals are deliberately different from one another:
+
+      404  no such token, or a form that has never been published. A draft
+           has no public existence to report on, and saying "not yet" about
+           one would confirm that a token somebody guessed is a real form.
+      410  published once and not any more. Gone, and it was here — which is
+           the honest thing to tell somebody holding a link that used to
+           work, and the only case where saying so costs nothing.
+      401  an AUTHENTICATED form reached without an identity.
+
+    Returns (form, board, user) where user is None for a PUBLIC_LINK form
+    nobody signed in for.
+    """
+    f = (db.query(FormView).filter(FormView.public_token == token).first()
+         if token else None)
+    if not f or not f.public_token:
+        raise HTTPException(404, "הטופס לא נמצא")
+    v = db.query(SavedView).filter(SavedView.id == f.view_id).first()
+    b = db.query(Board).filter(Board.id == f.board_id).first()
+    # A form whose view is in the bin, or whose board is, is as gone as a
+    # closed one — and for the person holding the link it is the same event.
+    if not v or v.deleted_at is not None or not b or b.deleted_at is not None:
+        raise HTTPException(410, "הטופס נסגר ואינו מקבל פניות")
+    if f.status == "DISABLED":
+        raise HTTPException(410, "הטופס נסגר ואינו מקבל פניות")
+    if f.status != "PUBLISHED":
+        # back to a draft after having been published: it has an address and
+        # nothing at that address
+        raise HTTPException(404, "הטופס לא נמצא")
+
+    user = None
+    if f.access == "AUTHENTICATED":
+        # By hand, because the middleware was told to let this path through.
+        # resolve_user raises 401 with no identity and 403 for an account
+        # this system does not know or has deactivated — both are the right
+        # answer here, so neither is softened. What is ADDED to the 401 is
+        # where to go: the page is a stranger's and has no way to know how
+        # this deployment signs people in.
+        try:
+            user = resolve_user(db, request)
+        except HTTPException as exc:
+            if exc.status_code == 401:
+                raise HTTPException(401, {
+                    "message": "הטופס פתוח למשתמשים מחוברים בלבד",
+                    "login_url": _login_url(FORM_PUBLIC_PATH + (token or ""))})
+            raise
+    elif f.access == "PUBLIC_LINK":
+        # An identity is not required and is not refused either: somebody
+        # signed in who opens a public link is still just somebody filling in
+        # a form, and recording who they were is better than not.
+        try:
+            user = resolve_user(db, request)
+        except HTTPException:
+            user = None
+    return f, b, user
+
+
+@app.get("/api/public/forms/{token}/logo")
+def public_form_logo(token: str, request: Request = None):
+    """The form's own logo, for a page whose reader has no account.
+
+    /api/files/{token} needs an identity, rightly — it serves every
+    attachment on every board. This serves exactly one file, named by the
+    form rather than by the caller, and only while the form is answering at
+    all. There is nothing here to enumerate: the only thing a holder of the
+    link can fetch is the picture already on the page they are looking at.
+    """
+    with Session(engine) as db:
+        f, _b, _user = _public_form_or_refuse(db, token, request)
+        if not f.logo_token or f.show_logo is False:
+            raise HTTPException(404, "אין לוגו")
+        row = (db.query(UploadedFile)
+                 .filter(UploadedFile.token == f.logo_token).first())
+        if not row:
+            raise HTTPException(404, "אין לוגו")
+        media_type, may_inline = _safe_media_type(row.content_type)
+        if not may_inline or not media_type.startswith("image/"):
+            # a logo is a picture. Anything else was not one when it was
+            # uploaded and is certainly not one to serve inline here.
+            raise HTTPException(404, "אין לוגו")
+        return Response(content=row.data, media_type=media_type,
+                        headers={"Content-Disposition": "inline",
+                                 "X-Content-Type-Options": "nosniff",
+                                 "Content-Security-Policy": "default-src 'none'; sandbox",
+                                 "Cache-Control": "public, max-age=300"})
+
+
+@app.post("/api/public/forms/{token}/upload")
+def public_form_upload(token: str, file: UploadFile = File(...), request: Request = None):
+    """A file a respondent attached, held until they send the form.
+
+    Deliberately narrow. The caller has no account, so the two things that
+    normally bound an upload — who they are, and the board they are on — are
+    both absent, and what is left has to do the work: the form must be open,
+    the rate limit applies, the size is the system's own, and the type is an
+    allowlist rather than a blocklist.
+
+    What comes back is a token and the file's name. Not a URL: a respondent
+    has no way to read the file back and no reason to.
+    """
+    with Session(engine) as db:
+        f, _b, _user = _public_form_or_refuse(db, token, request)
+        if not _form_rate_ok("up:" + (f.public_token or ""), request):
+            raise HTTPException(429, "נשלחו יותר מדי קבצים מהכתובת הזאת. נסו שוב בעוד כמה דקות.")
+        # A process that has been up for a month sweeps here rather than only
+        # at boot. Bounded work: it touches the rows that are already past
+        # the window and nothing else.
+        try:
+            _purge_unclaimed_form_uploads(db)
+        except Exception:                              # noqa: BLE001
+            pass
+        content = file.file.read()
+        if not content:
+            raise HTTPException(400, "הקובץ ריק")
+        if len(content) > FORM_UPLOAD_MAX_BYTES:
+            raise HTTPException(413, f"הקובץ גדול מדי (עד {FORM_UPLOAD_MAX_BYTES // (1024*1024)}MB)")
+        ctype = (file.content_type or "").split(";")[0].strip().lower()
+        if ctype not in FORM_UPLOAD_TYPES:
+            raise HTTPException(400, "סוג הקובץ אינו נתמך")
+        tok = uuid.uuid4().hex
+        # Stamped with the form it was uploaded FOR. This is the whole of
+        # "אימות בצד השרת שהקובץ שהוגש שייך להקשר ההעלאה המותר": a submission
+        # can only claim files carrying its own form's id, so a token lifted
+        # off a board — or out of another form — names nothing it can use.
+        db.add(UploadedFile(token=tok, name=(file.filename or "file")[:255],
+                            content_type=ctype, data=content, size=len(content),
+                            form_view_id=f.id))
+        db.commit()
+        return {"token": tok, "name": file.filename or "file",
+                "size": len(content), "type": ctype}
+
+
+@app.get("/api/public/forms/{token}")
+def public_form(token: str, request: Request = None):
+    """The form, as the person filling it in is allowed to see it.
+
+    Never the board id, the view id, the column ids, the group it lands in or
+    who published it — see _form_public_json, which is the one place that
+    decides what crosses this line.
+    """
+    with Session(engine) as db:
+        f, b, _user = _public_form_or_refuse(db, token, request)
+        return _form_public_json(db, f, b)
+
+
+@app.post("/api/public/forms/{token}/submit")
+def public_form_submit(token: str, data: dict = None, request: Request = None):
+    """A submission. The gate first, every time.
+
+    The gate is re-run here rather than trusted from the GET, which is the
+    whole of "בדיקת סטטוס וגישה מתבצעת גם בזמן ההגשה, ולא רק בפתיחת העמוד":
+    between opening a form and sending it there is a person typing, and a
+    form can be disabled, unpublished, deleted or switched to
+    AUTHENTICATED inside that gap.
+    """
+    with Session(engine) as db:
+        f, b, user = _public_form_or_refuse(db, token, request)
+        data = data or {}
+        answers = data.get("answers")
+        if not isinstance(answers, dict):
+            raise HTTPException(400, "חסרות תשובות")
+        return _form_submit(db, f, b, answers, user, request,
+                            submission_id=data.get("submission_id"))
+
+
+@app.post("/api/forms/{form_id}/preview/submit")
+def preview_form_submit(form_id: int, data: dict = None,
+                        user_id: int = Depends(current_user_id)):
+    """Fill the form in without filling anything in.
+
+    The SAME validation the real thing runs — _form_validate, one function,
+    so "test it in the preview" tests what will actually happen and not a
+    second implementation that agrees with it today. The only difference is
+    that nothing is written: no record, no cells, no file claims, no
+    idempotency key.
+
+    And it is a MANAGEMENT endpoint, not a public one. It is reached by the
+    form's id and takes the rights of the editor who may open the builder —
+    deliberately, because this is the one door that runs a submission's
+    validation while the form is a draft, closed, or members-only. Hung off
+    the public token it would be exactly the way around the gate that the
+    gate exists to prevent.
+    """
+    with Session(engine) as db:
+        f, _v, b, _role = _form_or_404(db, form_id, user_id)
+        answers = (data or {}).get("answers")
+        if not isinstance(answers, dict):
+            raise HTTPException(400, "חסרות תשובות")
+        # claim=False: the files are checked for being this form's and
+        # unclaimed, and are left exactly as they were.
+        _payload, _cf, _claimed = _form_validate(db, f, b, answers, claim=False)
+        # Nothing was written, and nothing is about to be — the session is
+        # read-only by construction here and is rolled back on the way out.
+        db.rollback()
+        return dict(_form_thanks(f), preview=True)
+
+
+@app.get("/api/forms/{form_id}/preview")
+def preview_form_view(form_id: int, user_id: int = Depends(current_user_id)):
+    """The respondent's view of the form, for the person building it.
+
+    Byte for byte what the public route will serve, so "תצוגה מקדימה" shows
+    the form rather than an approximation of it — and so a leak is visible
+    here, in a test, instead of on an endpoint with no identity behind it.
+    """
+    with Session(engine) as db:
+        f, _v, b, _role = _form_or_404(db, form_id, user_id)
+        return _form_public_json(db, f, b)
 
 
 # ── the advanced filter, evaluated here ────────────────────────────────
@@ -3657,7 +5771,6 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "filter_column_policy": FILTER_COLUMN_POLICY,
             "statuses": _board_statuses(b),
             "priorities": _board_priorities(b),
-            "form": (b.settings or {}).get("form"),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             "tasks": tasks_out,
         })
@@ -5772,13 +7885,11 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             s = dict(b.settings or {})
             s["visibility"] = v
             b.settings = s
-        if "form" in data:
-            # only a board admin can add/update the form
-            if _board_role(db, board_id, actor_id) != "admin":
-                raise HTTPException(403, "רק מנהל הלוח יכול לערוך את הטופס")
-            s = dict(b.settings or {})
-            s["form"] = data["form"]
-            b.settings = s
+        # `form` used to be a key in here — one form per board, four flags
+        # per field, rebuilt from the live columns on every open. A form is a
+        # view of the board now, with a row of its own and endpoints of its
+        # own; see the Form View section. The key is migrated away at startup
+        # by _migrate_board_forms and is not accepted here any more.
         if data.get("col_widths") is not None:
             # only a board admin may set column widths (drag-to-resize)
             if _board_role(db, board_id, actor_id) != "admin":
@@ -5874,8 +7985,17 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
             # full replacement of the custom-column definitions
-            allowed = {"timeline", "text", "email", "number", "date", "rating", "status",
-                       "people", "dropdown", "files", "accounts", "checkbox", "formula",
+            # "long_text" and "phone" are new here and were half-present
+            # everywhere else already: filter_ast.KINDS and the automation
+            # matrix have known about long_text since before a column could be
+            # one, and the monday importer was flattening both of them into
+            # plain text for want of anywhere to put them. The form view needs
+            # them as FIELDS — a question's type is its column's type, so a
+            # form cannot ask for a paragraph or a phone number unless the
+            # board can hold one.
+            allowed = {"timeline", "text", "long_text", "phone", "email", "number", "date",
+                       "rating", "status", "people", "dropdown", "files", "accounts",
+                       "checkbox", "formula",
                        "connect", "created_at", "created_by", "item_id", "mirror"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
             is_ws_admin = _ws_role(db, actor_id) == "admin"
@@ -5966,6 +8086,35 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # השהיה אם אינו תואם". A rename is neither: the id carries on and
             # the sentence simply shows the new name.
             now_by_id = {x["id"]: x for x in cols}
+            # ── what this change does to the board's forms ──
+            # Gone, or changed into a type the old questions cannot mean.
+            # Both are a change to a form somebody published, so both need
+            # saying out loud BEFORE the write and agreeing to in the
+            # request. A client that has not shown the warning cannot
+            # accidentally sail past it: the refusal carries the impact, and
+            # the only way through is to name the columns back.
+            _gone = [cid for cid in old_cols if cid not in now_by_id]
+            _retyped = {cid: (now_by_id[cid].get("type") or "")
+                        for cid, prev in old_cols.items()
+                        if cid in now_by_id
+                        and not _column_types_compatible(prev.get("type"),
+                                                         now_by_id[cid].get("type"))}
+            _at_risk = _gone + list(_retyped)
+            _uses = _form_column_uses(db, board_id, _at_risk)
+            if _uses:
+                agreed = {str(x) for x in (data.get("confirm_columns") or [])}
+                unagreed = [cid for cid in _uses if cid not in agreed]
+                if unagreed:
+                    raise HTTPException(409, {
+                        "message": "השדות האלה נמצאים בשימוש בטפסים — "
+                                   "אישור מפורש נדרש לפני המחיקה",
+                        "columns": [{
+                            "col_id": cid,
+                            "title": (old_cols.get(cid) or {}).get("title") or cid,
+                            "removed": cid in _gone,
+                            "new_type": _retyped.get(cid),
+                            "forms": _uses[cid],
+                        } for cid in unagreed]})
             for cid, prev in old_cols.items():
                 nxt = now_by_id.get(cid)
                 title = prev.get("title") or cid
@@ -5974,6 +8123,13 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                 elif not _column_types_compatible(prev.get("type"), nxt.get("type")):
                     _suspend_dependents(db, b, "column", cid, actor_id,
                                         f"{title} (שונתה מ{prev.get('type')} ל{nxt.get('type')})")
+            # The questions bound to a column that is gone stay, and stop
+            # being live — see _form_column_gone. The ones whose column
+            # changed type lose the settings that type can no longer carry.
+            if _gone:
+                _form_column_gone(db, board_id, _gone, actor_id)
+            if _retyped:
+                _form_settings_resweep(db, board_id, _retyped)
             s = dict(b.settings or {})
             s["columns"] = cols
             # a deleted column can't linger in the sub-item-only set
@@ -6108,6 +8264,33 @@ def _purge_expired_boards(db):
     return expired
 
 
+def _purge_unclaimed_form_uploads(db):
+    """Files uploaded for a form that was never sent.
+
+    A respondent uploads before they submit, so between those two moments the
+    file belongs to nothing. Most of the time the submission follows and
+    claims it; sometimes the tab is closed, and what is left is bytes in a
+    table with no record pointing at them and nobody who can reach them —
+    the form's own endpoint hands back a token and never a way to read one.
+
+    Only form uploads, and only unclaimed ones: an ordinary attachment
+    carries no form id and is never touched by this. Swept where the board
+    bin is swept, for the same reason — cheap enough that no scheduler has to
+    exist for it.
+    """
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+              - timedelta(hours=FORM_UPLOAD_TTL_HOURS))
+    rows = (db.query(UploadedFile)
+              .filter(UploadedFile.form_view_id.isnot(None),
+                      UploadedFile.claimed_at.is_(None),
+                      UploadedFile.created_at < cutoff).all())
+    for r in rows:
+        db.delete(r)
+    if rows:
+        db.commit()
+    return len(rows)
+
+
 # One sweep at boot, so expired boards are cleared even if nobody opens the bin.
 with Session(engine) as _bin_db:
     try:
@@ -6116,6 +8299,13 @@ with Session(engine) as _bin_db:
             print(f"🗑️  purged {len(_expired)} board(s) past the {RECYCLE_BIN_DAYS}-day window", flush=True)
     except Exception as _e:
         print(f"⚠️  recycle-bin purge skipped: {_e}", flush=True)
+    try:
+        _dropped = _purge_unclaimed_form_uploads(_bin_db)
+        if _dropped:
+            print(f"🗑️  dropped {_dropped} unsent form upload(s) past "
+                  f"{FORM_UPLOAD_TTL_HOURS}h", flush=True)
+    except Exception as _e:                            # noqa: BLE001
+        print(f"⚠️  form upload sweep skipped: {_e}", flush=True)
 
 
 def _can_delete_board(db, b, user_id):
@@ -8523,6 +10713,11 @@ def column_impact(board_id: int, col_id: str, actor_id: int = Depends(current_us
             raise HTTPException(404, "column not found")
         out = {"col_id": col_id, "title": col.get("title") or "", "type": col.get("type"),
                "two_way": _is_two_way(col), "links": 0, "items": 0, "mirrors": []}
+        # A form asks about this column, and deleting it changes that form.
+        # Counted here so the confirmation can say so — the same screen that
+        # already warns about links, warning about the other thing a column
+        # can be load-bearing for.
+        out["forms"] = _form_column_uses(db, board_id, [col_id]).get(str(col_id), [])
         if col.get("type") != "connect":
             return out
         if _is_two_way(col):
@@ -9025,12 +11220,12 @@ def _restore_choice(db, task, field, value):
 # run row (a rule is about an item, and "12 items updated" hides the two it
 # skipped), and the shared id is what puts them back together afterwards.
 AUTOMATION_SOURCES = ("item", "create", "bulk", "api", "automation", "import",
-                      "migration", "repair", "manual", "date", "link")
+                      "migration", "repair", "manual", "date", "link", "form")
 AUTOMATION_SOURCE_HE = {
     "item": "עריכה", "create": "יצירת פריט", "bulk": "עריכה מרובה", "api": "API",
     "automation": "אוטומציה אחרת", "import": "ייבוא", "migration": "מיגרציה",
     "repair": "תיקון מערכתי", "manual": "הפעלה ידנית", "date": "תאריך יעד",
-    "link": "קישור",
+    "link": "קישור", "form": "טופס",
 }
 
 
@@ -19364,82 +21559,14 @@ def swarm_think(data: dict, actor_id: int = Depends(current_user_id)):
     return result
 
 # ── Form Templates ──────────────────────────────────────────────────
-
-FORM_TEMPLATES = {
-    "building_permit": {
-        "name": "בקשה להיתר בנייה",
-        "fields": [
-            {"id": "applicant_name", "label": "שם המבקש", "type": "text", "required": True},
-            {"id": "applicant_id", "label": "תז", "type": "text", "required": True},
-            {"id": "phone", "label": "טלפון", "type": "tel", "required": True},
-            {"id": "email", "label": "אימייל", "type": "email"},
-            {"id": "property_address", "label": "כתובת הנכס", "type": "text", "required": True},
-            {"id": "gush", "label": "גוש", "type": "text"},
-            {"id": "helka", "label": "חלקה", "type": "text"},
-            {"id": "permit_type", "label": "סוג היתר", "type": "select", "options": ["בנייה חדשה", "הרחבה", "שינוי ייעוד", "הריסה", "עבודות תשתית"]},
-            {"id": "description", "label": "תיאור העבודות", "type": "textarea", "required": True},
-            {"id": "area_sqm", "label": "שטח (מטר)", "type": "number"},
-            {"id": "attachments", "label": "קבצים מצורפים", "type": "file", "multiple": True},
-        ]
-    },
-    "citizen_request": {
-        "name": "פניית תושב",
-        "fields": [
-            {"id": "citizen_name", "label": "שם מלא", "type": "text", "required": True},
-            {"id": "phone", "label": "טלפון", "type": "tel", "required": True},
-            {"id": "email", "label": "אימייל", "type": "email"},
-            {"id": "request_type", "label": "סוג פנייה", "type": "select", "options": ["תקלה בכביש", "תאורת רחוב", "פסולת/ניקיון", "מים/ביוב", "גינה ציבורית", " רעש", "תחבורה ציבורית", "אחר"]},
-            {"id": "title", "label": "כותרת", "type": "text", "required": True},
-            {"id": "description", "label": "תיאור", "type": "textarea", "required": True},
-            {"id": "address", "label": "כתובת מדויקת", "type": "text"},
-            {"id": "location", "label": "מיקום במפה", "type": "location"},
-            {"id": "photo", "label": "צילום", "type": "file"},
-        ]
-    },
-    "event_permit": {
-        "name": "בקשה לאישור אירוע",
-        "fields": [
-            {"id": "organizer_name", "label": "שם המארגן", "type": "text", "required": True},
-            {"id": "organizer_phone", "label": "טלפון", "type": "tel", "required": True},
-            {"id": "event_name", "label": "שם האירוע", "type": "text", "required": True},
-            {"id": "event_type", "label": "סוג אירוע", "type": "select", "options": ["הרצאה", "מוזיקה", "ספורט", "יריד", "הפגנה", "אחר"]},
-            {"id": "expected_attendees", "label": "משתתפים צפויים", "type": "number"},
-            {"id": "event_date", "label": "תאריך האירוע", "type": "date", "required": True},
-            {"id": "event_time", "label": "שעה", "type": "time"},
-            {"id": "location", "label": "מיקום", "type": "text", "required": True},
-            {"id": "description", "label": "תיאור האירוע", "type": "textarea"},
-        ]
-    },
-}
-
-@app.get("/api/forms/templates")
-def list_form_templates():
-    return {"templates": [
-        {"id": k, "name": v["name"], "fields_count": len(v["fields"])}
-        for k, v in FORM_TEMPLATES.items()
-    ]}
-
-@app.get("/api/forms/templates/{template_id}")
-def get_form_template(template_id: str):
-    if template_id not in FORM_TEMPLATES:
-        raise HTTPException(404, f"Template '{template_id}' not found")
-    return FORM_TEMPLATES[template_id]
-
-@app.post("/api/forms/submit")
-def submit_form(data: dict):
-    """Submit form data and create a task."""
-    template_id = data.get("template_id", "")
-    form_data = data.get("form_data", {})
-    with Session(engine) as db:
-        task = Task(
-            board_id=data.get("board_id", 3),  # Default to citizen requests
-            title=form_data.get("title") or form_data.get("applicant_name") or f"טופס: {template_id}",
-            description=json.dumps(form_data, ensure_ascii=False),
-            custom_fields=form_data,
-        )
-        db.add(task)
-        db.commit()
-        return {"id": task.id, "status": "submitted"}
+#
+# Gone. Three endpoints and a constant of three hard-coded municipal
+# forms, left over from CityOS: the frontend never called any of them,
+# and POST /api/forms/submit created a Task with no board check and no
+# creator — any authenticated user could inject a row into any board,
+# defaulting to board 3. The same IDOR create_task closes for itself.
+# A form is a view of a board now; see the section beside the saved
+# views, and docs/FORMS_PLAN.md for why this had to go first.
 
 # ── Visualization Engine ─────────────────────────────────────────────
 
@@ -21850,6 +23977,30 @@ def ai_project_insights(project_id: int, actor_id: int = Depends(current_user_id
 
 # Serve frontend
 frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+
+
+@app.get(FORM_PUBLIC_PATH + "{token}")
+def public_form_page(token: str):
+    """The page somebody fills a form in on.
+
+    Registered HERE, immediately before the StaticFiles mount at "/", because
+    the first matching route wins and that mount matches everything.
+
+    A page of its own and not the app. index.html is 1.2MB and assumes an
+    identity, a board and a set of permissions on every path through it; this
+    is the only code in the product that runs for somebody who is not a user,
+    and the less it knows the less there is to leak from it. It is served to
+    any token, valid or not — what the token IS gets decided by the API call
+    the page then makes, which is the one place that decides anything.
+    """
+    page = os.path.join(frontend_path, "public-form.html")
+    if not os.path.exists(page):
+        raise HTTPException(404, "not found")
+    with open(page, "rb") as fh:
+        return Response(content=fh.read(), media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-cache"})
+
+
 if os.path.exists(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 

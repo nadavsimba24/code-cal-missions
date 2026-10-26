@@ -284,6 +284,27 @@ def test_somebody_who_may_not_manage_the_board_cannot_touch_it(client, admin_id,
 
 def test_four_working_hours_reach_the_board_managers(client, admin_id, member_id,
                                                      monkeypatch):
+    """Four working hours and not nine: the board's rung, not the system's.
+
+    The window is pinned open for the length of this case so that aged hours
+    ARE working hours. It used to age by three calendar days and trust that
+    to land between the two rungs — and three days is four working hours on a
+    Friday and thirteen on a Monday, so the case passed or failed by the day
+    of the week it was run on. The ladder is what is being tested here; which
+    hours count is tested by test_the_clock_only_runs_in_working_hours, where
+    the window is the real one and the point.
+
+    Five hours, because the sweep runs more than once: reading the incident
+    list is what sweeps, and this case reads it twice. The first pass puts an
+    unescalated incident on the board rung; a second pass promotes anything
+    already there once it passes WORK_HOURS_PER_DAY. Five is past four and
+    short of nine, so the second read finds nothing left to do.
+    """
+    monkeypatch.setattr(cityos_main, "WORK_DAYS", (0, 1, 2, 3, 4, 5, 6))
+    monkeypatch.setattr(cityos_main, "WORK_START_HOUR", 0)
+    monkeypatch.setattr(cityos_main, "WORK_END_HOUR", 24)
+    assert 4 < 5 < cityos_main.WORK_HOURS_PER_DAY, "the two rungs moved"
+
     bid = _board(client, admin_id, "לוח הסלמה")
     client.post(f"/api/boards/{bid}/members",
                 json={"actor_id": admin_id, "user_id": member_id, "role": "admin"})
@@ -291,7 +312,7 @@ def test_four_working_hours_reach_the_board_managers(client, admin_id, member_id
          owner_id=admin_id)
     _break_it(client, bid, admin_id, monkeypatch)
     before = len(_notes(client, member_id))
-    _age(bid, hours=24 * 3)                  # three days — four working hours, surely
+    _age(bid, hours=5)                       # five working hours, on any day
     _incidents(client, bid, admin_id)        # reading the list is what sweeps
     after = _notes(client, member_id)
     assert len(after) > before, "nobody was escalated to"
