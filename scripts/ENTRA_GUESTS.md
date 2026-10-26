@@ -120,10 +120,13 @@ keeps them working when it is on — see `entra._complete_login`.
 
 ## 4. Turning it on in QA
 
-QA is the `missionspoccontainer` Container App in `rg-missions-qa`, in the
-**Misssions** subscription. The pipeline deploys the image and never touches
-environment variables, so this is a one-time manual step — and the reason the
-feature can ship to `main` without appearing in production:
+QA is the `Missions-Qa-Webapp` **Web App** in `rg-missions-qa`, in the
+**Misssions** subscription. (It was the Container App `missionspoccontainer`
+until 2026-10-26; that app is still standing but nothing deploys to it any
+more, so setting a variable on it now changes nothing.) The pipeline deploys
+the image and touches only the handful of settings it stamps, so this is a
+one-time manual step — and the reason the feature can ship to `main` without
+appearing in production:
 
 ```bash
 SUB=714d8f95-f2fa-4b06-942e-fb76ffb6d213     # "Misssions"
@@ -131,18 +134,23 @@ SUB=714d8f95-f2fa-4b06-942e-fb76ffb6d213     # "Misssions"
 # The group's object id — copy it from the portal, or:
 GROUP_ID=$(az ad group show --group missions-guests --query id -o tsv)
 
-az containerapp update \
+az webapp config appsettings set \
   --subscription "$SUB" \
   --resource-group rg-missions-qa \
-  --name missionspoccontainer \
-  --set-env-vars ENTRA_GUEST_INVITES=1 ENTRA_GUEST_GROUP_ID="$GROUP_ID" \
-  --remove-env-vars ENTRA_ALLOWED_DOMAINS
+  --name Missions-Qa-Webapp \
+  --settings ENTRA_GUEST_INVITES=1 ENTRA_GUEST_GROUP_ID="$GROUP_ID"
+
+az webapp config appsettings delete \
+  --subscription "$SUB" \
+  --resource-group rg-missions-qa \
+  --name Missions-Qa-Webapp \
+  --setting-names ENTRA_ALLOWED_DOMAINS
 ```
 
-`--set-env-vars` merges, so `ENTRA_CLIENT_SECRET` and the rest survive. The
-`--remove-env-vars` is what opens the app to guests from any domain; see the
-section above for the two fences that stay standing. The update rolls a new
-revision; the image it runs does not change.
+`appsettings set` merges, so `ENTRA_CLIENT_SECRET` and the rest survive.
+Deleting `ENTRA_ALLOWED_DOMAINS` is what opens the app to guests from any
+domain; see the section above for the two fences that stay standing. Both
+commands restart the app; the image it runs does not change.
 
 Production (`Missions-Prd-Webapp`) stays as it is. When it is time, the same two
 settings go on with `az webapp config appsettings set`, which also merges.

@@ -1,10 +1,25 @@
-# Deploying to Azure Container Apps
+# Deploying to Azure Container Apps (superseded — POC only)
+
+> **This is not how QA or production deploy any more.** Both now run as App
+> Service Web Apps, rolled by the Azure DevOps pipelines in the repo root:
+> QA by [`azure-pipelines-qa.yml`](../azure-pipelines-qa.yml) on every commit
+> to `main`, production by [`azure-pipelines-prod.yml`](../azure-pipelines-prod.yml)
+> by hand. The GitHub Actions workflow described below has failed on every run
+> since 2026-08 and deploys nothing.
+>
+> | | |
+> |---|---|
+> | QA | Web App `Missions-Qa-Webapp`, RG `rg-missions-qa` — `https://missions-qa-webapp.azurewebsites.net` |
+> | Production | Web App `Missions-Prd-Webapp`, RG `RG-Missions-PRD` — `https://missions.mashcal.co.il` |
+>
+> Both live in the **Misssions** subscription (three s's — Azure's typo),
+> `714d8f95-f2fa-4b06-942e-fb76ffb6d213`, **not** the `az` default. The rest of
+> this file documents the original POC path and is kept for its one-time Azure
+> setup notes (OIDC, managed identity, ACR) — the resource names in it are the
+> POC's, and the URL it calls "production" was in fact the old QA Container App.
 
 The app ships as a container ([`Dockerfile`](../Dockerfile)) — a FastAPI backend
 that also serves the single-file frontend, listening on `$PORT` / `0.0.0.0`.
-
-Production URL:
-`https://missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io/`
 
 ## Why this is the safe way
 

@@ -6,6 +6,11 @@
 # Usage:
 #   export AZURE_RESOURCE_GROUP=... AZURE_ACR_NAME=... AZURE_CONTAINERAPP_NAME=...
 #   [export AZURE_CONTAINERAPP_URL=https://...]   # defaults to the known POC URL
+#
+# SUPERSEDED. QA and production are App Service Web Apps rolled by the Azure
+# DevOps pipelines in the repo root; this script targets a Container App and
+# the URL it defaults to is the old QA one, which nothing deploys to any more.
+# Kept for the POC. See scripts/AZURE_DEPLOY.md.
 #   [SKIP_TESTS=1]  ./scripts/azure-deploy.sh
 #
 # Requires: az CLI (logged in via `az login`), git. Docker is NOT needed —

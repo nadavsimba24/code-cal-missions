@@ -8,6 +8,12 @@ from the platform, and the backend maps it to a `User` row by email.
 > code but only works on Azure. The other way — `CITYOS_AUTH_MODE=entra`, where
 > the app performs the login itself against an app registration and therefore
 > runs anywhere — is [ENTRA_SSO.md](ENTRA_SSO.md). Enable one, not both.
+>
+> **QA and production both use the other one.** They run
+> `CITYOS_AUTH_MODE=entra` on App Service Web Apps (`Missions-Qa-Webapp`,
+> `Missions-Prd-Webapp`), so nothing below is in force there — and since
+> 2026-10-26 neither is a Container App at all. The resource names in this
+> file are the POC's, which is where this was worked out.
 
 ## The one setting that matters
 

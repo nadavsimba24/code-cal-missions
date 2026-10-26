@@ -1,5 +1,12 @@
 name: Deploy to Azure Container Apps
 
+# SUPERSEDED — this workflow deploys nothing. It has failed on every run since
+# 2026-08 (the repo variables below were never set), and QA and production are
+# now App Service Web Apps rolled by azure-pipelines-qa.yml and
+# azure-pipelines-prod.yml in the repo root. It is left in place rather than
+# deleted because it still triggers on push and a silent removal would hide
+# that; delete it once someone confirms nothing watches its status.
+#
 # Safe, commit-triggered deploy:
 #   push to main  →  test + security gate  →  build image in ACR (immutable SHA
 #   tag)  →  roll out a new Container Apps revision  →  health check  →  auto

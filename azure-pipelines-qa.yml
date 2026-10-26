@@ -1,7 +1,7 @@
 
 # QA CI/CD Pipeline
 # Build and push Docker image to Azure Container Registry,
-# run Mend SCA and SAST scans, then deploy to Azure Container Apps.
+# run Mend SCA and SAST scans, then deploy to the QA App Service Web App.
 
 trigger:
   branches:
@@ -22,12 +22,16 @@ variables:
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
 
-  # QA deployment target
-  containerAppName: 'missionspoccontainer'
-  containerAppResourceGroup: 'rg-missions-qa'
+  # QA deployment target. QA is an App Service Web App running the image as a
+  # site container, mirroring production — see the comment above STAGE 3.
+  webAppName: 'Missions-Qa-Webapp'
+  webAppResourceGroup: 'rg-missions-qa'
+  registryName: 'missionspoccontainer'
+  siteContainerName: 'Missions'
+  siteContainerPort: '8000'
+  healthCheckPath: '/api/status'
   azureSubscriptionId: '714d8f95-f2fa-4b06-942e-fb76ffb6d213'
   azureServiceConnection: 'Missions-QA-ARM'
-  healthUrl: 'https://missionspoccontainer.kindwave-29864c84.westeurope.azurecontainerapps.io/api/status'
 
   # Pin the agent OS instead of following ubuntu-latest.
   vmImageName: 'ubuntu-24.04'
@@ -191,10 +195,21 @@ stages:
 # ============================================================
 # STAGE 3: DEPLOY
 # Deployment only proceeds if both Build and Security succeed.
-# Existing revision and health-check behavior is preserved.
+#
+# QA used to be the Container App missionspoccontainer. It is now the
+# App Service Web App Missions-Qa-Webapp, running the same image as a
+# site container, so that QA and production fail the same way — the two
+# had drifted far enough apart that a prod-only breakage could not be
+# reproduced here. The Container App is left standing but is no longer
+# deployed to, exactly as its production counterpart was.
+#
+# This step is a near-copy of azure-pipelines-prod.yml's deploy, and the
+# differences are deliberate: QA's registry, Web App and Mend scope, and
+# QA keeps CITYOS_AUTH_MODE/ENTRA_REDIRECT_URI as app settings rather
+# than re-deriving them, because QA has exactly one hostname.
 # ============================================================
 - stage: Deploy
-  displayName: 'Deploy to QA Container App'
+  displayName: 'Deploy to QA Web App'
 
   dependsOn:
     - Build
@@ -204,15 +219,15 @@ stages:
 
   jobs:
   - job: DeployQA
-    displayName: 'Deploy image and verify revision'
-    timeoutInMinutes: 30
+    displayName: 'Roll the QA site container onto the image this run built'
+    timeoutInMinutes: 45
 
     pool:
       vmImage: $(vmImageName)
 
     steps:
     - task: AzureCLI@2
-      displayName: 'Deploy and verify Container App revision'
+      displayName: 'Point the site container at the new image, restart, verify'
       inputs:
         azureSubscription: $(azureServiceConnection)
         scriptType: bash
@@ -220,102 +235,176 @@ stages:
         inlineScript: |
           set -euo pipefail
 
-          az config set extension.use_dynamic_install=yes_without_prompt
+          RG="$(webAppResourceGroup)"
+          APP="$(webAppName)"
+          CONTAINER="$(siteContainerName)"
+          if [ -z "$RG" ] || [ -z "$APP" ]; then
+            echo "##vso[task.logissue type=error]webAppResourceGroup / webAppName are not set — refusing to guess at a deploy target"
+            exit 1
+          fi
+
+          COMMON=(--subscription "$(azureSubscriptionId)"
+                  --resource-group "$RG"
+                  --name "$APP")
 
           IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
 
-          echo "Deploying image: $IMAGE"
+          # Record the currently configured image so a rollback has a target.
+          PREV=$(az webapp sitecontainers list "${COMMON[@]}" \
+                   --query "[?name=='$CONTAINER'].image | [0]" -o tsv)
+          if [ -z "$PREV" ]; then
+            echo "##vso[task.logissue type=error]no site container named '$CONTAINER' on $APP — check siteContainerName"
+            az webapp sitecontainers list "${COMMON[@]}" --query "[].name" -o tsv || true
+            exit 1
+          fi
 
-          COMMON=(
-            --subscription "$(azureSubscriptionId)"
-            --resource-group "$(containerAppResourceGroup)"
-            --name "$(containerAppName)"
-          )
+          HOST=$(az webapp show "${COMMON[@]}" --query defaultHostName -o tsv)
+          HOSTS=$(az webapp show "${COMMON[@]}" --query "hostNames" -o tsv)
+          REDIRECT_URIS=$(for h in $HOSTS; do printf 'https://%s/auth/callback,' "$h"; done | sed 's/,$//')
 
-          az containerapp update "${COMMON[@]}" \
+          echo "── current  : $PREV"
+          echo "── deploying: $IMAGE"
+          echo "── host     : https://$HOST"
+          echo "── redirects: $REDIRECT_URIS"
+
+          # The site container authenticates to ACR with admin credentials, and
+          # `sitecontainers update` rewrites the whole container definition — so
+          # the username and password must be resent on every deploy or the next
+          # pull goes out anonymous and fails.
+          ACR_USER=$(az acr credential show -n "$(registryName)" \
+                       --subscription "$(azureSubscriptionId)" --query username -o tsv)
+          ACR_PASS=$(az acr credential show -n "$(registryName)" \
+                       --subscription "$(azureSubscriptionId)" --query "passwords[0].value" -o tsv)
+
+          az webapp sitecontainers update "${COMMON[@]}" \
+            --container-name "$CONTAINER" \
             --image "$IMAGE" \
+            --target-port "$(siteContainerPort)" \
+            --is-main true \
+            --registry-username "$ACR_USER" \
+            --registry-password "$ACR_PASS" \
             --output none
 
-          REV=$(az containerapp show "${COMMON[@]}" \
-            --query "properties.latestRevisionName" \
-            -o tsv)
+          # Stamping the tag is what makes the verification below mean anything.
+          # The Container App never set it, so QA's /api/status answered
+          # "image_tag":"dev" forever and no run could prove what was live.
+          az webapp config appsettings set "${COMMON[@]}" --settings \
+            MISSIONS_IMAGE_TAG="$(tag)" \
+            CITYOS_AUTH_MODE="entra" \
+            WEBSITES_CONTAINER_START_TIME_LIMIT="1800" \
+            ENTRA_REDIRECT_URI="$REDIRECT_URIS" \
+            --output none
 
-          if [[ -z "$REV" || "$REV" == "None" ]]; then
-            echo "##vso[task.logissue type=error]Could not determine the new revision."
-            exit 1
+          az webapp config set "${COMMON[@]}" \
+            --generic-configurations "{\"healthCheckPath\": \"$(healthCheckPath)\"}" \
+            --output none
+
+          # QA is deny-by-default, so let this hosted agent in for the duration
+          # of the check and take the rule away again on the way out.
+          RULE=""
+          cleanup() {
+            [ -n "$RULE" ] || return 0
+            echo "── removing the temporary allow rule $RULE"
+            az webapp config access-restriction remove "${COMMON[@]}" \
+              --rule-name "$RULE" --output none || \
+              echo "##vso[task.logissue type=warning]could not remove $RULE — remove it by hand"
+          }
+          trap cleanup EXIT
+
+          DEFAULT_ACTION=$(az webapp config access-restriction show "${COMMON[@]}" \
+                             --query ipSecurityRestrictionsDefaultAction -o tsv 2>/dev/null || true)
+          if [ "$DEFAULT_ACTION" = "Deny" ]; then
+            for stale in $(az webapp config access-restriction show "${COMMON[@]}" \
+                             --query "ipSecurityRestrictions[?name != null] | [?starts_with(name, 'pipeline-verify-')].name" \
+                             -o tsv 2>/dev/null || true); do
+              echo "── removing a leftover rule from an earlier run: $stale"
+              az webapp config access-restriction remove "${COMMON[@]}" \
+                --rule-name "$stale" --output none || true
+            done
+
+            AGENT_IP=$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)
+            if [ -n "$AGENT_IP" ]; then
+              RULE="pipeline-verify-$(tag)"
+              echo "── allow-list is deny-by-default; letting the agent ($AGENT_IP) in as $RULE"
+              # ⚠ A rule's description may not contain a comma or a semicolon.
+              # App Service refuses one saying only "Bad Request" with no field
+              # named, the rule is silently never added, and the check below then
+              # spends its whole window being turned away by the allow-list this
+              # step just failed to put the agent on. That cost production six
+              # weeks of releases reported failed that had all deployed fine.
+              # Do not reintroduce the comma.
+              az webapp config access-restriction add "${COMMON[@]}" \
+                --rule-name "$RULE" --priority 100 --action Allow \
+                --ip-address "$AGENT_IP/32" \
+                --description "temporary - added and removed by build $(tag)" \
+                --output none || {
+                  RULE=""
+                  echo "##vso[task.logissue type=warning]could not add the allow rule — the check below will see 403"
+                }
+            else
+              echo "##vso[task.logissue type=warning]could not learn the agent's own address — the check below will see 403"
+            fi
           fi
 
-          echo "New revision: $REV"
+          az webapp restart "${COMMON[@]}" --output none
+          echo "── restarted, waiting for $(tag) to answer"
 
-          # Wait up to 10 minutes for the revision to start.
-          RUNNING=""
+          # Changing the image does not stop the container already running, and
+          # a bare HTTP 200 is answered just as happily by the old build — so the
+          # check is that /api/status echoes this run's own tag, nothing less.
+          refused=0
+          for i in $(seq 1 80); do
+            resp=$(curl -sS --max-time 10 -w '\n%{http_code}' \
+                     "https://$HOST$(healthCheckPath)" 2>/dev/null || true)
+            code=${resp##*$'\n'}
+            body=${resp%$'\n'*}
+            [ "$body" = "$code" ] && body=""
+            running=$(printf '%s' "$body" | python3 -c \
+              'import json,sys; print(json.load(sys.stdin).get("image_tag",""))' 2>/dev/null || true)
 
-          for i in $(seq 1 60); do
-            read -r RUNNING HEALTH < <(
-              az containerapp revision show "${COMMON[@]}" \
-                --revision "$REV" \
-                --query "[properties.runningState, properties.healthState]" \
-                -o tsv
-            )
-
-            echo "[$i/60] running=$RUNNING health=$HEALTH"
-
-            case "$RUNNING" in
-              Running)
-                break
-                ;;
-              Failed|Degraded)
-                echo "##vso[task.logissue type=error]Revision $REV entered state $RUNNING."
-                az containerapp logs show "${COMMON[@]}" \
-                  --revision "$REV" \
-                  --tail 60 || true
-                exit 1
-                ;;
+            case "${code:-000}:${running:-}" in
+              "200:$(tag)") state="$running" ;;
+              200:)         state="<200, but no image_tag — is this our app?>" ;;
+              200:*)        state="$running  ← STILL THE OLD IMAGE" ;;
+              403:*)        state="<403 refused — the agent is not on the allow-list>"
+                            refused=$((refused + 1)) ;;
+              000:*)        state="<still starting>" ;;
+              *)            state="<http $code>" ;;
             esac
-
-            sleep 10
+            echo "  [$i/80] serving=$state"
+            if [ "$running" = "$(tag)" ]; then
+              mode=$(printf '%s' "$body" | python3 -c \
+                'import json,sys; print(json.load(sys.stdin).get("auth_mode",""))' 2>/dev/null || true)
+              echo "✅ https://$HOST is serving $IMAGE (auth_mode=$mode)"
+              if [ "$mode" != "entra" ]; then
+                echo "##vso[task.logissue type=warning]auth_mode is '$mode', expected 'entra' — sign-in may fail"
+              fi
+              exit 0
+            fi
+            sleep 15
           done
 
-          if [[ "$RUNNING" != "Running" ]]; then
-            echo "##vso[task.logissue type=error]Revision $REV did not reach Running state within 10 minutes."
-            az containerapp logs show "${COMMON[@]}" \
-              --revision "$REV" \
-              --tail 60 || true
-            exit 1
+          CONFIGURED=$(az webapp sitecontainers list "${COMMON[@]}" \
+                         --query "[?name=='$CONTAINER'].image | [0]" -o tsv)
+          echo "##vso[task.logissue type=error]$HOST never reported image_tag=$(tag) within 20 minutes"
+          if [ "$refused" -gt 0 ]; then
+            echo "$refused of the attempts were refused with 403. The agent was not"
+            echo "let through the allow-list on $APP, so this run proves nothing"
+            echo "about what QA is serving — check it from an address that is on"
+            echo "the list before touching anything."
           fi
-
-          # Verify the application health endpoint.
-          # HTTP 403 is accepted as in the original pipeline because
-          # the build agent may be blocked by the ingress allow-list.
-          for i in $(seq 1 30); do
-            code=$(curl -sS -o /dev/null \
-              -w '%{http_code}' \
-              --max-time 10 \
-              "$(healthUrl)" || true)
-
-            echo "Health attempt $i/30: HTTP ${code:-000}"
-
-            case "$code" in
-              200)
-                echo "Revision $REV is serving $IMAGE."
-                exit 0
-                ;;
-              403)
-                echo "Revision $REV is running; HTTP 403 may indicate the build agent is blocked by the ingress allow-list."
-                echo "Application health has not been confirmed."
-                exit 0
-                ;;
-            esac
-
-            sleep 10
-          done
-
-          echo "##vso[task.logissue type=error]Revision $REV did not return HTTP 200 or 403 within the health-check window."
-
-          az containerapp logs show "${COMMON[@]}" \
-            --revision "$REV" \
-            --tail 60 || true
-
+          if [ "$CONFIGURED" = "$IMAGE" ]; then
+            echo "The site container IS pointed at $IMAGE — the image was deployed"
+            echo "and the app did not answer in time. Check the logs below before"
+            echo "rolling back: it may still be starting."
+          else
+            echo "The site container is on $CONFIGURED, not $IMAGE — the deploy"
+            echo "itself did not take."
+          fi
+          timeout 45 az webapp log tail "${COMMON[@]}" || true
+          echo "roll back with:"
+          echo "  az webapp sitecontainers update ${COMMON[*]} --container-name $CONTAINER --image $PREV --target-port $(siteContainerPort) --is-main true --registry-username <acr-user> --registry-password <acr-pass>"
+          echo "  az webapp restart ${COMMON[*]}"
           exit 1
       env:
         AZURE_CONFIG_DIR: $(Agent.TempDirectory)/.azure
