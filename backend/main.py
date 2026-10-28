@@ -9078,6 +9078,57 @@ def _xlsx_cell(ws, row, col, spec):
     cell.alignment = Alignment(vertical="center", wrap_text=False)
     return cell
 
+
+# A cell that Excel will not execute. _xlsx_cell above has always said this for
+# the .xlsx export ("never a formula, whatever the text is"); the CSV exports
+# never got the same rule, and they carry the text that ordinary members write —
+# an item title, a cell value, a board name. Someone naming an item
+# =HYPERLINK("http://…") is writing code that runs on the machine of the
+# colleague who opens the exported file.
+#
+# The leading apostrophe is Excel's own "this is text" marker and is consumed
+# when the file is opened, so the cell still reads as what was typed.
+# Tab/CR/LF are skipped over first, because Excel ignores them when it decides
+# that a cell is a formula.
+_CSV_FORMULA = re.compile(r"^[\t\r\n ]*[=+\-@]")
+
+
+def _csv_safe(v):
+    """One exported value, as text Excel will not evaluate."""
+    s = "" if v is None else str(v)
+    if not _CSV_FORMULA.match(s):
+        return s
+    # A leading minus is far more often a negative number than an attack, and
+    # an apostrophe in front of it turns a figure into a string that no longer
+    # sums in Excel. A value that is wholly a number is left alone; "-1+cmd|…"
+    # is not a number and still gets the marker.
+    try:
+        float(s)
+        return s
+    except ValueError:
+        return "'" + s
+
+
+class _csv_writer:
+    """csv.writer, with _csv_safe applied to every field.
+
+    Wrapping the writer rather than each writerow() call is deliberate: the
+    exports have dozens of columns between them, and the failure mode of
+    sanitising field-by-field is a column added later by someone who did not
+    know the rule existed. csv.writer is a C object and cannot have its method
+    replaced, hence a wrapper rather than a patched instance."""
+
+    def __init__(self, buf):
+        self._w = csv.writer(buf)
+
+    def writerow(self, row):
+        self._w.writerow([_csv_safe(v) for v in row])
+
+    def writerows(self, rows):
+        for r in rows:
+            self.writerow(r)
+
+
 # The conversation sheet's columns, in the order they are written.
 TALK_HEADERS = ["מספר מזהה", "פריט", "סוג", "מאת", "נכתב", "תוכן",
                 "לייקים", "קבצים", "מזהה הודעה", "בתגובה להודעה"]
@@ -17202,7 +17253,7 @@ def export_automation_runs(board_id: int, outcome: str = "", automation_id: int 
         _OUT_HE = {"ran": "הופעלה", "skipped": "דילוג", "failed": "כשל"}
         buf = io.StringIO()
         buf.write("﻿")
-        w = csv.writer(buf)
+        w = _csv_writer(buf)
         # "ייצוא יכלול מזהה הפעלה, אוטומציה, לוח, פריט, זמנים, סטטוס, מספר
         # ניסיונות וקודי שגיאה" — all of it, in that order, so a file handed to
         # somebody outside the product is readable without the product
@@ -18648,7 +18699,7 @@ def admin_automations_export(board_id: int = 0, department_id: int = 0, environm
                                        owner_id, status, flag, q)
         buf = io.StringIO()
         buf.write("﻿")                        # BOM so Excel reads Hebrew UTF-8
-        w = csv.writer(buf)
+        w = _csv_writer(buf)
         w.writerow(["לוח", "יחידה ארגונית", "שם האוטומציה", "המשפט", "סטטוס", "חשיבות",
                     "בעלים", "ללא בעלים", "דורשת טיפול", "הפעלה אחרונה", "ימים מאז",
                     "הצלחות", "כשלים", "דילוגים", "שיעור הצלחה"])
@@ -19120,7 +19171,7 @@ def export_board_automations(board_id: int, user_id: int = Depends(current_user_
                                   Automation.id).all())
         buf = io.StringIO()
         buf.write("﻿")
-        w = csv.writer(buf)
+        w = _csv_writer(buf)
         w.writerow(["שם", "המשפט", "תיאור עסקי", "סטטוס", "חשיבות", "סדר ביצוע", "בעלים",
                     "נוצר על ידי", "עדכון אחרון", "הפעלה אחרונה", "הצלחות", "כשלים",
                     "דילוגים", "שיעור הצלחה"])
@@ -20338,7 +20389,7 @@ def export_board_activity(board_id: int, actor_id: int = Depends(current_user_id
         rows = _board_activity_rows(db, board_id, user_id, date, limit=5000, viewer=actor_id)
         buf = io.StringIO()
         buf.write("\ufeff")  # BOM so Excel reads Hebrew UTF-8
-        w = csv.writer(buf)
+        w = _csv_writer(buf)
         w.writerow(["תאריך", "פריט", "משתמש", "פעולה", "שדה", "מ-", "ל-"])
         for r in rows:
             w.writerow([r["created_at"], r["task_title"], r["user_name"],
@@ -20359,7 +20410,7 @@ def export_activity(task_id: int, actor_id: int = Depends(current_user_id)):
                 if _log_link_row(db, l.field_name, l.old_value, l.new_value, cols, actor_id) is not None]
         buf = io.StringIO()
         buf.write("﻿")  # BOM so Excel reads Hebrew UTF-8
-        w = csv.writer(buf)
+        w = _csv_writer(buf)
         w.writerow(["תאריך", "משתמש", "פעולה", "שדה", "מ-", "ל-"])
         for l in logs:
             u = db.query(User).filter(User.id == l.changed_by).first()
