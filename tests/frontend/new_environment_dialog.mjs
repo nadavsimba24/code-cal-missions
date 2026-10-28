@@ -155,9 +155,18 @@ function makeHarness({typed='אגף החינוך', cap=true, mobile=false, creat
   ck('its rows carry no colour dot', table && !/dp-swatch/.test(table[0]));
   ck('and no empty column is left holding its place',
      table && !/<th style="width:34px"><\/th>/.test(table[0]));
+  /* The empty state used to be written inline here with colspan="3" in it. The
+     six admin tabs now share one emptyRow(tab,none), which spans
+     cols(tab).length — so the thing to pin is that the span FOLLOWS the column
+     count rather than that it says a particular number. A literal is exactly
+     what drifted when the colour column was taken out of this table. */
+  const envCols=/\n    envs:\[([\s\S]*?)\n    \],/.exec(src);
+  ck('the environments table still declares three columns — name, boards, actions',
+     !!envCols && (envCols[1].match(/\{/g)||[]).length===3,
+     envCols?envCols[1]:'COLS.envs not found');
   ck('the empty-state spans the columns that are actually there',
-     table && /colspan="3"/.test(table[0]),
-     table && (table[0].match(/colspan="\d"/)||[''])[0]);
+     /colspan="\$\{this\.cols\(tab\)\.length\|\|1\}"/.test(src),
+     (/colspan="[^"]*"/.exec(src)||[''])[0]);
   ck('the departments table keeps its own dot — a different screen, not asked about',
      /dp-swatch/.test(src));
 }

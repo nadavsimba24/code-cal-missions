@@ -1553,6 +1553,39 @@ body.coldragging .col-grip{opacity:1}
 .sa-table th{text-align:right;font-size:11px;font-weight:600;color:var(--text-light);text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
 .sa-table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
 .sa-table tr.inactive{opacity:.55}
+/* A sortable header. The caret sits in the markup of every sortable column and
+   is merely hidden on the ones that are not sorted — rendering it only on the
+   active column made the whole header jump sideways by a glyph every time
+   somebody changed their mind about which column to sort by. */
+/* .sa-table th already sets the padding and is the more specific selector, so
+   the element has to be named here too — otherwise the cell keeps its padding,
+   the button adds its own on top, and every sortable header sits offset from
+   the plain ones beside it. */
+.sa-table th.sa-th{padding:0}
+/* the sort control fills the cell, so the whole header is the target, and wears
+   none of the chrome a button brings with it — it has to read as a th */
+.sa-th-btn{display:flex;align-items:center;gap:5px;width:100%;padding:8px 10px;
+  font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit;
+  text-align:start;background:none;border:0;cursor:pointer;user-select:none}
+.sa-th-btn:hover{color:var(--text)}
+.sa-th.on .sa-th-btn{color:var(--primary)}
+.sa-th-btn:focus-visible{outline:2px solid var(--primary);outline-offset:-2px;border-radius:4px}
+.sa-caret{font-size:10px;visibility:hidden}
+.sa-th.on .sa-caret{visibility:visible}
+/* the toolbar above every admin table: how many rows, the live filter, the actions */
+.sa-bar{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-bottom:12px}
+.sa-search{position:relative;display:inline-flex;align-items:center;flex:0 1 250px}
+.sa-search>i{position:absolute;inset-inline-start:9px;font-size:11px;color:var(--text-light);pointer-events:none}
+.sa-search>input{width:100%;padding-inline-start:26px}
+/* "50/60": the rows on screen, and behind them the whole list. The ratio is
+   isolated because a slash between two numbers inside an RTL line is otherwise
+   free to be reordered, and 50/60 read as 60/50 is a different sentence. */
+.sa-count{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);white-space:nowrap}
+.sa-count b{font-size:15px;color:var(--text);font-weight:700}
+.sa-count.on,.sa-count.on b{color:var(--primary)}
+.sa-count .sa-ratio{direction:ltr;unicode-bidi:isolate}
+.sa-count .sa-tot{color:var(--text-light);font-size:12px;font-weight:400}
+.sa-sub{color:var(--text-light);font-size:11.5px}
 /* An environment's badge. One box whatever is inside it — a glyph on the
    environment's colour, an uploaded picture, an emoji, or the creator's own
    avatar — so a list of environments lines up however each one was set. */
@@ -2404,6 +2437,18 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
 /* ===================== MOBILE / narrow screens ===================== */
 @media (max-width:820px){
   body{font-size:14px}
+  /* The admin toolbar is a count, a search box and two buttons on one row; below
+     this width the search takes a line of its own instead of being squeezed to a
+     few characters between them.
+
+     Not, in practice, on a phone: SysAdmin.open() refuses through mobileBlocked
+     at exactly this breakpoint, so the only way to see this rule is a desktop
+     window narrowed after the modal is already open. It is kept for that, and
+     because the breakpoint is where the rest of the narrow-screen rules live —
+     a second @media at the same width is indistinguishable from this block to
+     anything reading the stylesheet, and the mobile tests duly read the wrong
+     one when it existed. */
+  .sa-search{flex:1 1 100%}
   /* Item selection is a desktop affordance — Monday does not offer it on a
      phone either. On a narrow screen the checkbox sits in front of every item
      name spending width the name needs.
@@ -10630,6 +10675,276 @@ const Env = {
 /* ===== system administration — user directory ===== */
 const SysAdmin = {
   tab:'users',
+
+  /* ===== the table chrome all six tabs share — sorting, live search, export =====
+     Six tabs had grown six half-tables, and the first one that learned to sort
+     made the other five look broken. So the behaviour lives here once and every
+     tab declares its columns instead: `val` is what a cell is worth to a sort,
+     `text` is the plain sentence a human reads in it (and therefore the one the
+     CSV carries — never markup), and `find` says what the search box looks at.
+     A column with no label carries no data — the ⋮ menu, the colour swatch, the
+     actions — and is deliberately neither sortable nor exported.
+
+     The rule that matters most here: typing must not rebuild #sa-body. Doing
+     that takes the input out of the DOM between two keystrokes and the caret
+     with it, which is the trap the comment on setAutoQ has been warning about
+     since the automations filter. Every tab therefore paints its toolbar and
+     its header once, and repaint() touches only <tbody id="sa-rows"> and the
+     count beside it. */
+  sort:{},          // per tab: {key,dir} — dir 1 ascending, -1 descending
+  query:{},         // per tab: the free-text filter, exactly as it was typed
+  AUTO_ST:{draft:'טיוטה',active:'פעילה',paused:'מושהית',paused_error:'מושהית עקב שגיאה',deleting:'בתהליך מחיקה'},
+  AUTO_IMP:{critical:'קריטית',high:'גבוהה',normal:'רגילה',low:'נמוכה'},
+  /* importance sorts by how urgent it is, not by where its Hebrew label falls
+     in the alphabet — ascending puts קריטית first, which is what an admin
+     clicking that column is looking for */
+  AUTO_IMP_RANK:{critical:1,high:2,normal:3,low:4},
+  /* "אחרונות" on the history tab is load-bearing: the server sends only the
+     newest 100 events, and a bare "100 התחברויות" invites an admin who searched
+     for someone who signed in six weeks ago to read ״לא נמצאו תוצאות״ as "never
+     logged in" rather than "not in the last hundred". */
+  NOUN:{users:'משתמשים',guests:'אורחים',depts:'יחידות ארגוניות',envs:'סביבות',history:'התחברויות אחרונות',autos:'אוטומציות'},
+  FILE:{users:'users',guests:'guests',depts:'departments',envs:'environments',history:'login-history'},
+  COLS:{
+    users:[
+      {th:'style="width:34px"'},
+      {key:'name',label:'שם',text:u=>u.name||'—'},
+      {key:'email',label:'מייל',text:u=>u.email||'—'},
+      /* the column shows the Hebrew label but the role is stored in English, so
+         the search has to answer to both — "מנהל" and "admin" find the same people */
+      {key:'role',label:'תפקיד',val:u=>ROLE_HE[u.role]||u.role||'',text:u=>ROLE_HE[u.role]||u.role||'—',
+       find:u=>(u.role||'')+' '+(ROLE_HE[u.role]||'')},
+      {key:'department_name',label:'מחלקה',text:u=>u.department_name||'—'},
+      {key:'created_at',label:'מועד הזמנה למערכת',find:false,text:u=>SysAdmin.fdtx(u.created_at)||'—'},
+      {key:'last_login',label:'כניסה אחרונה',find:false,text:u=>SysAdmin.fdtx(u.last_login)||'מעולם לא'},
+      {key:'is_active',label:'סטטוס',find:false,val:u=>u.is_active===false?0:1,text:u=>u.is_active===false?'לא פעיל':'פעיל'},
+    ],
+    guests:[
+      {key:'name',label:'שם',text:g=>g.name||'—'},
+      {key:'email',label:'מייל',text:g=>g.email||'—'},
+      {key:'state',label:'מצב',val:g=>SysAdmin.guestStateInfo(g).t,text:g=>SysAdmin.guestStateInfo(g).t},
+      {key:'department_name',label:'יחידה ארגונית',text:g=>g.department_name||'—'},
+      {th:'style="text-align:left"'},
+    ],
+    depts:[
+      {th:'style="width:34px"'},
+      {key:'name',label:'שם היחידה',text:d=>d.name||'—'},
+      {key:'user_count',label:'משתמשים',find:false,val:d=>d.user_count||0,text:d=>String(d.user_count||0)},
+      {key:'active_user_count',label:'פעילים בחודש האחרון',find:false,val:d=>d.active_user_count||0,
+       text:d=>d.user_count?((d.active_user_count||0)+' מתוך '+d.user_count):'—'},
+      {th:'style="text-align:left"'},
+    ],
+    envs:[
+      {key:'name',label:'שם הסביבה',text:e=>e.name||'—'},
+      {key:'board_count',label:'לוחות',find:false,val:e=>e.board_count||0,text:e=>String(e.board_count||0)},
+      {th:'style="text-align:left"'},
+    ],
+    history:[
+      {key:'user_name',label:'משתמש',text:ev=>ev.user_name||'—'},
+      {key:'logged_in_at',label:'מועד',find:false,text:ev=>SysAdmin.fdtx(ev.logged_in_at)||'—'},
+      {key:'ip',label:'כתובת IP',text:ev=>ev.ip||'—'},
+      {key:'user_agent',label:'דפדפן/מכשיר',text:ev=>ev.user_agent||'—'},
+    ],
+    /* the automations list is filtered and exported by the server (see
+       setAutoQ and exportAutos), so these columns only ever sort */
+    autos:[
+      {key:'board_name',label:'לוח / יחידה'},
+      {key:'display_name',label:'האוטומציה'},
+      {key:'status',label:'סטטוס',val:r=>SysAdmin.AUTO_ST[r.status]||r.status||''},
+      {key:'importance',label:'חשיבות',val:r=>SysAdmin.AUTO_IMP_RANK[r.importance]||9},
+      {key:'owner_name',label:'בעלים',val:r=>r.ownerless?'':(r.owner_name||'')},
+      {key:'last_run_at',label:'הפעלה אחרונה'},
+      {key:'success_rate',label:'הצלחה',val:r=>r.success_rate==null?null:+r.success_rate},
+      {key:'fail_count',label:'כשלים',val:r=>r.fail_count||0},
+      {th:''},
+    ],
+  },
+  cols(tab){ return this.COLS[tab]||[]; },
+  sortOf(tab){ return this.sort[tab]||(this.sort[tab]={key:'',dir:1}); },
+  rowsOf(tab){
+    if(tab==='users')   return this.users||[];
+    if(tab==='guests')  return (this.guests&&this.guests.guests)||[];
+    if(tab==='depts')   return st.depts||[];
+    if(tab==='envs')    return this.envs||[];
+    if(tab==='history') return this.history||[];
+    if(tab==='autos')   return (this.auto&&this.auto.rows)||[];
+    return [];
+  },
+  /* The rows as the screen has them: what the filter left, in the order the
+     header asked for. The <tbody>, the count and the export all read this one
+     list, so the three can never disagree about what "shown" means — an export
+     that quietly hands back something other than the table above it is the
+     whole reason the button is built client-side. */
+  view(tab){
+    const q=String(this.query[tab]||'').trim().toLowerCase();
+    let rows=this.rowsOf(tab)||[];
+    if(q){
+      const searchable=this.cols(tab).filter(c=>c.find!==false&&(c.find||c.text));
+      rows=rows.filter(r=>searchable.some(c=>String((c.find||c.text)(r)||'').toLowerCase().includes(q)));
+    }
+    const s=this.sortOf(tab);
+    if(s.key){ const c=this.cols(tab).find(x=>x.key===s.key); rows=this.sortRows(rows,s.key,s.dir,c&&c.val); }
+    return rows;
+  },
+  /* Numbers numerically, timestamps chronologically, everything else by Hebrew
+     collation — a plain `<` orders Hebrew by code point and puts a name
+     beginning with a final letter in a place no reader expects. A blank sorts
+     last in both directions on purpose: an admin reversing a column wants the
+     other end of the data, not a screenful of rows with nothing to say. */
+  sortRows(rows,key,dir,get){
+    const g=typeof get==='function'?get:(r=>r[key]);
+    const d=dir<0?-1:1;
+    const blank=v=>v==null||v===''||(typeof v==='number'&&isNaN(v));
+    const ISO=/^\d{4}-\d{2}-\d{2}[T ]/;
+    return (rows||[]).slice().sort((ra,rb)=>{
+      const a=g(ra), b=g(rb);
+      if(blank(a)&&blank(b))return 0;
+      if(blank(a))return 1;
+      if(blank(b))return -1;
+      if(typeof a==='number'&&typeof b==='number')return (a-b)*d;
+      if(typeof a==='boolean'||typeof b==='boolean')return ((a?1:0)-(b?1:0))*d;
+      const sa=String(a), sb=String(b);
+      if(ISO.test(sa)&&ISO.test(sb)){
+        const ta=this._ms(sa), tb=this._ms(sb);
+        if(!isNaN(ta)&&!isNaN(tb))return (ta-tb)*d;
+      }
+      return sa.localeCompare(sb,'he')*d;
+    });
+  },
+  sortBy(key){
+    if(!key)return;
+    const s=this.sortOf(this.tab);
+    if(s.key===key)s.dir=-s.dir; else { s.key=key; s.dir=1; }
+    this.repaint();
+  },
+  setQ(v){ this.query[this.tab]=v; this.repaint(); },
+  /* The sort control is a <button> inside the <th>, not the <th> wearing
+     role="button". An explicit role REPLACES the implicit one, so a th marked
+     that way stops being a columnheader — and aria-sort is only honoured on a
+     columnheader, which quietly threw away the state syncHeads works to keep
+     accurate. It also cost every cell below its header association, so a screen
+     reader stopped saying which column it was reading. The th keeps the role
+     and the aria-sort; the button takes the focus, the click and the keyboard. */
+  headHTML(tab){
+    return '<tr>'+this.cols(tab).map(c=>{
+      if(!c.key||!c.label) return `<th ${c.th||''}></th>`;
+      return `<th class="sa-th" ${c.th||''} data-k="${esc(c.key)}" aria-sort="none">`+
+        `<button type="button" class="sa-th-btn" title="מיון לפי ${esc(c.label)}" onclick="SysAdmin.sortBy('${esc(c.key)}')">`+
+        `${esc(c.label)} <i class="fa-solid fa-caret-up sa-caret"></i></button></th>`;
+    }).join('')+'</tr>';
+  },
+  /* The carets are updated in place rather than by re-rendering the header row,
+     because a header reached with the keyboard has the focus and re-rendering
+     it drops that focus back to the document — Enter would then sort once and
+     never again. */
+  syncHeads(){
+    const s=this.sortOf(this.tab);
+    /* Nothing on screen means nothing to decorate. The guard is not paranoia:
+       paintAutos is also driven headlessly by tests/frontend/automations_bulk.mjs,
+       which stubs document down to getElementById alone — and a caret failing to
+       update must never be what stops a tab from rendering at all. */
+    if(typeof document==='undefined'||!document.querySelectorAll)return;
+    document.querySelectorAll('#sa-body .sa-th').forEach(th=>{
+      const on=!!th.dataset.k&&th.dataset.k===s.key;
+      th.classList.toggle('on',on);
+      th.setAttribute('aria-sort',on?(s.dir>0?'ascending':'descending'):'none');
+      const ic=th.querySelector('.sa-caret');
+      if(ic)ic.className='fa-solid sa-caret '+(on&&s.dir<0?'fa-caret-down':'fa-caret-up');
+    });
+  },
+  repaint(){
+    const tab=this.tab;
+    const tb=document.getElementById('sa-rows'); if(tb)tb.innerHTML=this.bodyHTML(tab);
+    const c=document.getElementById('sa-count'); if(c)c.innerHTML=this.countHTML(tab);
+    this.syncHeads();
+  },
+  bodyHTML(tab){
+    if(tab==='guests') return this.guestRowsHTML();
+    if(tab==='depts')  return this.deptRowsHTML();
+    if(tab==='envs')   return this.envRowsHTML();
+    if(tab==='history')return this.histRowsHTML();
+    if(tab==='autos')  return this.autoRowsHTML();
+    return this.rowsHTML();
+  },
+  /* An empty table says which kind of empty it is: a directory with nobody in
+     it and a search that matched nobody look identical otherwise, and the
+     second one sent an admin looking for a bug that was a typo in the box. */
+  emptyRow(tab,none){
+    const q=String(this.query[tab]||'').trim();
+    const msg=q?`לא נמצאו תוצאות עבור ״${esc(q)}״`:none;
+    return `<tr><td colspan="${this.cols(tab).length||1}"><div class="empty" style="padding:20px">${msg}</div></td></tr>`;
+  },
+  countHTML(tab){
+    const total=tab==='autos'
+      ? (((this.auto||{}).totals||{}).total||this.rowsOf(tab).length)
+      : this.rowsOf(tab).length;
+    return this.countBox(this.view(tab).length,total,this.NOUN[tab]||'');
+  },
+  /* 50/60 — the number on screen first and large, the whole list beside it in
+     grey. The admin who narrowed a 60-user directory down to one division asked
+     for exactly this: how many are left, and an unmistakable sign that
+     something is filtering them. Unfiltered, there is only the one number. */
+  countBox(shown,total,noun){
+    const on=shown!==total;
+    return `<span class="sa-count${on?' on':''}">${on?'<i class="fa-solid fa-filter"></i>':''}`+
+      `<span class="sa-ratio"><b>${shown}</b>${on?`<span class="sa-tot">/${total}</span>`:''}</span> ${esc(noun)}</span>`;
+  },
+  barHTML(tab,actions,placeholder){
+    return `<div class="sa-bar">
+      <span id="sa-count">${this.countHTML(tab)}</span>
+      <span class="sa-search"><i class="fa-solid fa-magnifying-glass"></i><input class="am-in" type="search" value="${esc(this.query[tab]||'')}" aria-label="חיפוש ברשימה" placeholder="${esc(placeholder||'חיפוש…')}" oninput="SysAdmin.setQ(this.value)"></span>
+      <span class="am-spacer"></span>
+      ${actions||''}
+      <button class="btn btn-ghost" style="white-space:nowrap" onclick="SysAdmin.exportTab()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא לאקסל</button>
+    </div>`;
+  },
+  /* Excel, of what is on the screen rather than of what the server would hand
+     back: the point of the button is the list the admin is looking at — the
+     filter they typed, in the order they sorted it — and a round-trip would
+     answer with a different one. */
+  exportTab(){
+    const tab=this.tab;
+    if(tab==='autos'){ this.exportAutos(); return; }   // that list is narrowed server-side, so the server exports it
+    const cols=this.cols(tab).filter(c=>c.label&&c.text);
+    this.exportCSV((this.FILE[tab]||'export')+'-'+this.today()+'.csv',
+                   cols.map(c=>c.label),
+                   this.view(tab).map(r=>cols.map(c=>c.text(r))));
+  },
+  // the admin's own date, not UTC — a file exported at ten at night in Israel
+  // must not be named with tomorrow's, nor yesterday's, date
+  today(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); },
+  /* A CSV that Excel opens in Hebrew. Two things make that true and both are
+     easy to lose: the UTF-8 BOM, without which Excel reads the file in the
+     machine's ANSI code page and every Hebrew name arrives as mojibake (the
+     server-side export writes the same BOM, for the same reason), and quoting
+     every single field, so a name carrying a comma, a quote or a line break
+     survives the round trip instead of splitting the row in two. */
+  exportCSV(filename,headers,rows){
+    /* A field opening with = + - or @ is a FORMULA to Excel, quotes and all, and
+       these names are typed by users: a person who calls themselves
+       =HYPERLINK("http://…") is writing code that runs on the machine of the
+       admin who exports the directory. The leading apostrophe is Excel's own
+       "this is text" marker — it is consumed on open, so the cell still reads
+       as what was typed. Tab, CR and LF are stripped from the front first,
+       because Excel ignores them when deciding that a cell is a formula. */
+    const cell=v=>{
+      let t=String(v==null?'':v);
+      /* A leading minus is far more often a negative number than an attack, and
+         the apostrophe would turn a figure into a string Excel can no longer
+         sum — so a value that is wholly a number is left alone. Same rule as
+         _csv_safe in backend/main.py: the two exports must not disagree about
+         what is dangerous. */
+      if(/^[\t\r\n ]*[=+\-@]/.test(t)&&!(t.trim()!==''&&isFinite(t))) t="'"+t;
+      return '"'+t.replace(/"/g,'""')+'"';
+    };
+    const csv='\uFEFF'+[headers].concat(rows||[]).map(r=>r.map(cell).join(',')).join('\r\n')+'\r\n';   // written as \uFEFF rather than pasted: a real BOM is invisible in source and an editor may eat it
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    const a=document.createElement('a'); a.href=url; a.download=filename; a.click();
+    // the blob lives until it is let go of, so a few exports in one sitting
+    // would otherwise pin every list the admin downloaded for the whole session
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  },
+
   async open(tab){
     if(mobileBlocked('ניהול המערכת'))return;
     if(!hasCap('manage_system')){ toast('רק מנהל מערכת'); return; }
@@ -10690,24 +11005,9 @@ const SysAdmin = {
     const sel=(key,label,opts,cur)=>`<select onchange="SysAdmin.setAutoF('${key}',this.value)">
         <option value="">${esc(label)}</option>
         ${opts.map(o=>`<option value="${esc(o.id)}" ${String(cur||'')===String(o.id)?'selected':''}>${esc(o.name)}</option>`).join('')}</select>`;
-    const ST={draft:'טיוטה',active:'פעילה',paused:'מושהית',paused_error:'מושהית עקב שגיאה',deleting:'בתהליך מחיקה'};
-    const IMP={critical:'קריטית',high:'גבוהה',normal:'רגילה',low:'נמוכה'};
+    const ST=this.AUTO_ST;
     const dirty=Object.keys(f).some(k=>f[k]);
     const pct=Math.min(100,q.percent||0);
-    const rows=(a.rows||[]).map(r=>`<tr class="${r.needs_attention?'oa-warn':''}">
-        <td>${esc(r.board_name)}${r.department_name?`<div class="oa-sub">${esc(r.department_name)}</div>`:''}</td>
-        <td><div class="oa-name">${esc(r.display_name)}</div>
-            <div class="oa-sub">${esc(r.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>')}</div></td>
-        <td><span class="am-st ${r.status==='active'?'on':r.status==='paused_error'?'err':r.status==='draft'?'draft':r.status==='deleting'?'del':'off'}">${esc(ST[r.status]||r.status)}</span></td>
-        <td><span class="am-imp ${r.importance==='critical'?'crit':r.importance==='high'?'high':'norm'}">${esc(IMP[r.importance]||r.importance)}</span></td>
-        <td>${r.ownerless?'<span class="oa-flag">ללא בעלים</span>':esc(r.owner_name||'—')}</td>
-        <td>${r.last_run_at?esc(BoardLog.ago(r.last_run_at)):'<span class="oa-flag">טרם הופעלה</span>'}
-            ${(r.stale&&r.last_run_at)?`<div class="oa-sub">${r.stale_days} ימים</div>`:''}</td>
-        <td class="oa-num">${r.success_rate==null?'—':r.success_rate+'%'}</td>
-        <td class="oa-num ${r.fail_count?'bad':''}">${r.fail_count||0}</td>
-        <td><button class="sa-more" title="פתח את הלוח" onclick="SysAdmin.gotoBoard(${r.board_id})"><i class="fa-solid fa-arrow-up-right-from-square"></i></button></td>
-      </tr>`).join('')
-      ||`<tr><td colspan="9"><div class="empty" style="padding:26px"><div>אין אוטומציות בסינון הזה</div></div></td></tr>`;
     body.innerHTML=`
       ${this.freezeBannerHTML()}
       <div class="am-tiles">
@@ -10738,14 +11038,35 @@ const SysAdmin = {
         </select>
         ${dirty?'<button class="btn btn-ghost" onclick="SysAdmin.clearAutoF()">נקה סינון</button>':''}
         <span class="am-spacer"></span>
-        <button class="btn btn-ghost" onclick="SysAdmin.exportAutos()"><i class="fa-solid fa-file-csv" style="color:var(--green)"></i> ייצוא הרשימה</button>
+        <button class="btn btn-ghost" onclick="SysAdmin.exportAutos()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא לאקסל</button>
         <button class="btn btn-ghost danger" onclick="SysAdmin.freezeDialog()"><i class="fa-solid fa-hand"></i> השהיית חירום</button>
       </div>
-      <div class="oa-count">${(a.rows||[]).length} מוצגות מתוך ${t.total||0}</div>
-      <table class="sa-table oa-table"><thead><tr>
-        <th>לוח / יחידה</th><th>האוטומציה</th><th>סטטוס</th><th>חשיבות</th><th>בעלים</th>
-        <th>הפעלה אחרונה</th><th>הצלחה</th><th>כשלים</th><th></th>
-      </tr></thead><tbody>${rows}</tbody></table>`;
+      <div class="oa-count"><span id="sa-count">${this.countHTML('autos')}</span></div>
+      <table class="sa-table oa-table"><thead>${this.headHTML('autos')}</thead>
+        <tbody id="sa-rows">${this.autoRowsHTML()}</tbody></table>`;
+    this.syncHeads();
+  },
+  /* The automations rows, split out of paintAutos so that sorting a column can
+     repaint the body alone — the same bargain every other tab makes. Note the
+     two filters here are not the same thing: the box above is the server's
+     (autoF.q, which refetches), and the header sort is ours, applied to
+     whatever the server last sent back. */
+  autoRowsHTML(){
+    const ST=this.AUTO_ST, IMP=this.AUTO_IMP;
+    return this.view('autos').map(r=>`<tr class="${r.needs_attention?'oa-warn':''}">
+        <td>${esc(r.board_name)}${r.department_name?`<div class="oa-sub">${esc(r.department_name)}</div>`:''}</td>
+        <td><div class="oa-name">${esc(r.display_name)}</div>
+            <div class="oa-sub">${esc(r.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b>'+v+'</b>')}</div></td>
+        <td><span class="am-st ${r.status==='active'?'on':r.status==='paused_error'?'err':r.status==='draft'?'draft':r.status==='deleting'?'del':'off'}">${esc(ST[r.status]||r.status)}</span></td>
+        <td><span class="am-imp ${r.importance==='critical'?'crit':r.importance==='high'?'high':'norm'}">${esc(IMP[r.importance]||r.importance)}</span></td>
+        <td>${r.ownerless?'<span class="oa-flag">ללא בעלים</span>':esc(r.owner_name||'—')}</td>
+        <td>${r.last_run_at?esc(BoardLog.ago(r.last_run_at)):'<span class="oa-flag">טרם הופעלה</span>'}
+            ${(r.stale&&r.last_run_at)?`<div class="oa-sub">${r.stale_days} ימים</div>`:''}</td>
+        <td class="oa-num">${r.success_rate==null?'—':r.success_rate+'%'}</td>
+        <td class="oa-num ${r.fail_count?'bad':''}">${r.fail_count||0}</td>
+        <td><button class="sa-more" title="פתח את הלוח" onclick="SysAdmin.gotoBoard(${r.board_id})"><i class="fa-solid fa-arrow-up-right-from-square"></i></button></td>
+      </tr>`).join('')
+      ||this.emptyRow('autos','אין אוטומציות בסינון הזה');
   },
 
   gotoBoard(bid){ closeModals(); openBoard(bid).then(()=>Automations.open()).catch(()=>{}); },
@@ -10841,7 +11162,7 @@ const SysAdmin = {
     else if(tab==='depts'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderDepts(); }
     else if(tab==='envs'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderEnvs(); }
     else if(tab==='autos'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderAutos(); }
-    else body.innerHTML=this.usersHTML();
+    else { body.innerHTML=this.usersHTML(); this.syncHeads(); }
   },
   /* ── סביבות — a discoverable place for a system admin to rename or delete an
      environment (the sidebar switcher only exposes these on hover) ── */
@@ -10849,8 +11170,17 @@ const SysAdmin = {
     let envs=[]; try{ const d=await api('/api/environments'+(meId()?'?user_id='+meId():'')); envs=d.environments||[]; }catch(e){}
     this.envs=envs;
     const body=document.getElementById('sa-body'); if(!body)return;
+    const add=hasCap('create_environment')?`<button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addEnv()"><i class="fa-solid fa-plus"></i> סביבה חדשה</button>`:'';
+    body.innerHTML=`<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> סביבות (Workspaces) מכילות לוחות ותיקיות. מחיקת סביבה מעבירה את לוחותיה לסביבת ברירת המחדל — הלוחות לא נמחקים. את סביבת ברירת המחדל לא ניתן למחוק.</div>
+      ${this.barHTML('envs',add,'חיפוש בשם הסביבה')}
+      <div style="overflow-x:auto"><table class="sa-table"><thead>${this.headHTML('envs')}</thead><tbody id="sa-rows">${this.envRowsHTML()}</tbody></table></div>`;
+    this.syncHeads();
+  },
+  envRowsHTML(){
+    const list=this.view('envs');
+    if(!list.length) return this.emptyRow('envs','אין סביבות עדיין');
     const admin=canAdminEnvs();   // whoever may administer environments — same rule the API enforces
-    const rows=envs.length ? envs.map(e=>`<tr>
+    return list.map(e=>`<tr>
         <td style="font-weight:600"><button class="env-ic-btn" title="שינוי מראה" onclick="SysAdmin.editLook(${e.id})">${envIconHTML(e)}</button> <span class="env-name" data-env="${e.id}" title="לחיצה כפולה לשינוי שם" ondblclick="SysAdmin.renameEnv(${e.id})">${esc(e.name)}</span>${e.is_primary?' <span class="perm-badge">ברירת מחדל</span>':''}</td>
         <td style="color:var(--text-muted)">${e.board_count||0} <span style="color:var(--text-light)">לוחות</span></td>
         <td style="white-space:nowrap;text-align:left">
@@ -10860,14 +11190,7 @@ const SysAdmin = {
               ? `<button class="sa-more" title="לא ניתן למחוק את סביבת ברירת המחדל" disabled style="opacity:.35;cursor:not-allowed"><i class="fa-solid fa-trash"></i></button>`
               : `<button class="sa-more" title="מחיקה" onclick="SysAdmin.deleteEnv(${e.id})"><i class="fa-solid fa-trash" style="color:var(--danger,#e2445c)"></i></button>`}
         </td>
-      </tr>`).join('') : `<tr><td colspan="3"><div class="empty" style="padding:20px">אין סביבות עדיין</div></td></tr>`;
-    body.innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> סביבות (Workspaces) מכילות לוחות ותיקיות. מחיקת סביבה מעבירה את לוחותיה לסביבת ברירת המחדל — הלוחות לא נמחקים. את סביבת ברירת המחדל לא ניתן למחוק.</div>
-        ${hasCap('create_environment')?`<button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addEnv()"><i class="fa-solid fa-plus"></i> סביבה חדשה</button>`:''}
-      </div>
-      <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
-        <th>שם הסביבה</th><th>לוחות</th><th></th>
-      </tr></thead><tbody>${rows}</tbody></table></div>`;
+      </tr>`).join('');
   },
   /* The same dialog the switcher opens — one way to make an environment, not
      two that ask for different things. Here it hands the table back rather than
@@ -11004,22 +11327,32 @@ const SysAdmin = {
   async renderDepts(){
     try{ st.depts = await api('/api/departments'); }catch(e){ st.depts = st.depts||[]; }
     const body=document.getElementById('sa-body'); if(!body)return;
-    const rows=(st.depts||[]).length ? (st.depts).map(d=>`<tr>
+    const add=`<button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addDept()"><i class="fa-solid fa-plus"></i> הוסף יחידה</button>`;
+    body.innerHTML=`<div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> היחידות הארגוניות (מחלקות) משמשות לשיוך משתמשים ולוחות. מחיקת יחידה מנתקת ממנה את המשויכים אליה — היא לא מוחקת אותם.
+        <br>״פעיל״ כאן הוא משתמש המשויך ליחידה שהתחבר למערכת לפחות פעם אחת ב-30 הימים האחרונים.</div>
+      ${this.barHTML('depts',add,'חיפוש בשם היחידה')}
+      <div style="overflow-x:auto"><table class="sa-table"><thead>${this.headHTML('depts')}</thead><tbody id="sa-rows">${this.deptRowsHTML()}</tbody></table></div>`;
+    this.syncHeads();
+  },
+  deptRowsHTML(){
+    const list=this.view('depts');
+    if(!list.length) return this.emptyRow('depts','אין יחידות ארגוניות עדיין');
+    return list.map(d=>{
+      const n=d.user_count||0, a=d.active_user_count||0;
+      /* A unit with nobody in it has no share to show — 0 מתוך 0 reads like a
+         measurement, and it is the absence of one. */
+      const share=n?`<b>${a}</b> <span class="sa-sub">מתוך ${n}</span>`:'<span style="color:var(--text-light)">—</span>';
+      return `<tr>
         <td><span class="dp-swatch" style="background:${esc(d.color||'#3b82f6')}"></span></td>
         <td style="font-weight:600">${esc(d.name)}</td>
-        <td style="color:var(--text-muted)">${d.user_count||0} <span style="color:var(--text-light)">משתמשים</span></td>
+        <td style="color:var(--text-muted)">${n}</td>
+        <td style="color:var(--text-muted);white-space:nowrap">${share}</td>
         <td style="white-space:nowrap;text-align:left">
           <button class="sa-more" title="עריכה" onclick="SysAdmin.editDept(${d.id})"><i class="fa-solid fa-pen"></i></button>
           <button class="sa-more" title="מחיקה" onclick="SysAdmin.deleteDept(${d.id})"><i class="fa-solid fa-trash" style="color:var(--danger,#e2445c)"></i></button>
         </td>
-      </tr>`).join('') : `<tr><td colspan="4"><div class="empty" style="padding:20px">אין יחידות ארגוניות עדיין</div></td></tr>`;
-    body.innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> היחידות הארגוניות (מחלקות) משמשות לשיוך משתמשים ולוחות. מחיקת יחידה מנתקת ממנה את המשויכים אליה — היא לא מוחקת אותם.</div>
-        <button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addDept()"><i class="fa-solid fa-plus"></i> הוסף יחידה</button>
-      </div>
-      <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
-        <th style="width:34px"></th><th>שם היחידה</th><th>משתמשים</th><th></th>
-      </tr></thead><tbody>${rows}</tbody></table></div>`;
+      </tr>`;
+    }).join('');
   },
   deptModal(d){
     const edit=!!d; d=d||{};
@@ -11057,14 +11390,11 @@ const SysAdmin = {
     },{title:'מחיקת יחידה ארגונית',confirmText:'מחק'});
   },
   usersHTML(){
-    return `<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        <div style="flex:1;font-size:12.5px;color:var(--text-muted)"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. לעריכת כל פרטי הפרופיל — תפריט <i class="fa-solid fa-ellipsis-vertical"></i> ← ״ערוך פרופיל״.</div>
-        <button class="btn btn-ghost" style="white-space:nowrap" title="ניהול הרשאות תפקידים" onclick="SysAdmin.perms()"><i class="fa-solid fa-gear"></i> הרשאות תפקידים</button>
-        <button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addUser()"><i class="fa-solid fa-user-plus"></i> הוסף משתמש</button>
-      </div>
-      <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
-        <th style="width:34px"></th><th>שם</th><th>מייל</th><th>תפקיד</th><th>מחלקה</th><th>כניסה אחרונה</th><th>סטטוס</th>
-      </tr></thead><tbody id="sa-rows">${this.rowsHTML()}</tbody></table></div>`;
+    const actions=`<button class="btn btn-ghost" style="white-space:nowrap" title="ניהול הרשאות תפקידים" onclick="SysAdmin.perms()"><i class="fa-solid fa-gear"></i> הרשאות תפקידים</button>
+        <button class="btn btn-primary" style="white-space:nowrap" onclick="SysAdmin.addUser()"><i class="fa-solid fa-user-plus"></i> הוסף משתמש</button>`;
+    return `<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> כל משתמשי המערכת, כולל לא-פעילים. לעריכת כל פרטי הפרופיל — תפריט <i class="fa-solid fa-ellipsis-vertical"></i> ← ״ערוך פרופיל״.</div>
+      ${this.barHTML('users',actions,'חיפוש בשם, במייל, בתפקיד או במחלקה')}
+      <div style="overflow-x:auto"><table class="sa-table"><thead>${this.headHTML('users')}</thead><tbody id="sa-rows">${this.rowsHTML()}</tbody></table></div>`;
   },
   async perms(){
     let d; try{ d=await api('/api/role-permissions'); }catch(e){ toast('שגיאה בטעינת הרשאות'); return; }
@@ -11100,15 +11430,22 @@ const SysAdmin = {
   async renderHistory(){
     let evs=[]; try{ evs=await api('/api/login-history?actor_id='+meId()); }
     catch(e){ const b=document.getElementById('sa-body'); if(b)b.innerHTML='<div class="empty" style="padding:24px">רק מנהל מערכת יכול לצפות</div>'; return; }
-    const rows=evs.length?evs.map(ev=>`<tr>
+    this.history=evs;
+    const b=document.getElementById('sa-body'); if(!b)return;
+    b.innerHTML=`<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> ההתחברויות האחרונות בכל המערכת.</div>
+      ${this.barHTML('history','','חיפוש במשתמש, בכתובת IP או בדפדפן')}
+      <div style="overflow-x:auto"><table class="sa-table"><thead>${this.headHTML('history')}</thead><tbody id="sa-rows">${this.histRowsHTML()}</tbody></table></div>`;
+    this.syncHeads();
+  },
+  histRowsHTML(){
+    const list=this.view('history');
+    if(!list.length) return this.emptyRow('history','אין התחברויות רשומות עדיין');
+    return list.map(ev=>`<tr>
         <td><div class="sa-name"><span class="av" style="background:var(--primary)">${avatarInner({id:ev.user_id,name:ev.user_name,avatar_url:ev.avatar_url})}</span><span style="font-weight:600">${esc(ev.user_name||'—')}</span></div></td>
         <td style="white-space:nowrap;color:var(--text-muted)">${this.fdt(ev.logged_in_at)}</td>
         <td style="color:var(--text-muted)">${esc(ev.ip||'—')}</td>
         <td style="color:var(--text-light);font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(ev.user_agent||'')}">${esc(ev.user_agent||'—')}</td>
-      </tr>`).join(''):`<tr><td colspan="4"><div class="empty" style="padding:20px">אין התחברויות רשומות עדיין</div></td></tr>`;
-    const b=document.getElementById('sa-body'); if(!b)return;
-    b.innerHTML=`<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px"><i class="fa-solid fa-circle-info"></i> ${evs.length} ההתחברויות האחרונות בכל המערכת.</div>
-      <div style="overflow-x:auto"><table class="sa-table"><thead><tr><th>משתמש</th><th>מועד</th><th>כתובת IP</th><th>דפדפן/מכשיר</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      </tr>`).join('');
   },
   /* ── אורחים — people from outside the organization ──
      Inviting one is three things at once: an Entra ID guest account, membership
@@ -11134,8 +11471,21 @@ const SysAdmin = {
     const dirErr=d.directory_error
       ? `<div class="sa-note warn"><i class="fa-solid fa-cloud-exclamation"></i> לא ניתן לקרוא את מצב האורחים מ-Entra כרגע, המוצג להלן הוא מה שנרשם אצלנו. ${esc(d.directory_error)}</div>`
       : '';
-    const rows=(d.guests&&d.guests.length)
-      ? d.guests.map(g=>`<tr class="${g.is_active===false?'inactive':''}">
+    const invite=`<button class="btn btn-primary" style="white-space:nowrap" ${can?'onclick="SysAdmin.inviteGuest()"':'disabled style="white-space:nowrap;opacity:.5;cursor:not-allowed"'}><i class="fa-solid fa-user-plus"></i> הזמנת אורח</button>`;
+    body.innerHTML=`${notice}${dirErr}
+      <div style="font-size:12.5px;color:var(--text-muted);line-height:1.6;margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        אורח הוא אדם מחוץ לארגון. הזמנה יוצרת עבורו חשבון אורח ב-Entra ID, מוסיפה אותו לקבוצה <b>${group}</b>, ופותחת לו משתמש כאן בהרשאת <b>${ROLE_HE.guest}</b>. הוא מתחבר עם החשבון שלו — לא נוצרת עבורו סיסמה כאן.</div>
+      ${this.barHTML('guests',invite,'חיפוש בשם, במייל, במצב או ביחידה')}
+      <div style="overflow-x:auto"><table class="sa-table"><thead>${this.headHTML('guests')}</thead><tbody id="sa-rows">${this.guestRowsHTML()}</tbody></table></div>`;
+    this.syncHeads();
+  },
+  guestRowsHTML(){
+    const list=this.view('guests');
+    if(!list.length) return this.emptyRow('guests','אין אורחים עדיין');
+    // the two actions are only live when the tenant is actually configured for
+    // invitations — the same condition the banner above the table explains
+    const can=!!(this.guests&&this.guests.enabled&&this.guests.configured);
+    return list.map(g=>`<tr class="${g.is_active===false?'inactive':''}">
           <td><div class="sa-name"><span class="av" style="background:var(--primary)">${avatarInner(g)}</span><span style="font-weight:600">${esc(g.name||'—')}</span></div></td>
           <td style="color:var(--text-muted)">${esc(g.email||'—')}</td>
           <td>${this.guestState(g)}</td>
@@ -11144,28 +11494,26 @@ const SysAdmin = {
             <button class="sa-more" title="שליחת ההזמנה מחדש" ${can?`onclick="SysAdmin.inviteGuest(${g.id})"`:'disabled style="opacity:.35;cursor:not-allowed"'}><i class="fa-solid fa-paper-plane"></i></button>
             <button class="sa-more" title="ביטול גישה" ${can?`onclick="SysAdmin.revokeGuest(${g.id})"`:'disabled style="opacity:.35;cursor:not-allowed"'}><i class="fa-solid fa-user-slash" style="color:var(--danger,#e2445c)"></i></button>
           </td>
-        </tr>`).join('')
-      : `<tr><td colspan="5"><div class="empty" style="padding:20px">אין אורחים עדיין</div></td></tr>`;
-    body.innerHTML=`${notice}${dirErr}
-      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:14px">
-        <div style="flex:1;font-size:12.5px;color:var(--text-muted);line-height:1.6"><i class="fa-solid fa-circle-info"></i>
-          אורח הוא אדם מחוץ לארגון. הזמנה יוצרת עבורו חשבון אורח ב-Entra ID, מוסיפה אותו לקבוצה <b>${group}</b>, ופותחת לו משתמש כאן בהרשאת <b>${ROLE_HE.guest}</b>. הוא מתחבר עם החשבון שלו — לא נוצרת עבורו סיסמה כאן.</div>
-        <button class="btn btn-primary" style="white-space:nowrap" ${can?'onclick="SysAdmin.inviteGuest()"':'disabled style="white-space:nowrap;opacity:.5;cursor:not-allowed"'}><i class="fa-solid fa-user-plus"></i> הזמנת אורח</button>
-      </div>
-      <div style="overflow-x:auto"><table class="sa-table"><thead><tr>
-        <th>שם</th><th>מייל</th><th>מצב</th><th>יחידה ארגונית</th><th></th>
-      </tr></thead><tbody>${rows}</tbody></table></div>`;
+        </tr>`).join('');
   },
   /* Our row and the directory can disagree, and each disagreement means
      something different to whoever has to fix it, so each gets its own badge
-     rather than a single "active" flag that hides which half is wrong. */
-  guestState(g){
-    if(g.is_active===false) return `<span class="sa-badge off">גישה בוטלה</span>`;
-    if(g.in_group===false)  return `<span class="sa-badge warn" title="המשתמש קיים ב-Entra אך אינו בקבוצה — שליחת ההזמנה מחדש תוסיף אותו">אינו בקבוצה</span>`;
+     rather than a single "active" flag that hides which half is wrong.
+
+     The state is decided once, as text plus the badge it wears, so that the
+     column can also be sorted, searched and exported — a sort that read the
+     markup would order the guests by the name of a CSS class. */
+  guestStateInfo(g){
+    if(g.is_active===false) return {cls:'off',t:'גישה בוטלה'};
+    if(g.in_group===false)  return {cls:'warn',t:'אינו בקבוצה',title:'המשתמש קיים ב-Entra אך אינו בקבוצה — שליחת ההזמנה מחדש תוסיף אותו'};
     const st=(g.invite_state||'').toLowerCase();
-    if(st==='pendingacceptance') return `<span class="sa-badge warn">ממתין לאישור ההזמנה</span>`;
-    if(st==='accepted')          return `<span class="sa-badge ok">הצטרף</span>`;
-    return `<span class="sa-badge ok">הוזמן</span>`;
+    if(st==='pendingacceptance') return {cls:'warn',t:'ממתין לאישור ההזמנה'};
+    if(st==='accepted')          return {cls:'ok',t:'הצטרף'};
+    return {cls:'ok',t:'הוזמן'};
+  },
+  guestState(g){
+    const i=this.guestStateInfo(g);
+    return `<span class="sa-badge ${i.cls}"${i.title?` title="${esc(i.title)}"`:''}>${esc(i.t)}</span>`;
   },
   /* With an id it is a resend for that guest; with none, a fresh invitation.
      The id rather than the address, because a name carrying an apostrophe would
@@ -11265,19 +11613,27 @@ const SysAdmin = {
      laptop still on a holiday's clock would otherwise quietly report the wrong
      hour to an admin checking who logged in when. */
   TZ:'Asia/Jerusalem',
-  fdt(iso){
-    if(!iso)return '<span style="color:var(--text-light)">— מעולם לא —</span>';
+  /* "naive means UTC" is applied in exactly one place, so a sort and the cell
+     above it can never disagree about which instant a row carries. */
+  _ms(iso){ if(!iso)return NaN; const s=String(iso); return Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(s)?s:s+'Z'); },
+  /* the plain string — what the CSV carries, and what the cell shows once it
+     has been escaped. There is one formatter, not two that drift apart. */
+  fdtx(iso){
+    if(!iso)return '';
     try{
-      const s=String(iso);
-      const utc=/(Z|[+-]\d{2}:?\d{2})$/.test(s)?s:s+'Z';   // naive means UTC
-      const d=new Date(utc); if(isNaN(d))return esc(iso);
-      return esc(d.toLocaleString('he-IL',{timeZone:this.TZ,day:'2-digit',
-        month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}));
-    }catch(e){ return esc(iso); }
+      const t=this._ms(iso); if(isNaN(t))return String(iso);
+      return new Date(t).toLocaleString('he-IL',{timeZone:this.TZ,day:'2-digit',
+        month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    }catch(e){ return String(iso); }
+  },
+  fdt(iso){
+    const s=this.fdtx(iso);
+    return s?esc(s):'<span style="color:var(--text-light)">— מעולם לא —</span>';
   },
   rowsHTML(){
-    if(!this.users||!this.users.length) return `<tr><td colspan="7"><div class="empty" style="padding:20px">אין משתמשים</div></td></tr>`;
-    return this.users.map(u=>{
+    const list=this.view('users');
+    if(!list.length) return this.emptyRow('users','אין משתמשים');
+    return list.map(u=>{
       const active=u.is_active!==false;
       return `<tr class="${active?'':'inactive'}">
         <td><button class="sa-more" title="פעולות" onclick="SysAdmin.rowMenu(event,${u.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button></td>
@@ -11285,6 +11641,7 @@ const SysAdmin = {
         <td style="color:var(--text-muted)">${esc(u.email||'—')}</td>
         <td>${ROLE_HE[u.role]||esc(u.role||'—')}</td>
         <td style="color:var(--text-muted)">${esc(u.department_name||'—')}</td>
+        <td style="color:var(--text-muted);white-space:nowrap">${u.created_at?this.fdt(u.created_at):'—'}</td>
         <td style="color:var(--text-muted);white-space:nowrap">${this.fdt(u.last_login)}</td>
         <td>${(()=>{const self=u.id===meId();return `<label class="sa-toggle ${active?'on':''} ${self?'disabled':''}" title="${self?'אי אפשר לשנות את הסטטוס שלך':'שנה סטטוס פעיל/לא פעיל'}"><input type="checkbox" ${active?'checked':''} ${self?'disabled':''} onchange="SysAdmin.toggleActive(${u.id},this.checked)"><span class="sa-tk"></span><span class="sa-tl">${active?'פעיל':'לא פעיל'}</span></label>`;})()}</td>
       </tr>`;
@@ -11356,7 +11713,9 @@ const SysAdmin = {
     try{
       const r=await api('/api/users/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),...body})});
       const u=(this.users||[]).find(x=>x.id===uid); if(u)Object.assign(u,r);
-      const tb=document.getElementById('sa-rows'); if(tb)tb.innerHTML=this.rowsHTML();
+      // repaint, not just the rows: changing a role can move the person out of
+      // the filter that is running, and then the count above has to say so
+      this.repaint();
       if(okMsg)toast(okMsg);
     }catch(err){
       toast(String(err&&err.message||'').includes('403')?'רק מנהל מערכת יכול לשנות':'שגיאה בעדכון'); closeCellPops();

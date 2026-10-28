@@ -27,9 +27,26 @@ function grabMethod(header){
   const end = src.indexOf('\n  }', nl);
   return src.slice(i, end + 4);
 }
+/* a method written entirely on one line — the brace grab above would run past
+   it looking for a closing line that is not there */
+function grabLine(header){
+  const i = src.indexOf(header);
+  if (i < 0) throw new Error('not found: ' + header);
+  return src.slice(i, src.indexOf('\n', i));          // includes its trailing comma
+}
 const TZ = /TZ:'([^']+)'/.exec(src);
-const fdt = new Function('esc', `return { TZ:'${TZ ? TZ[1] : ''}', ${grabMethod('fdt(iso){')} };`)(
-  x => String(x == null ? '' : x)).fdt;
+/* fdt was split in three and the sandbox has to carry all of it. fdtx does the
+   formatting and hands back a PLAIN string, because the CSV export needs the
+   text unescaped; fdt is now only "escape it, or say never"; and _ms is the one
+   place the rule "a naive timestamp means UTC" is applied, so that a sort and
+   the cell above it can never disagree about which instant a row carries.
+   Pulling only fdt out gave a sandbox whose this.fdtx did not exist. */
+const COL = new Function('esc', `return { TZ:'${TZ ? TZ[1] : ''}', ${grabLine('_ms(iso){')} `
+  + `${grabMethod('fdtx(iso){')}, ${grabMethod('fdt(iso){')} };`)(
+  x => String(x == null ? '' : x));
+// called through the object, not lifted off it: fdt now reaches for this.fdtx,
+// and a detached method would arrive with no `this` at all
+const fdt = iso => COL.fdt(iso);
 
 let pass = 0, fail = 0;
 const ck = (n, c, x = '') => { c ? (pass++, console.log('  OK   ' + n)) : (fail++, console.log('  FAIL ' + n + (x ? '  → ' + x : ''))); };

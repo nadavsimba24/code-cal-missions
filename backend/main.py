@@ -20938,6 +20938,11 @@ def list_users():
             "is_active": bool(u.is_active) if u.is_active is not None else True,
             "phone": u.phone, "title": u.title,
             "last_login": _iso(last_logins.get(u.id)),
+            # When the account was opened ("מועד הזמנה למערכת" in the directory).
+            # Through the same _iso as last_login on purpose: the column is a
+            # naive DateTime holding UTC, and handing that to the browser bare
+            # is exactly what made every login read three hours early here.
+            "created_at": _iso(u.created_at),
             "email_notifications": bool(u.email_notifications) if u.email_notifications is not None else True,
             "notif_prefs": u.notif_prefs or {},
         } for u in users]
@@ -21420,10 +21425,27 @@ def list_departments():
                       .filter(User.department_id != None).group_by(User.department_id).all())
         bcount = dict(db.query(Board.department_id, _func.count(Board.id))
                       .filter(Board.department_id != None).group_by(Board.department_id).all())
+        # How many of those people actually showed up in the last 30 days.
+        # user_count answers "how many were assigned here", which stays true
+        # long after a unit stops being used — this is the one that tells the
+        # two apart, so neither replaces the other.
+        #
+        # One grouped join over login_events, not a count per department: this
+        # screen draws every unit at once, and the per-row version was a query
+        # per row. DISTINCT because a person who signed in daily is still one
+        # active user, not thirty. The cutoff is deliberately naive: logged_in_at
+        # is a plain DateTime and SQLite stores it with the offset dropped, so
+        # comparing it against an aware datetime compares two different things.
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30)
+        acount = dict(db.query(User.department_id, _func.count(_func.distinct(User.id)))
+                      .join(LoginEvent, LoginEvent.user_id == User.id)
+                      .filter(User.department_id != None, LoginEvent.logged_in_at >= cutoff)
+                      .group_by(User.department_id).all())
         return [{
             "id": d.id, "name": d.name, "code": d.code, "color": d.color,
             "organization_id": d.organization_id,
             "user_count": ucount.get(d.id, 0), "board_count": bcount.get(d.id, 0),
+            "active_user_count": acount.get(d.id, 0),
         } for d in depts]
 
 DEPT_COLORS = ("#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981",
@@ -21448,8 +21470,13 @@ def create_department(data: dict, actor_id: int = Depends(current_user_id)):
         db.add(d)
         db.commit()
         db.refresh(d)
+        # A brand-new unit has nobody in it, so every count is zero — but the
+        # shape has to match what GET /api/departments returns, including the
+        # activity figure. A caller that renders this response straight into the
+        # row instead of refetching would otherwise read undefined there.
         return {"id": d.id, "name": d.name, "code": d.code, "color": d.color,
-                "organization_id": d.organization_id, "user_count": 0, "board_count": 0}
+                "organization_id": d.organization_id, "user_count": 0,
+                "board_count": 0, "active_user_count": 0}
 
 
 @app.patch("/api/departments/{dept_id}")
