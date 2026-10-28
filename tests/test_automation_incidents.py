@@ -61,23 +61,34 @@ def _blow_up(kind):
     return boom
 
 
+#  Each of these breaks the engine for the length of its own loop and then puts
+#  it back — through a NESTED monkeypatch context, not through the caller's.
+#  monkeypatch.undo() undoes everything that monkeypatch has ever done, so the
+#  plain version silently reverted the caller's patches too. The case that paid
+#  for it is test_four_working_hours_reach_the_board_managers: it pins the
+#  working-hours window open so that aged hours are working hours, calls
+#  _break_it, and had the window torn back down inside that call — leaving the
+#  real 08:00–17:00 window, under which "five hours ago" is five working hours
+#  in the afternoon and none at all first thing in the morning. The case passed
+#  or failed by the hour of the day it was run at, which is exactly what its own
+#  docstring says it was rewritten to stop doing.
 def _break_temp(client, bid, admin_id, monkeypatch, n=1):
     """A rule that keeps hitting something transient. Recorded every time;
     said out loud only once the retries are spent or it is suspended."""
-    monkeypatch.setattr(cityos_main, "_apply_priority_key",
-                        _blow_up(RuntimeError("database is locked")))
-    for i in range(n):
-        _item(client, bid, admin_id, f"פריט {i}")
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(cityos_main, "_apply_priority_key",
+                   _blow_up(RuntimeError("database is locked")))
+        for i in range(n):
+            _item(client, bid, admin_id, f"פריט {i}")
 
 
 def _break_perm(client, bid, admin_id, monkeypatch, n=1):
     """A rule refused on what the engine read — permanent, and told at once."""
-    monkeypatch.setattr(cityos_main, "_apply_priority_key",
-                        _blow_up(cityos_main._Refused("ערך לא חוקי")))
-    for i in range(n):
-        _item(client, bid, admin_id, f"קבוע {i}")
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(cityos_main, "_apply_priority_key",
+                   _blow_up(cityos_main._Refused("ערך לא חוקי")))
+        for i in range(n):
+            _item(client, bid, admin_id, f"קבוע {i}")
 
 
 _break_it = _break_perm
