@@ -843,23 +843,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    column and inside the clip, where the columns sliding under it were in plain
    view. See .tbl td.c-item. */
 #view{--view-pad:22px;flex:1;overflow:auto;overscroll-behavior-y:contain;padding:0 var(--view-pad) 18px;position:relative}
-/* The board's own horizontal scrollbar — the line along the bottom of the
-   page. Still thinner than the app's 9px default, and in #c5c8d6, so a board
-   wider than the window says so without a grey bar across the foot of every
-   screen. Only the horizontal one: the vertical bar is dragged far more often
-   and stays the size it can be grabbed at.
-
-   6px, after 3px and then 4px. The thinness was the point — the bar is there
-   to say "this board is wider than the window", not to be furniture — but
-   twice now it turned out to be too thin to put a mouse on, and 4px was a
-   third more than 3px and still missed. 6px is two thirds of the default:
-   enough to catch on the way down, and still visibly not the grey band the
-   default lays across every other scrolling box. */
-#view::-webkit-scrollbar:horizontal{height:6px}
-#view::-webkit-scrollbar-thumb:horizontal{background:#c5c8d6;border-radius:6px}
-/* Firefox has no per-axis rule, so the thin size applies to both — its thin
-   vertical bar is still a grabbable width, which 3px would not be. */
-#view{scrollbar-width:thin;scrollbar-color:#c5c8d6 transparent}
 /* top breathing space as a margin on the first block — it scrolls away, so no strip is left above the sticky header for rows to peek through */
 #view>*:first-child{margin-top:18px}
 
