@@ -86,6 +86,15 @@ def _fix_verify(line):
     for p in ("verify=False", "verify = False"):
         if p in line: return line.replace(p, "verify=True")
     return None
+# Mend reports this table as CWE-916 (Weak Hash Strength). It is a false
+# positive and must not be "fixed": there is no hash call here. The scanner
+# matched the literal strings "MD5"/"SHA1" and the bandit ids B303/B324 inside
+# the very tool whose job is to FIND weak hashes and rewrite them to SHA-256.
+# Renaming the strings or dropping the entry would delete the remediation, not
+# a vulnerability. Confirmed 2026-10-29: the codebase has no md5/sha1 call at
+# all — every hash is sha256 (backend/entra.py:346 PKCE S256,
+# backend/main.py:4679 a rate-limit bucket key), and _fix_hash is pinned by
+# tests/test_security_agent.py. Waive it on the Mend side.
 FIXERS = [({"B303", "B324"}, _fix_hash, "MD5/SHA1 → SHA256 (אורך ה-digest משתנה)"),
           ({"B506"}, _fix_yaml, "yaml.load → yaml.safe_load"),
           ({"B501"}, _fix_verify, "verify=False → verify=True")]

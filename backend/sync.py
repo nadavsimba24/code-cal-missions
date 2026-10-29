@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from sqlalchemy.orm import Session
 from models import init_db, Board, Group
 
-APP = os.path.dirname(os.path.dirname(__file__))
+APP = os.path.realpath(os.path.dirname(os.path.dirname(__file__)))
 DB_PATH = os.path.join(os.path.dirname(__file__), "cityos.db")
 
 # known purple/indigo hexes -> monday replacements (NO purple allowed)
@@ -40,10 +40,36 @@ def reconcile_db():
             db.commit()
     return changed
 
+def read_in_app(p):
+    """Read a file from inside the project directory, or return "".
+
+    Mend flagged the open() here as a path-traversal sink (CWE-22, High). Every
+    caller passes a literal today, which is exactly how such a helper quietly
+    becomes dangerous later — os.path.join happily lets "../../.ssh/id_rsa", or
+    an absolute path, win over the root it was meant to be anchored to. So the
+    candidate is resolved first (which also collapses a symlink pointing out of
+    the tree) and anything landing outside APP reads as empty rather than
+    handing somebody's secrets to the invariant checks.
+
+    It lives at module level, not as a closure in check_invariants, so the
+    containment rule can be tested directly — see
+    tests/test_sync_reads_only_inside_the_repo.py.
+    """
+    target = os.path.realpath(os.path.join(APP, p))
+    if target != APP and not target.startswith(APP + os.sep):
+        print(f"  ✗ נתיב מחוץ לתיקיית הפרויקט, מדלגים: {p}")
+        return ""
+    try:
+        with open(target, encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, ValueError):
+        # A missing file and undecodable bytes both mean "nothing to check
+        # here"; ValueError is what covers UnicodeDecodeError.
+        return ""
+
+
 def check_invariants():
-    def read(p):
-        try: return open(os.path.join(APP, p), encoding="utf-8").read()
-        except: return ""
+    read = read_in_app
     idx = read("frontend/index.html"); main = read("backend/main.py"); env = read(".env")
     checks = [
         ("שם CODE-CAL MISSIONS ב-UI", "CODE-CAL MISSIONS" in idx and "CityOS" not in idx),
