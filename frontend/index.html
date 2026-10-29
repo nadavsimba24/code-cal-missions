@@ -9447,8 +9447,25 @@ const Automations = {
   buildHTML(){
     const r=this.building.recipe;
     if(!r) return this.catalogHTML();
-    let sent=esc(r.sentence);
+    /* A rule that names a status column of its own is a DIFFERENT sentence and
+       not the same one with another blank filled — "כאשר «שלב» משתנה ל…" has
+       no "הסטטוס" left in it. The server sends both readings of each HALF
+       (sentence_parts) rather than whole sentences, because the two halves are
+       chosen separately: "כאשר הסטטוס משתנה ל…, שנה את «שלב ביצוע» ל…" names a
+       column on one side only, and is as ordinary a rule as the ones that name
+       one on both. The wording stays on the server either way — it is the same
+       one that renders the rule in the list, the history and the notifications. */
+    const on=k=>!!(this.building.values[k+'_col']||{}).v;
+    const P=r.sentence_parts;
+    let sent=esc(P
+      ? ((P.trigger_col&&on('t_status')?P.trigger_col:P.trigger)+', '
+         +(P.action_col&&on('a_status')?P.action_col:P.action))
+      : r.sentence);
     r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.blankHTML(f)); });
+    (r.status_fields||[]).forEach(k=>{
+      sent=sent.replace('{'+k+'_col}',
+        this.blankHTML({key:k+'_col',type:'status_col',label:'עמודת הסטטוס'}));
+    });
     // a seeded condition still missing its value is as unfinished as a blank
     const condsReady=(this.building.conds||[]).every(c=>{
       const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
@@ -9498,13 +9515,19 @@ const Automations = {
     const list=(this.building&&this.building.acts)||[];
     const rows=list.map((a,i)=>{
       const spec=this._actSpec(a.key)||{text:'',fields:[]};
-      let body=esc(spec.text||spec.label||'');
-      (spec.fields||[]).forEach(f=>{
-        const cur=(a.values||{})[f.key];
+      // the same two wordings the sentence itself picks between: an action
+      // that names a status column of its own does not say "הסטטוס"
+      const scol=(a.values||{}).status_col;
+      const blank=(key,label,cur)=>{
         const style=(cur&&cur.color)?` style="background:${cur.color};border-color:${cur.color};color:#fff"`:'';
-        body=body.replace('{'+f.key+'}',
-          `<button class="au-blank${cur?' filled':''}"${style} title="${esc(f.label)}"
-             onclick="Automations.pickActValue(event,${i},'${f.key}')">${esc(cur?cur.label:f.label)}</button>`);
+        return `<button class="au-blank${cur?' filled':''}"${style} title="${esc(label)}"
+             data-k="${esc(key)}"
+             onclick="Automations.pickActValue(event,${i},'${key}')">${esc(cur?cur.label:label)}</button>`;
+      };
+      let body=esc((scol&&spec.text_col)||spec.text||spec.label||'');
+      body=body.replace('{col}',blank('status_col','עמודת הסטטוס',scol));
+      (spec.fields||[]).forEach(f=>{
+        body=body.replace('{'+f.key+'}',blank(f.key,f.label,(a.values||{})[f.key]));
       });
       return `<div class="au-act">
         <span class="au-act-n">${i+2}</span>
@@ -9531,7 +9554,13 @@ const Automations = {
     const taken=[(this.building.recipe||{}).action]
       .concat((this.building.acts||[]).map(a=>a.key))
       .filter(k=>ONE_PER_RULE.includes(k));
-    const offer=(this.acts||[]).filter(x=>!taken.includes(x.key));
+    // "שנה את הסטטוס" twice is one write twice over — unless the board has
+    // status columns, where the second is about a different column and
+    // overwrites nothing. Which column is a question the action itself asks,
+    // so it is offered and the server refuses the pair that really do collide.
+    const many=this._statusCols().length>0;
+    const offer=(this.acts||[]).filter(x=>!taken.includes(x.key)
+      ||(many&&x.key==='set_status'));
     this._actOffer=offer;
     const body=offer.length
       ? offer.map((x,i)=>`<button class="rm-item" onclick="Automations.addAct(${i})">${esc(x.label)}</button>`).join('')
@@ -9556,7 +9585,15 @@ const Automations = {
     e.preventDefault(); e.stopPropagation();
     const anchor=e.currentTarget;
     const a=(this.building.acts||[])[i]; if(!a)return;
-    const f=((this._actSpec(a.key)||{}).fields||[]).find(x=>x.key===key); if(!f)return;
+    const spec=this._actSpec(a.key)||{fields:[]};
+    /* the status column's own blank, shown once one is named */
+    if(key==='status_col'){ this.pickStatusSource(anchor,'status',{actIdx:i,key:'status'}); return; }
+    const f=(spec.fields||[]).find(x=>x.key===key); if(!f)return;
+    /* which status, before which value — asked once, where there is a choice */
+    if(f.type==='status'&&spec.text_col&&this._statusCols().length
+       &&(a.values||{})[key+'_col']===undefined){
+      this.pickStatusSource(anchor,key,{actIdx:i,key}); return;
+    }
     if(f.type==='text'){
       const cur=(a.values||{})[key];
       openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
@@ -9578,14 +9615,15 @@ const Automations = {
     if(f.type==='wait'){ this.pickWait(anchor,key,{actIdx:i,key}); return; }
     if(f.type==='map'){ toast('מיפוי שדות נערך דרך ה-API בשלב זה'); return; }
     if(f.type==='target_group'){ await this.pickActTargetGroup(anchor,i,key); return; }
-    const items=this._optionsFor(f.type,connect,f.key);
+    const items=this._optionsFor(f.type,connect,f.key,this._statusColOf(a.values,key));
     this._popItems=items;
-    const body=items.length
+    const head=(f.type==='status'&&spec.text_col)?this._statusSourceLine(key,{actIdx:i,key}):'';
+    const body=head+(items.length
       ? items.map((it,j)=>`<button class="rm-item" onclick="Automations.setActValue(${i},'${key}',${j})">${
           it.person?`<span class="av av-xs">${avatarInner(it.person)}</span>`
                    :`<span class="au-dot" style="background:${it.color||'var(--border)'}"></span>`
         } ${esc(it.label)}</button>`).join('')
-      : '<div class="rm-note">אין אפשרויות זמינות</div>';
+      : '<div class="rm-note">אין אפשרויות זמינות</div>');
     openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
   setActValue(i,key,idx){
@@ -9925,7 +9963,7 @@ const Automations = {
     const cur=this.building.values[f.key];
     // a filled blank wears the value's own colour, exactly as the board shows it
     const style=(cur&&cur.color)?` style="background:${cur.color};border-color:${cur.color};color:#fff"`:'';
-    return `<button class="au-blank${cur?' filled':''}"${style} onclick="Automations.pickField(event,'${f.key}')" title="${esc(f.label)}">${esc(cur?cur.label:f.label)}</button>`;
+    return `<button class="au-blank${cur?' filled':''}"${style} data-k="${esc(f.key)}" onclick="Automations.pickField(event,'${f.key}')" title="${esc(f.label)}">${esc(cur?cur.label:f.label)}</button>`;
   },
 
   async pickField(e,key){
@@ -9933,7 +9971,21 @@ const Automations = {
     // grabbed now: currentTarget is null once the handler returns, and the item
     // picker awaits a fetch before it has anything to anchor to
     const anchor=e.currentTarget;
-    const r=this.building.recipe, f=r&&r.fields.find(x=>x.key===key); if(!f)return;
+    const r=this.building.recipe;
+    /* the status column's own blank, shown in the sentence once one is named */
+    if(/_col$/.test(key)&&((r||{}).status_fields||[]).includes(key.slice(0,-4))){
+      this.pickStatusSource(anchor,key.slice(0,-4),null); return;
+    }
+    const f=r&&r.fields.find(x=>x.key===key); if(!f)return;
+    /* A board with status columns of its own is asked WHICH status first —
+       "הסטטוס" is no longer one question there. Asked ONCE: a blank that has
+       already been told which status it is about goes straight to the values,
+       with the way back to this question at the top of them. A board with no
+       status column never sees the step at all. */
+    if(f.type==='status'&&((r||{}).status_fields||[]).includes(key)
+       &&this._statusCols().length&&this.building.values[key+'_col']===undefined){
+      this.pickStatusSource(anchor,key,null); return;
+    }
     /* ---- נמען ---- five answers, four of them read off the event ---- */
     if(f.type==='recipient'){ this.pickRecipient(e.currentTarget,key,null); return; }
     /* ---- המתנה ---- stored in minutes, asked in the words people use ---- */
@@ -9975,24 +10027,52 @@ const Automations = {
     // "השדות להעתקה" is a set, not a choice: the picker stays open and the
     // blank reads them back as one phrase
     if(f.type==='fields'){ this.pickCopyFields(anchor,key); return; }
-    const items=this._optionsFor(f.type,(this.building.values['a_connect']||{}).v,f.key);
+    const items=this._optionsFor(f.type,(this.building.values['a_connect']||{}).v,f.key,
+                                 this._statusColOf(this.building.values,key));
     // referenced by index so a name with quotes can never break out of the handler
     this._popItems=items;
-    const body=items.length
+    const body=(f.type==='status'&&((r||{}).status_fields||[]).includes(key)
+                ? this._statusSourceLine(key,null) : '')
+      +(items.length
       ? items.map((it,i)=>`<button class="rm-item" onclick="Automations.setField('${key}',${i})">${
           it.person?`<span class="av av-xs">${avatarInner(it.person)}</span>`
                    :`<span class="au-dot" style="background:${it.color||'var(--border)'}"></span>`
         } ${esc(it.label)}</button>`).join('')
-      : '<div class="rm-note">אין אפשרויות זמינות</div>';
+      : '<div class="rm-note">אין אפשרויות זמינות</div>');
     openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
+
+  /* ---- איזו עמודת סטטוס ----
+     A board has one built-in status and may also carry columns of type status,
+     each with a vocabulary of its own. A rule says which it is about by naming
+     the column beside the value, and "" is the board's own — which is what
+     every rule written before this says.
+
+     A column whose options carry no stable id is left out: the engine matches
+     an option by its id, so a vocabulary of bare labels is one it could not
+     hold a rule against. */
+  _statusCols(){
+    return (customColumns()||[]).filter(c=>c.type==='status'
+      && statusColOpts(c).some(o=>o.id));
+  },
+  _statusSources(){
+    return [{v:'',label:'הסטטוס של הלוח',color:''}]
+      .concat(this._statusCols().map(c=>({v:c.id,label:c.title||c.id,color:''})));
+  },
+  /* Which column a status blank names, wherever that blank lives — the
+     sentence's own values, or one extra action's. */
+  _statusColOf(vals,key){ return ((vals||{})[key+'_col']||{}).v||''; },
 
   /* The options a field of each type offers. One list, because the sentence's
      own blanks and an extra action's blanks are the same question asked twice —
      and a second answer that drifted from the first would be a picker offering
      a person the rule cannot name. */
-  _optionsFor(type,connectId,fkey){
-    if(type==='status')   return boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+  _optionsFor(type,connectId,fkey,colId){
+    /* a status belongs to a vocabulary, and which vocabulary is a thing the
+       RULE says: the board's own statuses, or one status column's options */
+    if(type==='status') return colId
+      ? statusColOpts(colId).filter(o=>o.id).map(o=>({v:o.id,label:o.label,color:o.color}))
+      : boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
     if(type==='priority') return boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
     if(type==='group')    return (st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
     if(type==='person')   return this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
@@ -10001,10 +10081,20 @@ const Automations = {
     /* a column a rule may LISTEN to. A mirror shows a value that lives on
        another item, so "it changed" is that item's event — it stays usable as
        a condition. A connect column already has two triggers of its own, and a
-       formula has no value of its own to change. */
-    if(type==='column')   return customColumns()
-                                 .filter(c=>!['mirror','connect','formula'].includes(c.type))
-                                 .map(c=>({v:c.id,label:c.title||c.id,color:''}));
+       formula has no value of its own to change.
+
+       Writing one is a narrower question than listening to it: מזהה פריט,
+       מועד יצירה and יוצר הרשומה are derived from the item and store nothing,
+       so a rule pointed at one would write a cell the board never reads. The
+       action's own blank (a_*) is the one that asks to write. */
+    if(type==='column'){
+      const derived=['item_id','created_at','created_by'];
+      const write=/^a_/.test(String(fkey||''));
+      return customColumns()
+        .filter(c=>!['mirror','connect','formula'].includes(c.type)
+                   &&!(write&&derived.includes(c.type)))
+        .map(c=>({v:c.id,label:c.title||c.id,color:''}));
+    }
     if(type==='board')    return this._linkBoards(connectId).map(b=>({v:b.id,label:b.name,color:''}));
     /* The link column a copy is written through. Blank is an option and not an
        empty state: it means "whichever column the link that set this off was
@@ -10257,6 +10347,12 @@ const Automations = {
       config[f.key]=['person','group','item','board','target_group','days'].includes(f.type)
                       ?+cur.v:cur.v;
     }
+    // the status column rides beside the status under its own key; empty is
+    // not sent, because empty IS the board's own status
+    for(const k of (r.status_fields||[])){
+      const col=this._statusColOf(this.building.values,k);
+      if(col) config[k+'_col']=col;
+    }
     // a condition still missing its value is refused here rather than sent: the
     // server would reject it, and a draft must not silently save a condition
     // that would widen the rule instead of narrowing it
@@ -10315,6 +10411,10 @@ const Automations = {
         }
         values[f.key]=['person','group','item','board','target_group','days'].includes(f.type)
                         ?+cur.v:cur.v;
+        if(f.type==='status'){
+          const col=this._statusColOf(a.values,f.key);
+          if(col) values[f.key+'_col']=col;
+        }
       }
       acts.push({key:a.key,values});
     }

@@ -5906,6 +5906,9 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # date-based automations have no scheduler — opening the board is when
         # "the due date arrived" is noticed (each rule fires once per item)
         _sweep_due_date_automations(db, board_id, user_id)
+        # and the same for the rules on a clock, which come round again rather
+        # than firing once (see _sweep_recurring_automations)
+        _sweep_recurring_automations(db, board_id, user_id)
         my_role = _board_role(db, board_id, user_id)
         if user_id is not None and my_role is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
@@ -11317,6 +11320,7 @@ AUTOMATION_GRANTED_ACTIONS = frozenset({
     "create_and_link", "post_update", "copy_to_linked",
     "create_in_group_and_link", "set_column", "clear_column",
     "unassign_person", "create_item", "wait", "create_mapped_and_link",
+    "create_in_board",
 })
 # The item fields automation may write. The recipes only ever touch these, and
 # an action that reached past them would be doing something nobody approved.
@@ -11342,12 +11346,17 @@ AUTOMATION_ACTION_FIELDS = {
     "notify_person":    (),
     "notify_assignees": (),
     "assign_person":    ("assignees",),
-    "set_status":       ("status",),
+    # the board's own status, or — when the rule names one — a status COLUMN's
+    # cell, which is an ordinary column write like set_column's. Both are
+    # declared because a grant is what an action MAY reach, and this table is
+    # the thing held against the grant before every firing
+    "set_status":       ("status", "custom_fields_value"),
     "set_priority":     ("priority",),
     "move_to_group":    ("group_id",),
     "create_subitem":   ("subitem",),
     "link_to_item":     ("custom_fields",),
     "create_and_link":  ("custom_fields",),
+    "create_in_board":  ("item",),
     "create_in_group_and_link": ("custom_fields",),
     "post_update":      ("comment",),
     "set_column":       ("custom_fields_value",),
@@ -11639,7 +11648,14 @@ def _automation_matches(a, event):
         return False
     cfg = a.config or {}
     if event["type"] == "status_changes_to":
-        return str(cfg.get("t_status")) == str(event.get("status"))
+        # which status COLUMN as well as which value: a board with "שלב" and
+        # "סטטוס אישור" has two rules that both fire on «אושר», and each of
+        # them is about one of the columns. "" on both sides is the board's own
+        # status, which is what a rule written before columns could be named
+        # holds and what the built-in event reports.
+        return (str(cfg.get("t_status")) == str(event.get("status"))
+                and recipes.status_col_of(cfg, "t_status")
+                == str(event.get("col") or ""))
     if event["type"] == "priority_changes_to":
         return str(cfg.get("t_priority")) == str(event.get("priority"))
     if event["type"] == "linked_status_changes_to":
@@ -11653,6 +11669,87 @@ def _automation_matches(a, event):
         # this rule is the one that asked for that distance
         return int(cfg.get("t_days") or 0) == int(event.get("days") or 0)
     return True
+
+
+# ── which status an automation is about ─────────────────────────────────────
+# A board has one built-in status and may also carry columns of type status,
+# each with a vocabulary of its own. A rule says which it means by naming the
+# column beside the value (recipes.status_col_of); "" is the board's own, which
+# is what every rule written before this says.
+#
+# The two vocabularies are keyed differently — the board's statuses by their
+# own key ("done", "x_a1b2"), a column's options by the stable id
+# _status_col_options mints ("o_a1b2") — so everything that renders a status or
+# compares one has to be told which of the two it is holding. That is what
+# these are for, and why they take the column id rather than looking it up.
+def _status_vocab(board, col_id):
+    """(options, column) for a status blank. `options` are {key,label,color};
+    `column` is the board column they came from, or None for the board's own
+    status. A column id that is no longer on the board answers with neither —
+    the rule is blocked for exactly that reason, see _automation_blockers."""
+    cid = str(col_id or "").strip()
+    if not cid:
+        return list(_board_statuses(board)), None
+    col = next((c for c in ((board.settings or {}).get("columns") or [])
+                if str(c.get("id")) == cid and c.get("type") == "status"), None) \
+        if board else None
+    if not col:
+        return [], None
+    return ([{"key": o["id"], "label": o["label"], "color": o.get("color")}
+             for o in (_status_col_options(col.get("options")) or [])], col)
+
+
+def _status_label(board, col_id, key):
+    """A status value as the board shows it, out of whichever vocabulary it
+    belongs to. The raw value when it belongs to none of them — a rule that
+    cannot run still has to be legible enough to fix."""
+    if key in (None, "", []):
+        return "—"
+    opts, _ = _status_vocab(board, col_id)
+    e = next((o for o in opts if str(o["key"]) == str(key)), None)
+    return e["label"] if e else str(key)
+
+
+def _status_cell_key(col, v):
+    """Which option a status column's cell holds, as that option's stable id.
+
+    A cell is written two ways in this product and both are in the data: the
+    grid stores the option's LABEL, while a form answer and the monday import
+    store the whole option ({id,label,color}) so the cell can be drawn without
+    a lookup. Both are read here and both answer with the id, because the id is
+    what a rule stores — renaming "אושר" to "אושר סופית" must not quietly stop
+    every rule waiting on it.
+
+    A value in neither shape comes back as itself rather than as "", so a rule
+    cannot match a cell holding something the column no longer offers.
+    """
+    if v in (None, "", []):
+        return ""
+    raw = (v.get("id") or v.get("label") or "") if isinstance(v, dict) else str(v)
+    opts = _status_col_options((col or {}).get("options")) or []
+    hit = next((o for o in opts
+                if str(o["id"]) == str(raw) or o["label"] == str(raw)), None)
+    return str(hit["id"]) if hit else str(raw)
+
+
+def _apply_status_col(db, task, col, key):
+    """Write one of a status COLUMN's options into the item's cell.
+
+    Returns (ok, was). The cell carries the whole option rather than its id for
+    the same reason a form answer does: the grid draws the label and the colour
+    straight out of the cell, and a rename is picked up because the id is what
+    is matched on the way back in.
+    """
+    opts = _status_col_options(col.get("options")) or []
+    hit = next((o for o in opts if str(o["id"]) == str(key)
+                or o["label"] == str(key)), None)
+    if not hit:
+        return False, None
+    cf = dict(task.custom_fields or {})
+    was = cf.get(col["id"])
+    cf[col["id"]] = {"id": hit["id"], "label": hit["label"], "color": hit.get("color")}
+    task.custom_fields = cf
+    return True, was
 
 
 def _apply_status_key(db, task, key):
@@ -12407,14 +12504,20 @@ def _recipient_label(db, board, v):
     return recipes.RECIPIENTS.get(kind, kind)
 
 
-def _shown_value(db, board, ftype, v):
+def _shown_value(db, board, ftype, v, col_id=""):
     """One value as the board shows it — a status's label, a person's name.
 
     Pulled out of _automation_label because an extra action's value has to be
     rendered exactly as the recipe's own: the sentence must not say «3» for the
-    second action and the person's name for the first."""
+    second action and the person's name for the first.
+
+    `col_id` is the status column the value belongs to, "" being the board's
+    own status. A label is only a label inside its own vocabulary: «אושר» from
+    the "שלב" column is not the board status of that name and must not be
+    looked up among them."""
     if ftype == "status":
-        e = next((x for x in _board_statuses(board) if x["key"] == str(v)), None)
+        opts, _ = _status_vocab(board, col_id)
+        e = next((x for x in opts if str(x["key"]) == str(v)), None)
         return e["label"] if e else str(v)
     if ftype == "priority":
         e = next((x for x in _board_priorities(board) if x["key"] == str(v)), None)
@@ -12470,9 +12573,14 @@ def _action_phrases(db, board, extras, quote=True):
             if f["type"] == "pick":
                 shown[f["key"]] = recipes.pick_label(f, v)
                 continue
+            col_id = recipes.status_col_of(values, f["key"]) if f["type"] == "status" else ""
+            if col_id:
+                scol = _find_col(db, board.id, col_id) if board else None
+                name = (scol or {}).get("title") or col_id
+                shown["status_col"] = f"«{name}»" if quote else name
             if v in (None, ""):
                 continue
-            text = _shown_value(db, board, f["type"], v)
+            text = _shown_value(db, board, f["type"], v, col_id)
             shown[f["key"]] = f"«{text}»" if quote else text
         phrase = recipes.action_text(key, shown)
         if phrase:
@@ -12484,18 +12592,29 @@ def _automation_label(db, board, a):
     """The rule as a readable Hebrew sentence with its values filled in — shown
     in the list and quoted in the notifications it sends."""
     cfg = a.config or {}
+    # the config goes in because the wording itself depends on it: a rule that
+    # names a status column of its own is a different sentence, not the same
+    # sentence with a different blank filled — see recipes.STATUS_COL_TEXT
     text = recipes.sentence(a.recipe_id,
                             _condition_phrases(db, board, cfg.get(recipes.CONDITION_KEY)),
                             _action_phrases(db, board, cfg.get(recipes.ACTIONS_KEY)),
-                            cfg.get(recipes.CONDITION_GROUP_KEY) or "and")
+                            cfg.get(recipes.CONDITION_GROUP_KEY) or "and",
+                            config=cfg)
     r = recipes.recipe(a.recipe_id)
     for f in (r or {}).get("fields", []):
         if f["type"] == "pick":
             text = text.replace("{" + f["key"] + "}",
                                 recipes.pick_label(f, cfg.get(f["key"])))
             continue
-        shown = _shown_value(db, board, f["type"], cfg.get(f["key"]))
+        col_id = recipes.status_col_of(cfg, f["key"]) if f["type"] == "status" else ""
+        shown = _shown_value(db, board, f["type"], cfg.get(f["key"]), col_id)
         text = text.replace("{" + f["key"] + "}", f"«{shown}»")
+        if col_id:
+            # the column's own blank, read off the board every time so a
+            # renamed column reads correctly the moment it is renamed
+            scol = _find_col(db, board.id, col_id) if board else None
+            text = text.replace("{" + recipes.status_col_key(f["key"]) + "}",
+                                f"«{(scol or {}).get('title') or col_id}»")
     return text
 
 
@@ -12578,7 +12697,7 @@ def _run_action_inner(db, a, task, actor_id, board, event=None, human=None, owne
             _idem_mark(db, a, task, kid)
             out.extend(produced)
             step["output"] = [_plain_json(e) for e in produced] or "בוצע"
-            clash += _note_conflict(event, task, a, one["key"], told)
+            clash += _note_conflict(event, task, a, one, told)
         except _Waiting as w:
             try:
                 sp.rollback()
@@ -12737,7 +12856,7 @@ def _plain_json(v):
     return str(v)[:300]
 
 
-def _note_conflict(event, task, a, act_key, told):
+def _note_conflict(event, task, a, one, told):
     """Which fields this action has just written over, inside this same event.
 
     One event can trip several rules and two of them can write the same field;
@@ -12745,7 +12864,10 @@ def _note_conflict(event, task, a, act_key, told):
     lives on the event because that is exactly its lifetime — rules firing on
     two different changes are not in conflict, they are two changes.
     """
-    fields = AUTOMATION_ACTION_FIELDS.get(act_key) or ()
+    # per action INSTANCE: "שנה את הסטטוס" on a status column writes that
+    # column's cell and not the item's status, so it does not fight over the
+    # status with the rule that really does write it — see _action_writes
+    fields = _action_writes(one)[0]
     if not fields or event is None:
         return []
     ledger = event.setdefault("_wrote", {})
@@ -12754,7 +12876,7 @@ def _note_conflict(event, task, a, act_key, told):
         key = f"{task.id}:{f}"
         before = ledger.get(key)
         if before and before.get("id") != a.id:
-            what = ", ".join(AUTOMATION_ACTION_WRITES.get(act_key) or [f])
+            what = ", ".join(_action_writes(one)[1] or [f])
             out.append(f"«{what}» נכתב באירוע הזה גם בידי «{before['name']}» "
                        "— הכתיבה האחרונה קובעת")
         ledger[key] = {"id": a.id, "name": told}
@@ -13023,16 +13145,43 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                 board_id=task.board_id, task_id=task.id)
         out.append({"type": "person_assigned", "user_id": u.id})
     elif act == "set_status":
-        if _task_status_key(task) == str(cfg.get("status")):
-            raise _Skipped("הפריט נמצא בסטטוס הזה כבר")
-        _was = _logged_status(task)
-        if not _apply_status_key(db, task, cfg.get("status")):
-            raise _Skipped("הסטטוס שהכלל מבקש אינו קיים בלוח")
-        # In the log like anybody's change, with no user behind it — which both
-        # logs already render as "מערכת". Attributing it to whoever's edit
-        # tripped the rule would be a lie about who decided.
-        _audit(db, task.id, "update", "status", _was, _logged_status(task), None)
-        out.append({"type": "status_changes_to", "status": str(cfg.get("status"))})
+        # Which status the rule writes: the board's own, or one of its columns
+        # of type status. The column branch is the same work _apply_status_key
+        # does for the built-in — read the vocabulary, refuse a value that is
+        # not in it, write the cell, log it — against a different vocabulary.
+        _scol = recipes.status_col_of(cfg, "status")
+        if _scol:
+            col = _find_col(db, task.board_id, _scol)
+            if not col or col.get("type") != "status":
+                raise _Skipped("עמודת הסטטוס שהכלל מעדכן אינה קיימת בלוח")
+            if _status_cell_key(col, (task.custom_fields or {}).get(col["id"])) \
+                    == str(cfg.get("status")):
+                raise _Skipped("לעמודה יש את הערך הזה כבר")
+            ok, _was_cell = _apply_status_col(db, task, col, cfg.get("status"))
+            if not ok:
+                raise _Skipped("הסטטוס שהכלל מבקש אינו קיים בעמודה")
+            _now_cell = (task.custom_fields or {}).get(col["id"])
+            _audit(db, task.id, "update", f"col:{col['id']}",
+                   _shown_cell(db, board, _was_cell),
+                   _shown_cell(db, board, _now_cell), None)
+            # both events, because both questions are asked of this change:
+            # "ערך העמודה השתנה" and "«שלב» השתנה ל«אושר»"
+            out.append({"type": "column_changed", "col": col["id"],
+                        "was": _was_cell, "now": _now_cell})
+            out.append({"type": "status_changes_to", "col": col["id"],
+                        "status": _status_cell_key(col, _now_cell),
+                        "was": _status_cell_key(col, _was_cell)})
+        else:
+            if _task_status_key(task) == str(cfg.get("status")):
+                raise _Skipped("הפריט נמצא בסטטוס הזה כבר")
+            _was = _logged_status(task)
+            if not _apply_status_key(db, task, cfg.get("status")):
+                raise _Skipped("הסטטוס שהכלל מבקש אינו קיים בלוח")
+            # In the log like anybody's change, with no user behind it — which
+            # both logs already render as "מערכת". Attributing it to whoever's
+            # edit tripped the rule would be a lie about who decided.
+            _audit(db, task.id, "update", "status", _was, _logged_status(task), None)
+            out.append({"type": "status_changes_to", "status": str(cfg.get("status"))})
     elif act == "set_priority":
         if _task_priority_key(task) == str(cfg.get("priority")):
             raise _Skipped("לפריט יש את העדיפות הזו כבר")
@@ -13118,9 +13267,11 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         col = _find_col(db, task.board_id, str(cfg.get("column") or ""))
         if not col:
             raise _Skipped("העמודה שהכלל מעדכן אינה קיימת בלוח")
-        if col.get("type") in AUTOMATION_UNWATCHABLE_COLUMNS:
-            # a mirror shows another item's value and a formula works one out —
-            # neither is a cell anything can be written into
+        if col.get("type") in AUTOMATION_UNWATCHABLE_COLUMNS or col.get("type") in DERIVED_CELLS:
+            # a mirror shows another item's value, a formula works one out, and
+            # מועד יצירה / יוצר הרשומה / מזהה פריט are read off the item itself
+            # — none of them is a cell anything can be written into, and a rule
+            # that wrote one would store a value the board never looks at
             raise _Skipped(f"עמודת {col.get('title') or col['id']} אינה ניתנת לעדכון")
         cf = dict(task.custom_fields or {})
         was = cf.get(col["id"])
@@ -13142,6 +13293,12 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         _audit(db, task.id, "update", f"col:{col['id']}",
                _shown_cell(db, board, was), _shown_cell(db, board, now_v), None)
         out.append({"type": "column_changed", "col": col["id"], "was": was, "now": now_v})
+        # a status column moving is a status change as well, so a rule written
+        # as "כאשר «שלב» משתנה ל«אושר»" hears it however the value got there
+        if col.get("type") == "status":
+            out.append({"type": "status_changes_to", "col": col["id"],
+                        "status": _status_cell_key(col, now_v),
+                        "was": _status_cell_key(col, was)})
     elif act == "unassign_person":
         u = db.query(User).filter(User.id == cfg.get("person")).first()
         if not u or u not in task.assignees:
@@ -13209,6 +13366,20 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
         _note_creation(db, rule, task, made, records)
         out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
+    elif act == "create_in_board":
+        grp = db.query(Group).filter(Group.id == cfg.get("target_group"),
+                                     Group.board_id == cfg.get("board")).first()
+        if not grp:
+            raise _Skipped("הקבוצה שנבחרה אינה קיימת בלוח היעד")
+        _creation_guard(db, rule, task)
+        made, why = _create_board_item(db, task, cfg.get("board"),
+                                       text(cfg.get("text")), actor_id, group=grp)
+        if made is None:
+            raise _Skipped(why or "לא ניתן ליצור פריט בלוח היעד")
+        _note_creation(db, rule, task, made, records, group=grp)
+        # nothing is appended to `out`: the new item is on ANOTHER board, and
+        # its creation is that board's event rather than a step in this item's
+        # chain. The same silence create_and_link keeps, for the same reason.
     elif act == "create_in_group_and_link":
         col = _find_col(db, task.board_id, cfg.get("connect"))
         if not col or col.get("type") != "connect":
@@ -13494,6 +13665,42 @@ def _remember_creation(db, a, task, made, group_id=None):
                               group_id=group_id if group_id is not None else made.group_id,
                               created_at=datetime.now(timezone.utc).replace(tzinfo=None)))
     db.flush()
+
+
+def _create_board_item(db, task, board_id, title, actor_id, group=None):
+    """Make an item on another board, with nothing pointing back at it.
+
+    The link actions beside this one read the boards they may write to off the
+    connect column: the column IS the route and the permission at once. There
+    is no column here, so what stands in its place is the pair that was always
+    underneath it — the author had to hold writing rights on the target board
+    for the rule to be saved at all (_check_automation_reach), and the grant
+    recording that is re-read before every firing (_automation_blockers).
+
+    The organisation boundary is checked HERE and not only there, because it is
+    the one thing that must never rest on a check made earlier: a board moved
+    between tenants after the rule was written is still a board this rule must
+    not write into.
+    """
+    try:
+        board_id = int(board_id)
+    except (TypeError, ValueError):
+        return None, "לוח היעד אינו מזוהה"
+    src = db.query(Board).filter(Board.id == task.board_id).first()
+    no = _cross_board_refusal(db, src, board_id)
+    if no:
+        return None, no
+    grp = group or (db.query(Group).filter(Group.board_id == board_id)
+                    .order_by(Group.position, Group.id).first())
+    made = Task(board_id=board_id, group_id=grp.id if grp else None,
+                title=(title or "").strip() or "פריט חדש",
+                status=grp.task_status if grp else TaskStatus.TODO,
+                priority=Priority.MEDIUM, created_by=actor_id)
+    db.add(made)
+    db.flush()
+    _ensure_item_uid(db, made)
+    _audit(db, made.id, "create", field="item", old=None, new=made.title, user_id=actor_id)
+    return made, ""
 
 
 def _create_linked_item(db, task, col, board_id, title, actor_id, group=None):
@@ -14155,6 +14362,29 @@ def _automation_blockers(db, board, a):
             if not db.query(Group).filter(Group.id == v,
                                           Group.board_id == a.board_id).first():
                 out.append({"kind": "dependency", "text": "הקבוצה שהכלל מאזין לה נמחקה"})
+        elif f["type"] == "status":
+            # Only a rule that names a status COLUMN is checked here. The
+            # column can be deleted, or stop being a status column, and either
+            # way the event it waits for stops being emitted — silent
+            # otherwise: the rule looks active and never fires again.
+            #
+            # The board's OWN status is deliberately not checked against
+            # _board_statuses. That list is the board's display vocabulary,
+            # while an item's status is a TaskStatus — "review" and "todo" are
+            # real statuses an item reaches and real triggers rules are built
+            # on, and neither is in a board's default vocabulary. Blocking on
+            # that would retire working rules.
+            scol = recipes.status_col_of(cfg, f["key"])
+            if not scol:
+                continue
+            opts, col = _status_vocab(board, scol)
+            if not col:
+                out.append({"kind": "dependency",
+                            "text": "עמודת הסטטוס שהכלל מאזין לה נמחקה מהלוח"})
+            elif v and not any(str(x["key"]) == str(v) for x in opts):
+                out.append({"kind": "dependency",
+                            "text": f"הסטטוס '{_status_label(board, scol, v)}' "
+                                    f"אינו קיים בעמודה"})
     for one in acts:
         for f in recipes.action_fields(one["key"]):
             v = one["values"].get(f["key"])
@@ -14184,8 +14414,15 @@ def _automation_blockers(db, board, a):
                                     "text": f"עמודת '{col.get('title') or col['id']}' "
                                             "אינה עמודת אנשים"})
             elif f["type"] == "status":
-                if not any(x["key"] == str(v) for x in _board_statuses(board)):
-                    out.append({"kind": "dependency", "text": f"הסטטוס '{v}' אינו קיים בלוח"})
+                scol = recipes.status_col_of(one["values"], f["key"])
+                opts, col = _status_vocab(board, scol)
+                if scol and not col:
+                    out.append({"kind": "dependency",
+                                "text": "עמודת הסטטוס שהכלל מעדכן נמחקה מהלוח"})
+                elif not any(str(x["key"]) == str(v) for x in opts):
+                    out.append({"kind": "dependency",
+                                "text": f"הסטטוס '{_status_label(board, scol, v)}' "
+                                        f"אינו קיים ב{'עמודה' if scol else 'לוח'}"})
             elif f["type"] == "priority":
                 if not any(x["key"] == str(v) for x in _board_priorities(board)):
                     out.append({"kind": "dependency", "text": f"העדיפות '{v}' אינה קיימת בלוח"})
@@ -14294,7 +14531,12 @@ def _rule_uses(db, a, kind, ref):
         v = cfg.get(f["key"])
         if ((kind == "column" and f["type"] == "column" and same(v))
                 or (kind == "status" and f["type"] == "status" and same(v))
-                or (kind == "group" and f["type"] == "group" and same(v))):
+                or (kind == "group" and f["type"] == "group" and same(v))
+                # a status blank may name a COLUMN of its own, and deleting
+                # that column breaks the rule exactly as deleting the one a
+                # "ערך העמודה השתנה" rule listens to does
+                or (kind == "column" and f["type"] == "status"
+                    and same(recipes.status_col_of(cfg, f["key"])))):
             used.append("גורם מפעיל")
     # the conditions
     for c in cfg.get(recipes.CONDITION_KEY) or []:
@@ -14311,6 +14553,9 @@ def _rule_uses(db, a, kind, ref):
         for f in recipes.action_fields(one["key"]):
             v = vals.get(f["key"])
             if kind == "column" and f["type"] in ("column", "connect", "connect_opt") and same(v):
+                used.append("פעולה")
+            elif (kind == "column" and f["type"] == "status"
+                    and same(recipes.status_col_of(vals, f["key"]))):
                 used.append("פעולה")
             elif kind == "status" and f["type"] == "status" and same(v):
                 used.append("פעולה")
@@ -15083,6 +15328,98 @@ def _sweep_due_date_automations(db, board_id, actor_id):
         db.commit()
 
 
+# ── a rule on a clock ───────────────────────────────────────────────────────
+# "כל 7 ימים" is not something that happened to an item, it is the passage of
+# time, so it has nothing to hang a one-off marker on the way the date rules
+# do. What bounds it instead is the PERIOD: the rule fires at most once per
+# item per interval, and the interval is counted from the moment the rule was
+# switched on.
+#
+# Counting from activated_at rather than from a wall-clock grid is what makes
+# "כל 7 ימים" mean seven days of this rule's life. It is also rule 2 again —
+# an interval that elapsed before the rule was on is not one it acts on.
+_RECUR_TRIGGERS = ("every_n_days",)
+
+
+def _recur_period(activated, days, now):
+    """Which interval of this rule's life `now` falls in, counting from 1.
+
+    0 is the interval the rule was switched on during, and nothing fires in it:
+    a rule turned on at nine in the morning must not notify everybody about
+    everything at nine in the morning. The first firing is one whole interval
+    later, which is what "כל 7 ימים" says.
+
+    A board nobody opened for a month comes back at period 4, not at 1, and
+    fires ONCE. A chase does not backfill — three reminders arriving together
+    are not three reminders anybody wanted.
+    """
+    if activated is None or days < 1:
+        return 0
+    return int((now - activated).total_seconds() // (days * 86400))
+
+
+def _sweep_recurring_automations(db, board_id, actor_id):
+    """Fire the "כל כמה ימים" rules whose interval has come round.
+
+    There is no scheduler here either, so this runs when the board is read —
+    the same place the date rules are swept from, for the same reason. What it
+    means in practice is "the first time the board is opened after the interval
+    has elapsed", which is what every other timed rule in this product already
+    promises.
+
+    Unlike the date sweep this one cannot narrow by a column: a recurring rule
+    is about every item on the board, and which of them it acts on is decided
+    by the conditions when the rule runs. So the whole board is walked, and the
+    walk is skipped entirely when no rule asks for it.
+    """
+    if _automation_freeze(db, board_id) is not None:
+        return
+    rules = [a for a in db.query(Automation).filter(
+                Automation.board_id == board_id,
+                Automation.is_active == True)                              # noqa: E712
+                .order_by(Automation.run_order, Automation.activated_at,
+                          Automation.id).all()
+             if (recipes.recipe(a.recipe_id) or {}).get("trigger") in _RECUR_TRIGGERS]
+    if not rules:
+        return
+    now = datetime.now(timezone.utc)
+    board = db.query(Board).filter(Board.id == board_id).first()
+    tz = _board_tz(db, board)
+    items = None
+    fired_any = False
+    for a in rules:
+        days = int((a.config or {}).get("t_days") or 0)
+        period = _recur_period(_as_utc(a.activated_at, tz), days, now)
+        if period < 1:
+            continue
+        state = dict(a.state or {})
+        recur = dict(state.get("recur") or {})
+        # a new interval starts a new ledger: what was chased last week is due
+        # to be chased again, and keeping the old list would silence it for good
+        if int(recur.get("period") or 0) != period:
+            recur = {"period": period, "done": []}
+        done = set(recur.get("done") or [])
+        if items is None:                      # read once, however many rules
+            items = db.query(Task).filter(
+                Task.board_id == board_id,
+                Task.is_archived == False,                                 # noqa: E712
+                Task.deleted_at == None).all()                             # noqa: E711
+        for t in items:
+            if t.id in done:
+                continue
+            _run_one_automation(db, a, t, actor_id, "every_n_days", days)
+            done.add(t.id)
+            fired_any = True
+        # the same bound the date rules keep, for the same reason: a board with
+        # thousands of items must not grow a marker without limit
+        recur["done"] = sorted(done)[-_DUE_FIRED_MAX:]
+        recur["period"] = period
+        state["recur"] = recur
+        a.state = state
+    if fired_any:
+        db.commit()
+
+
 def _due_key(task_id, moment):
     """What a date rule remembers having fired for: the item, and the moment.
 
@@ -15473,6 +15810,15 @@ def _board_template_has(db, board):
         # AUTOMATION_UNWATCHABLE_COLUMNS)
         "column": any(c.get("id") and c.get("type") not in AUTOMATION_UNWATCHABLE_COLUMNS
                       for c in cols),
+        # and a column a rule can WRITE, which is a narrower question. Every
+        # board is issued מזהה פריט, מועד יצירה and יוצר הרשומה on creation;
+        # they are derived from the item and nothing is stored for them, so a
+        # rule pointed at one would write a cell the board never reads. A board
+        # holding only those has no column to write.
+        "writable_column": any(c.get("id")
+                               and c.get("type") not in AUTOMATION_UNWATCHABLE_COLUMNS
+                               and c.get("type") not in DERIVED_CELLS
+                               for c in cols),
         "group": db.query(Group).filter(Group.board_id == board.id).count() > 0,
         "people": any(_can_be_assigned(db, board.id, u) for u in people),
     }
@@ -16429,7 +16775,9 @@ def automation_templates(board_id: int, q: str = "", tags: str = "", only: str =
                          for k, he in recipes.LIBRARY_TAGS.items()],
                 "board": has,
                 "copy_fields": recipes.copy_fields_catalog(),
-                "recommended": [rid for rid, _ in recipes.MVP_TEMPLATES],
+                # the same list the per-row `recommended` flag is read off, so
+                # the two halves of this answer cannot disagree
+                "recommended": [rid for rid, _ in recipes.LIBRARY_TEMPLATES],
                 "unavailable": sum(1 for r in rows if not r["available"])}
 
 
@@ -17616,11 +17964,14 @@ AUTOMATION_ACTION_WRITES = {
     "notify_assignees": [],
     "assign_person":    ["אחראים"],
     "set_status":       ["סטטוס"],
+    # the same action said about a status COLUMN — see _action_writes
+    "set_status@col":   ["עמודה בלוח"],
     "set_priority":     ["עדיפות"],
     "move_to_group":    ["קבוצה"],
     "create_subitem":   ["תתי־פריטים"],
     "link_to_item":     ["קישור בין לוחות"],
     "create_and_link":  ["קישור בין לוחות"],
+    "create_in_board":  ["פריט חדש"],
     "create_in_group_and_link": ["קישור בין לוחות", "קבוצה"],
     "post_update":      ["שיחת הפריט"],
     "set_column":       ["עמודה בלוח"],
@@ -17651,6 +18002,33 @@ AUTOMATION_TRIGGER_READS = {
 }
 
 
+def _action_writes(one):
+    """The fields ONE action instance writes, and the Hebrew for them.
+
+    Per instance rather than per action key, because "שנה את הסטטוס" writes the
+    item's own status or one status column's cell depending on which the rule
+    names — and every question asked of this ("which rules write the same
+    field", "does this reach a mirror", "did two rules fight over one cell on
+    one event") is a question about the rules, not about the catalog. Keyed by
+    the action alone, a rule setting the "שלב" column would be reported as
+    fighting over the board's status with every rule that sets it, and as
+    reaching mirrors that follow a status it never touches.
+
+    AUTOMATION_ACTION_FIELDS stays the ceiling — what the action MAY reach, and
+    what the grant is held against — and so declares both.
+    """
+    key = str((one or {}).get("key") or "")
+    if key == "set_status":
+        # one or the other, never both: the ceiling declares the two because it
+        # is what the action MAY reach, and reading the instance's answer off
+        # it would have every plain status rule claiming a column write too
+        on_col = recipes.status_col_of((one or {}).get("values"), "status")
+        return (({"custom_fields_value"}, AUTOMATION_ACTION_WRITES["set_status@col"])
+                if on_col else ({"status"}, AUTOMATION_ACTION_WRITES["set_status"]))
+    return (set(AUTOMATION_ACTION_FIELDS.get(key, ())),
+            AUTOMATION_ACTION_WRITES.get(key, []))
+
+
 def _same_field_warning(db, board, a):
     """The rules already running that write a field this one writes.
 
@@ -17660,7 +18038,7 @@ def _same_field_warning(db, board, a):
     runs last, because that is the one whose value survives.
     """
     mine = {f for one in recipes.action_list(a.recipe_id, a.config or {})
-            for f in AUTOMATION_ACTION_FIELDS.get(one["key"], ())}
+            for f in _action_writes(one)[0]}
     if not mine:
         return []
     out = []
@@ -17668,14 +18046,14 @@ def _same_field_warning(db, board, a):
                                          Automation.id != a.id,
                                          Automation.is_active == True).all():   # noqa: E712
         theirs = {f for x in recipes.action_list(o.recipe_id, o.config or {})
-                  for f in AUTOMATION_ACTION_FIELDS.get(x["key"], ())}
+                  for f in _action_writes(x)[0]}
         shared = theirs & mine
         if not shared:
             continue
         name = o.name or _automation_label(db, board, o).replace("«", "").replace("»", "")
         words = sorted({w for x in recipes.action_list(o.recipe_id, o.config or {})
-                        for w in AUTOMATION_ACTION_WRITES.get(x["key"], [])
-                        if set(AUTOMATION_ACTION_FIELDS.get(x["key"], ())) & shared})
+                        for w in _action_writes(x)[1]
+                        if _action_writes(x)[0] & shared})
         later = _order_key(o) > _order_key(a)
         out.append({
             "id": o.id, "name": name, "fields": sorted(shared),
@@ -17707,7 +18085,7 @@ def _automation_impact(db, board, a, viewer=None):
     boards = [{"id": board.id, "name": board.name, "mode": "read_write",
                "why": "הלוח שהאוטומציה יושבת בו"}]
     reads = list(AUTOMATION_TRIGGER_READS.get(trig, []))
-    writes = [w for one in acts for w in AUTOMATION_ACTION_WRITES.get(one["key"], [])]
+    writes = [w for one in acts for w in _action_writes(one)[1]]
     links, recipients, missing = [], [], []
 
     for one in acts:
@@ -17775,7 +18153,7 @@ def _automation_impact(db, board, a, viewer=None):
     # back at it — a board the person switching this on is not looking at. Only
     # the three fields a mirror can follow and an action can write are asked
     # about; one query for the boards, on a preview somebody clicks.
-    written = {f for one in acts for f in AUTOMATION_ACTION_FIELDS.get(one["key"], ())}
+    written = {f for one in acts for f in _action_writes(one)[0]}
     watched = written & {"status", "priority", "assignees"}
     if watched:
         for ob in db.query(Board).filter(Board.deleted_at == None,            # noqa: E711
@@ -17819,7 +18197,7 @@ def _automation_impact(db, board, a, viewer=None):
                     .order_by(Automation.run_order, Automation.activated_at,
                                   Automation.id).all()):
             ow = {w for x in recipes.action_list(o.recipe_id, o.config or {})
-                  for w in AUTOMATION_ACTION_WRITES.get(x["key"], [])}
+                  for w in _action_writes(x)[1]}
             if not (ow & same):
                 continue
             others.append({"id": o.id,
@@ -17851,11 +18229,66 @@ AUTOMATION_PRODUCES = {
 
 
 def _rule_produces(a):
-    """Every trigger this rule's actions could raise — all of them, because any
-    one action is enough to start the rule on the other side."""
-    return {AUTOMATION_PRODUCES[x["key"]]
-            for x in recipes.action_list(a.recipe_id, a.config or {})
-            if x["key"] in AUTOMATION_PRODUCES}
+    """Every trigger this rule's actions could raise, as (trigger, column) —
+    all of them, because any one action is enough to start the rule on the
+    other side.
+
+    The column is there because a board may have several status columns, and
+    "שנה את «שלב ביצוע»" sets off the rules watching THAT column rather than
+    every rule watching a status. Without it the commonest thing two status
+    columns are for — one of them moving the other — would be reported as a
+    loop against every unrelated rule on the board.
+
+    "" is a wildcard on BOTH sides, not a column (see _produces_reaches). An
+    action whose column cannot be worked out from the rule alone says "" and
+    goes on matching everything, because this check is a guess from the shape
+    of two rules and the safe direction for a guess is to warn too much.
+    """
+    out = set()
+    for x in recipes.action_list(a.recipe_id, a.config or {}):
+        t = AUTOMATION_PRODUCES.get(x["key"])
+        if not t:
+            continue
+        if x["key"] == "set_status":
+            col = recipes.status_col_of(x["values"], "status")
+            out.add((t, col))
+            # a status column moving is an ordinary column change as well, and
+            # a rule may be waiting on it as one
+            if col:
+                out.add(("column_changed", col))
+        elif x["key"] in ("set_column", "clear_column"):
+            col = str((x["values"] or {}).get("column") or "")
+            out.add((t, col))
+            # it may be a status column — the rule does not say, and the board
+            # is not in hand here, so this stays the wildcard it has always been
+            out.add(("status_changes_to", ""))
+        else:
+            out.add((t, ""))
+    return out
+
+
+def _rule_listens(o):
+    """(trigger, column) this rule waits for — the other side of
+    _rule_produces, and "" is the same wildcard there."""
+    ro = recipes.recipe(o.recipe_id) or {}
+    trig, cfg = ro.get("trigger"), (o.config or {})
+    if trig == "status_changes_to":
+        return (trig, recipes.status_col_of(cfg, "t_status"))
+    if trig == "column_changed":
+        return (trig, str(cfg.get("t_column") or ""))
+    return (trig, "")
+
+
+def _produces_reaches(produced, listener):
+    """Could what one rule produces set off what another waits for?
+
+    Same trigger, and the same column — or either side saying "" , which is
+    "any of them" and not "no column". A warning that is a guess errs towards
+    being raised.
+    """
+    t, pc = produced
+    lt, lc = listener
+    return t == lt and (not pc or not lc or pc == lc)
 
 
 def _automation_loop_risk(db, board, a):
@@ -17878,11 +18311,8 @@ def _automation_loop_risk(db, board, a):
         return []
     others = db.query(Automation).filter(Automation.board_id == board.id,
                                          Automation.id != a.id).all()
-    # trigger → the rules that listen for it, over the whole board
-    listens = {}
-    for o in others + [a]:
-        ro = recipes.recipe(o.recipe_id) or {}
-        listens.setdefault(ro.get("trigger"), []).append(o)
+    # what each rule on the board waits for, as (trigger, column)
+    listens = [(o, _rule_listens(o)) for o in others + [a]]
 
     def reaches_a(start):
         """Is there a path from this rule back to the one being checked?"""
@@ -17890,7 +18320,9 @@ def _automation_loop_risk(db, board, a):
         while stack:
             cur = stack.pop()
             for t in _rule_produces(cur):
-                for nxt in listens.get(t, []):
+                for nxt, waits in listens:
+                    if not _produces_reaches(t, waits):
+                        continue
                     if nxt.id == a.id:
                         return True
                     if nxt.id not in seen:
@@ -17900,8 +18332,7 @@ def _automation_loop_risk(db, board, a):
 
     out = []
     for o in others:
-        ro = recipes.recipe(o.recipe_id) or {}
-        if ro.get("trigger") not in produces:
+        if not any(_produces_reaches(t, _rule_listens(o)) for t in produces):
             continue
         out.append({"id": o.id,
                     "name": o.name or _automation_label(db, board, o)
@@ -18027,7 +18458,7 @@ def _dry_run_automation(db, board, a, task, viewer=None):
     r = recipes.recipe(a.recipe_id) or {}
     cfg = a.config or {}
     trig = r.get("trigger", "")
-    label = lambda key, v: _automation_value_label(db, board, r, key, v)
+    label = lambda key, v: _automation_value_label(db, board, r, key, v, cfg)
 
     # ── the trigger ──
     cur_status, cur_prio = _task_status_key(task), _task_priority_key(task)
@@ -18040,8 +18471,21 @@ def _dry_run_automation(db, board, a, task, viewer=None):
         trigger["note"] = ("תאריך היעד " + task.due_date.strftime("%d/%m/%Y")) if task.due_date \
             else "לפריט אין תאריך יעד"
     elif trig == "status_changes_to":
-        trigger["matches"] = str(cfg.get("t_status")) == str(cur_status)
-        trigger["note"] = f"הסטטוס בפריט: {label('t_status', cur_status)}"
+        # against the column the rule names, not against the board's status —
+        # a test that compared the wrong one would say a rule cannot fire when
+        # it is about to
+        _tcol = recipes.status_col_of(cfg, "t_status")
+        if _tcol:
+            _scol = _find_col(db, task.board_id, _tcol)
+            _cell = _status_cell_key(_scol, (task.custom_fields or {}).get(_tcol))
+            trigger["matches"] = bool(_scol) and str(cfg.get("t_status")) == _cell
+            _name = (_scol or {}).get("title") or _tcol
+            trigger["note"] = (f"הערך בעמודה «{_name}»: "
+                               f"{_status_label(board, _tcol, _cell)}") if _scol \
+                else f"העמודה «{_tcol}» אינה קיימת בלוח"
+        else:
+            trigger["matches"] = str(cfg.get("t_status")) == str(cur_status)
+            trigger["note"] = f"הסטטוס בפריט: {label('t_status', cur_status)}"
     elif trig == "priority_changes_to":
         trigger["matches"] = str(cfg.get("t_priority")) == str(cur_prio)
         trigger["note"] = f"העדיפות בפריט: {label('t_priority', cur_prio)}"
@@ -18124,6 +18568,18 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
     """
     shown = lambda t, v: "—" if v in (None, "", []) else _shown_value(db, board, t, v)
     if key == "set_status":
+        scol = recipes.status_col_of(values, "status")
+        if scol:
+            col = _find_col(db, task.board_id, scol)
+            now = _status_cell_key(col, (task.custom_fields or {}).get(scol))
+            same = bool(col) and str(values.get("status")) == now
+            name = (col or {}).get("title") or scol
+            return {"what": f"שינוי הסטטוס בעמודה «{name}»",
+                    "to": _status_label(board, scol, values.get("status")),
+                    "from": _status_label(board, scol, now) if now else "—",
+                    "no_op": same or not col,
+                    "note": ("העמודה אינה קיימת בלוח" if not col
+                             else "לעמודה יש את הערך הזה כבר" if same else "")}
         same = str(values.get("status")) == str(cur_status)
         return {"what": "שינוי סטטוס", "to": shown("status", values.get("status")),
                 "from": shown("status", cur_status), "no_op": same,
@@ -18162,6 +18618,13 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
             note = "לפריט אין משויכים" if no_op else ""
         return {"what": "שליחת התראה", "to": who, "from": "", "no_op": no_op,
                 "note": note + (" · בבדיקה לא נשלחת התראה" if not no_op else "")}
+    if key == "create_in_board":
+        tb = db.query(Board).filter(Board.id == values.get("board")).first()
+        g = db.query(Group).filter(Group.id == values.get("target_group")).first()
+        return {"what": "יצירת פריט בלוח אחר", "to": values.get("text") or "", "from": "",
+                "no_op": not (tb and g),
+                "note": (f"בלוח «{tb.name}», בקבוצה «{g.name}»" if tb and g
+                         else "לוח היעד או הקבוצה אינם קיימים")}
     if key in ("link_to_item", "create_and_link", "create_in_group_and_link"):
         note = f"בעמודה {shown('connect', values.get('connect'))}"
         if key == "create_in_group_and_link":
@@ -18207,13 +18670,18 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
     return None
 
 
-def _automation_value_label(db, board, r, key, v):
-    """A value as the board shows it — a status's label, a person's name."""
+def _automation_value_label(db, board, r, key, v, cfg=None):
+    """A value as the board shows it — a status's label, a person's name.
+
+    `cfg` is the rule's own configuration, and it is here for the one case that
+    cannot be answered from the value alone: a status belongs to a vocabulary,
+    and which vocabulary is a thing the RULE says, not the value."""
     t = next((f["type"] for f in r.get("fields", []) if f["key"] == key), None)
     if v in (None, "", []):
         return "—"
     if t == "status" or key in ("t_status", "a_status"):
-        e = next((x for x in _board_statuses(board) if x["key"] == str(v)), None)
+        opts, _ = _status_vocab(board, recipes.status_col_of(cfg, key))
+        e = next((x for x in opts if str(x["key"]) == str(v)), None)
         return e["label"] if e else str(v)
     if t == "priority" or key in ("t_priority", "a_priority"):
         e = next((x for x in _board_priorities(board) if x["key"] == str(v)), None)
@@ -19813,6 +20281,16 @@ def update_task(task_id: int, data: dict, request: Request = None,
         for _cid, (_was, _now) in _field_delta.items():
             _run_automations(db, task, _ev("column_changed", col=_cid,
                                            was=_was, now=_now), actor)
+            # A status column is a status, and the two things a person wants
+            # to ask about it are different questions: "ערך העמודה השתנה"
+            # fires on every change, "כאשר «שלב» משתנה ל«אושר»" on one value.
+            # Its own event rather than a flag on the one above, so the
+            # matcher stays the same shape for both kinds of status.
+            _scol = _find_col(db, task.board_id, _cid)
+            if _scol and _scol.get("type") == "status":
+                _run_automations(db, task, _ev("status_changes_to", col=_cid,
+                                               status=_status_cell_key(_scol, _now),
+                                               was=_status_cell_key(_scol, _was)), actor)
         # a link being made or unmade is an event in its own right, and one edit
         # can do both in the same cell (a replacement), so both are reported
         for _k, (_added, _removed) in _link_delta.items():
@@ -20524,7 +21002,7 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
                     # that value onto the item now — from a button that looks
                     # exactly like every other undo on the page.
                     "origin": (og or {}).get("source") or "",
-                    "can_undo": (l.action == "update"
+                    "can_undo": (not on_board and l.action == "update"
                                  and (og or {}).get("source") in (None, "", "automation")),
                     "created_at": l.created_at})
         if len(out) >= limit:

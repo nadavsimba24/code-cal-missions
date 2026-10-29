@@ -1,7 +1,8 @@
 """Group — ספריית התבניות: the catalog as something to look through.
 
-  · The nine templates the specification recommends, under the names it gives
-    them, at the top of the list.
+  · The templates the library lists by name, at the top: the nine the
+    specification recommends under the names it gives them, and the ones the
+    engine learned afterwards that earned a name of their own.
   · Search, and filters for the six things a person has in mind: a status, a
     date, who it is assigned to, a sub-item, a link, a notification.
   · A template that does not fit the board is shown as unavailable, saying what
@@ -142,10 +143,22 @@ def test_search_matches_the_wording_a_person_would_use(client, admin_id):
     assert _lib(client, bid, admin_id, q="שאיןכזהדבר")["templates"] == []
 
 
-def test_only_recommended_narrows_to_the_nine(client, admin_id):
+def test_only_recommended_narrows_to_the_named_ones(client, admin_id):
+    """The filter narrows to the templates the library lists BY NAME.
+
+    That started as exactly the nine the specification recommends and is no
+    longer only them: a template the engine learned later can earn a name and a
+    place at the top without the specification's list being rewritten to claim
+    it asked for it. So the assertion is against the set the filter is about —
+    and against the nine still all being in it, which is the part that was
+    promised.
+    """
     bid = _board(client, admin_id)
     rows = _lib(client, bid, admin_id, only="recommended")["templates"]
-    assert len(rows) == len(recipes.MVP_TEMPLATES)
+    named = {rid for rid, _ in recipes.LIBRARY_TEMPLATES}
+    assert {r["id"] for r in rows} == named
+    assert {rid for rid, _ in recipes.MVP_TEMPLATES} <= named
+    assert len(rows) < len(_lib(client, bid, admin_id)["templates"])
 
 
 # ── compatibility with the board ────────────────────────────────────────────

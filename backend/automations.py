@@ -656,6 +656,46 @@ def _impossible(conds):
     return None
 
 
+# ── which status a rule is about ────────────────────────────────────────────
+# A board has one built-in status, and it may also carry columns of type
+# status, each with a vocabulary of its own. Every `status` blank in a rule
+# used to mean the built-in one and there was no way to say otherwise, so a
+# board that tracks its work in a "שלב" column could not fire a rule on it at
+# all — only through "כאשר ערך העמודה משתנה", which goes off on every change
+# rather than on the one value somebody cares about.
+#
+# The column travels BESIDE the value, under a derived key: `t_status` is
+# answered by `t_status_col`, `a_status` by `a_status_col`. Not inside the
+# value, because a bare vocabulary key is what every stored rule already holds
+# and what the engine compares against the event — widening it into a dict
+# would have had to be understood by the matcher, the dry run, the labels, the
+# export, the version diff and the browser, all in the same breath, and every
+# rule written before today would have had to be rewritten to keep working.
+#
+# Absent or empty means the board's own status, which is exactly what a rule
+# written before this says. That is why there is no migration.
+STATUS_COL_SUFFIX = "_col"
+
+# How a trigger or an action reads once it is about a named status column.
+# Whole alternative sentences rather than a substitution on the original:
+# "הסטטוס" sits in the middle of a Hebrew sentence whose grammar moves around
+# it, and "כאשר הסטטוס «שלב» משתנה" is not a sentence anybody would write.
+STATUS_COL_TEXT = {
+    "status_changes_to": "כאשר {col} משתנה ל{status}",
+    "set_status":        "שנה את {col} ל{status}",
+}
+
+
+def status_col_key(field_key):
+    """The key the column for this status blank is kept under."""
+    return str(field_key) + STATUS_COL_SUFFIX
+
+
+def status_col_of(values, field_key):
+    """The column this status blank names, or "" for the board's own status."""
+    return str((values or {}).get(status_col_key(field_key)) or "").strip()
+
+
 TRIGGERS = {
     "item_created":        "כאשר נוצר פריט חדש",
     "status_changes_to":   "כאשר הסטטוס משתנה ל{status}",
@@ -677,6 +717,18 @@ TRIGGERS = {
     "person_unassigned":   "כאשר מוסר שיוך של אדם מהפריט",
     "due_date_near":       "{days} ימים לפני תאריך היעד",
     "due_date_passed":     "{days} ימים אחרי תאריך היעד",
+    # ── a rule on a clock rather than on a change ──
+    # Every other trigger here is something that HAPPENED to an item. This one
+    # is the passage of time itself: it comes round again, on every item the
+    # conditions still hold for, for as long as the rule is on. It is what a
+    # chase is — "כל שבוע, כל עוד הסטטוס עדיין X, הזכר לאחראי" — and there was
+    # no way to say it, because every reminder this catalog had hung off a due
+    # date and fired once.
+    #
+    # MIN_EVERY_DAYS is a floor and not a formality: there is no scheduler in
+    # this product, so a recurring rule is swept when the board is read, and
+    # "every 0 days" would be "on every read".
+    "every_n_days":        "כל {days} ימים",
     # ── a sub-item finishing, reported to its PARENT ──
     # The item the rule then acts on is the parent, which is what makes
     # "עדכן שדה בפריט האב" every action the catalog already has rather than a
@@ -694,6 +746,20 @@ ACTIONS = {
     "create_subitem":   "צור תת־פריט בשם {text}",
     "link_to_item":     "קשר את הפריט אל {item} בעמודה {connect}",
     "create_and_link":  "צור פריט בשם {text} בלוח {board} וקשר אותו לפריט המקור בעמודה {connect}",
+    # ── a board the rule writes into, with nothing pointing back ──
+    # Every cross-board action here has been a LINK action: it creates the item
+    # and ties it to the one that set the rule off, and the connect column is
+    # both the route and the permission. That leaves "when an item reaches
+    # «הועברו לפרסום», open one on «מעקב התקשרויות»" unsayable — a hand-off, not
+    # a relationship, and there is nothing to connect the two items by.
+    #
+    # The specification allows exactly this as the second of two routes:
+    # "אוטומציה בין לוחות תתבסס על עמודת קישור או על יצירת פריט בלוח יעד שהוגדר
+    # מראש". What stands in the connect column's place as the permission is the
+    # pair that was always underneath it — the author must hold writing rights
+    # on the target board for the rule to be saved, and the grant recording it
+    # is re-read before every firing.
+    "create_in_board":  "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}",
     # ── and the three the template library asked for ──
     "post_update":      "הוסף עדכון לשיחת הפריט: {text}",
     "copy_to_linked":   "העתק {fields} {targets}",
@@ -764,6 +830,10 @@ def map_value(raw):
 # not a list of checkboxes. That is in the Roadmap, not here.
 # How far from the due date a "before"/"after" trigger may be set.
 MAX_TRIGGER_DAYS = 365
+# The shortest a recurring rule may come round. A day, because the thing it
+# counts is days and because the sweep that runs it happens when somebody opens
+# the board — anything finer would be a promise the engine cannot keep.
+MIN_EVERY_DAYS = 1
 
 COPY_FIELDS = {
     "status":      "סטטוס",
@@ -784,8 +854,11 @@ def copy_fields_label(v):
     return ", ".join(picked) if picked else "שדות"
 
 
-def _f(key, type_, label):
-    return {"key": key, "type": type_, "label": label}
+def _f(key, type_, label, **extra):
+    """One placeholder. `extra` carries whatever that one field needs that the
+    three above do not say — today only `min`, the floor a recurring interval
+    has and the due-date distances do not."""
+    return {"key": key, "type": type_, "label": label, **extra}
 
 
 # ── בין לוחות: יעד אחד או כולם, ומה קורה כשאין ─────────────────────────────
@@ -899,6 +972,9 @@ ACTION_FIELDS = {
     "create_and_link":  [_f("connect", "connect", "עמודת הקישור"),
                          _f("board", "board", "לוח היעד"),
                          _f("text", "text", "שם הפריט החדש")],
+    "create_in_board":  [_f("board", "board", "לוח היעד"),
+                         _f("target_group", "target_group", "הקבוצה בלוח היעד"),
+                         _f("text", "text", "שם הפריט החדש")],
     "post_update":      [_f("text", "text", "תוכן העדכון")],
     "set_column":       [_f("column", "column", "עמודה"),
                          _f("text", "text", "הערך החדש")],
@@ -932,6 +1008,18 @@ ACTION_FIELDS = {
 _ONE_PER_RULE = ("set_status", "set_priority", "move_to_group")
 
 
+def _one_per_target(key, values):
+    """What an action writes, for the once-per-rule check above.
+
+    Two «שנה את הסטטוס» in one rule are the same write only when they are about
+    the same status column. On two different columns the second overwrites
+    nothing — "שנה את הסטטוס ל«הושלם» וגם שנה את «שלב» ל«אושר»" is one rule
+    doing two things, and refusing it would be refusing the whole point of a
+    board having more than one status column.
+    """
+    return (key, status_col_of(values, "status") if key == "set_status" else "")
+
+
 def action_fields(key):
     return ACTION_FIELDS.get(key, [])
 
@@ -942,18 +1030,29 @@ def actions_catalog():
     # each one, the way the rule's own sentence does; `label` is the same line
     # with the blanks shown as "…", for the picker that offers it.
     return [{"key": k, "label": plain(text), "text": text,
+             # how it reads once it names a status column of its own; "" when
+             # it cannot name one — see STATUS_COL_TEXT
+             "text_col": STATUS_COL_TEXT.get(k, ""),
              "fields": action_fields(k)} for k, text in ACTIONS.items()]
 
 
 def action_text(key, shown=None):
     """One action as a phrase. `shown` maps a field key to the value already
-    rendered the way the board shows it; a blank stays a blank."""
-    text = ACTIONS.get(key, "")
+    rendered the way the board shows it; a blank stays a blank.
+
+    "status_col" is a key of its own in `shown` rather than one of the action's
+    fields: the column is an answer about the status blank, not a blank the
+    action has — see STATUS_COL_TEXT. When it is there the action is said about
+    that column instead of about the board's own status.
+    """
+    col = (shown or {}).get("status_col")
+    text = (STATUS_COL_TEXT[key] if col not in (None, "") and key in STATUS_COL_TEXT
+            else ACTIONS.get(key, ""))
     for f in action_fields(key):
         v = (shown or {}).get(f["key"])
         text = text.replace("{" + f["key"] + "}",
                             v if v not in (None, "") else "…")
-    return text
+    return text.replace("{col}", col if col not in (None, "") else "…")
 
 
 def action_list(recipe_id, config):
@@ -967,9 +1066,11 @@ def action_list(recipe_id, config):
     cfg = config or {}
     out = []
     if r.get("action"):
-        out.append({"key": r["action"],
-                    "values": {f["key"][2:]: cfg.get(f["key"])
-                               for f in r.get("fields", []) if f["key"].startswith("a_")},
+        # _primary_values rather than a second copy of the same comprehension:
+        # it is the one that also carries the status column, which rides beside
+        # the status under a key the field list does not mention, and a copy
+        # here is how the two would come to disagree about what an action holds
+        out.append({"key": r["action"], "values": _primary_values(recipe_id, cfg),
                     "index": 0})
     for i, extra in enumerate((cfg.get(ACTIONS_KEY) or []), start=1):
         key = str((extra or {}).get("key") or "")
@@ -1026,9 +1127,13 @@ def _coerce_field(f, v, require):
         v = str(v or "").strip()          # a column id, like connect
     elif f["type"] == "days":
         try:
-            return max(0, min(int(v), MAX_TRIGGER_DAYS)), None
+            n = int(v)
         except (TypeError, ValueError):
             return None, (f"חסר ערך בשדה '{f['label']}'" if require else None)
+        # a recurring rule counts an interval, and an interval of nothing is
+        # not an interval — see MIN_EVERY_DAYS. "ימים לפני תאריך היעד" has no
+        # such floor: zero there is the date itself, which is a real answer.
+        return max(int(f.get("min") or 0), min(n, MAX_TRIGGER_DAYS)), None
     elif f["type"] in ("person", "group", "item", "board", "target_group"):
         try:
             return int(v), None
@@ -1055,7 +1160,8 @@ def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
     if len(raw) > MAX_ACTIONS - 1:
         return None, f"אפשר להגדיר עד {MAX_ACTIONS} פעולות בכלל אחד"
     primary = (recipe(recipe_id) or {}).get("action")
-    singles = {primary} & set(_ONE_PER_RULE)
+    singles = ({_one_per_target(primary, primary_values)}
+               if primary in _ONE_PER_RULE else set())
     seen = set()
     if primary:
         seen.add((primary, _sig(primary_values or {})))
@@ -1071,16 +1177,21 @@ def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
             return None, "פעולות לא תקינות"
         values = {}
         for f in action_fields(key):
+            if f["type"] == "status":
+                sc = status_col_of(given, f["key"])
+                if sc:
+                    values[status_col_key(f["key"])] = sc
             v, err = _coerce_field(f, (given or {}).get(f["key"]), require_values)
             if err:
                 return None, f"{err} בפעולה «{plain(ACTIONS[key])}»"
             if v is not None:
                 values[f["key"]] = v
         if key in _ONE_PER_RULE:
-            if key in singles:
+            target = _one_per_target(key, values)
+            if target in singles:
                 return None, (f"«{plain(ACTIONS[key])}» יכולה להופיע פעם אחת "
                               f"בלבד בכלל")
-            singles.add(key)
+            singles.add(target)
         sig = (key, _sig(values))
         if sig in seen:
             continue                      # the same action twice does it once
@@ -1096,8 +1207,18 @@ def _sig(values):
 def _primary_values(recipe_id, config):
     r = recipe(recipe_id) or {}
     cfg = config or {}
-    return {f["key"][2:]: cfg.get(f["key"])
-            for f in r.get("fields", []) if f["key"].startswith("a_")}
+    out = {f["key"][2:]: cfg.get(f["key"])
+           for f in r.get("fields", []) if f["key"].startswith("a_")}
+    # the status column rides beside the status under a derived key the field
+    # list does not carry, and the duplicate-action check below reads it off
+    # these values — without it two actions on two different columns would
+    # look like the same action twice
+    for f in r.get("fields", []):
+        if f["type"] == "status" and f["key"].startswith("a_"):
+            sc = status_col_of(cfg, f["key"])
+            if sc:
+                out[status_col_key(f["key"][2:])] = sc
+    return out
 
 
 # Placeholder keys are namespaced by side (t_ = trigger, a_ = action) so a recipe
@@ -1114,12 +1235,39 @@ RECIPES = [
      "fields": [_f("t_status", "status", "סטטוס"), _f("a_group", "group", "קבוצה")]},
     {"id": "status_set_priority", "trigger": "status_changes_to", "action": "set_priority",
      "fields": [_f("t_status", "status", "סטטוס"), _f("a_priority", "priority", "עדיפות")]},
+    # One status moving another. Every other trigger has paired with
+    # "שנה את הסטטוס" from the start, and this one did not — back when a board
+    # had exactly one status, "כאשר הסטטוס משתנה, שנה את הסטטוס" was a rule
+    # that could only talk to itself, so it was left out on purpose.
+    #
+    # A board with status columns of its own is the case it was missing: "כאשר
+    # «שלב תכנון» משתנה ל«אושר», שנה את «שלב ביצוע» ל«התחיל»" is two different
+    # columns and the commonest thing people actually want from two of them.
+    # The old reading stays available and stays harmless — pointed at the same
+    # status it fires once, because the value it writes is not the value it
+    # waits for, and writing the value that IS there is skipped.
+    {"id": "status_set_status", "trigger": "status_changes_to", "action": "set_status",
+     "fields": [_f("t_status", "status", "סטטוס"),
+                _f("a_status", "status", "הסטטוס החדש")]},
     {"id": "status_create_subitem", "trigger": "status_changes_to", "action": "create_subitem",
      "fields": [_f("t_status", "status", "סטטוס"), _f("a_text", "text", "שם תת־הפריט")]},
+    {"id": "status_create_in_board", "trigger": "status_changes_to",
+     "action": "create_in_board",
+     "fields": [_f("t_status", "status", "סטטוס"),
+                _f("a_board", "board", "לוח היעד"),
+                _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
+                _f("a_text", "text", "שם הפריט החדש")]},
+    {"id": "status_set_column", "trigger": "status_changes_to", "action": "set_column",
+     "fields": [_f("t_status", "status", "סטטוס"),
+                _f("a_column", "column", "העמודה לעדכון"),
+                _f("a_text", "text", "הערך החדש")]},
 
     # ── item created ──
     {"id": "created_assign_person", "trigger": "item_created", "action": "assign_person",
      "fields": [_f("a_person", "person", "אחראי")]},
+    {"id": "created_set_column", "trigger": "item_created", "action": "set_column",
+     "fields": [_f("a_column", "column", "העמודה לעדכון"),
+                _f("a_text", "text", "הערך החדש")]},
     {"id": "created_set_status", "trigger": "item_created", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
     {"id": "created_notify_person", "trigger": "item_created", "action": "notify_person",
@@ -1241,6 +1389,12 @@ RECIPES = [
     # ── the new sources, each paired with the actions that read naturally ──
     {"id": "moved_group_notify_assignees", "trigger": "moved_to_group",
      "action": "notify_assignees", "fields": [_f("t_group", "group", "קבוצה")]},
+    {"id": "moved_group_create_in_board", "trigger": "moved_to_group",
+     "action": "create_in_board",
+     "fields": [_f("t_group", "group", "קבוצה"),
+                _f("a_board", "board", "לוח היעד"),
+                _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
+                _f("a_text", "text", "שם הפריט החדש")]},
     {"id": "moved_group_set_status", "trigger": "moved_to_group", "action": "set_status",
      "fields": [_f("t_group", "group", "קבוצה"), _f("a_status", "status", "סטטוס")]},
     {"id": "moved_group_notify_person", "trigger": "moved_to_group",
@@ -1257,10 +1411,47 @@ RECIPES = [
      "action": "notify_assignees", "fields": [_f("t_column", "column", "עמודה")]},
     {"id": "column_changed_set_status", "trigger": "column_changed", "action": "set_status",
      "fields": [_f("t_column", "column", "עמודה"), _f("a_status", "status", "סטטוס")]},
+    # ── writing one of the board's own columns ──
+    # "עדכן את העמודה" has been an action since columns could be written, and
+    # it had no recipe of its own: it could only ever be added as a SECOND
+    # action to a rule built around something else, so "כאשר «לקוחות» משתנה,
+    # עדכן את «מנהל פרויקט מקומי»" — a rule about nothing but a column — was
+    # not a rule this catalog could express at all.
+    #
+    # The trigger column and the action column may be the same one, and that
+    # is safe for the same reason the status pair is: the value it writes is
+    # not the value that set it off, and writing the value already there is
+    # skipped.
+    {"id": "column_changed_set_column", "trigger": "column_changed", "action": "set_column",
+     "fields": [_f("t_column", "column", "עמודה"),
+                _f("a_column", "column", "העמודה לעדכון"),
+                _f("a_text", "text", "הערך החדש")]},
+    {"id": "column_changed_clear_column", "trigger": "column_changed", "action": "clear_column",
+     "fields": [_f("t_column", "column", "עמודה"),
+                _f("a_column", "column", "העמודה לניקוי")]},
     {"id": "unassigned_notify_person", "trigger": "person_unassigned",
      "action": "notify_person", "fields": [_f("a_person", "recipient", "נמען")]},
     {"id": "unassigned_set_status", "trigger": "person_unassigned", "action": "set_status",
      "fields": [_f("a_status", "status", "סטטוס")]},
+    # ── כל כמה ימים ──
+    # The chase: it comes round again for as long as the rule is on and the
+    # conditions still hold. "כל 7 ימים, רק אם «קבלת מסמכים» לפני היום וגם
+    # «סטטוס ההליך» הוא «קבלת טפסים מהרשות», שלח התראה ל«מנהל פרויקט מקומי»"
+    # is the whole of it, and every part of that except the clock already
+    # existed.
+    {"id": "every_days_notify_person", "trigger": "every_n_days",
+     "action": "notify_person",
+     "fields": [_f("t_days", "days", "כל כמה ימים", min=MIN_EVERY_DAYS),
+                _f("a_person", "recipient", "נמען")]},
+    {"id": "every_days_notify_assignees", "trigger": "every_n_days",
+     "action": "notify_assignees",
+     "fields": [_f("t_days", "days", "כל כמה ימים", min=MIN_EVERY_DAYS)]},
+    {"id": "every_days_set_status", "trigger": "every_n_days", "action": "set_status",
+     "fields": [_f("t_days", "days", "כל כמה ימים", min=MIN_EVERY_DAYS),
+                _f("a_status", "status", "סטטוס")]},
+    {"id": "every_days_post_update", "trigger": "every_n_days", "action": "post_update",
+     "fields": [_f("t_days", "days", "כל כמה ימים", min=MIN_EVERY_DAYS),
+                _f("a_text", "text", "תוכן העדכון")]},
     {"id": "due_near_notify_assignees", "trigger": "due_date_near",
      "action": "notify_assignees", "conds": ["status_is_not"],
      "fields": [_f("t_days", "days", "ימים לפני")]},
@@ -1328,6 +1519,7 @@ _ACTION_TAGS = {
     "create_subitem":   ("subitem",),
     "link_to_item":     ("link",),
     "create_and_link":  ("link",),
+    "create_in_board":  (),
     "create_in_group_and_link": ("link",),
     "copy_to_linked":   ("link",),
     "post_update":      (),
@@ -1345,6 +1537,7 @@ _COND_TAGS = {
 # a person cannot answer in the form because they are the board's structure.
 NEEDS_HE = {
     "column":           "עמודה מותאמת בלוח (לא מראה ולא קישור)",
+    "writable_column":  "עמודה בלוח שאפשר לכתוב בה",
     "connect":          "עמודת קישור בלוח",
     "connect_two_way":  "עמודת קישור דו־כיוונית בלוח",
     "group":            "לפחות קבוצה אחת בלוח",
@@ -1358,6 +1551,8 @@ _TRIGGER_NEEDS = {
     "linked_status_changes_to": ("connect_two_way",),
 }
 _ACTION_NEEDS = {
+    "set_column":               ("writable_column",),
+    "clear_column":             ("writable_column",),
     "link_to_item":             ("connect",),
     "create_and_link":          ("connect",),
     "create_in_group_and_link": ("connect", "group"),
@@ -1390,8 +1585,32 @@ MVP_TEMPLATES = [
     ("assigned_post_update",
      "כאשר אחראי משתנה, הוסף עדכון לשיחת הפריט"),
 ]
-MVP_TITLES = dict(MVP_TEMPLATES)
-MVP_ORDER = {rid: i for i, (rid, _) in enumerate(MVP_TEMPLATES)}
+# Templates the library lists BY NAME and shows beside the recommended ones,
+# beyond the nine above. MVP_TEMPLATES is a record of what that specification
+# asked for and stays as it was; this is the list that grows as the engine
+# learns to do things the document did not know about.
+#
+# A template with no name is rendered as its bare sentence, which is how
+# "סטטוס מזיז סטטוס" went missing: 52nd of 59, under a sentence that reads
+# "כאשר הסטטוס משתנה ל…, שנה את הסטטוס ל…" — the one reading of it that looks
+# like a rule talking to itself, and no hint that the status it writes can be
+# a different column from the one it watches. The name is where that is said.
+EXTRA_TEMPLATES = [
+    ("status_set_status",
+     "כאשר עמודת סטטוס משתנה, עדכן עמודת סטטוס אחרת"),
+    ("every_days_notify_person",
+     "כל כמה ימים, שלח תזכורת כל עוד התנאים מתקיימים"),
+    ("column_changed_set_column",
+     "כאשר ערך עמודה משתנה, עדכן ערך בעמודה אחרת"),
+    ("created_set_column",
+     "כאשר נוצר פריט, מלא ערך בעמודה"),
+    ("moved_group_create_in_board",
+     "כאשר פריט מועבר לקבוצה, צור פריט בלוח אחר"),
+]
+
+LIBRARY_TEMPLATES = MVP_TEMPLATES + EXTRA_TEMPLATES
+MVP_TITLES = dict(LIBRARY_TEMPLATES)
+MVP_ORDER = {rid: i for i, (rid, _) in enumerate(LIBRARY_TEMPLATES)}
 
 # ── template versions ──
 # A system template is versioned so that a rule built from it goes on meaning
@@ -1425,7 +1644,41 @@ def recipe(recipe_id):
     return RECIPES_BY_ID.get(recipe_id)
 
 
-def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and"):
+def _sentence_halves(r, config=None, on_trigger=None, on_action=None):
+    """(trigger half, action half) with their placeholders renamed, before the
+    conditions clause goes between them.
+
+    Split out because the two halves are chosen independently. A rule may name
+    a status column for its trigger, for its action, for both or for neither,
+    and those are four different sentences — "כאשר הסטטוס משתנה ל…, שנה את
+    «שלב ביצוע» ל…" is as ordinary a rule as the two that name one column each.
+    Four whole strings would be a table that grows with every recipe; two
+    halves, each picked on its own, is the same answer without the table.
+
+    `on_trigger` / `on_action` override what `config` says, for the catalog —
+    which has no config and has to serve both readings of each half.
+    """
+    trig = TRIGGERS[r["trigger"]]
+    want = status_col_of(config, "t_status") if on_trigger is None else on_trigger
+    if r["trigger"] in STATUS_COL_TEXT and want:
+        # "{col}" is spelled out rather than run through the loop below: the
+        # column's key is derived from the status blank's (t_status_col), not
+        # from the blank's own name
+        trig = STATUS_COL_TEXT[r["trigger"]].replace("{col}", "{t_status_col}")
+    for k in ("status", "priority", "group", "column", "days"):
+        trig = trig.replace("{" + k + "}", "{t_" + k + "}")
+    act = ACTIONS[r["action"]]
+    want = status_col_of(config, "a_status") if on_action is None else on_action
+    if r["action"] in STATUS_COL_TEXT and want:
+        act = STATUS_COL_TEXT[r["action"]].replace("{col}", "{a_status_col}")
+    for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
+              "fields", "target_group", "column", "days", "map", "targets", "on_missing"):
+        act = act.replace("{" + k + "}", "{a_" + k + "}")
+    return trig, act
+
+
+def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and",
+             config=None):
     """The recipe as one '{placeholder}'-carrying sentence, for the UI to fill.
 
     `cond_phrases` are a stored rule's extra conditions, already rendered — they
@@ -1437,17 +1690,15 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and"):
     on after the first with "וגם", in the order they run — one sentence for the
     whole rule, because a rule that does four things is still one rule and the
     list has to be legible as one line in the history.
+
+    A rule that names a status column of its own says so — "כאשר «שלב» משתנה
+    ל«אושר»" and not "כאשר הסטטוס משתנה ל«אושר»", which would be a sentence
+    about a different column on the same board. See _sentence_halves.
     """
     r = recipe(recipe_id)
     if not r:
         return ""
-    trig = TRIGGERS[r["trigger"]]
-    for k in ("status", "priority", "group", "column", "days"):
-        trig = trig.replace("{" + k + "}", "{t_" + k + "}")
-    act = ACTIONS[r["action"]]
-    for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
-              "fields", "target_group", "column", "days", "map", "targets", "on_missing"):
-        act = act.replace("{" + k + "}", "{a_" + k + "}")
+    trig, act = _sentence_halves(r, config)
     clause = conditions_clause(cond_phrases, group_op)
     more = [p for p in (action_phrases or []) if p]
     if more:
@@ -1514,10 +1765,55 @@ def recipe_conditions(recipe_id):
     return out
 
 
+def _takes_status_col(r, field_key):
+    """Whether this status blank may name a column of its own.
+
+    The trigger and the action that WRITE or LISTEN to a status can; the rest
+    cannot, and the one that matters is "הסטטוס של פריט מקושר" — that status
+    lives on another board's item and is the built-in one by definition.
+    """
+    side = r["trigger"] if field_key.startswith("t_") else r["action"]
+    return side in STATUS_COL_TEXT
+
+
+def _sentence_parts(r):
+    """Both readings of each half, for a screen that composes the sentence
+    while somebody is still choosing.
+
+    The halves are joined with ", " — exactly what sentence() does when a rule
+    carries no conditions and no extra actions, which is every rule being
+    built. The "_col" reading is "" for a half whose status cannot name a
+    column, and that is how the screen knows not to offer the choice there.
+    """
+    trig, act = _sentence_halves(r, on_trigger=False, on_action=False)
+    tcol, _ = _sentence_halves(r, on_trigger=True, on_action=False)
+    _, acol = _sentence_halves(r, on_trigger=False, on_action=True)
+    # the slot sentence() gives a field the wording does not mention goes on
+    # the action half, and it has to travel with it — a screen composing from
+    # these parts would otherwise drop the one blank nothing else shows
+    tail = [f["key"] for f in r.get("fields", [])
+            if "{" + f["key"] + "}" not in trig + act]
+    if tail:
+        more = " · " + " · ".join("{" + k + "}" for k in tail)
+        act, acol = act + more, acol + more
+    can = lambda k: any(f["key"] == k and f["type"] == "status"
+                        and _takes_status_col(r, k) for f in r["fields"])
+    return {"trigger": trig, "action": act,
+            "trigger_col": tcol if can("t_status") else "",
+            "action_col": acol if can("a_status") else ""}
+
+
 def catalog():
     """The full catalog the UI renders in the 'automation from a recipe' picker."""
     return [{"id": r["id"], "trigger": r["trigger"], "action": r["action"],
              "sentence": sentence(r["id"]), "fields": r["fields"],
+             # Each half of the sentence in both its readings, so the builder
+             # can pick them independently: a rule may name a status column for
+             # its trigger, for its action, for both or for neither.
+             "sentence_parts": _sentence_parts(r),
+             "status_fields": [f["key"] for f in r["fields"]
+                               if f["type"] == "status"
+                               and _takes_status_col(r, f["key"])],
              # a template that comes with its own conditions says so; one that
              # does not sends an empty list and reads exactly as it always did
              "conditions": recipe_conditions(r["id"]),
@@ -1547,6 +1843,15 @@ def validate_partial(recipe_id, config):
         return None, "הגדרות לא תקינות"
     clean = {}
     for f in r["fields"]:
+        # The status column travels beside the value and not inside it, so it
+        # has to be carried here by hand — the loop walks the recipe's own
+        # fields and `t_status_col` is not one of them. Empty is not kept:
+        # that is the board's own status, which is what silence has always
+        # meant and what every rule written before this holds.
+        if f["type"] == "status":
+            _sc = status_col_of(config, f["key"])
+            if _sc:
+                clean[status_col_key(f["key"])] = _sc
         v = config.get(f["key"])
         if v is None or v == "" or v == []:
             continue                              # not filled in yet, and that is allowed
@@ -1561,7 +1866,7 @@ def validate_partial(recipe_id, config):
             continue
         elif f["type"] == "days":
             try:
-                v = max(0, min(int(v), MAX_TRIGGER_DAYS))
+                v = max(int(f.get("min") or 0), min(int(v), MAX_TRIGGER_DAYS))
             except (TypeError, ValueError):
                 continue
             clean[f["key"]] = v
@@ -1647,6 +1952,12 @@ def validate(recipe_id, config):
         return None, "הגדרות לא תקינות"
     clean = {}
     for f in r["fields"]:
+        # see clean(): the column a status blank names rides beside it, under a
+        # derived key the recipe's own field list does not mention
+        if f["type"] == "status":
+            _sc = status_col_of(config, f["key"])
+            if _sc:
+                clean[status_col_key(f["key"])] = _sc
         v = config.get(f["key"])
         if f["type"] == "text":
             v = (str(v or "")).strip()[:200]
@@ -1690,7 +2001,7 @@ def validate(recipe_id, config):
                 return None, f"חסר ערך בשדה '{f['label']}'"
         elif f["type"] == "days":
             try:
-                v = max(0, min(int(v), MAX_TRIGGER_DAYS))
+                v = max(int(f.get("min") or 0), min(int(v), MAX_TRIGGER_DAYS))
             except (TypeError, ValueError):
                 return None, f"חסר ערך בשדה '{f['label']}'"
         elif f["type"] in ("person", "group", "item", "board", "target_group"):
