@@ -235,6 +235,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .lg-av{width:26px;height:26px;font-size:10px;margin:0;flex:none}
 .lg-item{flex:1 1 150px;min-width:0;text-align:start;background:none;border:none;padding:0;font:inherit;font-size:13px;font-weight:600;color:var(--text);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lg-item:hover{color:var(--primary);text-decoration:underline}
+/* A line about the board itself has nothing to open, so it is not drawn as
+   something to press: no pointer, no underline on hover, and the board's icon
+   in front of the name so it is not mistaken for an item with that title. */
+.lg-board{cursor:default;color:var(--text-muted);display:flex;align-items:center;gap:6px}
+.lg-board:hover{color:var(--text-muted);text-decoration:none}
 .lg-field{flex:0 1 150px;min-width:0;display:inline-flex;align-items:center;gap:6px;color:var(--text-muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lg-field i{font-size:11px;flex:none}
 .lg-change{flex:0 1 250px;min-width:0;display:inline-flex;align-items:center;gap:7px;justify-content:flex-end}
@@ -4151,7 +4156,9 @@ const BoardLog = {
     const rows=(d.activity||[]).map(a=>`<div class="lg-row">
         <span class="lg-when" title="${esc(fdatetime(a.created_at))}"><i class="fa-regular fa-clock"></i> ${esc(this.ago(a.created_at))}</span>
         <span class="av lg-av" title="${esc(a.user_name||'')}">${avatarInner(a)}</span>
-        <button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})">${esc(a.task_title||'—')}</button>
+        ${a.task_id
+          ? `<button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})">${esc(a.task_title||'—')}</button>`
+          : `<span class="lg-item lg-board" title="שינוי בלוח עצמו — לא בפריט"><i class="fa-solid fa-table-columns"></i>${esc(a.task_title||'—')}</span>`}
         <span class="lg-l2">
           <span class="lg-field"><i class="fa-solid ${this.fieldIcon(a)}"></i> ${esc(this.fieldLabel(a))}</span>
           <span class="lg-change">${this.change(a)}${
@@ -4200,6 +4207,19 @@ const BoardLog = {
     return 'fa-pen';
   },
   fieldLabel(a){
+    /* Before the generic 'נמחק', or a deleted column would read as a deleted
+       ITEM — the same word on a line that names the board. A built-in column
+       cannot truly be dropped, only taken off the board, and the wording says
+       which of the two happened. */
+    if(a.field==='column')return 'עמודה נמחקה';
+    if(a.field==='builtin_column')return a.action==='restore'?'עמודה הוחזרה ללוח':'עמודה הוסרה מהלוח';
+    /* A group is the same kind of event as a column — it happened to the
+       board — and it has to be named before the generic 'נמחק' can answer
+       for it, which on a line carrying the board's name reads as a deleted
+       item. An 'update' on this field is not that: it is an ITEM that moved
+       between groups, and it falls through to the normal old → new pills. */
+    if(a.field==='group'&&a.action!=='update')
+      return a.action==='create'?'קבוצה נוצרה':'קבוצה נמחקה';
     if(a.action==='comment')return a.field==='reply'?'תגובה בשרשור':'תגובה';
     if(a.action==='create')return a.field==='subitem'?'תת-פריט נוצר':'פריט נוצר';
     if(a.action==='delete')return 'נמחק';
@@ -10334,6 +10354,70 @@ const Automations = {
     closeCellPops(); this.render();
   },
 
+  /* ---- איזו עמודת סטטוס ----
+     Asked before the value, because the value only means anything inside a
+     vocabulary: «אושר» in "שלב" is not the board status of that name. `into`
+     is an extra action's ({actIdx,key}) — the question is the same one, only
+     the place the answer lands differs. */
+  pickStatusSource(anchor,key,into){
+    const items=this._statusSources();
+    this._popItems=items;
+    const call=into?`Automations.setActStatusSource(${into.actIdx},'${into.key}',`
+                   :`Automations.setStatusSource('${key}',`;
+    const body=items.map((it,i)=>`<button class="rm-item" onclick="${call}${i})">
+        <i class="fa-solid ${it.v?'fa-table-columns':'fa-circle-dot'}"
+           style="font-size:11px;color:var(--primary)"></i> ${esc(it.label)}</button>`).join('');
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
+      <div class="rm-note">על איזה סטטוס מדובר?</div>${body}</div>`,'row-menu-pop');
+  },
+  /* Changing the column drops a value chosen for the previous one — an option
+     id from another column is not an answer to this one — and the value is
+     asked for straight away, the way the condition's column picker does it.
+
+     The board's own status is RECORDED as a choice ({v:''}) rather than left
+     as an absence. The two are the same thing to the engine and to save(),
+     which sends neither, but not to the screen: an absence is "nobody has been
+     asked yet" and is what sends the next click back to this question, which
+     is how the two steps would otherwise loop. */
+  _afterStatusSource(vals,key,it,reopen){
+    const had=this._statusColOf(vals,key);
+    if(had!==(it.v||'')) delete vals[key];
+    vals[key+'_col']={v:it.v||'',label:it.label,color:''};
+    closeCellPops(); this.render();
+    setTimeout(reopen,20);
+  },
+  /* The way back to the question, carried at the top of the value picker.
+     Without it the board's own status is a one-way door: it takes the column
+     wording out of the sentence, and with it the blank that would have asked
+     again. */
+  _statusSourceLine(key,into){
+    if(!this._statusCols().length) return '';
+    const vals=into?(((this.building.acts||[])[into.actIdx]||{}).values||{})
+                   :this.building.values;
+    const cur=(vals[key+'_col']||{}).label||'הסטטוס של הלוח';
+    const call=into?`Automations.pickActValue(event,${into.actIdx},'status_col')`
+                   :`Automations.pickField(event,'${key}_col')`;
+    return `<button class="rm-item" onclick="${call}">
+        <i class="fa-solid fa-right-left" style="font-size:10px;color:var(--text-light)"></i>
+        <small style="color:var(--text-light)">${esc(cur)} — החלף</small></button>
+      <div class="rm-note" style="padding-top:4px"></div>`;
+  },
+  setStatusSource(key,idx){
+    const it=(this._popItems||[])[idx]; if(!it)return;
+    this._afterStatusSource(this.building.values,key,it,()=>{
+      const el=document.querySelector(`.au-build .au-blank[data-k="${key}"]`);
+      if(el)el.click();
+    });
+  },
+  setActStatusSource(i,key,idx){
+    const it=(this._popItems||[])[idx], a=(this.building.acts||[])[i]; if(!it||!a)return;
+    this._afterStatusSource(a.values=a.values||{},key,it,()=>{
+      const row=document.querySelectorAll('.au-act')[i];
+      const el=row&&row.querySelector(`.au-blank[data-k="${key}"]`);
+      if(el)el.click();
+    });
+  },
+
   async save(asDraft){
     const r=this.building&&this.building.recipe; if(!r)return;
     const config={};
@@ -13611,7 +13695,14 @@ function builtinColMenu(e,key){
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('builtin','${key}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +(key==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(key==='priority'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();managePriorities()"><i class="fa-solid fa-sliders"></i> ניהול עדיפויות</button>`:'')
-    +(canHide?`<button class="cell-pop-opt2" style="color:var(--red)" onclick="hideBuiltinCol(event,'${key}')"><i class="fa-solid fa-eye-slash"></i> מחק עמודה</button>`:'');
+    /* A trash can, like the same line in the custom-column menu above it:
+       the two menus sit on neighbouring headers and say the identical words,
+       and an eye beside "מחק עמודה" reads as "hide" — a different promise
+       from the one the label makes. What the button does underneath is still
+       hideBuiltinCol, because a built-in column is a column of the item and
+       cannot be dropped; the icon now agrees with the wording rather than
+       with the implementation. */
+    +(canHide?`<button class="cell-pop-opt2" style="color:var(--red)" onclick="hideBuiltinCol(event,'${key}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`:'');
   openCellPop(e.currentTarget,html);
 }
 /* rename a column by editing its header text IN PLACE (no dialog). Works for
@@ -19641,7 +19732,7 @@ const Chat = {
     if(a.action==='undo')return 'ביטל/ה שינוי ב'+this.fieldHe(a.field);
     return `שינה/תה ${this.fieldHe(a.field)}: <span class="log-old">${esc(this.transVal(a.field,a.old))}</span> ← <span class="log-new">${esc(this.transVal(a.field,a.new))}</span>`;
   },
-  fieldHe(f){ if(!f)return ''; const m={title:'כותרת',status:'סטטוס',priority:'עדיפות',due_date:'תאריך יעד'}; if(m[f])return m[f]; if(f.startsWith('col:')){const c=customColumns().find(x=>x.id===f.slice(4));return 'עמודה '+(c?'"'+c.title+'"':'');} return f; },
+  fieldHe(f){ if(!f)return ''; const m={title:'כותרת',status:'סטטוס',priority:'עדיפות',due_date:'תאריך יעד',group:'קבוצה'}; if(m[f])return m[f]; if(f.startsWith('col:')){const c=customColumns().find(x=>x.id===f.slice(4));return 'עמודה '+(c?'"'+c.title+'"':'');} return f; },
   /* A custom column's history is stored as JSON, so "empty" arrives as the
      STRING "null" and a text value arrives wrapped in quotes. Comparing against
      null never matched the string, which is why cells that were cleared showed

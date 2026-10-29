@@ -2523,6 +2523,64 @@ def _check_view_name(db, board_id, name, exclude_id=None):
     return name
 
 
+def _log_board(db, board_id, action, field=None, old=None, new=None, actor=None):
+    """One line in the board's log for a change to the BOARD, not to an item.
+
+    The log was built out of AuditLog rows whose entity is a task, because
+    everything worth recording happened to an item. Deleting a column is not
+    that: it happens to the board, it takes a column of data off every item at
+    once, and until this existed it left no trace anywhere — the column was
+    simply gone, and nobody could say by whom or when. "מחיקת עמודה בלוח צריכה
+    להופיע בלוגים" is that hole.
+
+    entity_id is the BOARD's id, so _board_activity_rows can find these rows
+    without a table of its own, and _hard_delete_board takes them with it the
+    way it takes the item rows — ids are reissued, and a row left behind would
+    reattach to whatever board is created into that id next.
+
+    These rows are never undoable: there is no old value to put back. The undo
+    endpoint refuses anything that is not an entity_type="task" update, which
+    is the gate rather than the hint.
+    """
+    db.add(AuditLog(entity_type="board", entity_id=board_id, action=action,
+                    field_name=field, old_value=old, new_value=new,
+                    changed_by=actor))
+
+
+def _group_name(db, gid):
+    """A group's name for the log, or None for "ללא קבוצה".
+
+    The log stores names rather than ids on purpose. A group can be deleted
+    long after an item passed through it, and an id left in the history would
+    then point at nothing — or, since ids are reissued, at some later group
+    the item was never in. The name is what somebody reading the line a year
+    from now is actually asking about.
+    """
+    if not gid:
+        return None
+    g = db.query(Group).filter(Group.id == gid).first()
+    return g.name if g else None
+
+
+def _log_group_move(db, task_id, from_gid, to_gid, actor=None):
+    """"מעבר רשומה בין קבוצות" — one line on the item, where the move happened.
+
+    A drag between groups changed group_id, fired its automation trigger and
+    recorded nothing: the item's own history showed the status changes around
+    it and said nothing about the move, so a board where the group IS the
+    workflow had the one event that mattered missing from both logs. The
+    status change two lines above this in move_task had been audited all
+    along, which is the shape this follows.
+
+    Group rows are read through _group_name, so a later rename or deletion
+    cannot turn the line into a dangling id.
+    """
+    if from_gid == to_gid:
+        return
+    _audit(db, task_id, "update", "group",
+           _group_name(db, from_gid), _group_name(db, to_gid), actor)
+
+
 def _log_view(db, v, action, field=None, old=None, new=None, actor=None):
     """One line in the board's log for a change to a view.
 
@@ -8142,8 +8200,26 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             hideable = {"assignees", "status", "priority", "due"}
             hidden = [str(k) for k in (data["col_hidden"] or []) if str(k) in hideable]
             s = dict(b.settings or {})
+            was = [str(k) for k in (s.get("col_hidden") or [])]
             s["col_hidden"] = list(dict.fromkeys(hidden))  # de-dup, preserve order
             b.settings = s
+            # Logged like a deletion, because that is the word the board uses:
+            # the "..." menu on a built-in header offers "מחק עמודה" and this
+            # is what it calls. A built-in column is a column of the item and
+            # cannot really be dropped, so the row says "הוסרה מהלוח" rather
+            # than "נמחקה" — and the way back is logged too, or the log reads
+            # as four deletions and no restorations.
+            _he = {"assignees": "אחראים", "status": "סטטוס",
+                   "priority": "עדיפות", "due": "תאריך יעד"}
+            _name = lambda k: (s.get("col_labels") or {}).get(k) or _he.get(k, k)
+            for k in s["col_hidden"]:
+                if k not in was:
+                    _log_board(db, board_id, "delete", field="builtin_column",
+                               old=_name(k), actor=actor_id)
+            for k in was:
+                if k not in s["col_hidden"]:
+                    _log_board(db, board_id, "restore", field="builtin_column",
+                               old=_name(k), actor=actor_id)
         if data.get("col_order") is not None:
             # persisted display order of columns (built-in keys + custom ids) — board admin
             if _board_role(db, board_id, actor_id) != "admin":
@@ -8338,6 +8414,13 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                 title = prev.get("title") or cid
                 if nxt is None:
                     _suspend_dependents(db, b, "column", cid, actor_id, title)
+                    # The column itself is about to stop existing, so this row
+                    # is the only place its name survives. Written here and not
+                    # beside `_gone` above, because above is still in front of
+                    # the forms gate: a change refused with a 409 must not
+                    # leave a line saying it happened.
+                    _log_board(db, board_id, "delete", field="column",
+                               old=title, actor=actor_id)
                 elif not _column_types_compatible(prev.get("type"), nxt.get("type")):
                     _suspend_dependents(db, b, "column", cid, actor_id,
                                         f"{title} (שונתה מ{prev.get('type')} ל{nxt.get('type')})")
@@ -8421,6 +8504,11 @@ def _hard_delete_board(db, board_id: int):
                                   AuditLog.entity_id.in_(task_ids)).delete(synchronize_session=False)
         # links reach across boards, so the far end is on a board that survives
         _drop_links_for_tasks(db, task_ids)
+    # and the board's own rows, for exactly the reason above: a board id is
+    # reissued too, and a column deletion left behind would surface in the log
+    # of whatever board is created into that id next.
+    db.query(AuditLog).filter(AuditLog.entity_type == "board",
+                              AuditLog.entity_id == board_id).delete(synchronize_session=False)
     for t in tasks:          # clear assignee links via the ORM relationship
         t.assignees = []
     db.flush()
@@ -13197,6 +13285,9 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             raise _Skipped("הקבוצה שהכלל מבקש אינה קיימת בלוח")
         if task.group_id == g.id:
             raise _Skipped("הפריט נמצא בקבוצה הזו כבר")
+        # actor None: the rule stamps itself through db.info, the way the
+        # status and priority actions above do
+        _log_group_move(db, task.id, task.group_id, g.id, None)
         task.group_id = g.id
     elif act == "create_subitem":
         _sub = Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
@@ -20274,6 +20365,7 @@ def update_task(task_id: int, data: dict, request: Request = None,
                                            user_ids=sorted(_before_assignees
                                                            - _after_assignees)), actor)
         if task.group_id != _before_group:
+            _log_group_move(db, task.id, _before_group, task.group_id, actor)
             _run_automations(db, task, _ev("moved_to_group", group_id=task.group_id,
                                            from_group=_before_group), actor)
         # one event per column whose VALUE moved — a mirror is not among them,
@@ -20969,14 +21061,25 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
     across the whole board instead of one item. Each row carries the item it
     belongs to, because at board level "changed status" means nothing without
     saying of what.
+
+    Plus the board's own rows (_log_board): a deleted column happened to the
+    board and to no item, so it belongs here and nowhere else. Those come back
+    with task_id None and the board's name in task_title — the reader needs to
+    be told what the line is about, and there is no item to open. A board with
+    no items at all still has them, which is why the early return below is on
+    the rows and not on the item list.
     """
     ids = _board_task_ids(db, board_id)
-    if not ids:
-        return []
-    q = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id.in_(ids))
+    scopes = [and_(AuditLog.entity_type == "board", AuditLog.entity_id == board_id)]
+    if ids:
+        scopes.append(and_(AuditLog.entity_type == "task", AuditLog.entity_id.in_(ids)))
+    q = db.query(AuditLog).filter(or_(*scopes))
     if user_id:
         q = q.filter(AuditLog.changed_by == user_id)
-    titles = {i: t for (i, t) in db.query(Task.id, Task.title).filter(Task.id.in_(ids)).all()}
+    _b = db.query(Board).filter(Board.id == board_id).first()
+    board_name = (_b.name if _b else None) or "הלוח"
+    titles = ({i: t for (i, t) in db.query(Task.id, Task.title).filter(Task.id.in_(ids)).all()}
+              if ids else {})
     users = {u.id: u.name for u in db.query(User).all()}
     cols = {c.get("id"): c for c in _board_columns(db, board_id)}
     out = []
@@ -20989,9 +21092,15 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
         if vals is None:
             continue                          # the change was invisible to this viewer
         og = l.origin if isinstance(l.origin, dict) else None
+        # A board row has no item behind it. task_id None is what tells the
+        # page not to draw the "open the item" button — an id that opens
+        # nothing is worse than no button, and l.entity_id here is a BOARD id
+        # that would happily collide with some unrelated item's.
+        on_board = (l.entity_type == "board")
         out.append({"id": l.id, "action": l.action, "field": l.field_name,
                     "old": vals[0], "new": vals[1],
-                    "task_id": l.entity_id, "task_title": titles.get(l.entity_id, "—"),
+                    "task_id": None if on_board else l.entity_id,
+                    "task_title": board_name if on_board else titles.get(l.entity_id, "—"),
                     "user_id": l.changed_by,
                     # an imported row's author may have no account here; the name
                     # it came with is better than "מערכת"
@@ -21019,21 +21128,23 @@ def _board_log_people(db, board_id):
     Plus anyone who actually appears in this board's log. A member who was
     removed after doing work is still in the history, and dropping them from the
     filter would leave rows nobody can filter to. So the rule is "could have
-    acted, or did".
+    acted, or did" — "did" now including the board's own rows, so that whoever
+    deleted a column can be filtered to like anybody else.
     """
     members = (db.query(User)
                  .join(BoardMember, BoardMember.user_id == User.id)
                  .filter(BoardMember.board_id == board_id).all())
     people = {u.id: {"id": u.id, "name": u.name, "avatar_url": u.avatar_url} for u in members}
     ids = _board_task_ids(db, board_id)
+    scopes = [and_(AuditLog.entity_type == "board", AuditLog.entity_id == board_id)]
     if ids:
-        actor_ids = {a for (a,) in db.query(AuditLog.changed_by)
-                     .filter(AuditLog.entity_type == "task",
-                             AuditLog.entity_id.in_(ids)).distinct().all() if a}
-        missing = actor_ids - set(people)
-        if missing:
-            for u in db.query(User).filter(User.id.in_(missing)).all():
-                people[u.id] = {"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
+        scopes.append(and_(AuditLog.entity_type == "task", AuditLog.entity_id.in_(ids)))
+    actor_ids = {a for (a,) in db.query(AuditLog.changed_by)
+                 .filter(or_(*scopes)).distinct().all() if a}
+    missing = actor_ids - set(people)
+    if missing:
+        for u in db.query(User).filter(User.id.in_(missing)).all():
+            people[u.id] = {"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
     return sorted(people.values(), key=lambda p: (p["name"] or ""))
 
 
@@ -21398,6 +21509,7 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
         elif "group_id" in data and task.group_id != src_group:
             _place_item(db, task)                     # no anchor named: last
         if task.group_id != src_group:
+            _log_group_move(db, task_id, src_group, task.group_id, actor)
             _renumber_group(db, task.board_id, src_group)   # close the gap behind it
         if "status" in data:
             # The kanban drag, the sub-item status cell and the console `move`
@@ -21571,6 +21683,10 @@ def create_group_api(data: dict, actor_id: int = Depends(current_user_id)):
             task_status=task_status,
         )
         db.add(g)
+        # A group is structure, like a column: the board gained a shelf, and
+        # until now nobody could say who added it or when. Same row shape as
+        # the column events, so it reads in the board log beside them.
+        _log_board(db, board_id, "create", field="group", new=g.name, actor=actor_id)
         db.commit()
         bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
         db.refresh(g)
@@ -21628,6 +21744,11 @@ def delete_group_api(group_id: int, actor_id: int = Depends(current_user_id)):
         # while the group is still there: afterwards there is nothing to match
         _suspend_dependents(db, db.query(Board).filter(Board.id == _bid).first(),
                             "group", group_id, actor_id, g.name)
+        # Recorded before the delete, while the name is still there to record.
+        # The items are not deleted with it — they fall back to "ללא קבוצה" —
+        # so this line is the only trace that the shelf they were on ever
+        # existed, and the only place its name survives.
+        _log_board(db, _bid, "delete", field="group", old=g.name, actor=actor_id)
         for t in db.query(Task).filter(Task.group_id == group_id).all():
             t.group_id = None
         db.delete(g)
