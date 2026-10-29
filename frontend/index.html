@@ -1702,7 +1702,7 @@ body.coldragging .col-grip{opacity:1}
 .confirm-ic{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-size:23px;margin:0 auto 14px;background:var(--primary-soft);color:var(--primary)}
 .confirm-ic.danger{background:#fdebed;color:var(--red)}
 .confirm-msg{font-size:15px;font-weight:600;color:var(--text)}
-.confirm-note{font-size:13px;color:var(--text-muted);margin-top:7px}
+.confirm-note{font-size:13px;color:var(--text-muted);margin-top:7px;white-space:pre-line}
 .confirm-actions{display:flex;gap:10px;justify-content:center;margin-top:20px}
 .confirm-actions .btn{min-width:104px;justify-content:center}
 /* styled single-field edit dialog (replaces native prompt) */
@@ -15143,6 +15143,38 @@ function canEdit(){ return canComment(); }  // board members who aren't view-onl
 function itemPerm(t){ return (t&&t.my_perm)||'edit'; }
 function canEditItem(t){ const p=itemPerm(t); return p==='edit'||p==='delete'; }
 function canDeleteItem(t){ return itemPerm(t)==='delete'; }
+/* Why a deletion is refused, or "" when it may go ahead.
+
+   Without this the refusal only happened at the server: the menu offered
+   "מחק פריט" to everybody, the confirmation dialog warned that the item could
+   not be restored, somebody confirmed it — and the only answer was a toast
+   reading "0 פריטים נמחקו", which names neither what went wrong nor who to
+   ask. The check belongs before the dialog, not after it.
+
+   The board role is the usual reason and a per-item override is the other,
+   and they must be told apart: saying "בלוח זה" to somebody whose board role
+   DOES allow deleting, but who was denied this one item, sends them to argue
+   with the wrong person. This is a courtesy, not a gate — _item_perm on the
+   server is still what actually decides, and still answers 403. */
+/* How long the bin really keeps things, not a number typed into a sentence.
+
+   RECYCLE_BIN_DAYS is configurable on the server, and a dialog that promises
+   sixty days while the server purges at thirty is worse than promising
+   nothing. Both bins report the real value when they are opened, so this
+   prefers whichever has been seen this session and falls back to the
+   server's own default. */
+function recycleDays(){
+  return (typeof BoardTrash!=='undefined' && BoardTrash.retention)
+      || (typeof Trash!=='undefined' && Trash.data && Trash.data.retention_days)
+      || 60;
+}
+function deleteBlockReason(t){
+  if(!t || canDeleteItem(t)) return '';
+  const own=(t.permissions||{})[String(meId())];
+  return (own && own!=='delete')
+    ? 'אין לך הרשאה מתאימה למחיקה של פריט זה'
+    : 'אין לך הרשאה מתאימה למחיקה בלוח זה';
+}
 /* A column's permission belongs to the column and the viewer's role, not to
    the item, so the board states it once. t.col_perms is still read first: a
    single-item response (and an older board payload) carries it there. */
@@ -16506,6 +16538,7 @@ async function addSubItem(parentId){
 function deleteSubItem(e,id){
   e.stopPropagation();
   const s=findAnyTask(id);
+  const why=deleteBlockReason(s); if(why){ toast(why); return; }
   askConfirm('למחוק את תת-הפריט'+(s&&s.title?` "${s.title}"`:'')+'?',async()=>{
     try{
       await api('/api/tasks/'+id,{method:'DELETE'});
@@ -16513,8 +16546,9 @@ function deleteSubItem(e,id){
       if(!removeRowsLocal(id))renderView();   // no board reload — the row just disappears
       toast('תת-פריט נמחק');
     }
-    catch(err){toast('שגיאה במחיקה');}
-  },{title:'מחיקת תת-פריט',confirmText:'מחק',note:'תת-הפריט יימחק ולא ניתן לשחזר.'});
+    catch(err){toast(String(err.message||'').includes('403')?'אין לך הרשאה מתאימה למחיקה בלוח זה':'שגיאה במחיקה');}
+  },{title:'מחיקת תת-פריט',confirmText:'מחק',note:`המחיקה תנתק גם את כל הקישורים הקיימים שלו.
+תת-הפריט ישמר בסל המחזור של הלוח למשך ${recycleDays()} יום, ולאחר מכן ימחק לצמיתות.`});
 }
 /* item options menu — opened by right-click on the row or the hover 3-dots button */
 /* Item menu: "העבר" opens קבוצה / לוח, each leading to its own targets, then
@@ -16640,11 +16674,33 @@ function clearSelection(){
 function _selectedTopItems(){ return [...st.selected].map(id=>findAnyTask(id)).filter(t=>t&&!t.parent_id); }
 async function bulkDelete(){
   const items=_selectedTopItems(); if(!items.length)return;
-  askConfirm(`למחוק ${items.length} פריטים?`,async()=>{
-    let ok=0;
-    for(const t of items){ try{ await api('/api/tasks/'+t.id,{method:'DELETE'}); removeTaskLocal(t.id); ok++; }catch(e){} }
-    clearSelection(); renderView(); toast(`${ok} פריטים נמחקו`);
-  },{title:'מחיקת פריטים',confirmText:'מחק',note:'הפריטים וכל תת-הפריטים שלהם יימחקו ולא ניתן לשחזר.'});
+  // A selection can be mixed. Refusing the whole thing would be wrong, and so
+  // would deleting part of it in silence — the dialog counts what will really
+  // go, and says what is being left behind and why.
+  const allowed=items.filter(canDeleteItem), denied=items.length-allowed.length;
+  if(!allowed.length){ toast(deleteBlockReason(items[0])); return; }
+  /* The note used to end "ולא ניתן לשחזר", which was simply untrue: this
+     product's deletion policy is a recycle bin, and somebody who believed the
+     warning had no reason to look for the item there. What it says now is
+     what the server does — see tests/test_delete_dialog_promises.py, which
+     pins the window in the sentence to RECYCLE_BIN_DAYS itself. */
+  const note=`המחיקה תנתק גם את כל הקישורים הקיימים שלהם.
+הפריטים ישמרו בסל המחזור של הלוח למשך ${recycleDays()} יום, ולאחר מכן ימחקו לצמיתות.`
+    + (denied?`\n${denied} מהפריטים שנבחרו אינם ברי-מחיקה עבורך ויישארו.`:'');
+  askConfirm(`למחוק ${allowed.length} פריטים?`,async()=>{
+    let ok=0, refused=0, failed=0;
+    for(const t of allowed){
+      try{ await api('/api/tasks/'+t.id,{method:'DELETE'}); removeTaskLocal(t.id); ok++; }
+      catch(e){ if(String(e.message||'').includes('403')) refused++; else failed++; }
+    }
+    clearSelection(); renderView();
+    // The server is the authority, so a refusal can still arrive here — a
+    // permission changed under us, or another tab moved the board on. What it
+    // must never do again is report that as a bare count of zero.
+    toast(refused||failed
+      ? `נמחקו ${ok} מתוך ${allowed.length}`+(refused?` — ${refused} ללא הרשאה`:'')+(failed?` — ${failed} נכשלו`:'')
+      : `${ok} פריטים נמחקו`);
+  },{title:'מחיקת פריטים',confirmText:'מחק',note});
 }
 async function bulkDuplicate(){
   const items=_selectedTopItems(); if(!items.length)return;
@@ -16760,6 +16816,7 @@ async function moveItemToGroup(e,id,gid){
 async function deleteItem(e,id){
   e.stopPropagation(); closeCellPops();
   const t=findAnyTask(id); const n=(t&&t.subtasks&&t.subtasks.length)||0;
+  const why=deleteBlockReason(t); if(why){ toast(why); return; }
   askConfirm('למחוק את הפריט'+(n?` ואת ${n} תת-הפריטים שלו`:'')+'?',async()=>{
     try{
       await api('/api/tasks/'+id,{method:'DELETE'});
@@ -16767,8 +16824,9 @@ async function deleteItem(e,id){
       if(!removeRowsLocal(id))renderView();   // not on screen (other view) → re-render
       toast('הפריט נמחק');
     }
-    catch(err){toast('שגיאה במחיקה');}
-  },{title:'מחיקת פריט',confirmText:'מחק',note:'הפריט וכל תת-הפריטים שלו יימחקו ולא ניתן לשחזר.'});
+    catch(err){toast(String(err.message||'').includes('403')?'אין לך הרשאה מתאימה למחיקה בלוח זה':'שגיאה במחיקה');}
+  },{title:'מחיקת פריט',confirmText:'מחק',note:`המחיקה תנתק גם את כל הקישורים הקיימים שלו.
+הפריט וכל תת-הפריטים שלו ישמרו בסל המחזור של הלוח למשך ${recycleDays()} יום, ולאחר מכן ימחקו לצמיתות.`});
 }
 
 function vKanban(el){
