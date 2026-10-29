@@ -112,8 +112,36 @@ def test_the_page_is_hebrew_rtl_and_fits_a_phone():
 
 def test_one_renderer_serves_the_editor_and_this_page():
     index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-    assert 'src="form-paper.js"' in index and 'src="form-paper.js"' in PAGE
+    assert 'src="form-paper.js"' in index and 'src="/form-paper.js"' in PAGE
     assert "const FormPaper" not in index, "a second copy of the renderer"
+
+
+def test_this_page_asks_for_the_renderer_by_its_real_address():
+    """A relative src on THIS page fetches the page itself.
+
+    index.html is served at "/", so a bare "form-paper.js" resolves to the
+    root and is correct there. This page is served at /forms/{token}, where a
+    bare one resolves to /forms/form-paper.js — and the route above matches
+    ANY token, so the browser was handed 20KB of this very page under a
+    text/html content type. nosniff then refused to execute it, FormPaper was
+    never defined, and the form sat on its spinner for good: the link "did not
+    open". Every asset this page asks for is therefore root-relative.
+    """
+    for src in re.findall(r'<script src="([^"]+)"', PAGE):
+        assert src.startswith(("/", "http")), (
+            f"{src} resolves against /forms/ and will fetch the page itself")
+
+
+def test_the_renderer_is_served_as_javascript_not_as_the_page(client, admin_id):
+    """The same thing again from the outside: what the browser actually gets."""
+    r = client.get("/form-paper.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"], r.headers["content-type"]
+    assert "const FormPaper" in r.text
+    # and the shadow it used to fall into, so the trap itself is on record
+    shadow = client.get("/forms/form-paper.js")
+    assert "text/html" in shadow.headers["content-type"], (
+        "a path under /forms/ is the fill page, whatever it is named")
     for t in ("text", "long_text", "number", "status", "dropdown",
               "checkbox", "date", "phone", "email", "files"):
         assert f"'{t}'" in PAPER, f"the renderer cannot draw {t}"
@@ -162,6 +190,230 @@ def test_every_one_of_the_ten_arrives_with_what_it_needs_to_be_drawn(client, adm
     assert [o["label"] for o in by["Single Select"]["options"]] == ["א", "ב"]
     assert [o["label"] for o in by["Multi Select"]["options"]] == ["ג", "ד"]
     assert "options" not in by["Text"] and "options" not in by["File"]
+
+
+def _with_assignees(client, admin_id, name, access="PUBLIC_LINK"):
+    """A published form carrying an אחראים question. Returns (bid, fid, token)."""
+    bid = _board(client, admin_id, name)
+    f = client.post(f"/api/boards/{bid}/forms", json={}, headers=AS(admin_id)).json()
+    q = client.post(f"/api/forms/{f['id']}/components",
+                    json={"kind": "question", "field_key": "assignees",
+                          "label": "אחראים"}, headers=AS(admin_id)).json()
+    client.patch(f"/api/forms/{f['id']}", json={"access": access}, headers=AS(admin_id))
+    client.patch(f"/api/forms/{f['id']}", json={"status": "PUBLISHED"}, headers=AS(admin_id))
+    tok = client.get(f"/api/forms/{f['id']}", headers=AS(admin_id)).json()["public_token"]
+    assert q["id"]
+    return bid, f["id"], tok
+
+
+def _people_q(doc):
+    return next(c for c in doc["components"] if c["type"] == "people")
+
+
+def test_an_assignees_question_offers_the_people_it_may_be_answered_with(
+        client, admin_id, member_id):
+    """It used to offer nobody, which made it a field that did nothing.
+
+    The options are what the control is built from, so an empty list is a
+    question with no answer available — clicking it did nothing in the
+    editor, in the preview and on the published page alike.
+    """
+    bid, _fid, tok = _with_assignees(client, admin_id, "אחראים נפתח")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": member_id, "role": "editor"})
+    q = _people_q(client.get(f"/api/public/forms/{tok}", headers=AS(member_id)).json())
+    assert member_id in [o["value"] for o in q["options"]]
+    assert all(o["label"] for o in q["options"]), "a person with no name to show"
+    assert all(isinstance(o["value"], int) for o in q["options"]), (
+        "an id is what _can_be_assigned compares, and it compares to a number")
+
+
+def test_the_member_list_still_does_not_reach_anybody_the_board_does_not_know(
+        client, admin_id, member_id, guinea_id):
+    """The line the form has always held, now that there is a list to hold back.
+
+    A member may name a member — they can see that list in the app anyway.
+    A stranger on a public link, and a signed-in account that is not on this
+    board, get an empty question and no names at all: "מילוי טופס אינו מעניק
+    גישה ללוח" is the same rule it was.
+    """
+    bid, _fid, tok = _with_assignees(client, admin_id, "אחראים נסגר")
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": member_id, "role": "editor"})
+    assert _people_q(client.get(f"/api/public/forms/{tok}",
+                                headers=AS(member_id)).json()).get("options")
+    for who, headers in (("a stranger", ANON),
+                         ("a signed-in outsider", AS(guinea_id))):
+        doc = client.get(f"/api/public/forms/{tok}", headers=headers).json()
+        assert not _people_q(doc).get("options"), who
+        blob = json.dumps(doc, ensure_ascii=False)
+        for u in client.get("/api/users", headers=AS(admin_id)).json():
+            assert (u.get("name") or "@@") not in blob, f"{who} was told a name"
+
+
+def test_the_builder_sees_the_picker_in_their_own_preview(client, admin_id):
+    """The preview is the published page, so it is the published page's list —
+    and the person building the board's form is on the board by definition."""
+    _bid, fid, _tok = _with_assignees(client, admin_id, "אחראים בתצוגה")
+    doc = client.get(f"/api/forms/{fid}/preview", headers=AS(admin_id)).json()
+    assert admin_id in [o["value"] for o in _people_q(doc)["options"]]
+
+
+# What the renderer draws only for the person BUILDING the form: the drag
+# grip, the marks on a hidden or orphaned question, the greying that says a
+# tick-list on the canvas is a drawing rather than a control, and the
+# stand-ins for the column types a form cannot collect at all — in fill mode
+# those are refused outright (see FILLABLE), so a respondent never meets one.
+# A respondent is never in that mode, so the public page rightly has no rule
+# for these.
+#
+# One of them, fv-opt-off, is drawn only when `live` is false — and all three
+# of the product's call sites pass live (editor canvas, preview, public page),
+# so nothing a user can open emits it today. It is kept on this list, and the
+# non-live branch is kept under test, as the RENDERER's contract rather than
+# as a look somebody can reach: `live` exists precisely so that a surface can
+# ask for a drawing, and the day one does, the drawing has to still be styled.
+# Nobody should read this set as a list of things on screen.
+_EDITOR_ONLY = {"fv-bgrip", "fv-hid-t", "fv-gone-t", "fv-opt-off", "fv-stars"}
+
+# …and these are not a look at all. A marker class carries a FACT about the
+# block that code reads back off the element — fv-files-off is how blockedWhy
+# finds the question a form cannot take a file for — and the element's
+# appearance comes from the classes beside it. A stylesheet rule for one would
+# be the odd thing, so the rule below exempts them and the test demands the
+# thing that makes them legitimate instead: somebody has to be reading it.
+_MARKERS = {"fv-files-off"}
+
+
+def test_the_pages_both_style_every_class_the_one_renderer_emits():
+    """Two stylesheets, one renderer — a class only one of them knows about
+    is how the editor's form and the published one quietly drift apart. The
+    exceptions are listed above rather than inferred, so adding one is a
+    decision somebody makes and not a rule that quietly stops holding."""
+    index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    # Read out of the class attributes and not off the whole file, and
+    # through the interpolation rather than around it: a name that only
+    # appears inside a `${...}` — which is where every conditional class
+    # lives, fv-opt-off included — is exactly the one nobody styles.
+    seen = set()
+    for attr in re.findall(r'class="([^"]*)"', PAPER):
+        for name in re.findall(r"fv-[a-z0-9-]+", attr):
+            seen.add(name)
+            if name in _MARKERS:
+                continue
+            assert f".{name}" in index, f"index.html has no rule for {name}"
+            if name not in _EDITOR_ONLY:
+                assert f".{name}" in PAGE, f"public-form.html has no rule for {name}"
+    assert _EDITOR_ONLY <= seen, (
+        f"listed as editor-only but no longer drawn: {_EDITOR_ONLY - seen}")
+    # A marker nobody reads is a class that does nothing, which is how this
+    # exemption would turn into a hole: it would excuse any unstyled name.
+    for name in _MARKERS:
+        assert name in seen, f"listed as a marker but no longer drawn: {name}"
+        assert re.search(rf"contains\(['\"]{re.escape(name)}['\"]\)", PAPER + index), (
+            f"{name} is styled by nobody and read by nobody — it marks nothing")
+
+
+# The names the test above cannot see. `fv-blk-${c.kind}` reads out of the
+# attribute as the bare stem "fv-blk-", which is a substring of .fv-blk-heading
+# and so passes however many kinds go unstyled; and the state a block is in —
+# selected, hidden, orphaned — is not fv- prefixed at all, so the scan skips
+# it entirely.
+#
+# Neither list is written down here. The kinds are the server's own list of
+# what a component may be, and the states are read off the renderer's class
+# attribute, so a fourth of either arrives in this test on the day it arrives
+# in the product rather than on the day somebody remembers this file.
+_CONTENT_KINDS = tuple(k for k in M.FORM_COMPONENT_KINDS if k != "question")
+
+
+def _block_states(paper):
+    """The state classes blockHTML can put on a block, read off blockHTML.
+
+    Every one of them is a `${cond?' name':''}` inside the block's class
+    attribute, and none is fv- prefixed — which is exactly why the scan above
+    cannot see them. The fv- prefixed ones that are written the same way
+    (fv-blk-empty) belong to that scan and are left to it.
+    """
+    out = set()
+    for attr in re.findall(r'class="(fv-blk[^"]*)"', paper):
+        for name in re.findall(r"\?\s*'\s+([a-z][\w-]*)'\s*:\s*''", attr):
+            if not name.startswith("fv-"):
+                out.add(name)
+    return out
+
+
+def _rule_bodies(css, selector, *, exactly):
+    """The declarations of every flat rule that reaches this selector.
+
+    `exactly` is the difference between "this element is styled" and "there
+    is a rule somewhere with this name in it". With it on, the selector has
+    to END the one it is matched against — optional ancestors and an optional
+    pseudo, nothing after — so `.fv-blk.sel .fv-bgrip`, which styles the drag
+    grip INSIDE a selected block, does not answer for the block itself. With
+    it off, a descendant rule counts: a heading block is styled by
+    `.fv-blk-heading h3`, which is the whole of what styling a heading means.
+    """
+    tail = r"(::?[\w-]+)?$" if exactly else r"(?![\w-])"
+    pat = re.compile(r"(^|[\s>+~])" + re.escape(selector) + tail)
+    out = []
+    for sels, body in re.findall(r"([^{}@;]+)\{([^{}]*)\}", css):
+        for one in sels.split(","):
+            if pat.search(one.strip()):
+                out.append(body)
+    return out
+
+
+def _declares(css, selector, *, exactly=False):
+    """…and that at least one of those rules actually sets something."""
+    return any(re.search(r"[a-z-]+\s*:[^;{}]", b)
+               for b in _rule_bodies(css, selector, exactly=exactly))
+
+
+def test_the_editor_styles_every_state_and_every_kind_of_block_it_draws():
+    """The two halves of the class scan that a substring check cannot make.
+
+    A kind with no rule draws as an unstyled paragraph, and a state with no
+    rule means the selected question looks exactly like the other nine — on
+    the one screen whose whole job is to show you which one you are editing.
+
+    The state is matched against the selector a browser would match, and the
+    rule has to land ON the block. An earlier version of this test accepted
+    `.fv-blk.sel` OR the bare word `sel` anywhere in 19,600 lines of mixed
+    CSS and JS — where `this.sel=`, `.vis-opt.sel` and `.tl-day.sel` all
+    answer for it — so deleting `.fv-blk.sel{…}` from the stylesheet left it
+    green. It could not fail, which is worse than not existing.
+    """
+    index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert re.search(r"fv-blk-\$\{c\.kind\}", PAPER), (
+        "the block no longer carries its kind as a class, so none of the rules "
+        "below can reach it whatever the stylesheet says")
+    for kind in _CONTENT_KINDS:
+        assert _declares(index, f".fv-blk-{kind}"), \
+            f"index.html has no rule for a {kind} block"
+    states = _block_states(PAPER)
+    assert states, "blockHTML marks no state on a block at all — has it been rewritten?"
+    for state in sorted(states):
+        assert _declares(index, f".fv-blk.{state}", exactly=True), (
+            f"index.html has no rule for a block in the {state} state: it is "
+            f"drawn exactly like every other block on the canvas")
+
+
+def test_a_people_question_is_one_a_respondent_is_allowed_to_answer():
+    """FILLABLE is the renderer's own list of what a form may collect, and a
+    type missing from it is refused in words on the fill surfaces however
+    well the server sends it. אחראים was refused there for exactly that
+    reason, which is a question nobody could answer.
+
+    What the control then LOOKS like — a tick box per person, carrying the id
+    as a number — is not asserted by reading the source for it. The renderer
+    is run instead, in tests/frontend/form_controls_live.mjs, where the
+    markup it really produces and what collect() really returns can both be
+    looked at; a regex over a window of the file pins the shape of today's
+    code and says nothing about either.
+    """
+    fillable = re.search(r"FILLABLE:\s*\[(.*?)\]", PAPER, re.S).group(1)
+    assert "'people'" in fillable, "a people question is still refused at fill time"
 
 
 # ── מי נכנס ──────────────────────────────────────────────────────────

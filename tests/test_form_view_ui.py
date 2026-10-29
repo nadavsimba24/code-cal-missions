@@ -164,11 +164,15 @@ def test_the_top_bar_carries_everything_it_was_asked_to():
     for what, mark in (("the view name", 'id="fv-name"'),
                        ("a way back", "FormEditor.close()"),
                        ("a preview", "FormEditor.togglePreview()"),
-                       ("settings", "fa-sliders"),
                        ("publish and share", "FormEditor.share()"),
                        ("a save indicator", 'id="fv-save"')):
         assert mark in bar, f"the top bar is missing {what}"
     assert 'aria-live="polite"' in bar, "the save state is not announced to a screen reader"
+    # The settings button came off the bar: it only ever cleared the
+    # selection, and clicking the selected component does that already
+    # (select() toggles). What it is NOT is a second way in — the form's own
+    # settings are what the pane shows whenever nothing is selected.
+    assert "fa-sliders" not in bar, "the settings button is back on the bar"
 
 
 def test_the_canvas_previews_from_the_public_projection():
@@ -230,8 +234,11 @@ def test_typing_does_not_repaint_the_pane_it_is_typed_into():
 
 
 def test_leaving_with_unsaved_work_is_not_silent():
-    block = _editor()
-    close = block[block.index("async close()"):block.index("leave(){")]
+    # By the method and not by two literal lines of its signature: `close()`
+    # grew an onLeft callback, `leave()` took one too, and this test broke on
+    # the punctuation of a change it has no opinion about. _method finds it
+    # however it is declared.
+    close = _method("FormEditor", "close")
     assert "await this.flush()" in close, "leaving does not try to save first"
     assert "askConfirm" in close, "leaving with a failed save says nothing"
     assert "FormEditor" in SRC[SRC.index("beforeunload"):SRC.index("beforeunload") + 300], \
@@ -250,6 +257,27 @@ def test_one_order_is_dragged_from_two_places():
         "two wirings of the same thing will disagree the first time either moves"
     assert "this.reorder(" in sort, "a drag does not go through the one reorder"
     assert "if(this.preview) return;" in sort, "the respondent's form is draggable"
+
+
+def test_the_canvas_is_a_form_somebody_can_actually_try():
+    """It used to be a picture of one.
+
+    Every control on the editing canvas was disabled, so a date would not
+    open, a tick would not tick and a line of text could not be typed — and
+    each of those was reported as a broken field, which is exactly what it
+    looked like. The canvas draws the controls live now. What it still does
+    not have is a way to SEND anything: the values go nowhere, and the note
+    under it says so.
+    """
+    block = _editor()
+    canvas = block[block.index("canvasHTML(){"):block.index("optionsFor(key, type)")]
+    assert "live:true" in canvas, "the canvas still draws a form nobody can touch"
+    assert "fv-edit-note" in canvas, "the canvas does not say what it is"
+    # and the editor's own stylesheet no longer tells anybody they may not —
+    # the declaration, not the word, which the comment beside it still uses
+    css = block[block.index("css(){"):]
+    assert "cursor:not-allowed" not in css, \
+        "the canvas tells somebody they may not, when the truth is not-here"
 
 
 def test_the_two_views_are_drawn_from_the_one_array():
@@ -313,7 +341,12 @@ def test_the_design_choices_are_closed_sets_in_the_renderer_too():
     # …and it is loaded rather than copied, in both places
     index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     page = (ROOT / "frontend" / "public-form.html").read_text(encoding="utf-8")
-    assert 'src="form-paper.js"' in index and 'src="form-paper.js"' in page
+    # The public page says "/form-paper.js" and this one says "form-paper.js",
+    # and the difference is where each is served from: index.html answers at
+    # "/", the fill page at /forms/{token}. See
+    # test_this_page_asks_for_the_renderer_by_its_real_address for what a
+    # relative src fetched there instead.
+    assert 'src="form-paper.js"' in index and 'src="/form-paper.js"' in page
 
 
 def test_the_form_settings_pane_offers_only_what_the_spec_allows():
@@ -337,10 +370,36 @@ def test_taking_the_branding_off_is_offered_only_to_the_entitled():
 
 
 def test_a_design_change_repaints_the_paper_and_not_the_field_being_typed_in():
-    block = _editor()
-    rep = block[block.index("repaint(){"):block.index("async uploadLogo(input)")]
+    """The canvas is a working form, so a repaint that rebuilds it is a
+    repaint that empties it.
+
+    repaint() runs from oninput on the form's title, its description and its
+    submit label — once per character. While it replaced the canvas with a
+    fresh canvasHTML(), one keystroke in the settings pane threw away every
+    answer somebody had typed into the form beside it, and then did it again
+    on the next keystroke. That is the second road "השדה לא שומר מה שהקלדתי"
+    arrived by, after select() stopped doing it.
+
+    What it does instead is checked where it can be checked properly —
+    tests/frontend/form_view.mjs mounts the editor in a small DOM, types into
+    the canvas and edits the design — because no reading of the source can
+    tell whether the element somebody typed into is still on the page. What
+    is pinned here is the one thing a reading CAN settle: that the rebuild is
+    gone, and that nothing a person typed is written back as HTML.
+    """
+    rep = _method("FormEditor", "repaint")
     assert "querySelector('.fv-canvas')" in rep, "a design change repaints everything"
-    assert "canvasHTML()" in rep
+    assert "canvasHTML()" not in rep, (
+        "repaint rebuilds the canvas, which replaces every control on it with a "
+        "fresh empty one — see the harness for what that costs the person typing")
+    assert "outerHTML" not in rep, "the canvas is replaced whole by another road"
+    # The title and the description are what SOMEBODY TYPED. The renderer
+    # escapes them; painting them in has to be just as careful, and
+    # textContent is how. Only a constant may be written as HTML here.
+    for m in re.finditer(r"innerHTML\s*=\s*([^;]+);", rep):
+        assert re.fullmatch(r"'[^']*'", m.group(1).strip()), (
+            f"repaint writes {m.group(1).strip()} into the page as HTML — if a "
+            f"form's title can reach that, a form's title is stored XSS")
 
 
 def test_the_editor_survives_a_narrow_screen():

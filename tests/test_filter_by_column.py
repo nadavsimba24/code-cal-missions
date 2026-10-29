@@ -66,6 +66,24 @@ def test_the_advanced_builder_is_whole_from_its_one_door():
     assert r.returncode == 0, "\n" + r.stdout + r.stderr
 
 
+def test_the_panel_can_keep_the_cut_it_just_made():
+    """Driven harness: tests/frontend/quick_filter_saves_a_view.mjs.
+
+    Saving a cut as a view stood in two places, and neither was the panel the
+    cut is made in: a button on the tab strip above the board, and one beside
+    the advanced builder's title. So picking three chips and wanting to keep
+    the result meant looking away from the panel, or opening a dialog for the
+    single button in it that does the same thing. The foot of the panel offers
+    it now, routed the same way both of the others route it — back onto the
+    open view, or into a new one."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    h = ROOT / "tests" / "frontend" / "quick_filter_saves_a_view.mjs"
+    r = subprocess.run([node, str(h)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, "\n" + r.stdout + r.stderr
+
+
 def test_the_toolbar_has_one_filter_button():
     """And the badge on it counts the whole filter, whichever door wrote it —
     otherwise a filter built in the builder would light nothing."""

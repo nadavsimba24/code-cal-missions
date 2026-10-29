@@ -419,8 +419,18 @@ def test_the_respondent_payload_is_not_the_manager_payload(client, admin_id):
     assert q["נושא"]["type"] == "text" and q["נושא"]["required"] is True
     assert q["כתובת"]["placeholder"] == "הרצל 1"
     assert [o["label"] for o in q["סוג"]["options"]] == ["תאורה", "ניקיון"]
-    # the board's people are never a list a form hands out
-    assert q["אחראי"]["type"] == "people" and "options" not in q["אחראי"]
+    # An אחראים question is answerable, so it arrives with people in it —
+    # but only because this reader is the board's own admin. The list is cut
+    # to a name and an id and carries nothing else about anybody: no address,
+    # no role, no avatar. Who is refused it entirely is pinned next door, in
+    # test_public_form_page.test_the_member_list_still_does_not_reach_anybody_
+    # the_board_does_not_know.
+    assert q["אחראי"]["type"] == "people"
+    who = q["אחראי"]["options"]
+    assert admin_id in [o["value"] for o in who]
+    assert all(set(o) == {"value", "label"} for o in who), who
+    for u in client.get("/api/users", headers=AS(admin_id)).json():
+        assert (u.get("email") or "@@") not in blob
 
     assert pub["design"]["display_title"] == "דברו איתנו"
     assert pub["success"]["title"] == "תודה"

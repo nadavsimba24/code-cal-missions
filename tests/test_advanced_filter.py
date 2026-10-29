@@ -198,12 +198,25 @@ def test_the_count_is_beside_the_title():
 def test_the_door_turns_both_ways():
     """The quick panel's foot opens the builder. Without this, getting back to
     picking values meant closing the dialog and finding the filter button
-    again — and what had been built would be lost on the trip."""
-    assert "toQuick()" in SRC, "there is no way back to the quick panel"
-    i = SRC.index("  async toQuick(){")
-    assert "this.apply()" in SRC[i:i + 200], \
+    again — and what had been built would be lost on the trip.
+
+    The trip must not WAIT for anything, which is the half that broke it. It
+    used to await the apply, and the apply ends in a question to the server; on
+    a builder with nothing filled in there is nothing to ask, so the panel was
+    opened one microtask into a click that was still bubbling towards the
+    document — where every open popup is closed. Opened and shut inside the
+    same click. So the panel is opened straight away and the click is stopped
+    here, which is why the button hands the event over."""
+    assert "toQuick(ev)" in SRC, "there is no way back to the quick panel"
+    i = SRC.index("  toQuick(ev){")
+    body = SRC[i:i + 400]
+    assert "this.apply();" in body, \
         "going back to the quick panel throws away what was built"
-    assert 'onclick="Adv.toQuick()"' in SRC, "nothing offers the way back"
+    assert "await" not in body, \
+        "the way back waits for the server again — the panel opens inside the click"
+    assert "stopPropagation" in body, \
+        "the click reaches the closer that empties every popup"
+    assert 'onclick="Adv.toQuick(event)"' in SRC, "nothing offers the way back"
 
 
 def test_the_dialog_looks_like_three_controls_and_not_a_card():

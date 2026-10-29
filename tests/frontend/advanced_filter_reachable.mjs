@@ -63,6 +63,11 @@ function world(){
     filters:{q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null},
   };
   const log = {modals:0, closed:0, asked:0, toasts:[], redraws:0, quick:0};
+  // the filter panel's control in the toolbar, open or not
+  log.ctl = {_open:false, classList:{
+    contains:c=>c==='open'&&log.ctl._open,
+    add(c){ if(c==='open')log.ctl._open=true; },
+    remove(c){ if(c==='open')log.ctl._open=false; }}};
   const names = ['advFields','advColHidden','customColumns','advCount','advPicked','advPickedAll',
                  'advSetPicked','advToggle','advFilterRoot','advLegacyPicks','advDropLegacy',
                  'advChoices','advPersonLabel','boardPeople','statusColOpts','advToAst'];
@@ -80,7 +85,12 @@ function world(){
     x => String(x==null?'':x),
     () => { log.modals++; },
     () => { log.closed++; },
-    {getElementById:()=>({classList:{add(){},remove(){}}, set innerHTML(v){log.redraws++;}}),
+    /* The toolbar control the filter panel hangs off is a real enough element
+       to be asked whether it is open: the way back from the builder opens the
+       panel rather than toggling it, and a stub that always said "open" would
+       hide a door that silently closes the thing it was asked to show. */
+    {getElementById:id=>(id==='ctl-arrange'?log.ctl
+        :{classList:{add(){},remove(){}}, set innerHTML(v){log.redraws++;}}),
      querySelector:()=>null},
     () => {}, () => {},
     () => { log.asked++; },
@@ -286,10 +296,25 @@ function world(){
   const [Adv, st, log] = world();
   Adv.open();
   Adv.addRule(''); Adv.setField('0','col_a'); Adv.setRuleOp('0','eq'); Adv.setV('0','v','תקוע');
-  await Adv.toQuick();
-  ck('going back to the quick panel opens it', log.quick===1);
+  /* The click that makes the trip, watched for the two things that used to
+     decide whether the panel survived it. */
+  const ev = {stopped:0, stopPropagation(){ this.stopped++; }};
+  Adv.toQuick(ev);
+  /* Opened WITHIN the click, not after it. It used to wait for the filter to
+     be confirmed by the server, so the panel appeared whenever the answer did
+     — and when there was nothing to ask about, that was one microtask into a
+     click still on its way to the document, where every open popup is closed.
+     The panel was opened and shut inside the same click. */
+  ck('going back to the quick panel opens it, within the click itself', log.quick===1);
+  ck('…and that click is kept from the closer that empties every popup',
+     ev.stopped===1, ev.stopped);
   ck('…and takes what was built along rather than dropping it',
      st.filters.adv && st.filters.adv.rules.length===1, st.filters.adv);
+  /* The door turns one way. Pressed while the panel is somehow already open,
+     a toggle would have closed the very thing it was asked to show. */
+  log.ctl.classList.add('open');
+  Adv.toQuick(ev);
+  ck('…and never closes a panel that is already open', log.quick===1, log.quick);
 }
 
 // ── the look the dialog is meant to have ─────────────────────────────────

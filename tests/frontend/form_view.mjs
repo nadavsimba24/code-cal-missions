@@ -61,6 +61,11 @@ const ck=(n,c,x='')=>{c?(pass++,console.log('  OK   '+n)):(fail++,console.log(' 
 
 // ── the world the real code runs in ──
 let tabsHTML='', popHTML='', viewHTML='', modalHTML='', toasts=[], routed=[], confirmed=null;
+let confirmOpts=null;   // the third argument: the wording, and what else is offered
+/* The stub says yes by default — most tests are about what happens AFTER
+   the question is answered. A test about the dialog itself turns that off
+   and answers by hand, or by one of the other doors the dialog offers. */
+let confirmAuto=true, confirmYes=null;
 const els={};
 /* Enough of an element for the code under test: the save indicator writes a
    class, a title and some HTML into one, and syncLabel reaches for text. */
@@ -69,7 +74,8 @@ function fakeEl(){ let v='';
           className:'', textContent:'', dataset:{}, style:{},
           setAttribute(){}, getAttribute(){return null;}, removeAttribute(){},
           classList:{add(){},remove(){},toggle(){},contains(){return false;}},
-          addEventListener(){}, focus(){}, blur(){},
+          _on:{}, addEventListener(ev,fn){ (this._on[ev]=this._on[ev]||[]).push(fn); },
+          focus(){}, blur(){},
           querySelectorAll:()=>[], querySelector:()=>null}; }
 /* A Sortable the harness can drive: it records what each list was wired
    with, so a drag is "call that list's onEnd with a different order". The
@@ -104,7 +110,11 @@ global.location={origin:'http://x'};   // the share dialog builds an absolute li
 const FORMS={};           // id → the form the fake server holds
 let nextId=100;
 const st={view:'table', board:{id:7, name:'תשתיות', my_role:'admin',
-                               views:['table'], columns:[
+                               views:['table'],
+                               // who may be tagged — what the canvas builds
+                               // an אחראים question's tick-list from
+                               members:[{id:3, name:'דנה'}, {id:4, name:'אורי'}],
+                               columns:[
   {id:'col_addr', type:'text',     title:'כתובת'},
   {id:'col_when', type:'date',     title:'מתי'},
   {id:'sys_item_id', type:'item_id', title:'מספר מזהה'},
@@ -117,7 +127,8 @@ function blankForm(id, name){
                   font_size:'medium', text_align:'right', theme_color:'#0073ea',
                   background_color:'#ffffff', text_color:'#323338',
                   logo_token:null, cover_token:null, show_logo:true,
-                  submit_label:'', show_branding:true},
+                  submit_label:'', show_branding:true,
+                  logo_token:null, cover_token:null, show_logo:true},
           success:{title:'', message:'', allow_another:false, redirect_url:null},
           public_url:null,
           record_submitter:true, published_at:null, published_by:null,
@@ -127,13 +138,20 @@ function blankForm(id, name){
 let apiLog=[], apiFail=null, apiHold=null, apiCalls=0;
 async function api(p,o){
   apiCalls++;
-  apiLog.push({p, method:(o&&o.method)||'GET', body:o&&o.body?JSON.parse(o.body):null});
+  const raw=o&&o.body;
+  const asJson=v=>{ try{ return typeof v==='string'?JSON.parse(v):null; }catch(e){ return null; } };
+  apiLog.push({p, method:(o&&o.method)||'GET', body:asJson(raw)});
   /* A request that does not answer until the test says so — how an old
      answer is made to land after a newer change. */
   if(apiHold && apiHold.match(p,o)) await apiHold.gate;
   if(apiFail){ const e=new Error('boom'); e.status=apiFail.status; e.detail=apiFail.detail; throw e; }
-  const body=o&&o.body?JSON.parse(o.body):{};
+  const body=asJson(raw)||{};
   let m;
+  /* The upload door. It answers the way the real one does — a url whose last
+     segment is the token — because that is what uploadLogo takes apart. */
+  if(p==='/api/upload' && o&&o.method==='POST'){
+    const tok='up'+(nextId++); return {url:'/api/files/'+tok, name:'logo.png'};
+  }
   if((m=p.match(/^\/api\/boards\/\d+\/forms$/)) && o&&o.method==='POST'){
     const id=nextId++; FORMS[id]=blankForm(id, body.name||'טופס חדש'); return FORMS[id];
   }
@@ -249,12 +267,13 @@ const ctx=new Function(
   ${grab('renderAddViewPop')}
   ${grab('renderView')}
   function closeAddView(){}
-  function setView(v){ st.view=v; }
-  return {FormEditor, FormPaper, renderTabs, renderAddViewPop, renderView};
+  ${grab('setView')}
+  return {FormEditor, FormPaper, renderTabs, renderAddViewPop, renderView, setView};
 `)(global.document, global.window, st, esc,
    api, b=>JSON.stringify(b||{}), m=>toasts.push(m),
    {set:(b,i,v)=>routed.push([b,i,v])}, Views,
-   (msg,yes)=>{confirmed=msg; return yes();},
+   (msg,yes,opts)=>{confirmed=msg; confirmOpts=opts||{}; confirmYes=yes;
+                    return confirmAuto?yes():undefined;},
    (a,h)=>{popHTML=h;}, ()=>{}, ()=>st.board.columns, {taskId:null, close(){}},
    new Set(), ()=>false,
    h=>{modalHTML=h;}, ()=>{modalHTML='';},
@@ -292,7 +311,11 @@ ck('the name is editable in the top bar', /class="fv-bar"[\s\S]*?id="fv-name"[\s
 ck('the top bar shows the state', /fv-badge-DRAFT">טיוטה</.test(viewHTML));
 ck('…a save indicator', /id="fv-save"/.test(viewHTML)&&/aria-live="polite"/.test(viewHTML));
 ck('…a preview toggle', /FormEditor\.togglePreview\(\)/.test(viewHTML)&&/תצוגה מקדימה/.test(viewHTML));
-ck('…settings', /fa-sliders/.test(viewHTML)&&/>\s*הגדרות/.test(viewHTML));
+/* No settings button: it only cleared the selection, and clicking the
+   selected component already does that — select() toggles. The form's own
+   settings are simply what the pane shows when nothing is selected. */
+ck('…and no settings button, which had nothing of its own to do',
+   !/fa-sliders/.test(viewHTML));
 ck('…publish and share', /FormEditor\.share\(\)/.test(viewHTML)&&/פרסום ושיתוף/.test(viewHTML));
 ck('…and a way back to the board', /FormEditor\.close\(\)/.test(viewHTML)&&/חזרה ללוח/.test(viewHTML));
 ck('…pointing the RTL way', /fa-arrow-right[^"]*"><\/i> חזרה ללוח/.test(viewHTML));
@@ -322,6 +345,15 @@ ck('…with an input of the right kind', /class="fv-in"[^>]*type="text"/.test(vi
 ck('the settings pane edits THAT question', /id="fv-c-label"[^>]*value="שם הפריט"/.test(viewHTML));
 ck('…and says which board field it is bound to', /fv-bound[\s\S]*?שם הפריט/.test(viewHTML));
 ck('…and offers required and visible', /שדה חובה/.test(viewHTML)&&/מוצג בטופס/.test(viewHTML));
+/* The way back to the FORM's own settings, which is all the settings button
+   on the top bar ever did. select() toggles, so pressing the component that
+   is already selected clears the selection — and an empty selection IS the
+   form's settings pane. */
+FE.select(FE.sel); ctx.renderView();
+ck('pressing the selected component again clears the selection', FE.sel===null);
+ck('…and the pane goes back to the form\u2019s own settings',
+   /id="fv-dt"/.test(viewHTML)&&!/id="fv-c-label"/.test(viewHTML));
+FE.select(FE.form.components[FE.form.components.length-1].id); ctx.renderView();
 FE.select(FE.form.components[0].id); ctx.renderView();
 ck('selecting another component moves the settings pane',
    /id="fv-c-label"[^>]*value="כתובת"/.test(viewHTML));
@@ -360,6 +392,17 @@ ck('closing leaves the editor', !FE.isOpen());
 ctx.renderView();
 ck('…and the board is drawn again', !/class="fv-wrap"/.test(viewHTML));
 ck('…and the address drops the view', routed[routed.length-1][2]===null);
+
+/* "טבלה ראשית" out of an open form used to do nothing: st.view was already
+   'table' and Views.active was null, so setView found nothing to leave and
+   renderView went on drawing the editor. Clicking one of the board's own
+   views is a way out of the form, the same as the back button is. */
+await FE.open(formA, formA+1000); await sleep();
+ctx.setView('table');
+await sleep();
+ck('the board\u2019s own table is a way out of a form', !FE.isOpen());
+ctx.renderView();
+ck('\u2026and the board is what gets drawn', !/class="fv-wrap"/.test(viewHTML));
 
 // ── 8 · loading and failing, out loud ──
 await FE.open(formA, formA+1000);
@@ -887,6 +930,652 @@ apiFail=null; apiHold=null;
   ck('…nor the access choice', /id="fv-acc" disabled/.test(modalHTML));
   ck('…and is told whose it is', /רק מנהל הלוח/.test(modalHTML));
   st.board.my_role='admin';
+}
+
+// ── 14 · שינוי עיצוב בזמן שהתצוגה המקדימה פתוחה ──────────────────────
+/* `pub` is fetched once, when the preview is switched on, and the settings
+   pane stays open beside it. Every design change redrew the canvas from that
+   one projection, so nothing moved: unticking the Missions mark left it on
+   the paper, and it came out right only after a reload.
+
+   Read through FE.html() and not the rendered view — the view carries the
+   stylesheet, where every one of these class names appears too. */
+{
+  const g=await api('/api/boards/7/forms',{method:'POST',headers:{},body:'{}'});
+  await Views.load(); await FE.open(g.id, g.view_id); await sleep();
+  // the canvas alone: the settings pane that follows it shows the logo too
+  const paper=()=>{const h=FE.html();
+    return h.slice(h.indexOf('fv-canvas'), h.indexOf('fv-inspect'));};
+  FE.preview=true;
+  /* what the server answered WHEN the preview opened — a copy, not a
+     reference to the model that is about to be edited */
+  FE.pub={token:'t', components:[{id:2,kind:'question',type:'text',label:'שאלה'}],
+          design:JSON.parse(JSON.stringify(FE.form.design)),
+          success:FE.form.success};
+  ck('the preview carries the Missions mark to begin with',
+     /class="fv-brand"/.test(paper()));
+
+  FE.edit('show_branding', false);
+  ck('taking the mark off shows on the preview at once', !/class="fv-brand"/.test(paper()),
+     'the preview still draws the projection fetched before the change');
+  ck('…and the projection itself was not rewritten behind the server\u2019s back',
+     FE.pub.design.show_branding !== false);
+
+  FE.edit('theme_color', '#00c875');
+  ck('…and so does a colour', /--fv-accent:#00c875/.test(paper()));
+  FE.edit('submit_label', 'שליחת הפנייה');
+  ck('…and the submit button\u2019s own words', /שליחת הפנייה/.test(paper()));
+
+  /* The components stay the SERVER's: a preview exists to show what a
+     respondent gets, so nothing that decides what may be ANSWERED comes off
+     the screen. */
+  ck('…while the questions are still the ones the server sent',
+     /שאלה/.test(paper())&&!/fv-bgrip/.test(paper()));
+
+  /* A logo switched off sends no token at all on the public route
+     (_form_public_json), so the preview must not draw one either. */
+  FE.form.design.logo_token='lg1'; FE.edit('show_logo', false);
+  ck('a logo switched off is not drawn in the preview', !/lg1/.test(paper()));
+  FE.edit('show_logo', true);
+  ck('…and switched back on it is', /lg1/.test(paper()));
+
+  FE.preview=false; FE.pub=null; FE.form.design.logo_token=null;
+  await settle();
+}
+
+// ── 15 · הקנבס אומר מה הוא ───────────────────────────────────────────
+/* Every field on the canvas is disabled and a click selects the question
+   instead of answering it. Both are deliberate and neither was said out
+   loud, so a field pressed on the canvas read as a broken field. */
+{
+  const g=await api('/api/boards/7/forms',{method:'POST',headers:{},body:'{}'});
+  await Views.load(); await FE.open(g.id, g.view_id); await sleep();
+  await FE.addQuestion('c_a'); await settle();
+  const canvas=()=>{const h=FE.html();
+    return h.slice(h.indexOf('fv-canvas'), h.indexOf('fv-inspect'));};
+
+  ck('the canvas says it is the editing view', /fv-edit-note/.test(canvas()));
+  ck('…and names where the real check lives', /תצוגה מקדימה/.test(canvas()));
+  /* The canvas used to draw a form in which nothing could be pressed — not a
+     date, not a tick, not a line of text — and every one of those was
+     reported as broken, which is what it looked like. The controls work
+     here now; what they do NOT do is go anywhere, and the note says so. */
+  ck('…and its fields can actually be used', !/<input[^>]*disabled/.test(canvas()));
+  ck('…while nothing on it can be sent', !/id="fv-send"/.test(canvas()));
+  ck('…and it says that what is typed here is not saved',
+     /אינו נשמר/.test(canvas()));
+
+  FE.preview=true;
+  FE.pub={token:'t', components:[{id:2,kind:'question',type:'text',label:'שאלה'}],
+          design:FE.form.design, success:FE.form.success};
+  ck('the preview carries its own note instead', /fv-preview-note/.test(canvas())
+     && !/fv-edit-note/.test(canvas()));
+  ck('…and there the fields are answerable',
+     !/<input[^>]*disabled/.test(canvas()));
+  FE.preview=false; FE.pub=null; await settle();
+}
+
+// ── 16 · שאלת אחראים ─────────────────────────────────────────────────
+/* It was a <div> with a sentence in it and no control of any kind: clicking
+   it did nothing, in the editor and on the published page alike. What makes
+   it answerable is the OPTIONS — the server decides per reader whether this
+   question may have any (_form_people_options), and the renderer draws a box
+   per person when it does and says why when it does not. */
+{
+  const WHO=[{value:3,label:'דנה'},{value:4,label:'אורי'}];
+  const q={id:77, kind:'question', type:'people', label:'אחראים',
+           required:false, settings:{}, options:WHO};
+  const doc={design:{}, components:[q]};
+
+  const filled=FormPaper.html(doc,{fill:true});
+  ck('an אחראים question is drawn as a tick per person',
+     (filled.match(/type="checkbox"/g)||[]).length===2, filled.slice(0,220));
+  ck('…each carrying the person, by id', /value="3"/.test(filled)&&/value="4"/.test(filled));
+  ck('…and named', /דנה/.test(filled)&&/אורי/.test(filled));
+  ck('…answerable, not disabled', !/fv-multi[\s\S]{0,400}?checkbox" disabled/.test(filled));
+  ck('…and it is no longer refused at fill time',
+     !/אינו נתמך במילוי טופס/.test(filled));
+
+  const shown=FormPaper.html(doc,{editable:true});
+  ck('the builder sees the same control, greyed',
+     /type="checkbox" disabled/.test(shown)&&/דנה/.test(shown));
+  /* …and it says so before it is pressed. A greyed tick box is nearly
+     indistinguishable from a live one, so a canvas field that is merely
+     not-here read as a field that was broken. */
+  ck('…and marked as a drawing, not a control', /class="fv-opt fv-opt-off"/.test(shown));
+  ck('…which the fillable one never is', !/fv-opt-off/.test(filled));
+
+  // nobody to offer: a stranger on a public link, where the server holds the
+  // list back. A box with nothing in it is what this used to be.
+  const none=FormPaper.html({design:{}, components:[{...q, options:[]}]},{fill:true});
+  ck('with nobody to offer, the page says so rather than drawing an empty box',
+     /fv-people/.test(none)&&/חבר בלוח/.test(none)&&!/type="checkbox"/.test(none));
+
+  // what collect() makes of it — ids, as numbers
+  const ticked=[{value:'4'}];
+  const root={querySelector:sel=>sel==='#fa-77'?{
+    classList:{contains:c=>c==='fv-multi'},
+    querySelectorAll:s2=>s2==='input:checked'?ticked:[]}:null};
+  const got=FormPaper.collect(doc, root);
+  ck('a ticked person is collected as a number, not a string',
+     JSON.stringify(got.answers['77'])==='[4]', JSON.stringify(got.answers));
+  ticked.length=0;
+  const empty=FormPaper.collect({design:{}, components:[{...q, required:true}]}, root);
+  ck('…and an unanswered required one is reported beside the field',
+     empty.missing.length===1&&empty.missing[0].label==='אחראים');
+}
+
+// ── 17 · להוציא שדה מהטופס בלי לאבד אותו ─────────────────────────────
+/* Removing a question is not removing the board's column, and the two read
+   as one thing: the question went, the column stayed, and a field added
+   THROUGH the form left a column behind that the form never mentioned
+   again. The column is named at the moment of the decision now, and the
+   reversible way out is offered beside the irreversible one. */
+{
+  st.board.columns=[{id:'c_a',type:'text',title:'כתובת'}];
+  const g=await api('/api/boards/7/forms',{method:'POST',headers:{},body:'{}'});
+  await Views.load(); await FE.open(g.id, g.view_id); await sleep();
+  await FE.addQuestion('c_a'); await settle();
+  const q=FE.form.components.find(c=>c.kind==='question'&&c.field_key==='c_a');
+
+  // hiding, straight out of the dialog — the question stays, the column stays
+  confirmAuto=false;                       // the dialog is what is under test
+  confirmed=null; confirmOpts=null;
+  FE.removeRow(q.id);
+  ck('removing a board-backed question names the column that stays',
+     /כתובת/.test((confirmOpts||{}).note||''), (confirmOpts||{}).note);
+  ck('…and says what the removal actually deletes',
+     /נוסח השאלה/.test((confirmOpts||{}).note||''));
+  ck('…and offers hiding instead',
+     /hideInstead/.test((confirmOpts||{}).noteHTML||''));
+  ck('…saying what hiding keeps',
+     /להחזיר אותה/.test((confirmOpts||{}).noteHTML||''));
+
+  // the alternative really is an alternative: nothing is deleted by it
+  const before=FE.form.components.length;
+  FE.hideInstead(q.id); await settle();
+  ck('hiding instead keeps the question', FE.form.components.length===before);
+  ck('…and it is the hidden one now',
+     FE.form.components.find(c=>c.id===q.id).visible===false);
+  ck('…which the server was told', FORMS[g.id].components.find(c=>c.id===q.id).visible===false);
+  ck('…and the person is told how to bring it back',
+     /מוצג בטופס/.test(toasts[toasts.length-1]||''), toasts[toasts.length-1]);
+  ck('…and the board kept its column', st.board.columns.length===1);
+
+  // nothing to hide a second time
+  confirmOpts=null; FE.removeRow(q.id);
+  ck('a question already hidden is not offered hiding again',
+     !((confirmOpts||{}).noteHTML||''));
+
+  // …and saying yes to that same dialog still removes it
+  await confirmYes(); await settle();
+  ck('the removal itself still works', !FE.form.components.find(c=>c.id===q.id));
+  ck('…and the board still kept its column', st.board.columns.length===1);
+
+  // a content block has no column behind it, so there is nothing to promise
+  await FE.addContent('heading'); await settle();
+  const h=FE.form.components.find(c=>c.kind==='heading');
+  confirmOpts=null; FE.removeRow(h.id);
+  ck('a content block is not told about a column it never had',
+     !/נוסח השאלה/.test((confirmOpts||{}).note||''));
+  ck('…nor offered hiding', !((confirmOpts||{}).noteHTML||''));
+  await confirmYes(); await settle();
+  confirmAuto=true;
+}
+
+// ── 18 · כפתור השליחה בתצוגה המקדימה ─────────────────────────────────
+/* FormPaper draws it as type="button". The public page attaches a listener
+   to it by hand; the editor attached nothing, so a button that cannot submit
+   never reached the form's onsubmit and "שליחה" in the preview did nothing —
+   in the one place somebody checks that their form works. */
+{
+  const g=await api('/api/boards/7/forms',{method:'POST',headers:{},body:'{}'});
+  await Views.load(); await FE.open(g.id, g.view_id); await sleep();
+  FE.preview=true;
+  FE.pub={token:'t', components:[{id:2,kind:'question',type:'text',label:'שאלה'}],
+          design:FE.form.design, success:FE.form.success};
+  ctx.renderView();
+  const send=global.document.getElementById('fv-send');
+  ck('the preview\u2019s send button is wired to something',
+     ((send._on||{}).click||[]).length===1);
+  ck('…and it is the preview submission', typeof ((send._on||{}).click||[])[0]==='function');
+  /* …and only once, however many times the canvas is repainted: the node is
+     the same one until a repaint replaces it. */
+  ctx.renderView();
+  ck('…wired once per painted button, not once per paint',
+     ((global.document.getElementById('fv-send')._on||{}).click||[]).length===1);
+  FE.preview=false; FE.pub=null; await settle();
+}
+
+// ── 19 · לוגו לטופס ──────────────────────────────────────────────────
+/* Picking a file did nothing visible. edit() writes through
+   FORM_SETTING_PATH, and logo_token was not on it — so localSet found no
+   path and left the model alone, while save.form carried the token to the
+   server anyway. The file uploaded, the form stored it, and the screen
+   redrew from a model that had never heard of it. Only a reload showed the
+   logo. mergeForm walks the same keys, so the server's answer could not
+   teach it either. */
+{
+  const g=await api('/api/boards/7/forms',{method:'POST',headers:{},body:'{}'});
+  await Views.load(); await FE.open(g.id, g.view_id); await sleep();
+  const paper=()=>{const h=FE.html();
+    return h.slice(h.indexOf('fv-canvas'), h.indexOf('fv-inspect'));};
+  const pane=()=>FE.html().slice(FE.html().indexOf('fv-inspect'));
+
+  ck('a form starts with no logo', !/fv-logo/.test(paper()));
+  const picked={files:[new Blob(['x'],{type:'image/png'})], value:'C:/fake/logo.png'};
+  await FE.uploadLogo(picked);
+  await settle();
+
+  const tok=FE.form.design.logo_token;
+  ck('the chosen file reaches the model', !!tok, 'logo_token is '+tok);
+  ck('…and the paper draws it', new RegExp('fv-logo[^>]*src="/api/files/'+tok).test(paper()));
+  ck('…and the settings pane shows it with a way to remove it',
+     /fv-logo-sm/.test(pane())&&/removeLogo/.test(pane()));
+  ck('…and the model and the server hold the same one',
+     !!FORMS[g.id].design.logo_token && FORMS[g.id].design.logo_token===tok,
+     'server: '+FORMS[g.id].design.logo_token+'  model: '+tok);
+  ck('…and the logo is switched on with it', FE.form.design.show_logo===true);
+  ck('…and the file input was cleared, so the same file can be picked again',
+     picked.value==='');
+
+  // …and taking it off is visible at once too, for the same reason
+  await FE.removeLogo(); await settle();
+  ck('removing the logo clears it from the paper', !/fv-logo/.test(paper()));
+  ck('…and from the server', !FORMS[g.id].design.logo_token);
+  ck('…and the button to upload one is back', /fv-logo-in/.test(pane())
+     && !/fv-logo-sm/.test(pane()));
+
+  // anything that is not an image never leaves the browser
+  const before=apiCalls;
+  await FE.uploadLogo({files:[new Blob(['x'],{type:'application/pdf'})], value:'x.pdf'});
+  ck('a file that is not an image is refused before it is sent', apiCalls===before);
+  ck('…and the person is told why', /תמונה בלבד/.test(toasts[toasts.length-1]||''));
+}
+
+// ── 20 · כל רכיב בקנבס נענה ללחיצה ───────────────────────────────────
+/* "אף אחד מרכיבי הטופס לא עובד" — and it was true: every control the canvas
+   drew was disabled, so a date would not open, a tick would not tick and a
+   line of text could not be typed. One mode of the renderer draws a form
+   that works; the canvas was asking for the other one. */
+{
+  const WHO=[{value:3,label:'דנה'}];
+  const kinds=[['text','טקסט'],['long_text','תיאור'],['number','מספר'],
+               ['date','מתי'],['phone','טלפון'],['email','דואל'],
+               ['checkbox','כן/לא'],['files','קובץ'],['people','אחראים']];
+  const doc={design:{}, components:kinds.map(([t,l],i)=>
+    ({id:i+1, kind:'question', type:t, label:l, settings:{},
+      options:t==='people'?WHO:undefined}))};
+
+  const canvas=FormPaper.html(doc,{editable:true, live:true});
+  ck('not one control on the canvas is disabled', !/disabled/.test(canvas), canvas.slice(0,200));
+  ck('…the date opens', /type="date"/.test(canvas)&&!/type="date"[^>]*disabled/.test(canvas));
+  ck('…the long text can be typed into', /<textarea [^>]*data-type="long_text"/.test(canvas));
+  ck('…the tick ticks', /data-type="people"[\s\S]{0,200}?type="checkbox" \n?\s*value="3"/.test(canvas)
+     || (/data-type="people"/.test(canvas)&&!/fv-opt-off/.test(canvas)));
+  ck('…and every one of them still selects its question when pressed',
+     (canvas.match(/FormEditor\.select\(/g)||[]).length===kinds.length);
+
+  // what the canvas still is NOT: a form. Nothing here sends anything.
+  ck('the canvas has no send button', !/id="fv-send"/.test(canvas));
+  ck('…and no error slots, because nothing is validated here',
+     !/class="fv-err"/.test(canvas));
+
+  // …and the respondent's form is unchanged by any of it
+  const filled=FormPaper.html(doc,{fill:true});
+  ck('the published form still sends', /id="fv-send"/.test(filled));
+  ck('…and still carries an error slot per question',
+     (filled.match(/class="fv-err"/g)||[]).length===kinds.length);
+  ck('…and is not selectable, because nobody is editing it',
+     !/FormEditor\.select\(/.test(filled));
+
+  // the third mode is still there: a drawing, for whoever asks for one
+  const drawn=FormPaper.html(doc,{editable:true});
+  ck('a drawing is still drawable, and still disabled', /disabled/.test(drawn));
+}
+
+/* ── דום קטן, לשתי הבדיקות האחרונות ──────────────────────────────────
+
+   Everything above reads a STRING of markup, and the two rules below cannot
+   be seen in one. "השדה לא שומר את מה שאני מקליד" is not a statement about
+   markup — the markup is identical before and after that bug, because a
+   value somebody typed lives on the ELEMENT and was never in the markup at
+   all. What decides it is whether the node that was typed into is still the
+   node on the page afterwards. The same goes for "there is a way back to the
+   form's settings": the question is whether a real click, landing on a real
+   target, reaches a handler that clears the selection.
+
+   So: a parser for the renderer's own output, elements with identity, and
+   exactly the DOM calls FormEditor makes — querySelector, closest,
+   classList, dataset, textContent, createElement, appendChild, remove. It is
+   not a browser, it must never become one, and anything it cannot do should
+   send the test back to a string assertion rather than grow a feature. */
+const VOID=new Set(['input','img','br','hr','meta','link','source','col']);
+class El{
+  constructor(tag,attrs){ this.tagName=String(tag).toUpperCase(); this.attrs=attrs||{};
+    this.kids=[]; this.parentNode=null; this._html='';
+    /* Not in the markup and that is the whole point: what a person typed. */
+    this.value=''; this.checked=false; this._on={}; }
+  get id(){ return this.attrs.id||''; }
+  get className(){ return this.attrs.class||''; }
+  set className(v){ this.attrs.class=String(v); }
+  _cls(){ return (this.attrs.class||'').split(/\s+/).filter(Boolean); }
+  get classList(){ const self=this; const has=c=>self._cls().includes(c);
+    const set=l=>{ self.attrs.class=l.join(' '); };
+    return {contains:has,
+      add:c=>{ if(!has(c)) set(self._cls().concat(c)); },
+      remove:c=>set(self._cls().filter(x=>x!==c)),
+      toggle:(c,on)=>{ const want=on===undefined?!has(c):!!on;
+        want?(has(c)||set(self._cls().concat(c))):set(self._cls().filter(x=>x!==c)); }};
+  }
+  get dataset(){ const d={};
+    for(const k of Object.keys(this.attrs)) if(k.startsWith('data-'))
+      d[k.slice(5).replace(/-([a-z])/g,(m,c)=>c.toUpperCase())]=this.attrs[k];
+    return d; }
+  getAttribute(n){ return n in this.attrs?this.attrs[n]:null; }
+  setAttribute(n,v){ this.attrs[n]=String(v); }
+  removeAttribute(n){ delete this.attrs[n]; }
+  get children(){ return this.kids.filter(k=>k instanceof El); }
+  appendChild(c){ c.parentNode=this; this.kids.push(c); return c; }
+  remove(){ const p=this.parentNode; if(!p) return;
+    p.kids=p.kids.filter(x=>x!==this); this.parentNode=null; }
+  get textContent(){ return this.kids.map(k=>typeof k==='string'?k:k.textContent).join(''); }
+  set textContent(v){ this.kids=[String(v)]; this._html=String(v); }
+  get innerHTML(){ return this._html; }
+  set innerHTML(v){ this._html=String(v);
+    this.kids=parseHTML(String(v)).kids.map(k=>{ if(k instanceof El) k.parentNode=this; return k; }); }
+  /* The one that costs what this file is about. Assigning either of these
+     parses the markup into FRESH elements and puts them where the old ones
+     were: a value somebody typed was on the old element and is not in the
+     markup, so it is simply gone. That is not a quirk of this little DOM —
+     it is what the browser does, and it is why a repaint that rebuilds the
+     canvas empties the form under the person filling it in. */
+  get outerHTML(){ return this._outer||''; }
+  set outerHTML(v){
+    const p=this.parentNode; if(!p) return;
+    const fresh=parseHTML(String(v)).kids;
+    fresh.forEach(n=>{ if(n instanceof El) n.parentNode=p; });
+    p.kids.splice(p.kids.indexOf(this),1,...fresh);
+    this.parentNode=null;
+  }
+  matches(sel){ return selMatch(this, sel); }
+  closest(sel){ let n=this; while(n){ if(selMatch(n,sel)) return n; n=n.parentNode; } return null; }
+  querySelector(sel){ return this.querySelectorAll(sel)[0]||null; }
+  querySelectorAll(sel){ const out=[];
+    const walk=n=>{ for(const k of n.children){ if(selMatch(k,sel)) out.push(k); walk(k); } };
+    walk(this); return out; }
+  focus(){} blur(){}
+  addEventListener(ev,fn){ (this._on[ev]=this._on[ev]||[]).push(fn); }
+}
+/* One simple selector: a tag, any number of .classes, #ids and [attrs], and
+   :not(). Descendants by space, alternatives by comma — which between them
+   is every selector FormEditor and FormPaper actually ask for. Anything else
+   throws rather than quietly matching nothing, which would turn a broken
+   test into a passing one. */
+function simpleMatch(el,s){
+  s=s.trim(); if(!s) return false;
+  const tag=/^[a-zA-Z][\w-]*/.exec(s);
+  if(tag && el.tagName!==tag[0].toUpperCase()) return false;
+  const rest=s.slice(tag?tag[0].length:0);
+  const parts=rest.match(/:not\([^)]*\)|\[[^\]]*\]|[.#][\w-]+/g)||[];
+  if(rest.replace(/\s+/g,'').length!==parts.join('').length)
+    throw new Error('selector the mini-DOM cannot read: '+s);
+  for(const p of parts){
+    if(p.startsWith('.')){ if(!el.classList.contains(p.slice(1))) return false; }
+    else if(p.startsWith('#')){ if(el.id!==p.slice(1)) return false; }
+    else if(p.startsWith('[')){
+      const a=/^\[([\w-]+)(?:=["']?([^"'\]]*)["']?)?\]$/.exec(p);
+      if(!a) throw new Error('attribute selector the mini-DOM cannot read: '+p);
+      const got=el.getAttribute(a[1]);
+      if(got===null) return false;
+      if(a[2]!==undefined && got!==a[2]) return false;
+    }
+    else { const inner=p.slice(5,-1); if(inner.split(',').some(x=>simpleMatch(el,x))) return false; }
+  }
+  return true;
+}
+function selMatch(el,sel){
+  return String(sel).split(',').some(one=>{
+    const chain=one.trim().split(/\s+/);
+    if(!simpleMatch(el, chain.pop())) return false;
+    let n=el.parentNode;
+    while(chain.length){
+      const want=chain.pop();
+      while(n && !simpleMatch(n,want)) n=n.parentNode;
+      if(!n) return false;
+      n=n.parentNode;
+    }
+    return true;
+  });
+}
+function parseHTML(html){
+  const root=new El('#root',{}), stack=[root];
+  const re=/<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>])*)>/g;
+  let m, last=0;
+  while((m=re.exec(html))){
+    const text=html.slice(last,m.index);
+    if(text) stack[stack.length-1].kids.push(text);
+    last=re.lastIndex;
+    const [,close,tag,raw]=m;
+    if(close){
+      const el=stack.pop();
+      if(el && el!==root){ el._html=html.slice(el._from, m.index);
+                           el._outer=html.slice(el._open, re.lastIndex); }
+      continue;
+    }
+    const attrs={};
+    const ar=/([:@\w-]+)(?:\s*=\s*"([^"]*)"|\s*=\s*'([^']*)')?/g;
+    let a; while((a=ar.exec(raw))) attrs[a[1]]=a[2]!==undefined?a[2]:(a[3]!==undefined?a[3]:'');
+    const el=new El(tag,attrs);
+    el._open=m.index; el._from=re.lastIndex; el._outer=m[0];
+    stack[stack.length-1].appendChild(el);
+    if(!VOID.has(tag.toLowerCase()) && !/\/$/.test(raw)) stack.push(el);
+  }
+  const tail=html.slice(last);
+  if(tail) stack[stack.length-1].kids.push(tail);
+  return root;
+}
+
+/* The editor, painted into that document. FE.html() and not paint(), because
+   paint() prepends css() and a stylesheet is not a tree. */
+function mount(){
+  const root=parseHTML(FE.html());
+  const origGet=global.document.getElementById;
+  global.document.querySelector=sel=>root.querySelector(sel);
+  global.document.querySelectorAll=sel=>root.querySelectorAll(sel);
+  global.document.getElementById=id=>root.querySelector('#'+id)||origGet.call(global.document,id);
+  global.document.createElement=tag=>new El(tag,{});
+  FE.attachSort();                       // what paint() does after writing the HTML
+  return root;
+}
+
+// ── 21 · מה שהוקלד בקנבס נשאר שם ─────────────────────────────────────
+/* "השדה לא נותן להקליד / לא שומר מה שהקלדתי", twice over and by two roads.
+
+   The canvas draws live controls now, so somebody can try their own form
+   where they are building it. That only means anything if what they type
+   survives the next thing they do — and every edit in the settings pane used
+   to rebuild the canvas from scratch: one character typed into the form's
+   title replaced every node on the paper, taking the caret and the half
+   filled form with it, and then did it again on the next character.
+
+   Each of the four paths that touch the canvas is pinned the same way: the
+   node that was typed into has to be the SAME node afterwards, still holding
+   its value, and the change being made has to show. A repaint that does
+   nothing would pass the first half on its own. */
+{
+  st.board.columns=[{id:'c_a',type:'text',title:'כתובת'},
+                    {id:'c_b',type:'long_text',title:'תיאור'}];
+  const g=await api('/api/boards/7/forms',{method:'POST',headers:{},body:'{}'});
+  await Views.load(); await FE.open(g.id, g.view_id); await sleep();
+  await FE.addQuestion('c_a'); await settle();
+  await FE.addQuestion('c_b'); await settle();
+  await FE.addContent('heading'); await settle();
+  const qs=FE.form.components;
+  const one=qs.find(c=>c.field_key==='c_a'), two=qs.find(c=>c.field_key==='c_b');
+  const head=qs.find(c=>c.kind==='heading');
+
+  /* Nothing selected: adding a block selects it, and the settings pane is
+     where this starts — somebody edits the form's look and watches the paper. */
+  FE.sel=null;
+  const root=mount();
+  const paper=root.querySelector('.fv-paper');
+  const canvas=root.querySelector('.fv-canvas');
+  const field=root.querySelector('#fa-'+one.id);
+  const area=root.querySelector('#fa-'+two.id);
+  ck('the canvas really is a form: the question is an element with a value',
+     !!field && !!area && field.tagName==='INPUT' && area.tagName==='TEXTAREA',
+     (field&&field.tagName)+'/'+(area&&area.tagName));
+  const typed='רחוב הרצל 10', typed2='שתי שורות';
+  field.value=typed; area.value=typed2;
+
+  /* The settings pane is what calls repaint, and on oninput — every
+     keystroke. Read off the pane rather than assumed, so a pane that stops
+     calling it takes this test with it. */
+  const pane=root.querySelector('.fv-inspect');
+  ck('a design setting repaints the canvas on every keystroke',
+     /FormEditor\.edit\('display_title',this\.value\);FormEditor\.repaint\(\)/.test(pane.innerHTML),
+     pane.innerHTML.slice(0,200));
+
+  /* Asked of the PAGE and not of the variable: a rebuilt canvas leaves the
+     old element in this test's hand, holding its value, attached to nothing
+     — which is exactly what the person typing is left with too. */
+  const onPage=c=>root.querySelector('#fa-'+c.id);
+  const kept=()=>onPage(one)===field&&field.value===typed
+                 &&onPage(two)===area&&area.value===typed2;
+
+  FE.edit('display_title','טופס פניות'); FE.repaint();
+  ck('typing the form’s title leaves what is typed in the form alone', kept(),
+     'the field on the page is '+(onPage(one)===field?'the same, emptied':'a new one'));
+  ck('…while the title itself did change on the paper',
+     root.querySelector('.fv-paper-t').textContent==='טופס פניות');
+
+  FE.edit('theme_color','#00c875'); FE.repaint();
+  ck('a colour keeps them too', kept());
+  ck('…and reaches the paper', /#00c875/.test(paper.getAttribute('style')||''));
+
+  FE.edit('show_branding',false); FE.repaint();
+  ck('unticking the Missions mark takes it off', !root.querySelector('.fv-brand'));
+  ck('…without emptying the form', kept());
+  FE.edit('show_branding',true); FE.repaint();
+  ck('…and ticking it puts it back', !!root.querySelector('.fv-brand'));
+  ck('…still without emptying the form', kept());
+
+  FE.edit('submit_label','שליחת פנייה'); FE.repaint();
+  ck('the submit button’s words change in place',
+     root.querySelector('.fv-submit').textContent==='שליחת פנייה');
+  ck('…and that did not empty the form either', kept());
+
+  /* Renaming the question and styling a heading are the other two in-place
+     paints. Both used to go through a full rebuild for a single keystroke. */
+  FE.editComp(one.id,'label','כתובת האירוע'); FE.syncLabel(one.id);
+  ck('renaming a question renames it on the paper',
+     /כתובת האירוע/.test(root.querySelector('#fvq-'+one.id+'-l').textContent));
+  ck('…and does not empty the field under it', kept());
+
+  FE.setBlockStyle(head.id,'style','bold');
+  ck('making a heading bold styles that heading',
+     /font-weight/.test(root.querySelector('#fvb-'+head.id).querySelector('h3')
+                        .getAttribute('style')||''),
+     (root.querySelector('#fvb-'+head.id).querySelector('h3')||{}).attrs);
+  ck('…and leaves the answers below it where they were', kept());
+
+  /* And selecting — the first road the complaint arrived by. A press inside
+     a text field selects the question for the settings pane, which is how
+     this screen works; what it must never do is take the field away. */
+  FE.select(one.id,{target:field});
+  ck('pressing the field selects its question', FE.sel===one.id);
+  ck('…and the field is untouched', kept());
+  ck('…and the block says it is the selected one',
+     root.querySelector('#fvb-'+one.id).classList.contains('sel'));
+  FE.select(one.id,{target:field});
+  ck('a second press in the same field does not close the pane under the caret',
+     FE.sel===one.id);
+  ck('…and the canvas says something is selected, for the hint under it',
+     canvas.classList.contains('has-sel'));
+}
+
+// ── 22 · הדרך חזרה להגדרות הטופס ─────────────────────────────────────
+/* The settings pane shows the selected question or the form itself, and
+   nothing else shows the form's own settings: "הגדרות" came off the top bar
+   on purpose. So once a question is selected there has to be a way back, and
+   pressing the question again is not one — select() refuses to toggle off
+   when the press landed on a control, and a question block in editing mode
+   is now almost entirely controls, label included.
+
+   Which handler provides it is not this test's business. The editor is drawn,
+   a real click is aimed at the paper background, and every handler on the
+   canvas that is not a question's own gets it; one of them has to put the
+   pane back on the form. A click aimed INSIDE a question must not. */
+{
+  st.board.columns=[{id:'c_a',type:'text',title:'כתובת'}];
+  const g=await api('/api/boards/7/forms',{method:'POST',headers:{},body:'{}'});
+  await Views.load(); await FE.open(g.id, g.view_id); await sleep();
+  await FE.addQuestion('c_a'); await settle();
+  const q=FE.form.components[0];
+  const root=mount();
+  const paper=root.querySelector('.fv-paper');
+  const field=root.querySelector('#fa-'+q.id);
+  const pane=root.querySelector('.fv-inspect');
+
+  /* A handler, as a browser would run it: the code in the attribute, with
+     `event` bound to the click that reached it. */
+  const run=(code,ev)=>{ try{ new Function('FormEditor','event',code)(FE,ev); return null; }
+                         catch(e){ return e; } };
+  /* Everything inside that answers a press, the element itself included. */
+  const clickable=el=>(el.getAttribute('onclick')?[el]:[])
+      .concat(el.querySelectorAll('[onclick]'));
+
+  FE.select(q.id,{target:field});
+  ck('a question is selected, and the pane is its own',
+     FE.sel===q.id && /id="fv-c-label"/.test(pane.innerHTML));
+  ck('…and pressing the question again does not get out of it',
+     (FE.select(q.id,{target:field}), FE.sel===q.id));
+
+  const canvas=root.querySelector('.fv-canvas');
+  const onPaper={target:paper, stopPropagation(){}, preventDefault(){}};
+  const ways=[];
+  for(const el of clickable(canvas)){
+    if(el.closest('.fv-blk')) continue;        // the question's own handler
+    FE.sel=q.id; FE.paintSel();
+    run(el.getAttribute('onclick'), onPaper);
+    if(FE.sel===null) ways.push(el.className||el.tagName);
+  }
+  ck('a click on the paper, beside the questions, gets back to the form',
+     ways.length>0, 'nothing on the canvas clears the selection: '
+     + clickable(canvas).map(e=>e.getAttribute('onclick')).join(' | '));
+  ck('…and the pane is then the form’s own settings',
+     /id="fv-dt"/.test(pane.innerHTML)&&!/id="fv-c-label"/.test(pane.innerHTML),
+     pane.innerHTML.slice(0,160));
+  ck('…and the canvas stops saying that something is selected',
+     !canvas.classList.contains('has-sel'));
+
+  /* …and the same handler must keep its hands off a click that landed on a
+     question. Everything inside the canvas reaches it — the blocks do not
+     stop their own clicks, and they must not — so a background handler that
+     does not check where the press landed deselects the question half a
+     millisecond after select() chose it. */
+  const onField={target:field, stopPropagation(){}, preventDefault(){}};
+  for(const el of clickable(canvas)){
+    if(el.closest('.fv-blk')) continue;
+    FE.sel=q.id; FE.paintSel();
+    run(el.getAttribute('onclick'), onField);
+    ck('a press inside a question is not treated as a press on the background',
+       FE.sel===q.id, el.getAttribute('onclick'));
+  }
+
+  /* One of the two doors has to open without a mouse. A background is not a
+     tab stop, so the pane carries a real button at the head of the selected
+     question — found the same way, by running what it is wired to. */
+  FE.sel=q.id; FE.paintSel();
+  const paneRoot=parseHTML(pane.innerHTML);
+  const buttons=paneRoot.querySelectorAll('button[onclick]')
+    .filter(b=>{ FE.sel=q.id; run(b.getAttribute('onclick'), null); return FE.sel===null; });
+  ck('the keyboard has a way back too: a button in the question’s settings',
+     buttons.length>0, paneRoot.querySelectorAll('button').map(b=>b.textContent).join(' | '));
+  ck('…that says where it goes', buttons.some(b=>/הגדרות הטופס/.test(b.textContent)),
+     buttons.map(b=>b.textContent).join(' | '));
+  FE.sel=null;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

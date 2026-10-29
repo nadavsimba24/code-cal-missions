@@ -125,10 +125,65 @@ async def require_authentication(request, call_next):
     return await call_next(request)
 
 
+# Third-party and generated blobs we ship but never hand-edit: the GeoLibre WASM
+# map build and the vendored sortable.min.js. They move only when somebody
+# deliberately swaps the file, they are by far the heaviest things we serve, and
+# nothing in the SPA has to agree with their version from one minute to the next
+# the way it has to agree with form-paper.js. They keep the browser's default
+# caching — re-fetching a WASM build on every entry would be a real cost paid to
+# fix a problem they do not have.
+VENDORED_ASSET_PREFIXES = ("/wasm/",)
+VENDORED_ASSET_PATHS = ("/sortable.min.js",)
+
+
+def _asset_must_revalidate(path: str) -> bool:
+    """True for the first-party JS/CSS we ship out of frontend/.
+
+    Decided on the path and not on the content type on purpose: what matters is
+    who wrote the file and whether it moves when we deploy, and a media type
+    cannot tell us either.
+    """
+    if not path.endswith((".js", ".mjs", ".css")):
+        return False
+    if path in VENDORED_ASSET_PATHS or path.startswith(VENDORED_ASSET_PREFIXES):
+        return False
+    return True
+
+
 @app.middleware("http")
 async def security_headers(request, call_next):
     resp = await call_next(request)
-    if "text/html" in resp.headers.get("content-type", ""):
+    if request.url.path.startswith(PUBLIC_API_PREFIXES):
+        # The one family of /api/ paths the authentication middleware lets
+        # through, which makes it the one family a CDN, an Azure Front Door or
+        # a corporate forward proxy is most likely to treat as public and cache
+        # by URL alone. That was harmless while a published form answered the
+        # same bytes to everybody. It stopped being harmless the moment the
+        # people options started depending on who is reading: a board member
+        # opens the public link, something in the middle stores the response,
+        # and the next stranger on that link is handed the board's member list
+        # — the exact thing "מילוי טופס אינו מעניק גישה ללוח" forbids.
+        #
+        # So it is decided HERE, off the same constant that opened the path,
+        # rather than on each route. The next handler added under this prefix
+        # inherits it without its author having to remember, which is the only
+        # version of this rule that survives contact with a growing file.
+        # `no-store` rather than `no-cache`: these responses are small and are
+        # fetched once per page, so there is no round trip worth saving, and
+        # not keeping the bytes at all is the claim we actually want to make.
+        # setdefault, so a route that reasoned about its own caching — the
+        # logo, which is a picture and not a person's data — keeps what it
+        # decided. Vary is still declared for that case and for any proxy that
+        # honours it while ignoring the rest: these bodies differ by identity,
+        # and identity arrives in exactly these three places (see auth.py).
+        resp.headers.setdefault("Cache-Control", "private, no-store")
+        vary = [v.strip() for v in (resp.headers.get("Vary") or "").split(",") if v.strip()]
+        known = {v.lower() for v in vary}
+        for h in ("Cookie", "X-CityOS-User", "X-MS-CLIENT-PRINCIPAL"):
+            if h.lower() not in known:
+                vary.append(h)
+        resp.headers["Vary"] = ", ".join(vary)
+    elif "text/html" in resp.headers.get("content-type", ""):
         # `no-cache`, not `no-store`. Both force the browser to check with the
         # server before using the page, so a deploy is still picked up on the
         # very next entry — the difference is that `no-store` also forbids
@@ -140,6 +195,27 @@ async def security_headers(request, call_next):
         # Safe because the only text/html this app serves is the SPA shell and
         # 404.html — the same bytes for every user, carrying nobody's data.
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif _asset_must_revalidate(request.url.path):
+        # The shell and the scripts it loads are one program split across files,
+        # and for a long time only the shell was told to revalidate. index.html
+        # is text/html so the branch above gives it `no-cache`; form-paper.js is
+        # not, and the StaticFiles mount at "/" gives it an ETag and a
+        # Last-Modified but no Cache-Control at all — so the browser falls back
+        # to heuristic freshness and may serve it from cache for hours without
+        # ever asking us whether it is still current.
+        # That is how a user ended up running a brand-new index.html calling
+        # FormPaper.html(doc, {editable: true, live: true, ...}) against a
+        # yesterday copy of form-paper.js that had never heard of `live` and
+        # rendered every control disabled. The form editor was dead in her
+        # browser and correct on the server, through six rounds of "it still
+        # doesn't work" and several fixes that shipped and changed nothing. A
+        # half-updated program is worse than an old one: it fails in ways
+        # neither version of it can.
+        # `no-cache` is as cheap here as it is on the shell — the browser keeps
+        # the bytes and sends If-None-Match, and StaticFiles answers 304 with no
+        # body when nothing moved. setdefault, so a route that has thought about
+        # its own caching keeps what it decided.
+        resp.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -4272,17 +4348,68 @@ _FORM_BUILTIN_TYPES = {"title": "text", "assignees": "people",
                        "due_date": "date"}
 
 
-def _form_question_shape(b, key):
+def _form_people_options(db, b, viewer_id):
+    """Who this respondent may name on this board — and for a stranger, nobody.
+
+    The rule has always been that a form must not hand out the board's member
+    list: that is what "מילוי טופס אינו מעניק גישה ללוח" protects, and it is
+    why this used to answer an empty list to everyone. But answering it to
+    everyone meant an אחראים question had nothing to draw, so the field was
+    dead on the page — clicking it did nothing, in the editor and on the
+    published form alike.
+
+    The line is drawn by who is READING rather than by the question: the
+    options are the board's own taggable members, and they are offered only
+    to somebody the board already knows — a member, or a workspace admin,
+    exactly who _can_be_assigned accepts. Such a reader can see this list in
+    the app anyway, so nothing crosses the line that was not already theirs.
+    A stranger on a public link, and a signed-in user who is not on the
+    board, still get nothing, and the page says so instead of drawing a
+    control that cannot be used.
+
+    Deactivated accounts are left out, the same as the board's own pickers do
+    (see the `members` key of the board payload) — offering a name that
+    _can_be_assigned would then refuse at submission is worse than not
+    offering it.
+
+    Called ONCE per request, by _form_public_json, and the result handed down
+    to every question that needs it. It used to be called per question, which
+    is four queries each — the gate is three on its own — so a form with three
+    אחראים questions asked the database twelve times for one answer that
+    cannot change inside a single response.
+    """
+    if not _can_be_assigned(db, b.id, viewer_id):
+        return []
+    return [{"value": u.id, "label": u.name}
+            for u in (db.query(User)
+                        .join(BoardMember, BoardMember.user_id == User.id)
+                        .filter(BoardMember.board_id == b.id,
+                                User.is_active.isnot(False))
+                        .order_by(User.name).all())]
+
+
+def _form_question_shape(db, b, key, people_options=None):
     """(type, options) — what a browser needs to draw this question.
 
     The type, because an input has to be an input OF something. The options,
-    where a choice cannot be made without them. A people question gets an
-    empty list on purpose: the board's members are exactly the thing a form
-    must not hand out, and who may be assigned is decided on submission by
-    _can_be_assigned, not by what the respondent was shown.
+    where a choice cannot be made without them.
+
+    For a people question that depends on who is asking, and what arrives
+    here is the ANSWER rather than the reader: _form_public_json works it out
+    once for the whole form and passes it down. Taking a `viewer_id` instead
+    meant re-deriving the same list for every אחראים question on the page.
+    None is a reader who may name nobody — a stranger on a public link — and
+    is the same empty list the caller would have got anyway. See
+    _form_people_options for where that line is drawn.
+
+    Whatever is answered here is a courtesy to the browser and never the
+    rule: a submitted people value is checked again, one id at a time,
+    against _can_be_assigned.
     """
     if key in _FORM_BUILTIN_TYPES:
         t = _FORM_BUILTIN_TYPES[key]
+        if t == "people":
+            return t, (people_options or [])
         if t == "status":
             return t, [{"value": x["key"], "label": x.get("label") or x["key"]}
                        for x in _board_statuses(b)]
@@ -4302,14 +4429,29 @@ def _form_question_shape(b, key):
                    for o in (_status_col_options(col.get("options")) or [])]
     if t == "dropdown":
         return t, [{"value": o, "label": o} for o in (col.get("options") or [])]
+    if t == "people":
+        return t, (people_options or [])
     return t, []
 
 
-def _form_public_json(db, f, b):
-    """The form as the person filling it in sees it, and nothing besides."""
+def _form_public_json(db, f, b, viewer_id=None):
+    """The form as the person filling it in sees it, and nothing besides.
+
+    `viewer_id` is who is reading — None for a stranger on a public link. It
+    changes exactly one thing, the options of a people question, and it is
+    passed rather than looked up because the two callers resolve identity
+    differently: the public route through _public_form_or_refuse, the
+    preview through the ordinary dependency.
+    """
     rows = (db.query(FormComponent)
               .filter(FormComponent.form_id == f.id)
               .order_by(FormComponent.position, FormComponent.id).all())
+    # Once, before the loop. Who may be named on this board is a fact about
+    # the reader and the board, not about the question being drawn, so it
+    # cannot differ between two אחראים questions in the same response — and
+    # working it out inside the loop cost four queries per question for an
+    # answer already known.
+    people_options = _form_people_options(db, b, viewer_id)
     out = []
     for c in rows:
         if c.kind != "question":
@@ -4326,7 +4468,7 @@ def _form_public_json(db, f, b):
         # page that drew it was never withheld at all.
         if c.visible is False:
             continue
-        t, options = _form_question_shape(b, c.field_key)
+        t, options = _form_question_shape(db, b, c.field_key, people_options)
         if t is None:
             continue           # the field is gone; the question goes with it
         q = {"id": c.id, "kind": "question", "type": t,
@@ -5195,11 +5337,23 @@ def public_form_logo(token: str, request: Request = None):
             # a logo is a picture. Anything else was not one when it was
             # uploaded and is certainly not one to serve inline here.
             raise HTTPException(404, "אין לוגו")
+        # The only response under this prefix that is allowed to keep a cache
+        # of its own: one picture, the same bytes for every reader of the
+        # token, and it is on the page twice over. The middleware's blanket
+        # `private, no-store` is a setdefault for exactly this.
+        # It is still not unconditionally `public`. On an AUTHENTICATED form
+        # getting this far took an identity — _public_form_or_refuse answers
+        # 401 without one — so a shared copy would be a proxy handing the
+        # logo to the stranger it had just refused. Members-only therefore
+        # keeps the five minutes in the reader's own browser and gives up the
+        # shared copy; a link anybody may open has nothing to give up.
+        cache = ("public, max-age=300" if f.access == "PUBLIC_LINK"
+                 else "private, max-age=300")
         return Response(content=row.data, media_type=media_type,
                         headers={"Content-Disposition": "inline",
                                  "X-Content-Type-Options": "nosniff",
                                  "Content-Security-Policy": "default-src 'none'; sandbox",
-                                 "Cache-Control": "public, max-age=300"})
+                                 "Cache-Control": cache})
 
 
 @app.post("/api/public/forms/{token}/upload")
@@ -5256,8 +5410,8 @@ def public_form(token: str, request: Request = None):
     decides what crosses this line.
     """
     with Session(engine) as db:
-        f, b, _user = _public_form_or_refuse(db, token, request)
-        return _form_public_json(db, f, b)
+        f, b, user = _public_form_or_refuse(db, token, request)
+        return _form_public_json(db, f, b, user.id if user else None)
 
 
 @app.post("/api/public/forms/{token}/submit")
@@ -5316,13 +5470,22 @@ def preview_form_submit(form_id: int, data: dict = None,
 def preview_form_view(form_id: int, user_id: int = Depends(current_user_id)):
     """The respondent's view of the form, for the person building it.
 
-    Byte for byte what the public route will serve, so "תצוגה מקדימה" shows
-    the form rather than an approximation of it — and so a leak is visible
-    here, in a test, instead of on an endpoint with no identity behind it.
+    Byte for byte what the public route will serve TO THIS SAME READER, so
+    "תצוגה מקדימה" shows the form rather than an approximation of it — and so
+    a leak is visible here, in a test, instead of on an endpoint with no
+    identity behind it.
+
+    That qualification is new and it is the whole of the sentence now: one
+    thing in the body depends on who is asking, the options of an אחראים
+    question, and the builder is a board member while the stranger on the
+    link is not. So the preview shows a member's copy of the form, which is
+    the copy its reader would get — not the stranger's. Everything else here
+    is the same bytes for everybody, and _form_public_json is still the one
+    place that decides either way.
     """
     with Session(engine) as db:
         f, _v, b, _role = _form_or_404(db, form_id, user_id)
-        return _form_public_json(db, f, b)
+        return _form_public_json(db, f, b, user_id)
 
 
 # ── the advanced filter, evaluated here ────────────────────────────────

@@ -48,8 +48,22 @@ button{font-family:inherit;cursor:pointer;border:0;background:none}
   color:var(--text);min-height:44px}
 .fv-in:focus{outline:2px solid var(--fv-accent);outline-offset:1px;border-color:var(--fv-accent)}
 .fv-in-cb{width:22px;height:22px;min-height:0;accent-color:var(--fv-accent)}
+/* The calendar button belongs to the dd/mm/yyyy it opens, not to the far
+   end of the line. The field is a full-width box and Chrome lets the date
+   text stretch across all of it, which parks the picker icon at the other
+   edge — in an RTL form that is the whole width of the paper away from the
+   digits, on the side the eye finishes at rather than the side it starts
+   from, and it read as an icon belonging to nothing. Holding the digits to
+   their own width leaves the icon directly beside them; the slack falls at
+   the end of the row, where it says nothing. */
+.fv-in[type=date]::-webkit-datetime-edit{flex:none}
+.fv-in[type=date]::-webkit-calendar-picker-indicator{margin-inline-start:8px}
 .fv-multi{display:flex;flex-direction:column;gap:2px;padding:6px}
 .fv-opt{display:flex;align-items:center;gap:9px;padding:8px 4px;min-height:44px;cursor:pointer}
+/* Never reached here — this page only ever renders in fill mode — but the
+   renderer is shared, and a class it can emit that this stylesheet has no
+   rule for is how the two pages drift apart. */
+.fv-opt-off{cursor:pointer;opacity:.6}
 .fv-opt input{width:20px;height:20px;accent-color:var(--fv-accent)}
 .fv-files input[type=file]{padding:9px}
 .fv-files-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
@@ -64,6 +78,14 @@ button{font-family:inherit;cursor:pointer;border:0;background:none}
 .fv-bar{display:block;flex:1;height:4px;border-radius:3px;background:var(--border);overflow:hidden}
 .fv-bar i{display:block;height:100%;background:var(--fv-accent);transition:width .15s}
 .fv-unsupported{color:var(--text-light);font-size:.85em;border-style:dashed}
+/* A heading or a paragraph left blank. Drawn in BOTH modes — the renderer
+   writes "(כותרת ריקה)" wherever it finds one — so this page needs the rule
+   as much as the editor does. */
+.fv-blk-empty h3,.fv-blk-empty p{color:var(--text-light);font-style:italic}
+/* An אחראים question nobody signed in may answer: the server sends no people
+   (_form_people_options) and the renderer says why instead of drawing an
+   empty box. It is a sentence, not a control, and it is dressed like one. */
+.fv-people{color:var(--text-light);font-size:.85em;border-style:dashed;text-align:center}
 .fv-err{color:var(--red);font-size:.82em;margin-top:5px;font-weight:600}
 .fv-in.bad{border-color:var(--red)}
 .fv-paper-f{margin-top:22px}
@@ -100,7 +122,21 @@ button{font-family:inherit;cursor:pointer;border:0;background:none}
 <body>
 <div id="app"><div class="spin" role="status" aria-label="טוען את הטופס"></div></div>
 
-<script src="form-paper.js"></script>
+<!-- Absolute, not relative. This page is served at /forms/{token}, so a bare
+     "form-paper.js" resolves against /forms/ — and /forms/{token} is registered
+     ahead of the StaticFiles mount and matches ANYTHING, so the browser asked
+     for /forms/form-paper.js and got this very page back: 20KB of HTML under a
+     text/html content type. x-content-type-options: nosniff then refused to
+     run it, FormPaper was never defined, and the form sat on its spinner —
+     the link "did not open". The renderer lives at the root, so that is where
+     it is asked for.
+
+     And no ?v= on it: the server sends first-party .js with "no-cache,
+     must-revalidate" (security_headers, backend/main.py), so this page can
+     never run against a renderer older than itself. The same note in
+     index.html says why a hand-bumped query string is the worse half of
+     that guarantee. -->
+<script src="/form-paper.js"></script>
 <script>
 /* ============ The public fill page ============
 
@@ -198,8 +234,14 @@ async function load(){
 
 function draw(){
   SUBMISSION = newSubmissionId();
+  /* `upload` is this page saying it has somewhere to put a file — the
+     address below, the policy that travelled with the form, and wireFiles at
+     the bottom of draw(). The renderer draws a picker only where that is
+     true, so the editor's canvas gets a sentence instead of a control that
+     would take a file and drop it. */
   app.innerHTML = `<form id="fv-form" novalidate>${FormPaper.html(DOC, {
     fill: true,
+    upload: true,
     logoSrc: '/api/public/forms/' + encodeURIComponent(TOKEN) + '/logo',
   })}</form>`;
   document.title = (DOC.design && DOC.design.display_title) || 'טופס';
@@ -351,7 +393,11 @@ async function send(){
 
   const {answers, missing, bad} = FormPaper.collect(DOC, form);
   if (missing.length || bad.length){
-    missing.forEach(m => fieldError(m.id, 'שדה חובה'));
+    /* `why` where the question cannot be answered on this page at all — an
+       אחראים nobody here may be named to. Telling somebody a field is
+       required, beside a field they have no way of filling, is the kind of
+       dead end that ends with the form abandoned. */
+    missing.forEach(m => fieldError(m.id, m.why || 'שדה חובה'));
     bad.forEach(x => fieldError(x.id, x.why));
     banner(missing.length
       ? 'חסרות תשובות לשדות חובה: ' + missing.map(m => m.label).join(', ')

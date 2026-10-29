@@ -299,6 +299,38 @@ const m = (t,field,op,v,v2) => advRuleMatch(t,{field,op,v,v2});
   ck('a condition still missing its value is marked as not filtering',
      /class="adv-rule adv-todo"/.test(html) && /adv-warn/.test(html), html.slice(0,200));
 
+  /* A date condition is written either as a day or as a span — "2026-03-01"
+     or "this_week" — and both controls write the SAME value. So they cannot
+     both stand: the calendar used to be drawn beside the list whatever was
+     chosen, which left an empty date box next to היום asking for a day the
+     condition was no longer about, and a day typed into it silently replaced
+     the span. The calendar is drawn only while the value is an exact date. */
+  Adv.addRule('');
+  const dpath=String(Adv.draft.rules.length-1);
+  Adv.setField(dpath,'c_date');
+  const cals=()=>(Adv.bodyHTML().match(/type="date"/g)||[]).length;
+  ck('a date condition opens on תאריך מדויק, with a calendar to fill in', cals()===1, cals());
+  Adv.setV(dpath,'v','this_week');
+  ck('...choosing a dynamic span takes the calendar away', cals()===0, cals());
+  /* And the box left behind narrows. Its width was the one a list and a
+     calendar need side by side; holding "היום" alone it was a box wide enough
+     for a sentence. */
+  const narrow=()=>/class="adv-date adv-date-tok"/.test(Adv.bodyHTML());
+  ck('...and the box narrows to the span it now holds alone', narrow());
+  Adv.setV(dpath,'v','');
+  ck('...and going back to תאריך מדויק brings it back', cals()===1, cals());
+  ck('...at the width a calendar needs', !narrow());
+  Adv.setV(dpath,'v','2026-03-01');
+  ck('...an exact day keeps it, holding that day',
+     cals()===1 && Adv.bodyHTML().includes('value="2026-03-01"'), cals());
+  /* בטווח asks twice, and the two ends are answered independently — "from the
+     first of March until today" is a question somebody asks. */
+  Adv.setRuleOp(dpath,'between');
+  ck('a range opens a calendar at each end', cals()===2, cals());
+  Adv.setV(dpath,'v2','today');
+  ck('...and a span at one end takes only that end\u2019s calendar away', cals()===1, cals());
+  Adv.del(dpath);
+
   Adv.del('1');
   ck('a whole group can be removed', Adv.draft.rules.length===1);
 }

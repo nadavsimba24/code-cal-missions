@@ -7,6 +7,19 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/><path d='M32 38 L39 49 L30 45 Z' fill='%23d6ecff'/></svg>">
 <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/></svg>">
 <script src="sortable.min.js"></script>
+<!-- The form renderer, and this shell, are ONE program split across two
+     files: the code below calls FormPaper.html(doc, {live:true, ...}) and a
+     copy of form-paper.js that predates `live` answers it by drawing every
+     control disabled. A half-updated program fails in ways neither version
+     of it can, and that is exactly how it failed.
+
+     No ?v= cache-buster here on purpose. Freshness is the server's job and
+     it does it: security_headers in backend/main.py gives first-party
+     .js/.css "no-cache, must-revalidate", so the browser keeps the bytes,
+     sends If-None-Match and takes a 304 when nothing moved. A query string
+     would be a second, hand-maintained version of the same guarantee — one
+     that is wrong the first time somebody edits the renderer and forgets to
+     bump it HERE and in public-form.html both. -->
 <script src="form-paper.js"></script>
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
@@ -171,10 +184,14 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
    dates are read against each other, and they were once two bare
    `<input type="date">` — so the pair read 09/27 to one person and 27/09 to the
    next. `.tl-in input` above already gives the box its size and border; what is
-   left here is the reading direction, since a range reads from its start. */
+   left here is the reading direction, since a range reads from its start.
+   No padding of its own any more: it used to pull the start in to 6px, which
+   was right while the calendar sat at the other end and is a date lying across
+   the icon now that it does not. These fields are wider than a cell, so the
+   date sits against the calendar and the slack falls after it — which is what
+   start-aligned text does, and what the pair is read from. */
 .tl-in .tl-datewrap{display:block}
-.tl-in .tl-datewrap .cc-date-txt{text-align:start;font-weight:400;color:var(--text);
-  padding-inline-start:6px}
+.tl-in .tl-datewrap .cc-date-txt{text-align:start;font-weight:400;color:var(--text)}
 .tl-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
 .tl-month{font-weight:700;font-size:12.5px}
 .tl-nav{width:22px;height:22px;border-radius:6px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:grid;place-items:center;font-size:10px}
@@ -806,6 +823,14 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .qf-clear{color:var(--red)}
 .qf-adv{margin-inline-start:auto;color:var(--primary)}
 .qf-clear:hover,.qf-adv:hover{text-decoration:underline}
+/* saving is the one outlined thing in the foot, the same as it is in the
+   builder's head — the two words are a way out and this is an action */
+.qf-save{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
+  border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);
+  color:var(--text);font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer;
+  transition:.12s}
+.qf-save:hover:not(:disabled){border-color:var(--primary);color:var(--primary)}
+.qf-save:disabled{opacity:.45;cursor:default}
 .arr-foot{padding:10px 14px;position:sticky;bottom:0;background:var(--surface)}
 .tb-clear{display:none;color:var(--red);font-weight:600}
 .tb-clear.show{display:inline-flex}
@@ -1143,20 +1168,34 @@ body.coldragging .col-grip{opacity:1}
    one button away. */
 .cc-datewrap{position:relative;display:block}
 /* .cc-inp already gives the box the look of a text cell. What is added here is
-   room for the calendar at the inline end, and a little at the other end so the
-   date does not sit flush against the cell's edge.
+   room for the calendar at the inline START — the right, on an RTL board — and
+   a little at the other end so the date does not sit flush against the cell's
+   edge.
+   The calendar used to sit at the far end instead, which put the two halves of
+   the cell at opposite edges: the date began at the right, the icon's gutter
+   waited at the left, and everything between them was a gap. The wider the
+   column was dragged the worse it read. Icon first and the date against it is
+   one object instead of two, and text-align:start (rather than the centring
+   .cc-inp gives every other cell) is what holds it there — centred, a short
+   value drifts back out into the middle of a wide column, which is the thing
+   being fixed.
    Keep that sum small. תאריך יעד is a 130px column — about 114px of box — and a
    box whose text does not fit scrolls itself as soon as the caret lands in it,
    taking the board's own sideways scroll with it. Padding of 21px at both ends
    left 72px for a DD/MM/YYYY that wants 83: the hint came out clipped, and
-   every click on a date jumped the whole board sideways. */
-.cc-datewrap .cc-date-txt{padding-inline:5px 21px;font-variant-numeric:tabular-nums;
-  text-overflow:ellipsis}
+   every click on a date jumped the whole board sideways. Swapping the two ends
+   keeps the sum at 26px; growing it does not. */
+.cc-datewrap .cc-date-txt{padding-inline:21px 5px;text-align:start;
+  font-variant-numeric:tabular-nums;text-overflow:ellipsis}
 /* The hint is a hint: smaller than the dates it stands in for — ten latin caps
    next to 13px Hebrew read far heavier than the date they describe — and narrow
    enough to fit the column whole, since clipped it just reads as a broken cell. */
 .cc-datewrap .cc-date-txt::placeholder{color:var(--text-light);font-size:11.5px}
-.cc-date-cal{position:absolute;inset-inline-end:2px;top:50%;transform:translateY(-50%);
+/* At the inline start, inside the gutter .cc-date-txt reserves for it. The
+   gutter is padding and not a margin that appears with the icon, so the date
+   does not shift sideways when the row is hovered and the calendar fades in —
+   see the colour rule below. */
+.cc-date-cal{position:absolute;inset-inline-start:2px;top:50%;transform:translateY(-50%);
   width:19px;height:19px;border:none;background:none;padding:0;border-radius:4px;
   color:transparent;font-size:11px;cursor:pointer;display:grid;place-items:center}
 /* the calendar shows itself when the cell is in play, so a row of dates stays
@@ -2133,6 +2172,13 @@ tr.chat-open>td{background:var(--primary-soft)!important}
   min-width:0;flex:1;height:100%}
 .adv-date{display:flex;gap:9px;align-items:center;flex:1 1 300px;min-width:0}
 .adv-date .adv-box{flex:1 1 0}
+/* A dynamic span is two words. The 300px above is the width a calendar and a
+   list need SIDE BY SIDE, and once the calendar is gone — it is drawn only for
+   an exact date — the list was left holding all of it: "היום" in a box wide
+   enough for a sentence. 170px is the operator box beside it, so the row still
+   reads as a row of controls rather than one long one, and the width does not
+   jump between "היום" and "30 הימים האחרונים". */
+.adv-date-tok{flex:0 1 170px}
 .adv-noval{color:var(--text-light);font-size:13px;flex:1}
 /* a value the board no longer offers — a person who left, an option deleted.
    Marked, not hidden: the rule still filters, and it says what it is. */
@@ -5086,6 +5132,25 @@ function openViewPicker(e){
    change and the view stayed applied — the strip looked stuck. Choosing the
    board's own table IS leaving the view, so that is what it does. */
 function setView(v){
+  /* A form is open over the board in exactly the same way a saved view is,
+     but it leaves Views.active null — so the line below saw nothing to leave,
+     st.view was already 'table', and clicking "טבלה ראשית" out of a form did
+     nothing at all. Choosing one of the board's own views IS leaving the form.
+     The editor is asked to close rather than simply dropped: it may still have
+     a save in flight, and only it knows that. The view is applied after it has
+     actually gone, so answering "stay" to the unsaved-changes question leaves
+     you on the form you are still editing.
+
+     By callback and not by awaiting close(): when there are unsaved changes
+     close() opens a question and returns at once, so the promise resolved
+     with the editor still open and `v` was thrown away — answering "צאו בלי
+     לשמור" then landed you on the view you came from instead of the one you
+     pressed. The callback runs from leave(), and leave() runs only when the
+     editor is really gone. */
+  if(typeof FormEditor!=='undefined' && FormEditor.isOpen()){
+    FormEditor.close(()=>setView(v));
+    return;
+  }
   if(typeof Views!=='undefined' && Views.active!=null) Views.leave();
   st.view=v; renderTabs(); renderView();
 }
@@ -6844,6 +6909,12 @@ async function advAskServer(){
     _advSplit=false;                 // a new answer may say something new
     st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
     renderView();
+    /* …and the panel, if it is open. It prints "מציג 12 מתוך 155" off the same
+       filter the board was just redrawn from, so an answer that changes the
+       board and not the sentence beside it leaves two numbers on screen that
+       disagree. It redraws only while open, and this is the same path a picked
+       chip already takes. */
+    reArrange();
   }catch(e){
     st.filters.advIds=null;          // the local answer stands
     if(e&&e.detail)toast(e.detail);  // a filter the server refused, said out loud
@@ -11957,6 +12028,10 @@ function renderPop(name){
   }
   if(name!=='arrange')return;
   const f=st.filters, el=document.getElementById('pop-arrange'); if(!el)return;
+  /* What the save in the foot says and whether it can be pressed: writing back
+     to an open view is a different sentence from making a new one, and a board
+     that is neither filtered nor sorted has nothing to write either way. */
+  const onView=(typeof Views!=='undefined')&&Views.active!=null, cut=boardIsCut();
   /* No sort section. It was four fixed fields in a panel that is now about the
      board's own columns, and every column header carries its own sort button
      with the three states — off, descending, ascending (see sortBtn). Sorting
@@ -11969,14 +12044,22 @@ function renderPop(name){
     <div class="arr-head"><i class="fa-solid fa-sliders"></i> סינון<button class="arr-x" onclick="closePops()" aria-label="סגור">✕</button></div>
     ${colFilterHTML()}
     ${linkFilterHTML()}
-    <!-- one row: clearing and the way out to the builder are both one click,
-         and neither is worth a line of its own. Picking values answers most
-         questions; a sentence ("תאריך יעד לפני היום וגם הסטטוס אינו בוצע") is
+    <!-- one row: clearing, the way out to the builder and the save are each
+         one click, and none is worth a line of its own. Picking values answers
+         most questions; a sentence ("תאריך יעד לפני היום וגם הסטטוס אינו בוצע") is
          what the builder is for, and this is where somebody is standing when
-         they find they need one. -->
+         they find they need one.
+
+         The save is here because this is where the cut gets made. It stood
+         only in the builder's head and on the tab strip, so keeping a quick
+         filter meant either finding a button above the board or opening a
+         dialog for the one button in it that does the same thing. -->
     <div class="arr-foot">
       <button class="qf-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה הכל</button>
       <button class="qf-adv" onclick="closePops();Adv.open()" title="בניית תנאים: עמודה, אופרטור, ערך — וקבוצות של וגם/או">מעבר לסינון מתקדם <i class="fa-solid fa-arrow-left"></i></button>
+      <button class="qf-save" onclick="qfSaveView()" ${cut?'':'disabled'}
+              title="${cut?(onView?'כתיבת החיתוך שעל המסך בחזרה לתצוגה הפתוחה':'שמירת החיתוך שעל המסך כתצוגה חדשה'):'אין מה לשמור — הלוח לא מסונן ולא ממוין'}">
+        <i class="fa-regular fa-bookmark"></i> ${onView?'שמירה בתצוגה זו':'שמירה כתצוגה'}</button>
     </div>`;
   qfRestore();          // the strip is in the document now
 }
@@ -12096,6 +12179,23 @@ function qfShowing(){
   const now=applyFilters(st.board&&st.board.tasks||[]).length;
   if(!all)return '';
   return now>=all?`מציג את כל ${all} הפריטים`:`מציג ${now} מתוך ${all} פריטים`;
+}
+/* Keeping the cut this panel just made.
+
+   The same two-way question the tab strip and the builder both answer, in the
+   same words and through the same two calls: a view is open, so the cut is
+   written back onto it; none is, so it is saved as a new one. There is no
+   apply step before it, unlike Adv.saveView — every chip here has already
+   been through advChanged, so the board on screen IS what gets stored.
+
+   The panel is closed first. The name dialog is a modal, and a popup left open
+   over it is a panel nobody can reach while the thing in front of it is asking
+   for a word. */
+function qfSaveView(){
+  if(typeof Views==='undefined')return;
+  if(!boardIsCut()){ toast('אין מה לשמור — הלוח לא מסונן ולא ממוין'); return; }
+  closePops();
+  if(Views.active!=null)Views.update(); else Views.saveNew();
 }
 /* How many items carry each value, per column — one pass over the board for
    the columns whose values are an identity (a status, a person, a tick), and
@@ -12397,15 +12497,30 @@ const Adv = {
             ${choices.map(c=>`<option value="${esc(c.v)}" ${kind==='people'?`data-uid="${esc(c.v)}"`
                 :(c.color?`data-color="${esc(c.color)}"`:'')} ${String(v)===String(c.v)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`);
       }
-      if(kind==='date')
-        return `<span class="adv-date">
+      if(kind==='date'){
+        /* The calendar belongs to "תאריך מדויק" and to nothing else.
+
+           Both were drawn side by side whatever was chosen, so picking היום
+           left an empty date box standing beside it — a control with nothing
+           in it, asking for a day the condition had stopped being about. And
+           it was not merely idle: a day typed into it REPLACED the span, since
+           the two write the same value. One question, two boxes, and the
+           second one able to undo the first silently.
+
+           So the calendar is drawn only while the span is an exact date — which
+           is what an empty value means here, the state "תאריך מדויק" with no
+           day picked yet. Choosing a dynamic span takes it away; going back to
+           תאריך מדויק brings it back empty, ready for the day. */
+        const dyn=!!v&&ADV_DATES.some(d=>d[0]===v);
+        return `<span class="adv-date${dyn?' adv-date-tok':''}">
           ${this.box('',`<select class="adv-bare" aria-label="תאריך" onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()">
             <option value="">תאריך מדויק</option>
             ${ADV_DATES.map(d=>`<option value="${d[0]}" data-ic="fa-calendar-day" ${v===d[0]?'selected':''}>${esc(d[1])}</option>`).join('')}
           </select>`)}
-          <span class="adv-box"><input type="date" class="adv-in" value="${/^\d{4}-\d{2}-\d{2}$/.test(v||'')?esc(v):''}"
-                 onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()"></span>
+          ${dyn?'':`<span class="adv-box"><input type="date" class="adv-in" value="${/^\d{4}-\d{2}-\d{2}$/.test(v||'')?esc(v):''}"
+                 onchange="Adv.setV('${path}','${which}',this.value);Adv.redraw()"></span>`}
         </span>`;
+      }
       return `<span class="adv-box adv-box-val"><input class="adv-in" type="${kind==='number'?'number':'text'}"
                 value="${esc(v==null?'':v)}" placeholder="${kind==='number'?'מספר':'ערך'}"
                 oninput="Adv.setV('${path}','${which}',this.value)"></span>`;
@@ -12508,7 +12623,7 @@ const Adv = {
          <!-- the way back. The quick panel's foot opens this builder; without
               this the door only turned one way, and returning to picking values
               meant closing the dialog and finding the filter button again. -->
-         <button class="adv-link muted" onclick="Adv.toQuick()">
+         <button class="adv-link muted" onclick="Adv.toQuick(event)">
            <i class="fa-solid fa-arrow-right"></i> מעבר לסינון מהיר</button>`;
   },
   html(){
@@ -12536,9 +12651,32 @@ const Adv = {
     if(typeof Views==='undefined')return;
     if(Views.active!=null)Views.update(); else Views.saveNew();
   },
-  // what is built travels with you: going back to the quick panel applies it
-  // rather than throwing it away, since the two edit the same tree
-  async toQuick(){ await this.apply(); togglePop('arrange'); },
+  /* Back to the quick panel. What is built travels along — the trip applies
+     it rather than throwing it away, since the two edit the same tree.
+
+     Two things here are not decoration.
+
+     The apply is NOT awaited. It ends in a question to the server, and
+     awaiting it made the panel open whenever the answer arrived: a moment
+     later on a slow board, and — when there was nothing to ask about, because
+     the builder was opened and nothing was filled in — within the very same
+     click. That last case is the one that broke it. A click that reaches the
+     document closes every open popup (see the pair of listeners by
+     closePops), and a panel opened one microtask into a click that is still
+     bubbling is a panel that gets closed again before it is ever painted. The
+     filter itself is already applied by then: apply() narrows the board before
+     it asks anything, and the question is only the authority confirming it.
+
+     So the click is stopped here instead of racing it. It belongs to the panel
+     being opened, and the closer must not read it as a click somewhere else. */
+  toQuick(ev){
+    if(ev&&ev.stopPropagation)ev.stopPropagation();
+    this.apply();
+    const ctl=document.getElementById('ctl-arrange');
+    // opened, never toggled: this door only ever goes one way, and a toggle
+    // would close the panel in any state that left it already open
+    if(!ctl||!ctl.classList.contains('open'))togglePop('arrange');
+  },
   /* The tree as it will be ASKED: without the conditions that are still
      missing a value. Such a condition matches every item — it filters
      nothing — so leaving it in buys a badge that counts a question nobody is
@@ -17061,6 +17199,14 @@ const FORM_SETTING_PATH={
   font_family:['design','font_family'], font_size:['design','font_size'],
   text_align:['design','text_align'], theme_color:['design','theme_color'],
   background_color:['design','background_color'], text_color:['design','text_color'],
+  /* The logo's token, and not only the switch beside it. Its absence here
+     was the whole of "picking a file does nothing": edit() writes through
+     this map, so localSet found no path and left the model alone — while
+     save.form carried the token to the server anyway. The file uploaded,
+     the form stored it, and the screen redrew from a model that had never
+     heard of it. Only a reload showed the logo. mergeForm walks these keys
+     too, so the answer could not teach it either. */
+  logo_token:['design','logo_token'],
   show_logo:['design','show_logo'],
   submit_label:['design','submit_label'],
   show_branding:['design','show_branding'],
@@ -17187,26 +17333,39 @@ const FormEditor={
      not the place to discover that a save was still pending. Only if that
      send FAILS is there a question to ask, and then it is asked plainly:
      the work is still on screen, and leaving is what loses it. */
-  async close(){
+  /* `onLeft` runs once the editor has ACTUALLY gone, and never if it has
+     not. A caller that was on its way somewhere — setView, taking the person
+     to the board's own table — cannot use the returned promise for this: the
+     unsaved-changes branch below resolves immediately, with the editor still
+     on screen and the question still unanswered, so the view it was asked
+     for was applied to nothing and quietly dropped. Answering "צאו בלי
+     לשמור" then left you on the form's tab rather than on the one you
+     pressed. The callback travels to leave(), which is the one place that
+     knows the editor is closed. */
+  async close(onLeft){
     if(!this.isOpen()) return;
     if(this.save.state==='pending'||this.save.state==='saving'){
       clearTimeout(this.save.timer);
       await this.flush();
     }
     if(this.save.state==='error'){
-      askConfirm('יש שינויים שלא נשמרו. לצאת מהעורך בכל זאת?', ()=>this.leave(),
+      askConfirm('יש שינויים שלא נשמרו. לצאת מהעורך בכל זאת?', ()=>this.leave(onLeft),
         {title:'יציאה מהעורך', confirmText:'צאו בלי לשמור',
          note:'השינויים שלא נשמרו יאבדו. אפשר להישאר ולנסות לשמור שוב.'});
       return;
     }
-    this.leave();
+    this.leave(onLeft);
   },
-  leave(){
+  leave(onLeft){
     this.resetSave();
     this.id=null; this.viewId=null; this.form=null;
     this.error=null; this.loading=false; this.sel=null; this.preview=false;
     Router.set(st.board&&st.board.id, null, null);
     renderTabs(); renderView();
+    /* Last, and guarded: whoever asked to leave usually asked in order to go
+       somewhere, and that somewhere paints over what was just painted here.
+       A throw from it must not leave the editor half-closed. */
+    if(onLeft) try{ onLeft(); }catch(e){}
   },
 
   // ── the autosave queue ──
@@ -17363,7 +17522,118 @@ const FormEditor={
     return c?{key:c.id,label:c.title,type:c.type}:null;
   },
   selected(){ return (this.form&&this.form.components||[]).find(c=>c.id===this.sel)||null; },
-  select(cid){ this.sel=(this.sel===cid?null:cid); renderView(); },
+  /* ── Selecting a question, without throwing the canvas away ──
+
+     "אף אחד מרכיבי הטופס לא עובד — לא בחירת אחראים, לא בחירת תאריך, וגם
+     תיאור לא נותן להקליד" was TWO faults, one behind the other, and the
+     order matters because it is the only way to see why both fixes are
+     needed and neither is redundant.
+
+     First, and for most of this saga, every control on the canvas was
+     disabled. inputHTML appended ' disabled' to all of them unless `fill`
+     was set, and the canvas passed {editable:true} and never `fill` — so
+     there was nothing to type into, nothing to tick and no date to pick.
+     That is the complaint, word for word. opts.live is what ended it.
+
+     Second, and only once the controls were switched on: a disabled control
+     dispatches no click and nothing bubbles out of it (see the CSS note on
+     pointer-events, where the same fact is doing work), so while everything
+     was disabled this block's own onclick="FormEditor.select(id)" never ran
+     from inside a field. select() called renderView(), which for an open
+     form replaces the whole of #view — bar, outline, canvas, settings pane.
+     The moment the controls went live that reached it: a click inside a
+     field now bubbled to its block and destroyed the field milliseconds
+     after it was pressed. The input took the focus on mousedown and lost it
+     on click; the date picker opened onto an element that no longer existed;
+     a tick landed on a checkbox that was then rebuilt unticked; the caret
+     left the textarea before the first character could arrive. A latent bug
+     that went live with the fix above, and the one reported last.
+
+     So selection is now repainted where it SHOWS and nowhere else: the
+     outline row, the block's own outline, and the settings pane. The canvas
+     is left exactly as it stands, which is the entire point — it is holding
+     the focus, the caret and the half-filled form somebody is trying out.
+
+     `ev` says where inside the block the click landed. A press on a control
+     selects the question and never unselects it: toggling off is what a
+     second click on a BLOCK means, and a second click inside a text field is
+     not a request to close the pane. It also keeps a <label class="fv-opt">
+     from flapping the pane, since a label click arrives twice — once on the
+     label, once on the checkbox it activates. */
+  select(cid, ev){
+    const t=ev&&ev.target;
+    const onCtl=!!(t&&t.closest&&t.closest('input,textarea,select,option,label,.fv-in'));
+    this.sel=(this.sel===cid&&!onCtl)?null:cid;
+    this.paintSel();
+  },
+  /* ── The way back out of a question ──
+
+     Nothing on the canvas deselects reliably any more, and that matters
+     because the settings pane is the only place the FORM's own settings —
+     its title, its colours, its submit label — can be reached: the pane
+     shows the question while one is selected, and "הגדרות" was taken off
+     the top bar on purpose and does not come back.
+
+     Pressing the selected block again cannot be the answer. select() refuses
+     to toggle off when the press landed on a control, a <label> or anything
+     inside .fv-in — it has to, or a second click in a text field would close
+     the pane out from under the caret — and a question block is now almost
+     entirely those: its wording is a <label>, and in editing mode that label
+     carries `for`, so it is a control too.
+
+     Two doors instead, because one of them has to work without a mouse:
+       · the paper itself, beside the blocks — bgClick below;
+       · a named button at the head of the question's settings, which is
+         what a keyboard reaches, and what somebody finds without being
+         told that the background is clickable.  */
+  deselect(){
+    if(this.sel===null) return;
+    this.sel=null;
+    this.paintSel();
+  },
+  /* A click on the canvas that was not a click on a block. The blocks do not
+     stop their own clicks — they must not, the outline and the pane follow
+     them — so everything arrives here too and what came from a block is
+     handed back. The note under the paper is inside the canvas as well, and
+     pressing it meaning "not this question" is exactly right. */
+  bgClick(ev){
+    const t=ev&&ev.target;
+    if(t&&t.closest&&t.closest('.fv-blk')) return;
+    this.deselect();
+  },
+  /* The three places the selection is visible. Nothing else is touched —
+     see select() for what redrawing the rest costs. */
+  paintSel(){
+    const wrap=document.querySelector('.fv-wrap');
+    const pane=wrap&&wrap.querySelector('.fv-inspect');
+    if(!wrap||!pane){ renderView(); return; }
+    this.paintSelState();
+    /* Not in preview: there the canvas is the respondent's form, drawn by
+       FormPaper without a selection at all, and marking a block on it would
+       show a builder's outline on a page that is meant to be exactly what
+       somebody filling it in sees. The outline list still selects, and the
+       pane beside it still follows. */
+    const show=!this.preview;
+    wrap.querySelectorAll('.fv-blk').forEach(b=>
+      b.classList.toggle('sel', show && +b.dataset.id===this.sel));
+    wrap.querySelectorAll('.fv-ol-row').forEach(r=>{
+      const on=+r.dataset.id===this.sel;
+      r.classList.toggle('on', on);
+      r.setAttribute('aria-current', on?'true':'false');
+    });
+    const c=this.selected();
+    pane.innerHTML=c?this.inspectComp(c):this.inspectForm();
+  },
+  /* The canvas says whether anything is selected, so the hint under it can
+     offer the way back out at the moment there is something to come out of,
+     and stay quiet the rest of the time. On the section and not on the paper
+     because the note is the section's too. Called from both the painter
+     above and from attachSort, so a full render and a selection change leave
+     the same thing on screen. */
+  paintSelState(){
+    const canvas=document.querySelector('.fv-canvas');
+    if(canvas) canvas.classList.toggle('has-sel', !this.preview && this.sel!==null);
+  },
 
   /* Two ways to a question, in one menu: a field the board already has, or a
      field made here and then asked about. The second is the board's admin's
@@ -17477,9 +17747,23 @@ const FormEditor={
     if(r){ this.form.components.push(r); this.sel=r.id; renderView(); }
   },
 
+  /* Taking a question out of the form is not taking the field off the board,
+     and the two read as one thing: the question went, the column stayed, and
+     a field added THROUGH the form left a column behind that nothing in the
+     form ever mentioned again. The board owns its columns — removing one is
+     done in the board's own column settings, where the records that would
+     lose their cells are in front of you.
+
+     So the column is named here rather than alluded to, and the reversible
+     way out is offered beside the irreversible one. Hiding keeps the
+     question, its wording and its settings, and a hidden question is not
+     sent to anybody; it is offered only where there is still a board column
+     to come back to, which is exactly where removal is the wrong tool. */
   removeRow(cid){
     const c=(this.form.components||[]).find(x=>x.id===cid);
-    const what=c&&c.kind==='question'?'השאלה':'הרכיב';
+    const q=!!(c&&c.kind==='question');
+    const fl=q?this.fieldOf(c.field_key):null;
+    const what=q?'השאלה':'הרכיב';
     askConfirm(`להסיר את ${what} מהטופס?`, async()=>{
       delete this.save.comps[cid];            // nothing to save about a row that is going
       await this.flushNow();
@@ -17490,7 +17774,25 @@ const FormEditor={
       this.form.components=this.form.components.filter(x=>x.id!==cid);
       if(this.sel===cid) this.sel=null;
       renderView();
-    },{note:'שדות הלוח והרשומות אינם מושפעים.'});
+    },{title:'הסרה מהטופס', confirmText:'הסירו מהטופס',
+       note: fl
+         ? `העמודה ״${fl.label}״ והנתונים שבה נשארים בלוח — נוסח השאלה הוא מה שנמחק. `
+           +'להסרת העמודה עצמה — בהגדרות העמודות של הלוח.'
+         : 'שדות הלוח והרשומות אינם מושפעים.',
+       noteHTML: (fl && c.visible!==false)
+         ? `<button class="btn btn-ghost" onclick="FormEditor.hideInstead(${cid})">
+              <i class="fa-solid fa-eye-slash"></i> הסתרה במקום</button>
+            <span class="fv-alt-why">השאלה נשארת בטופס על נוסחה והגדרותיה, ואינה נשלחת
+              למי שממלא. אפשר להחזיר אותה בכל רגע.</span>` : ''});
+  },
+  /* The way out of the dialog that is not the dialog's own action. The
+     cancel callback is cleared by hand because this leaves by a door
+     askConfirm did not open, and a stale one would fire on the next
+     dismissal of some other question entirely. */
+  hideInstead(cid){
+    window._confirmNo=null; closeModals();
+    this.setVisible(cid,false);
+    toast('השאלה הוסתרה. להחזרתה — סמנו ״מוצג בטופס״ בהגדרות השאלה.');
   },
 
   async reorder(order){
@@ -17552,7 +17854,12 @@ const FormEditor={
     (this.pub.components||[]).forEach(c=>this.pErr(c.id,''));
     const {answers, missing, bad}=FormPaper.collect(this.pub, form);
     if(missing.length||bad.length){
-      missing.forEach(m=>this.pErr(m.id,'שדה חובה'));
+      /* `why` where the question cannot be answered on this page at all —
+         an אחראים with nobody to name, a file question with no upload wired
+         to the preview. "שדה חובה" beside a field there is no way to fill is
+         an instruction nobody can follow, and in the preview it would read
+         as a fault in the form rather than a limit of the preview. */
+      missing.forEach(m=>this.pErr(m.id,m.why||'שדה חובה'));
       bad.forEach(x=>this.pErr(x.id,x.why));
       toast('יש תשובות שצריך לתקן');
       return;
@@ -17733,8 +18040,6 @@ const FormEditor={
       <button class="btn btn-ghost ${this.preview?'on':''}" onclick="FormEditor.togglePreview()"
               aria-pressed="${this.preview?'true':'false'}">
         <i class="fa-solid fa-eye"></i> תצוגה מקדימה</button>
-      <button class="btn btn-ghost ${this.sel==null?'on':''}" onclick="FormEditor.sel=null;renderView()">
-        <i class="fa-solid fa-sliders"></i> הגדרות</button>
       <button class="btn btn-primary" onclick="FormEditor.share()">
         <i class="fa-solid fa-share-nodes"></i> פרסום ושיתוף</button>
     </div>`;
@@ -17805,21 +18110,92 @@ const FormEditor={
         ? (this.pubDone
             ? this.thanksHTML()
             : `<form id="fv-pform" novalidate onsubmit="event.preventDefault();FormEditor.tryPreview()">${
-                FormPaper.html(this.pub,{fill:true})}</form>`)
+                FormPaper.html(this.previewDoc(),{fill:true})}</form>`)
         : `<div class="spin" role="status" aria-label="טוען תצוגה מקדימה"></div>`;
     }else{
-      body=FormPaper.html(this.doc(),{editable:true, sel:this.sel,
+      /* live: the controls on the canvas work. Nothing typed into them is
+         saved or sent — the canvas draws the local model, and a value put
+         into a field is not a value of anything. It is there so that
+         somebody can try their own form where they are building it, which
+         is the first thing anybody does and was the one thing they could
+         not do. The note under the canvas says exactly that. */
+      body=FormPaper.html(this.doc(),{editable:true, live:true, sel:this.sel,
                                       fallbackTitle:this.form.name});
     }
-    return `<section class="fv-canvas" aria-label="תצוגת הטופס">
+    /* The click on the canvas that is not a click on a question clears the
+       selection — the way back to the form's own settings, since the pane
+       shows one or the other and nothing else does. Editing only: in preview
+       there is no selection on the paper to clear, and a stray handler on a
+       page meant to be exactly what a respondent sees is the one thing a
+       preview must not have. */
+    return `<section class="fv-canvas" aria-label="תצוגת הטופס"${
+      this.preview?'':' onclick="FormEditor.bgClick(event)"'}>
       ${body}
-      ${this.preview?`<div class="fv-note fv-preview-note"><i class="fa-solid fa-eye"></i>
-         כך רואה את הטופס מי שממלא אותו. אפשר למלא ולשלוח כאן כדי לבדוק את
-         הבדיקות — לא נוצרת רשומה בלוח. שאלות מוסתרות אינן נשלחות למשיב כלל.</div>`:''}
+      ${this.preview
+        ? `<div class="fv-note fv-preview-note"><i class="fa-solid fa-eye"></i>
+             כך רואה את הטופס מי שממלא אותו. אפשר למלא ולשלוח כאן כדי לבדוק את
+             הבדיקות — לא נוצרת רשומה בלוח. שאלות מוסתרות אינן נשלחות למשיב כלל.</div>`
+        /* The canvas is the form, and its fields WORK — see opts.live, and
+           select() for the two faults that made "nothing here works" true
+           for so long. So the note no longer claims the opposite: it invites
+           trying the fields, says that nothing typed into them is kept, and
+           names both ways back out of a selected question.
+
+           The last sentence is shown only while something is selected
+           (.has-sel, painted by paintSel). An instruction for a state
+           somebody is not in is noise, and this note is already long. */
+        : `<div class="fv-note fv-edit-note"><i class="fa-solid fa-pen-ruler"></i>
+             <span>זוהי תצוגת העריכה. אפשר לנסות את השדות כאן כדי לראות איך הם
+             מתנהגים — מה שתמלאו אינו נשמר ואינו נשלח לשום מקום, ולחיצה על שדה
+             בוחרת גם את השאלה לעריכה. לבדיקה אמיתית, כולל הבדיקות והשליחה —
+             <b>תצוגה מקדימה</b> בסרגל העליון.
+             <span class="fv-desel-h">לחיצה על רקע הטופס, מחוץ לשאלות, חוזרת
+             להגדרות הטופס.</span></span></div>`}
     </section>`;
   },
 
+  /* What the preview draws: the public projection, with ONE thing taken
+     from the screen instead — the design.
+
+     `pub` is fetched once, when the preview is switched on, and the settings
+     pane stays open beside it. So every design change redrew this canvas
+     from a projection that still held the OLD design and nothing moved:
+     unticking "הצגת מיתוג Missions" left the mark on the paper, a colour did
+     not take, the submit label did not change. It looked like the click had
+     been ignored, and it came out right only after a reload — which is when
+     `pub` was fetched again.
+
+     Everything that decides what may be ANSWERED stays the server's: the
+     components, their types, their options, their ids. Only the look is
+     local, which is the thing being edited and the thing already on its way
+     to the server.
+
+     The logo is projected the way _form_public_json projects it — a form
+     with its logo switched off sends no token at all. Copying the manager's
+     design across whole would put a logo on the preview that a respondent
+     would never see, and showing something the published page will not is
+     the one mistake a preview must not make. */
+  previewDoc(){
+    const d=(this.form&&this.form.design)||(this.pub&&this.pub.design)||{};
+    return Object.assign({}, this.pub,
+      {design: Object.assign({}, d,
+        {logo_token: d.show_logo===false ? null : d.logo_token})});
+  },
+
   optionsFor(key, type){
+    /* אחראים, on the canvas. The published page gets this list from the
+       server, which decides per reader whether it may have it at all
+       (_form_people_options); here the builder is a board member by
+       definition — they are editing the board's form — so the board's own
+       taggable list is the same answer, and it is already in hand.
+
+       Through boardPeople() and not off st.board.members directly, because
+       that function IS the product's answer to "who may a people column be
+       given to": members, minus anyone whose account was deactivated. Read
+       raw, the canvas offered a blocked user a tick that the server would
+       then refuse — the one thing a preview of a form must not do. */
+    if(type==='people') return (typeof boardPeople==='function'?boardPeople():[])
+      .map(u=>({value:u.id,label:u.name}));
     if(key==='status') return (typeof boardStatusList==='function'?boardStatusList():[])
       .map(s=>({value:s.key,label:s.he||s.label||s.key}));
     if(key==='priority') return (typeof boardPriorityList==='function'?boardPriorityList():[])
@@ -17839,8 +18215,18 @@ const FormEditor={
   },
   inspectComp(c){
     const fl=c.kind==='question'?this.fieldOf(c.field_key):null;
-    const head=`<div class="fv-sec-t">${c.kind==='question'?'הגדרות השאלה'
-      :(c.kind==='heading'?'כותרת':'טקסט')}</div>`;
+    /* The way back to the FORM's settings, beside the question's own title.
+
+       The pane shows one or the other, "הגדרות" is gone from the top bar,
+       and clicking the paper background (bgClick) is a mouse gesture — a
+       keyboard never reaches it. So the door is also a button, in the one
+       place somebody who selected a question is already looking. The arrow
+       points right because back is right in RTL. */
+    const head=`<div class="fv-sec-t fv-insp-h">
+      <span>${c.kind==='question'?'הגדרות השאלה'
+        :(c.kind==='heading'?'כותרת':'טקסט')}</span>
+      <button class="btn btn-ghost fv-insp-back" onclick="FormEditor.deselect()">
+        <i class="fa-solid fa-arrow-right"></i> הגדרות הטופס</button></div>`;
     if(c.kind!=='question'){
       const sg=(c.settings||{}), styles=[['normal','רגיל'],['bold','מודגש'],['italic','נטוי']];
       return head+`<div class="field"><label for="fv-c-content">תוכן</label>
@@ -17882,9 +18268,19 @@ const FormEditor={
           onchange="FormEditor.editComp(${c.id},'required',this.checked)"> שדה חובה</label>`
       +`<label class="fv-chk"><input type="checkbox" ${c.visible!==false?'checked':''}
           onchange="FormEditor.setVisible(${c.id},this.checked)"> מוצג בטופס</label>`
-      +`<div class="fv-note">שאלה מוסתרת אינה נשלחת למי שממלא, ולכן אינה יכולה להיות חובה.</div>`
+      /* Hiding is the way to take a field out of a form that still has a
+         column behind it: it is reversible, it keeps the wording, and the
+         respondent is never told the question existed. Removal throws the
+         wording away and leaves the column where it was — so the note says
+         which of the two does what, rather than leaving "הסרה" to be read as
+         "delete the field". */
+      +`<div class="fv-note">שאלה מוסתרת אינה נשלחת למי שממלא, ולכן אינה יכולה להיות חובה.
+          היא נשארת כאן על נוסחה והגדרותיה, ואפשר להחזיר אותה בכל רגע —
+          זו הדרך להוציא שדה מהטופס מבלי לאבד אותו.</div>`
       +`<button class="btn btn-ghost danger" onclick="FormEditor.removeRow(${c.id})">
-          <i class="fa-solid fa-trash"></i> הסרת השאלה</button>`;
+          <i class="fa-solid fa-trash"></i> הסרה מהטופס</button>`
+      +(fl?`<div class="fv-note fv-note-quiet">ההסרה מוחקת את נוסח השאלה בלבד.
+            העמודה ״${esc(fl.label)}״ נשארת בלוח עם כל הנתונים שבה.</div>`:'');
   },
   /* Hiding wins over requiring — the server refuses the pair outright, so the
      screen must not offer it. Clearing one clears the other in the same edit. */
@@ -17894,7 +18290,25 @@ const FormEditor={
     const c=(this.form&&this.form.components||[]).find(x=>x.id===cid);
     if(!c) return;
     this.editComp(cid,'settings', Object.assign({}, c.settings||{}, {[key]:value}));
-    this.repaint();
+    this.paintBlockStyle(cid);
+  },
+  /* Bold, italic and a heading's level, onto the one block they belong to.
+
+     This went through repaint() when repaint() rebuilt the whole canvas,
+     which meant choosing "מודגש" for a heading also wiped every answer
+     somebody had typed into the live fields below it. The style is a style
+     attribute on one element, so that is what is written — the same rule
+     syncLabel follows for the wording, and by id for the same reason: by
+     class, the second heading on the page restyles the first. */
+  paintBlockStyle(cid){
+    const c=(this.form&&this.form.components||[]).find(x=>x.id===cid);
+    if(!c||c.kind==='question') return;
+    const blk=document.getElementById('fvb-'+cid);
+    const h=blk&&blk.querySelector('h3,p');
+    if(!h) return;
+    const em=FormPaper.emphasis(c.settings), lvl=(c.settings||{}).level||2;
+    h.setAttribute('style', c.kind==='heading'
+      ? `font-size:${FormPaper.LEVELS[lvl]||FormPaper.LEVELS[2]};${em}` : em);
   },
   setVisible(cid, on){
     this.editComp(cid,'visible',on);
@@ -17980,14 +18394,74 @@ const FormEditor={
         onchange="FormEditor.edit('success_allow_another',this.checked)"> אפשרות לשלוח תשובה נוספת</label>`;
   },
 
-  /* A design change is on the paper at once. Only the canvas is redrawn —
-     repainting the settings pane would take the focus out of the field being
-     typed into, which is how a colour picker becomes unusable. */
+  /* A design change is on the paper at once — and ONLY the design is.
+
+     This used to be el.outerHTML=this.canvasHTML(), which was harmless while
+     the canvas was a drawing: there was nothing on it to lose. It stopped
+     being harmless the moment the controls went live and the note started
+     inviting people to try them. It is called from oninput on the form's
+     title, its description and its submit label, so one character typed into
+     the settings pane rebuilt the paper and threw away everything that had
+     been typed INTO the form — and then again on the next character. That is
+     "the field doesn't keep what I type", arriving by a second road after
+     select() stopped doing it.
+
+     So the design is painted where it SHOWS, the way paintSel paints the
+     selection: the paper's own style attribute (colour, background, size,
+     alignment), its title, its description, the submit label and the
+     branding line. The blocks are not touched, so the focus, the caret and
+     the half-filled form stay exactly where they are. The settings pane is
+     not touched either — repainting it would take the focus out of the field
+     being typed into, which is how a colour picker becomes unusable.
+
+     The logo is deliberately not here: uploading or removing one is a round
+     trip, not a keystroke, and goes through flushNow() and renderView(). */
   repaint(){
-    const el=document.querySelector('.fv-canvas');
-    if(!el){ renderView(); return; }
-    el.outerHTML=this.canvasHTML();
-    this.attachSort();
+    const canvas=document.querySelector('.fv-canvas');
+    if(!canvas){ renderView(); return; }
+    /* Not the thank-you screen, which is a .fv-paper too and whose title and
+       message are the SUCCESS strings — painting the form's title over them
+       would rewrite a screen this does not own. And not the preview's
+       spinner, which has no paper at all: there is nothing to paint yet, and
+       a renderView() here would be the very caret-stealing rebuild this
+       function exists to stop. */
+    const paper=canvas.querySelector('.fv-paper:not(.fv-thanks)');
+    if(!paper) return;
+    const d=(this.form&&this.form.design)||{};
+    paper.setAttribute('style', FormPaper.styleAttr(d));
+    /* The fallback title is the renderer's, and only where the renderer uses
+       it: the canvas is given fallbackTitle:this.form.name, the preview is
+       drawn from the public projection and given none, so an empty title is
+       the board's form name here and genuinely empty there. */
+    const t=paper.querySelector('.fv-paper-t');
+    if(t) t.textContent=d.display_title||(this.preview?'':((this.form&&this.form.name)||''));
+    /* textContent throughout, never innerHTML — this is what somebody typed,
+       and FormPaper escapes it for exactly the same reason. */
+    const head=paper.querySelector('.fv-paper-h');
+    const dtxt=d.display_description||'';
+    let desc=paper.querySelector('.fv-paper-d');
+    if(dtxt&&!desc&&head){
+      desc=document.createElement('div');
+      desc.className='fv-paper-d';
+      head.appendChild(desc);
+    }
+    if(desc){
+      if(dtxt) desc.textContent=dtxt;
+      else desc.remove();      // the renderer draws no empty description
+    }
+    const sub=paper.querySelector('.fv-submit');
+    if(sub) sub.textContent=d.submit_label||'שליחה';
+    /* The branding line is present or absent in the markup, not hidden, so
+       unticking the box has to remove it. Static text, so the one innerHTML
+       here carries nothing anybody typed. */
+    const brandOn=d.show_branding!==false;
+    let brand=paper.querySelector('.fv-brand');
+    if(brandOn&&!brand){
+      brand=document.createElement('div');
+      brand.className='fv-brand';
+      brand.innerHTML='מופעל באמצעות <b>Missions</b>';
+      paper.appendChild(brand);
+    }else if(!brandOn&&brand) brand.remove();
   },
 
   async uploadLogo(input){
@@ -18019,6 +18493,25 @@ const FormEditor={
 
   attachSort(){
     this.paintBar();
+    /* And the canvas's own state, for the same reason everything else in
+       here is redone per paint: adding a question SELECTS it and goes
+       through a full render, so the hint that offers the way back out of a
+       selection has to be right the moment the canvas is drawn and not only
+       when paintSel runs. */
+    this.paintSelState();
+    /* The preview's send button, wired here because nothing else was.
+
+       FormPaper draws it as type="button" — the public page attaches a
+       listener to it by hand (see public-form.html), and the editor was
+       attaching nothing. A button that does not submit cannot fire the
+       form's own onsubmit, so "שליחה" in the preview did nothing at all:
+       the one place somebody checks that their form WORKS was the one place
+       the check could not be run. Per painted node, because every repaint
+       replaces it. */
+    if(this.preview){
+      const b=document.getElementById('fv-send');
+      if(b && !b._wired){ b._wired=true; b.addEventListener('click',()=>this.tryPreview()); }
+    }
     if(!window.Sortable||typeof sortableOn!=='function')return;
     if(this.preview) return;          // the respondent's form is not reorderable
     const wire=(el,sel,handle)=>{
@@ -18061,6 +18554,11 @@ const FormEditor={
       border-radius:var(--radius);padding:14px;box-shadow:var(--shadow-sm)}
     .fv-sec-t{font-size:13px;font-weight:700;color:var(--text-muted);margin-bottom:10px}
     .fv-inspect .fv-sec-t:not(:first-child){margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+    /* The question's title and the way back to the form's own settings, on
+       one line. The button is the keyboard's route out of a selection — the
+       paper background is a click and a Tab key never lands on it. */
+    .fv-insp-h{display:flex;align-items:center;gap:8px;justify-content:space-between}
+    .fv-insp-back{padding:4px 7px;font-size:12px;font-weight:600;color:var(--primary);flex:none}
     .fv-ol{display:flex;flex-direction:column;gap:4px}
     .fv-ol-row{display:flex;align-items:center;gap:7px;width:100%;text-align:inherit;
       border:1px solid transparent;border-radius:7px;padding:7px 8px;font-size:13px}
@@ -18092,8 +18590,15 @@ const FormEditor={
     .fv-paper-t{font-size:1.3em;font-weight:800}
     .fv-paper-d{color:var(--text-muted);margin-top:5px;font-size:.9em}
     .fv-blocks{min-height:40px}
+    /* Logical, and it had to be: the grip sits at inset-inline-start, but
+       the room for it was reserved with a physical left padding. In RTL
+       those are opposite ends, so the handle was laid straight over the
+       first centimetre of the question's own wording — invisible, because
+       opacity:0 hides a node without taking its clicks away, and it is the
+       Sortable handle, so pressing the start of a label began a DRAG
+       instead of focusing the field it names. */
     .fv-blk{position:relative;border:1px solid transparent;border-radius:8px;
-      padding:9px 10px 9px 26px;margin-bottom:10px;cursor:pointer}
+      padding-block:9px;padding-inline:26px 10px;margin-bottom:10px;cursor:pointer}
     .fv-bgrip{position:absolute;inset-inline-start:7px;top:11px;color:var(--text-light);
       font-size:11px;opacity:0;cursor:grab;transition:opacity .12s}
     .fv-blk:hover .fv-bgrip,.fv-blk.sel .fv-bgrip{opacity:1}
@@ -18110,23 +18615,81 @@ const FormEditor={
       border-radius:4px;padding:1px 5px;margin-inline-start:6px;font-weight:400}
     .fv-gone-t{color:var(--red);border-color:var(--red)}
     .fv-q-d{color:var(--text-light);font-size:.82em;margin-bottom:5px}
+    /* Full-strength text, because these are real controls now and not a
+       drawing of one: --text-light on something somebody is typing into
+       reads as greyed-out, which is the very impression this screen spent
+       six rounds giving. The greying is kept for the fields that genuinely
+       are inert, which is what :disabled already says. */
     .fv-in{width:100%;border:1px solid var(--border-strong);border-radius:7px;padding:8px;
       background:rgba(255,255,255,.65);font-family:inherit;font-size:.9em;
-      color:var(--text-light)}
-    .fv-in-cb{width:auto}
+      color:var(--text);min-height:36px}
+    .fv-paper .fv-in:disabled{color:var(--text-light)}
+    /* A visible focus ring, in the form's own accent — the canvas is reached
+       by Tab like everything else, and a control nobody can see the focus on
+       is a control nobody can use from the keyboard. */
+    .fv-paper .fv-in:focus,.fv-paper .fv-opt input:focus-visible{
+      outline:2px solid var(--fv-accent);outline-offset:1px;border-color:var(--fv-accent)}
+    .fv-in-cb{width:18px;height:18px;min-height:0;padding:0;accent-color:var(--fv-accent)}
+    /* The calendar button belongs to the dd/mm/yyyy it opens — same rule as
+       the published page, and for the same reason: a full-width date field
+       lets Chrome stretch the digits across the whole box and strand the
+       picker icon at the opposite edge. public-form.html carries the twin of
+       this rule; the canvas draws the same paper, so it cannot be left with
+       the version of the field that the form itself no longer has. */
+    .fv-in[type=date]::-webkit-datetime-edit{flex:none}
+    .fv-in[type=date]::-webkit-calendar-picker-indicator{margin-inline-start:8px}
     .fv-stars{color:var(--fv-accent);letter-spacing:3px}
-    .fv-drop,.fv-people{border-style:dashed;text-align:center}
+    .fv-drop,.fv-people{border-style:dashed;text-align:center;color:var(--text-light)}
     .fv-paper-f{margin-top:18px}
     .fv-submit{display:inline-block;background:var(--fv-accent);color:#fff;font-weight:700;
       border-radius:7px;padding:9px 20px;font-size:.9em}
-    .fv-preview-note{margin-top:12px}
+    .fv-preview-note,.fv-edit-note{margin-top:12px}
+    /* Said only while a question is selected — paintSel puts has-sel on the
+       canvas. An instruction for a state nobody is in is noise, and this
+       note is already long enough to stop being read. */
+    .fv-desel-h{display:none}
+    .fv-canvas.has-sel .fv-desel-h{display:inline;font-weight:600;color:var(--primary)}
     .fv-thanks{text-align:center}
     .fv-thanks-i{font-size:34px;color:var(--green);display:block;margin-bottom:12px}
     .fv-err{color:var(--red);font-size:.82em;margin-top:5px;font-weight:600}
     .fv-in.bad{border-color:var(--red)}
     .fv-unsupported{color:var(--text-light);font-size:.85em;border-style:dashed}
-    .fv-multi{display:flex;flex-direction:column;gap:2px;padding:6px}
-    .fv-opt{display:flex;align-items:center;gap:8px;padding:4px}
+    .fv-multi{display:flex;flex-direction:column;gap:2px;padding:6px;min-height:0}
+    /* A tick is pressed with a finger here too — the editor opens on a phone
+       — so the row is a target and not a line of text with a dot on it. */
+    .fv-opt{display:flex;align-items:center;gap:8px;padding:6px 4px;min-height:32px;cursor:pointer}
+    .fv-opt input{width:18px;height:18px;accent-color:var(--fv-accent);flex:none}
+    /* A disabled control SWALLOWS the click. It dispatches no click event of
+       its own and nothing bubbles out of it, so a press on one reached
+       neither the block around it nor anything else — which is the fact the
+       whole of this screen's history turns on.
+
+       It is why the old canvas, where inputHTML disabled every control
+       because the canvas passed no fill flag, did nothing when it was
+       pressed: not the typing, not the ticking, and not even the one thing a
+       drawing could still have done, namely selecting the question for the
+       pane. And it is why the teardown in FormEditor.select sat there
+       unnoticed until opts.live switched the controls on — a press that
+       never arrives cannot tear anything down. Read that comment with this.
+
+       This rule is what is left of that: where a control is still inert —
+       no live flag, so the renderer is drawing a form nobody is meant to
+       fill — the press goes through it to the block, which selects the
+       question. Nothing here claims anybody is forbidden anything; a
+       not-allowed cursor used to, and the board's own admin read it as a
+       permission they were missing, so it is gone.
+       (No back-ticks in here: this comment lives inside the template
+       literal that css() returns, and one would end the string.) */
+    .fv-paper input:disabled,.fv-paper select:disabled,
+    .fv-paper textarea:disabled{pointer-events:none}
+    /* A file question where nothing is wired to take an upload — the
+       editor's canvas and its preview. Drawn like the other sentences that
+       stand in for a control (.fv-people), and not like a field, so it is
+       not mistaken for one that is merely refusing to work. */
+    .fv-files-off{border-style:dashed;text-align:center;color:var(--text-light)}
+    .fv-opt-off{cursor:pointer;opacity:.6}
+    .fv-note-quiet{background:none;padding:6px 0 0;color:var(--text-light)}
+    .fv-alt-why{display:block;margin-top:7px;font-size:12px;color:var(--text-muted)}
     .fv-files-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
     .fv-note{font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:7px;
       padding:8px 10px;margin-top:10px;display:flex;gap:7px;align-items:flex-start}
