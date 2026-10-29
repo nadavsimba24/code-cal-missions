@@ -18932,6 +18932,11 @@ const Chat = {
     if(this._pre && this._pre.id===this.taskId){ d=await this._pre.p; this._pre=null; }
     if(!d){ try{ d=await api('/api/tasks/'+this.taskId+'/comments'); }catch(e){ d=null; } }
     this.comments=(d&&d.comments)||[];
+    // The payload that was just fetched carries the count, so the item's badge
+    // is updated from it. It used to come from bump() — a second, identical
+    // GET of the whole thread fired immediately before every renderChat — so
+    // posting one comment read the entire conversation back twice.
+    if(d){ const _t=findAnyTask(this.taskId); if(_t&&_t.comment_count!==d.count){ _t.comment_count=d.count; if(st.view==='table')renderView(); } }
     // flat id→comment lookup (incl. replies) so the "seen by" hover can find viewers
     this._commentsById={}; const _flat=arr=>arr.forEach(c=>{this._commentsById[c.id]=c; if(c.replies)_flat(c.replies);}); _flat(this.comments);
     const list=this.comments.length? this.comments.map(c=>this.commentHTML(c)).join('')
@@ -19041,7 +19046,7 @@ const Chat = {
       await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},
         body:withMe({content,mentions:this.mentions,attachments:this.atts})});
       this.editing=null; this.atts=[]; this.mentions=[];
-      await this.bump(); this.renderChat(document.getElementById('chat-body'));
+      this.renderChat(document.getElementById('chat-body'));
     }catch(e){ toast('אין הרשאה לערוך הודעה זו'); }
     finally{ this._posting=false; }
   },
@@ -19458,12 +19463,12 @@ const Chat = {
     try{
       await api('/api/tasks/'+this.taskId+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({content,parent_id:this.replyTo,mentions:this.mentions,attachments:this.atts})});
       this.clearDraft();
-      this.atts=[]; this.mentions=[]; this.replyTo=null; await this.bump(); this.renderChat(document.getElementById('chat-body'));
+      this.atts=[]; this.mentions=[]; this.replyTo=null; this.renderChat(document.getElementById('chat-body'));
     }catch(e){ toast(String(e.message||'').includes('403')?'אין הרשאת תגובה':'שגיאה בשליחה'); if(btn)btn.disabled=false; }
     finally{ this._posting=false; }
   },
   async like(id){ try{ await api('/api/comments/'+id+'/like',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); this.renderChat(document.getElementById('chat-body')); }catch(e){toast('שגיאה');} },
-  del(id){ askConfirm('האם אתה בטוח שברצונך למחוק?',async()=>{ try{await api('/api/comments/'+id+'?user_id='+meId(),{method:'DELETE'});await this.bump();this.renderChat(document.getElementById('chat-body'));}catch(e){toast('אין הרשאה למחוק');} },{title:'מחיקת תגובה',confirmText:'מחק'}); },
+  del(id){ askConfirm('האם אתה בטוח שברצונך למחוק?',async()=>{ try{await api('/api/comments/'+id+'?user_id='+meId(),{method:'DELETE'});this.renderChat(document.getElementById('chat-body'));}catch(e){toast('אין הרשאה למחוק');} },{title:'מחיקת תגובה',confirmText:'מחק'}); },
   async toggleChk(cid,cb){
     const find=(arr)=>{for(const c of arr){if(c.id===cid)return c;const r=find(c.replies||[]);if(r)return r;}return null;};
     const c=find(this.comments); if(!c)return;
@@ -19471,7 +19476,6 @@ const Chat = {
     let n=-1; const lines=c.content.split('\n').map(l=>{ const mm=l.match(/^(\s*)(?:[☐☑]|\[[ xX]\])\s?(.*)$/); if(mm){n++; if(n===idx)return mm[1]+(cb.checked?'☑ ':'☐ ')+mm[2]; } return l; });
     try{ await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({content:lines.join('\n')})}); this.renderChat(document.getElementById('chat-body')); }catch(e){toast('שגיאה');}
   },
-  async bump(){ try{ const d=await api('/api/tasks/'+this.taskId+'/comments'); const t=findAnyTask(this.taskId); if(t)t.comment_count=d.count; if(st.view==='table')renderView(); }catch(e){} },
   // ---- files ----
   async renderFiles(body){
     let d={files:[]}; try{ d=await api('/api/tasks/'+this.taskId+'/files'); }catch(e){}

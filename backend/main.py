@@ -9,7 +9,8 @@ from datetime import tzinfo as tzinfo_cls
 from zoneinfo import ZoneInfo
 from enum import Enum
 from typing import Optional
-from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile, File, Form, Request
+from fastapi import (BackgroundTasks, Depends, FastAPI, HTTPException, Query,
+                     UploadFile, File, Form, Request)
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
@@ -677,6 +678,57 @@ else:
                 _conn.execute(_text(_sql))
         except Exception as _e:
             print(f"⚠️  pg migration skipped: {_sql!r} → {_e}", flush=True)
+
+
+# ── Indexes for the three tables every screen reads ─────────────────
+# comments, tasks and audit_logs are the oldest and busiest tables here, and
+# until now not one of them carried a single index. EXPLAIN QUERY PLAN on the
+# query behind every thread open answered "SCAN comments" plus a temp B-tree
+# for the ORDER BY, over thirteen thousand rows; the board load and the item
+# log scanned their tables the same way.
+#
+# They were missed because they predate the index=True declarations that the
+# newer models carry, and create_all() only builds indexes for tables it
+# creates itself — so adding index=True in models.py would have fixed a fresh
+# database and left every existing one exactly as it was. That is the same
+# trap as the ALTER TABLE rule above, and it is why this DDL lives here. The
+# composites could not be spelled as index=True in any case: each one is
+# ordered to serve its query's filter AND its sort in one read.
+#
+# On Postgres the build is CONCURRENTLY, so it never takes a write lock on a
+# live table — which also means it cannot run inside a transaction, hence the
+# AUTOCOMMIT connection rather than engine.begin(). IF NOT EXISTS makes every
+# startup after the first a no-op.
+_HOT_INDEXES = [
+    # list_comments: WHERE task_id = ? ORDER BY created_at
+    ("ix_comments_task_created", "comments (task_id, created_at)"),
+    # the board load: WHERE board_id = ? AND parent_id IS [NOT] NULL
+    ("ix_tasks_board_parent", "tasks (board_id, parent_id)"),
+    # the item log: WHERE entity_type = 'task' AND entity_id = ?
+    ("ix_audit_entity", "audit_logs (entity_type, entity_id)"),
+]
+
+
+def _build_hot_indexes():
+    from sqlalchemy import text as _t
+    concurrently = "" if IS_SQLITE else "CONCURRENTLY "
+    for name, target in _HOT_INDEXES:
+        sql = f"CREATE INDEX {concurrently}IF NOT EXISTS {name} ON {target}"
+        try:
+            if IS_SQLITE:
+                with engine.begin() as conn:
+                    conn.execute(_t(sql))
+            else:
+                with engine.connect().execution_options(
+                        isolation_level="AUTOCOMMIT") as conn:
+                    conn.execute(_t(sql))
+        except Exception as e:
+            # An index that could not be built is slow, never wrong, so this
+            # must not stop the app from starting.
+            print(f"⚠️  index skipped: {name} → {e}", flush=True)
+
+
+_build_hot_indexes()
 
 
 def _forget_tags_in_board_settings():
@@ -9042,6 +9094,33 @@ def _send_item_mails(msgs):
             _send_email(*m)
 
 
+def _queue_item_mails(background, msgs):
+    """Hand the built messages to the response's background queue.
+
+    _send_email is a blocking HTTPS call to the provider, one per recipient,
+    and it used to run inside the request. Tagging three people therefore made
+    the person who typed the comment wait for three round trips to SendGrid
+    before their own comment appeared: measured at 939 ms against a provider
+    answering in 300 ms, and _post_mail allows each call ten seconds before it
+    gives up, so a slow provider could hold the request for half a minute. The
+    caller is not waiting for an answer about the mail — nothing in the
+    response depends on it — so it belongs after the response, not before.
+
+    Starlette runs background tasks once the response has been sent, while
+    TestClient drains them before it returns. That difference is the point:
+    the suite still observes the send synchronously (tests/test_item_mail.py
+    asserts on it immediately after the POST), and a real client stops paying
+    for it. A caller outside a request passes background=None and sends inline.
+    """
+    msgs = [m for m in msgs if m]
+    if not msgs:
+        return
+    if background is None:
+        _send_item_mails(msgs)
+        return
+    background.add_task(_send_item_mails, msgs)
+
+
 @app.get("/api/boards/{board_id}/members")
 def list_board_members(board_id: int):
     with Session(engine) as db:
@@ -10024,6 +10103,7 @@ def move_board_to_environment(board_id: int, data: dict, actor_id: int = Depends
 
 @app.post("/api/tasks")
 def create_task(data: dict, request: Request = None,
+                background: BackgroundTasks = None,
                 actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         parent_id = data.get("parent_id")
@@ -10190,7 +10270,7 @@ def create_task(data: dict, request: Request = None,
                 _run_automations(db, _parent, _sub, actor_id)
         _bid, _tid = task.board_id, task.id
         db.commit()
-        _send_item_mails(_mail)
+        _queue_item_mails(background, _mail)
         bus.publish("task.created", board_id=_bid, task_id=_tid, actor_id=actor_id)
         db.refresh(task)
         # return the fully-serialized task so the client can insert the new row
@@ -19434,6 +19514,7 @@ async def events_stream(request: Request, user_id: int = Depends(current_user_id
 
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: int, data: dict, request: Request = None,
+                background: BackgroundTasks = None,
                 actor_id: int = Depends(current_user_id)):
     """Generic item update — title, priority, status, due_date, and custom column
     values (merged into custom_fields). Used by the editable board columns."""
@@ -19756,7 +19837,7 @@ def update_task(task_id: int, data: dict, request: Request = None,
             _fan_out_linked_status(db, task, _task_status_key(task), actor)
         _bid, _tid = task.board_id, task.id
         db.commit()
-        _send_item_mails(_mail)
+        _queue_item_mails(background, _mail)
         # the write landed — only now is it safe to tell anyone, or a listener
         # could refetch and read the pre-commit row
         bus.publish("task.changed", board_id=_bid, task_id=_tid, actor_id=actor)
@@ -19942,13 +20023,39 @@ def _audit(db, entity_id, action, field=None, old=None, new=None, user_id=None):
                     actor_service=("automation" if rule else None),
                     changed_by=user_id))
 
-def _serialize_comment(c, db):
-    u = db.query(User).filter(User.id == c.user_id).first()
+def _comment_users(db, comments):
+    """Every user a batch of comments needs, in one query, keyed by id.
+
+    _serialize_comment used to look its author up on its own, plus a second
+    query for the read receipts, so opening a thread cost two round trips per
+    message — 32 SELECTs for a 26-message thread. Against SQLite on the same
+    disk that is a few milliseconds, but production talks to Postgres over the
+    network, where the same shape is fifty-odd round trips for one panel. The
+    set of people involved is tiny and overlaps almost completely between
+    messages, so it is fetched once and handed down.
+    """
+    need = set()
+    for c in comments:
+        if c.user_id:
+            need.add(c.user_id)
+        need.update(i for i in (c.seen_by or []) if i)
+    if not need:
+        return {}
+    return {u.id: u for u in db.query(User).filter(User.id.in_(need)).all()}
+
+
+def _serialize_comment(c, db, users=None):
+    # `users` is the batch loaded by _comment_users; without it this falls back
+    # to its own lookups, which is what the single-comment callers want.
+    u = users.get(c.user_id) if users is not None else (
+        db.query(User).filter(User.id == c.user_id).first())
     # read receipts: everyone who saw the message except its own author
     seen_ids = [i for i in (c.seen_by or []) if i != c.user_id]
     seen_users = []
     if seen_ids:
-        for su in db.query(User).filter(User.id.in_(seen_ids)).all():
+        found = ([users[i] for i in seen_ids if i in users] if users is not None
+                 else db.query(User).filter(User.id.in_(seen_ids)).all())
+        for su in found:
             seen_users.append({"id": su.id, "name": su.name, "avatar_url": su.avatar_url})
     org = c.origin if isinstance(c.origin, dict) else None
     return {
@@ -19973,7 +20080,8 @@ def list_comments(task_id: int, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         _require_task_view(db, task_id, actor_id)
         cs = db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at).all()
-        items = [_serialize_comment(c, db) for c in cs]
+        users = _comment_users(db, cs)
+        items = [_serialize_comment(c, db, users) for c in cs]
         by_id = {i["id"]: {**i, "replies": []} for i in items}
         roots = []
         for i in items:
@@ -19988,6 +20096,7 @@ def list_comments(task_id: int, actor_id: int = Depends(current_user_id)):
 
 @app.post("/api/tasks/{task_id}/comments")
 def add_comment(task_id: int, data: dict, request: Request = None,
+                background: BackgroundTasks = None,
                 actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
@@ -20039,7 +20148,7 @@ def add_comment(task_id: int, data: dict, request: Request = None,
                                         _app_base_url(request)))
         _bid = task.board_id if task else None
         db.commit(); db.refresh(c)
-        _send_item_mails(_mail)
+        _queue_item_mails(background, _mail)
         bus.publish("comment.added", board_id=_bid, task_id=task_id, actor_id=actor_id)
         return _serialize_comment(c, db)
 
@@ -20113,6 +20222,7 @@ def mark_comments_seen(task_id: int, data: dict, actor_id: int = Depends(current
 
 @app.patch("/api/comments/{cid}")
 def update_comment(cid: int, data: dict, request: Request = None,
+                   background: BackgroundTasks = None,
                    actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         c = db.query(Comment).filter(Comment.id == cid).first()
@@ -20176,7 +20286,7 @@ def update_comment(cid: int, data: dict, request: Request = None,
                     _mail.append(_item_mail(db, mid, task, board, user.id, "mention",
                                             _app_base_url(request)))
         db.commit()
-        _send_item_mails(_mail)
+        _queue_item_mails(background, _mail)
         return _serialize_comment(c, db)
 
 @app.delete("/api/comments/{cid}")
@@ -20645,6 +20755,7 @@ def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_
 
 @app.post("/api/tasks/{task_id}/assignees")
 def task_assignees(task_id: int, data: dict, request: Request = None,
+                   background: BackgroundTasks = None,
                    actor_id: int = Depends(current_user_id)):
     """Add or remove a user from a task (monday-style people column)."""
     with Session(engine) as db:
@@ -20687,7 +20798,7 @@ def task_assignees(task_id: int, data: dict, request: Request = None,
                                                   user_ids=[user.id]), actor)
         _bid = task.board_id
         db.commit()
-        _send_item_mails(_mail)
+        _queue_item_mails(background, _mail)
         bus.publish("task.changed", board_id=_bid, task_id=task_id, actor_id=actor)
         return {"assignees": [{"id": u.id, "name": u.name, "avatar_url": u.avatar_url}
                               for u in task.assignees]}
