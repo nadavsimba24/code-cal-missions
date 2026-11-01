@@ -44,6 +44,19 @@ def _log(client, bid, uid, **params):
     return r.json()
 
 
+def _deletions(client, bid, admin_id):
+    """Only the deletion lines.
+
+    These assertions were written when a line about a column could only mean
+    a deletion. Adding a column is recorded too now, so filtering on the
+    field alone collects the setup's own "create" alongside the deletion
+    under test and every count is one too high. The behaviour each test
+    guards is unchanged — they just have to say which kind of line they mean.
+    """
+    return [a for a in _log(client, bid, admin_id)["activity"]
+            if a["field"] == "column" and a["action"] == "delete"]
+
+
 def test_deleting_a_column_writes_a_line_naming_it(client, admin_id):
     bid = _board(client, admin_id, "לוג מחיקת עמודה")
     cid = _add_col(client, bid, admin_id, "תקציב מאושר")
@@ -86,7 +99,7 @@ def test_a_board_with_no_items_still_shows_it(client, admin_id):
     _drop_col(client, bid, admin_id, cid)
 
     rows = [a for a in _log(client, bid, admin_id)["activity"] if a["field"] == "column"]
-    assert [r["old"] for r in rows] == ["עמודה בלוח ריק"]
+    assert [r["old"] for r in rows if r["action"] == "delete"] == ["עמודה בלוח ריק"]
 
 
 def test_an_undo_of_that_row_is_refused(client, admin_id):
@@ -110,7 +123,8 @@ def test_whoever_deleted_the_column_can_be_filtered_to(client, admin_id, guinea_
     d = _log(client, bid, admin_id)
     assert guinea_id in {p["id"] for p in d["people"]}
     only = _log(client, bid, admin_id, user_id=guinea_id)["activity"]
-    assert [a["old"] for a in only if a["field"] == "column"] == ["עמודה של בודק"]
+    assert [a["old"] for a in only
+            if a["field"] == "column" and a["action"] == "delete"] == ["עמודה של בודק"]
 
 
 def test_a_rename_is_not_a_deletion(client, admin_id):
@@ -125,7 +139,7 @@ def test_a_rename_is_not_a_deletion(client, admin_id):
             c["title"] = "שם שני"
     assert client.patch(f"/api/boards/{bid}", json={"columns": cols},
                         headers=AS(admin_id)).status_code == 200
-    assert not [a for a in _log(client, bid, admin_id)["activity"] if a["field"] == "column"]
+    assert not _deletions(client, bid, admin_id)
 
 
 def test_it_is_written_once_and_not_again_on_the_next_save(client, admin_id):
@@ -135,7 +149,7 @@ def test_it_is_written_once_and_not_again_on_the_next_save(client, admin_id):
     # a second save of the same (already shorter) column list
     _drop_col(client, bid, admin_id, cid)
     rows = [a for a in _log(client, bid, admin_id)["activity"] if a["field"] == "column"]
-    assert len(rows) == 1
+    assert len([r for r in rows if r["action"] == "delete"]) == 1
 
 
 def test_a_refused_deletion_leaves_no_line(client, admin_id):
@@ -151,14 +165,16 @@ def test_a_refused_deletion_leaves_no_line(client, admin_id):
     cols = [c for c in _cols(client, bid, admin_id) if c["id"] != cid]
     assert client.patch(f"/api/boards/{bid}", json={"columns": cols},
                         headers=AS(admin_id)).status_code == 409
-    assert not [a for a in _log(client, bid, admin_id)["activity"] if a["field"] == "column"]
+    # Neither line: the request is refused in one piece, so the column it
+    # would also have ADDED must not be recorded either.
+    assert not [a for a in _log(client, bid, admin_id)["activity"]
+                if a["field"] == "column" and a["action"] == "delete"]
 
     # and once it IS agreed to, the line appears
     assert client.patch(f"/api/boards/{bid}",
                         json={"columns": cols, "confirm_columns": [cid]},
                         headers=AS(admin_id)).status_code == 200
-    assert [a["old"] for a in _log(client, bid, admin_id)["activity"]
-            if a["field"] == "column"] == ["שדה בטופס"]
+    assert [a["old"] for a in _deletions(client, bid, admin_id)] == ["שדה בטופס"]
 
 
 def test_removing_a_builtin_column_is_logged_and_so_is_bringing_it_back(client, admin_id):

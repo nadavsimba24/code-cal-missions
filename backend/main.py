@@ -2542,9 +2542,49 @@ def _log_board(db, board_id, action, field=None, old=None, new=None, actor=None)
     endpoint refuses anything that is not an entity_type="task" update, which
     is the gate rather than the hint.
     """
-    db.add(AuditLog(entity_type="board", entity_id=board_id, action=action,
-                    field_name=field, old_value=old, new_value=new,
-                    changed_by=actor))
+    row = AuditLog(entity_type="board", entity_id=board_id, action=action,
+                   field_name=field, old_value=old, new_value=new,
+                   changed_by=actor)
+    db.add(row)
+    # Flushed so the row has an id: the column bin points back at the exact
+    # line its restore button belongs to, rather than matching on a title two
+    # columns could share.
+    db.flush()
+    return row
+
+
+COLUMN_BIN_MAX = 20
+
+
+def _column_bin(board):
+    return list((board.settings or {}).get("columns_bin") or [])
+
+
+def _bin_a_column(db, board, col, log_id, actor, at=None):
+    """Keep a deleted column's definition so the log line can put it back.
+
+    Deleting a column removes it from settings["columns"] and nothing else —
+    every item's value for it stays in custom_fields, keyed by the column id,
+    and is never cleaned up. So the data survives a deletion already; what did
+    not survive was the column itself: its type, its options, its width, where
+    it sat. Without those there is nothing to restore the values INTO, which
+    is why the log line could say a column was deleted and not offer to undo
+    it.
+
+    The definition goes here, carrying the id of the log row it belongs to, so
+    the line can show its own button and a restore can be refused once the
+    entry is gone. Capped at COLUMN_BIN_MAX, newest first: this lives inside
+    the board's settings JSON, and a board whose columns churn should not grow
+    an unbounded tail there. The values in the items are not capped and not
+    touched — a column restored long after its entry fell off the end would
+    still come back full, if its definition were still here to restore.
+    """
+    s = dict(board.settings or {})
+    entry = {"col": col, "log_id": log_id, "at": at,
+             "deleted_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+             "deleted_by": actor}
+    s["columns_bin"] = ([entry] + _column_bin(board))[:COLUMN_BIN_MAX]
+    board.settings = s
 
 
 def _group_name(db, gid):
@@ -8292,6 +8332,9 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                        "checkbox", "formula",
                        "connect", "created_at", "created_by", "item_id", "mirror"}
             old_cols = {c.get("id"): c for c in (b.settings or {}).get("columns", [])}
+            # where each one sat, so a restore can put it back in its place
+            _old_at = {c.get("id"): i
+                       for i, c in enumerate((b.settings or {}).get("columns", []))}
             is_ws_admin = _ws_role(db, actor_id) == "admin"
             cols = []
             for c in data["columns"]:
@@ -8419,11 +8462,24 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     # beside `_gone` above, because above is still in front of
                     # the forms gate: a change refused with a 409 must not
                     # leave a line saying it happened.
-                    _log_board(db, board_id, "delete", field="column",
-                               old=title, actor=actor_id)
+                    _row = _log_board(db, board_id, "delete", field="column",
+                                      old=title, actor=actor_id)
+                    _bin_a_column(db, b, prev, _row.id, actor_id, _old_at.get(cid))
                 elif not _column_types_compatible(prev.get("type"), nxt.get("type")):
                     _suspend_dependents(db, b, "column", cid, actor_id,
                                         f"{title} (שונתה מ{prev.get('type')} ל{nxt.get('type')})")
+            # And the ones that were not there before. The loop above walks
+            # old_cols, so it can only ever see a column that already existed:
+            # a deletion left a line and the addition that preceded it left
+            # none, and the log read as a board that only ever lost columns.
+            # Written after the forms gate for the same reason the deletions
+            # are — a change refused with a 409 must not leave a line saying
+            # it happened.
+            for c in cols:
+                cid = str(c.get("id") or "")
+                if cid and cid not in old_cols:
+                    _log_board(db, board_id, "create", field="column",
+                               new=c.get("title") or cid, actor=actor_id)
             # The questions bound to a column that is gone stay, and stop
             # being live — see _form_column_gone. The ones whose column
             # changed type lose the settings that type can no longer carry.
@@ -21050,8 +21106,21 @@ def _log_link_row(db, field, old, new, cols, viewer):
 
 
 def _board_task_ids(db, board_id):
-    """Ids of every item on the board, sub-items included — they are Tasks too."""
-    return [i for (i,) in db.query(Task.id).filter(Task.board_id == board_id).all()]
+    """Ids of every item on the board, sub-items included — they are Tasks too.
+
+    Items in the recycle bin count. The global hook hides deleted rows from
+    every ordinary query, and this list is what the log scopes its task rows
+    to — so deleting an item used to erase its entire history from the board
+    log, the line recording the deletion included. The row was written and
+    then filtered out by the very act it recorded, and the item appeared to
+    have evaporated.
+
+    A purge takes the audit rows with it (_hard_delete_task), so this does not
+    accumulate: the history of a deleted item is visible exactly as long as
+    the item is restorable.
+    """
+    return [i for (i,) in db.query(Task.id).execution_options(include_deleted=True)
+                            .filter(Task.board_id == board_id).all()]
 
 
 def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewer=None):
@@ -21078,10 +21147,27 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
         q = q.filter(AuditLog.changed_by == user_id)
     _b = db.query(Board).filter(Board.id == board_id).first()
     board_name = (_b.name if _b else None) or "הלוח"
-    titles = ({i: t for (i, t) in db.query(Task.id, Task.title).filter(Task.id.in_(ids)).all()}
+    titles = ({i: t for (i, t) in db.query(Task.id, Task.title)
+                                     .execution_options(include_deleted=True)
+                                     .filter(Task.id.in_(ids)).all()}
               if ids else {})
+    # Which of them are in the bin: their lines must not offer to open an item
+    # that cannot be opened, and their deletion line carries the way back.
+    _in_bin = {i for (i,) in db.query(Task.id).execution_options(include_deleted=True)
+                               .filter(Task.id.in_(ids), Task.deleted_at != None).all()} \
+        if ids else set()                                              # noqa: E711
+    # Restoring is a board edit, which is what POST /api/tasks/{id}/restore
+    # enforces. Offering the button to somebody it would refuse is worse than
+    # not offering it.
+    _may_restore = _board_role(db, board_id, viewer) in ("admin", "editor") if viewer else False
     users = {u.id: u.name for u in db.query(User).all()}
     cols = {c.get("id"): c for c in _board_columns(db, board_id)}
+    # Which deletion lines can still be undone. A column's definition is kept
+    # in the board's bin under the id of the log row it came from, so a line
+    # offers its own button only while the entry behind it is still there —
+    # after a restore, or once it has aged off the end of the bin, the offer
+    # goes away rather than failing when pressed.
+    _restorable = {e.get("log_id") for e in _column_bin(_b) if e.get("log_id")}
     out = []
     for l in q.order_by(AuditLog.created_at.desc()).limit(max(1, min(2000, limit * 3))).all():
         if l.field_name in _INTERNAL_LOG_FIELDS:
@@ -21097,8 +21183,16 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
         # nothing is worse than no button, and l.entity_id here is a BOARD id
         # that would happily collide with some unrelated item's.
         on_board = (l.entity_type == "board")
+        _dead = (not on_board) and l.entity_id in _in_bin
         out.append({"id": l.id, "action": l.action, "field": l.field_name,
                     "old": vals[0], "new": vals[1],
+                    "can_restore_column": l.id in _restorable,
+                    # the item is in the bin — nothing to open, and this is
+                    # the line that can bring it back
+                    "task_deleted": _dead,
+                    "can_restore_item": (_dead and _may_restore
+                                         and l.action == "delete"
+                                         and l.field_name == "item"),
                     "task_id": None if on_board else l.entity_id,
                     "task_title": board_name if on_board else titles.get(l.entity_id, "—"),
                     "user_id": l.changed_by,
@@ -21298,6 +21392,58 @@ def _revert_field(db, task, field, old):
         else: cf[cid] = val
         task.custom_fields = cf; return True
     return False
+
+@app.post("/api/boards/{board_id}/columns/restore")
+def restore_column(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
+    """Put a deleted column back, from the line in the log that recorded it.
+
+    The values were never deleted: removing a column takes it out of
+    settings["columns"] and leaves every item's entry in custom_fields alone,
+    keyed by the column id. So this restores the definition and the board is
+    whole again — the data walks back in with it.
+
+    Adding a column is an admin's decision on this board, and so is undoing
+    the removal of one. The bin entry is the authority: it is consumed here,
+    which is what stops the same line restoring twice and what makes the
+    button disappear afterwards.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b:
+            raise HTTPException(404, "board not found")
+        _require_board_edit(db, board_id, actor_id, need="admin",
+                            msg="רק מנהל הלוח יכול לשחזר עמודה")
+        try:
+            log_id = int(data.get("log_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "log_id חסר")
+        entries = _column_bin(b)
+        entry = next((e for e in entries if e.get("log_id") == log_id), None)
+        if not entry:
+            raise HTTPException(404, "העמודה אינה ניתנת לשחזור יותר")
+        col = entry.get("col") or {}
+        cid = col.get("id")
+        s = dict(b.settings or {})
+        cols = list(s.get("columns") or [])
+        if not cid:
+            raise HTTPException(400, "רשומת השחזור פגומה")
+        if any(str(c.get("id")) == str(cid) for c in cols):
+            # Restoring on top of a live column would give the board two
+            # columns sharing an id, and every item's single stored value
+            # would answer for both.
+            raise HTTPException(409, "קיימת כבר עמודה עם המזהה הזה בלוח")
+        at = entry.get("at")
+        at = len(cols) if not isinstance(at, int) else max(0, min(at, len(cols)))
+        cols.insert(at, col)
+        s["columns"] = cols
+        s["columns_bin"] = [e for e in entries if e.get("log_id") != log_id]
+        b.settings = s
+        _log_board(db, board_id, "restore", field="column",
+                   new=col.get("title") or cid, actor=actor_id)
+        db.commit()
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
+        return {"status": "restored", "column": col, "position": at}
+
 
 @app.post("/api/activity/{log_id}/undo")
 def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_id)):
@@ -21611,6 +21757,14 @@ def move_items_bulk(board_id: int, data: dict, actor_id: int = Depends(current_u
         batch = _new_batch()
         ev_ids = []
         for t in moving:
+            # One line per item, for the same reason there is one EVENT per
+            # item: the log is read per item, and "twelve items moved" on one
+            # row could not answer where any particular one came from. This
+            # was the fourth way an item can change group and the only one
+            # that recorded nothing — the other three log it, the automations
+            # here already fire per item, and the board log simply had a hole
+            # exactly the shape of "somebody selected rows and moved them".
+            _log_group_move(db, t.id, was_group[t.id], gid, actor_id)
             ev = _event("moved_to_group", "bulk", batch,
                         group_id=gid, from_group=was_group[t.id])
             ev_ids.append(ev["id"])

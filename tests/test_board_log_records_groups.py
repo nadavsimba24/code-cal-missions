@@ -102,6 +102,74 @@ def test_moving_an_item_between_groups_is_written_to_both_logs(client, admin_id)
         client.delete(f"/api/boards/{bid}?user_id={admin_id}")
 
 
+def test_every_way_to_move_an_item_writes_a_line(client, admin_id):
+    """Four paths change an item's group, and the log must not depend on
+    which one somebody used.
+
+    The menu sends group_id with a position, a drag sends it with an anchor,
+    a plain move sends neither, and a selection goes to a bulk endpoint of
+    its own. That last one changed the group and fired its automations and
+    recorded nothing — so selecting rows and moving them left no trace, while
+    doing the identical thing one row at a time did. A log with a hole in the
+    shape of one gesture is worse than no log: it reads as "this never
+    happened" rather than as "this is not recorded".
+    """
+    bid = _board(client, admin_id)
+    try:
+        g1 = _group(client, bid, admin_id, "א")
+        g2 = _group(client, bid, admin_id, "ב")
+
+        def item(title):
+            return client.post("/api/tasks", json={"board_id": bid, "group_id": g1,
+                                                   "title": title,
+                                                   "user_id": admin_id}).json()["id"]
+
+        menu, drag, plain, bulk = (item("תפריט"), item("גרירה"),
+                                   item("פשוט"), item("מרובה"))
+        client.post(f"/api/tasks/{menu}/move",
+                    json={"group_id": g2, "position": 0, "actor_id": admin_id})
+        client.post(f"/api/tasks/{drag}/move",
+                    json={"group_id": g2, "after_id": None, "actor_id": admin_id})
+        client.post(f"/api/tasks/{plain}/move",
+                    json={"group_id": g2, "actor_id": admin_id})
+        r = client.post(f"/api/boards/{bid}/items/move",
+                        json={"ids": [bulk], "group_id": g2, "actor_id": admin_id})
+        assert r.status_code == 200, r.text
+
+        moves = _rows(_board_log(client, bid, admin_id), "update")
+        moved = {m["task_title"]: (m["old"], m["new"]) for m in moves}
+        assert set(moved) == {"תפריט", "גרירה", "פשוט", "מרובה"}, moved
+        for title, (old, new) in moved.items():
+            assert (old, new) == ("א", "ב"), (title, old, new)
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
+def test_a_selection_of_several_gets_a_line_each(client, admin_id):
+    """One gesture over many items is still one event per item — the log is
+    read per item, and a single row for five of them could not say which."""
+    bid = _board(client, admin_id)
+    try:
+        g1 = _group(client, bid, admin_id, "מקור")
+        g2 = _group(client, bid, admin_id, "יעד")
+        ids = [client.post("/api/tasks", json={"board_id": bid, "group_id": g1,
+                                               "title": f"פריט {i}",
+                                               "user_id": admin_id}).json()["id"]
+               for i in range(3)]
+        client.post(f"/api/boards/{bid}/items/move",
+                    json={"ids": ids, "group_id": g2, "actor_id": admin_id})
+        moves = _rows(_board_log(client, bid, admin_id), "update")
+        assert len(moves) == 3, moves
+        assert {m["task_title"] for m in moves} == {"פריט 0", "פריט 1", "פריט 2"}
+
+        # an item already in the target is not moved, so it is not an event
+        client.post(f"/api/boards/{bid}/items/move",
+                    json={"ids": ids, "group_id": g2, "actor_id": admin_id})
+        assert len(_rows(_board_log(client, bid, admin_id), "update")) == 3
+    finally:
+        client.delete(f"/api/boards/{bid}?user_id={admin_id}")
+
+
 def test_a_drag_that_lands_where_it_started_is_not_an_event(client, admin_id):
     """Only a real move. A log that records non-moves is a log nobody reads."""
     bid = _board(client, admin_id)

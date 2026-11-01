@@ -68,8 +68,13 @@ ck('a restored one carries the way back',
    BoardLog.fieldIcon({...bi, action: 'restore'}) === 'fa-rotate-left');
 
 // ── nothing to open, so nothing to press ───────────────────────────────────
+/* The guard may gain conditions — an item in the recycle bin is also not
+   something to open, and that was added later — so this pins that the button
+   branch is reached through a.task_id at all, not the exact spelling of the
+   test beside it. That a DELETED item gets no button is pinned by
+   tests/frontend/deleted_item_log_line.mjs. */
 ck('the row draws the item button only when there is an item',
-   /\$\{a\.task_id\s*\n?\s*\?\s*`<button class="lg-item"/.test(src));
+   /\$\{a\.task_id[^?]*\?\s*`<button class="lg-item"/.test(src));
 ck('and a board line instead, which is not a button',
    /<span class="lg-item lg-board"/.test(src));
 const board = /\.lg-board\{[^}]*\}/.exec(src);

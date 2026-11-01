@@ -247,6 +247,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .lg-pill.old{background:var(--bg);color:var(--text-light)}
 .lg-pill.new{background:var(--surface);color:var(--text)}
 .lg-arrow{font-size:10px;color:var(--text-light);flex:none}
+.lg-dead{color:var(--text-muted);text-decoration:line-through;text-decoration-thickness:1px}
 .lg-undo{flex:none;padding:4px 12px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);font:inherit;font-size:12px;color:var(--text-muted);cursor:pointer}
 .lg-undo:hover{border-color:var(--primary);color:var(--primary)}
 .lg-undo-gap{flex:none;width:56px}
@@ -4156,14 +4157,26 @@ const BoardLog = {
     const rows=(d.activity||[]).map(a=>`<div class="lg-row">
         <span class="lg-when" title="${esc(fdatetime(a.created_at))}"><i class="fa-regular fa-clock"></i> ${esc(this.ago(a.created_at))}</span>
         <span class="av lg-av" title="${esc(a.user_name||'')}">${avatarInner(a)}</span>
-        ${a.task_id
+        ${a.task_id&&!a.task_deleted
           ? `<button class="lg-item" title="פתח את הפריט" onclick="BoardLog.goto(${a.task_id})">${esc(a.task_title||'—')}</button>`
+          : a.task_id
+          /* In the recycle bin: the same trap as a board line. A button here
+             would offer to open an item that is not on the board, so the name
+             is drawn plain and struck through — the line still says which
+             item it was about, which is the whole point of keeping it. */
+          ? `<span class="lg-item lg-dead" title="הפריט נמחק — נמצא בסל המחזור"><i class="fa-regular fa-trash-can"></i>${esc(a.task_title||'—')}</span>`
           : `<span class="lg-item lg-board" title="שינוי בלוח עצמו — לא בפריט"><i class="fa-solid fa-table-columns"></i>${esc(a.task_title||'—')}</span>`}
         <span class="lg-l2">
           <span class="lg-field"><i class="fa-solid ${this.fieldIcon(a)}"></i> ${esc(this.fieldLabel(a))}</span>
           <span class="lg-change">${this.change(a)}${
             a.origin==='monday'?' <span class="log-src" title="היסטוריה שיובאה ממאנדיי — אירעה שם, ולכן אין מה לבטל כאן">monday</span>':''}</span>
-          ${a.can_undo&&isMgr
+          ${a.can_restore_column&&isMgr
+            ? `<button class="lg-undo" onclick="BoardLog.restoreColumn(${a.id})"><i class="fa-solid fa-rotate-left"></i> שחזר</button>`
+            : a.can_restore_item
+            /* No isMgr here: restoring an item is a board edit, and the
+               server already answered whether THIS viewer may do it. */
+            ? `<button class="lg-undo" onclick="BoardLog.restoreItem(${a.task_id})"><i class="fa-solid fa-rotate-left"></i> שחזר</button>`
+            : a.can_undo&&isMgr
             ? `<button class="lg-undo" onclick="BoardLog.undo(${a.id})">בטל</button>`
             : `<span class="lg-undo-gap"></span>`}
         </span>
@@ -4211,7 +4224,8 @@ const BoardLog = {
        ITEM — the same word on a line that names the board. A built-in column
        cannot truly be dropped, only taken off the board, and the wording says
        which of the two happened. */
-    if(a.field==='column')return 'עמודה נמחקה';
+    if(a.field==='column')return a.action==='create'?'עמודה נוספה'
+                               :a.action==='restore'?'עמודה שוחזרה':'עמודה נמחקה';
     if(a.field==='builtin_column')return a.action==='restore'?'עמודה הוחזרה ללוח':'עמודה הוסרה מהלוח';
     /* A group is the same kind of event as a column — it happened to the
        board — and it has to be named before the generic 'נמחק' can answer
@@ -4297,6 +4311,48 @@ const BoardLog = {
       const b=await api('/api/boards/'+st.board.id); st.board=b;
       renderView(); this.render();
     }catch(e){ toast('רק מנהל יכול לבטל'); }
+  },
+  /* Putting a deleted column back. The values were never deleted — removing a
+     column only takes it out of the board's settings, and every item's entry
+     for it stays in custom_fields — so this restores the definition and the
+     data is simply there again. The board is re-read rather than patched
+     locally: a column reappearing in the middle changes every row. */
+  /* Bringing an item back out of the bin, from the line that recorded its
+     deletion. The same endpoint the recycle bin uses — this is a second door
+     to it, not a second mechanism — and the board is re-read because a row
+     reappearing changes the view it belongs to. */
+  async restoreItem(taskId){
+    askConfirm('לשחזר את הפריט?',async()=>{
+      try{
+        await api('/api/tasks/'+taskId+'/restore',
+                  {method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})});
+        toast('הפריט שוחזר');
+        const b=await api('/api/boards/'+st.board.id); st.board=b;
+        renderView(); this.render();
+      }catch(e){
+        const m=String(e.message||'');
+        toast(m.includes('404')?'הפריט כבר אינו בסל המחזור':'אין לך הרשאה לשחזר פריט בלוח זה');
+      }
+    },{title:'שחזור פריט',confirmText:'שחזר',danger:false,icon:'fa-rotate-left',
+       note:'הפריט יחזור ללוח עם תת-הפריטים, השיחות וההיסטוריה שלו.'});
+  },
+  async restoreColumn(logId){
+    askConfirm('לשחזר את העמודה?',async()=>{
+      try{
+        await api('/api/boards/'+st.board.id+'/columns/restore',
+                  {method:'POST',headers:{'Content-Type':'application/json'},
+                   body:withMe({log_id:logId})});
+        toast('העמודה שוחזרה — כולל הערכים שהיו בה');
+        const b=await api('/api/boards/'+st.board.id); st.board=b;
+        renderView(); this.render();
+      }catch(e){
+        const m=String(e.message||'');
+        toast(m.includes('409')?'קיימת כבר עמודה עם המזהה הזה'
+             :m.includes('404')?'העמודה אינה ניתנת לשחזור יותר'
+             :'רק מנהל הלוח יכול לשחזר עמודה');
+      }
+    },{title:'שחזור עמודה',confirmText:'שחזר',danger:false,icon:'fa-rotate-left',
+       note:'העמודה תחזור למקומה בלוח, עם הערכים שהיו בה בכל הפריטים.'});
   },
 };
 /* ===== תפריט הלוח — the board's own actions, next to its name =====
@@ -5960,13 +6016,32 @@ function renderView(){
   _viewScrollKey=key;
   if(!same){ el.scrollTop=0; el.scrollLeft=0; }   // a new place starts at the top, explicitly
   if(top||left){
-    el.scrollTop=top; el.scrollLeft=left;
-    // views that fill in asynchronously are still empty on the line above, so
-    // the offset would clamp to 0 — re-apply once the content is there
-    requestAnimationFrame(()=>{
-      if(el.scrollTop!==top) el.scrollTop=top;
-      if(el.scrollLeft!==left) el.scrollLeft=left;
-    });
+    /* An offset can only be applied as far as the content allows: ask for
+       -1800 while the table is still 600px wide and the browser gives back
+       whatever fits and forgets the rest. That is a CLAMP, not a failure, and
+       nothing comes back to finish the job.
+
+       A board reaches its full width in stages — the rows are built, then
+       syncItemColWidth sets the column widths, then fitLinkChipsSoon
+       re-measures the connect cells 60ms later — so one frame of grace was
+       not enough, and it failed in proportion to the distance: a column near
+       the right-hand edge needs a small offset and survived, while sorting by
+       a column you had to scroll to find landed back at the right-hand edge
+       with the offset eaten. Which is exactly the shape of the bug.
+
+       So it is re-applied until it takes, rather than once and hopefully.
+       The loop stops the moment the position is the one asked for, and after
+       12 frames regardless — a board that genuinely cannot scroll that far
+       (a column was deleted, the window was resized) must not spin. */
+    const want=()=>{ el.scrollTop=top; el.scrollLeft=left; };
+    want();
+    let tries=0;
+    const settle=()=>{
+      if(el.scrollTop===top && el.scrollLeft===left) return;
+      want();
+      if(++tries<12) requestAnimationFrame(settle);
+    };
+    requestAnimationFrame(settle);
   }
 }
 function pill(map,key){const m=map[key]||{he:key,c:'#c4c4c4'};return `<span class="pill" style="background:${m.c}">${esc(m.he)}</span>`;}
