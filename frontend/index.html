@@ -4594,6 +4594,11 @@ const Paged = {
       // different question from the one on screen
       q:f.q||'', people:(f.people||[]).slice(), status:f.status||'',
       priority:f.priority||'', links:f.links||null,
+      /* …and here a page of ROWS is exactly what is wanted, which is why
+         advQuery's ids_only is turned back off. Past the threshold the rows
+         on screen ARE the server's answer — this browser holds none of them
+         to match ids against. */
+      ids_only:false,
     });
   },
   /* Ask for the next page under the filters as they are now. `fresh` throws
@@ -4729,7 +4734,7 @@ const Views = {
       const r=await api('/api/boards/'+st.board.id+'/items/query',
         {method:'POST',headers:{'Content-Type':'application/json'},
          body:withMe(advQuery(st.filters.adv))});
-      st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
+      st.filters.advIds=advServerIds(r);
       renderView();
     }catch(e){ st.filters.advIds=null; }
   },
@@ -6751,7 +6756,26 @@ function advQuery(node){
   const now=new Date();
   return {filter:advToAst(node), today:advIso(now),
           // getTimezoneOffset is minutes WEST; east-positive is the readable way
-          tz_offset:-now.getTimezoneOffset()};
+          tz_offset:-now.getTimezoneOffset(),
+          /* Ask for the IDS, not for a page of rows.
+
+             Without this the server answered the way it answers a board being
+             scrolled — the first QUERY_PAGE rows, and `has_more` for the rest
+             — and applyFilters read item_ids as THE answer. Every row past the
+             fiftieth that matched was then removed from the board with nothing
+             on screen to say so: filtering by אחראי on a board holding sixty of
+             somebody's items showed fifty of them, and the ten that went were
+             whichever sat lowest in the board's own order. The filter looked
+             like it had worked, which is what made it cost an afternoon.
+
+             ids_only is the small-board answer, and the one this path has
+             wanted all along: the browser already holds every row and all it
+             needs back is which of them survive. It is capped at
+             FILTER_CLIENT_MAX — the same threshold that decided this board is
+             filtered in the browser at all — and the answer says `truncated`
+             when it reaches that cap, which is the one case the caller must
+             not treat as an answer. See advServerIds. */
+          ids_only:true};
 }
 
 /* ── filtering by the board's own columns ────────────────────────────────
@@ -6974,6 +6998,26 @@ function advChanged(){
   refreshToolbar(); reArrange(); renderView();
   advAskServer();
 }
+/* The server's answer as the set of ids the board may keep — or null, which
+   means "the engine in this browser answers".
+
+   Two answers are not answers. A reply carrying no id list at all is one; the
+   other is a list the server says it `truncated`, which it does at
+   FILTER_CLIENT_MAX. A cut list used as the whole answer removes every row
+   past the cut from the board — the same silent disappearance the paged reply
+   used to cause, one order of magnitude further along — and the local engine
+   has matched every row this browser holds, so it is the better of the two.
+   Said out loud rather than swallowed: a board narrowed by something other
+   than the filter on it is worth a line in the console. */
+function advServerIds(r){
+  if(!r||!Array.isArray(r.item_ids))return null;
+  if(r.truncated){
+    console.warn('[filter] the server cut its id list at the client limit —'
+      +' the browser\'s own answer stands');
+    return null;
+  }
+  return new Set(r.item_ids);
+}
 async function advAskServer(){
   const node=st.filters.adv;
   if(!node||!st.board)return;
@@ -6988,7 +7032,7 @@ async function advAskServer(){
     // it was dropped. The write already asked for a fresh one.
     if(stamp!==_advWrites)return;
     _advSplit=false;                 // a new answer may say something new
-    st.filters.advIds=Array.isArray(r.item_ids)?new Set(r.item_ids):null;
+    st.filters.advIds=advServerIds(r);
     renderView();
     /* …and the panel, if it is open. It prints "מציג 12 מתוך 155" off the same
        filter the board was just redrawn from, so an answer that changes the
