@@ -9857,6 +9857,13 @@ const Automations = {
       this.pickStatusSource(anchor,key,{actIdx:i,key}); return;
     }
     if(f.type==='text'){
+      const _tc=this._targetCol(a.values,key);
+      if(_tc&&_tc.type==='people'){
+        const [items,body]=this._peopleMenu(_tc,j=>`Automations.setActPerson(${i},'${key}',${j})`);
+        this._popItems=items;
+        openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+        return;
+      }
       const cur=(a.values||{})[key];
       openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
         <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
@@ -9904,6 +9911,11 @@ const Automations = {
   setActFieldCol(i,key,col){
     const a=(this.building.acts||[])[i]; if(!a||!col)return;
     (a.values=a.values||{})[key]={v:col.id,label:col.title||col.id,color:''};
+    closeCellPops(); this.render();
+  },
+  setActPerson(i,key,idx){
+    const it=(this._popItems||[])[idx], a=(this.building.acts||[])[i]; if(!it||!a)return;
+    (a.values=a.values||{})[key]={v:it.label,label:it.label,color:''};
     closeCellPops(); this.render();
   },
   /* the same group-on-another-board question, asked by an extra action — which
@@ -10185,6 +10197,68 @@ const Automations = {
       return {v:label,label:label,color:(o&&o.color)||''};
     }).filter(o=>o.label);
   },
+  /* ---- the people a people column actually holds ----
+     "אחראי", "מנהל פרויקט" and "רכזת" are three people columns on one board,
+     and a rule about any of them was offered every member of the board. The
+     member list is not wrong, it is just not the answer: the question is who
+     is IN this column, and on a board with forty members the one name that
+     matters is somewhere in the middle of the other thirty-nine.
+
+     Two sections and not one filtered list. Nine rules out of ten are about
+     somebody already in the column; the tenth is written ahead of the first
+     time anyone is put there. A rule is forward-looking, so cutting the list
+     down to the current occupants would make that tenth rule impossible to
+     write at all — which is a worse failure than a long menu. */
+  /* The column an action is about to write into, when its value blank is the
+     one that follows a column blank. "עדכן את «רכזת» ל…" asked for a column
+     and then for "הערך החדש" — and that second question was a text box
+     whatever the column was, so writing a people column meant typing
+     somebody's name exactly right. A typo was a rule that silently did
+     nothing: the server refuses a name it cannot match to a board member and
+     says so only in the run history, which is not where anybody looks for a
+     rule that never seemed to run.
+
+     Only set_column pairs a column blank with a text blank, which is why
+     looking for a sibling is enough to recognise it. */
+  _targetCol(values,key){
+    if(!/(^|_)text$/.test(String(key||''))) return null;
+    const id=((values&&(values.a_column||values.column))||{}).v;
+    return id?((customColumns()||[]).find(c=>String(c.id)===String(id))||null):null;
+  },
+  _peopleIn(col){
+    const f={id:col.id,kind:'people',col:col}, n=new Map();
+    ((st.board&&st.board.tasks)||[]).forEach(t=>
+      (advCell(t,f)||[]).forEach(x=>{
+        const id=Number((x&&typeof x==='object')?x.id:x);
+        if(!isNaN(id)) n.set(id,(n.get(id)||0)+1);
+      }));
+    return n;
+  },
+  /* [items, html] — the flat list the handlers index into, and the menu that
+     reads it: the column's own people first, each with how many items carry
+     them, and the rest of the board under a line. `call` builds the onclick
+     from the index, because the three callers store the answer differently. */
+  _peopleMenu(col,call){
+    const n=col?this._peopleIn(col):new Map();
+    const row=(m,c)=>({v:m.user_id,label:m.name,person:m,n:c||0});
+    const mine=this.members.filter(m=>n.has(m.user_id)).map(m=>row(m,n.get(m.user_id)))
+      .sort((a,b)=>b.n-a.n||String(a.label||'').localeCompare(String(b.label||''),'he'));
+    const rest=this.members.filter(m=>!n.has(m.user_id)).map(m=>row(m,0));
+    const items=mine.concat(rest);
+    if(!items.length) return [items,'<div class="rm-note">אין חברים בלוח</div>'];
+    const btn=(it,j)=>`<button class="rm-item" onclick="${call(j)}">
+        <span class="av av-xs">${avatarInner(it.person)}</span>
+        <span class="rm-grow">${esc(it.label)}</span>
+        ${it.n?`<small style="color:var(--text-light)">${it.n}</small>`:''}</button>`;
+    let html='';
+    if(mine.length)
+      html+=`<div class="rm-sub-label">${esc((col&&col.title)||'בעמודה')}</div>`
+        +mine.map((it,j)=>btn(it,j)).join('');
+    if(rest.length)
+      html+=(mine.length?`<div class="rm-sep"><i class="fa-solid fa-users"></i> שאר חברי הלוח</div>`:'')
+        +rest.map((it,j)=>btn(it,mine.length+j)).join('');
+    return [items,html];
+  },
   dropCond(i){ (this._condHome().conds||[]).splice(i,1); this.render(); },
   pickCondValue(e,i,second){
     e.preventDefault(); e.stopPropagation();
@@ -10233,9 +10307,17 @@ const Automations = {
       setTimeout(()=>{const el=document.getElementById('au-cv'); if(el){el.focus();el.select();}},30);
       return;
     }
+    /* The column's own people, not the board's — see _peopleMenu. Rendered
+       there as well, because this one menu has two sections and the generic
+       loop below draws a flat list. */
+    if(kind==='people'){
+      const [items,body]=this._peopleMenu(col,j=>`Automations.setCondValue(${i},${j})`);
+      this._popItems=items;
+      openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+      return;
+    }
     let items=[];
     if(kind==='status')      items=this._condColOptions(col);
-    else if(kind==='people') items=this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
     else if(kind==='check')  items=[{v:true,label:'מסומן'},{v:false,label:'לא מסומן'}];
     else if(kind==='date')   items=ADV_DATES.map(d=>({v:d[0],label:d[1]}));
     this._popItems=items;
@@ -10314,6 +10396,15 @@ const Automations = {
       return;
     }
     if(f.type==='text'){
+      // …unless the column it writes into is a people column, in which case
+      // the value is a person and is picked rather than spelled
+      const _tc=this._targetCol(this.building.values,key);
+      if(_tc&&_tc.type==='people'){
+        const [items,body]=this._peopleMenu(_tc,j=>`Automations.setFieldPerson('${key}',${j})`);
+        this._popItems=items;
+        openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+        return;
+      }
       const cur=this.building.values[key];
       openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
         <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
@@ -10593,6 +10684,16 @@ const Automations = {
   },
   setFieldCol(key,col){
     this.building.values[key]={v:col.id,label:col.title||col.id,color:''};
+    closeCellPops(); this.render();
+  },
+  /* Stored as the person's NAME. That is what the server matches on when it
+     writes a people cell (_coerce_cell looks the name up and refuses one that
+     is not a member of the board), and what the rule's sentence already
+     shows. The picker is here so the name is spelled the way the directory
+     spells it — it does not change what the rule means or how it is saved. */
+  setFieldPerson(key,idx){
+    const it=(this._popItems||[])[idx]; if(!it)return;
+    this.building.values[key]={v:it.label,label:it.label,color:''};
     closeCellPops(); this.render();
   },
 
