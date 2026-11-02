@@ -11245,6 +11245,214 @@ def column_impact(board_id: int, col_id: str, actor_id: int = Depends(current_us
         return out
 
 
+# ── המרת עמודה קיימת לרשימה נפתחת ──
+# A board admin can add a dropdown column, and could always retype one through
+# the board PATCH — but that branch replaces DEFINITIONS and never touches a
+# cell, so a text column turned into a list arrived with an empty vocabulary
+# and every answer already in it unreadable. The thing people actually want is
+# the opposite: the column already holds the list, written out by hand a
+# hundred times, and what is missing is the declaration that those are the
+# options. So this converts the two together, in one transaction.
+#
+# Only from a type that holds a value a list can be made out of. A date, a
+# person, a file or a link is not a vocabulary, and a derived column (formula,
+# mirror, מזהה פריט, מועד יצירה, יוצר הרשומה) has no value of its own —
+# offering any of those would be offering to throw the cells away and calling
+# it a conversion.
+DROPDOWN_SOURCE_TYPES = frozenset({"text", "long_text", "email", "phone",
+                                   "number", "rating", "status"})
+
+# A list nobody can scroll is not a list. The refusal says the count, because
+# the useful next step is to look at what the column actually holds: a free
+# text column with nine hundred distinct answers was never a vocabulary
+# waiting to be declared, and silently keeping the first two hundred would
+# empty the cells of everybody below the cut.
+DROPDOWN_CONVERT_MAX = 200
+
+
+def _as_dropdown_value(v, was):
+    """One cell, as the list of labels it becomes. [] when it held nothing.
+
+    A dropdown cell is a list of option strings — see the form coercion, which
+    checks each one against the column's options. Every source type here
+    stores a single value, so each converts to a one-element list; the shape
+    change is the whole of the migration.
+    """
+    if v is None or v == "":
+        return []
+    if was == "status":
+        # A status cell carries a snapshot of the option it points at, so the
+        # label is right here. The bare-string branch is for data old enough
+        # to predate that, which the board still renders.
+        if isinstance(v, dict):
+            v = v.get("label")
+        s = str(v or "").strip()
+        return [s] if s else []
+    if was in ("number", "rating"):
+        if isinstance(v, bool):
+            return []
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            s = str(v).strip()
+            return [s] if s else []
+        # 3 and not 3.0: the option has to read like the figure did
+        return [str(int(f)) if f.is_integer() else str(f)]
+    s = str(v).strip()
+    return [s] if s else []
+
+
+def _dropdown_plan(db, board, col):
+    """The vocabulary this column would become — [(label, how many cells)].
+
+    Counted over every item on the board, the ones in the recycle bin
+    included. A cell left in the old shape is a wrong cell the day somebody
+    restores the item, and a restore is the worst place to discover it.
+
+    Order is the part worth being careful about. A status column already HAS
+    an order — its admin chose it — so that one is kept, unused options and
+    all: they are the column's vocabulary whether or not anybody has picked
+    them yet, and dropping them would quietly delete somebody's work. Every
+    other type has no order of its own, so the values are sorted, which is
+    what a list of domains or departments wants to be.
+    """
+    col_id = str(col.get("id"))
+    was = col.get("type") or "text"
+    counts, order = {}, []
+    for t in (db.query(Task).execution_options(include_deleted=True)
+                .filter(Task.board_id == board.id).all()):
+        for lbl in _as_dropdown_value((t.custom_fields or {}).get(col_id), was):
+            if lbl not in counts:
+                counts[lbl] = 0
+                order.append(lbl)
+            counts[lbl] += 1
+    if was == "status":
+        vocab = [o["label"] for o in (_status_col_options(col.get("options")) or [])]
+        labels = vocab + [l for l in order if l not in vocab]
+    else:
+        labels = sorted(counts, key=lambda s: (s.casefold(), s))
+    return [(l, counts.get(l, 0)) for l in labels]
+
+
+def _dropdown_convert_or_403(db, board_id, col_id, actor_id):
+    """The board and the column, or the refusal that says why not."""
+    b = db.query(Board).filter(Board.id == board_id).first()
+    if not b or b.deleted_at:
+        raise HTTPException(404, "board not found")
+    if _board_role(db, board_id, actor_id) != "admin":
+        raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+    col = _find_col(db, board_id, col_id)
+    if not col:
+        raise HTTPException(404, "column not found")
+    was = col.get("type") or "text"
+    if was == "dropdown":
+        raise HTTPException(400, "העמודה כבר מסוג רשימה נפתחת")
+    if was not in DROPDOWN_SOURCE_TYPES:
+        raise HTTPException(400, "אפשר להמיר לרשימה נפתחת רק עמודות טקסט, "
+                                 "טקסט ארוך, דוא\"ל, טלפון, מספר, דירוג או סטטוס")
+    return b, col, was
+
+
+@app.get("/api/boards/{board_id}/columns/{col_id}/dropdown")
+def column_dropdown_plan(board_id: int, col_id: str,
+                         actor_id: int = Depends(current_user_id)):
+    """What converting this column to a list would produce, before it does.
+
+    Counted on the server and not off the loaded board, for the same reason
+    the delete impact is: the cells a client holds have already been filtered
+    to what its viewer may see, so counting there would understate the change
+    for exactly the person about to make it.
+    """
+    with Session(engine) as db:
+        b, col, was = _dropdown_convert_or_403(db, board_id, col_id, actor_id)
+        plan = _dropdown_plan(db, b, col)
+        return {"col_id": col_id, "title": col.get("title") or "", "type": was,
+                "options": [{"value": l, "count": n} for l, n in plan],
+                "cells": sum(n for _, n in plan),
+                "max": DROPDOWN_CONVERT_MAX,
+                "too_many": len(plan) > DROPDOWN_CONVERT_MAX,
+                # the other thing a retype is load-bearing for — same warning
+                # the board PATCH gives, asked here before anything is written
+                "forms": _form_column_uses(db, board_id, [col_id]).get(str(col_id), [])}
+
+
+@app.post("/api/boards/{board_id}/columns/{col_id}/dropdown")
+def column_to_dropdown(board_id: int, col_id: str, data: dict,
+                       actor_id: int = Depends(current_user_id)):
+    """Convert the column to a list, its own values becoming the options.
+
+    The definition and the cells move together or not at all: a column
+    declared a list whose cells still hold bare strings renders every row
+    empty, and the board PATCH that retypes a column does exactly that
+    because replacing definitions is all it does.
+
+    Everything a retype owes, this owes too, and for the same reasons as
+    there: forms that ask about the column have to be agreed to out loud
+    (409, answered by naming the column back), rules written against the old
+    type are suspended rather than left to fire on a shape they cannot read,
+    and the board's log gets the line.
+    """
+    with Session(engine) as db:
+        b, col, was = _dropdown_convert_or_403(db, board_id, col_id, actor_id)
+        plan = _dropdown_plan(db, b, col)
+        if len(plan) > DROPDOWN_CONVERT_MAX:
+            raise HTTPException(
+                400, f"בעמודה {len(plan)} ערכים שונים — יותר מ-{DROPDOWN_CONVERT_MAX}, "
+                     f"וזו רשימה שאי אפשר לבחור ממנה")
+        opts = [l for l, _ in plan]
+        uses = _form_column_uses(db, board_id, [col_id])
+        if uses:
+            agreed = {str(x) for x in (data.get("confirm_columns") or [])}
+            if str(col_id) not in agreed:
+                raise HTTPException(409, {
+                    "message": "השדות האלה נמצאים בשימוש בטפסים — "
+                               "אישור מפורש נדרש לפני השינוי",
+                    "columns": [{"col_id": str(col_id),
+                                 "title": col.get("title") or col_id,
+                                 "removed": False, "new_type": "dropdown",
+                                 "forms": uses[str(col_id)]}]})
+        # ── the cells ──
+        touched = 0
+        for t in (db.query(Task).execution_options(include_deleted=True)
+                    .filter(Task.board_id == b.id).all()):
+            cf = dict(t.custom_fields or {})
+            if col_id not in cf:
+                continue
+            new = _as_dropdown_value(cf.get(col_id), was)
+            if new:
+                cf[col_id] = new
+            else:
+                # a cell that held nothing keeps holding nothing, as the empty
+                # value of the new type rather than as the old type's blank
+                cf.pop(col_id, None)
+            # JSON columns are replaced, never mutated in place — SQLAlchemy
+            # does not watch inside one, and an in-place edit commits nothing
+            t.custom_fields = cf
+            touched += 1
+        # ── the definition ──
+        cols = [dict(c) for c in ((b.settings or {}).get("columns") or [])]
+        for c in cols:
+            if str(c.get("id")) != str(col_id):
+                continue
+            c.update({"type": "dropdown", "options": opts,
+                      # settings the old type carried and this one cannot
+                      "number": None, "copy_mode": None,
+                      "connect": None, "mirror_of": None})
+        s = dict(b.settings or {})
+        s["columns"] = cols
+        b.settings = s
+        title = col.get("title") or col_id
+        if not _column_types_compatible(was, "dropdown"):
+            _suspend_dependents(db, b, "column", col_id, actor_id,
+                                f"{title} (שונתה מ{was} לרשימה נפתחת)")
+        _form_settings_resweep(db, board_id, {str(col_id): "dropdown"})
+        _log_board(db, board_id, "update", field="column", old=title,
+                   new=f"{title} — הומרה לרשימה נפתחת ({len(opts)} אפשרויות)",
+                   actor=actor_id)
+        db.commit()
+        return {"columns": cols, "options": opts, "items": touched}
+
+
 @app.get("/api/tasks/lookup")
 def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
     """Resolve item ids → title/board, to display linked items in a connect cell.

@@ -22,10 +22,17 @@ function grab(name){
 }
 
 let cols=[], shown='';
+/* colMenu also reads DROPDOWN_SOURCES — the types "המרה לרשימה נפתחת" is
+   offered on. Passed in rather than stubbed so this harness keeps exercising
+   the real menu; what the entry does is pinned by
+   tests/frontend/column_to_dropdown_menu.mjs. */
+const DROPDOWN_SOURCES = JSON.parse(
+  /^const DROPDOWN_SOURCES\s*=\s*(\[[^\]]*\]);$/m.exec(src)[1].replace(/'/g,'"'));
 const colMenu = new Function('customColumns','st','isBoardAdmin','esc','openCellPop','ColPerms',
+  'DROPDOWN_SOURCES',
   grab('colMenu')+'\nreturn colMenu;')(
   ()=>cols, {board:{my_role:'admin'}}, ()=>true, x=>String(x==null?'':x),
-  (el,html)=>{shown=html;}, {open(){}});
+  (el,html)=>{shown=html;}, {open(){}}, DROPDOWN_SOURCES);
 
 let pass=0, fail=0;
 const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console.log('  FAIL '+n+(x?'  → '+x.slice(0,300):''))); };

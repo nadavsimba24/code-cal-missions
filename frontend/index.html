@@ -4234,7 +4234,14 @@ const BoardLog = {
        cannot truly be dropped, only taken off the board, and the wording says
        which of the two happened. */
     if(a.field==='column')return a.action==='create'?'עמודה נוספה'
-                               :a.action==='restore'?'עמודה שוחזרה':'עמודה נמחקה';
+                               :a.action==='restore'?'עמודה שוחזרה'
+                               /* A column row can also be a TYPE CHANGE now, and
+                                  falling through to the delete wording would
+                                  have the log announce a deletion that did not
+                                  happen — on the one line nobody can check
+                                  against the board, because the column is
+                                  still there. */
+                               :a.action==='update'?'סוג עמודה שונה':'עמודה נמחקה';
     if(a.field==='builtin_column')return a.action==='restore'?'עמודה הוחזרה ללוח':'עמודה הוסרה מהלוח';
     /* A group is the same kind of event as a column — it happened to the
        board — and it has to be named before the generic 'נמחק' can answer
@@ -16356,6 +16363,10 @@ function colMenu(e,colId){
     +idSettings
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&c.type==='number'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();numberSettings('${colId}')"><i class="fa-solid fa-sliders"></i> הגדרות עמודת מספר</button>`:'')
+    /* "המרה לרשימה נפתחת". Offered only where there is something to make a
+       list out of — see DROPDOWN_SOURCES — and only to the board admin, who
+       is the only one the server will let change a column at all. */
+    +(isAdmin&&c&&DROPDOWN_SOURCES.includes(c.type)?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();convertColToDropdown('${colId}')"><i class="fa-solid fa-list-check"></i> המרה לרשימה נפתחת</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     /* An imported formula column holds monday's computed value as text, and the
        expression rides along on the column. Stored and shown nowhere it is the
@@ -16381,6 +16392,97 @@ function colMenu(e,colId){
       ?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();ColPerms.open('${colId}')"><i class="fa-solid fa-user-lock"></i> הרשאות עמודה</button>`:'')
     +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   openCellPop(e.currentTarget,html);
+}
+/* ===== המרת עמודה קיימת לרשימה נפתחת =====
+   The column already holds the list — somebody typed "תשתיות" into ninety
+   cells by hand — and what is missing is the declaration that those are the
+   options. Mirrors DROPDOWN_SOURCE_TYPES in main.py: the menu has to decide
+   whether to offer the entry before asking the server anything, so the set of
+   convertible types is stated on both sides. The server is still the one that
+   refuses; this only keeps the menu from offering what it would refuse. */
+const DROPDOWN_SOURCES=['text','long_text','email','phone','number','rating','status'];
+async function convertColToDropdown(colId){
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך עמודות');return;}
+  let p;
+  try{ p=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/dropdown`); }
+  catch(e){ toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בבדיקת העמודה'); return; }
+  const opts=p.options||[];
+  /* The values themselves, counted. Shown and not merely summarised: "12
+     ערכים שונים" is a number somebody has to trust, and the list is the one
+     thing that tells them whether the column is a vocabulary or whether it is
+     free text with twelve spellings of the same word. */
+  const chips=opts.length
+    ? `<div style="display:flex;flex-wrap:wrap;gap:6px;max-height:220px;overflow:auto;padding:8px;
+                   border:1px solid var(--border);border-radius:8px;background:var(--bg)">
+         ${opts.map(o=>`<span class="tag">${esc(o.value)}${
+            o.count?` <b style="opacity:.6;font-weight:600">${o.count}</b>`:''}</span>`).join('')}
+       </div>`
+    : `<div style="padding:10px;border:1px dashed var(--border);border-radius:8px;
+                   color:var(--text-muted);font-size:12.5px">
+         אין ערכים בעמודה — הרשימה תיווצר ריקה, ואפשר יהיה להוסיף אליה אפשרויות ידנית.</div>`;
+  if(p.too_many){
+    alertModal('יותר מדי ערכים שונים',
+      `בעמודה "${p.title}" יש ${opts.length} ערכים שונים — יותר מ-${p.max}. `
+      +'רשימה באורך כזה אי אפשר לבחור ממנה, ולכן ההמרה אינה מוצעת.','fa-list-check');
+    return;
+  }
+  const forms=(p.forms||[]).length
+    ? `<div style="margin-top:10px;font-size:12.5px;color:var(--orange)">
+         <i class="fa-solid fa-triangle-exclamation"></i>
+         ${(p.forms||[]).length} טפסים שואלים על העמודה הזאת — השאלה תהפוך לבחירה מרשימה.</div>`
+    : '';
+  showModal(`<h2><i class="fa-solid fa-list-check" style="color:var(--primary)"></i> המרה לרשימה נפתחת</h2>
+    <div class="mbody">
+      <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+        העמודה "${esc(p.title)}" תהפוך לרשימה נפתחת, והערכים שכבר נמצאים בה יהיו האפשרויות שלה.
+        הערכים בתאים נשמרים — אחרי ההמרה אפשר יהיה לבחור בהם מהרשימה במקום להקליד אותם,
+        ולבחור יותר מאחד בתא.</div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:6px">
+        ${opts.length} אפשרויות · ${p.cells} תאים מלאים</div>
+      ${chips}
+      ${forms}
+      <div style="margin-top:10px;font-size:12.5px;color:var(--text-muted)">
+        אוטומציות שנכתבו על העמודה בסוגה הקודם יושהו, כדי שלא יפעלו על ערך שאינן יודעות לקרוא.</div>
+    </div>
+    <div class="mfoot">
+      <button class="btn btn-primary" onclick="doConvertColToDropdown('${colId}')"><i class="fa-solid fa-list-check"></i> המר לרשימה</button>
+      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+    </div>`);
+}
+/* The conversion itself. `confirm` is the column id named back, which is the
+   only way past the forms gate — the same bargain saveColumns strikes for a
+   retype through the board PATCH, and struck here rather than shared because
+   this path sends one column and not the whole list. */
+async function doConvertColToDropdown(colId,confirm){
+  closeModals();
+  try{
+    const r=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/dropdown`,
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:withMe(confirm?{confirm_columns:[colId]}:{})});
+    st.board.columns=r.columns;
+    /* Every cell in the column changed shape — a string became a list — so
+       the loaded items are wrong until they are re-read. Re-rendering without
+       this draws the whole column empty, which looks exactly like the
+       conversion having eaten the data. */
+    await refreshBoardItems();
+    renderView();
+    toast(`העמודה הומרה לרשימה — ${(r.options||[]).length} אפשרויות`);
+  }catch(e){
+    if(e&&e.status===409&&e.detail&&Array.isArray(e.detail.columns)){
+      const cs=e.detail.columns;
+      const rows=cs.map(c=>`<div class="ci-row"><b>${esc(c.title||c.col_id)}</b>
+          <span class="ah-tag">שינוי סוג לרשימה נפתחת</span>
+          ${(c.forms||[]).map(x=>`<span class="ah-tag">${esc(x.name||'')}${
+            x.required?' · חובה':''}</span>`).join('')}</div>`).join('');
+      askConfirm(e.detail.message||'השדות נמצאים בשימוש בטפסים',
+        ()=>doConvertColToDropdown(colId,true),
+        {title:'שדה בשימוש בטופס', confirmText:'המשך בכל זאת',
+         noteHTML:rows+`<div class="ci-row" style="color:var(--text-muted)">
+            השאלות לא יימחקו — הן יישאלו כבחירה מתוך הרשימה.</div>`});
+      return;
+    }
+    toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בהמרת העמודה');
+  }
 }
 /* "התאמות עמודת מזהה פריט" — the only setting the column has: what a click on a
    cell copies. The identifier itself is generated by the system and read-only. */
