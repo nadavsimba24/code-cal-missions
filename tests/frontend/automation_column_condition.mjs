@@ -59,7 +59,7 @@ function build(){
   const A=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','fdate',
     'avatarInner','boardStatusList','boardPriorityList','customColumns','statusColOpts',
     'advColHidden','meId','api','openCellPop','closeCellPops','askConfirm','showModal',
-    'closeModals','document','renderView','localStorage',
+    'closeModals','document','renderView','localStorage','colTypeHe',
     grabTable('const ADV_KINDS = {')+grabTable('const ADV_DATES = [')
     +grabTable('const COLUMN_TYPES=[')
     +grabConst('Automations')+' return Automations;')(
@@ -77,7 +77,8 @@ function build(){
     ()=>{}, ()=>{}, ()=>{}, ()=>{},
     {getElementById:()=>({value:fieldValue,focus(){},select(){}}),
      querySelectorAll:()=>[]},
-    ()=>{}, {getItem:()=>null,setItem(){}});
+    ()=>{}, {getItem:()=>null,setItem(){}},
+    t=>(COLS.find(c=>c.type===t)&&t)||t);
   /* the catalog as the server sends it, with the two column kinds in it */
   A.conds=[
     {kind:'status_is',   label:'הסטטוס הוא …', type:'status', value_label:'סטטוס'},
@@ -110,10 +111,11 @@ function addCond(A,kind){
   return true;
 }
 function chooseCol(A,i,type,colId){
-  A.pickCondColOf(EV,i,type);
-  const j=(A._condColOffer||[]).findIndex(c=>c.id===colId);
+  A.pickCondCol(EV,i);
+  A.colPickType(EV,type);
+  const j=((A._colPick||{}).offer||[]).findIndex(c=>c.id===colId);
   if(j<0) return false;
-  A.setCondCol(i,j);
+  A.colPickOne(j);
   return true;
 }
 
@@ -135,7 +137,7 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
   addCond(A,'column_is');
   A.pickCondCol(EV,0);
   const menu=pops[pops.length-1];
-  ck('the first question is what KIND of column', menu.includes('pickCondColOf'), menu);
+  ck('the first question is what KIND of column', menu.includes('colPickType'), menu);
   ['מספר','סטטוס','רשימה נפתחת','אנשים','תאריך','תיבת סימון'].forEach(he=>
     ck('...offering '+he, menu.includes(he), menu));
   ck('a column with nothing to compare is not offered at all',
@@ -148,12 +150,13 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 {
   const A=build();
   addCond(A,'column_is');
-  A.pickCondColOf(EV,0,'number');
+  A.pickCondCol(EV,0);
+  A.colPickType(EV,'number');
   const menu=pops[pops.length-1];
   ck('the second question is which column of that kind',
-     menu.includes('setCondCol(0,0)') && menu.includes('תקציב'), menu);
+     menu.includes('colPickOne(0)') && menu.includes('תקציב'), menu);
   ck('...and not one of another kind', !menu.includes('שלב'), menu);
-  A.setCondCol(0,0);
+  A.colPickOne(0);
   const c=A.building.conds[0];
   ck('the column, and the kind of column it is, are both kept on the condition',
      c.col==='c_budget' && c.colType==='number' && c.colLabel==='תקציב', JSON.stringify(c));

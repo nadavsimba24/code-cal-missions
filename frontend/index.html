@@ -9862,6 +9862,14 @@ const Automations = {
     if(f.type==='wait'){ this.pickWait(anchor,key,{actIdx:i,key}); return; }
     if(f.type==='map'){ toast('מיפוי שדות נערך דרך ה-API בשלב זה'); return; }
     if(f.type==='target_group'){ await this.pickActTargetGroup(anchor,i,key); return; }
+    /* An extra action names a column the same way the sentence does. Its
+       field is keyed plainly "column", so `write` is said here rather than
+       read off the key — this is an action, and an action writes. */
+    if(f.type==='column'){
+      this.colPickOpen(anchor,this._blankCols(f.key,true),
+                       col=>this.setActFieldCol(i,key,col));
+      return;
+    }
     const items=this._optionsFor(f.type,connect,f.key,this._statusColOf(a.values,key));
     this._popItems=items;
     const head=(f.type==='status'&&spec.text_col)?this._statusSourceLine(key,{actIdx:i,key}):'';
@@ -9876,6 +9884,11 @@ const Automations = {
   setActValue(i,key,idx){
     const it=(this._popItems||[])[idx], a=(this.building.acts||[])[i]; if(!it||!a)return;
     (a.values=a.values||{})[key]={v:it.v,label:it.label,color:it.color||''};
+    closeCellPops(); this.render();
+  },
+  setActFieldCol(i,key,col){
+    const a=(this.building.acts||[])[i]; if(!a||!col)return;
+    (a.values=a.values||{})[key]={v:col.id,label:col.title||col.id,color:''};
     closeCellPops(); this.render();
   },
   /* the same group-on-another-board question, asked by an extra action — which
@@ -10066,33 +10079,66 @@ const Automations = {
     const ok=t=>caps.length?!!(caps.find(f=>f.type===t)||{}).condition:!!ADV_KINDS[t];
     return (customColumns()||[]).filter(c=>ok(c.type)&&!advColHidden(c.id));
   },
-  pickCondCol(e,i){
-    e.preventDefault(); e.stopPropagation();
-    const cols=this._condCols();
-    const types=[];
-    COLUMN_TYPES.forEach(t=>{
-      const n=cols.filter(c=>c.type===t.type).length;
-      if(n) types.push({type:t.type,he:t.he,ic:t.ic,n});
-    });
+  /* ---- the board's columns, asked for in two questions ----
+     Which KIND of column, and then which one. A board here carries thirty
+     columns and a flat list of all of them is not a question anybody wants
+     to read — and the kind is what somebody has in mind first ("the date
+     column", "one of the statuses"). The type menu lists only kinds this
+     board actually HAS a column of, so "תאריך" on a board with no date
+     column is never offered as a dead end two clicks deep.
+
+     One picker, used by all three places a rule names a column: a condition,
+     a blank in the sentence, and a blank in an extra action. They were three
+     different questions — the condition asked the two, the other two handed
+     over every column at once — and a person met whichever the rule they
+     were writing happened to use. `onPick` takes the chosen column; which
+     columns are eligible is the CALLER's business, because listening to a
+     column, writing to one and asking about one are three different lists. */
+  colPickOpen(anchor,cols,onPick,empty){
+    this._colPick={cols:cols||[],onPick:onPick,empty:empty,anchor:anchor};
+    const types=COLUMN_TYPES.map(t=>({...t,n:(cols||[]).filter(c=>c.type===t.type).length}))
+                            .filter(t=>t.n);
     const body=types.length
-      ? types.map(t=>`<button class="rm-item" onclick="Automations.pickCondColOf(event,${i},'${t.type}')">
+      ? types.map(t=>`<button class="rm-item" onclick="Automations.colPickType(event,'${t.type}')">
           <i class="fa-solid ${t.ic}" style="font-size:11px;color:var(--primary)"></i> ${esc(t.he)}
           <small style="margin-inline-start:auto;color:var(--text-light)">${t.n}</small></button>`).join('')
-      : '<div class="rm-note">אין בלוח עמודות שניתן להתנות בהן</div>';
-    openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+      : `<div class="rm-note">${esc(empty||'אין בלוח עמודות מתאימות')}</div>`;
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
-  pickCondColOf(e,i,type){
+  colPickType(e,type){
     e.preventDefault(); e.stopPropagation();
-    const anchor=document.querySelectorAll('.au-cond')[i];
-    const cols=this._condCols().filter(c=>c.type===type);
-    this._condColOffer=cols;
-    const body=cols.map((c,j)=>`<button class="rm-item" onclick="Automations.setCondCol(${i},${j})">${esc(c.title||c.id)}</button>`).join('')
-      ||'<div class="rm-note">אין עמודות מסוג זה</div>';
-    openCellPop(anchor&&anchor.querySelector('.au-blank')||e.currentTarget,
+    const p=this._colPick||{};
+    p.offer=(p.cols||[]).filter(c=>c.type===type);
+    /* The way back, at the top. Picking the wrong kind is a thing somebody
+       does, and without this the only way out is to dismiss the menu and
+       find the blank again. The same shape pickStatusSource uses. */
+    const back=`<button class="rm-item au-back" onclick="Automations.colPickBack(event)">
+        <i class="fa-solid fa-chevron-right" style="font-size:10px;color:var(--text-light)"></i>
+        <small style="color:var(--text-light)">${esc(colTypeHe(type))} — סוג אחר</small></button>`;
+    const body=back+(p.offer.length
+      ? p.offer.map((c,j)=>`<button class="rm-item" onclick="Automations.colPickOne(${j})">${esc(c.title||c.id)}</button>`).join('')
+      : '<div class="rm-note">אין עמודות מסוג זה</div>');
+    openCellPop(p.anchor||e.currentTarget,
       `<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
-  setCondCol(i,j){
-    const col=(this._condColOffer||[])[j], c=(this._condHome().conds||[])[i];
+  colPickBack(e){
+    e.preventDefault(); e.stopPropagation();
+    const p=this._colPick||{};
+    this.colPickOpen(p.anchor,p.cols,p.onPick,p.empty);
+  },
+  colPickOne(j){
+    const p=this._colPick||{}, col=(p.offer||[])[j];
+    if(col&&p.onPick) p.onPick(col);
+  },
+
+  pickCondCol(e,i){
+    e.preventDefault(); e.stopPropagation();
+    this.colPickOpen(e.currentTarget,this._condCols(),
+                     col=>this.setCondCol(i,col),
+                     'אין בלוח עמודות שניתן להתנות בהן');
+  },
+  setCondCol(i,col){
+    const c=(this._condHome().conds||[])[i];
     if(!col||!c)return;
     // changing the column drops a value chosen for the previous one: a status
     // label from another column is not an answer to this one
@@ -10274,6 +10320,14 @@ const Automations = {
     // "השדות להעתקה" is a set, not a choice: the picker stays open and the
     // blank reads them back as one phrase
     if(f.type==='fields'){ this.pickCopyFields(anchor,key); return; }
+    /* Which column — the same two questions a condition asks, through the
+       same picker. This blank used to hand over every column on the board at
+       once, so the two halves of one screen asked for a column in two
+       different ways. */
+    if(f.type==='column'){
+      this.colPickOpen(anchor,this._blankCols(f.key),col=>this.setFieldCol(key,col));
+      return;
+    }
     const items=this._optionsFor(f.type,(this.building.values['a_connect']||{}).v,f.key,
                                  this._statusColOf(this.building.values,key));
     // referenced by index so a name with quotes can never break out of the handler
@@ -10325,23 +10379,8 @@ const Automations = {
     if(type==='person')   return this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
     if(type==='connect')  return customColumns().filter(c=>c.type==='connect')
                                  .map(c=>({v:c.id,label:c.title||c.id,color:''}));
-    /* a column a rule may LISTEN to. A mirror shows a value that lives on
-       another item, so "it changed" is that item's event — it stays usable as
-       a condition. A connect column already has two triggers of its own, and a
-       formula has no value of its own to change.
-
-       Writing one is a narrower question than listening to it: מזהה פריט,
-       מועד יצירה and יוצר הרשומה are derived from the item and store nothing,
-       so a rule pointed at one would write a cell the board never reads. The
-       action's own blank (a_*) is the one that asks to write. */
-    if(type==='column'){
-      const derived=['item_id','created_at','created_by'];
-      const write=/^a_/.test(String(fkey||''));
-      return customColumns()
-        .filter(c=>!['mirror','connect','formula'].includes(c.type)
-                   &&!(write&&derived.includes(c.type)))
-        .map(c=>({v:c.id,label:c.title||c.id,color:''}));
-    }
+    if(type==='column')
+      return this._blankCols(fkey).map(c=>({v:c.id,label:c.title||c.id,color:''}));
     if(type==='board')    return this._linkBoards(connectId).map(b=>({v:b.id,label:b.name,color:''}));
     /* The link column a copy is written through. Blank is an option and not an
        empty state: it means "whichever column the link that set this off was
@@ -10359,6 +10398,28 @@ const Automations = {
       return (spec.options||[]).map(o=>({v:o,label:(spec.labels||{})[o]||o,color:''}));
     }
     return [];
+  },
+  /* The board's columns a rule may name in a blank.
+
+     A mirror shows a value that lives on another item, so "it changed" is
+     that item's event — it stays usable as a condition. A connect column
+     already has two triggers of its own, and a formula has no value of its
+     own to change.
+
+     Writing one is a narrower question than listening to it: מזהה פריט,
+     מועד יצירה and יוצר הרשומה are derived from the item and store nothing,
+     so a rule pointed at one would write a cell the board never reads.
+
+     `write` is passed in where the caller knows — an extra action's field is
+     keyed plainly "column" with no a_ prefix, so sniffing the key offered
+     those three as somewhere to write to. The prefix is still the default,
+     because the rule's own sentence does key its action blanks that way. */
+  _blankCols(fkey,write){
+    const derived=['item_id','created_at','created_by'];
+    const w=(write===undefined)?/^a_/.test(String(fkey||'')):!!write;
+    return (customColumns()||[])
+      .filter(c=>!['mirror','connect','formula'].includes(c.type)
+                 &&!(w&&derived.includes(c.type)));
   },
   /* The connect column a link action is written against: the one it names
      itself, or the board's only one. An extra action carries its own, which is
@@ -10513,6 +10574,10 @@ const Automations = {
   setField(key,idx){
     const it=(this._popItems||[])[idx]; if(!it)return;
     this.building.values[key]={v:it.v,label:it.label,color:it.color||''};
+    closeCellPops(); this.render();
+  },
+  setFieldCol(key,col){
+    this.building.values[key]={v:col.id,label:col.title||col.id,color:''};
     closeCellPops(); this.render();
   },
 
