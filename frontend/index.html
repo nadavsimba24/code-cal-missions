@@ -7790,8 +7790,16 @@ const Live = {
     // ...and for a like that is the whole of it: no row, no column, no group of
     // the board changed, so there is nothing to refetch
     if(ev.type==='comment.liked')return;
-    // I already see the result of my own edit; re-applying it only causes flicker
-    if(ev.actor_id===meId())return;
+    /* I already see the result of my own edit; re-applying it only causes
+       flicker. An automation is the exception, and the important one: the
+       rule wrote things I did not type and cannot predict — a status, a
+       person, a column on a linked item, a sub-item that did not exist a
+       moment ago. The person whose edit set it off is therefore the one
+       client that must be told, and it was the only one that was not.
+       Said as a type test and not left to automation.ran happening to carry
+       no actor_id: the day somebody stamps one on it, this would quietly go
+       back to not refreshing for exactly the person watching. */
+    if(ev.actor_id===meId() && ev.type!=='automation.ran')return;
     if(!st.board || ev.board_id!==st.board.id)return;
     this._pending.set(ev.type+':'+(ev.task_id||0), ev);
     clearTimeout(this._flush);
@@ -7809,6 +7817,13 @@ const Live = {
       // a new or removed row changes the list itself, and a board change can
       // alter its columns or groups — neither is a single-row swap
       if(ev.type==='task.created'||ev.type==='task.deleted'||ev.type==='board.changed'){ whole=true; break; }
+      /* Nor is a rule that ran. The event names the item the rule fired ON,
+         which is not the list of what it then wrote: an action can assign a
+         person, move the item to another group, add a sub-item, or set a
+         column on an item somewhere else entirely. Patching the one row the
+         event names would redraw the only part that might not have changed
+         and leave the rest stale. */
+      if(ev.type==='automation.ran'){ whole=true; break; }
     }
     if(whole){ await this.refreshBoard(); return; }
     for(const ev of evs){

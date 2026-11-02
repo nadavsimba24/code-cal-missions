@@ -14531,8 +14531,59 @@ def _emit(db, kind, board_id=None, task_id=None, automation_id=None,
                            automation_id=automation_id, run_id=run_id,
                            seq=seq, payload=_plain_json(payload or {}),
                            created_at=_now_naive()))
+        _flush_outbox_when_committed(db, board_id)
     except Exception as e:                         # noqa: BLE001
         print(f"⚠️  outbox not written ({kind}): {e}", flush=True)
+
+
+def _flush_outbox_when_committed(db, board_id):
+    """Send this board's outbox the moment the transaction lands.
+
+    _emit writes the row INSIDE the caller's transaction on purpose: an event
+    that goes out before the commit announces something that may yet be rolled
+    back. The other half of that bargain — sending it once the commit HAS
+    landed — was kept by nobody. _drain_outbox ran when somebody opened the
+    board, or its automations screen, and in no other place.
+
+    Which is why a board did not refresh after a rule fired. The engine
+    recorded "automation.ran" and the row sat in the table until the next
+    board read — and the next board read was the person pressing F5 to find
+    out whether the automation had done anything. From the outside that is a
+    rule that does nothing, and the first thing anyone does about it is run it
+    again.
+
+    Armed here rather than called from the twenty-odd places a rule can fire.
+    The one moment this is safe is the commit, and the session is the only
+    thing that knows when that is.
+    """
+    boards = getattr(db, "_outbox_boards", None)
+    if boards is None:
+        boards = set()
+        db._outbox_boards = boards
+        # once=True, and the attribute is cleared when it fires — so a session
+        # that commits a second time arms itself again for that one
+        event.listen(db, "after_commit", _outbox_after_commit, once=True)
+    if board_id:
+        boards.add(int(board_id))
+
+
+def _outbox_after_commit(db):
+    """The write landed, so now it is true and now it can be announced.
+
+    In a session of its own: the one that just committed cannot be asked to
+    commit again from inside its own after_commit. Never raises — announcing
+    the work must not be able to fail the work, and by here the work is
+    already saved.
+    """
+    boards = getattr(db, "_outbox_boards", None) or set()
+    db._outbox_boards = None
+    for bid in boards:
+        try:
+            with Session(engine) as out:
+                _drain_outbox(out, bid)
+                out.commit()
+        except Exception as e:                     # noqa: BLE001
+            print(f"⚠️  outbox not drained (board {bid}): {e}", flush=True)
 
 
 def _drain_outbox(db, board_id=None, limit=200):
