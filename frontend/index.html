@@ -1294,6 +1294,35 @@ body.coldragging .col-grip{opacity:1}
 .coltype span{display:flex;flex-direction:column;line-height:1.3}
 .coltype small{color:var(--text-light);font-size:11px}
 .col-add-pop{max-height:340px;overflow-y:auto}
+/* "שינוי סוג עמודה" — the picker, and then what the change would do.
+   The two halves of the dialog are deliberately different in weight: the
+   grid of types is a choice, and the preview under it is the part somebody
+   has to read before pressing. Orange where cells will be emptied, green
+   where none will — the colour is the sentence, before the sentence is. */
+.rt-types{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:4px;
+  max-height:46vh;overflow-y:auto}
+.rt-head{font-size:13.5px;font-weight:600;margin-bottom:10px;color:var(--text)}
+.rt-head i{font-size:11px;color:var(--text-light);margin:0 4px}
+.rt-sec-t{font-size:12px;font-weight:700;color:var(--text-muted);margin:12px 0 6px}
+.rt-chips{display:flex;flex-wrap:wrap;gap:6px;max-height:170px;overflow:auto;padding:8px;
+  border:1px solid var(--border);border-radius:8px;background:var(--bg)}
+.rt-samples{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.rt-row{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12.5px;
+  border-bottom:1px solid var(--border)}
+.rt-row:last-child{border-bottom:none}
+.rt-row i{font-size:10px;color:var(--text-light);flex:none}
+.rt-before{color:var(--text-muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rt-after{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rt-row-lost .rt-after{color:var(--red);font-weight:600}
+.rt-warn,.rt-ok{display:flex;align-items:flex-start;gap:8px;padding:9px 11px;border-radius:8px;
+  font-size:12.5px;font-weight:600;margin-bottom:4px}
+.rt-warn{border:1px solid var(--orange);background:rgba(253,171,61,.10);color:var(--text)}
+.rt-warn i{color:var(--orange);flex:none;margin-top:2px}
+.rt-stop{border-color:var(--red);background:rgba(226,68,92,.10)}
+.rt-stop i{color:var(--red)}
+.rt-ok{border:1px solid var(--green);background:rgba(0,200,117,.10);color:var(--text)}
+.rt-ok i{color:var(--green);flex:none;margin-top:2px}
+.rt-note{margin-top:12px;font-size:12px;color:var(--text-muted);line-height:1.5}
 /* checkbox */
 .cc-check{width:18px;height:18px;accent-color:var(--green);cursor:pointer}
 /* people/dropdown list popovers */
@@ -16363,10 +16392,10 @@ function colMenu(e,colId){
     +idSettings
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&c.type==='number'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();numberSettings('${colId}')"><i class="fa-solid fa-sliders"></i> הגדרות עמודת מספר</button>`:'')
-    /* "המרה לרשימה נפתחת". Offered only where there is something to make a
-       list out of — see DROPDOWN_SOURCES — and only to the board admin, who
-       is the only one the server will let change a column at all. */
-    +(isAdmin&&c&&DROPDOWN_SOURCES.includes(c.type)?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();convertColToDropdown('${colId}')"><i class="fa-solid fa-list-check"></i> המרה לרשימה נפתחת</button>`:'')
+    /* "שינוי סוג עמודה". Offered only on a column that holds a value of its
+       own — see RETYPE_TYPES — and only to the board admin, who is the only
+       one the server will let change a column at all. */
+    +(isAdmin&&c&&RETYPE_TYPES.includes(c.type)?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();retypeColumn('${colId}')"><i class="fa-solid fa-right-left"></i> שינוי סוג עמודה</button>`:'')
     +(c&&c.type==='formula'?`<button class="cell-pop-opt2" onclick="editFormula(event,'${colId}')"><i class="fa-solid fa-calculator"></i> ערוך נוסחה</button>`:'')
     /* An imported formula column holds monday's computed value as text, and the
        expression rides along on the column. Stored and shown nowhere it is the
@@ -16393,95 +16422,129 @@ function colMenu(e,colId){
     +`<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${colId}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
   openCellPop(e.currentTarget,html);
 }
-/* ===== המרת עמודה קיימת לרשימה נפתחת =====
-   The column already holds the list — somebody typed "תשתיות" into ninety
-   cells by hand — and what is missing is the declaration that those are the
-   options. Mirrors DROPDOWN_SOURCE_TYPES in main.py: the menu has to decide
-   whether to offer the entry before asking the server anything, so the set of
-   convertible types is stated on both sides. The server is still the one that
-   refuses; this only keeps the menu from offering what it would refuse. */
-const DROPDOWN_SOURCES=['text','long_text','email','phone','number','rating','status'];
-async function convertColToDropdown(colId){
+/* ===== שינוי סוג עמודה =====
+   Mirrors COLUMN_RETYPE_TYPES in main.py — the types whose cell holds a value
+   of its own, in words another type can be built out of. Stated on both sides
+   because the menu has to decide whether to offer the entry, and the picker
+   which types to show, before the server is asked anything. The server is
+   still the one that refuses; this only keeps the screen from offering what
+   it would refuse. tests/test_column_type_conversion.py pins the two lists
+   together. */
+const RETYPE_TYPES=['text','long_text','email','phone','number','rating',
+                    'status','dropdown','date','timeline','checkbox','people'];
+/* The one rule, said once and shown wherever the conversion is: the cell is
+   read into the WORDS it says, and those words are written back in the shape
+   the new type holds. */
+const RETYPE_RULE='הערך שבכל תא נקרא כטקסט ונכתב מחדש בצורה שהסוג החדש מחזיק. '
+  +'תא שהסוג החדש אינו יודע לקרוא יתרוקן — וכמה כאלה יש, כתוב כאן למטה.';
+
+function retypeColumn(colId){
   if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך עמודות');return;}
-  let p;
-  try{ p=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/dropdown`); }
-  catch(e){ toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בבדיקת העמודה'); return; }
-  const opts=p.options||[];
-  /* The values themselves, counted. Shown and not merely summarised: "12
-     ערכים שונים" is a number somebody has to trust, and the list is the one
-     thing that tells them whether the column is a vocabulary or whether it is
-     free text with twelve spellings of the same word. */
-  const chips=opts.length
-    ? `<div style="display:flex;flex-wrap:wrap;gap:6px;max-height:220px;overflow:auto;padding:8px;
-                   border:1px solid var(--border);border-radius:8px;background:var(--bg)">
-         ${opts.map(o=>`<span class="tag">${esc(o.value)}${
-            o.count?` <b style="opacity:.6;font-weight:600">${o.count}</b>`:''}</span>`).join('')}
-       </div>`
-    : `<div style="padding:10px;border:1px dashed var(--border);border-radius:8px;
-                   color:var(--text-muted);font-size:12.5px">
-         אין ערכים בעמודה — הרשימה תיווצר ריקה, ואפשר יהיה להוסיף אליה אפשרויות ידנית.</div>`;
-  if(p.too_many){
-    alertModal('יותר מדי ערכים שונים',
-      `בעמודה "${p.title}" יש ${opts.length} ערכים שונים — יותר מ-${p.max}. `
-      +'רשימה באורך כזה אי אפשר לבחור ממנה, ולכן ההמרה אינה מוצעת.','fa-list-check');
-    return;
-  }
-  const forms=(p.forms||[]).length
-    ? `<div style="margin-top:10px;font-size:12.5px;color:var(--orange)">
-         <i class="fa-solid fa-triangle-exclamation"></i>
-         ${(p.forms||[]).length} טפסים שואלים על העמודה הזאת — השאלה תהפוך לבחירה מרשימה.</div>`
-    : '';
-  showModal(`<h2><i class="fa-solid fa-list-check" style="color:var(--primary)"></i> המרה לרשימה נפתחת</h2>
+  const c=customColumns().find(x=>x.id===colId); if(!c)return;
+  /* Step one is the same picker "הוסף עמודה" uses, minus the types a value
+     cannot be built for and minus the one the column already is — an entry
+     that does nothing is an entry somebody will press. */
+  const types=COLUMN_TYPES.filter(t=>RETYPE_TYPES.includes(t.type)&&t.type!==c.type)
+                          .sort((a,b)=>a.he.localeCompare(b.he,'he'));
+  showModal(`<h2><i class="fa-solid fa-right-left" style="color:var(--primary)"></i> שינוי סוג עמודה</h2>
     <div class="mbody">
       <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
-        העמודה "${esc(p.title)}" תהפוך לרשימה נפתחת, והערכים שכבר נמצאים בה יהיו האפשרויות שלה.
-        הערכים בתאים נשמרים — אחרי ההמרה אפשר יהיה לבחור בהם מהרשימה במקום להקליד אותם,
-        ולבחור יותר מאחד בתא.</div>
-      <div style="font-size:13px;font-weight:600;margin-bottom:6px">
-        ${opts.length} אפשרויות · ${p.cells} תאים מלאים</div>
-      ${chips}
-      ${forms}
-      <div style="margin-top:10px;font-size:12.5px;color:var(--text-muted)">
-        אוטומציות שנכתבו על העמודה בסוגה הקודם יושהו, כדי שלא יפעלו על ערך שאינן יודעות לקרוא.</div>
+        העמודה "${esc(c.title||'')}" היא כרגע <b>${esc(colTypeHe(c.type))}</b>. ${esc(RETYPE_RULE)}</div>
+      <div class="rt-types">${types.map(t=>`
+        <button class="coltype" onclick="retypePreview('${colId}','${t.type}')">
+          <i class="fa-solid ${t.ic}"></i><span><b>${esc(t.he)}</b><small>${esc(t.desc)}</small></span>
+        </button>`).join('')}</div>
+    </div>
+    <div class="mfoot"><button class="btn btn-ghost" onclick="closeModals()">ביטול</button></div>`);
+}
+function colTypeHe(t){ return (COLUMN_TYPES.find(x=>x.type===t)||{}).he||t; }
+
+/* Step two: what the change would actually do, counted by the server over
+   every item on the board — including the ones in the recycle bin, which the
+   loaded board does not have. Shown before anything is written, because "12
+   תאים יתרוקנו" is the whole of what there is to agree to. */
+async function retypePreview(colId,to){
+  let p;
+  try{ p=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/retype?to=${encodeURIComponent(to)}`); }
+  catch(e){ toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בבדיקת העמודה'); return; }
+  const back=`<button class="btn btn-ghost" onclick="retypeColumn('${colId}')"><i class="fa-solid fa-chevron-right"></i> חזרה</button>`;
+  if(p.too_many){
+    showModal(`<h2><i class="fa-solid fa-right-left" style="color:var(--primary)"></i> שינוי סוג עמודה</h2>
+      <div class="mbody"><div class="rt-warn rt-stop"><i class="fa-solid fa-circle-exclamation"></i>
+        בעמודה ${p.options.length} ערכים שונים — יותר מ-${p.max}. רשימה באורך כזה אי אפשר
+        לבחור ממנה, ולכן ההמרה ל${esc(colTypeHe(to))} אינה אפשרית.</div></div>
+      <div class="mfoot">${back}</div>`);
+    return;
+  }
+  /* The vocabulary a list or a status column would be given — shown as the
+     chips it will become, because "14 אפשרויות" is a number somebody has to
+     trust and the list is what tells them whether the column is a vocabulary
+     or free text with fourteen spellings of one word. */
+  const opts=p.options||[];
+  const vocab=opts.length?`
+    <div class="rt-sec-t">${opts.length} אפשרויות ייווצרו</div>
+    <div class="rt-chips">${opts.map(o=>`<span class="tag">${esc(o.value)}${
+        o.count?` <b style="opacity:.6;font-weight:600">${o.count}</b>`:''}</span>`).join('')}</div>`:'';
+  const samples=(p.samples||[]).length?`
+    <div class="rt-sec-t">כך ייראו התאים</div>
+    <div class="rt-samples">${p.samples.map(s=>`<div class="rt-row${s.after==null?' rt-row-lost':''}">
+        <span class="rt-before">${esc(s.before)}</span>
+        <i class="fa-solid fa-arrow-left"></i>
+        <span class="rt-after">${s.after==null?'מתרוקן':esc(s.after)}</span>
+      </div>`).join('')}</div>`:'';
+  const lost=p.lose?`<div class="rt-warn"><i class="fa-solid fa-triangle-exclamation"></i>
+      ${p.lose} מתוך ${p.filled} התאים המלאים יתרוקנו — ${esc(colTypeHe(to))} אינו יודע לקרוא את מה שכתוב בהם.</div>`
+    :`<div class="rt-ok"><i class="fa-solid fa-circle-check"></i>
+      כל ${p.filled} התאים המלאים שומרים את ערכם.</div>`;
+  const forms=(p.forms||[]).length?`<div class="rt-warn">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      ${(p.forms||[]).length} טפסים שואלים על העמודה הזאת — השאלה תשנה את סוגה.</div>`:'';
+  showModal(`<h2><i class="fa-solid fa-right-left" style="color:var(--primary)"></i> שינוי סוג עמודה</h2>
+    <div class="mbody">
+      <div class="rt-head">${esc(p.title)}:
+        <b>${esc(colTypeHe(p.from))}</b> <i class="fa-solid fa-arrow-left"></i> <b>${esc(colTypeHe(to))}</b></div>
+      ${lost}${vocab}${samples}${forms}
+      <div class="rt-note">אוטומציות שנכתבו על העמודה בסוגה הקודם יושהו, כדי שלא יפעלו
+        על ערך שאינן יודעות לקרוא. השינוי נרשם ביומן הלוח.</div>
     </div>
     <div class="mfoot">
-      <button class="btn btn-primary" onclick="doConvertColToDropdown('${colId}')"><i class="fa-solid fa-list-check"></i> המר לרשימה</button>
-      <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+      <button class="btn ${p.lose?'btn-danger':'btn-primary'}" onclick="doRetypeColumn('${colId}','${to}')">
+        <i class="fa-solid fa-right-left"></i> שנה ל${esc(colTypeHe(to))}</button>
+      ${back}
     </div>`);
 }
-/* The conversion itself. `confirm` is the column id named back, which is the
-   only way past the forms gate — the same bargain saveColumns strikes for a
-   retype through the board PATCH, and struck here rather than shared because
-   this path sends one column and not the whole list. */
-async function doConvertColToDropdown(colId,confirm){
+/* The change itself. `confirm` is the column id named back, which is the only
+   way past the forms gate — the same bargain saveColumns strikes for a retype
+   through the board PATCH, and struck here rather than shared because this
+   path sends one column and not the whole list. */
+async function doRetypeColumn(colId,to,confirm){
   closeModals();
   try{
-    const r=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/dropdown`,
+    const r=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/retype`,
       {method:'POST',headers:{'Content-Type':'application/json'},
-       body:withMe(confirm?{confirm_columns:[colId]}:{})});
+       body:withMe(confirm?{to,confirm_columns:[colId]}:{to})});
     st.board.columns=r.columns;
-    /* Every cell in the column changed shape — a string became a list — so
-       the loaded items are wrong until they are re-read. Re-rendering without
-       this draws the whole column empty, which looks exactly like the
+    /* Every cell in the column changed shape. Re-rendering off the loaded
+       items draws the whole column empty, which looks exactly like the
        conversion having eaten the data. */
     await refreshBoardItems();
     renderView();
-    toast(`העמודה הומרה לרשימה — ${(r.options||[]).length} אפשרויות`);
+    toast(r.lose?`הסוג שונה — ${r.lose} תאים התרוקנו`:'סוג העמודה שונה');
   }catch(e){
     if(e&&e.status===409&&e.detail&&Array.isArray(e.detail.columns)){
       const cs=e.detail.columns;
       const rows=cs.map(c=>`<div class="ci-row"><b>${esc(c.title||c.col_id)}</b>
-          <span class="ah-tag">שינוי סוג לרשימה נפתחת</span>
+          <span class="ah-tag">שינוי סוג ל${esc(colTypeHe(c.new_type))}</span>
           ${(c.forms||[]).map(x=>`<span class="ah-tag">${esc(x.name||'')}${
             x.required?' · חובה':''}</span>`).join('')}</div>`).join('');
       askConfirm(e.detail.message||'השדות נמצאים בשימוש בטפסים',
-        ()=>doConvertColToDropdown(colId,true),
+        ()=>doRetypeColumn(colId,to,true),
         {title:'שדה בשימוש בטופס', confirmText:'המשך בכל זאת',
          noteHTML:rows+`<div class="ci-row" style="color:var(--text-muted)">
-            השאלות לא יימחקו — הן יישאלו כבחירה מתוך הרשימה.</div>`});
+            השאלות לא יימחקו — הן יישאלו בסוג החדש.</div>`});
       return;
     }
-    toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בהמרת העמודה');
+    toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בשינוי סוג העמודה');
   }
 }
 /* "התאמות עמודת מזהה פריט" — the only setting the column has: what a click on a

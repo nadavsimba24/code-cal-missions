@@ -1,18 +1,19 @@
-/* "המרה לרשימה נפתחת" — who is offered it, and on which columns.
+/* "שינוי סוג עמודה" — who is offered it, and on which columns.
 
    The entry has to be decided in the browser, before the server is asked
    anything: a menu that offers a conversion the server would refuse with a
    400 is a menu that teaches people not to trust it. So the browser carries
-   its own copy of the convertible types (DROPDOWN_SOURCES), and the column
-   menu reads it.
+   its own copy of the convertible types (RETYPE_TYPES), and the column menu
+   reads it.
 
-   Two mistakes are easy here and both are silent. Offering it on a date, a
-   person or a מזהה פריט column — none of which holds a vocabulary, so the
-   conversion could only ever throw the cells away. And offering it to an
-   editor, who is not allowed to change a column at all and would get a 403
-   after being invited to press the button.
+   Two mistakes are easy here and both are silent. Offering it on a column
+   that holds nothing of its own — a formula, a mirror, a מזהה פריט, a files
+   column — where there is no value to carry across and the conversion could
+   only ever empty the cells. And offering it to an editor, who is not
+   allowed to change a column at all and would get a 403 after being invited
+   to press the button.
 
-   Driven by tests/test_column_becomes_a_dropdown.py. */
+   Driven by tests/test_column_type_conversion.py. */
 import fs from 'fs';
 import path from 'path';
 import {fileURLToPath} from 'url';
@@ -42,11 +43,17 @@ const COLS = [
   {id:'c_status', type:'status',     title:'שלב', options:[]},
   {id:'c_rate',   type:'rating',     title:'ציון'},
   {id:'c_date',   type:'date',       title:'יעד'},
+  {id:'c_time',   type:'timeline',   title:'טווח'},
+  {id:'c_check',  type:'checkbox',   title:'הושלם'},
   {id:'c_people', type:'people',     title:'בודק'},
+  {id:'c_drop',   type:'dropdown',   title:'רשימה', options:['א']},
   {id:'c_files',  type:'files',      title:'קבצים'},
+  {id:'c_conn',   type:'connect',    title:'מקושר'},
+  {id:'c_form',   type:'formula',    title:'חישוב'},
+  {id:'c_mir',    type:'mirror',     title:'מראה'},
   {id:'c_iid',    type:'item_id',    title:'מזהה'},
   {id:'c_made',   type:'created_at', title:'נוצר'},
-  {id:'c_drop',   type:'dropdown',   title:'כבר רשימה', options:['א']},
+  {id:'c_by',     type:'created_by', title:'יוצר'},
 ];
 
 /* The menu, run for one column, as one role. Returns the HTML it would open:
@@ -61,23 +68,22 @@ function menuFor(colId, role){
     isSysAdmin:()=>false,
   };
   const body = [grab('colMenu'), grab('customColumns'), grab('isBoardAdmin'),
-                konst('DROPDOWN_SOURCES')].join('\n');
+                konst('RETYPE_TYPES')].join('\n');
   const run = new Function('sandbox', `with(sandbox){ ${body}
     colMenu({stopPropagation(){}, currentTarget:null}, ${JSON.stringify(colId)}); }`);
   run(sandbox);
   return html;
 }
-const offers = (colId, role='admin') => menuFor(colId, role).includes('convertColToDropdown');
+const offers = (colId, role='admin') => menuFor(colId, role).includes('retypeColumn');
 
-// ── the types that hold a list ──
-for(const id of ['c_text','c_long','c_num','c_status','c_rate'])
+// ── the columns that hold a value of their own ──
+for(const id of ['c_text','c_long','c_num','c_status','c_rate','c_date',
+                 'c_time','c_check','c_people','c_drop'])
   ck('offered on '+id, offers(id));
 
-// ── and the ones that do not ──
-for(const id of ['c_date','c_people','c_files','c_iid','c_made'])
+// ── and the ones that hold nothing of their own ──
+for(const id of ['c_files','c_conn','c_form','c_mir','c_iid','c_made','c_by'])
   ck('not offered on '+id, !offers(id));
-
-ck('not offered on a column that is already a list', !offers('c_drop'));
 
 // ── and only to the board admin ──
 ck('an editor is not offered it', !offers('c_text','editor'));
@@ -85,18 +91,28 @@ ck('a viewer is not offered it',  !offers('c_text','viewer'));
 
 // ── the entry says what it does, and is not the deletion ──
 const m = menuFor('c_text','admin');
-ck('the menu names it in the board’s language', m.includes('המרה לרשימה נפתחת'), m);
+ck('the menu names it in the board’s language', m.includes('שינוי סוג עמודה'), m);
 ck('and it is not styled as the destructive one',
-   !/color:var\(--red\)[^>]*convertColToDropdown/.test(m));
+   !/color:var\(--red\)[^>]*retypeColumn/.test(m));
 ck('the delete entry is still the only red one',
    (m.match(/color:var\(--red\)/g)||[]).length===1);
 
+// ── the picker never offers the type the column already is ──
+const picker = new Function('COLUMN_TYPES','RETYPE_TYPES','c',
+  'return COLUMN_TYPES.filter(t=>RETYPE_TYPES.includes(t.type)&&t.type!==c.type)'
+  +'.sort((a,b)=>a.he.localeCompare(b.he,"he")).map(t=>t.type);');
+const TYPES = new Function(konst('COLUMN_TYPES')+'\nreturn COLUMN_TYPES;')();
+const RT = new Function(konst('RETYPE_TYPES')+'\nreturn RETYPE_TYPES;')();
+for(const t of RT){
+  const shown = picker(TYPES, RT, {type:t});
+  ck(`the picker for a ${t} column omits ${t}`, !shown.includes(t), shown.join(','));
+  ck(`and offers the other ${RT.length-1}`, shown.length===RT.length-1, shown.length);
+}
+
 // ── the two lists cannot drift apart unnoticed ──
-const inBrowser = JSON.parse(konst('DROPDOWN_SOURCES')
-  .replace(/^const DROPDOWN_SOURCES\s*=\s*/,'').replace(/;$/,'').replace(/'/g,'"'));
 ck('every convertible type is a type the picker can create',
-   inBrowser.every(t=>/\{type:'(\w+)'/.test(src) && src.includes(`{type:'${t}',he:`)),
-   inBrowser.filter(t=>!src.includes(`{type:'${t}',he:`)));
+   RT.every(t=>src.includes(`{type:'${t}',he:`)),
+   RT.filter(t=>!src.includes(`{type:'${t}',he:`)));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

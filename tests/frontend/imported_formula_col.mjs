@@ -22,17 +22,17 @@ function grab(name){
 }
 
 let cols=[], shown='';
-/* colMenu also reads DROPDOWN_SOURCES — the types "המרה לרשימה נפתחת" is
+/* colMenu also reads RETYPE_TYPES — the column types "שינוי סוג עמודה" is
    offered on. Passed in rather than stubbed so this harness keeps exercising
    the real menu; what the entry does is pinned by
-   tests/frontend/column_to_dropdown_menu.mjs. */
-const DROPDOWN_SOURCES = JSON.parse(
-  /^const DROPDOWN_SOURCES\s*=\s*(\[[^\]]*\]);$/m.exec(src)[1].replace(/'/g,'"'));
+   tests/frontend/column_retype_menu.mjs. */
+const RETYPE_TYPES = new Function(
+  /^const RETYPE_TYPES=[\s\S]*?;$/m.exec(src)[0]+'\nreturn RETYPE_TYPES;')();
 const colMenu = new Function('customColumns','st','isBoardAdmin','esc','openCellPop','ColPerms',
-  'DROPDOWN_SOURCES',
+  'RETYPE_TYPES',
   grab('colMenu')+'\nreturn colMenu;')(
   ()=>cols, {board:{my_role:'admin'}}, ()=>true, x=>String(x==null?'':x),
-  (el,html)=>{shown=html;}, {open(){}}, DROPDOWN_SOURCES);
+  (el,html)=>{shown=html;}, {open(){}}, RETYPE_TYPES);
 
 let pass=0, fail=0;
 const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console.log('  FAIL '+n+(x?'  → '+x.slice(0,300):''))); };

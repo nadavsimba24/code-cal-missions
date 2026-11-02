@@ -11245,96 +11245,327 @@ def column_impact(board_id: int, col_id: str, actor_id: int = Depends(current_us
         return out
 
 
-# ── המרת עמודה קיימת לרשימה נפתחת ──
-# A board admin can add a dropdown column, and could always retype one through
-# the board PATCH — but that branch replaces DEFINITIONS and never touches a
-# cell, so a text column turned into a list arrived with an empty vocabulary
-# and every answer already in it unreadable. The thing people actually want is
-# the opposite: the column already holds the list, written out by hand a
-# hundred times, and what is missing is the declaration that those are the
-# options. So this converts the two together, in one transaction.
+# ── שינוי סוג עמודה ──
+# A board admin could always retype a column: PATCH /api/boards/{id} takes a
+# full replacement of the column definitions, so naming a text column
+# "dropdown" in that payload retypes it. What it could never do is the half
+# that matters. That branch replaces DEFINITIONS and never touches a cell, and
+# every type stores its value in its own shape — a dropdown cell is a LIST of
+# strings, a status cell is a {label,color} snapshot, a timeline is a pair of
+# dates. So a column retyped that way came back holding values the new type
+# cannot read, and the board drew the whole column empty.
 #
-# Only from a type that holds a value a list can be made out of. A date, a
-# person, a file or a link is not a vocabulary, and a derived column (formula,
-# mirror, מזהה פריט, מועד יצירה, יוצר הרשומה) has no value of its own —
-# offering any of those would be offering to throw the cells away and calling
-# it a conversion.
-DROPDOWN_SOURCE_TYPES = frozenset({"text", "long_text", "email", "phone",
-                                   "number", "rating", "status"})
+# Here the definition and the cells move together, in one transaction, through
+# one rule that is the same for every pair of types:
+#
+#     the cell is read into the WORDS it says, and those words are written
+#     back in the shape the new type holds. Where the new type cannot read a
+#     word, that cell is emptied — and the number of cells that will happen to
+#     is counted and shown BEFORE anything is written.
+#
+# One rule rather than a matrix of a hundred and thirty-two conversions. It is
+# also the rule a person already has in their head: a column says something,
+# and the question is whether the new type can still say it.
+
+# Columns whose cell holds a value of its own, in words another type can be
+# built out of. Everything else is excluded, and not out of fussiness:
+#   · formula and mirror compute from elsewhere and store nothing of their own
+#   · created_at, created_by and item_id are issued by the system
+#   · connect is a relationship, with rows of its own in ItemLink
+#   · files points at uploads — a filename is not a file, and converting away
+#     from one would leave the uploads orphaned
+#   · accounts points at a linked record rather than holding a word
+# Source and target are the same set on purpose: everything in it can be read
+# into words, and everything in it can be written from them.
+COLUMN_RETYPE_TYPES = frozenset({
+    "text", "long_text", "email", "phone", "number", "rating",
+    "status", "dropdown", "date", "timeline", "checkbox", "people"})
 
 # A list nobody can scroll is not a list. The refusal says the count, because
 # the useful next step is to look at what the column actually holds: a free
 # text column with nine hundred distinct answers was never a vocabulary
-# waiting to be declared, and silently keeping the first two hundred would
-# empty the cells of everybody below the cut.
+# waiting to be declared, and silently keeping the first N would empty the
+# cells of everybody below the cut.
 DROPDOWN_CONVERT_MAX = 200
 
+# The board's own word for each type. Said on the server because the board's
+# LOG is written here, and a line reading "הסוג שונה לdropdown" on a Hebrew
+# board is a line written for whoever wrote the code rather than for whoever
+# has to read it a month later. Mirrors COLUMN_TYPES in the browser.
+COLUMN_TYPE_HE = {
+    "text": "טקסט", "long_text": "טקסט ארוך", "email": 'דוא"ל', "phone": "טלפון",
+    "number": "מספר", "rating": "דירוג", "status": "סטטוס",
+    "dropdown": "רשימה נפתחת", "date": "תאריך", "timeline": "ציר זמן",
+    "checkbox": "תיבת סימון", "people": "אנשים",
+}
 
-def _as_dropdown_value(v, was):
-    """One cell, as the list of labels it becomes. [] when it held nothing.
+# The words a checkbox will accept as "yes". Anything else — "לא", "", a date,
+# a name — leaves the box unticked, which is what an unticked box means: there
+# is no third state to put a value nobody can read into.
+CHECKBOX_YES = frozenset({"כן", "yes", "true", "1", "v", "✓", "x", "מסומן", "בוצע"})
 
-    A dropdown cell is a list of option strings — see the form coercion, which
-    checks each one against the column's options. Every source type here
-    stores a single value, so each converts to a one-element list; the shape
-    change is the whole of the migration.
+
+def _num_word(v):
+    """A number as the word it reads like — 3 and not 3.0."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v).strip()
+    return str(int(f)) if f.is_integer() else str(f)
+
+
+def _iso_day(s):
+    """One word as a date, or "" — accepts what the board itself writes
+    (YYYY-MM-DD) and what people type into it (DD/MM/YYYY, DD.MM.YYYY)."""
+    s = str(s or "").strip()
+    if not s:
+        return ""
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        y, mo, d = m.groups()
+    else:
+        m = re.match(r"^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$", s)
+        if not m:
+            return ""
+        d, mo, y = m.groups()
+    try:
+        return date(int(y), int(mo), int(d)).isoformat()
+    except ValueError:
+        return ""
+
+
+def _cell_words(col, task, names):
+    """The cell, as the list of words it says. [] when it holds nothing.
+
+    `names` is {user_id: name}, prefetched — a people column is a list of ids
+    and the word it says is the person's name.
     """
-    if v is None or v == "":
+    t = col.get("type")
+    v = (task.custom_fields or {}).get(str(col.get("id")))
+    if v is None or v == "" or v == [] or v == {}:
         return []
-    if was == "status":
-        # A status cell carries a snapshot of the option it points at, so the
-        # label is right here. The bare-string branch is for data old enough
-        # to predate that, which the board still renders.
-        if isinstance(v, dict):
-            v = v.get("label")
-        s = str(v or "").strip()
+    if t in ("text", "long_text", "email", "phone"):
+        s = str(v).strip()
         return [s] if s else []
-    if was in ("number", "rating"):
+    if t in ("number", "rating"):
         if isinstance(v, bool):
             return []
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            s = str(v).strip()
-            return [s] if s else []
-        # 3 and not 3.0: the option has to read like the figure did
-        return [str(int(f)) if f.is_integer() else str(f)]
-    s = str(v).strip()
-    return [s] if s else []
+        w = _num_word(v)
+        return [w] if w else []
+    if t == "status":
+        # the cell carries a snapshot of the option it points at, so the label
+        # is right here; the bare-string branch is for data old enough to
+        # predate that, which the board still renders
+        lbl = v.get("label") if isinstance(v, dict) else v
+        s = str(lbl or "").strip()
+        return [s] if s else []
+    if t == "dropdown":
+        return [str(x).strip() for x in (v if isinstance(v, list) else [v])
+                if str(x).strip()]
+    if t == "date":
+        d = _iso_day(v)
+        return [d] if d else []
+    if t == "timeline":
+        # two words, a start and an end — so a timeline converted to a list
+        # keeps both dates rather than collapsing to one
+        if not isinstance(v, dict):
+            return []
+        return [d for d in (_iso_day(v.get("from")), _iso_day(v.get("to"))) if d]
+    if t == "checkbox":
+        return ["כן"] if v else []
+    if t == "people":
+        out = []
+        for x in (v if isinstance(v, list) else [v]):
+            uid = x.get("id") if isinstance(x, dict) else x
+            try:
+                n = names.get(int(uid))
+            except (TypeError, ValueError):
+                n = None
+            out.append(n or str(x))
+        return [w for w in out if w]
+    return []
 
 
-def _dropdown_plan(db, board, col):
-    """The vocabulary this column would become — [(label, how many cells)].
-
-    Counted over every item on the board, the ones in the recycle bin
-    included. A cell left in the old shape is a wrong cell the day somebody
-    restores the item, and a restore is the worst place to discover it.
-
-    Order is the part worth being careful about. A status column already HAS
-    an order — its admin chose it — so that one is kept, unused options and
-    all: they are the column's vocabulary whether or not anybody has picked
-    them yet, and dropping them would quietly delete somebody's work. Every
-    other type has no order of its own, so the values are sorted, which is
-    what a list of domains or departments wants to be.
+def _words_cell(words, to, ctx):
+    """What a column of type `to` would hold, said in those words — or None
+    for a cell the new type cannot read, which is a cell that comes out empty.
     """
-    col_id = str(col.get("id"))
-    was = col.get("type") or "text"
+    words = [w for w in words if w]
+    if not words:
+        return None
+    if to in ("text", "long_text"):
+        return ", ".join(words)
+    if to == "email":
+        return next((w for w in words
+                     if _FORM_EMAIL_RE.match(w) and len(w) <= 254), None)
+    if to == "phone":
+        # a word with seven digits or more in it, which is the loosest rule
+        # that still refuses to call "תשתיות" a telephone number
+        return next((w for w in words if len(re.sub(r"\D", "", w)) >= 7), None)
+    if to in ("number", "rating"):
+        for w in words:
+            try:
+                f = float(str(w).replace(",", ""))
+            except ValueError:
+                continue
+            if to == "rating":
+                # the column draws five stars and nothing else, so a value
+                # outside them is not a rating this column can show
+                n = int(round(f))
+                if 1 <= n <= 5:
+                    return n
+                continue
+            return int(f) if f.is_integer() else f
+        return None
+    if to == "status":
+        for w in words:
+            o = ctx["by_label"].get(w)
+            if o:
+                return {"id": o["id"], "label": o["label"], "color": o.get("color")}
+        return None
+    if to == "dropdown":
+        seen, out = set(), []
+        for w in words:
+            if w in ctx["by_label"] and w not in seen:
+                seen.add(w)
+                out.append(w)
+        return out or None
+    if to == "date":
+        return next((d for d in (_iso_day(w) for w in words) if d), None)
+    if to == "timeline":
+        days = [d for d in (_iso_day(w) for w in words) if d]
+        if not days:
+            return None
+        # one date is a timeline that starts and ends on the same day, which
+        # is what the board draws for a single-day range anyway
+        return {"from": min(days), "to": max(days)}
+    if to == "checkbox":
+        return True if any(w.strip().lower() in CHECKBOX_YES for w in words) else None
+    if to == "people":
+        out = []
+        for w in words:
+            uid = ctx["by_person"].get(w.strip().casefold())
+            if uid and uid not in out:
+                out.append(uid)
+        return out or None
+    return None
+
+
+def _retype_vocabulary(col, to, rows):
+    """The list a status or dropdown target would be given, in order.
+
+    A status or dropdown SOURCE already has an order — its admin chose it — so
+    that one is kept, options nobody has picked included: they are the column's
+    vocabulary whether or not anyone has used them yet, and pruning them would
+    quietly delete somebody's work. Every other type has no order of its own,
+    so its values are sorted, which is what a list of departments wants to be.
+
+    `rows` is [(task, words)] — walked once, by the caller, for everything.
+    """
+    if to not in ("status", "dropdown"):
+        return []
     counts, order = {}, []
-    for t in (db.query(Task).execution_options(include_deleted=True)
-                .filter(Task.board_id == board.id).all()):
-        for lbl in _as_dropdown_value((t.custom_fields or {}).get(col_id), was):
-            if lbl not in counts:
-                counts[lbl] = 0
-                order.append(lbl)
-            counts[lbl] += 1
+    for _, words in rows:
+        for w in words:
+            if w not in counts:
+                counts[w] = 0
+                order.append(w)
+            counts[w] += 1
+    was = col.get("type")
     if was == "status":
         vocab = [o["label"] for o in (_status_col_options(col.get("options")) or [])]
-        labels = vocab + [l for l in order if l not in vocab]
+        labels = vocab + [w for w in order if w not in vocab]
+    elif was == "dropdown":
+        vocab = [str(o) for o in (col.get("options") or [])]
+        labels = vocab + [w for w in order if w not in vocab]
     else:
         labels = sorted(counts, key=lambda s: (s.casefold(), s))
     return [(l, counts.get(l, 0)) for l in labels]
 
 
-def _dropdown_convert_or_403(db, board_id, col_id, actor_id):
+def _retype_plan(db, board, col, to):
+    """Everything the dialog and the write both need, from one pass.
+
+    Counted over every item on the board, the ones in the recycle bin
+    included. A cell left in the old shape is a wrong cell the day somebody
+    restores the item, and a restore is the worst place to discover it.
+    """
+    tasks = (db.query(Task).execution_options(include_deleted=True)
+               .filter(Task.board_id == board.id).all())
+    names = {}
+    if col.get("type") == "people":
+        names = {u.id: u.name for u in db.query(User).all()}
+    rows = [(t, _cell_words(col, t, names)) for t in tasks]
+    vocab = _retype_vocabulary(col, to, rows)
+
+    ctx = {"by_label": {}, "by_person": {}}
+    if to == "status":
+        opts = _status_col_options(
+            [{"label": l, "color": IMPORT_PALETTE[i % len(IMPORT_PALETTE)]}
+             for i, (l, _) in enumerate(vocab)]) or []
+        ctx["by_label"] = {o["label"]: o for o in opts}
+        options = opts
+    elif to == "dropdown":
+        ctx["by_label"] = {l: l for l, _ in vocab}
+        options = [l for l, _ in vocab]
+    else:
+        options = None
+    if to == "people":
+        # only somebody who may be named on this board — the same gate every
+        # other door uses, and the reason a conversion cannot invent a member
+        for (uid, nm) in (db.query(User.id, User.name)
+                            .join(BoardMember, BoardMember.user_id == User.id)
+                            .filter(BoardMember.board_id == board.id).all()):
+            if nm:
+                ctx["by_person"].setdefault(nm.strip().casefold(), uid)
+
+    plan, filled, keep = [], 0, 0
+    lost, kept = [], []            # distinct before→after pairs, for the dialog
+    for t, words in rows:
+        val = _words_cell(words, to, ctx) if words else None
+        plan.append((t, val))
+        if not words:
+            continue
+        filled += 1
+        before = ", ".join(words)
+        if val is None:
+            if before not in [b for b, _ in lost]:
+                lost.append((before, None))
+        else:
+            keep += 1
+            if before not in [b for b, _ in kept]:
+                kept.append((before, val))
+    # The losses come first: they are the part of the change somebody has to
+    # agree to, and five unchanged cells say nothing about it.
+    samples = [{"before": b, "after": None} for b, _ in lost[:4]]
+    for b, val in kept:
+        if len(samples) >= 6:
+            break
+        samples.append({"before": b, "after": _cell_preview(val, to)})
+    return {"rows": plan, "vocab": vocab, "options": options,
+            "filled": filled, "keep": keep, "lose": filled - keep,
+            "samples": samples}
+
+
+def _cell_preview(val, to):
+    """One converted value as the dialog shows it — the point is to let
+    somebody SEE the change, so this says what the cell will read like."""
+    if val is None:
+        return None
+    if to == "status":
+        return (val or {}).get("label")
+    if to == "dropdown":
+        return ", ".join(val)
+    if to == "timeline":
+        return f"{val.get('from')} – {val.get('to')}"
+    if to == "checkbox":
+        return "כן"
+    if to == "people":
+        return str(len(val))
+    return str(val)
+
+
+def _retype_or_403(db, board_id, col_id, to, actor_id):
     """The board and the column, or the refusal that says why not."""
     b = db.query(Board).filter(Board.id == board_id).first()
     if not b or b.deleted_at:
@@ -11345,18 +11576,21 @@ def _dropdown_convert_or_403(db, board_id, col_id, actor_id):
     if not col:
         raise HTTPException(404, "column not found")
     was = col.get("type") or "text"
-    if was == "dropdown":
-        raise HTTPException(400, "העמודה כבר מסוג רשימה נפתחת")
-    if was not in DROPDOWN_SOURCE_TYPES:
-        raise HTTPException(400, "אפשר להמיר לרשימה נפתחת רק עמודות טקסט, "
-                                 "טקסט ארוך, דוא\"ל, טלפון, מספר, דירוג או סטטוס")
+    if was not in COLUMN_RETYPE_TYPES:
+        raise HTTPException(400, "אי אפשר לשנות את הסוג של עמודה זו — היא אינה "
+                                 "מחזיקה ערך משלה (נוסחה, שדה מראה, קישור, קבצים "
+                                 "או עמודה שהמערכת מייצרת)")
+    if to not in COLUMN_RETYPE_TYPES:
+        raise HTTPException(400, "אי אפשר להמיר לסוג הזה")
+    if to == was:
+        raise HTTPException(400, "העמודה כבר מהסוג הזה")
     return b, col, was
 
 
-@app.get("/api/boards/{board_id}/columns/{col_id}/dropdown")
-def column_dropdown_plan(board_id: int, col_id: str,
-                         actor_id: int = Depends(current_user_id)):
-    """What converting this column to a list would produce, before it does.
+@app.get("/api/boards/{board_id}/columns/{col_id}/retype")
+def column_retype_plan(board_id: int, col_id: str, to: str = "",
+                       actor_id: int = Depends(current_user_id)):
+    """What changing this column's type would do, before it does it.
 
     Counted on the server and not off the loaded board, for the same reason
     the delete impact is: the cells a client holds have already been filtered
@@ -11364,42 +11598,41 @@ def column_dropdown_plan(board_id: int, col_id: str,
     for exactly the person about to make it.
     """
     with Session(engine) as db:
-        b, col, was = _dropdown_convert_or_403(db, board_id, col_id, actor_id)
-        plan = _dropdown_plan(db, b, col)
-        return {"col_id": col_id, "title": col.get("title") or "", "type": was,
-                "options": [{"value": l, "count": n} for l, n in plan],
-                "cells": sum(n for _, n in plan),
-                "max": DROPDOWN_CONVERT_MAX,
-                "too_many": len(plan) > DROPDOWN_CONVERT_MAX,
-                # the other thing a retype is load-bearing for — same warning
-                # the board PATCH gives, asked here before anything is written
+        b, col, was = _retype_or_403(db, board_id, col_id, to, actor_id)
+        p = _retype_plan(db, b, col, to)
+        cap = STATUS_COL_MAX if to == "status" else DROPDOWN_CONVERT_MAX
+        return {"col_id": col_id, "title": col.get("title") or "",
+                "from": was, "to": to,
+                "options": [{"value": l, "count": n} for l, n in p["vocab"]],
+                "filled": p["filled"], "keep": p["keep"], "lose": p["lose"],
+                "samples": p["samples"],
+                "max": cap,
+                "too_many": to in ("status", "dropdown") and len(p["vocab"]) > cap,
+                # the other thing a retype is load-bearing for — the same
+                # warning the board PATCH gives, asked before anything is written
                 "forms": _form_column_uses(db, board_id, [col_id]).get(str(col_id), [])}
 
 
-@app.post("/api/boards/{board_id}/columns/{col_id}/dropdown")
-def column_to_dropdown(board_id: int, col_id: str, data: dict,
-                       actor_id: int = Depends(current_user_id)):
-    """Convert the column to a list, its own values becoming the options.
+@app.post("/api/boards/{board_id}/columns/{col_id}/retype")
+def column_retype(board_id: int, col_id: str, data: dict,
+                  actor_id: int = Depends(current_user_id)):
+    """Change the column's type, carrying its cells across with it.
 
-    The definition and the cells move together or not at all: a column
-    declared a list whose cells still hold bare strings renders every row
-    empty, and the board PATCH that retypes a column does exactly that
-    because replacing definitions is all it does.
-
-    Everything a retype owes, this owes too, and for the same reasons as
-    there: forms that ask about the column have to be agreed to out loud
+    Everything a retype owes, this owes and in the same shapes as the board
+    PATCH: a form that asks about the column has to be agreed to out loud
     (409, answered by naming the column back), rules written against the old
-    type are suspended rather than left to fire on a shape they cannot read,
+    type are suspended rather than left to fire on a value they cannot read,
     and the board's log gets the line.
     """
+    to = str(data.get("to") or "")
     with Session(engine) as db:
-        b, col, was = _dropdown_convert_or_403(db, board_id, col_id, actor_id)
-        plan = _dropdown_plan(db, b, col)
-        if len(plan) > DROPDOWN_CONVERT_MAX:
+        b, col, was = _retype_or_403(db, board_id, col_id, to, actor_id)
+        p = _retype_plan(db, b, col, to)
+        cap = STATUS_COL_MAX if to == "status" else DROPDOWN_CONVERT_MAX
+        if to in ("status", "dropdown") and len(p["vocab"]) > cap:
             raise HTTPException(
-                400, f"בעמודה {len(plan)} ערכים שונים — יותר מ-{DROPDOWN_CONVERT_MAX}, "
+                400, f"בעמודה {len(p['vocab'])} ערכים שונים — יותר מ-{cap}, "
                      f"וזו רשימה שאי אפשר לבחור ממנה")
-        opts = [l for l, _ in plan]
         uses = _form_column_uses(db, board_id, [col_id])
         if uses:
             agreed = {str(x) for x in (data.get("confirm_columns") or [])}
@@ -11409,48 +11642,50 @@ def column_to_dropdown(board_id: int, col_id: str, data: dict,
                                "אישור מפורש נדרש לפני השינוי",
                     "columns": [{"col_id": str(col_id),
                                  "title": col.get("title") or col_id,
-                                 "removed": False, "new_type": "dropdown",
+                                 "removed": False, "new_type": to,
                                  "forms": uses[str(col_id)]}]})
         # ── the cells ──
-        touched = 0
-        for t in (db.query(Task).execution_options(include_deleted=True)
-                    .filter(Task.board_id == b.id).all()):
+        # Only the rows that change. Reassigning custom_fields on every task
+        # would mark the whole board dirty and issue an UPDATE per item, for
+        # the sake of rows that never had a value in this column at all.
+        for t, val in p["rows"]:
             cf = dict(t.custom_fields or {})
-            if col_id not in cf:
+            if val is None and str(col_id) not in cf:
                 continue
-            new = _as_dropdown_value(cf.get(col_id), was)
-            if new:
-                cf[col_id] = new
+            if val is None:
+                # a value the new type cannot read leaves an EMPTY cell, not a
+                # cell holding the old type's shape — that would render blank
+                # and behave as if it still had something in it
+                cf.pop(str(col_id), None)
             else:
-                # a cell that held nothing keeps holding nothing, as the empty
-                # value of the new type rather than as the old type's blank
-                cf.pop(col_id, None)
+                cf[str(col_id)] = val
             # JSON columns are replaced, never mutated in place — SQLAlchemy
             # does not watch inside one, and an in-place edit commits nothing
             t.custom_fields = cf
-            touched += 1
         # ── the definition ──
         cols = [dict(c) for c in ((b.settings or {}).get("columns") or [])]
         for c in cols:
             if str(c.get("id")) != str(col_id):
                 continue
-            c.update({"type": "dropdown", "options": opts,
-                      # settings the old type carried and this one cannot
-                      "number": None, "copy_mode": None,
-                      "connect": None, "mirror_of": None})
+            c.update({"type": to, "options": p["options"],
+                      # settings the old type carried and the new one cannot
+                      "number": c.get("number") if to == "number" else None,
+                      "copy_mode": None, "connect": None, "mirror_of": None})
         s = dict(b.settings or {})
         s["columns"] = cols
         b.settings = s
         title = col.get("title") or col_id
-        if not _column_types_compatible(was, "dropdown"):
+        if not _column_types_compatible(was, to):
             _suspend_dependents(db, b, "column", col_id, actor_id,
-                                f"{title} (שונתה מ{was} לרשימה נפתחת)")
-        _form_settings_resweep(db, board_id, {str(col_id): "dropdown"})
+                                f"{title} (שונתה מ{was} ל{to})")
+        _form_settings_resweep(db, board_id, {str(col_id): to})
         _log_board(db, board_id, "update", field="column", old=title,
-                   new=f"{title} — הומרה לרשימה נפתחת ({len(opts)} אפשרויות)",
+                   new=f"{title} — הסוג שונה ל{COLUMN_TYPE_HE.get(to, to)}"
+                       + (f" ({p['lose']} תאים התרוקנו)" if p["lose"] else ""),
                    actor=actor_id)
         db.commit()
-        return {"columns": cols, "options": opts, "items": touched}
+        return {"columns": cols, "keep": p["keep"], "lose": p["lose"],
+                "options": p["options"]}
 
 
 @app.get("/api/tasks/lookup")
