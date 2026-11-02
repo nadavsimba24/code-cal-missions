@@ -8682,7 +8682,8 @@ const Automations = {
                onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setOrder(${a.id});}">
         <button class="rm-item" onclick="Automations.setOrder(${a.id})"><i class="fa-solid fa-check"></i> שמור</button>`;
     const on=a.status==='active';
-    return item('fa-pen','ערוך',`closeCellPops();Automations.edit(${a.id})`)
+    return item('fa-pen','ערוך את הכלל',`closeCellPops();Automations.editRule(${a.id})`)
+      +item('fa-sliders','פרטים — שם, בעלות וסדר',`closeCellPops();Automations.edit(${a.id})`)
       +item('fa-copy','שכפל',`closeCellPops();Automations.duplicate(${a.id})`)
       +item(on?'fa-pause':'fa-play',on?'השהה':'הפעל',`closeCellPops();Automations.toggle(${a.id},${!on})`)
       +'<div class="rm-sep"></div>'
@@ -9684,6 +9685,141 @@ const Automations = {
      becomes a chip in the value's own colour. "צור" stays disabled until the
      sentence is complete, so a half-built rule can never be saved. */
   cancelNew(){ this.building=null; this.render(); },
+
+  /* ---- editing a rule that already exists ----
+     "ערוך" opened the name, the description, the owner and the running order
+     — everything ABOUT the rule and nothing the rule DOES. The sentence
+     itself was fixed at creation: a trigger pointed at the wrong column, or a
+     status picked by mistake, meant deleting the rule and building it again,
+     which throws away its history, its owner, its order and its id.
+
+     The server has taken a changed configuration all along, and takes it
+     carefully: while the rule is ACTIVE the edit is written as a draft
+     version and the live rule goes on running until somebody publishes it —
+     which is the banner that already says "גרסה N ממתינה להפעלה". The one
+     thing missing in between was a builder opened on a rule that exists. */
+  async editRule(id){
+    const a=(this.data.automations||[]).find(x=>x.id===id); if(!a)return;
+    const r=(this.recipes||[]).find(x=>x.id===a.recipe_id);
+    if(!r){ toast('הכלל נבנה על תבנית שאינה בקטלוג — אפשר לערוך רק את פרטיו'); return; }
+    let cfg=a.config||{}, fromDraft=false;
+    /* A pending draft is what the next publish will make live, so it is what
+       an edit has to start from. Starting from the live version would quietly
+       throw the waiting one away, and the person editing would have no way of
+       knowing that had happened. */
+    if(a.draft_version){
+      try{
+        const d=await api('/api/automations/'+id+'/versions'+(meId()?'?user_id='+meId():''));
+        const v=(d.versions||[]).find(x=>x.version===a.draft_version);
+        if(v&&v.snapshot&&v.snapshot.config){ cfg=v.snapshot.config; fromDraft=true; }
+      }catch(e){ toast('לא ניתן לקרוא את הטיוטה הממתינה'); return; }
+    }
+    this.building=this._buildingFrom(r,cfg,a,fromDraft);
+    this.tab='create'; this.render();
+  },
+
+  /* The inverse of save(): a stored configuration read back into the blanks.
+
+     Everything the builder does not model is carried through in `base` rather
+     than rebuilt — a field mapping is edited through the API and nowhere
+     else, and a save that rebuilt the configuration from the screen alone
+     would delete it without saying so. */
+  _buildingFrom(r,cfg,a,fromDraft){
+    const values={};
+    // the status column rides beside the status and decides what its value
+    // MEANS, so it is read before the values that depend on it
+    (r.status_fields||[]).forEach(k=>{
+      if(cfg[k+'_col']) values[k+'_col']=this._colCell(cfg[k+'_col']);
+    });
+    (r.fields||[]).forEach(f=>{
+      if(cfg[f.key]!==undefined) values[f.key]=this._cellFor(f,cfg[f.key],cfg,values);
+    });
+    const acts=(cfg.actions||[]).map(x=>{
+      const spec=this._actSpec(x.key)||{fields:[]};
+      const vals={};
+      (spec.fields||[]).filter(f=>f.type==='status').forEach(f=>{
+        if((x.values||{})[f.key+'_col']) vals[f.key+'_col']=this._colCell(x.values[f.key+'_col']);
+      });
+      (spec.fields||[]).forEach(f=>{
+        const got=(x.values||{})[f.key];
+        if(got!==undefined) vals[f.key]=this._cellFor(f,got,x.values||{},vals);
+      });
+      return {key:x.key,values:vals};
+    });
+    return {recipe:r, values, acts,
+            conds:(cfg.conditions||[]).map(c=>this._condFrom(c)),
+            condOp:cfg.conditions_op==='or'?'or':'and',
+            meta:{name:a.name||'',description:a.description||''},
+            base:{...cfg},
+            edit:{id:a.id,status:a.status,etag:a.etag,fromDraft:!!fromDraft}};
+  },
+  _colCell(id){
+    const c=(customColumns()||[]).find(x=>String(x.id)===String(id));
+    return {v:id,label:(c&&c.title)||String(id),color:''};
+  },
+  /* One stored value, as the chip that stands for it. Resolved through the
+     very lists the pickers offer, so a value the picker could not have
+     produced reads as itself rather than as a wrong name. */
+  _cellFor(f,v,siblings,built){
+    const mk=(label,color)=>({v:v,label:String(label==null?'':label),color:color||''});
+    if(f.type==='text'||f.type==='days') return mk(v);
+    if(f.type==='wait')   return mk(this.waitHe(+v||0));
+    if(f.type==='map')    return mk('מיפוי שדות');   // edited through the API
+    if(f.type==='column') return mk(this._colCell(v).label);
+    if(f.type==='fields')
+      return mk((Array.isArray(v)?v:[]).map(k=>
+        ((this.copyFields||[]).find(x=>x.key===k)||{}).label||k).join(', '));
+    if(f.type==='recipient'){
+      const HE={actor:'המשתמש שביצע את השינוי',owner:'בעל האוטומציה',board_admin:'מנהל הלוח'};
+      const kind=(v&&v.kind)||'user', val=(v||{}).value;
+      if(kind==='user') return mk((this.members.find(m=>m.user_id===val)||{}).name||val);
+      if(kind==='field') return mk('אחראי משדה '+this._colCell(val).label);
+      return mk(HE[kind]||kind);
+    }
+    const items=this._optionsFor(f.type,(siblings||{}).a_connect||(siblings||{}).connect,
+                                 f.key,this._statusColOf(built||{},f.key));
+    const hit=items.find(x=>String(x.v)===String(v));
+    return hit?mk(hit.label,hit.color):mk(v);
+  },
+  _condFrom(c){
+    const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
+    const out={kind:c.kind,v:null,label:''};
+    if(!spec.type) return out;
+    if(spec.type==='column'){
+      const val=c.value||{};
+      const col=(customColumns()||[]).find(x=>String(x.id)===String(val.col));
+      out.col=val.col;
+      out.colType=val.type||(col&&col.type)||'text';
+      out.colLabel=(col&&col.title)||val.col;
+      if(val.op) out.op=val.op;
+      if(val.match) out.match=val.match;
+      if(val.value!==undefined){ out.v=val.value; out.label=this._condValueLabel(out,val.value); }
+      if(val.value2!==undefined){ out.v2=val.value2; out.label2=this._condValueLabel(out,val.value2); }
+      return out;
+    }
+    out.v=c.value;
+    const items=spec.type==='status'?boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}))
+      :spec.type==='priority'?boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}))
+      :spec.type==='group'?((st.board&&st.board.groups)||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}))
+      :spec.type==='person'?this.members.map(m=>({v:m.user_id,label:m.name,person:m}))
+      :[];
+    const hit=items.find(x=>String(x.v)===String(c.value));
+    out.label=hit?hit.label:String(c.value==null?'':c.value);
+    out.color=(hit&&hit.color)||'';
+    return out;
+  },
+  _condValueLabel(c,v){
+    const kind=ADV_KINDS[c.colType]||'text';
+    if(kind==='people'){ const m=this.members.find(x=>x.user_id===+v); return m?m.name:String(v); }
+    if(kind==='check')  return (v===true||v==='true')?'מסומן':'לא מסומן';
+    if(kind==='date'){ const t=ADV_DATES.find(d=>d[0]===v); return t?t[1]:String(v); }
+    if(kind==='status'){
+      const col=(customColumns()||[]).find(x=>String(x.id)===String(c.col));
+      const o=this._condColOptions(col).find(x=>String(x.v)===String(v));
+      return o?o.label:String(v);
+    }
+    return String(v);
+  },
   pick(rid){
     const r=this.recipes.find(x=>x.id===rid)||null;
     // the conditions chosen in step 2 belong to the rule the action completes
@@ -9739,7 +9875,24 @@ const Automations = {
       (this._actSpec(a.key)||{fields:[]}).fields.every(f=>(a.values||{})[f.key]!==undefined));
     const ready=r.fields.every(f=>this.building.values[f.key]!==undefined)&&condsReady&&actsReady;
     const meta=this.building.meta||(this.building.meta={name:'',description:''});
-    return `<div class="au-group-h">אוטומציה חדשה</div>
+    const ed=this.building.edit;
+    /* The same screen either way — it has to be, or the two would drift into
+       two different builders. What changes is the heading, what the button
+       promises, and the one sentence an ACTIVE rule has to be told: the save
+       does not touch what is running. */
+    const head=ed
+      ? `<div class="au-group-h">עריכת אוטומציה</div>`
+        +(ed.status==='active'
+          ? `<div class="au-hint"><i class="fa-solid fa-circle-info"></i>
+               הכלל פעיל — השמירה תיכתב כגרסה חדשה הממתינה להפעלה, והכלל הקיים
+               ימשיך לרוץ עד שתפעילו אותה.</div>`
+          : '')
+        +(ed.fromDraft
+          ? `<div class="au-hint"><i class="fa-solid fa-pen-ruler"></i>
+               העריכה ממשיכה את הטיוטה שכבר ממתינה להפעלה, ולא את הגרסה הפעילה.</div>`
+          : '')
+      : `<div class="au-group-h">אוטומציה חדשה</div>`;
+    return head+`
       <div class="au-build">${sent}</div>
       ${ready?'':'<div class="au-hint"><i class="fa-solid fa-circle-info"></i> לחץ על כל שדה מודגש כדי להשלים אותו</div>'}
       ${this.condsHTML()}
@@ -9753,9 +9906,18 @@ const Automations = {
                  oninput="Automations.building.meta.description=this.value"></div>
       </div>
       <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary" ${ready?'':'disabled title="יש להשלים את כל השדות כדי להפעיל"'} onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור והפעל</button>
-        <button class="btn btn-ghost" onclick="Automations.save(true)" title="ניתן לשמור טיוטה גם בלי להשלים את כל השדות"><i class="fa-solid fa-pencil"></i> שמור כטיוטה</button>
-        <button class="btn btn-ghost" onclick="Automations.cancelNew()">חזרה לבחירה</button>
+        ${ed
+          /* A rule that is already a draft may be saved half-built, exactly as
+             a new draft may. One that is live or paused may not: the server
+             validates it in full, and a button that leads to a 400 is worse
+             than one that is plainly disabled. */
+          ? `<button class="btn btn-primary" ${(ready||ed.status==='draft')?'':'disabled title="יש להשלים את כל השדות"'}
+                     onclick="Automations.save()"><i class="fa-solid fa-check"></i> ${
+               ed.status==='active'?'שמור כגרסה ממתינה':'שמור שינויים'}</button>
+             <button class="btn btn-ghost" onclick="Automations.cancelNew()">ביטול</button>`
+          : `<button class="btn btn-primary" ${ready?'':'disabled title="יש להשלים את כל השדות כדי להפעיל"'} onclick="Automations.save()"><i class="fa-solid fa-check"></i> צור והפעל</button>
+             <button class="btn btn-ghost" onclick="Automations.save(true)" title="ניתן לשמור טיוטה גם בלי להשלים את כל השדות"><i class="fa-solid fa-pencil"></i> שמור כטיוטה</button>
+             <button class="btn btn-ghost" onclick="Automations.cancelNew()">חזרה לבחירה</button>`}
       </div>`;
   },
 
@@ -10828,7 +10990,16 @@ const Automations = {
 
   async save(asDraft){
     const r=this.building&&this.building.recipe; if(!r)return;
-    const config={};
+    const ed=this.building.edit;
+    if(ed) asDraft=(ed.status==='draft');
+    /* Editing starts from what was stored, so anything the builder does not
+       model survives the save — a field mapping is edited through the API and
+       nowhere else, and rebuilding the configuration from the screen alone
+       would delete it without a word. The three the builder DOES own are
+       cleared first: a condition somebody removed has to disappear, and
+       merging would quietly keep it. */
+    const config=ed?{...(this.building.base||{})}:{};
+    delete config.conditions; delete config.conditions_op; delete config.actions;
     for(const f of r.fields){
       const cur=this.building.values[f.key];
       // a draft is allowed to be half-built — that is what a draft is for
@@ -10913,14 +11084,30 @@ const Automations = {
     if(acts.length) config.actions=acts;
     const meta=this.building.meta||{};
     try{
-      await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
-                {method:'POST',headers:{'Content-Type':'application/json'},
-                 body:JSON.stringify({recipe_id:r.id,config,name:meta.name||'',
-                                      description:meta.description||'',
-                                      status:asDraft?'draft':'active'})});
-      toast(asDraft?'האוטומציה נשמרה כטיוטה':'האוטומציה נוצרה');
+      if(ed){
+        /* `etag` is the version this edit was written against. The server
+           refuses a write aimed at one that has since moved on and says what
+           the rule reads now — being told you lost without being told to what
+           is barely better than not being told. */
+        const got=await api('/api/automations/'+ed.id+(meId()?'?user_id='+meId():''),
+                  {method:'PATCH',headers:{'Content-Type':'application/json'},
+                   body:JSON.stringify({config,name:meta.name||'',
+                                        description:meta.description||'',etag:ed.etag})});
+        toast(ed.status==='active'
+              ? 'נשמרה גרסה ממתינה — הפעילו אותה כדי להחיל'
+              : 'האוטומציה עודכנה');
+        if(got&&got.id){ /* nothing to carry: the list is reloaded below */ }
+      }else{
+        await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
+                  {method:'POST',headers:{'Content-Type':'application/json'},
+                   body:JSON.stringify({recipe_id:r.id,config,name:meta.name||'',
+                                        description:meta.description||'',
+                                        status:asDraft?'draft':'active'})});
+        toast(asDraft?'האוטומציה נשמרה כטיוטה':'האוטומציה נוצרה');
+      }
       this.building=null;
-    }catch(e){ toast('לא ניתן ליצור אוטומציה'); return; }
+    }catch(e){ toast((e&&e.detail&&typeof e.detail==='string'&&e.detail)
+                     ||(ed?'לא ניתן לשמור את השינויים':'לא ניתן ליצור אוטומציה')); return; }
     await this.load();
     this.tab='manage';           // the new rule is now something to manage
     this.render();
