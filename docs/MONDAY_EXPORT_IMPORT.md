@@ -209,6 +209,7 @@ rather than dropping them silently.
 | the board came up, and the report says the query never asked for history | the query that ran is an older revision, without `activity_logs` |
 | every log row is recorded as "מערכת" | the query did not ask for `users { id name email }` |
 | formula / mirror / connect columns are empty on every item | the query did not ask for `display_value` — those three types do not answer in `text` at all |
+| a status column nobody has filled in yet did not come across | the query did not ask for `columns { … settings_str }` — an empty status column is built from the vocabulary its own definition states, and without it there is nothing to build |
 | everything imported, but there are fewer items than in monday | `cursor` was not `null` and pages were left behind. The report says so explicitly |
 | everything imported, but a change you made to the code is not there | the server is running from before the change — restart it, and Cmd+Shift+R in the tab |
 

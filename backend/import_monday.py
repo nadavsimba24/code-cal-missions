@@ -230,6 +230,40 @@ def status_colors(settings):
     return out
 
 
+def status_labels(settings):
+    """The words one status column offers, in the board's own order.
+
+    status_colors answers only the labels the file gave a colour for. This is
+    the vocabulary itself, and it is what an EMPTY status column has to be built
+    from: no item points at any of its options, so the cells cannot say what the
+    column offers and only its own definition can.
+    """
+    if not isinstance(settings, dict):
+        return []
+    labels = settings.get("labels")
+    out = []
+    if isinstance(labels, dict):
+        # keyed by the label's index, which monday writes as a string — read as
+        # text, "10" comes before "2" and the vocabulary arrives shuffled.
+        def idx(kv):
+            try:
+                return (0, int(kv[0]))
+            except (TypeError, ValueError):
+                return (1, 0)
+        for _, label in sorted(labels.items(), key=idx):
+            name = str(label or "").strip()
+            if name and name not in out:
+                out.append(name)
+    elif isinstance(labels, list):
+        for it in labels:
+            if not isinstance(it, dict):
+                continue
+            name = str(it.get("name") or it.get("label") or "").strip()
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
 def cell_label_color(cv):
     """The colour a single status CELL states, when the query asked for it.
 
@@ -1041,6 +1075,11 @@ def parse(raw, max_cols):
     people_by_id.update(_users_in(doc))
     activity, activity_left = _activity_of(board, people_by_id)
 
+    # The board's own column definitions, read here rather than further down
+    # because the blank-column rule below needs them: a status column nobody
+    # filled in is kept only when the file states its vocabulary.
+    defs = _column_defs(board)
+
     # ── survey the columns: title, type, and how many items actually use them ──
     meta, fill, order = {}, {}, []
     asked = set()          # columns whose cells came with display_value at all
@@ -1079,6 +1118,22 @@ def parse(raw, max_cols):
 
     for it in items:
         survey(it)
+    # A status column the board's own column list states and no item echoes a
+    # cell for. monday normally answers with a cell per column on every item, so
+    # this is the file whose items cannot speak for it — a board with no items
+    # yet, or a page that brought none — and the column list is then the only
+    # statement of what the board holds. Only the statuses are read this way:
+    # they are the ones whose definition carries the whole column (see the blank
+    # rule below), and taking the rest would be creating columns asserted by
+    # nothing and filled by nobody.
+    for cid, d in defs.items():
+        if cid in meta or TYPE_MAP.get(d.get("type") or "") != "status":
+            continue
+        if not status_labels(d.get("settings")):
+            continue
+        meta[cid] = {"title": (d.get("title") or "").strip(), "type": d.get("type") or ""}
+        fill[cid] = 0
+        order.append(cid)
     # The sub-items are a board of their own on monday, with a column set of
     # their own. Surveyed separately, because which of those columns the parent
     # also has is a question that can only be asked once both sets are known.
@@ -1113,8 +1168,24 @@ def parse(raw, max_cols):
     # into the ones that are empty in monday too and the ones whose values the
     # export simply never asked for. And it is self-correcting: re-export with
     # the query that asks, and the columns that DO have values come in.
-    blank = [cid for cid in keep if not fill[cid]]
-    keep = [cid for cid in keep if fill[cid]]
+    # A status column is the exception, and deliberately so. The rule above
+    # rests on the file being unable to tell a column that is empty from a
+    # column that is not really there — but a status column whose definition the
+    # query asked for states its own vocabulary, and that vocabulary IS the
+    # column: "טרם הוגדר / בעבודה / הושלם" belongs to the board whether or not
+    # any item sits on one of the words yet. A board migrated early in its life
+    # has those columns standing empty in monday too, and arriving without them
+    # is the first thing anyone notices. So an empty status column that brought
+    # a vocabulary is a column of this board, created with its words and their
+    # colours and no values. One that brought none — a query that never asked
+    # for `columns { settings_str }` — still falls to the rule, because there is
+    # nothing left to build it from.
+    status_vocab = {cid: status_labels((defs.get(cid) or {}).get("settings"))
+                    for cid in keep
+                    if not fill[cid] and TYPE_MAP.get(meta[cid]["type"]) == "status"}
+    status_vocab = {cid: words for cid, words in status_vocab.items() if words}
+    blank = [cid for cid in keep if not fill[cid] and cid not in status_vocab]
+    keep = [cid for cid in keep if fill[cid] or cid in status_vocab]
 
     # Over the limit, the fullest columns win — a column two items use carries
     # less of the board than one that every item fills. Ties keep the original
@@ -1151,7 +1222,6 @@ def parse(raw, max_cols):
         if c["monday_type"] in RETYPED:
             c["note"] = RETYPED[c["monday_type"]]
     # ── the formulas, now that every column has a title here ────────────
-    defs = _column_defs(board)
     titles_by_id = {c["key"]: c["title"] for c in columns}
     formulas = []
     for c in columns:
@@ -1356,6 +1426,10 @@ def parse(raw, max_cols):
                 for one in (v if isinstance(v, list) else [v]):
                     if one and one not in seen:
                         seen.append(one)
+        # An empty status column has no cells to learn its words from, and its
+        # own definition is the only place they are — see the blank rule above.
+        if not seen and c["type"] == "status":
+            seen = list(status_vocab.get(c["key"]) or [])
         c["options"] = seen
         if c["type"] == "status":
             # and the colour each of those words is shown in. The column's own
@@ -1425,6 +1499,12 @@ def parse(raw, max_cols):
             "columns_found": len(meta) + sub_found,
             "columns_imported": len(columns),
             "columns_empty": empty,
+            # Status columns created with their vocabulary and no values. They
+            # are imported columns, not missing ones, and they are named because
+            # a column that is empty here AND empty in monday still looks like
+            # something the import lost until somebody says otherwise.
+            "columns_status_empty": [meta[cid]["title"] or cid for cid in keep
+                                     if cid in status_vocab],
             # the columns that exist on the sub-items and nowhere on the parent
             # board — named, because they are the ones somebody will look for on
             # the item row and not find

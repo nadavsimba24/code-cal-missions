@@ -5750,6 +5750,19 @@ function importReport(b){
       <div class="imp-why">${REEXPORT_ONE_OP}</div>
     </div>`:'';
   const emptyCols=r.columns_empty||[];
+  /* Status columns created with their vocabulary and no values. They belong
+     with the report's good news and not with its losses: a column that is empty
+     here AND empty in monday looks exactly like a column the import dropped,
+     and the only thing that tells the two apart is saying so. */
+  const blankStatus=r.columns_status_empty||[];
+  const blankStatusHTML=blankStatus.length?`
+    <div class="imp-sec"><div class="imp-sec-t">
+      <i class="fa-solid fa-circle-check"></i> ${blankStatus.length} עמודות סטטוס נוצרו ריקות</div>
+      <div class="imp-why">אף פריט לא נמצא על אחד הערכים שלהן — גם במאנדיי הן ריקות — אבל
+        <b>רשימת הערכים שלהן הגיעה מהקובץ</b>, על צבעיה, ולכן הן נוצרו כאן במלואן. אפשר לבחור
+        בהן ערך מיד, בלי להגדיר אותן מחדש.</div>
+      <div class="imp-cols">${blankStatus.map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>
+    </div>`:'';
   const emptyHTML=emptyCols.length?`
     <div class="imp-sec"><div class="imp-sec-t">
       <i class="fa-solid fa-table-columns"></i> ${emptyCols.length} עמודות ריקות שלא נוצרו — <b>הן ריקות גם במאנדיי</b></div>
@@ -5876,7 +5889,7 @@ function importReport(b){
     </div>`;
   const title=(b.name||'הלוח יובא');
   const body=`${statsHTML}
-      ${cutHTML}${othersHTML}${nameHTML}${groupHTML}${statusHTML}${actHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
+      ${cutHTML}${othersHTML}${nameHTML}${groupHTML}${statusHTML}${actHTML}${mapHTML}${formulaHTML}${nothingHTML}${cellFormulaHTML}${skipHTML}${subColHTML}${reexportHTML}${blankStatusHTML}${emptyHTML}${hierHTML}${talkHTML}${fileHTML}${peopleHTML}`;
   // kept for the three things that can be done with it once it is on screen —
   // this report cannot be asked for again, so closing it is the one action
   // worth stopping to confirm
