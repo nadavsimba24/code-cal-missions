@@ -779,6 +779,15 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    actually see and drag, because a strip that only answers to a trackpad
    gesture reads as a panel with three columns in it and no more. */
 .qf-wrap{position:relative}
+/* The cut answers with nothing, said where the person is standing. Orange
+   rather than red: an over-narrow filter is not an error, it is an answer. */
+.qf-none{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px;padding:9px 11px;
+  border:1px solid var(--orange);border-radius:8px;background:rgba(253,171,61,.10);
+  font-size:13px;font-weight:600;color:var(--text)}
+.qf-none i{color:var(--orange);font-size:12px;flex:none}
+.qf-none-act{margin-inline-start:auto;background:none;border:none;padding:0;font:inherit;
+  font-size:12.5px;font-weight:700;color:var(--primary);cursor:pointer;text-decoration:underline}
+.qf-none-act:hover{color:var(--primary-dark,#0060b9)}
 .qf-cols{display:flex;gap:12px;overflow-x:auto;padding-bottom:10px;scroll-behavior:smooth}
 .qf-cols::-webkit-scrollbar{height:9px}
 .qf-cols::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:5px}
@@ -6353,6 +6362,9 @@ const ADV_KINDS = {
   people:'people', created_by:'people', assignees:'people',
   date:'date', created_at:'date', timeline:'date', due:'date',
   checkbox:'check', files:'check',
+  // מזהה פריט — see filter_ast.KINDS: the one column every board has that the
+  // filter would not offer, though the server could already answer about it
+  item_id:'text',
 };
 
 /* The operators each kind offers, in the order they are shown. `n` is how many
@@ -6448,13 +6460,24 @@ function advSpan(v){
 /* Every column the board can be asked about, built-in and custom alike, each
    with the kind that decides its operators. */
 function advFields(){
+  /* A column taken off the board is not a column to filter by. The five
+     built-ins used to be added here unconditionally, so a board whose admin
+     had removed "סטטוס" through the header's own "מחק עמודה" went on offering
+     it in the filter — a question about a column the board does not draw, and
+     from the person's side a column that does not exist. The custom ones were
+     already checked, but only against col_perms; being hidden is the other
+     way a column stops being there.
+
+     "שם הפריט" is deliberately not subject to this: it is the item itself,
+     the board cannot hide it, and the panel drops it for its own reason. */
+  const gone=advColGone;
   const out=[
     {id:'title',    label:'שם הפריט', kind:'text'},
     {id:'status',   label:'סטטוס',    kind:'status'},
     {id:'priority', label:'עדיפות',   kind:'status'},
     {id:'assignees',label:'אחראים',   kind:'people'},
     {id:'due',      label:'תאריך יעד',kind:'date'},
-  ];
+  ].filter(f=>f.id==='title'||!gone(f.id));
   (customColumns()||[]).forEach(c=>{
     const kind=ADV_KINDS[c.type];
     if(!kind) return;                       // connect, mirror… nothing to ask yet
@@ -6462,10 +6485,22 @@ function advFields(){
     // tidiness rule: a filter is a question, and the row set that answers it
     // is the answer. "תקציב גדול מ-מיליון", run for somebody who cannot see
     // budgets, hands them the figures through which rows survived.
+    // only advColHidden here: col_hidden holds built-ins alone (see
+    // HIDEABLE_BUILTIN_COLS), and a custom column removed from the board
+    // leaves customColumns() outright rather than being hidden
     if(advColHidden(c.id)) return;
     out.push({id:String(c.id), label:c.title||'עמודה', kind, col:c});
   });
   return out;
+}
+/* Has this column been taken off the board? col_hidden is what the header's
+   "מחק עמודה" writes — a built-in column cannot truly be dropped, only
+   removed from the board, and a custom one can be hidden the same way. Kept
+   apart from advColHidden below because they are two different facts: one is
+   "the board no longer has it", the other is "you may not see it". */
+function advColGone(colId){
+  const h=(st.board&&st.board.col_hidden)||[];
+  return h.map(String).includes(String(colId));
 }
 /* Is this column closed to the person looking? The board states each
    column's permission once, for every item — see col_perms. */
@@ -6477,6 +6512,13 @@ function advColHidden(colId){
    only to tell "the column was deleted" from "you may not see it" — two
    different facts, and telling somebody the wrong one is its own small lie. */
 function advKnownField(id){
+  /* A column removed from the board answers NO here, so a saved rule on it is
+     reported as "העמודה נמחקה" rather than as "אין לך הרשאה". Not a wording
+     nicety: under filter_column_policy='block' the denied branch refuses to
+     open the view at all, so a column the admin simply took off the board
+     would have locked people out of their own saved cut with a message about
+     a permission nobody had taken away. */
+  if(advColGone(id))return false;
   if(['title','status','priority','assignees','due'].includes(id))return true;
   return (customColumns()||[]).some(c=>String(c.id)===String(id)&&ADV_KINDS[c.type]);
 }
@@ -7350,17 +7392,34 @@ function stateHTML(badge, title, body, actions, icon){
     ${actions?`<div class="err-actions">${actions}</div>`:''}
   </div>`;
 }
-function noMatchHTML(){
-  /* Inside a view, the offer is to drop the temporary adjustments and go back
-     to what the view says. Outside one, there is nothing to go back TO, so
-     the offer is to clear the cut. Same button, two different promises, and
-     labelling both "ניקוי" would make one of them a lie. */
+/* Inside a view, the offer is to drop the temporary adjustments and go back
+   to what the view says. Outside one, there is nothing to go back TO, so the
+   offer is to clear the cut. Same button, two different promises, and
+   labelling both "ניקוי" would make one of them a lie.
+
+   One function because the board's empty state and the filter panel both make
+   this offer now, and two copies would be two wordings a week from now. */
+function clearCutAction(cls){
   const inView=typeof Views!=='undefined'&&Views.active!=null;
-  const act=inView
-    ? `<button class="btn btn-primary" onclick="Views.reset()">
+  return inView
+    ? `<button class="${cls||'btn btn-primary'}" onclick="Views.reset()">
          <i class="fa-solid fa-rotate-left"></i> איפוס השינויים הזמניים</button>`
-    : `<button class="btn btn-primary" onclick="clearFilters()">
+    : `<button class="${cls||'btn btn-primary'}" onclick="clearFilters()">
          <i class="fa-solid fa-xmark"></i> ניקוי חיפוש וסינון</button>`;
+}
+/* Does the cut on screen answer with nothing, on a board that HAS items? The
+   panel asks because it is sitting on top of the board's own empty state: it
+   hangs from the toolbar, up to 74vh of it, so somebody who filters down to
+   nothing while it is open never sees "אין תוצאות לסינון הנוכחי" at all. */
+function cutMatchesNothing(){
+  const all=((st.board&&st.board.tasks)||[]).length;
+  if(!all) return false;                       // an empty board is not a failed filter
+  if(typeof Paged!=='undefined'&&Paged.on) return Paged.total===0;
+  return applyFilters((st.board&&st.board.tasks)||[]).length===0;
+}
+function noMatchHTML(){
+  const inView=typeof Views!=='undefined'&&Views.active!=null;
+  const act=clearCutAction();
   return stateHTML('', 'אין תוצאות לסינון הנוכחי',
     inView ? 'הסינון שבתצוגה הזאת, יחד עם השינויים שביצעת, אינו מתאים לאף פריט.'
            : 'נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.',
@@ -12388,9 +12447,19 @@ function colFilterHTML(){
       ${colChipsHTML(x,picked,counts)}
     </div>`;
   }).join('');
+  /* The board's own "אין תוצאות" is behind this panel, not beside it — so the
+     panel says it too, with the same way out. Above the columns rather than
+     below them: the strip scrolls, and a notice at the far end of a scroller
+     is a notice nobody reads. */
+  const none=cutMatchesNothing()?`<div class="qf-none" role="status">
+      <i class="fa-solid fa-magnifying-glass"></i>
+      <span>אין תוצאות לסינון הנוכחי</span>
+      ${clearCutAction('qf-none-act')}
+    </div>`:'';
   return `<div class="arr-sec fcols">
     <div class="qf-head"><i class="fa-solid fa-filter"></i> סינון לפי עמודה
       <span class="qf-showing">${qfShowing()}</span></div>
+    ${none}
     ${cols?`<div class="qf-wrap">
         <button class="qf-arr prev" id="qf-prev" onclick="qfScroll(1)" tabindex="-1"
                 aria-label="עמודות קודמות"><i class="fa-solid fa-chevron-right"></i></button>
@@ -15283,7 +15352,12 @@ function canDeleteItem(t){ return itemPerm(t)==='delete'; }
    prefers whichever has been seen this session and falls back to the
    server's own default. */
 function recycleDays(){
-  return (typeof BoardTrash!=='undefined' && BoardTrash.retention)
+  /* The board carries it, so the sentence is the server's promise and not the
+     browser's. The two bins are kept as fallbacks for a screen reached before
+     a board is loaded; the literal sixty is the last resort and the only
+     number here nobody checked — which is why it is last. */
+  return (st.board && st.board.retention_days)
+      || (typeof BoardTrash!=='undefined' && BoardTrash.retention)
       || (typeof Trash!=='undefined' && Trash.data && Trash.data.retention_days)
       || 60;
 }
@@ -16666,7 +16740,7 @@ function deleteSubItem(e,id){
       toast('תת-פריט נמחק');
     }
     catch(err){toast(String(err.message||'').includes('403')?'אין לך הרשאה מתאימה למחיקה בלוח זה':'שגיאה במחיקה');}
-  },{title:'מחיקת תת-פריט',confirmText:'מחק',note:`המחיקה תנתק גם את כל הקישורים הקיימים שלו.
+  },{title:'מחיקת תת-פריט',confirmText:'מחק',note:`המחיקה תסיר גם את כל הקישורים הקיימים שלו.
 תת-הפריט ישמר בסל המחזור של הלוח למשך ${recycleDays()} יום, ולאחר מכן ימחק לצמיתות.`});
 }
 /* item options menu — opened by right-click on the row or the hover 3-dots button */
@@ -16803,7 +16877,7 @@ async function bulkDelete(){
      warning had no reason to look for the item there. What it says now is
      what the server does — see tests/test_delete_dialog_promises.py, which
      pins the window in the sentence to RECYCLE_BIN_DAYS itself. */
-  const note=`המחיקה תנתק גם את כל הקישורים הקיימים שלהם.
+  const note=`המחיקה תסיר גם את כל הקישורים הקיימים שלה.
 הפריטים ישמרו בסל המחזור של הלוח למשך ${recycleDays()} יום, ולאחר מכן ימחקו לצמיתות.`
     + (denied?`\n${denied} מהפריטים שנבחרו אינם ברי-מחיקה עבורך ויישארו.`:'');
   askConfirm(`למחוק ${allowed.length} פריטים?`,async()=>{
@@ -16944,7 +17018,7 @@ async function deleteItem(e,id){
       toast('הפריט נמחק');
     }
     catch(err){toast(String(err.message||'').includes('403')?'אין לך הרשאה מתאימה למחיקה בלוח זה':'שגיאה במחיקה');}
-  },{title:'מחיקת פריט',confirmText:'מחק',note:`המחיקה תנתק גם את כל הקישורים הקיימים שלו.
+  },{title:'מחיקת פריט',confirmText:'מחק',note:`המחיקה תסיר גם את כל הקישורים הקיימים שלו.
 הפריט וכל תת-הפריטים שלו ישמרו בסל המחזור של הלוח למשך ${recycleDays()} יום, ולאחר מכן ימחקו לצמיתות.`});
 }
 

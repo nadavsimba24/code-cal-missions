@@ -68,7 +68,7 @@ function world(){
     contains:c=>c==='open'&&log.ctl._open,
     add(c){ if(c==='open')log.ctl._open=true; },
     remove(c){ if(c==='open')log.ctl._open=false; }}};
-  const names = ['advFields','advColHidden','customColumns','advCount','advPicked','advPickedAll',
+  const names = ['advFields','advColHidden','advColGone','customColumns','advCount','advPicked','advPickedAll',
                  'advSetPicked','advToggle','advFilterRoot','advLegacyPicks','advDropLegacy',
                  'advChoices','advPersonLabel','boardPeople','statusColOpts','advToAst'];
   const body = names.map(grab).join('\n') + '\n'
@@ -120,8 +120,13 @@ function world(){
   /* The panel's own half of the same tree. advChanged is the redraw-and-ask
      step, which is not what these checks are about — they are about the two
      doors opening on one filter. */
+  /* The panel needs the names up to and including advDropLegacy, which
+     advToggle calls. Sliced by NAME and not by a count: it was slice(0,11),
+     and the first name added to the list above pushed advDropLegacy out of
+     it — advToggle then threw a ReferenceError from inside a world that had
+     been assembled perfectly well. */
   const panel = new Function('st','advChanged',
-    names.slice(0,11).map(grab).join('\n') + '\n' + konst('advOwnGroup') + '\n'
+    names.slice(0, names.indexOf('advDropLegacy')+1).map(grab).join('\n') + '\n' + konst('advOwnGroup') + '\n'
     + konst('advField') + '\n' + konst('ADV_KINDS') + '\n'
     + ';return {advPicked,advPickedAll,advCount,advToggle};')(st, ()=>{});
   return [Adv, st, log, panel];

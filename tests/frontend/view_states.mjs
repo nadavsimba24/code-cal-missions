@@ -43,7 +43,7 @@ function states(over = {}) {
   }, over);
   const names = Object.keys(env);
   return new Function(...names,
-    grab('stateHTML') + grab('noMatchHTML') + grab('emptyBoardHTML')
+    grab('stateHTML') + grab('clearCutAction') + grab('noMatchHTML') + grab('emptyBoardHTML')
     + grab('restrictedViewHTML') + grab('brokenViewHTML')
     + '; return {noMatchHTML, emptyBoardHTML, restrictedViewHTML, brokenViewHTML};'
   )(...names.map(n => env[n]));

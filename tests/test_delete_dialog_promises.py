@@ -105,6 +105,10 @@ def test_the_dialog_reads_the_window_instead_of_spelling_it_out():
     window and go on promising a retention nobody keeps."""
     src = INDEX.read_text(encoding="utf-8")
     assert "function recycleDays()" in src
+    # the verb is the same on all three dialogs — one action described with two
+    # different words on neighbouring screens reads as two different promises
+    assert "המחיקה תנתק" not in src, "a delete dialog still says תנתק"
+    assert src.count("המחיקה תסיר") >= 3
     for phrase in ("הפריטים ישמרו בסל המחזור של הלוח למשך ${recycleDays()} יום",
                    "הפריט וכל תת-הפריטים שלו ישמרו בסל המחזור של הלוח למשך ${recycleDays()} יום",
                    "תת-הפריט ישמר בסל המחזור של הלוח למשך ${recycleDays()} יום"):
@@ -122,3 +126,38 @@ def test_the_note_can_show_two_lines():
     src = INDEX.read_text(encoding="utf-8")
     note = next(l for l in src.splitlines() if l.startswith(".confirm-note{"))
     assert "white-space:pre-line" in note, note
+
+
+def test_the_dialog_reads_the_window_off_the_board(client, admin_id):
+    """The number in the sentence is the SERVER's, on every screen.
+
+    recycleDays() used to read whichever bin the person happened to have
+    opened and fall back to a literal sixty when neither had been — so a board
+    opened fresh promised sixty days because the browser said so, not because
+    the server did. RECYCLE_BIN_DAYS is environment-settable; the moment
+    somebody moved it, that dialog would have been promising a window nobody
+    keeps, which is the exact failure this group exists to prevent.
+    """
+    bid = client.post("/api/boards",
+                      json={"name": "לוח חלון", "user_id": admin_id}).json()["id"]
+    d = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()
+    assert d["retention_days"] == cityos_main.RECYCLE_BIN_DAYS == 60
+    # and the browser prefers it over its own fallback
+    src = INDEX.read_text(encoding="utf-8")
+    fn = src[src.index("function recycleDays()"):]
+    fn = fn[:fn.index("}")]
+    assert "st.board && st.board.retention_days" in fn, fn
+    assert fn.index("st.board") < fn.index("60"), \
+        "the literal fallback is consulted before the server's own answer"
+
+
+def test_the_bulk_dialog_says_what_it_was_asked_to_say():
+    """The wording is a product decision, quoted here so a later edit to the
+    sentence is a deliberate one rather than a drift."""
+    src = INDEX.read_text(encoding="utf-8")
+    for line in ("המחיקה תסיר גם את כל הקישורים הקיימים שלה.",
+                 "הפריטים ישמרו בסל המחזור של הלוח למשך ${recycleDays()} יום,"
+                 " ולאחר מכן ימחקו לצמיתות."):
+        assert line in src, line
+    assert "title:'מחיקת פריטים'" in src
+    assert "askConfirm(`למחוק ${allowed.length} פריטים?`" in src

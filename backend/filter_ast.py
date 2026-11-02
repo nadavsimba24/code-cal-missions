@@ -65,6 +65,14 @@ KINDS = {
     "people": "people", "created_by": "people", "assignees": "people",
     "date": "date", "created_at": "date", "timeline": "date", "due": "date",
     "checkbox": "check", "files": "check",
+    # מזהה פריט — every board is issued one on creation, and it was the only
+    # column on any board that the filter would not offer. Nothing was missing
+    # underneath: the value already reaches here, because the board filter
+    # feeds _derived_cells alongside the item's own cells. It was absent from
+    # this table alone, so the column was drawn on the board, answered a
+    # question the automations could ask, and had no row in the filter panel.
+    # Text, because an item id is matched and searched rather than compared.
+    "item_id": "text",
 }
 
 DATE_TOKENS = ("today", "yesterday", "tomorrow", "this_week", "next_week",

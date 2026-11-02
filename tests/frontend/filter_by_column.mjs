@@ -58,7 +58,7 @@ function world(){
     filters:{q:'',people:[],status:'',priority:'',sort:'',links:{col:'',mode:'',item:0},adv:null,advIds:null},
   };
   const names = ['advFilterRoot','advPicked','advSetPicked','advToggle','advLegacyPicks',
-                 'advDropLegacy','advPickedAll','advCount','advFields','advColHidden',
+                 'advDropLegacy','advPickedAll','advCount','advFields','advColHidden','advColGone',
                  'colFilterChips','colFilterSummary','advTextOf','advSetText','customColumns',
                  'boardPeople','statusColOpts','advPickChip','colChipsHTML','colAssigned','colEmptyChips',
                  'qfCounts','advCell','advRuleMatch','advMatch','statusKeyOf',

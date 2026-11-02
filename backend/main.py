@@ -1996,6 +1996,11 @@ def _filter_columns(b, user_id, role, known=None, fields=None):
     """
     known = {} if known is None else known
     fields = {} if fields is None else fields
+    # No col_hidden check here, deliberately: only HIDEABLE_BUILTIN_COLS can be
+    # in that list, and none of them is a custom column. A custom column leaves
+    # the board by leaving this very list, so it disappears from both sides on
+    # its own. A guard for it would be a line that cannot run, which reads as a
+    # case somebody handled and is worse than no line at all.
     for c in ((b.settings or {}).get("columns") or []):
         kind = filter_ast.KINDS.get(c.get("type"))
         if not kind:
@@ -5687,8 +5692,16 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         # different answers and the person deserves the right one. `fields` is
         # what this reader may filter by; `known` is every column the board
         # has, used only to tell the two apart in the report.
-        base = {"title": "text", "status": "status", "priority": "status",
-                "assignees": "people", "due": "date"}
+        # A column taken off the board is not one to filter by, and the
+        # built-ins were added here whatever the board said — so a board whose
+        # admin had used "מחק עמודה" on סטטוס went on answering filters about
+        # it while the browser drew no such column. "שם הפריט" is exempt: it is
+        # the item itself and the board cannot hide it.
+        _off = {str(k) for k in ((b.settings or {}).get("col_hidden") or [])}
+        base = {k: v for k, v in (("title", "text"), ("status", "status"),
+                                  ("priority", "status"), ("assignees", "people"),
+                                  ("due", "date"))
+                if k == "title" or k not in _off}
         fields, known = dict(base), dict(base)
         known, fields = _filter_columns(b, user_id, my_role, known, fields)
 
@@ -6050,6 +6063,15 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "view_only": (b.settings or {}).get("view_only", False),
             "visibility": _board_visibility(b),
             "my_role": my_role,
+            # How long the bin keeps a deleted item, carried on the board so
+            # the delete dialog can SAY it. It used to be read off whichever
+            # bin the reader happened to have opened, and guessed at sixty
+            # when neither had been — a promise made by the browser rather
+            # than by the server, which is the one thing that sentence must
+            # not be. RECYCLE_BIN_DAYS is environment-settable, so a dialog
+            # that guessed would promise a window nobody keeps the moment
+            # somebody moved it.
+            "retention_days": RECYCLE_BIN_DAYS,
             # whether the automations page is offered at all — a board viewer
             # never sees it, and an editor only where the capability is granted
             "can_view_automations": _can_view_automations(db, b, user_id),
@@ -8237,8 +8259,8 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # hide built-in columns (the "פריט" name column can never be hidden) — board admin
             if _board_role(db, board_id, actor_id) != "admin":
                 raise HTTPException(403, "רק מנהל הלוח יכול להסתיר עמודות")
-            hideable = {"assignees", "status", "priority", "due"}
-            hidden = [str(k) for k in (data["col_hidden"] or []) if str(k) in hideable]
+            hidden = [str(k) for k in (data["col_hidden"] or [])
+                      if str(k) in HIDEABLE_BUILTIN_COLS]
             s = dict(b.settings or {})
             was = [str(k) for k in (s.get("col_hidden") or [])]
             s["col_hidden"] = list(dict.fromkeys(hidden))  # de-dup, preserve order
@@ -9268,6 +9290,34 @@ def _queue_item_mails(background, msgs):
     background.add_task(_send_item_mails, msgs)
 
 
+def _outside_board_env(db, board, user_id):
+    """Why this person may not be invited to that board — "" when they may.
+
+    A board lives in an environment, and the environment is who was let into
+    this part of the product at all. Inviting somebody to a board inside it is
+    therefore not a question the board answers on its own: a person nobody put
+    in the environment has no business being handed a board in it, and the
+    picker used to offer every active account in the system.
+
+    _env_role is the one place that knows what membership means here, and it
+    already answers the two cases that are not a row in the table: a system
+    admin belongs to every environment, and EVERYONE belongs to the primary
+    one — so this does not narrow the workspace most boards live in.
+
+    A board with no environment at all is not scoped: there is nothing to scope
+    it by, and refusing every invitation on a legacy board would be inventing a
+    rule out of a missing column.
+    """
+    env_id = getattr(board, "environment_id", None)
+    if not env_id:
+        return ""
+    if _env_role(db, env_id, user_id) is None:
+        env = db.query(Environment).filter(Environment.id == env_id).first()
+        return (f"אפשר להזמין ללוח רק מי שחבר בסביבה "
+                f"'{env.name if env else ''}'".strip())
+    return ""
+
+
 @app.get("/api/boards/{board_id}/members")
 def list_board_members(board_id: int):
     with Session(engine) as db:
@@ -9281,9 +9331,13 @@ def list_board_members(board_id: int):
                         # a member who was deactivated stays listed: somebody
                         # has to be able to see them and take them off the board
                         "is_active": (u.is_active is not False) if u else True})
-        # who could still be invited — never a deactivated account
+        # Who could still be invited: never a deactivated account, and never
+        # somebody from outside this board's environment — see
+        # _outside_board_env, which the POST below holds to as well.
+        board = db.query(Board).filter(Board.id == board_id).first()
         available = [{"id": u.id, "name": u.name} for u in db.query(User).all()
-                     if u.id not in member_ids and u.is_active is not False]
+                     if u.id not in member_ids and u.is_active is not False
+                     and not _outside_board_env(db, board, u.id)]
         return {"members": out, "available": available}
 
 @app.post("/api/boards/{board_id}/members")
@@ -9298,6 +9352,12 @@ def add_board_member(board_id: int, data: dict, request: Request = None,
         # receive one however the request was made.
         if _account_blocked(db, uid):
             raise HTTPException(400, "לא ניתן להזמין ללוח משתמש מושבת")
+        # …and the same for the environment, for the same reason: the picker
+        # does not offer them, but the picker is not the rule
+        _why = _outside_board_env(
+            db, db.query(Board).filter(Board.id == board_id).first(), uid)
+        if _why:
+            raise HTTPException(400, _why)
         role = data.get("role", "editor")
         if role not in BOARD_ROLES:
             role = "editor"
@@ -15936,6 +15996,16 @@ def automation_recipes(user_id: int = Depends(current_user_id)):
             # them a rule may carry in all (the recipe's own included)
             "action_catalog": recipes.actions_catalog(),
             "max_actions": recipes.MAX_ACTIONS}
+
+
+# Which columns "מחק עמודה" can actually take off a board. Only these four:
+# "שם הפריט" is the item itself, and a CUSTOM column is not hidden at all —
+# it leaves settings["columns"] outright, which is why neither the filter
+# panel nor _filter_columns needs a guard for a hidden custom column. Named
+# rather than left inline because two other places reason from it; widening it
+# means revisiting advFields() in the browser and _filter_columns here, and
+# tests/test_filter_offers_the_boards_columns.py says so where it pins this.
+HIDEABLE_BUILTIN_COLS = frozenset({"assignees", "status", "priority", "due"})
 
 
 def _board_template_has(db, board):
