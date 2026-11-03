@@ -462,7 +462,11 @@ def test_a_notification_carries_the_five_things_it_must(client, admin_id, guinea
     assert "התראת פתיחה" in body                       # which rule
     assert "נוצר פריט" in body                          # what happened
     assert "תיקון מדרכה" in body                        # which item
-    assert f"item={tid}" in body                        # and a way straight to it
+    # The way straight to it is the notification itself — the row opens the
+    # item — so the body carries no written-out address. It used to, and while
+    # APP_BASE_URL went unset it was a bare path: a dead string in a bell.
+    assert "item=" not in body and "?board=" not in body, body
+    assert note.task_id == tid and note.board_id == bid
     assert "לוח תוכן התראה" in body                     # which board
     assert datetime.now().strftime("%d/%m/%Y") in body  # and when
 

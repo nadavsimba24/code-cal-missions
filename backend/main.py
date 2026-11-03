@@ -13316,8 +13316,11 @@ def _run_action_inner(db, a, task, actor_id, board, event=None, human=None, owne
     # whose work the item's own log will show for the length of these actions
     db.info["_acting_rule"] = (getattr(a, "id", None),
                                (a.name or "").strip() or _automation_plain_name(db, board, a))
-    # a notification names the rule; the board's own screens show the sentence
-    told = notice or _automation_plain_name(db, board, a)
+    # A notification names the rule; the board's own screens show the sentence.
+    # Its NAME where it has one — the line above already resolves it that way
+    # for the item's log, and this one did not, so a rule reached through the
+    # queue (a wait that came due) announced itself by its template instead.
+    told = notice or (a.name or "").strip() or _automation_plain_name(db, board, a)
     acts = recipes.action_list(a.recipe_id, a.config or {})[start:]
     clash = []
     for i, one in enumerate(acts):
@@ -13641,8 +13644,15 @@ def _linked_token(db, task, board, rest):
 
 
 def _item_url(board, task):
-    """A direct link to the item, as the notifications already build one."""
-    base = (os.getenv("APP_BASE_URL") or "").rstrip("/")
+    """A direct link to the item — the one {{item.url}} resolves to.
+
+    Through _app_base_url, which is the only thing here that knows what origin
+    this deployment answers on. Reading APP_BASE_URL alone was reading a
+    variable neither pipeline sets, so the "link" was a bare path:
+    "/?board=11&item=16102" — a dead string in a notification, and a dead
+    string in any notice that wrote {{item.url}} into itself.
+    """
+    base = _app_base_url()
     return f"{base}/?board={board.id if board else ''}&item={task.id}"
 
 
@@ -13763,12 +13773,13 @@ def _can_see_item(db, task, user_id):
         return False
 
 
-def _notice_body(db, task, board, label, act, event=None):
+def _notice_body(db, task, board, label, act, event=None, name=""):
     """The text of a notification an automation sends.
 
     Five things, because they are the five a person needs to act on it: which
-    rule, what happened, which item (and a way straight to it), which board,
-    and when.
+    rule, what happened, which item, which board, and when. The way straight to
+    it is the notification itself — the row opens the item — which is why there
+    is no address written out in here.
 
     What it deliberately does NOT carry is the rule's filled-in sentence. That
     sentence quotes the values the rule was built with — a person's name, an
@@ -13779,12 +13790,23 @@ def _notice_body(db, task, board, label, act, event=None):
     trig = recipes.plain(recipes.TRIGGERS.get((event or {}).get("type"), "")) \
         or (event or {}).get("type") or ""
     what = _NOTICE_WHAT.get(act, "")
-    lines = [label,
-             " · ".join([x for x in (trig, what) if x]),
+    # Line one is WHICH RULE: the name somebody gave it, and failing that the
+    # trigger alone. Not the trigger and the action together, which is what
+    # _automation_plain_name reads as — "כאשר נוצר פריט חדש · שייך את …", where
+    # the ellipsis stands for the person, a value a notification is not allowed
+    # to quote anyway (see below). A dangling blank is not a name; the action
+    # is line two, and says itself there in plain words.
+    who = (name or "").strip() or trig or label
+    # Line two says what happened — minus whatever line one already said, or an
+    # unnamed rule opened by stating its trigger twice over.
+    said = " · ".join([x for x in (trig, what) if x and x not in who])
+    # No raw address. The notification IS the way to the item: the row opens it
+    # (see Notif.click), so the line only ever added a URL to read — and while
+    # APP_BASE_URL went unset it was not even that.
+    lines = [who, said,
              f"פריט: {task.title or ''}",
              f"לוח: {board.name if board else ''}",
-             f"זמן: {now}",
-             _item_url(board, task)]
+             f"זמן: {now}"]
     return "\n".join([x for x in lines if x and x.strip()])
 
 
@@ -13853,7 +13875,8 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
     out = []
     # the text an action writes may be built from the item it is acting on
     text = lambda v: _resolve_tokens(db, v, task, board, event, human, owner)
-    body = _notice_body(db, task, board, label, act, event)
+    body = _notice_body(db, task, board, label, act, event,
+                        name=(getattr(rule, "name", "") or ""))
 
     # An automation is a stored rule: the person it names may have been chosen
     # while they were a member and removed from the board since. Re-check at run

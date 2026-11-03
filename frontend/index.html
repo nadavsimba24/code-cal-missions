@@ -740,7 +740,12 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .notif-ic.comment_like{background:#fdab3d}
 .notif-txt{flex:1;min-width:0}
 .notif-title{font-size:13.5px;font-weight:600;color:var(--text)}
-.notif-body{font-size:12.5px;color:var(--text-muted);margin-top:2px;line-height:1.4}
+/* A notification body is written as lines — which rule, what happened, the
+   item, the board, the time — and without this they arrive as one paragraph
+   with the words run together, which is how "פריט: פריט חדש לוח: MISSIONS"
+   came to be a single sentence nobody could read. */
+.notif-body{font-size:12.5px;color:var(--text-muted);margin-top:2px;line-height:1.45;
+  white-space:pre-line}
 .notif-time{font-size:11px;color:var(--text-light);margin-top:3px}
 .notif-dot{width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:6px}
 .notif-empty{padding:34px 14px;text-align:center;color:var(--text-light);font-size:13px}
