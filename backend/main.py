@@ -13322,8 +13322,10 @@ def _run_action_inner(db, a, task, actor_id, board, event=None, human=None, owne
                                (a.name or "").strip() or _automation_plain_name(db, board, a))
     # A notification names the rule; the board's own screens show the sentence.
     # Its NAME where it has one — the line above already resolves it that way
-    # for the item's log, and this one did not, so a rule reached through the
-    # queue (a wait that came due) announced itself by its template instead.
+    # for the item's log, and this one did not, so a rule somebody had named
+    # announced itself as "כאשר נוצר פריט חדש · שייך את …": its template, with
+    # the blank still a blank, which is what _automation_plain_name is for and
+    # only when there is nothing better.
     told = notice or (a.name or "").strip() or _automation_plain_name(db, board, a)
     acts = recipes.action_list(a.recipe_id, a.config or {})[start:]
     clash = []
@@ -13653,8 +13655,8 @@ def _item_url(board, task):
     Through _app_base_url, which is the only thing here that knows what origin
     this deployment answers on. Reading APP_BASE_URL alone was reading a
     variable neither pipeline sets, so the "link" was a bare path:
-    "/?board=11&item=16102" — a dead string in a notification, and a dead
-    string in any notice that wrote {{item.url}} into itself.
+    "/?board=11&item=16102", which is a dead string in a notification and a
+    dead string in any notice that wrote {{item.url}} into itself.
     """
     base = _app_base_url()
     return f"{base}/?board={board.id if board else ''}&item={task.id}"
@@ -13798,15 +13800,15 @@ def _notice_body(db, task, board, label, act, event=None, name=""):
     # trigger alone. Not the trigger and the action together, which is what
     # _automation_plain_name reads as — "כאשר נוצר פריט חדש · שייך את …", where
     # the ellipsis stands for the person, a value a notification is not allowed
-    # to quote anyway (see below). A dangling blank is not a name; the action
-    # is line two, and says itself there in plain words.
+    # to quote anyway (see the note below on the sentence). A dangling blank is
+    # not a name; the action is line two and says itself in plain words there.
     who = (name or "").strip() or trig or label
     # Line two says what happened — minus whatever line one already said, or an
     # unnamed rule opened by stating its trigger twice over.
     said = " · ".join([x for x in (trig, what) if x and x not in who])
-    # No raw address. The notification IS the way to the item: the row opens it
-    # (see Notif.click), so the line only ever added a URL to read — and while
-    # APP_BASE_URL went unset it was not even that.
+    # No raw address. The notification is itself the way to the item — the row
+    # opens it (see Notif.click) — so the line only ever added a URL to read,
+    # and while APP_BASE_URL went unset it was not even that.
     lines = [who, said,
              f"פריט: {task.title or ''}",
              f"לוח: {board.name if board else ''}",
