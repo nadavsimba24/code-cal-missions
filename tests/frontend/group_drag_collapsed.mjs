@@ -55,9 +55,13 @@ const grp = (()=>{ const j=src.indexOf("sortableOn(el,{handle:'.g-handle'"); let
   for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } })();
 ck('a group is still dragged by its grip or its name',
    /handle:'\.g-handle'/.test(grp) && /draggable:'\.group'/.test(grp));
+/* Both are written conditionally now — a narrowed board does not draw all of
+   its groups, so it does not offer to reorder the ones it does draw (see
+   filter_hides_empty_groups) — but when they ARE drawn they are drawn in the
+   header, which is the whole of what a collapsed group shows. */
 ck('and both of those sit in the header, which is all a collapsed group shows',
    /<i class="fa-solid fa-grip-vertical g-drag g-handle"/.test(src)
-   && /<span class="g-name g-handle"/.test(src));
+   && /class="g-name\$\{mayDrag\?' g-handle':''\}"/.test(src));
 ck('collapsing is still the caret alone, so grabbing a name never folds a group',
    /if\(!e\.target\.closest\('\.caret'\)\)return;/.test(src));
 

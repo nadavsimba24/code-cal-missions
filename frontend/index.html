@@ -7502,6 +7502,17 @@ function filtersActive(){const f=st.filters;
    board that re-fetched its first page because somebody clicked a column
    header would throw away the rows they had scrolled to. */
 function boardIsCut(){ return filtersActive() || !!(st.colSort&&st.colSort.key); }
+/* …and narrowing ALONE — what actually takes rows off the board.
+   Deliberately neither of the two above: filtersActive counts `f.sort` and
+   boardIsCut counts the column sort as well, and an order is not a narrowing —
+   a board sorted differently still holds every one of its rows. The difference
+   is the whole of what may hide a group for being empty. A group left empty by
+   a filter is a heading over an answer nobody asked for; a group left empty by
+   a sort is simply a group with nothing in it, which is a fact about the board
+   and has to go on being visible. */
+function boardIsNarrowed(){const f=st.filters;
+  return !!(f.q||f.people.length||f.status||f.priority||(f.links&&f.links.mode)
+            ||advCount(f.adv));}
 /* ===== the states a board can be in, and what each one offers =====
 
    Four of them look alike and are not, and offering the wrong action in any
@@ -13766,7 +13777,17 @@ function groupsOf(){
   const gs = (st.board.groups||[]).slice();
   const tasks = applyFilters(st.board.tasks||[]);
   if(!gs.length) return [{id:null,name:'פריטים',color:'#0073ea',tasks}];
-  const out = gs.map(g=>({...g,tasks:tasks.filter(t=>t.group_id===g.id)}));
+  /* A group with nothing under it is part of the board's structure and is
+     drawn as such — but not while a filter is on. Under a filter a group is
+     half of an answer: "these items match, and this is where they live". A
+     group with no matching item is not a smaller answer, it is a heading, a
+     row of column names and an "add item" line standing in for nothing — and
+     a board of twelve groups holding two results reads as a filter that did
+     not work. The empty ones come back the moment the filter is cleared;
+     nothing about the board changed, only what is being asked of it. */
+  const cut = boardIsNarrowed();
+  const out = gs.map(g=>({...g,tasks:tasks.filter(t=>t.group_id===g.id)}))
+                .filter(g=>!cut || g.tasks.length);
   const orphan = tasks.filter(t=>!t.group_id || !gs.some(g=>g.id===t.group_id));
   if(orphan.length) out.push({id:null,name:'ללא קבוצה',color:'#c4c4c4',tasks:orphan});
   return out;
@@ -13842,11 +13863,20 @@ function groupHTML(g){
     // refreshing the board) — otherwise it springs open and the rows below it
     // jump, which reads as the view scrolling by itself
     const shut=groupCollapsed(g.id);
+    /* …and a narrowed board is not one whose groups can be reordered. It does
+       not show all of them any more (see groupsOf), and /api/groups/reorder is
+       told the WHOLE sequence — so a drag over the three groups that happen to
+       match would send an order of three for a board of twelve and file the
+       other nine wherever their old positions collided. The grip is therefore
+       not drawn at all while a filter is on, exactly as the "ללא קבוצה" bucket
+       — the other thing on this screen that is not an orderable group — has
+       never had one. Clearing the filter gives it back. */
+    const mayDrag=!boardIsNarrowed();
     const head=real
       ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}"><span class="gh-in">
-          <i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>
+          ${mayDrag?'<i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>':''}
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
-          <span class="g-nm"><span class="g-name g-handle" style="color:${col}" title="גרור לשינוי סדר">${esc(g.name)}</span>${sum}</span>
+          <span class="g-nm"><span class="g-name${mayDrag?' g-handle':''}" style="color:${col}" ${mayDrag?'title="גרור לשינוי סדר"':''}>${esc(g.name)}</span>${sum}</span>
           <span class="g-count">${g.tasks.length}</span>
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
         </span></div>`
@@ -13878,6 +13908,11 @@ function groupHTML(g){
     </div>`;
 }
 function addGroupBtnHTML(){
+  /* Not while the board is narrowed. A new group is born empty and an empty
+     group is exactly what a filtered board no longer draws, so the button
+     would answer with nothing appearing on screen — which reads as a broken
+     button rather than as a filter that is on. */
+  if(boardIsNarrowed())return '';
   return isBoardAdmin()
     ? `<button class="add-group-btn" onclick="addGroup()"><i class="fa-solid fa-plus"></i> הוסף קבוצה</button>`
     : '';

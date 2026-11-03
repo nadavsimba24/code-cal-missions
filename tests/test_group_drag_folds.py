@@ -49,4 +49,9 @@ def test_the_drag_is_still_only_offered_from_the_handle():
     board comes back on unchoose. If the handle ever widens, this stops being
     true."""
     assert "handle:'.g-handle'" in SRC
-    assert 'class="g-name g-handle"' in SRC
+    # Written conditionally since empty groups stopped being drawn under a
+    # filter: a board that does not show all of its groups does not offer to
+    # reorder them either, so the name carries the handle only when it may be
+    # dragged. What is pinned here is unchanged — the handle is the name and
+    # the grip, and nothing wider.
+    assert 'class="g-name${mayDrag?\' g-handle\':\'\'}"' in SRC
