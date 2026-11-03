@@ -11614,25 +11614,21 @@ const Env = {
     let d={members:[],available:[],can_set_manager:false}; try{ d=await api('/api/environments/'+id+'/members?actor_id='+meId()); }catch(e){}
     this.membersData=d;
     const roleAdd=d.can_set_manager?`<select id="envm-role"><option value="member">חבר</option><option value="manager">מנהל סביבה</option></select>`:'';
-    /* The primary workspace has no member list to manage: everyone is in it.
-       What is left here is appointing its managers, so the screen says that
-       instead of offering an "add" that could only ever add somebody who is
-       already there. */
-    const everyone=!!d.everyone;
+    /* Every workspace is managed here the same way, the primary one included.
+       It used to be the exception — everyone was in it by definition, so this
+       screen listed the whole directory and offered no "add" — and that is
+       exactly what made the invite picker of every board inside it offer the
+       whole directory too. */
     // same design & logic as a board's "חברים והרשאות" — restricted to sysadmin / env manager
     showModal(`<h2><i class="fa-solid fa-user-shield" style="color:var(--primary)"></i> חברים והרשאות — ${esc(env?env.name:'סביבה')}</h2>
       <div class="mbody">
-        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> ${everyone
-          ? `<b>כל משתמשי המערכת חברים בסביבה הזו</b> — היא נפתחת לכולם בכניסה למערכת, ואי אפשר להסיר ממנה משתמש.
-             הצפייה בלוחות שבתוכה נקבעת בלוח עצמו: לוח פרטי נראה רק למי שהוזמן אליו, ולוח ציבורי — לכולם.
-             כאן אפשר למנות <b>מנהלי סביבה</b>.${d.can_set_manager?'':' רק מנהל מערכת ממנה מנהל סביבה.'}`
-          : `רק חברי הסביבה רואים אותה ואת לוחותיה. <b>מנהל סביבה</b> מנהל חברים, לוחות ותיקיות.${d.can_set_manager?'':' רק מנהל מערכת ממנה מנהל סביבה.'}`}</div>
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> רק חברי הסביבה רואים אותה ואת לוחותיה, ורק אותם אפשר להזמין ללוחות שבתוכה. <b>מנהל סביבה</b> מנהל חברים, לוחות ותיקיות.${d.can_set_manager?'':' רק מנהל מערכת ממנה מנהל סביבה.'}</div>
         <div id="envm-list">${this.membersHTML()}</div>
-        ${everyone?'':`<div class="mem-add">
+        <div class="mem-add">
           <select id="envm-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כל המשתמשים כבר בסביבה —</option>'}</select>
           ${roleAdd}
           <button class="btn btn-primary" onclick="Env.addMember()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-plus"></i> הוסף</button>
-        </div>`}
+        </div>
       </div>`);
   },
   membersHTML(){ const canSet=this.membersData.can_set_manager;
@@ -11642,9 +11638,7 @@ const Env = {
       ${canSet
         ? `<select onchange="Env.setMemberRole(${m.user_id},this.value)">${['manager','member'].map(r=>`<option value="${r}" ${(m.role||'member')===r?'selected':''}>${r==='manager'?'מנהל סביבה':'חבר'}</option>`).join('')}</select>`
         : `<span class="perm-badge">${esc(m.role_he||'חבר')}</span>`}
-      ${(this.membersData.everyone && (m.role||'member')!=='manager')
-        ? ''
-        : `<button class="mem-del" title="${this.membersData.everyone?'בטל מנהל סביבה':'הסר מהסביבה'}" onclick="Env.removeMember(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>`}
+      <button class="mem-del" title="הסר מהסביבה" onclick="Env.removeMember(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>
     </div>`).join('')||'<div style="padding:16px;text-align:center;color:var(--text-light);font-size:12.5px">אין משתמשים מורשים עדיין</div>'; },
   async refreshMembers(){ try{ this.membersData=await api('/api/environments/'+this.membersFor+'/members?actor_id='+meId()); }catch(e){}
     const l=document.getElementById('envm-list'); if(l)l.innerHTML=this.membersHTML();
@@ -12808,10 +12802,11 @@ const Members = {
         </div>
         <div id="mem-list">${this.listHTML()}</div>
         <div class="mem-add">
-          <select id="mem-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— כל המשתמשים כבר חברים —</option>'}</select>
+          <select id="mem-user">${d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— אין חברי סביבה שאפשר להוסיף —</option>'}</select>
           <select id="mem-role"><option value="editor">עריכה</option><option value="viewer">צפייה בלבד</option><option value="admin">מנהל לוח</option></select>
           <button class="btn btn-primary" onclick="Members.add()" ${d.available.length?'':'disabled'}><i class="fa-solid fa-plus"></i> הזמן</button>
         </div>
+        <div style="font-size:11.5px;color:var(--text-light);margin-top:7px"><i class="fa-solid fa-circle-info"></i> הרשימה היא חברי הסביבה שהלוח שייך אליה — רק אותם אפשר להזמין. צירוף אדם לסביבה נעשה ממסך הסביבות.</div>
       </div>
       <div class="mfoot">
         <button class="btn btn-danger" style="margin-inline-start:auto" onclick="Members.deleteBoard()"><i class="fa-solid fa-trash"></i> מחק לוח</button>
@@ -12834,7 +12829,7 @@ const Members = {
   },
   async refresh(){ let d={members:[],available:[]}; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){} this.data=d;
     const l=document.getElementById('mem-list'); if(l)l.innerHTML=this.listHTML();
-    const s=document.getElementById('mem-user'); if(s)s.innerHTML=d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— הכל חברים —</option>';
+    const s=document.getElementById('mem-user'); if(s)s.innerHTML=d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— אין חברי סביבה שאפשר להוסיף —</option>';
   },
   async add(){
     const uid=+document.getElementById('mem-user').value, role=document.getElementById('mem-role').value;

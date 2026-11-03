@@ -102,8 +102,38 @@ def _ensure_user(name, email):
 
 MEMBER_ID = _ensure_user("בודק חבר", "test.member@cityos.test")     # non-admin board-1 member
 GUINEA_ID = _ensure_user("בודק ניסוי", "test.guinea@cityos.test")  # a member we mutate in tests
+
+
+def _primary_env_id():
+    for e in _boot.get("/api/environments", headers=_AS_ADMIN).json()["environments"]:
+        if e.get("is_primary"):
+            return e["id"]
+    return None
+
+
+# A board invitation only reaches somebody who is already in the board's
+# environment, and the primary workspace is no longer everybody's by
+# definition — a user created today is in no environment until an admin puts
+# them in one. So these two are enrolled the way a real admin enrolls anybody:
+# the workspace first, then the board inside it.
+PRIMARY_ENV_ID = _primary_env_id()
 for _uid in (MEMBER_ID, GUINEA_ID):
+    if PRIMARY_ENV_ID:
+        _boot.post(f"/api/environments/{PRIMARY_ENV_ID}/members",
+                   json={"actor_id": ADMIN_ID, "user_id": _uid, "role": "member"})
     _boot.post("/api/boards/1/members", json={"actor_id": ADMIN_ID, "user_id": _uid, "role": "editor"})
+
+
+def join_primary_env(client, uid, role="member"):
+    """Put a user in the primary workspace, the way the admin screen does.
+
+    Creating a user makes them a member of nothing: the primary workspace
+    stopped being everybody's by definition, so a test that invites a freshly
+    created person to a board in it has to enroll them first — the board
+    invitation is refused otherwise (see _outside_board_env)."""
+    if PRIMARY_ENV_ID:
+        client.post(f"/api/environments/{PRIMARY_ENV_ID}/members",
+                    json={"actor_id": ADMIN_ID, "user_id": uid, "role": role})
 
 
 @pytest.fixture(scope="session")

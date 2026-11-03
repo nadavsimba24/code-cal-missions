@@ -13,6 +13,7 @@ destroyed with them — the item they created, the permit assigned to them, the
 automation they own. Deleting a person is not deleting their work.
 """
 from sqlalchemy.orm import Session
+from conftest import join_primary_env
 import main as cityos_main
 from models import (AuditLog, Automation, BoardMember, Comment, EnvironmentMember,
                     Notification, Task, User, WorkspaceMember)
@@ -22,7 +23,12 @@ def _mk_user(client, admin_id, email, name="זמני", role="member"):
     r = client.post(f"/api/users?user_id={admin_id}",
                     json={"email": email, "name": name, "role": role})
     assert r.status_code in (200, 201), r.text
-    return r.json()["id"]
+    uid = r.json()["id"]
+    # A new account belongs to no workspace until somebody puts it in one, and
+    # the boards below have to be able to invite them — so this is the admin's
+    # first step, not a detail of these tests.
+    join_primary_env(client, uid)
+    return uid
 
 
 def _board(client, admin_id, name="לוח מחיקה"):

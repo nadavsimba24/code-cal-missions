@@ -5,7 +5,7 @@ the paths that bypass a picker entirely: a comment, an "@Name" typed straight
 into the text, an edit made after the fact, and a stored automation whose target
 was removed from the board since the rule was written.
 """
-from conftest import TestClient, ADMIN_ID  # noqa: F401
+from conftest import TestClient, ADMIN_ID, join_primary_env  # noqa: F401
 
 
 def _outsider(client, admin_id, email="outsider.mention@cityos.test"):
@@ -19,6 +19,9 @@ def _outsider(client, admin_id, email="outsider.mention@cityos.test"):
                                               "email": email, "role": "member"}).json()["id"]
     # make sure a previous run did not leave them enrolled
     client.delete(f"/api/boards/1/members/{uid}?actor_id={admin_id}")
+    # …but they are in the workspace board 1 lives in: a board can only invite
+    # someone already there, and these tests are about the board's own rule.
+    join_primary_env(client, uid)
     return uid
 
 

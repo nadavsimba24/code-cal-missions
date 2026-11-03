@@ -7,10 +7,14 @@ never been given that environment, and inviting one of them handed out access
 nobody upstream had granted.
 
 The rule is not the board's own: _env_role already knows what belonging to an
-environment means, including the two cases that are not a row in the table —
-a system admin belongs to every environment, and everyone belongs to the
-primary one. Scoping to it therefore narrows the environments that were meant
-to be narrow and leaves the shared workspace alone.
+environment means, including the case that is not a row in the table — a system
+admin belongs to every environment.
+
+The primary workspace was a second such case, and it swallowed the rule whole:
+everybody was a member of it without a row, so on the workspace almost every
+board lives in, the picker went on offering the entire directory. It is an
+ordinary workspace now (see test_primary_environment.py) and this scopes its
+boards like any other.
 
 And the picker is not the rule. The POST is held to the same line, because an
 invitation is a grant of access whatever screen it was made from.
@@ -91,18 +95,31 @@ def test_adding_them_to_the_environment_makes_the_invitation_work(
                          client.get(f"/api/boards/{bid}/members").json()["members"]}
 
 
-# ── the two cases that are not a row in the table ──────────────────────────
+# ── the workspace this rule used to leave alone ────────────────────────────
 
-def test_the_primary_environment_is_not_narrowed(client, admin_id, guinea_id):
-    """Everyone belongs to the primary workspace with or without a row, so the
-    boards most people work on go on offering the whole directory."""
+def test_the_primary_environment_is_narrowed_too(client, admin_id, guinea_id):
+    """The boards most people work on are in the primary workspace, and it is
+    where this rule was doing nothing at all: everybody was a member of it
+    without a row. Its boards offer its members, like anywhere else."""
     bid = client.post("/api/boards",
                       json={"name": "לוח ראשי", "user_id": admin_id}).json()["id"]
     with Session(cityos_main.engine) as db:
+        pid = cityos_main._primary_env_id(db)
         b = db.query(Board).filter(Board.id == bid).first()
-        assert b.environment_id == cityos_main._primary_env_id(db), b.environment_id
+        assert b.environment_id == pid, b.environment_id
+    # guinea is in it (tests/conftest.py enrolls them, as an admin would)
     assert guinea_id in _available(client, bid)
+    stranger = client.post("/api/users",
+                           json={"actor_id": admin_id, "name": "לא בסביבה הראשית",
+                                 "email": "scope.primary.stranger@cityos.test",
+                                 "role": "member"}).json()["id"]
+    assert stranger not in _available(client, bid)
+    r = client.post(f"/api/boards/{bid}/members",
+                    json={"actor_id": admin_id, "user_id": stranger, "role": "editor"})
+    assert r.status_code == 400, r.text
 
+
+# ── and the one case that is still not a row in the table ─────────────────
 
 def test_a_board_with_no_environment_is_not_scoped(client, admin_id, guinea_id):
     """Refusing every invitation because a legacy board has no environment

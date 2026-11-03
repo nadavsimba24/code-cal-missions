@@ -1,6 +1,7 @@
 """Board-level activity: the same audit records the item log reads, gathered
 across every item on the board."""
 from sqlalchemy.orm import Session
+from conftest import join_primary_env
 import main as cityos_main
 from models import EnvironmentMember, Board
 
@@ -15,6 +16,7 @@ def _mk_item(client, bid, admin_id, title="פריט"):
 
 
 def _outsider(client, admin_id, email):
+    """A user who exists and is in the workspace, but not on the board."""
     for u in client.get("/api/users").json():
         if u.get("email") == email:
             uid = u["id"]; break
@@ -22,6 +24,10 @@ def _outsider(client, admin_id, email):
         uid = client.post("/api/users", json={"actor_id": admin_id, "name": "זר ללוג",
                                               "email": email, "role": "member"}).json()["id"]
     client.delete(f"/api/boards/1/members/{uid}?actor_id={admin_id}")
+    # Outside the BOARD is what these tests mean. Being inside the workspace is
+    # now a row somebody writes, and without it no board in it could invite
+    # them at all — which is a different test than this file's.
+    join_primary_env(client, uid)
     return uid
 
 

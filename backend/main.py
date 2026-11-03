@@ -1000,11 +1000,31 @@ def _seed_environments():
                                    position=pos, organization_id=org.id if org else None))
         # 3) legacy boards (no environment) belong to the primary workspace
         db.query(Board).filter(Board.environment_id == None).update({Board.environment_id: primary.id})
-        # 4) nothing to grant: every user belongs to the primary workspace by
-        # definition — see _user_env_ids. It used to be seeded as a row per
-        # user, once, which left everyone created afterwards outside the one
-        # workspace everybody is supposed to share. Rows that already exist are
-        # left alone; on this workspace they now carry only the manager role.
+        # 4) the primary workspace is a workspace like any other: you are in it
+        # because somebody put you in it. It used to mean "everyone", and that
+        # rule was not a row — so turning it into one is a backfill, not a new
+        # grant. Everybody already sitting on a board inside it gets the row
+        # their access was resting on, and keeps every board they can open
+        # today; what they lose is being offered for invitation on boards they
+        # have nothing to do with.
+        #
+        # It is written to run on every boot without doing anything twice: a
+        # board member here without a row can only be somebody this has not run
+        # for yet, since an invitation to a board now requires the environment
+        # membership first, and removing a member is refused while a board in
+        # the environment still names them.
+        have = {m.user_id for m in db.query(EnvironmentMember).filter(
+            EnvironmentMember.environment_id == primary.id).all()}
+        on_a_board = {uid for (uid,) in
+                      db.query(BoardMember.user_id)
+                        .join(Board, Board.id == BoardMember.board_id)
+                        .filter(Board.environment_id == primary.id).all()}
+        missing = sorted(uid for uid in on_a_board - have if uid is not None)
+        for uid in missing:
+            db.add(EnvironmentMember(environment_id=primary.id, user_id=uid, role="member"))
+        if missing:
+            print(f"↻ {len(missing)} member row(s) written for '{primary.name}' "
+                  f"— it is now an ordinary workspace, by invitation")
         db.commit()
 _safe_startup(_seed_environments)
 
@@ -1709,24 +1729,27 @@ def _primary_env_id(db):
     return e.id if e else None
 
 def _user_env_ids(db, user_id):
-    """The environments a user is in: the ones granted to them, plus the primary.
+    """The environments a user is in — the ones they were given, and no others.
 
-    The primary workspace is where everybody meets, so belonging to it is not a
-    row anyone has to be given — it is what being a user means. A row-per-user
-    grant was the same thing until the first person was created after it ran,
-    and then it quietly was not.
+    The primary workspace used to be the exception: everybody was in it with or
+    without a row, because it was where the organisation met. But a board lives
+    in an environment, and "who may be invited to this board" is read off the
+    environment — so on the workspace almost every board lives in, that question
+    answered "the entire user directory", which is the opposite of what an
+    invitation is. Belonging to it is now a row somebody wrote, exactly like
+    every other workspace.
 
-    This says nothing about which BOARDS they see inside it. A board in the
-    primary workspace is seen exactly as a board anywhere else is: public to the
-    workspace, or by invitation — see _visible_board_ids."""
+    Nobody lost access to a board they could already open: the rows were
+    backfilled once at startup for everyone already on a board there — see
+    _seed_environments.
+
+    This still says nothing about which BOARDS they see inside it. A board in
+    the primary workspace is seen exactly as a board anywhere else is: public to
+    the workspace, or by invitation — see _visible_board_ids."""
     if user_id is None:
         return set()
-    ids = {m.environment_id for m in
-           db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
-    pid = _primary_env_id(db)
-    if pid is not None:
-        ids.add(pid)
-    return ids
+    return {m.environment_id for m in
+            db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
 
 def _ws_role(db, user_id):
     if user_id is None:
@@ -9300,9 +9323,11 @@ def _outside_board_env(db, board, user_id):
     picker used to offer every active account in the system.
 
     _env_role is the one place that knows what membership means here, and it
-    already answers the two cases that are not a row in the table: a system
-    admin belongs to every environment, and EVERYONE belongs to the primary
-    one — so this does not narrow the workspace most boards live in.
+    answers the one case that is not a row in the table: a system admin belongs
+    to every environment. The primary workspace was a second such case —
+    everybody was in it without a row — which left the boards most people work
+    on offering the entire user directory anyway. It is an ordinary workspace
+    now, so this narrows them too.
 
     A board with no environment at all is not scoped: there is nothing to scope
     it by, and refusing every invitation on a legacy board would be inventing a
@@ -9911,10 +9936,7 @@ def _env_role(db, env_id, user_id):
         return "admin"
     m = (db.query(EnvironmentMember)
          .filter(EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == user_id).first())
-    if m:
-        return m.role or "member"
-    # everyone is a member of the primary workspace, with or without a row
-    return "member" if env_id == _primary_env_id(db) else None
+    return (m.role or "member") if m else None
 
 def _can_manage_env(db, env_id, user_id):
     """System admins and environment managers may manage an environment."""
@@ -9946,10 +9968,6 @@ def list_environments(user_id: int = Depends(current_user_id)):
         if user_id is not None:
             roles = {m.environment_id: (m.role or "member") for m in
                      db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
-            # the primary workspace is everybody's, whether or not a row says so
-            pid = _primary_env_id(db)
-            if pid is not None:
-                roles.setdefault(pid, "member")
         if is_sysadmin:
             envs = allenvs
         elif user_id is not None:
@@ -10043,13 +10061,12 @@ def environment_members(env_id: int, actor_id: int = Depends(current_user_id)):
             raise HTTPException(404, "סביבה לא נמצאה")
         rows = db.query(EnvironmentMember).filter(EnvironmentMember.environment_id == env_id).all()
         users = {u.id: u for u in db.query(User).all()}
+        # Every environment is its rows and nothing else — the primary one
+        # included. It used to list the whole directory instead, because
+        # everybody was a member of it by definition, and that is what handed
+        # every board inside it an invite picker of every account in the system.
         by_row = {m.user_id: (m.role or "member") for m in rows}
-        # On the primary workspace everyone is a member — so everyone is listed,
-        # and a row only ever says "manager". A screen that listed the rows
-        # alone would show four names for a workspace the whole organisation is
-        # in, and offer to "add" people who are already there.
-        everyone = (env_id == _primary_env_id(db))
-        shown = users.keys() if everyone else by_row.keys()
+        shown = by_row.keys()
         members = [{"user_id": uid, "name": users[uid].name,
                     "email": users[uid].email,
                     "avatar_url": users[uid].avatar_url,
@@ -10065,7 +10082,7 @@ def environment_members(env_id: int, actor_id: int = Depends(current_user_id)):
         # only a system admin may hand out the manager role; a plain env manager can add members
         can_set_manager = _can_admin_envs(db, actor_id)
         return {"members": members, "available": available,
-                "can_set_manager": can_set_manager, "everyone": everyone}
+                "can_set_manager": can_set_manager}
 
 @app.post("/api/environments/{env_id}/members")
 def environment_add_member(env_id: int, data: dict, request: Request = None,
@@ -10125,14 +10142,7 @@ def environment_set_member_role(env_id: int, uid: int, data: dict, actor_id: int
         m = db.query(EnvironmentMember).filter(
             EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first()
         if not m:
-            # In the primary workspace a member has no row of their own — they
-            # are a member by being a user — so promoting one is a row being
-            # written for the first time, not a missing member.
-            if env_id != _primary_env_id(db) or not db.query(User).filter(User.id == uid).first():
-                raise HTTPException(404, "החבר לא נמצא בסביבה")
-            m = EnvironmentMember(environment_id=env_id, user_id=uid, role=role)
-            db.add(m); db.commit()
-            return {"status": "ok", "role": role}
+            raise HTTPException(404, "החבר לא נמצא בסביבה")
         m.role = role
         db.commit()
         return {"status": "ok", "role": role}
@@ -10156,16 +10166,6 @@ def environment_remove_member(env_id: int, uid: int, actor_id: int = Depends(cur
                                     + ", ".join(names))
         m = db.query(EnvironmentMember).filter(
             EnvironmentMember.environment_id == env_id, EnvironmentMember.user_id == uid).first()
-        # Nobody can be taken out of the primary workspace: belonging to it is
-        # what being a user here means, and the row would be back on the next
-        # listing anyway. Taking a manager's row away is a real change though —
-        # it is the demotion — so that one is allowed and says what it did.
-        if env_id == _primary_env_id(db):
-            if m and (m.role or "member") == "manager":
-                db.delete(m); db.commit()
-                return {"status": "demoted"}
-            raise HTTPException(400, "כל משתמשי המערכת חברים בסביבה הראשית, ולכן אי אפשר להסיר מהם אותה. "
-                                     "אפשר להסיר הרשאה ללוח מסוים מתוך הלוח עצמו.")
         if m:
             db.delete(m); db.commit()
         return {"status": "removed"}
