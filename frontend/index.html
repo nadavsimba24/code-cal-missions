@@ -3990,9 +3990,24 @@ function cacheBoard(b){
 }
 function dropCachedBoard(id){ _boardCache.delete(id); }
 /* Cheap enough to run on every switch, specific enough that a real change
-   shows: how many items and groups, the columns, and the newest change on the
-   board. A cell edited anywhere moves updated_at, which is what makes this
-   safe to compare instead of the whole payload. */
+   shows: the items and their newest edit, and the board's structure in full.
+   A cell edited anywhere moves updated_at, which is what makes this safe to
+   compare instead of the whole payload.
+
+   The groups and the columns are compared WHOLE, not counted. Counting them
+   was the bug: a group renamed, recoloured or moved, a column renamed or
+   retyped, a status option added — none of those touches any item's
+   updated_at and none of them changes how many groups or columns there are,
+   so the stamp said "nothing changed", revalidateBoard returned without
+   redrawing, and the board went on showing the old name until somebody
+   reloaded the page by hand. Renaming a group you had just created was the
+   way it was found.
+
+   Whole rather than a chosen few fields on purpose: every list of fields
+   here would be a list of the changes that are allowed to show, and the next
+   field added to a group or a column would quietly not be on it. These are
+   tens of small objects compared once per board open — the cost is not worth
+   a rule that has to be remembered. */
 function boardStamp(b){
   if(!b)return '';
   const t=b.tasks||[];
@@ -4001,8 +4016,9 @@ function boardStamp(b){
     if(x.updated_at&&x.updated_at>last)last=x.updated_at;
     for(const sub of (x.subtasks||[])) if(sub.updated_at&&sub.updated_at>last)last=sub.updated_at;
   }
-  return [t.length,(b.groups||[]).length,(b.columns||[]).length,
-          t.reduce((n,x)=>n+((x.subtasks||[]).length),0),last,b.name,b.my_role].join('|');
+  return [t.length,JSON.stringify(b.groups||[]),JSON.stringify(b.columns||[]),
+          t.reduce((n,x)=>n+((x.subtasks||[]).length),0),last,
+          b.name,b.icon||'',b.my_role].join('|');
 }
 async function openBoard(id){
   // Whatever she is leaving is what gets remembered — including a board the app
@@ -4110,7 +4126,14 @@ async function revalidateBoard(id,_t0){
   const wait=performance.now()-t;
   if(st.board&&st.board.id!==id)return;         // she has moved on; the cache is updated below
   const changed=boardStamp(fresh)!==boardStamp(st.board);
-  cacheBoard(fresh);
+  /* What is remembered is what is ON SCREEN. Where the two agree it is the
+     copy on screen that is kept, because that is the one carrying whatever has
+     been applied to it since — a group just renamed, a cell just edited —
+     while `fresh` is a copy that merely looks the same from the outside.
+     Keeping `fresh` here meant the next open of this board came out of memory
+     holding none of it, and the rename she had just watched happen was gone
+     again. */
+  cacheBoard(changed?fresh:st.board);
   if(!changed){ reportBoardOpen(id,wait,0,_t0,'from memory, unchanged'); return; }
   st.board=fresh;
   const r=performance.now();
@@ -18273,8 +18296,14 @@ const GROUP_COLORS=['#0073ea','#00c875','#fdab3d','#e2445c','#579bfc','#5559df',
 async function addGroup(){
   if(!isBoardAdmin()){ toast('רק מנהל הלוח יכול להוסיף קבוצות'); return; }
   try{
-    await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},
+    /* The answer IS the group — id, name, position and colour, the same shape
+       the board carries — so it goes straight onto the board. openBoard paints
+       a board it has seen from memory first, and a group that is only on the
+       server is not on the board she is looking at until the recheck comes
+       back. The same reasoning as in saveGroup. */
+    const made=await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({board_id:st.board.id,name:'קבוצה חדשה',color:GROUP_COLORS[(st.board.groups||[]).length%GROUP_COLORS.length],actor_id:meId()})});
+    if(made&&made.id){ (st.board.groups=st.board.groups||[]).push(made); }
     toast('קבוצה נוספה');await openBoard(st.board.id);
   }catch(e){ toast((e&&e.detail)||'שגיאה ביצירת קבוצה'); }
 }
@@ -18302,11 +18331,23 @@ async function saveGroup(gid){
   const newIdx=+document.getElementById('g-pos').value;
   try{
     await api('/api/groups/'+gid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,color,actor_id:meId()})});
+    /* …and the board is told, here, rather than being left to find out.
+       openBoard below paints a board it has already seen from memory before it
+       asks the server anything — so without this the group goes on saying what
+       it used to say for as long as that round trip takes, which is the whole
+       of what "it only updated after a refresh" was. The PATCH has already
+       succeeded, so this is not a guess about what the server will say: it is
+       the same change, applied where the board is held. `slice()` copies the
+       list and not the groups in it, so writing a position through it writes
+       it on the board's own group — which is what makes the reorder show too. */
+    const mine=(st.board.groups||[]).find(x=>x.id===gid);
+    if(mine){ mine.name=name; mine.color=color; }
     const groups=(st.board.groups||[]).slice().sort((a,b)=>a.position-b.position);
     const cur=groups.findIndex(x=>x.id===gid);
     if(cur!==newIdx){
       const [m]=groups.splice(cur,1); groups.splice(newIdx,0,m);
       await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order:groups.map(x=>x.id),actor_id:meId()})});
+      groups.forEach((x,i)=>{x.position=i;});
     }
     closeModals();toast('הקבוצה עודכנה');await openBoard(st.board.id);
   }catch(e){toast('שגיאה בשמירה');}

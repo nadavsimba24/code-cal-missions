@@ -60,8 +60,11 @@ ck('nothing is remembered for a board with no id', (()=>{
 })());
 
 // ── what it notices ──
-const base = {id: 5, name: 'לוח', my_role: 'admin',
-              groups: [{id: 1}, {id: 2}], columns: [{id: 'a'}, {id: 'b'}],
+const base = {id: 5, name: 'לוח', my_role: 'admin', icon: '📋',
+              groups: [{id: 1, name: 'ראשונה', color: '#0073ea', position: 0},
+                       {id: 2, name: 'שנייה',  color: '#00c875', position: 1}],
+              columns: [{id: 'a', name: 'עמודה', type: 'text'},
+                        {id: 'b', name: 'סטטוס', type: 'status', options: ['א']}],
               tasks: [{id: 1, updated_at: '2026-10-14T09:00:00', subtasks: []},
                       {id: 2, updated_at: '2026-10-14T08:00:00', subtasks: [
                         {id: 3, updated_at: '2026-10-14T07:00:00'}]}]};
@@ -81,6 +84,18 @@ const checks = [
   ['a column was added',        x => { x.columns.push({id: 'c'}); }],
   ['the board was renamed',     x => { x.name = 'אחר'; }],
   ['her role on it changed',    x => { x.my_role = 'viewer'; }],
+  /* Counting the groups and the columns was the bug. None of these moves an
+     item's updated_at and none of them changes how many there are, so the
+     stamp said "nothing changed", the board was not redrawn, and what she had
+     just renamed went on showing its old name until the page was reloaded by
+     hand. Renaming a group straight after creating it is how it was found. */
+  ['a group was RENAMED',       x => { x.groups[0].name = 'אחרת'; }],
+  ['a group was RECOLOURED',    x => { x.groups[1].color = '#e2445c'; }],
+  ['a group was MOVED',         x => { x.groups[0].position = 5; }],
+  ['a column was RENAMED',      x => { x.columns[0].name = 'אחרת'; }],
+  ['a column was RETYPED',      x => { x.columns[0].type = 'number'; }],
+  ['a status option was added', x => { x.columns[1].options.push('ב'); }],
+  ['the board icon changed',    x => { x.icon = '🚀'; }],
 ];
 for (const [what, mutate] of checks) {
   const x = clone(); mutate(x);
@@ -104,6 +119,12 @@ ck('whenIdle falls back where requestIdleCallback is missing, and never waits fo
    /function whenIdle\(fn,ms\)\{[\s\S]*?requestIdleCallback[\s\S]*?timeout:ms\|\|\d+[\s\S]*?setTimeout\(fn/.test(src));
 ck('...and no spinner is put up for one', /if\(!seen\) document\.getElementById\('view'\)\.innerHTML='<div class="spin">/.test(src));
 ck('an unchanged board is not redrawn', /if\(!changed\)\{[^}]*return;/.test(src));
+/* …and what is remembered is what is ON SCREEN. Where the stamp says the two
+   agree, keeping the server's copy threw away whatever had been applied to the
+   one on screen since — a group renamed a moment ago — so the next open of
+   this board came out of memory without it. */
+ck('an unchanged board keeps the copy she is looking at, not the one just fetched',
+   /cacheBoard\(changed\?fresh:st\.board\);/.test(src));
 ck('a changed one is, and keeps her scroll (renderView does)',
    /st\.board=fresh;[\s\S]{0,120}renderView\(\);/.test(src));
 ck('a board that is gone, or no longer hers, is forgotten rather than shown',
