@@ -54,6 +54,20 @@ ck('and every default column title is distinct',
    new Set(titles).size===titles.length,
    titles.filter((t,i)=>titles.indexOf(t)!==i).join(', '));
 
+/* A type the picker offers but COL_DEFAULTS never named was born under its own
+   key: a long-text column on a Hebrew board came out headed "long_text", and
+   "phone" was one entry short of the same. The title a new column starts with
+   now falls back to the Hebrew name of its type. */
+ck('a new column falls back to the Hebrew name of its type, not to the key',
+   /const heName=\(COLUMN_TYPES\.find\(c=>c\.type===type\)\|\|\{\}\)\.he/.test(src) &&
+   /const col=\{type,title:COL_DEFAULTS\[type\]\|\|heName\|\|type\}/.test(src));
+const nameOf = t => COL_DEFAULTS[t] || (COLUMN_TYPES.find(c=>c.type===t)||{}).he;
+ck('so a long-text column is headed טקסט ארוך', nameOf('long_text')==='טקסט ארוך', nameOf('long_text'));
+ck('and a phone column טלפון', nameOf('phone')==='טלפון', nameOf('phone'));
+const naked = COLUMN_TYPES.filter(c=>!nameOf(c.type));
+ck('and no type in the picker is left to be born under its English key',
+   naked.length===0, naked.map(c=>c.type).join(', '));
+
 // the old word is still findable, because the type picker searches the blurb
 ck('searching חשבון still finds it, through its description',
    (accounts.he+' '+accounts.desc+' '+accounts.type).includes('חשבון'),

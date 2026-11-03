@@ -16853,7 +16853,14 @@ async function addColumn(type,forSub){
   closeCellPops();
   if(type==='connect'){ if(!isBoardAdmin()){toast('רק מנהל הלוח יכול להוסיף עמודות');return;} openConnectConfig(); return; }
   if(type==='mirror'){ openMirrorConfig(); return; }
-  const col={type,title:COL_DEFAULTS[type]||type};
+  /* A type with no entry in COL_DEFAULTS used to fall back to the type key
+     itself, so a Hebrew board came out with a column headed "long_text" — and
+     "phone" was one step from the same. The Hebrew name is the one the picker
+     just offered for that type, so it is also the name the column is born
+     with; COL_DEFAULTS stays for the types whose first title is not simply the
+     name of their kind ("סטטוס מותאם", "סימון"). */
+  const heName=(COLUMN_TYPES.find(c=>c.type===type)||{}).he;
+  const col={type,title:COL_DEFAULTS[type]||heName||type};
   if(type==='formula'){
     const f=prompt('נוסחה — השתמש בשם עמודה בסוגריים מסולסלים.\nלדוגמה:  {מספר} * 2 + {דירוג}','');
     if(f===null)return; col.formula=f.trim();
