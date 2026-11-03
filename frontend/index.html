@@ -20033,7 +20033,7 @@ const Chat = {
       : `<div class="cmt-body">${(c.content||'').trim()?this.renderContent(c.content,c.id):''}${(c.attachments||[]).length?`<div class="cmt-atts">${c.attachments.map(f=>this.attPreview(f)).join('')}</div>`:''}</div>
         <div class="cmt-actions">
           <button class="${liked?'liked':''}" onclick="Chat.like(${c.id})"><i class="fa-${liked?'solid':'regular'} fa-thumbs-up"></i> ${(c.likes||[]).length||''}</button>
-          ${!isReply&&canComment()?`<button onclick="Chat.startReply(${c.id},'${esc((c.user_name||'').replace(/['\\]/g,''))}')"><i class="fa-solid fa-reply"></i> הגב</button>`:''}
+          ${canComment()?`<button onclick="Chat.startReply(${c.id},'${esc((c.user_name||'').replace(/['\\]/g,''))}')"><i class="fa-solid fa-reply"></i> הגב</button>`:''}
           ${canMod?`<button title="ערוך" onclick="Chat.startEdit(${c.id})"><i class="fa-solid fa-pen"></i></button>`:''}
           ${canMod?`<button title="מחק" onclick="Chat.del(${c.id})"><i class="fa-regular fa-trash-can"></i></button>`:''}
           ${(c.seen_users||[]).length?`<span class="seen-ind" title="נצפה על ידי ${(c.seen_users||[]).length}" onmouseenter="Chat.seenPop(event,${c.id})" onmouseleave="Chat.seenPopClose()"><i class="fa-solid fa-eye"></i> ${(c.seen_users||[]).length}</span>`:''}
@@ -20183,7 +20183,54 @@ const Chat = {
     };
     txt.focus();
   },
-  startReply(id,name){ this.replyTo=id; this.replyToName=name; this.renderChat(document.getElementById('chat-body')).then(()=>{const ta=document.getElementById('comp-text');if(ta)ta.focus();}); },
+  /* ---- "הגב", from anywhere in the conversation ----
+     It was offered on a top-level message only, so an answer to an answer had
+     nowhere to go: the conversation's second level was where it stopped being
+     a conversation, and the way round it was to write a new message at the
+     bottom naming the person by hand.
+
+     The thread still goes one level deep. Who is answering whom is carried by
+     the TAG and not by indentation — which is the same shape the importer
+     already builds, and the only one that survives a phone screen at the
+     fourth nesting. So a reply to a reply joins the thread's root, and the
+     line above the box says who it is addressed to.
+
+     The tag is the point of the whole thing. Without it a reply three
+     messages down reads as a remark to nobody, and the person it answers is
+     not told at all — a reply reached them only if they happened to type
+     their own name into it. */
+  startReply(id,name){
+    const c=(this._commentsById||{})[id];
+    // the root of the thread, so the conversation stays two levels deep
+    this.replyTo=(c&&c.parent_id)||id;
+    this.replyToName=name||'';
+    this.renderChat(document.getElementById('chat-body')).then(()=>{
+      const ta=document.getElementById('comp-text'); if(!ta)return;
+      this.tagReplied(c,ta);
+      ta.focus();
+      ta.setSelectionRange(ta.value.length,ta.value.length);
+    });
+  },
+  /* The author of the message being answered, tagged in the box. Registered in
+     `mentions` as well as typed, so the notification does not depend on the
+     text surviving an edit.
+
+     Three it does not tag, each for its own reason: an imported message, whose
+     author has no account here to notify; yourself, which the server discards
+     anyway; and somebody no longer a member of this board, who would be
+     filtered out server-side and whose name in the box would be a promise
+     nobody keeps. */
+  tagReplied(c,ta){
+    const uid=c&&c.user_id;
+    if(!uid||uid===meId())return;
+    const u=this.mentionPeople().find(x=>x.id===uid);
+    if(!u)return;
+    if(!this.mentions.includes(uid))this.mentions.push(uid);
+    const tag='@'+u.name+' ';
+    if(ta.value.indexOf(tag)>=0)return;        // already there — a second reply to the same person
+    ta.value=tag+ta.value;
+    this.syncHL(); this.saveDraft();
+  },
   cancelReply(){ this.replyTo=null; this.renderChat(document.getElementById('chat-body')); },
   // toolbar @ button: insert "@" at the caret and open the autocomplete
   /* A tag is only recognised at the start of a word, so pressing the button with
