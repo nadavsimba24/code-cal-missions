@@ -408,8 +408,11 @@ def test_the_catalog_offers_the_actions_and_says_how_many(client, admin_id):
     assert keys == set(recipes.ACTIONS), keys
     notify = next(a for a in d["action_catalog"] if a["key"] == "notify_person")
     # a recipient is its own kind of blank: five answers, four of them read off
-    # the event rather than named in advance
-    assert notify["fields"] == [{"key": "person", "type": "recipient", "label": "נמען"}]
+    # the event rather than named in advance. "התראה" is the second — the
+    # wording the notice carries, which may be left unset for the one this
+    # system has always sent.
+    assert notify["fields"] == [{"key": "person", "type": "recipient", "label": "נמען"},
+                                {"key": "notice", "type": "notice", "label": "התראה"}]
 
 
 def test_the_impact_screen_counts_what_every_action_writes(client, admin_id, guinea_id):

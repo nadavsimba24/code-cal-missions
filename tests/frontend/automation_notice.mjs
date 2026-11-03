@@ -1,0 +1,205 @@
+/* "התראה" is a word you can press, and behind it is what the notice says.
+
+   The notification said one thing: the rule's name, what happened, the item,
+   the board, the time and a link. Right for "something happened", wrong for
+   the thing people actually send — a sentence addressed to a colleague, with
+   the item's own values in it.
+
+   So the word in the sentence is a blank like the recipient beside it. What
+   is checked here is the part the server cannot: that the word opens a
+   TEXTAREA and not the one-line box every other text blank uses, that the
+   columns are offered by TITLE (the person writing is choosing "שם הנוהל" and
+   should never have to know it is col_7a1), that the two boxes on two
+   different dialogs each get their own tokens, and that an empty box means
+   the default notice rather than a notice that says nothing.
+
+   Driven by tests/test_automation_notice_wording.py. */
+import fs from 'fs';
+import path from 'path';
+import {fileURLToPath} from 'url';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const src = fs.readFileSync(path.join(ROOT,'frontend','index.html'),'utf8');
+
+function grabConst(name){
+  const m = new RegExp(`^const ${name} = \\{`,'m').exec(src);
+  if(!m) throw new Error('not found: '+name);
+  let i=src.indexOf('{',m.index), d=0;
+  for(let j=i;j<src.length;j++){ if(src[j]==='{')d++; else if(src[j]==='}'){d--; if(!d) return src.slice(m.index,j+1)+';';} }
+  throw new Error('unbalanced: '+name);
+}
+function grabTable(decl){
+  const i=src.indexOf(decl);
+  if(i<0) throw new Error('not found: '+decl);
+  const open=src.indexOf(decl.includes('[')?'[':'{', i), close=decl.includes('[')?']':'}';
+  let d=0;
+  for(let j=open;j<src.length;j++){
+    if(src[j]===src[open])d++;
+    else if(src[j]===close){ d--; if(!d) return src.slice(i,j+1)+';'; }
+  }
+  throw new Error('unbalanced: '+decl);
+}
+
+const COLS=[
+  {id:'col_7a1', type:'text',   title:'שם הנוהל'},
+  {id:'col_b2',  type:'status', title:'שלב', options:[]},
+  {id:'col_lnk', type:'connect',title:'מקושר'},
+];
+const st={board:{id:1,name:'לוח',groups:[],my_role:'admin',col_perms:{},
+                 columns:COLS.slice(),tasks:[]},boards:[]};
+let modals=[], area=null, mailBox=null;
+
+function build(){
+  modals=[];
+  area={value:'',focus(){},setSelectionRange(){}};
+  mailBox={checked:false};
+  const A=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','fdate',
+    'avatarInner','boardStatusList','boardPriorityList','customColumns','statusColOpts',
+    'advColHidden','meId','api','openCellPop','closeCellPops','askConfirm','showModal',
+    'closeModals','document','renderView','localStorage','colTypeHe','advCell',
+    grabTable('const ADV_KINDS = {')+grabTable('const ADV_DATES = [')
+    +grabTable('const COLUMN_TYPES=[')
+    +grabConst('Automations')+' return Automations;')(
+    st, x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
+    ()=>{}, {ago:()=>'',goto(){}},
+    ()=>'', ()=>'', d=>String(d),
+    ()=>'', ()=>[], ()=>[],
+    ()=>COLS.slice(), ()=>[], ()=>false, ()=>1, async()=>({}),
+    ()=>{}, ()=>{}, ()=>{},
+    h=>modals.push(h), ()=>{},
+    {getElementById:id=>(id==='au-notice'?area:(id==='au-notice-mail'?mailBox:null)),
+     querySelector:()=>null, querySelectorAll:()=>[]},
+    ()=>{}, {getItem:()=>null,setItem(){}},
+    t=>t, (t,f)=>null);
+  A.conds=[]; A.maxConds=3; A.maxActs=4; A.members=[{user_id:3,name:'דנה'}];
+  A.caps={fields:[],operator_labels:{},
+          tokens:[{token:'item.name',label:'שם הפריט'},
+                  {token:'now',label:'זמן ההפעלה'},
+                  {token:'field.',label:'ערך של עמודה',takes_column:true}]};
+  A.data={can_manage:true,automations:[],people:[]};
+  A.acts=[{key:'notify_person', label:'שלח התראה ל…', text:'שלח {notice} ל{person}',
+           fields:[{key:'person',type:'recipient',label:'נמען'},
+                   {key:'notice',type:'notice',label:'התראה'}]}];
+  A.recipes=[RECIPE]; A.render=()=>{};
+  A.pick(RECIPE.id);
+  return A;
+}
+const RECIPE={id:'every_days_notify_person', trigger:'every_n_days', action:'notify_person',
+  sentence:'כל {t_days} ימים, שלח {a_notice} ל{a_person}',
+  fields:[{key:'t_days',type:'days',label:'כל כמה ימים',min:1},
+          {key:'a_person',type:'recipient',label:'נמען'},
+          {key:'a_notice',type:'notice',label:'התראה'}],
+  conditions:[]};
+
+const EV={preventDefault(){},stopPropagation(){},currentTarget:{}};
+let pass=0,fail=0;
+const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+String(x).slice(0,340):''))); };
+const last=()=>modals[modals.length-1]||'';
+
+// ── the word in the sentence is the blank ─────────────────────────────────
+{
+  const A=build();
+  const chip=A.blankHTML({key:'a_notice',type:'notice',label:'התראה'});
+  ck('an unset blank reads as the word itself', /&gt;התראה<\/button>|>התראה<\/button>/.test(chip), chip);
+  ck('…and it is pressable', chip.includes("Automations.pickField(event,'a_notice')"), chip);
+}
+
+// ── which opens a textarea, not a one-line box ────────────────────────────
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  ck('the word opens the notice editor', last().includes('נוסח ההתראה'), last().slice(0,120));
+  ck('…with room for paragraphs', last().includes('<textarea id="au-notice"'), last());
+  ck('…and not the one-line value box', !last().includes('id="au-txt"'), last());
+  ck('…offering to send it by mail as well', last().includes('au-notice-mail'), last());
+  ck('…and the placeholder shows what one looks like',
+     last().includes('{{item.name}}'), last());
+}
+
+// ── the columns are offered by name ───────────────────────────────────────
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  ck('a column is offered by its title', last().includes('ערך של «שם הנוהל»'), last());
+  ck('…and inserts its id, which nobody has to know',
+     last().includes("putToken('field.col_7a1','au-notice')"), last());
+  ck('a connect column is not offered — it has no single value',
+     !last().includes('«מקושר»'), last());
+  ck('and the plain tokens are there too',
+     last().includes("putToken('item.name','au-notice')"), last());
+}
+
+// ── writing one, and clearing it ──────────────────────────────────────────
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  area.value='היי,\nלרשות: {{item.name}}\n';
+  mailBox.checked=true;
+  A.saveNotice();
+  const v=A.building.values['a_notice'];
+  ck('the wording is stored', v && v.v.text.includes('לרשות: {{item.name}}'), JSON.stringify(v));
+  ck('…and so is the mail switch', v && v.v.mail===true, JSON.stringify(v));
+  ck('the chip now says there IS a wording, not what it says',
+     v && v.label==='התראה מותאמת', JSON.stringify(v));
+}
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  area.value='   ';
+  mailBox.checked=true;
+  A.saveNotice();
+  ck('an empty box means the default notice, not a notice saying nothing',
+     A.building.values['a_notice']===undefined,
+     JSON.stringify(A.building.values['a_notice']));
+}
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  area.value='משהו'; A.saveNotice();
+  await A.pickField(EV,'a_notice');
+  ck('an existing wording offers the way back to the default',
+     last().includes('clearNotice'), last());
+  A.clearNotice();
+  ck('…and taking it clears the blank', A.building.values['a_notice']===undefined);
+}
+
+// ── the token insertion lands in the right box ────────────────────────────
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  area.value='לרשות: '; area.selectionStart=area.selectionEnd=7;
+  A.putToken('item.name','au-notice');
+  ck('a token is inserted at the caret, in the notice box',
+     area.value==='לרשות: {{item.name}}', JSON.stringify(area.value));
+}
+
+// ── an unset notice does not hold the create button ───────────────────────
+{
+  const A=build();
+  A.building.values['t_days']={v:7,label:'7'};
+  A.building.values['a_person']={v:{kind:'user',value:3},label:'דנה'};
+  const html=A.buildHTML();
+  ck('a rule is complete without a wording', !/disabled title="יש להשלים/.test(html),
+     html.slice(html.indexOf('btn-primary'),html.indexOf('btn-primary')+160));
+}
+{
+  const A=build();
+  A.building.values['t_days']={v:7,label:'7'};
+  const html=A.buildHTML();
+  ck('…but not without the recipient', /disabled title="יש להשלים/.test(html));
+}
+
+// ── an extra action's notice is its own ───────────────────────────────────
+{
+  const A=build();
+  A.pickAct(EV);
+  A.addAct((A._actOffer||[]).findIndex(x=>x.key==='notify_person'));
+  await A.pickActValue(EV,0,'notice');
+  ck('an extra action opens the same editor', last().includes('נוסח ההתראה'), last().slice(0,120));
+  area.value='של הפעולה הנוספת'; A.saveNotice();
+  const v=((A.building.acts[0]||{}).values||{}).notice;
+  ck('…and stores it on that action', v && v.v.text==='של הפעולה הנוספת', JSON.stringify(v));
+  ck('…and not on the sentence', A.building.values['a_notice']===undefined);
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail?1:0);

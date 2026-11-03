@@ -727,8 +727,14 @@ A.setWait(99999); ck('and thirty days is the ceiling', A.building.values['a_days
 
 const tm=A.tokenMenuHTML();
 ck('a text blank offers values from the item', tm.includes('ערך מהפריט')
-   && tm.includes("Automations.putToken('item.name')"));
+   && tm.includes("Automations.putToken('item.name','au-txt')"));
 ck('...including the board\'s own columns', tm.includes("putToken('field."));
+// the same menu serves the notice's textarea, and says which box it is for —
+// the two are on screen in different dialogs
+const tn=A.tokenMenuHTML('au-notice');
+ck('and the notice gets the same values, aimed at its own box',
+   tn.includes("putToken('item.name','au-notice')")
+   && tn.includes("','au-notice')"), tn.slice(0,200));
 
 
 /* ── סדר ביצוע, התנגשות והשהיה ────────────────────────────────────────── */

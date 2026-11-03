@@ -13253,6 +13253,14 @@ def _automation_label(db, board, a):
             text = text.replace("{" + f["key"] + "}",
                                 recipes.pick_label(f, cfg.get(f["key"])))
             continue
+        if f["type"] == "notice":
+            # The word itself, and not a blank in quotation marks: "שלח התראה
+            # ל«דנה»" is what this rule has always read as, and one that wrote
+            # its own wording says THAT rather than quoting a paragraph into a
+            # line in a list of thirty.
+            text = text.replace("{" + f["key"] + "}",
+                                "התראה מותאמת" if cfg.get(f["key"]) else "התראה")
+            continue
         col_id = recipes.status_col_of(cfg, f["key"]) if f["type"] == "status" else ""
         shown = _shown_value(db, board, f["type"], cfg.get(f["key"]), col_id)
         text = text.replace("{" + f["key"] + "}", f"«{shown}»")
@@ -13649,6 +13657,95 @@ _NOTICE_WHAT = {"notify_person": "שליחת התראה", "notify_assignees": "�
                 "post_update": "עדכון בשיחת הפריט"}
 
 
+def _notice_of(db, cfg, task, board, event=None, human=None, owner=None):
+    """(body, by_mail) for this rule's notification — (None, False) when it
+    named no wording of its own.
+
+    A rule that says nothing here gets the notice this system has always sent:
+    which rule, what happened, the item, the board, the time and a link. Right
+    for "something happened" and wrong for the thing people actually send,
+    which is a sentence addressed to a colleague — a chase that reads "היי,
+    תזכורת להמשך טיפול… לרשות: «שם הפריט»" and names the item it is about.
+
+    So the wording is resolved against THIS item (see _resolve_tokens). That is
+    the whole point of writing it: a notice that said the same thing about
+    every item is a notice nobody reads twice.
+    """
+    n = cfg.get("notice")
+    if isinstance(n, str):
+        n = {"text": n}
+    if not isinstance(n, dict):
+        return None, False
+    raw = str(n.get("text") or "").strip()
+    if not raw:
+        return None, False
+    return (_resolve_tokens(db, raw, task, board, event, human, owner),
+            bool(n.get("mail")))
+
+
+def _automation_notice_mail(db, uid, task, board, title, body):
+    """(to, subject, html) for a notice going out by mail — or None.
+
+    Deliberately NOT routed through _item_mail. That one refuses to tell the
+    actor about their own keystroke, which is right for "you were tagged" and
+    wrong here: the commonest rule of this shape is a recurring chase, where
+    the actor is whoever's board read happened to sweep the clock and has
+    nothing to do with the person being chased. Refusing them would make the
+    rule silently skip exactly the recipient it names.
+
+    The wording is the rule's own, already resolved. It arrives as text and is
+    escaped here — a notice is written in a textarea, and what somebody typed
+    into one is not HTML.
+    """
+    if not uid or task is None or not _board_notify_on(board):
+        return None
+    to = db.query(User).filter(User.id == uid).first()
+    if not to or not to.email or to.is_active is False:
+        return None
+    bname = board.name if board else ""
+    sentence = _mail_esc(body).replace("\n", "<br>")
+    return (to.email,
+            f'{title} — בלוח "{bname}" במערכת MISSIONS',
+            _item_mail_html(f'{_mail_esc(title)} — בלוח "{_mail_esc(bname)}"',
+                            to.name, sentence, "כניסה לרשומה",
+                            _item_link(task.board_id, task.id, _app_base_url(None))))
+
+
+def _mail_when_committed(db, msgs):
+    """Send these once the transaction has landed, and not before.
+
+    The same bargain the outbox strikes, for the same reason and through the
+    same mechanism: a mail announcing a write that then rolls back cannot be
+    recalled, and one sent in a separate step after the commit is lost if the
+    process dies in between. Armed on the session, which is the only thing that
+    knows when the commit happened.
+    """
+    msgs = [m for m in (msgs or []) if m]
+    if not msgs:
+        return
+    box = getattr(db, "_pending_mail", None)
+    if box is None:
+        box = []
+        db._pending_mail = box
+        event.listen(db, "after_commit", _mail_after_commit, once=True)
+    box.extend(msgs)
+
+
+def _mail_after_commit(db):
+    msgs = getattr(db, "_pending_mail", None) or []
+    db._pending_mail = None
+    if not msgs:
+        return
+    # _send_email is a blocking HTTPS call per recipient, and the request must
+    # not wait for it — see _queue_item_mails, which the routes avoid exactly
+    # this way. The engine has no BackgroundTasks to hand, so it brings its own
+    # thread. Never raises into the commit: by here the work is already saved.
+    try:
+        threading.Thread(target=_send_item_mails, args=(msgs,), daemon=True).start()
+    except Exception as e:                         # noqa: BLE001
+        print(f"⚠️  notice mail not sent: {e}", flush=True)
+
+
 def _can_see_item(db, task, user_id):
     """Whether this person may open the item a notification is about.
 
@@ -13762,24 +13859,35 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
     # while they were a member and removed from the board since. Re-check at run
     # time, or a rule becomes a standing way to reach someone who was taken off
     # the board on purpose.
-    if act == "notify_person":
-        who, why = _recipient_ids(db, board, task, cfg.get("person"), human, owner)
-        allowed = [u for u in who if _can_see_item(db, task, u)]
-        if not allowed:
-            raise _Skipped("לנמען אין הרשאה לראות את הפריט" if who
-                           else (why or "אין נמען להתראה"))
-        who = allowed
+    if act in ("notify_person", "notify_assignees"):
+        # the rule's own wording where it has one, under the rule's own name:
+        # "אוטומציה הופעלה" above a sentence addressed to a colleague reads as
+        # a system message about nothing
+        _said, _by_mail = _notice_of(db, cfg, task, board, event, human, owner)
+        _text = _said or body
+        _title = label if _said else "אוטומציה הופעלה"
+        if act == "notify_person":
+            who, why = _recipient_ids(db, board, task, cfg.get("person"), human, owner)
+            allowed = [u for u in who if _can_see_item(db, task, u)]
+            if not allowed:
+                raise _Skipped("לנמען אין הרשאה לראות את הפריט" if who
+                               else (why or "אין נמען להתראה"))
+            who = allowed
+        else:
+            people = [u for u in list(task.assignees) if _can_see_item(db, task, u.id)]
+            if not people:
+                raise _Skipped("לפריט אין משויכים" if not list(task.assignees)
+                               else "למשויכים אין הרשאה לראות את הפריט")
+            who = [u.id for u in people]
         for uid in who:
-            _notify(db, uid, "automation", "אוטומציה הופעלה", body,
+            _notify(db, uid, "automation", _title, _text,
                     board_id=task.board_id, task_id=task.id)
-    elif act == "notify_assignees":
-        people = [u for u in list(task.assignees) if _can_see_item(db, task, u.id)]
-        if not people:
-            raise _Skipped("לפריט אין משויכים" if not list(task.assignees)
-                           else "למשויכים אין הרשאה לראות את הפריט")
-        for u in people:
-            _notify(db, u.id, "automation", "אוטומציה הופעלה", body,
-                    board_id=task.board_id, task_id=task.id)
+        if _by_mail:
+            # queued, not sent: the row and the mail announce the same thing,
+            # and the mail must not leave ahead of the commit
+            _mail_when_committed(db, [_automation_notice_mail(db, uid, task, board,
+                                                              _title, _text)
+                                      for uid in who])
     elif act == "assign_person":
         u = db.query(User).filter(User.id == cfg.get("person")).first()
         if not u or not _can_be_assigned(db, task.board_id, u.id):
@@ -19327,8 +19435,17 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
             who = ", ".join(people) if people else "—"
             no_op = not people
             note = "לפריט אין משויכים" if no_op else ""
+        # The wording, resolved against THIS item — which is the whole reason
+        # somebody opens the test screen after writing one: "לרשות:
+        # {{item.name}}" is only right if it reads right on a real row.
+        said, by_mail = _notice_of(db, values, task, board)
+        extra = ""
+        if said:
+            extra = " · נוסח: " + (said[:160] + ("…" if len(said) > 160 else ""))
+            if by_mail:
+                extra += " · נשלחת גם במייל"
         return {"what": "שליחת התראה", "to": who, "from": "", "no_op": no_op,
-                "note": note + (" · בבדיקה לא נשלחת התראה" if not no_op else "")}
+                "note": note + (" · בבדיקה לא נשלחת התראה" if not no_op else "") + extra}
     if key == "create_in_board":
         tb = db.query(Board).filter(Board.id == values.get("board")).first()
         g = db.query(Group).filter(Group.id == values.get("target_group")).first()
@@ -19397,6 +19514,11 @@ def _automation_value_label(db, board, r, key, v, cfg=None):
     if t == "priority" or key in ("t_priority", "a_priority"):
         e = next((x for x in _board_priorities(board) if x["key"] == str(v)), None)
         return e["label"] if e else str(v)
+    if t == "notice":
+        # The rule's sentence is one line in a list of thirty. A notice is a
+        # paragraph with the item's values in it; quoting it here would make
+        # the sentence unreadable and say nothing that opening it does not.
+        return "התראה מותאמת"
     if t == "person":
         return db.query(User.name).filter(User.id == v).scalar() or str(v)
     if t == "group":

@@ -737,8 +737,8 @@ TRIGGERS = {
 }
 
 ACTIONS = {
-    "notify_person":    "שלח התראה ל{person}",
-    "notify_assignees": "שלח התראה למשויכים לפריט",
+    "notify_person":    "שלח {notice} ל{person}",
+    "notify_assignees": "שלח {notice} למשויכים לפריט",
     "assign_person":    "שייך את {person}",
     "set_status":       "שנה את הסטטוס ל{status}",
     "set_priority":     "שנה את העדיפות ל{priority}",
@@ -905,7 +905,53 @@ PICKS = {"targets": (TARGETS, TARGETS_DEFAULT),
 
 # The field types that may be blank. Everything else a recipe declares has to be
 # filled before the rule can be switched on.
-OPTIONAL_TYPES = ("pick", "connect_opt")
+OPTIONAL_TYPES = ("pick", "connect_opt", "notice")
+
+# ── נוסח ההתראה ─────────────────────────────────────────────────────────────
+# What a notification SAYS. Until now it said one thing: the rule's name, what
+# happened, the item, the board, the time and a link — six lines, right for
+# "something happened" and wrong for the thing people actually send, which is
+# a sentence addressed to a colleague:
+#
+#     היי,
+#     תזכורת להמשך טיפול בתהליך בל"מ
+#     לרשות: {{item.name}}
+#     שם הנוהל: {{field.col_7a1}}
+#     תודה.
+#
+# So it is a blank now, with the item's own values available inside it (see
+# TOKENS) and a choice of whether it also leaves by mail. Optional, and that is
+# the whole of the compatibility story: a rule that says nothing here gets the
+# notice this system has always sent, which is what every rule written before
+# now holds.
+NOTICE_MAX = 2000
+
+
+def notice_value(raw):
+    """({"text","mail"}, error) for a notice blank — (None, None) when unset.
+
+    Accepts the bare string as well as the pair, because that is what a rule
+    written against an older client would send and what a person pasting a
+    configuration would write. A string means "this wording, in the app only",
+    which is the quieter of the two and therefore the right reading of
+    silence about the mail.
+    """
+    if raw in (None, "", [], {}):
+        return None, None
+    if isinstance(raw, str):
+        raw = {"text": raw}
+    if not isinstance(raw, dict):
+        return None, "נוסח התראה לא תקין"
+    text = str(raw.get("text") or "").strip()[:NOTICE_MAX]
+    if not text:
+        # the mail switch on its own says nothing to send — and a notice with
+        # no wording is not a notice, it is the default one with a flag beside
+        # it that nobody would find again
+        return None, None
+    bad = unknown_tokens(text)
+    if bad:
+        return None, "ערך דינמי לא מוכר: {{" + bad[0] + "}}"
+    return {"text": text, "mail": bool(raw.get("mail"))}, None
 
 
 def pick_key(f):
@@ -960,8 +1006,9 @@ MAX_ACTIONS = 10
 # own action declares the same fields prefixed `a_` (see RECIPES), and
 # action_list below reads the two into one shape.
 ACTION_FIELDS = {
-    "notify_person":    [_f("person", "recipient", "נמען")],
-    "notify_assignees": [],
+    "notify_person":    [_f("person", "recipient", "נמען"),
+                         _f("notice", "notice", "התראה")],
+    "notify_assignees": [_f("notice", "notice", "התראה")],
     "assign_person":    [_f("person", "person", "אחראי")],
     "set_status":       [_f("status", "status", "סטטוס")],
     "set_priority":     [_f("priority", "priority", "עדיפות")],
@@ -1050,8 +1097,12 @@ def action_text(key, shown=None):
             else ACTIONS.get(key, ""))
     for f in action_fields(key):
         v = (shown or {}).get(f["key"])
+        # an unset blank reads as "…" — except the one whose own name is the
+        # word the phrase needs, where "שלח … לדנה" says nothing about what the
+        # action does. See PLAIN_WORDS.
         text = text.replace("{" + f["key"] + "}",
-                            v if v not in (None, "") else "…")
+                            v if v not in (None, "")
+                            else PLAIN_WORDS.get(f["key"], "…"))
     return text.replace("{col}", col if col not in (None, "") else "…")
 
 
@@ -1108,6 +1159,12 @@ def _coerce_field(f, v, require):
         v, err = map_value(v)
         if err:
             return None, (err if require else None)
+        return v, None
+    elif f["type"] == "notice":
+        # blank is a value here: the notice this system has always sent
+        v, err = notice_value(v)
+        if err:
+            return None, err
         return v, None
     elif f["type"] == "wait":
         try:
@@ -1473,6 +1530,18 @@ RECIPES = [
                 _f("a_fields", "fields", "השדות להעתקה")]},
 ]
 
+# Every recipe declares the blanks its ACTION has, named with the a_ prefix the
+# sentence uses. Derived here rather than repeated in ninety literals: an action
+# that gains a blank — "התראה" is the first in a long while — would otherwise
+# have to be added by hand to each of the dozen recipes that use it, and the one
+# that is missed is a rule whose sentence shows a blank the save then refuses.
+# Appended, so a recipe that already names the field keeps its own order.
+for _r in RECIPES:
+    _have = {f["key"] for f in _r["fields"]}
+    for _af in ACTION_FIELDS.get(_r["action"], ()):
+        if "a_" + _af["key"] not in _have:
+            _r["fields"].append({**_af, "key": "a_" + _af["key"]})
+
 RECIPES_BY_ID = {r["id"]: r for r in RECIPES}
 
 
@@ -1672,7 +1741,8 @@ def _sentence_halves(r, config=None, on_trigger=None, on_action=None):
     if r["action"] in STATUS_COL_TEXT and want:
         act = STATUS_COL_TEXT[r["action"]].replace("{col}", "{a_status_col}")
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
-              "fields", "target_group", "column", "days", "map", "targets", "on_missing"):
+              "fields", "target_group", "column", "days", "map", "targets", "on_missing",
+              "notice"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
     return trig, act
 
@@ -1715,19 +1785,34 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and",
     return f"{trig}, {clause + ', ' if clause else ''}{act}"
 
 
+# What a placeholder reads as when the wording is shown with its blanks empty.
+# Only for a blank whose own NAME is the word the sentence needs: "שלח {notice}
+# ל…" has to read "שלח התראה ל…" in the picker, because the picker is a list of
+# what each action does and "שלח … ל…" says nothing about this one. Every other
+# blank is a value somebody has yet to choose, and "…" is exactly right for it.
+PLAIN_WORDS = {"notice": "התראה"}
+
+
 def plain(text):
     """A trigger's or action's wording with its blanks shown as "…" — what a
     from-scratch picker lists, before any value has been chosen."""
-    out, depth = [], 0
+    out, depth, name = [], 0, []
     for ch in text:
         if ch == "{":
             depth += 1
             if depth == 1:
-                out.append("…")
+                name = []
+                out.append(None)          # the blank's place, decided on close
         elif ch == "}":
             depth = max(0, depth - 1)
+            if depth == 0 and out and out[-1] is None:
+                out[-1] = PLAIN_WORDS.get("".join(name), "…")
         elif depth == 0:
             out.append(ch)
+        elif depth == 1:
+            name.append(ch)
+    # an unterminated "{" leaves its blank undecided; it reads as one
+    out = ["…" if x is None else x for x in out]
     return "".join(out)
 
 
@@ -1883,6 +1968,12 @@ def validate_partial(recipe_id, config):
                 continue                          # half-built: simply not kept
             clean[f["key"]] = v
             continue
+        elif f["type"] == "notice":
+            v, nerr = notice_value(v)
+            if nerr or v is None:
+                continue                          # unset, or a half-typed token
+            clean[f["key"]] = v
+            continue
         elif f["type"] == "wait":
             try:
                 v = int(v)
@@ -1984,6 +2075,12 @@ def validate(recipe_id, config):
             v, merr = map_value(v)
             if merr:
                 return None, merr
+        elif f["type"] == "notice":
+            v, nerr = notice_value(v)
+            if nerr:
+                return None, nerr
+            if v is None:
+                continue                        # unset, and that is allowed
         elif f["type"] == "wait":
             try:
                 v = int(v)

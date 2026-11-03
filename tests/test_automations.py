@@ -47,7 +47,9 @@ def test_the_recipe_catalog_is_served(client, admin_id):
     one = next(r for r in d["recipes"] if r["id"] == "status_notify_person")
     # the sentence carries the placeholders the picker fills in
     assert "{t_status}" in one["sentence"] and "{a_person}" in one["sentence"]
-    assert {f["key"] for f in one["fields"]} == {"t_status", "a_person"}
+    # a_notice is the notice's own wording — optional, and derived onto every
+    # recipe from the action's field list rather than repeated in each
+    assert {f["key"] for f in one["fields"]} == {"t_status", "a_person", "a_notice"}
 
 
 def test_only_a_board_admin_may_define_a_rule(client, admin_id, guinea_id):
