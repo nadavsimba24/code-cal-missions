@@ -892,6 +892,21 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    axis left at `none` a skipped group measures empty across, which is what it
    is, and takes the container's width. */
 .group{margin-bottom:22px;min-width:max-content;content-visibility:auto;contain-intrinsic-width:none;contain-intrinsic-height:auto 600px}
+/* ...and that is also why a re-render loses the sideways scroll position.
+   Every group is built fresh, a fresh content-visibility:auto element starts
+   SKIPPED — the browser has not decided yet which of them are on screen — and
+   a board of skipped groups measures empty across. So at the moment renderView
+   puts the offset back there is nothing to scroll: -1800 is clamped to 0, the
+   board paints at the right-hand edge, and it is only once the first group is
+   found to be on screen, a frame or two later, that the offset can be applied
+   for real. The restore loop does get there, but the frames in between are
+   painted — which is the jump: sort by a column you had to scroll to reach and
+   the board snaps back to the right and then returns.
+   While the offset is being restored the board is therefore held at the width
+   it had a moment ago, so the offset is never clamped and there is no wrong
+   frame to paint. A pseudo-element rather than a real one on purpose:
+   #view>*:first-child has to go on meaning the first group. */
+#view.restoring-x::before{content:'';display:block;height:0;width:var(--restore-x,0)}
 /* A collapsed group is a name and nothing else — some 28px tall, with the 22px
    gap under it belonging to no element at all. That gap is nearly half of the
    group's slot, and a pointer in it hit-tests to the board rather than to a
@@ -6045,8 +6060,10 @@ function renderView(){
   }
   const key=(st.board?st.board.id:'-')+'/'+st.view;
   const same=(key===_viewScrollKey);
-  // rebuilding innerHTML drops the scroll offset — remember it first
-  const top=same?el.scrollTop:0, left=same?el.scrollLeft:0;
+  // rebuilding innerHTML drops the scroll offset — remember it first, and the
+  // width it was an offset into, because the rebuilt board does not have that
+  // width yet (see #view.restoring-x)
+  const top=same?el.scrollTop:0, left=same?el.scrollLeft:0, wide=same?el.scrollWidth:0;
   // Hold on to the images already decoded on screen. A full render throws every
   // <img> away and builds new ones, and the avatars blink even though the files
   // are cached — most visibly when a status change moves a row between groups,
@@ -6097,12 +6114,40 @@ function renderView(){
        12 frames regardless — a board that genuinely cannot scroll that far
        (a column was deleted, the window was resized) must not spin. */
     const want=()=>{ el.scrollTop=top; el.scrollLeft=left; };
+    /* …and until it can take it, the board is held at the width it had. The
+       holder is a zero-height block the width of the old board, so the offset
+       applies in full on the very first try and the board never paints at a
+       position nobody asked for. It is let go the moment the real columns are
+       wide enough to hold the offset by themselves, which is asked by taking
+       it off and measuring: inside one task, so nothing is painted in between
+       and the question costs a layout rather than a flicker. */
+    const need=Math.abs(left);
+    let held=false;
+    const hold=on=>{
+      held=on;
+      if(on){ el.style.setProperty('--restore-x',wide+'px'); el.classList.add('restoring-x'); }
+      else { el.classList.remove('restoring-x'); el.style.removeProperty('--restore-x'); }
+    };
+    // how far the board could scroll on its own, holder or no holder
+    const roomOfItsOwn=()=>{
+      if(!held) return el.scrollWidth-el.clientWidth;
+      el.classList.remove('restoring-x');
+      const r=el.scrollWidth-el.clientWidth;
+      el.classList.add('restoring-x');
+      return r;
+    };
+    if(need && wide-el.clientWidth>=need) hold(true);
     want();
     let tries=0;
     const settle=()=>{
-      if(el.scrollTop===top && el.scrollLeft===left) return;
+      if(held && roomOfItsOwn()>=need-1) hold(false);   // the columns carry it now
       want();
-      if(++tries<12) requestAnimationFrame(settle);
+      if(!held && el.scrollTop===top && el.scrollLeft===left) return;
+      if(++tries<12){ requestAnimationFrame(settle); return; }
+      /* Out of frames. A board that genuinely cannot scroll that far — a
+         column was deleted, the window was made wider — must not be left
+         propped open by the holder for the life of the page. */
+      if(held){ hold(false); want(); }
     };
     requestAnimationFrame(settle);
   }
