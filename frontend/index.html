@@ -1510,6 +1510,16 @@ body.coldragging .col-grip{opacity:1}
 .batt-tip-row .batt-lbl{flex:1;color:var(--text)}
 .batt-tip-row .batt-pct{font-weight:700;color:var(--text)}
 .batt-tip-row .batt-n{color:var(--text-light);font-size:11px}
+/* The full value of a cell the grid had to cut short. This used to ride on the
+   browser's own `title`, and the browser waits about a second and a half before
+   it shows one — long enough that the value looked like it was simply not
+   there. Ours appears at once, wraps instead of running off the screen, and
+   keeps the newlines of a long-text cell. pointer-events:none so the box can
+   never sit between the pointer and the cell it belongs to. */
+.cell-tip{position:fixed;z-index:400;max-width:420px;background:var(--surface);border:1px solid var(--border-strong);
+  border-radius:9px;box-shadow:var(--shadow);padding:7px 11px;font-size:12.5px;line-height:1.55;color:var(--text);
+  white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none}
+.cell-tip .cell-tip-h{display:block;margin-top:5px;font-size:11px;color:var(--text-light)}
 .tag{display:inline-block;background:var(--bg);border:1px solid var(--border-strong);border-radius:11px;padding:1px 9px;font-size:11px;color:var(--text-muted);margin:1px}
 
 /* ===== Kanban ===== */
@@ -14027,6 +14037,49 @@ function battTip(e){
 }
 function battTipHide(){ const t=document.getElementById('batt-tip'); if(t)t.remove(); }
 
+/* ---- the full value of a clipped cell, on hover ---- */
+/* The value travels in data-tipf and NOT in title: an element carrying both
+   would answer twice — ours straight away and the browser's a second later, on
+   top of it. data-tiph is the second, quieter line (what a click there does).
+   Delegated from the document because the grid is rebuilt on every render and
+   on every live update, so per-cell handlers would have to be re-bound each
+   time, and the one that got missed is the cell that looks broken. */
+let _tipEl=null,_tipT=null;
+function cellTipHide(){ clearTimeout(_tipT); _tipT=null; _tipEl=null;
+  const b=document.getElementById('cell-tip'); if(b)b.remove(); }
+function cellTipShow(el){
+  const txt=el.getAttribute('data-tipf')||''; if(!txt.trim())return;
+  const hint=el.getAttribute('data-tiph')||'';
+  const box=document.createElement('div'); box.className='cell-tip'; box.id='cell-tip';
+  box.innerHTML=esc(txt)+(hint?`<span class="cell-tip-h">${esc(hint)}</span>`:'');
+  document.body.appendChild(box);
+  const r=el.getBoundingClientRect();
+  // below the cell, unless the bottom of the window is closer than the box is tall
+  box.style.top=(r.bottom+6+box.offsetHeight>window.innerHeight
+    ? Math.max(6,r.top-box.offsetHeight-6) : r.bottom+6)+'px';
+  // in RTL the eye starts at the cell's right edge, so the box starts there too
+  const rtl=document.documentElement.getAttribute('dir')!=='ltr';
+  const want=rtl?r.right-box.offsetWidth:r.left;
+  box.style.left=Math.max(6,Math.min(window.innerWidth-box.offsetWidth-6,want))+'px';
+}
+document.addEventListener('mouseover',e=>{
+  // a tap on a phone fires mouseover too, and there is no "away" to move to
+  // afterwards — the box would stay on the screen until the next render
+  if(isTouch())return;
+  const el=e.target&&e.target.closest?e.target.closest('[data-tipf]'):null;
+  if(el===_tipEl)return;                       // still inside the same cell
+  cellTipHide();
+  if(!el)return;
+  _tipEl=el;
+  // a short wait, so crossing the grid on the way somewhere else leaves no
+  // trail of boxes behind it — but far below the browser's own second and a half
+  _tipT=setTimeout(()=>{ if(_tipEl===el&&document.body.contains(el))cellTipShow(el); },150);
+});
+// anything that moves the cell out from under the box takes the box with it
+document.addEventListener('mousedown',cellTipHide,true);
+document.addEventListener('scroll',cellTipHide,true);
+window.addEventListener('blur',cellTipHide);
+
 /* ============ items + sub-items (פריט / תת-פריט) ============ */
 function itemRow(t,col){
   const subs=sortedSubs(t.subtasks||[]);
@@ -14034,11 +14087,11 @@ function itemRow(t,col){
   const open=st.openSubs.has(t.id);
   const parent=`
     <tr data-tid="${t.id}" class="${st.selected.has(t.id)?'row-sel':''}">
-      <td class="c-item" style="--gcolor:${col}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
+      <td class="c-item" style="--gcolor:${col}" data-tipf="${esc(t.title)}" oncontextmenu="itemRowMenu(event,${t.id});return false"><div class="ci-flex">
         ${canEditItem(t)?`<input type="checkbox" class="item-check" title="סימון פריט" ${st.selected.has(t.id)?'checked':''} onclick="toggleItemSelect(event,${t.id})">`:''}
         ${canEditItem(t)?`<button class="item-menu" title="פעולות פריט" onclick="itemRowMenu(event,${t.id})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:''}
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
-        <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
+        <span class="item-title editable" data-tipf="${esc(t.title)}" data-tiph="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
         ${cnt?`<span class="sub-badge${open?' open':''}" role="button" tabindex="0" title="${cnt} תת-פריטים · לחץ להצגה/הסתרה" onclick="toggleSubs(event,${t.id})" onkeydown="if(event.key==='Enter'||event.key===' ')toggleSubs(event,${t.id})"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
         <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
       </div></td>
@@ -14119,8 +14172,8 @@ function subItemRowHTML(s,cols,admin,parentId){
   const rest=cols.filter(c=>c.id!=='item')
     .map(c=>c.kind==='builtin'?builtinCellHTML(c.key,s):customCellHTML(c.col,s)).join('');
   return `<tr class="sub-item-row" data-sid="${s.id}" data-parent="${parentId}">
-      <td class="sub-name-cell"><div class="ci-flex">
-        <span class="item-title editable" title="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
+      <td class="sub-name-cell" data-tipf="${esc(s.title)}"><div class="ci-flex">
+        <span class="item-title editable" data-tipf="${esc(s.title)}" data-tiph="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
         <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
         <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button>
       </div></td>
@@ -14773,12 +14826,17 @@ function builtinCellHTML(key,t){
 /* one custom-column cell for a given row */
 function customCellHTML(c,t){
   const v=cellValue(t,c.id), id=t.id, cc=`data-task="${id}" data-col="${c.id}"`;
-  if(c.type==='text')   return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
+  /* A text cell is a one-line <input> as wide as its column, so anything longer
+     than the column is simply not readable in the grid. The whole value hangs on
+     the cell AND on the input — the input does not cover the cell's padding, and
+     that strip is easy to land on. oninput keeps both current, because a tooltip
+     still showing what was there before the user typed is worse than none. */
+  if(c.type==='text')   return `<td class="cell cell-custom" data-tipf="${esc(v==null?'':v)}"><input class="cc-inp" value="${esc(v==null?'':v)}" data-tipf="${esc(v==null?'':v)}" placeholder="—" oninput="this.dataset.tipf=this.value;this.parentNode.dataset.tipf=this.value" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
   /* A paragraph in a grid cell is still one line wide — the full text is in
-     the title and in the item's own panel. An <input> rather than a textarea
+     the hover tooltip and in the item's own panel. An <input> rather than a textarea
      on purpose: a row that grows to four lines because one cell holds four
      breaks the alignment of every other column in it. */
-  if(c.type==='long_text') return `<td class="cell cell-custom"><input class="cc-inp" value="${esc(v==null?'':String(v).replace(/\n/g,' '))}" title="${esc(v==null?'':v)}" placeholder="—" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
+  if(c.type==='long_text') return `<td class="cell cell-custom" data-tipf="${esc(v==null?'':v)}"><input class="cc-inp" value="${esc(v==null?'':String(v).replace(/\n/g,' '))}" data-tipf="${esc(v==null?'':v)}" placeholder="—" oninput="this.dataset.tipf=this.value;this.parentNode.dataset.tipf=this.value" onchange="setCell(${id},'${c.id}',this.value)"></td>`;
   /* Like the email cell, and for the same reason: the value is a way of
      reaching somebody, so the cell offers to do it. `tel:` on a phone dials;
      on a desktop it hands off to whatever is registered, or does nothing,
