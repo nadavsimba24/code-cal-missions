@@ -17,6 +17,17 @@ Three roads lead to one upload, and each of them has produced a double:
     bindDnd on every open, so without its guard the tenth conversation of the
     day would attach every pasted file ten times, for the rest of the session.
 
+The same stopPropagation then froze the panel. #chat-panel carries .dnd-over
+while a drag is over it, and that class draws a blue sheet across the whole
+conversation reading "שחרר כאן כדי לצרף לשיחה". The panel's own drop handler was
+the only thing taking it off — and a drop on the composer is kept from reaching
+it, on purpose. So dropping onto the composer attached the file and left the
+sheet up for good: no drag is in flight any more to raise a dragleave, and
+nothing else was coming to clear it. Dropping on the big area was fine and
+dropping on the strip at the bottom "froze the screen", which is one bug
+wearing the shape of two. Both markers come down in one place now (Chat._dndMark),
+ahead of every way out of onDrop — including the two that attach nothing.
+
 The harness does not call the handlers. It builds the listener graph the page
 really builds — composer inside panel inside document, with bubbling and
 stopPropagation — dispatches one event and counts. Verified to fail: remove the

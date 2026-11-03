@@ -20050,7 +20050,7 @@ const Chat = {
       try{e.dataTransfer.dropEffect='copy';}catch(_){}
       if(canComment())panel.classList.add('dnd-over'); });
     panel.addEventListener('dragleave',e=>{ if(e.target===panel||!panel.contains(e.relatedTarget))panel.classList.remove('dnd-over'); });
-    panel.addEventListener('drop',e=>{ panel.classList.remove('dnd-over'); this.onDrop(e); });
+    panel.addEventListener('drop',e=>{ this.onDrop(e); });
     /* Paste belongs to the conversation, not to the text box — and it has to
        be listened for on the DOCUMENT, not on the panel.
 
@@ -20607,11 +20607,30 @@ const Chat = {
     catch(_){}
     return true;
   },
-  onDragOver(e){ if(!this._isImport(e))return; e.preventDefault(); try{e.dataTransfer.dropEffect='copy';}catch(_){}
-    const d=document.getElementById('comp-drop'); if(d)d.classList.add('show'); },
+  /* Both markers come down together, from wherever the drag ended. The panel
+     and the composer each raise their own, and each used to take down only its
+     own — which was fine until the composer started stopping the event from
+     reaching the panel (see onDrop). Dropping into the composer then left the
+     panel's "שחרר כאן" sheet over the whole conversation with nothing coming
+     to clear it: the panel read as frozen. One function, both markers. */
+  _dndMark(on){
+    const panel=document.getElementById('chat-panel');
+    if(panel)panel.classList.toggle('dnd-over',!!on);
+    const d=document.getElementById('comp-drop'); if(d)d.classList.toggle('show',!!on); },
+  // not offered to someone whose drop will be refused — the panel's own
+  // dragover has always checked this, and the composer promising a drop the
+  // drop handler then turns down is the same button with the answer "no"
+  onDragOver(e){ if(!this._isImport(e)||!canComment())return; e.preventDefault(); try{e.dataTransfer.dropEffect='copy';}catch(_){}
+    this._dndMark(true); },
   onDragLeave(e){ const comp=e.currentTarget; if(e.relatedTarget&&comp.contains(e.relatedTarget))return; // still inside
     const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show'); },
-  async onDrop(e){ if(!this._isImport(e))return; e.preventDefault();
+  async onDrop(e){
+    /* Before every way out below, not after the ones that happen to reach it:
+       a drag we do not take, and a drop from someone who may not comment, both
+       used to return with the markers still up. Nothing else takes them down —
+       no drag is in flight any more to raise a dragleave. */
+    this._dndMark(false);
+    if(!this._isImport(e))return; e.preventDefault();
     // Checked here rather than at each caller: the composer is only rendered
     // for someone who may comment, but the panel around it is there for
     // everybody, and it is now a drop target too.
@@ -20623,7 +20642,6 @@ const Chat = {
     // even match, because that handler uploads the raw file while this one
     // normalises the name first (_normDropped). Handled here means handled.
     e.stopPropagation();
-    const d=document.getElementById('comp-drop'); if(d)d.classList.remove('show');
     const dt=e.dataTransfer; if(!dt)return;
     // 1) collect real file bytes (normal files + Outlook emails the browser exposes as .msg)
     let files=[], promised='';

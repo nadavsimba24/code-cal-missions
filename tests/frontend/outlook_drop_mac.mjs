@@ -72,7 +72,8 @@ function panelWorld({mayComment=true}={}){
   const w = {uploaded:[], toasts:[], inserted:[], listeners:{}, docListeners:{},
              classes:new Set(), dropHint:false};
   const panel = {
-    classList:{add:c=>w.classes.add(c), remove:c=>w.classes.delete(c), contains:c=>w.classes.has(c)},
+    classList:{add:c=>w.classes.add(c), remove:c=>w.classes.delete(c), contains:c=>w.classes.has(c),
+               toggle:(c,on)=>on?w.classes.add(c):w.classes.delete(c)},
     addEventListener:(k,fn)=>{ w.listeners[k]=fn; },
     contains:()=>false,
   };
@@ -82,7 +83,8 @@ function panelWorld({mayComment=true}={}){
   const Chat = new Function('document','canComment','toast','File','Blob','console',
     chatSrc + '\nreturn Chat;')(
     {getElementById: id => id==='chat-panel' ? panel
-       : id==='comp-drop' ? {classList:{add:()=>{w.dropHint=true;}, remove:()=>{w.dropHint=false;}}}
+       : id==='comp-drop' ? {classList:{add:()=>{w.dropHint=true;}, remove:()=>{w.dropHint=false;},
+                                        toggle:(c,on)=>{w.dropHint=!!on;}}}
        : null,
      // Sortable's marker, present only while a row of our own is being dragged
      querySelector: () => w.internalDrag ? {} : null,

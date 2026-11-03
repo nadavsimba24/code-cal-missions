@@ -52,7 +52,8 @@ function node(name, parent){
   const n = {
     name, parent, _on:{}, classes:new Set(),
     classList:{add:c=>n.classes.add(c), remove:c=>n.classes.delete(c),
-               contains:c=>n.classes.has(c)},
+               contains:c=>n.classes.has(c),
+               toggle:(c,on)=>on?n.classes.add(c):n.classes.delete(c)},
     addEventListener:(k,fn)=>{ (n._on[k]=n._on[k]||[]).push(fn); },
     contains:other=>{ for(let p=other;p;p=p.parent) if(p===n) return true; return false; },
   };
@@ -68,19 +69,22 @@ function dispatch(target, type, ev){
   return ev;
 }
 
-function world(){
+function world(opts){
+  opts = opts || {};
   const w = {uploads:[], toasts:[]};
   const doc = node('document', null);
   const panel = node('#chat-panel', doc);
   const composer = node('.composer', panel);
+  const compDrop = node('#comp-drop', composer);   // the composer's own "drop here" sheet
   panel.classes.add('open');
-  doc.getElementById = id => id==='chat-panel' ? panel : null;
-  doc.querySelector = () => null;              // no Sortable drag in flight
+  doc.getElementById = id => id==='chat-panel' ? panel : (id==='comp-drop' ? compDrop : null);
+  // a Sortable drag in flight is the one drag the chat does not take
+  doc.querySelector = () => opts.sortable ? node('.sortable-drag', doc) : null;
   doc.addEventListener = (k,fn)=>{ (doc._on[k]=doc._on[k]||[]).push(fn); };
 
   const Chat = new Function('document','canComment','toast','File','Blob','console',
     chatSrc + '\nreturn Chat;')(
-    doc, ()=>true, m=>w.toasts.push(m),
+    doc, ()=>opts.canComment!==false, m=>w.toasts.push(m),
     function File(parts,name,opts){ return {name, size:(opts||{}).size||1, type:(opts||{}).type||''}; },
     function Blob(parts){ return {_parts:parts}; },
     {info(){}, debug(){}});
@@ -89,8 +93,11 @@ function world(){
   Chat.insert = () => {};
   Chat.bindDnd();
   // the composer's own inline handlers, exactly as composerHTML writes them
+  composer.addEventListener('dragenter', e=>Chat.onDragOver(e));
+  composer.addEventListener('dragover',  e=>Chat.onDragOver(e));
+  composer.addEventListener('dragleave', e=>Chat.onDragLeave(e));
   composer.addEventListener('drop', e=>Chat.onDrop(e));
-  Object.assign(w, {Chat, doc, panel, composer});
+  Object.assign(w, {Chat, doc, panel, composer, compDrop});
   return w;
 }
 
@@ -187,6 +194,63 @@ const settle = () => new Promise(r=>setTimeout(r,0));
   await settle();
   ck('a paste with no conversation open attaches nothing',
      w.uploads.length === 0, w.uploads.join(','));
+}
+
+/* ── and the conversation is readable again afterwards ─────────────────────
+   The panel raises .dnd-over while a drag is over it, and that class draws a
+   blue sheet across the WHOLE panel reading "שחרר כאן כדי לצרף לשיחה". The only
+   thing that used to take it off was the panel's own drop handler — which the
+   composer deliberately stops the event from reaching, so that a file dropped
+   on the composer is not uploaded twice. Dropping into the composer therefore
+   attached the file and left the sheet over the conversation for good: no
+   drag is in flight any more to raise a dragleave, so nothing was coming to
+   clear it. From the outside, the panel is frozen.
+   Every way out of onDrop has to leave the panel clean, including the two that
+   return without uploading anything. */
+{
+  const w = world();
+  dispatch(w.composer, 'dragover', ev(['קובץ.pdf']));
+  ck('dragging over the composer marks both the panel and the composer',
+     w.panel.classList.contains('dnd-over') && w.compDrop.classList.contains('show'));
+  dispatch(w.composer, 'drop', ev(['קובץ.pdf']));
+  await settle();
+  ck('dropping on the composer leaves no sheet over the conversation',
+     !w.panel.classList.contains('dnd-over'), [...w.panel.classes].join(' '));
+  ck('...and none over the composer either',
+     !w.compDrop.classList.contains('show'), [...w.compDrop.classes].join(' '));
+  ck('...and the file still went up exactly once', w.uploads.length===1, w.uploads.join(','));
+}
+{
+  const w = world();
+  dispatch(w.panel, 'dragover', ev(['קובץ.pdf']));
+  dispatch(w.panel, 'drop', ev(['קובץ.pdf']));
+  await settle();
+  ck('a drop on the panel clears it too', !w.panel.classList.contains('dnd-over'));
+}
+{
+  // refused for want of permission — and a refusal that leaves the sheet up
+  // is the same frozen panel, with a toast on top of it
+  const w = world({canComment:false});
+  dispatch(w.composer, 'dragover', ev(['קובץ.pdf']));
+  ck('someone who may not comment is not offered a drop zone at all',
+     !w.compDrop.classList.contains('show') && !w.panel.classList.contains('dnd-over'));
+  w.panel.classList.add('dnd-over'); w.compDrop.classList.add('show');   // as if it had been
+  dispatch(w.composer, 'drop', ev(['קובץ.pdf']));
+  await settle();
+  ck('a drop refused for want of permission still clears both markers',
+     !w.panel.classList.contains('dnd-over') && !w.compDrop.classList.contains('show'));
+  ck('...and says why', w.toasts.join(' ').includes('הרשאת תגובה'), w.toasts.join(' '));
+  ck('...and attaches nothing', w.uploads.length===0, w.uploads.join(','));
+}
+{
+  // a row being reordered is our own drag, and the chat lets it pass
+  const w = world({sortable:true});
+  w.panel.classList.add('dnd-over'); w.compDrop.classList.add('show');
+  dispatch(w.composer, 'drop', ev(['קובץ.pdf']));
+  await settle();
+  ck('a drag of our own is let go of, markers and all',
+     !w.panel.classList.contains('dnd-over') && !w.compDrop.classList.contains('show')
+     && w.uploads.length===0);
 }
 
 // ── the handlers are still the ones the page wires, not a copy ─────────────
