@@ -629,6 +629,7 @@ def _items_of(doc):
               "board in the account; re-run it with the board's id and merge again")
 
     board, items, cursor, seen = {}, [], None, set()
+    items_asked = False     # a page of items came back, even if it held none
     # The history is the one thing that arrives in SEVERAL pieces and still has
     # to end up whole. `activity_logs` paginates by `page`, not by cursor, so a
     # long log is several responses in the same file — and taking it from the
@@ -661,6 +662,7 @@ def _items_of(doc):
         got = (page or {}).get("items") if isinstance(page, dict) else b.get("items")
         if not isinstance(got, list):
             continue
+        items_asked = True
         cursor = (page or {}).get("cursor") if isinstance(page, dict) else None
         # a page is taken as monday sent it; only an item already read from an
         # *earlier* page is a repeat — the same page handed over twice
@@ -677,7 +679,16 @@ def _items_of(doc):
         # asked for and empty is not the same as never asked, and the report
         # tells them apart by whether the key is here at all
         board["activity_logs"] = logs
-    if not items:
+    # No items and no page that brought them is a file that is not this import's:
+    # the history response on its own looks exactly like that — one board, a log,
+    # and nothing that was ever asked to carry a row.
+    #
+    # No items FROM a page that came back is a different thing, and a real one: a
+    # board whose structure is built and whose rows are not. monday answers it
+    # `items_page: {items: []}` beside the columns and the groups, and that board
+    # is as importable as any other — it arrives with its columns, its groups and
+    # its log, and the first row is typed here instead of there.
+    if not items and not items_asked:
         raise NotMondayJson("no items in the response")
     if extra:
         board["_other_boards"] = extra
@@ -1126,11 +1137,24 @@ def parse(raw, max_cols):
     # they are the ones whose definition carries the whole column (see the blank
     # rule below), and taking the rest would be creating columns asserted by
     # nothing and filled by nobody.
+    # A board with NO items at all is the end of that reasoning rather than a
+    # case of it: there is no item that could have echoed a cell, so "no item
+    # shows this column" says nothing whatsoever about the column. The board's
+    # own list is then the entire statement of what the board is, and all of it
+    # is read — a board built and not yet filled arrives with its columns, which
+    # is the only thing such a board has.
     for cid, d in defs.items():
-        if cid in meta or TYPE_MAP.get(d.get("type") or "") != "status":
+        if cid in meta:
             continue
-        if not status_labels(d.get("settings")):
+        # monday lists the item's own name among the board's columns. Here the
+        # name is not a column at all, and read as one it arrives as a second
+        # "Name" standing empty beside every row's title.
+        if cid == "name" or (d.get("type") or "") == "name":
             continue
+        mapped = TYPE_MAP.get(d.get("type") or "")
+        if items:
+            if mapped != "status" or not status_labels(d.get("settings")):
+                continue
         meta[cid] = {"title": (d.get("title") or "").strip(), "type": d.get("type") or ""}
         fill[cid] = 0
         order.append(cid)
@@ -1184,8 +1208,14 @@ def parse(raw, max_cols):
                     for cid in keep
                     if not fill[cid] and TYPE_MAP.get(meta[cid]["type"]) == "status"}
     status_vocab = {cid: words for cid, words in status_vocab.items() if words}
-    blank = [cid for cid in keep if not fill[cid] and cid not in status_vocab]
-    keep = [cid for cid in keep if fill[cid] or cid in status_vocab]
+    # On a board with no items the rule has nothing to weigh: every column is
+    # empty because there is no row, not because the column is not there. The
+    # file's column list stands as it is.
+    if items:
+        blank = [cid for cid in keep if not fill[cid] and cid not in status_vocab]
+        keep = [cid for cid in keep if fill[cid] or cid in status_vocab]
+    else:
+        blank = []
 
     # Over the limit, the fullest columns win — a column two items use carries
     # less of the board than one that every item fills. Ties keep the original

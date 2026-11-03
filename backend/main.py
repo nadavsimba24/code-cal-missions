@@ -7317,8 +7317,12 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         raise HTTPException(400, f"הקובץ אינו תשובת API של מאנדיי ({e})")
     except (ValueError, TypeError):
         raise HTTPException(400, "לא ניתן לקרוא את הקובץ — ודא שהוא JSON תקין")
-    if not parsed["items"]:
-        raise HTTPException(400, "לא נמצאו פריטים בקובץ")
+    # A board with no rows is not an empty file: monday answers a board whose
+    # structure is built and whose rows are not with `items_page: {items: []}`
+    # beside its columns and groups, and that is worth importing as it stands —
+    # the columns, the groups and the log arrive, and the first row is typed
+    # here instead of there. A file that never carried an items page at all —
+    # the history response on its own — is refused by the parser before this.
     if len(parsed["items"]) > IMPORT_MAX_ROWS:
         # a cut this size is not something to notice by counting rows afterwards
         parsed["report"]["rows_dropped"] = len(parsed["items"]) - IMPORT_MAX_ROWS
