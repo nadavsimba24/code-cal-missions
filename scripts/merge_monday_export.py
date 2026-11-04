@@ -75,7 +75,7 @@ def describe(resp):
     """What one response brought."""
     data = (resp.get("data") or {}) if isinstance(resp, dict) else {}
     out = {"items": 0, "pages": 0, "cursors": [], "logs": 0, "log_pages": [],
-           "users": len(data.get("users") or []),
+           "users": len(data.get("users") or []), "count": None,
            "with_items": set(), "without_items": set(), "logs_of": set(),
            "errors": [e.get("message", "") for e in (resp.get("errors") or [])
                       if isinstance(e, dict)] if isinstance(resp, dict) else []}
@@ -87,6 +87,10 @@ def describe(resp):
 
     for b in data.get("boards") or []:
         bid = str(b.get("id"))
+        # monday's own answer to "how many rows does this board have". It rides
+        # on the response that asked for the board itself, which is page one.
+        if out["count"] is None and isinstance(b.get("items_count"), int):
+            out["count"] = b["items_count"]
         box = b.get("items_page") if isinstance(b.get("items_page"), dict) else None
         items = (box or {}).get("items") if box else b.get("items")
         if isinstance(items, list):
@@ -107,13 +111,15 @@ def describe(resp):
 def report(parts):
     """Print what each response brought; return the problems and the warnings."""
     total = {"items": 0, "pages": 0, "logs": 0, "users": 0, "cursors": [], "log_pages": [],
-             "with_items": set(), "without_items": set(), "logs_of": set()}
+             "count": None, "with_items": set(), "without_items": set(), "logs_of": set()}
     seen_paths = set()
     for path, resp, soon in parts:
         d = describe(resp)
         for k in ("items", "pages", "logs"):
             total[k] += d[k]
         total["users"] = max(total["users"], d["users"])
+        if total["count"] is None:
+            total["count"] = d["count"]
         total["cursors"] += d["cursors"]
         total["log_pages"] += d["log_pages"]
         for k in ("with_items", "without_items", "logs_of"):
@@ -154,6 +160,18 @@ def report(parts):
         problems.append(f"הייצוא נעצר באמצע הלוח — נשאר cursor פתוח אחרי {total['items']} פריטים. "
                         "הריצי את בקשה 3 עם ה-cursor עד שיחזור null, והוסיפי כל תשובה לאיחוד")
 
+    # The arithmetic the cursor check cannot do. A chain of pages that ends on a
+    # null cursor is a chain that ran to the end of SOMETHING — it does not say
+    # the pages in between are all here. A merge assembled by hand, or by a
+    # glob that missed a file, loses a page out of the middle and the last page
+    # still closes cleanly. monday states the board's row count on page one, and
+    # that is the only number in the file that can contradict the file.
+    if total["count"] is not None and total["items"] < total["count"]:
+        problems.append(
+            f"בקובץ {total['items']} פריטים, והלוח במאנדיי מחזיק {total['count']} — "
+            f"חסרים {total['count'] - total['items']}. אם יש פער בלי cursor פתוח, "
+            "כנראה אחד מעמודי ההמשך לא נכנס לאיחוד: בדקי שכל קובצי התשובה נמסרו לסקריפט")
+
     strangers = sorted((total["without_items"] | total["logs_of"]) - {board}) if board else []
     if strangers:
         warnings.append(f"בקובץ יש עוד {len(strangers)} לוחות ({', '.join(strangers[:3])}"
@@ -169,12 +187,18 @@ def report(parts):
     if total["logs"] and not total["users"]:
         warnings.append("יש היסטוריה בלי רשימת משתמשים — כל שורה בלוג תירשם על \"מערכת\". "
                         "הוסיפי users { id name email } לשאילתה")
-    if total["items"] % ITEM_PAGE == 0 and total["items"] and not live:
+    # A guess at the question items_count answers outright, and worth making
+    # only when the file never carried the answer: an export that asked for
+    # `items_count` has already been checked against it above.
+    if total["count"] is None and total["items"] % ITEM_PAGE == 0 and total["items"] and not live:
         warnings.append(f"מספר הפריטים ({total['items']}) הוא כפולה מדויקת של {ITEM_PAGE} — "
-                        "שווה לוודא שבאמת זה מספר הפריטים בלוח במאנדיי")
+                        "שווה לוודא שבאמת זה מספר הפריטים בלוח במאנדיי. "
+                        f"שאילתה שמבקשת גם items_count עונה על זה מעצמה")
 
     print()
-    print(f"  סה\"כ: {c(str(total['items']), BOLD)} פריטים · "
+    whole = ("" if total["count"] is None
+             else c(f" מתוך {total['count']} בלוח", GRN if total["items"] >= total["count"] else RED))
+    print(f"  סה\"כ: {c(str(total['items']), BOLD)} פריטים{whole} · "
           f"{c(str(total['logs']), BOLD)} רשומות היסטוריה · "
           f"{c(str(total['users']), BOLD)} משתמשים · לוח "
           + (c(board, CYAN) if board else c("—", RED)))

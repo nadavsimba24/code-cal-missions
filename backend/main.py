@@ -6799,7 +6799,15 @@ def _imp_attach_conversation(db, rows, tasks, actor_id, budget):
             "unmatched_people": sorted(missing_people)[:20]}
 
 
-IMPORT_MAX_ROWS = 2000
+# How many rows one import may bring in. It was 2,000, with nothing written
+# down about why, and a real migration walked straight into it: a monday board
+# of 2,069 items imported as 2,069 minus the 69 that happened to come last in
+# the file — a whole group short by 69 rows, discovered by counting them in
+# monday a day later. The number was never about what this app can hold; the
+# upload ceiling (IMPORT_MAX_UPLOAD_MB) is the real guard on how big a file can
+# be, and it refuses rather than trims. So this is set where no board anyone
+# migrates here will reach it, and is tunable for the one that does.
+IMPORT_MAX_ROWS = int(os.getenv("IMPORT_MAX_ROWS", "20000"))
 # How many columns a board may be imported with. 40 was below what a real
 # monday board carries — a 64-column board lost five columns that had data in
 # them purely to the ceiling, which is the one kind of loss a migration cannot
@@ -7324,9 +7332,19 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
     # here instead of there. A file that never carried an items page at all —
     # the history response on its own — is refused by the parser before this.
     if len(parsed["items"]) > IMPORT_MAX_ROWS:
-        # a cut this size is not something to notice by counting rows afterwards
-        parsed["report"]["rows_dropped"] = len(parsed["items"]) - IMPORT_MAX_ROWS
-        parsed["items"] = parsed["items"][:IMPORT_MAX_ROWS]
+        # A migration is not a sample. Past the ceiling the rows used to be cut
+        # here — the first IMPORT_MAX_ROWS in file order — and the loss was
+        # written into the report, where it sat under a long list of other notes
+        # and was read by nobody: the board that lost 69 of 2,069 rows this way
+        # looked finished, and the gap surfaced a day later when someone counted
+        # the group in monday. A board that is quietly 3% short is worse than an
+        # import that did not happen, because only one of the two gets noticed.
+        #
+        # So it is refused, with both numbers and the knob that moves them.
+        raise HTTPException(413,
+            f"בקובץ {len(parsed['items'])} פריטים, ותקרת הייבוא היא {IMPORT_MAX_ROWS}. "
+            "הייבוא נעצר כדי שלא ייווצר לוח חסר בשקט — פצל את הייצוא לכמה לוחות, "
+            "או הרם את התקרה במשתנה הסביבה IMPORT_MAX_ROWS והרץ שוב")
 
     with Session(engine) as db:
         env_id = environment_id

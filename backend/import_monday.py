@@ -640,7 +640,11 @@ def _items_of(doc):
         # the board's name, groups and column definitions ride on the page that
         # asked for them; the first page carrying each settles it, so a later
         # page without them takes nothing away
-        for k in ("id", "name", "groups", "columns"):
+        # `items_count` rides along for the same reason: it is monday's own
+        # answer to "how many rows does this board have", and the only thing in
+        # the file that can contradict the file. Without it a merge that lost a
+        # page reads exactly like a smaller board.
+        for k in ("id", "name", "groups", "columns", "items_count"):
             if b.get(k) and not board.get(k):
                 board[k] = b[k]
         got_logs = b.get("activity_logs")
@@ -693,6 +697,20 @@ def _items_of(doc):
     if extra:
         board["_other_boards"] = extra
     return board, items, cursor
+
+
+def _items_expected(board):
+    """monday's own row count for the board, or None when it was not asked for.
+
+    Top-level items only, which is what `items` counts here too — sub-items are
+    a board of their own on monday and are not in this number.
+    """
+    raw = (board or {}).get("items_count")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
 
 
 def looks_like_monday(raw):
@@ -1478,6 +1496,8 @@ def parse(raw, max_cols):
     status_options = sum(len(c.get("options") or []) for c in status_cols)
     status_colored = sum(len(c.get("option_colors") or {}) for c in status_cols)
 
+    expected = _items_expected(board)
+
     return {
         "board_name": (board.get("name") or "").strip() or None,
         "groups": groups,
@@ -1487,6 +1507,14 @@ def parse(raw, max_cols):
         "items": rows,
         "report": {
             "items": len(rows),
+            # What monday says the board holds, beside what the file brought.
+            # The cursor only catches an export that stopped at the END; a merge
+            # that dropped a page out of the MIDDLE ends on a null cursor and
+            # looks complete. This is the one number that catches both, and it
+            # is monday's, not ours — so it is reported rather than enforced: a
+            # query narrowed by `query_params` is a smaller file on purpose.
+            "items_expected": expected,
+            "items_missing": max(0, (expected or 0) - len(rows)),
             "subitems": sub_total,
             # Of those, the ones built from a name in the sub-items column and
             # nothing else — because the query never asked for `subitems`. They

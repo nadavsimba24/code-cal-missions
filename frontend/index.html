@@ -5595,6 +5595,12 @@ function importReport(b){
      is imported, so the one moment it can be said is now. */
   const cut=[];
   if(r.truncated) cut.push('הייצוא נעצר לפני סוף הלוח — בתשובה יש cursor להמשך, ולכן יובאו רק הפריטים שבקובץ. הרץ את השאילתה עם limit גבוה יותר, או צרף את כל העמודים לקובץ אחד כמערך JSON.');
+  /* monday's own count for the board, against what the file actually carried.
+     The cursor only catches an export that stopped at the end; a merge that
+     lost a page out of the middle ends on a null cursor and reads as complete.
+     This is the line that catches that one — and it is the line a board short
+     by 69 rows out of 2,069 needed, when nothing else in the report said so. */
+  if(r.items_missing) cut.push(`הלוח במאנדיי מחזיק ${r.items_expected} פריטים ובקובץ יש ${r.items} — ${r.items_missing} פריטים חסרים בקובץ עצמו, ולכן לא יובאו. אם הייצוא רץ בעמודים, המשך מה-cursor האחרון וצרף את העמודים שחסרים לאותו קובץ.`);
   if(r.rows_dropped) cut.push(`${r.rows_dropped} פריטים מעבר לתקרה לא יובאו.`);
   /* A request run without the boardId variable asks for `boards(ids: null)` and
      comes back with every board in the account — usually the history request,

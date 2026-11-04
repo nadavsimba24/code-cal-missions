@@ -70,6 +70,12 @@ query ($boardId: [ID!]) {
     # is what turns "did everything come?" into arithmetic instead of a feeling:
     # 687 against 500 says a second request is needed before the first response
     # is even read, and it is the number the pages are counted back against.
+    #
+    # It is read by the importer now, which it was not: the field came across in
+    # the file and nothing compared it to anything. A merged file of 2,000 items
+    # out of a 2,069-item board imported as a board of 2,000, and the gap was
+    # found by counting one group in monday a day later. The report states both
+    # numbers — see items_expected / items_missing in import_monday.parse.
     items_count
 
     groups { id title color }

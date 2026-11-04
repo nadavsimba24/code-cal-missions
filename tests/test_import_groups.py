@@ -404,14 +404,18 @@ def test_the_report_reads_the_three_cases_differently():
     assert r.returncode == 0, "\n" + r.stdout + r.stderr
 
 
-def test_a_sheet_past_the_import_ceiling_says_what_it_cut(client, admin_id):
-    """The tabular import cut at 2,000 rows without a word — and a board short by
-    its tail reads exactly like a board that is that size."""
-    over = cityos_main.IMPORT_MAX_ROWS + 25
-    csv = "פריט,אחראי\n" + "".join(f"פריט {i},רינה\n" for i in range(over))
+def test_a_sheet_past_the_import_ceiling_says_what_it_cut(client, admin_id, monkeypatch):
+    """The tabular import cut at the ceiling without a word — and a board short by
+    its tail reads exactly like a board that is that size.
+
+    The ceiling itself is moved down for the test rather than written out in
+    rows: it is a tunable now (IMPORT_MAX_ROWS), and building twenty thousand
+    lines of CSV to reach it tests the machine, not the rule."""
+    monkeypatch.setattr(cityos_main, "IMPORT_MAX_ROWS", 20)
+    csv = "פריט,אחראי\n" + "".join(f"פריט {i},רינה\n" for i in range(45))
     d = _imp(client, admin_id, csv.encode(), "b.csv")
     assert d["report"]["rows_dropped"] == 25
-    assert d["items"] == cityos_main.IMPORT_MAX_ROWS
+    assert d["items"] == 20
 
 
 def test_a_sheet_inside_the_ceiling_reports_nothing_cut(client, admin_id):

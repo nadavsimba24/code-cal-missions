@@ -143,6 +143,7 @@ change what you do next:
 | In the report | What it means | What to do |
 |---|---|---|
 | **הקובץ אינו הלוח המלא** (the file is not the whole board) | `cursor` still had a value — the export stopped mid-board | collect the remaining pages (request 3) and import again |
+| **הלוח במאנדיי מחזיק N פריטים ובקובץ יש M** | the file carries fewer rows than `items_count` says the board has. The cursor only catches an export that stopped at the *end*; this catches a merge that lost a page out of the *middle*, where the last page's cursor is null and the file reads as complete | run request 3 from the cursor of the page before the gap, add the missing responses to the same array, and import again |
 | **בקובץ היו עוד N לוחות** (the file held N more boards) | a request ran without `boardId`; those boards' history was left behind | run the history request again with the id |
 | **היסטוריית הלוח לא יובאה** (no history imported) | either the query never asked for `activity_logs`, or the history in the file belongs to other boards — the report distinguishes the two | whichever the report says |
 | **N רשומות רשומות על מערכת** (N rows recorded as "system") | people the log identifies only by a number, and the user list in the file does not cover them | see section 5 |
@@ -156,6 +157,14 @@ change what you do next:
 ---
 
 ## 5. Known limits — these are not import bugs
+
+**A file past the row ceiling is refused, not trimmed.** `IMPORT_MAX_ROWS` (20,000 by default, and an
+environment variable) is the most rows one import may write. Past it the import stops with the two
+numbers in the message rather than building a board out of the first N rows: a board of 2,069 items
+once imported as 2,000 — the last 69 of the file, all of them in one group — and that was found by
+counting the group in monday a day later. A board short by 3% looks finished, which is the whole
+problem with trimming.
+
 
 **History is a window, not the life of the board.** monday keeps `activity_logs` for a period that
 depends on the plan. The report says which date the log starts at; that is a fact about monday, not
