@@ -31,6 +31,7 @@ and has nothing to do with the person being chased.
 import pathlib
 import shutil
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.orm import Session
@@ -272,6 +273,59 @@ def test_the_sentence_still_reads_as_a_sentence():
     assert recipes.action_text("notify_person", {"person": "דנה"}) == "שלח התראה לדנה"
 
 
+def test_the_recurring_chase_arrives_saying_what_she_wrote(client, admin_id, member_id):
+    """The whole of the request, end to end: "כל X ימים שלח התראה ל-Y", with
+    her wording, resolved against the item, and out by mail as well.
+
+    Covered separately from the status rule above because a recurring rule
+    reaches the engine by a different road — no event, no actor, swept off the
+    clock when somebody opens the board — and the notice is the one thing on
+    that road that reads the item. The sweep is also the case the wording was
+    written for: a chase nobody is standing over, where "אוטומציה הופעלה" above
+    six system lines is exactly the notice that gets ignored.
+    """
+    bid = _board(client, admin_id, "לוח בל\"מ")
+    cid = _col(client, bid, admin_id, "שם הנוהל")
+    assert client.post(f"/api/boards/{bid}/members",
+                       json={"actor_id": admin_id, "user_id": member_id,
+                             "role": "editor"}).status_code in (200, 201)
+    r = _rule(client, bid, admin_id,
+              {"t_days": 7, "a_person": {"kind": "user", "value": member_id},
+               "a_notice": {"text": NOTICE % cid, "mail": True}},
+              recipe_id="every_days_notify_person", name="תזכורת בל\"מ")
+    assert r.status_code == 200, r.text
+    rid = r.json()["id"]
+
+    tid = _item(client, bid, admin_id, "עיריית חדרה", {cid: "נוהל 7"})
+
+    # one whole interval later — the clock a recurring rule counts from is its
+    # activation, and reading the board is what sweeps it
+    with Session(cityos_main.engine) as db:
+        a = db.query(cityos_main.Automation).filter(
+            cityos_main.Automation.id == rid).first()
+        a.activated_at = (datetime.now(timezone.utc).replace(tzinfo=None)
+                          - timedelta(days=8))
+        db.commit()
+    with _Mails() as mails:
+        client.get(f"/api/boards/{bid}?user_id={admin_id}")
+
+    n = _last_notice(member_id)
+    assert n is not None, "the chase never arrived"
+    assert n.title == 'תזכורת בל"מ', n.title
+    assert "לרשות: עיריית חדרה" in n.body, n.body
+    assert "שם הנוהל: נוהל 7" in n.body, n.body
+    assert "{{" not in n.body, n.body
+    # …and the same thing left by mail, because the switch was on. One per
+    # ITEM, not one per rule: a chase is about the items that still answer the
+    # conditions, and a board born with starter items has several of them — so
+    # this names the one the test wrote rather than counting the board.
+    hers = [h for _to, _subj, h in mails.sent if "לרשות: עיריית חדרה" in h]
+    assert len(hers) == 1, [h[:120] for _t, _s, h in mails.sent]
+    assert "שם הנוהל: נוהל 7" in hers[0], hers[0]
+    # the subject carries the rule's own name, not "אוטומציה הופעלה"
+    assert all('תזכורת בל"מ' in subj for _to, subj, _h in mails.sent), mails.sent
+
+
 def test_every_notify_recipe_declares_the_blank(client, admin_id):
     """Derived from the action's own field list rather than repeated in each
     recipe — the one that was missed would be a rule whose sentence shows a
@@ -328,6 +382,65 @@ def test_the_token_menu_names_the_columns_and_not_their_ids():
     fn = fn[:fn.index("\n  },")]
     assert "ערך של «${esc(c.title||c.id)}»" in fn, fn
     assert "putToken('field.${c.id}'" in fn, fn
+
+
+def test_the_box_shows_the_name_and_the_wire_keeps_the_code(client, admin_id,
+                                                            member_id):
+    """She picked "שם הנוהל" off the menu and then had to read
+    {{field.col_7a1}} back out of the box.
+
+    The editor translates both ways now — the detail of that is in
+    tests/frontend/automation_notice.mjs, where the functions can be run. What
+    is checked HERE is the half the browser cannot promise: that what reaches
+    the server is still the code, that the engine still resolves it, and that
+    renaming the column afterwards changes neither. The code is what is
+    stored precisely so that a rename is not a rewrite of every rule that
+    mentions the column.
+    """
+    bid = _board(client, admin_id, "לוח קודים")
+    cid = _col(client, bid, admin_id, "שם הנוהל")
+    assert client.post(f"/api/boards/{bid}/members",
+                       json={"actor_id": admin_id, "user_id": member_id,
+                             "role": "editor"}).status_code in (200, 201)
+    # a status rule and not a creation one, so the cell this notice reads is
+    # already on the item when the rule fires — see the first test in this file
+    r = _rule(client, bid, admin_id,
+              {"t_status": "done", "a_person": {"kind": "user", "value": member_id},
+               "a_notice": {"text": "שם הנוהל: {{field.%s}}" % cid}},
+              recipe_id="status_notify_person", name="תזכורת")
+    assert r.status_code == 200, r.text
+    assert r.json()["config"]["a_notice"]["text"] == "שם הנוהל: {{field.%s}}" % cid, \
+        "the wire holds anything but the column's id"
+
+    t1 = _item(client, bid, admin_id, "עיריית חדרה", {cid: "נוהל 7"})
+    client.patch(f"/api/tasks/{t1}", json={"user_id": admin_id, "status": "done"})
+    assert _last_notice(member_id).body == "שם הנוהל: נוהל 7"
+
+    # the admin renames the column — the rule is untouched and goes on working
+    cols = client.get(f"/api/boards/{bid}?user_id={admin_id}").json()["columns"]
+    for c in cols:
+        if c["id"] == cid:
+            c["title"] = "שם ההליך"
+    assert client.patch(f"/api/boards/{bid}",
+                        json={"actor_id": admin_id,
+                              "columns": cols}).status_code == 200
+    t2 = _item(client, bid, admin_id, "עיריית חיפה", {cid: "נוהל 9"})
+    client.patch(f"/api/tasks/{t2}", json={"user_id": admin_id, "status": "done"})
+    assert _last_notice(member_id).body == "שם הנוהל: נוהל 9"
+
+
+def test_an_unknown_value_is_refused_where_it_was_typed():
+    """The server refuses one and is the authority, but by the time it
+    answers the dialog has closed and the text is gone. The browser asks the
+    same question while the caret is still in the box."""
+    src = INDEX.read_text(encoding="utf-8")
+    fn = src[src.index("  unknownTokens(stored){"):]
+    fn = fn[:fn.index("\n  },")]
+    assert "takes_column" in fn, "a prefixed value would be reported as unknown"
+    save = src[src.index("  saveNotice(){"):]
+    save = save[:save.index("\n  },")]
+    assert "this.namesToTokens(" in save, "the name went to the server as a name"
+    assert "unknownTokens(text)" in save and "return;" in save, save
 
 
 def test_an_empty_blank_does_not_hold_the_save_button():

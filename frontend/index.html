@@ -45,6 +45,11 @@
 :root{
   --bg:#f6f7fb; --surface:#ffffff; --board-bg:#ffffff;
   --text:#4a4d55; --text-muted:#767888; --text-light:#9699a6;
+  /* A shade darker than --text, for the three names a person navigates BY:
+     the item's, the board's and the folder's. Everything else on the screen
+     is about one of those three, so they carry the contrast and the rest of
+     the page stays a step back from them. monday's own #323338. */
+  --text-strong:#323338;
   --border:#e6e9ef; --border-strong:#d0d4e4; --row-hover:#f5f6f8;
   /* monday primary is BLUE (no purple) */
   --primary:#0073ea; --primary-hover:#0060b9; --primary-soft:#cce5ff;
@@ -63,6 +68,10 @@
 :root[data-theme="dark"]{
   --bg:#12141c; --surface:#1b1e27; --board-bg:#1b1e27;
   --text:#e6e8ef; --text-muted:#9aa0b0; --text-light:#6b7080;
+  /* the same step, in the direction dark mode has it: brighter than --text,
+     not darker, or the three names would be the hardest thing on the page to
+     read instead of the easiest */
+  --text-strong:#f6f8fc;
   --border:#2a2e3a; --border-strong:#3a3f4d; --row-hover:#232733;
   --primary-soft:#1e3050;
   --shadow:0 6px 22px rgba(0,0,0,.45); --shadow-sm:0 2px 8px rgba(0,0,0,.35);
@@ -321,6 +330,9 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   .sb-item .sb-more,.sb-folder-head .sb-more{opacity:1}
 }
 .sb-item-name{overflow:hidden;text-overflow:ellipsis}
+/* The open board's row is blue and bold — that is what says which board you
+   are looking at — so the name takes the darker ink only on the others. */
+.sb-item:not(.active) .sb-item-name{color:var(--text-strong)}
 .sb-sec-acts{display:inline-flex;gap:10px;align-items:center}
 .sb-sec-acts i{cursor:pointer}
 .sb-empty{padding:14px;color:var(--text-light);font-size:12px;text-align:center}
@@ -329,7 +341,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .sb-folder-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--text);font-size:14px;white-space:nowrap;overflow:hidden;font-weight:600}
 .sb-folder-head:hover{background:var(--row-hover)}
 .sb-folder-head .folder-caret{font-size:10px;color:var(--text-light);width:11px;flex-shrink:0}
-.sb-folder-head .folder-name{overflow:hidden;text-overflow:ellipsis;flex:1}
+.sb-folder-head .folder-name{overflow:hidden;text-overflow:ellipsis;flex:1;color:var(--text-strong)}
 .sb-folder-head .folder-count{font-size:11px;color:var(--text-light);font-weight:500}
 .sb-folder-head .sb-more{flex-shrink:0;width:24px;height:24px;border:none;background:none;color:var(--text-light);border-radius:5px;cursor:pointer;opacity:0;transition:.12s;display:grid;place-items:center;font-size:13px}
 .sb-folder-head:hover .sb-more{opacity:1}
@@ -410,6 +422,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 #boardhead .bh-top{display:flex;align-items:center;gap:12px;margin-bottom:10px}
 #boardhead h1{font-size:22px;font-weight:800;display:flex;align-items:center;gap:10px}
 #boardhead .bh-desc{color:var(--text-muted);font-size:13px;font-weight:400}
+#boardhead .board-name{color:var(--text-strong)}
 #boardhead .board-name.editable{cursor:text;border-radius:6px;padding:1px 5px;margin-inline-start:-5px}
 #boardhead .board-name.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
 #boardhead .bt-icon.editable{cursor:pointer;border-radius:7px;padding:0 4px;transition:.12s}
@@ -484,6 +497,19 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-sent b{font-weight:700;color:var(--primary);background:var(--primary-soft);border-radius:4px;padding:1px 6px;white-space:nowrap}
 .au-meta{font-size:11px;color:var(--text-light);margin-top:5px}
 .au-in{font-size:12.5px;padding:3px 7px;border:1px solid var(--primary);border-radius:6px;background:var(--card);color:var(--text);font-family:inherit;max-width:190px;vertical-align:middle}
+/* "כל כמה ימים" — four answers that cover almost every rule, and a box for
+   the fifth. The chips carry the whole phrase ("כל 7 ימים") rather than the
+   bare number, because the number alone is seven of something. */
+.au-days{min-width:218px}
+.au-days-quick{display:flex;flex-wrap:wrap;gap:5px;padding:4px 2px 7px}
+.au-day-chip{font:inherit;font-size:12px;padding:3px 9px;border-radius:13px;cursor:pointer;
+  color:var(--primary);background:var(--primary-soft);border:1px solid transparent;transition:.12s}
+.au-day-chip:hover{border-color:var(--primary)}
+.au-day-chip.on{background:var(--primary);color:#fff}
+.au-days-row{display:flex;align-items:center;gap:6px}
+.au-days-unit{font-size:12px;color:var(--text-light)}
+.au-days-ok{margin-inline-start:auto}
+.au-days-echo{min-height:16px;padding-top:6px;color:var(--text-muted)}
 /* A recipe reads as a sentence with blanks. An unfilled blank names what belongs
    there; a filled one becomes a chip in the value's own colour. */
 .au-blank{display:inline-block;font:inherit;font-weight:700;font-size:13px;line-height:1.5;padding:2px 10px;margin:0 3px;border-radius:14px;cursor:pointer;vertical-align:middle;transition:.12s;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
@@ -1497,6 +1523,7 @@ body.coldragging .col-grip{opacity:1}
 /* inline editing of built-in columns */
 .tbl td.edit-cell{position:relative;cursor:pointer}
 .tbl td.edit-cell:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1.5px var(--primary-soft)}
+.item-title{color:var(--text-strong)}
 .item-title.editable{cursor:pointer;border-radius:4px;padding:1px 3px}
 .item-title.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
 .title-edit{border:1px solid var(--primary);border-radius:5px;padding:3px 6px;font-family:inherit;font-size:14px;font-weight:500;min-width:200px;box-shadow:0 0 0 3px var(--primary-soft);outline:none}
@@ -1533,7 +1560,7 @@ body.coldragging .col-grip{opacity:1}
 .kcol-body{padding:8px;overflow-y:auto;flex:1;min-height:40px}
 .kcard{background:var(--surface);border-radius:8px;padding:11px;box-shadow:var(--shadow-sm);margin-bottom:8px;cursor:grab;border:1px solid var(--border)}
 .kcard:hover{box-shadow:var(--shadow)}
-.kcard .kt{font-weight:600;margin-bottom:8px;font-size:13.5px;line-height:1.35}
+.kcard .kt{font-weight:600;margin-bottom:8px;font-size:13.5px;line-height:1.35;color:var(--text-strong)}
 .kcard .kmeta{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .kcard .sm-pill{font-size:11px;height:22px;min-width:auto;width:auto;padding:0 8px}
 .sortable-ghost{opacity:.4}
@@ -2042,7 +2069,7 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 #chat-panel.dnd-over{outline:2.5px dashed var(--primary);outline-offset:-6px}
 #chat-panel.dnd-over::after{content:"שחרר כאן כדי לצרף לשיחה";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:var(--primary-soft);color:var(--primary);font-weight:700;font-size:15px;pointer-events:none;z-index:5}
 .chat-head{display:flex;align-items:center;gap:10px;padding:12px 14px 12px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
-.chat-title{font-weight:800;font-size:16px}
+.chat-title{font-weight:800;font-size:16px;color:var(--text-strong)}
 .chat-sub{font-size:14.5px;color:var(--text);line-height:1.5;white-space:normal;display:-webkit-box;-webkit-line-clamp:4;line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
 .chat-tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);padding:0 8px}
 .chat-tab{flex:1;text-align:center;padding:11px 6px;font-size:13px;font-weight:600;color:var(--text-muted);border-bottom:3px solid transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px}
@@ -4691,8 +4718,18 @@ function filterMode(){ return boardRowCount()>filterClientMax()?'server':'client
    answer, thrown away the moment the question changes. */
 const Paged = {
   on:false, rows:[], offset:0, more:false, matched:0, total:0, loading:false, seq:0,
+  /* A question has been asked and its answer has not come back — the
+     debounce is still counting, or the request is in flight. It is not the
+     same as `loading`, which only covers the second half: on the first
+     keystroke of a search the board has no answer AND no request yet, and
+     that quarter-second was the whole of the bug. The board said "אין
+     תוצאות לסינון הנוכחי" over a search that had not been run, because the
+     only thing left to filter was the one page of rows this browser happens
+     to hold. A search that is still running has to say so. */
+  pending:false,
   reset(){ this.on=false; this.rows=[]; this.offset=0; this.more=false;
-           this.matched=0; this.total=0; this.loading=false; this.seq++; },
+           this.matched=0; this.total=0; this.loading=false; this.pending=false;
+           this.seq++; clearTimeout(_pagedTimer); },
   query(){
     const f=st.filters||{};
     return Object.assign(advQuery(f.adv||null), {
@@ -4711,10 +4748,18 @@ const Paged = {
      away what is held — a filter changed, so every row of the old answer is
      an answer to a question nobody is asking any more. */
   async load(fresh){
-    if(this.loading)return;
+    /* A FRESH question is never dropped for one already in flight. It used to
+       be, and that is the other half of "it takes a long time to get a
+       correct answer": the request for «חיפה» took three seconds, every
+       keystroke after it returned here immediately and asked nothing, and the
+       answer that finally painted the board was the one for «חיפ». The board
+       then sat on a stale answer until something else happened to re-ask.
+       `seq` already makes the older answer harmless — it is thrown away on
+       arrival — so the new question simply goes out beside it. */
+    if(this.loading && !fresh) return;
     if(fresh){ this.rows=[]; this.offset=0; this.more=false; }
     else if(!this.more) return;
-    this.loading=true;
+    this.loading=true; this.pending=true;
     const mine=++this.seq;                 // a slower answer must not overwrite a newer one
     try{
       const r=await api('/api/boards/'+st.board.id+'/items/query',
@@ -4726,9 +4771,11 @@ const Paged = {
       this.offset=r.next_offset||this.rows.length;
       this.more=!!r.has_more;
       this.matched=r.matched||0; this.total=r.total||0;
+      this.pending=false;
       renderView(); refreshToolbar();
     }catch(e){
-      if(mine===this.seq){ this.on=false; toast((e&&e.detail)||'הסינון בשרת נכשל'); }
+      if(mine===this.seq){ this.on=false; this.pending=false;
+                           toast((e&&e.detail)||'הסינון בשרת נכשל'); }
     }finally{ if(mine===this.seq)this.loading=false; }
   },
   /* Infinite scroll. Bound once to #view, and deliberately generous about
@@ -6470,6 +6517,103 @@ function linkIdsOf(t,colId){
 function linkNamesOf(t,colId){
   return linkIdsOf(t,colId).map(id=>((st.linkCache||{})[id]||{}).title).filter(Boolean);
 }
+/* Every word a cell holds, flattened — what the free-text box reads off it.
+
+   A cell is a JSON value whose shape depends on the column: a string for
+   text, a list of strings for a multi-select, {id,label,color} for a status
+   written by a form or by the monday import, {from,to} for a timeline. All of
+   them are things somebody typed into the board and can therefore expect to
+   find again, so this is generous about shape and narrow about keys — an
+   option's id and a colour are not words anybody searches for, and matching
+   them would answer a search for "e2" with a third of the board.
+
+   The browser's half of _cell_search_words on the server, deliberately to the
+   same rules — including which columns are left out. A board that crosses the
+   client threshold overnight must not start or stop finding the same row. */
+function cellWords(v,out){
+  out=out||[];
+  if(v===null||v===undefined||v===''||typeof v==='boolean')return out;
+  if(typeof v==='string'){ out.push(v); return out; }
+  if(typeof v==='number'){ out.push(String(v)); return out; }
+  if(Array.isArray(v)){ v.forEach(x=>cellWords(x,out)); return out; }
+  if(typeof v==='object')
+    ['label','text','name','value','address','url','from','to'].forEach(k=>{
+      if(typeof v[k]==='string'&&v[k]) out.push(v[k]);
+    });
+  return out;
+}
+/* A ticked box, in the word the board shows for it — the server's TICK_WORD,
+   and the one word in this search matched whole rather than anywhere inside.
+   Every other word in the haystack is something a person typed into one row,
+   so over-matching it costs a few rows; this one is invented for every ticked
+   row on the board, and matching it on "מס" — a prefix of מסמך, מספר, מסירה —
+   would answer an ordinary search with half the board. */
+const TICK_WORD='מסומן';
+/* How one cell reads to somebody searching, given the kind of column it is.
+   The browser's half of _searchable_words, to the same four special cases:
+   people are their names and not their ids, a date is both what is stored and
+   what is shown, a status id resolves to its label, and a tick answers to one
+   whole word. */
+function cellSearchWords(c,v,out,exact){
+  const t=c.type;
+  if(t==='checkbox'){ if(v===true||v===1||(Array.isArray(v)&&v.length)) exact.push(TICK_WORD); return; }
+  const words=cellWords(v,[]);
+  if(t==='people'||t==='created_by'||t==='assignees'){
+    words.forEach(w=>{ const u=(st.users||[]).find(x=>String(x.id)===String(w));
+                       out.push(u?(u.name||''):w); });
+    return;
+  }
+  if(t==='date'||t==='timeline'||t==='created_at'||t==='due'){
+    words.forEach(w=>{ out.push(w); out.push(fdatePlain(String(w).slice(0,10))); });
+    return;
+  }
+  if(t==='status'){
+    const vocab={};
+    ((c.options)||[]).forEach(o=>{ if(o&&o.id!=null) vocab[String(o.id)]=o.label||''; });
+    words.forEach(w=>{ out.push(w); if(vocab[w]) out.push(vocab[w]); });
+    return;
+  }
+  words.forEach(w=>out.push(w));
+}
+/* A stored day as the board writes it, as a bare string — fdate returns markup
+   for an empty value and this is going into a haystack, not onto the screen.
+
+   The ISO day is taken apart rather than handed to Date, which is not
+   pedantry: `new Date('2026-11-04')` is midnight UTC, and getDate() on it is
+   the 3rd anywhere west of Greenwich. The server formats the same cell with
+   strptime, which has no zone to get wrong, and the two have to produce the
+   same string or a board would find a date on one side of the client
+   threshold and not the other. */
+function fdatePlain(d){
+  const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(d||''));
+  return m?`${m[3]}/${m[2]}/${m[1]}`:'';
+}
+/* Everything on this row somebody could be typing — (substring words, whole
+   words). The item's own words, and then EVERY column of the board: "רשות" is
+   a column, and somebody typing a municipality into the search box means "the
+   items whose רשות is that one".
+
+   Two columns are not read here and for different reasons. A CONNECT cell
+   holds ids and its words are the titles at the other end, which linkNamesOf
+   already reads off the link cache. A FORMULA is the one column neither side
+   can answer for: it is computed and never stored, and the engine that
+   computes it lives here — so searching it in the browser and not on the
+   server would mean a board that found a row until it grew past the client
+   threshold and then stopped. */
+function searchRow(t,q){
+  const [hay,exact]=searchWordsOf(t);
+  return hay.some(w=>String(w).toLowerCase().includes(q))
+      || exact.some(w=>String(w).toLowerCase()===q);
+}
+function searchWordsOf(t){
+  const out=[t.title||'', t.description||''], exact=[];
+  const cf=t.custom_fields||{};
+  customColumns().forEach(c=>{
+    if(c.type==='connect'||c.type==='formula')return;
+    cellSearchWords(c,cf[c.id],out,exact);
+  });
+  return [out,exact];
+}
 /* What counts as somebody searching for an item's number rather than for words
    that happen to be digits. The number in the "מספר מזהה" column is eleven
    digits, so a bare "5" would match nearly every item on the board — an id with
@@ -7310,15 +7454,16 @@ function applyFilters(tasks){
   }
   if(f.q){const q=f.q.trim().toLowerCase();
     const byId=IS_ITEM_ID.test(q), hasId=x=>byId&&String(x.item_uid||'').includes(q);
-    out=out.filter(t=>(t.title||'').toLowerCase().includes(q)
-      || (t.description||'').toLowerCase().includes(q)
-      || hasId(t)
+    out=out.filter(t=>hasId(t)
       // a sub-item prints its own number on its own row and is copied from
       // there, so the item holding it is the answer to a search for it
       || (t.subtasks||[]).some(hasId)
       || (t.assignees||[]).some(a=>(a.name||'').toLowerCase().includes(q))
       // an item is findable by what it is linked to, not only by its own words
-      || linkNamesOf(t).some(n=>n.toLowerCase().includes(q)));}
+      || linkNamesOf(t).some(n=>n.toLowerCase().includes(q))
+      // …and by what is in its cells: the title, the description and every
+      // column of the board somebody filled in
+      || searchRow(t,q));}
   const lf=f.links||{};
   if(lf.mode==='has')  out=out.filter(t=>linkIdsOf(t,lf.col).length);
   if(lf.mode==='none') out=out.filter(t=>!linkIdsOf(t,lf.col).length);
@@ -7571,8 +7716,41 @@ function clearCutAction(cls){
 function cutMatchesNothing(){
   const all=((st.board&&st.board.tasks)||[]).length;
   if(!all) return false;                       // an empty board is not a failed filter
-  if(typeof Paged!=='undefined'&&Paged.on) return Paged.total===0;
+  if(searchPending()) return false;            // …and neither is a search still running
+  if(typeof Paged!=='undefined'&&Paged.on) return Paged.matched===0;
   return applyFilters((st.board&&st.board.tasks)||[]).length===0;
+}
+/* Is the board waiting for the server to answer the cut that is on screen?
+
+   Only ever true past the client threshold, where the server's answer IS what
+   the board shows. Below it the browser filters what it already holds and
+   there is nothing to wait for — the answer is on the keystroke.
+
+   Everything that draws "אין תוצאות" asks this first, because a search that
+   has not finished has not found nothing. The board used to say so anyway:
+   typing a municipality's name into a board of fifteen thousand items printed
+   "אין תוצאות לסינון הנוכחי" at once — the local engine answering over the one
+   page of rows this browser was handed — and then, seconds later, filled with
+   the rows the server found. */
+function searchPending(){
+  return !!(typeof Paged!=='undefined' && Paged.pending
+            && typeof filterMode==='function' && filterMode()==='server');
+}
+/* …and what it says while it waits. Deliberately not a bare spinner: on a
+   board this size the wait is seconds, and a spinner over an empty board says
+   nothing about why it is taking them. It names the search where there is
+   one, because that is what somebody is standing there waiting for — a view
+   opening under the same machinery is a filter, and calling that a search
+   would describe something nobody did. */
+function searchingHTML(){
+  const byText=!!(st.filters&&st.filters.q);
+  return stateHTML('', byText?'מחפש בכל הלוח…':'מסנן את כל הלוח…',
+    byText
+      ? 'הלוח גדול מכדי לחפש בו בדפדפן, אז החיפוש רץ בשרת על כל הפריטים — גם על '
+        +'אלה שעדיין לא נטענו למסך. התוצאות יופיעו כאן בעוד רגע.'
+      : 'הלוח גדול מכדי לסנן אותו בדפדפן, אז הסינון רץ בשרת על כל הפריטים — גם על '
+        +'אלה שעדיין לא נטענו למסך. התוצאות יופיעו כאן בעוד רגע.',
+    '', 'fa-spinner fa-spin');
 }
 function noMatchHTML(){
   const inView=typeof Views!=='undefined'&&Views.active!=null;
@@ -9846,12 +10024,21 @@ const Automations = {
     (r.status_fields||[]).forEach(k=>{
       if(cfg[k+'_col']) values[k+'_col']=this._colCell(cfg[k+'_col']);
     });
+    // the people column the same way, and by its TITLE off the board — so a
+    // rule written against "מנהל פרויקט" reads as whatever that column is
+    // called today
+    ['t','a'].forEach(side=>{
+      const k=side+'_person_col';
+      if(cfg[k]) values[k]=this._colCell(cfg[k]);
+    });
     (r.fields||[]).forEach(f=>{
       if(cfg[f.key]!==undefined) values[f.key]=this._cellFor(f,cfg[f.key],cfg,values);
     });
     const acts=(cfg.actions||[]).map(x=>{
       const spec=this._actSpec(x.key)||{fields:[]};
       const vals={};
+      if((x.values||{}).person_col)
+        vals.person_col=this._colCell(x.values.person_col);
       (spec.fields||[]).filter(f=>f.type==='status').forEach(f=>{
         if((x.values||{})[f.key+'_col']) vals[f.key+'_col']=this._colCell(x.values[f.key+'_col']);
       });
@@ -9869,6 +10056,9 @@ const Automations = {
             edit:{id:a.id,status:a.status,etag:a.etag,fromDraft:!!fromDraft}};
   },
   _colCell(id){
+    // the built-in priority is a status source without being a column — it
+    // has no entry to look up, and its name is not its id
+    if(String(id)===this.PRIORITY_AS_STATUS) return {v:id,label:'עדיפות',color:''};
     const c=(customColumns()||[]).find(x=>String(x.id)===String(id));
     return {v:id,label:(c&&c.title)||String(id),color:''};
   },
@@ -9883,6 +10073,7 @@ const Automations = {
     // the chip says THAT there is a wording, never the wording itself — it
     // sits in a one-line sentence and the dialog is where it is read
     if(f.type==='notice')  return mk('התראה מותאמת');
+    if(f.type==='people_col') return mk(v?this._colCell(v).label:'אחראים');
     if(f.type==='column') return mk(this._colCell(v).label);
     if(f.type==='fields')
       return mk((Array.isArray(v)?v:[]).map(k=>
@@ -9927,6 +10118,12 @@ const Automations = {
     return out;
   },
   _condValueLabel(c,v){
+    // the other side may be a column rather than a value — see condRef
+    const ref=this.condRef(v);
+    if(ref){
+      const col=(customColumns()||[]).find(x=>String(x.id)===String(ref.col));
+      return (col&&col.title)||String(ref.col);
+    }
     const kind=ADV_KINDS[c.colType]||'text';
     if(kind==='people'){ const m=this.members.find(x=>x.user_id===+v); return m?m.name:String(v); }
     if(kind==='check')  return (v===true||v==='true')?'מסומן':'לא מסומן';
@@ -9973,14 +10170,30 @@ const Automations = {
        one that renders the rule in the list, the history and the notifications. */
     const on=k=>!!(this.building.values[k+'_col']||{}).v;
     const P=r.sentence_parts;
+    /* …and the same for a people column, with one difference that matters.
+       A status half carries a status BLANK, so the way in to "which status?"
+       is pressing it. "כאשר משויך אדם לפריט" has no blank at all, so there is
+       nothing to press — which is why a people half shows its column reading
+       from the start, with the blank standing at the board's own אחראים until
+       somebody says otherwise. Only on a board that HAS people columns: on one
+       that does not, "ל«אחראים»" is a choice that cannot be made. */
+    const peopleOn=side=>this._colKind(side)==='people'&&this._peopleCols().length>0;
+    const colOn=side=>peopleOn(side)||on(side+'_status');
     let sent=esc(P
-      ? ((P.trigger_col&&on('t_status')?P.trigger_col:P.trigger)+', '
-         +(P.action_col&&on('a_status')?P.action_col:P.action))
+      ? ((P.trigger_col&&colOn('t')?P.trigger_col:P.trigger)+', '
+         +(P.action_col&&colOn('a')?P.action_col:P.action))
       : r.sentence);
     r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.blankHTML(f)); });
     (r.status_fields||[]).forEach(k=>{
       sent=sent.replace('{'+k+'_col}',
         this.blankHTML({key:k+'_col',type:'status_col',label:'עמודת הסטטוס'}));
+    });
+    ['t','a'].forEach(side=>{
+      if(!peopleOn(side))return;
+      // unset reads "אחראים" and not "עמודת אנשים": the blank is standing at
+      // a real answer, not waiting for one
+      sent=sent.replace('{'+side+'_person_col}',
+        this.blankHTML({key:side+'_person_col',type:'people_col',label:'אחראים'}));
     });
     // a seeded condition still missing its value is as unfinished as a blank
     const condsReady=(this.building.conds||[]).every(c=>{
@@ -10062,14 +10275,23 @@ const Automations = {
       // the same two wordings the sentence itself picks between: an action
       // that names a status column of its own does not say "הסטטוס"
       const scol=(a.values||{}).status_col;
+      /* …and the people column, on the actions that name one. Shown from the
+         start wherever the board HAS people columns, standing at אחראים until
+         somebody says otherwise — see the sentence's own half for why a
+         people blank cannot wait to be pressed into existence. */
+      const pIsCol=!!spec.text_col&&['assign_person','unassign_person'].includes(a.key)
+                   &&this._peopleCols().length>0;
+      const pcol=(a.values||{}).person_col;
       const blank=(key,label,cur)=>{
         const style=(cur&&cur.color)?` style="background:${cur.color};border-color:${cur.color};color:#fff"`:'';
         return `<button class="au-blank${cur?' filled':''}"${style} title="${esc(label)}"
              data-k="${esc(key)}"
              onclick="Automations.pickActValue(event,${i},'${key}')">${esc(cur?cur.label:label)}</button>`;
       };
-      let body=esc((scol&&spec.text_col)||spec.text||spec.label||'');
-      body=body.replace('{col}',blank('status_col','עמודת הסטטוס',scol));
+      let body=esc(((scol||pIsCol)&&spec.text_col)||spec.text||spec.label||'');
+      body=body.replace('{col}', pIsCol
+        ? blank('person_col','אחראים',pcol&&pcol.v?pcol:null)
+        : blank('status_col','עמודת הסטטוס',scol));
       (spec.fields||[]).forEach(f=>{
         body=body.replace('{'+f.key+'}',blank(f.key,f.label,(a.values||{})[f.key]));
       });
@@ -10132,6 +10354,7 @@ const Automations = {
     const spec=this._actSpec(a.key)||{fields:[]};
     /* the status column's own blank, shown once one is named */
     if(key==='status_col'){ this.pickStatusSource(anchor,'status',{actIdx:i,key:'status'}); return; }
+    if(key==='person_col'){ this.pickPeopleSource(anchor,'a',{actIdx:i,key:'person_col'}); return; }
     const f=(spec.fields||[]).find(x=>x.key===key); if(!f)return;
     /* which status, before which value — asked once, where there is a choice */
     if(f.type==='status'&&spec.text_col&&this._statusCols().length
@@ -10245,7 +10468,8 @@ const Automations = {
       const txt=esc(spec.label||'');
       const valBtn=`<button class="au-blank${c.label?' filled':''}"${
             c.color?` style="background:${c.color};border-color:${c.color};color:#fff"`:''
-          } onclick="Automations.pickCondValue(event,${i})">${esc(c.label||spec.value_label||'ערך')}</button>`;
+          } onclick="Automations.pickCondValue(event,${i})">${
+            this.condRefIcon(c.v)}${esc(c.label||spec.value_label||'ערך')}</button>`;
       /* A condition about one of the board's columns reads with two blanks, and
          they are answered in that order: which column, and then what value —
          the value cannot be offered before the column is known, because the
@@ -10311,9 +10535,70 @@ const Automations = {
     const two=((this.caps||{}).operators_with_two_values||['between']);
     if(!two.includes(c.op||'')) return '';
     return ` ועד <button class="au-blank${c.label2?' filled':''}"
-      onclick="Automations.pickCondValue(event,${i},true)">${esc(c.label2||'ערך')}</button>`;
+      onclick="Automations.pickCondValue(event,${i},true)">${
+        this.condRefIcon(c.v2)}${esc(c.label2||'ערך')}</button>`;
   },
   /* A mirror can reflect several linked items: all of them, or any one. */
+  /* ---- the other side of the comparison, when it is a column too ----
+     "רק אם «תאריך סיום» אחרי «תאריך התחלה»" — the question that arrives as
+     soon as a board holds two columns that mean something to each other, and
+     which no fixed value can ask: what the rule is comparing against is not a
+     date, it is whatever the second column says on that item.
+
+     Stored on the condition in place of the value, as {col,type} — the same
+     shape the server stores and the same one the left-hand side already uses.
+     The chip then reads the column's NAME, which on its own would look exactly
+     like a rule searching for that text, so it carries a column icon. */
+  condRef(v){ return (v&&typeof v==='object'&&v.col)?v:null; },
+  condRefIcon(v){
+    return this.condRef(v)
+      ? '<i class="fa-solid fa-table-columns" style="font-size:10px;margin-inline-end:4px"></i>'
+      : '';
+  },
+  /* The kind a column is asked about, as the capabilities service says — not
+     the browser's own table, which knows nothing about a mirror or a formula.
+     ADV_KINDS stands in only where the service has not answered. */
+  capKind(colType){
+    const f=((this.caps||{}).fields||[]).find(x=>x.type===colType);
+    return (f&&f.kind)||ADV_KINDS[colType]||'';
+  },
+  /* Which columns this condition may be compared WITH: the same kind, and not
+     itself. A kind the engine refuses to compare at all — a checkbox, a
+     connect column, whose questions take no value — answers with nothing, so
+     the choice is never offered where it would be rejected. */
+  _condCmpCols(c){
+    const kind=this.capKind(c.colType);
+    const allowed=((this.caps||{}).compare_to_column)||[];
+    if(!kind||(allowed.length&&!allowed.includes(kind))) return [];
+    return this._condCols().filter(x=>String(x.id)!==String(c.col)
+                                      &&this.capKind(x.type)===kind);
+  },
+  /* The line that offers it, carried at the BOTTOM of every value picker: the
+     fixed value is what nine rules out of ten want, and this is the tenth. */
+  condCmpLine(c,i){
+    if(!this._condCmpCols(c).length) return '';
+    return `<div class="rm-sep"></div>
+      <button class="rm-item" onclick="Automations.pickCondCmpCol(event,${i})">
+        <i class="fa-solid fa-table-columns" style="font-size:11px;color:var(--primary)"></i>
+        להשוות לעמודה אחרת…</button>`;
+  },
+  pickCondCmpCol(e,i){
+    e.preventDefault(); e.stopPropagation();
+    const c=(this._condHome().conds||[])[i]; if(!c||!c.col)return;
+    // which blank sent us here, remembered before the picker's own clicks
+    const second=!!this._condSecond;
+    this.colPickOpen(e.currentTarget,this._condCmpCols(c),
+                     col=>this.setCondValueCol(i,col,second),
+                     'אין בלוח עמודה אחרת מאותו סוג');
+  },
+  setCondValueCol(i,col,second){
+    const c=(this._condHome().conds||[])[i]; if(!c||!col)return;
+    const ref={col:col.id,type:col.type};
+    if(second){ c.v2=ref; c.label2=col.title||col.id; }
+    else { c.v=ref; c.label=col.title||col.id; c.color=''; }
+    this._condSecond=false;
+    closeCellPops(); this.render();
+  },
   condMatchHTML(c,i){
     if(c.colType!=='mirror') return '';
     const all=(c.match==='all');
@@ -10583,9 +10868,11 @@ const Automations = {
     if(kind==='number'||kind==='text'){
       openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
         <input id="au-cv" class="au-in" style="max-width:210px" type="${kind==='number'?'number':'text'}"
-               placeholder="${esc(kind==='number'?'ערך מספרי':'טקסט')}" value="${esc(c.label||'')}"
+               placeholder="${esc(kind==='number'?'ערך מספרי':'טקסט')}" value="${
+                 esc(this.condRef(this._condSecond?c.v2:c.v)?'':(c.label||''))}"
                onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setColCondText(${i});}">
         <button class="rm-item" onclick="Automations.setColCondText(${i})"><i class="fa-solid fa-check"></i> אישור</button>
+        ${this.condCmpLine(c,i)}
       </div>`,'row-menu-pop');
       setTimeout(()=>{const el=document.getElementById('au-cv'); if(el){el.focus();el.select();}},30);
       return;
@@ -10596,7 +10883,8 @@ const Automations = {
     if(kind==='people'){
       const [items,body]=this._peopleMenu(col,j=>`Automations.setCondValue(${i},${j})`);
       this._popItems=items;
-      openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+      openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${
+        body}${this.condCmpLine(c,i)}</div>`,'row-menu-pop');
       return;
     }
     let items=[];
@@ -10616,6 +10904,7 @@ const Automations = {
       body+=`<div class="rm-note" style="padding-top:6px">או תאריך מסוים:</div>
         <input id="au-cv" class="au-in" type="date" style="max-width:210px"
                onchange="Automations.setColCondText(${i})">`;
+    body+=this.condCmpLine(c,i);
     openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
   setColCondText(i){
@@ -10649,6 +10938,11 @@ const Automations = {
     if(/_col$/.test(key)&&((r||{}).status_fields||[]).includes(key.slice(0,-4))){
       this.pickStatusSource(anchor,key.slice(0,-4),null); return;
     }
+    /* …and the people column, which is not one of the recipe's fields either
+       — the trigger half has no blank of its own to derive it from. */
+    if(key==='t_person_col'||key==='a_person_col'){
+      this.pickPeopleSource(anchor,key[0],null); return;
+    }
     const f=r&&r.fields.find(x=>x.key===key); if(!f)return;
     /* A board with status columns of its own is asked WHICH status first —
        "הסטטוס" is no longer one question there. Asked ONCE: a blank that has
@@ -10669,14 +10963,40 @@ const Automations = {
     }
     // "התראה" — the word in the sentence, and a dialog behind it
     if(f.type==='notice'){ this.pickNotice(key,null); return; }
+    /* ---- כל כמה ימים ----
+       A bare number box with the blank's own label repeated inside it as a
+       placeholder, which said nothing the sentence behind it was not already
+       saying and vanished the moment anybody typed. What is actually hard
+       about this blank is the other three things:
+
+         · the floor is the FIELD's, not zero. "כל 0 ימים" is not a schedule,
+           and the server quietly rounded it up to one — a value somebody
+           chose being silently replaced is worse than being refused.
+         · a number alone does not say what it means. "7" in a popup is seven
+           of something; the line underneath reads "כל 7 ימים", which is the
+           sentence the rule will actually run under.
+         · almost every answer is one of four. Typing is for the fifth. */
     if(f.type==='days'){
       const cur=this.building.values[key];
-      openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
-        <input id="au-txt" class="au-in" type="number" min="0" max="365" style="max-width:120px"
-               placeholder="${esc(f.label)}" value="${esc(cur?cur.v:'')}"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setDays('${key}');}">
-        <button class="rm-item" onclick="Automations.setDays('${key}')"><i class="fa-solid fa-check"></i> אישור</button>
+      const lo=(typeof f.min==='number')?f.min:0;
+      const now=(cur&&cur.v!=null&&cur.v!=='')?+cur.v:null;
+      const quick=lo>=1?[1,7,14,30]:[0,1,3,7];
+      openCellPop(e.currentTarget,`<div class="row-menu au-days" onclick="event.stopPropagation()">
+        <div class="rm-note">${esc(f.label)}</div>
+        <div class="au-days-quick">${quick.map(n=>
+          `<button class="au-day-chip${now===n?' on':''}" onclick="Automations.setDays('${key}',${n})"
+           >${esc(this.daysEcho(f,n))}</button>`).join('')}</div>
+        <div class="au-days-row">
+          <input id="au-txt" class="au-in" type="number" min="${lo}" max="365" style="max-width:88px"
+                 value="${esc(now==null?'':now)}" aria-label="${esc(f.label)}"
+                 oninput="Automations.echoDays('${key}')"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setDays('${key}');}">
+          <span class="au-days-unit">ימים</span>
+          <button class="rm-item au-days-ok" onclick="Automations.setDays('${key}')"><i class="fa-solid fa-check"></i> אישור</button>
+        </div>
+        <div class="rm-note au-days-echo" id="au-days-echo">${esc(now==null?'':this.daysEcho(f,now))}</div>
       </div>`,'row-menu-pop');
+      this._daysField=f;
       setTimeout(()=>{const i=document.getElementById('au-txt'); if(i){i.focus();i.select();}},30);
       return;
     }
@@ -10747,8 +11067,33 @@ const Automations = {
     return (customColumns()||[]).filter(c=>c.type==='status'
       && statusColOpts(c).some(o=>o.id));
   },
+  /* The board's own columns of type people — מנהל פרויקט, רכזת, מפקח — beside
+     its built-in אחראים. No "has a usable vocabulary" test like the status
+     list needs: a people column's values are the board's members, so every
+     one of them can hold a rule. */
+  _peopleCols(){ return (customColumns()||[]).filter(c=>c.type==='people'); },
+  _peopleSources(){
+    return [{v:'',label:'אחראים',color:''}]
+      .concat(this._peopleCols().map(c=>({v:c.id,label:c.title||c.id,color:''})));
+  },
+  /* "status", "people" or "" — which column list this half of the sentence
+     offers, as the server works it out. Asked of the server rather than
+     guessed from the trigger's name, so a recipe added there needs nothing
+     here. */
+  _colKind(side){
+    const P=(this.building&&this.building.recipe||{}).sentence_parts||{};
+    return (side==='t'?P.trigger_col_kind:P.action_col_kind)||'';
+  },
+  _peopleColOf(vals,side){ return ((vals||{})[side+'_person_col']||{}).v||''; },
+  /* A priority is a labelled, coloured, board-defined vocabulary — the same
+     shape as a status, which is why the advanced filter has always offered it
+     as one. A rule could not: naming it got a rule that saved and then sat
+     there blocked, reporting a deleted column that had never existed. It is a
+     source of its own now, under the built-in's own name. */
+  PRIORITY_AS_STATUS:'priority',
   _statusSources(){
-    return [{v:'',label:'הסטטוס של הלוח',color:''}]
+    return [{v:'',label:'הסטטוס של הלוח',color:''},
+            {v:this.PRIORITY_AS_STATUS,label:'עדיפות',color:''}]
       .concat(this._statusCols().map(c=>({v:c.id,label:c.title||c.id,color:''})));
   },
   /* Which column a status blank names, wherever that blank lives — the
@@ -10762,9 +11107,16 @@ const Automations = {
   _optionsFor(type,connectId,fkey,colId){
     /* a status belongs to a vocabulary, and which vocabulary is a thing the
        RULE says: the board's own statuses, or one status column's options */
-    if(type==='status') return colId
-      ? statusColOpts(colId).filter(o=>o.id).map(o=>({v:o.id,label:o.label,color:o.color}))
-      : boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    if(type==='status'){
+      // …and when the source IS the priority, the vocabulary is the board's
+      // priorities. One branch, so a status blank pointed at it offers what
+      // the engine will accept and nothing else.
+      if(colId===this.PRIORITY_AS_STATUS)
+        return boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
+      return colId
+        ? statusColOpts(colId).filter(o=>o.id).map(o=>({v:o.id,label:o.label,color:o.color}))
+        : boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+    }
     if(type==='priority') return boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
     if(type==='group')    return (st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
     if(type==='person')   return this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
@@ -10878,15 +11230,16 @@ const Automations = {
     const vals=into?(((this.building.acts||[])[into.actIdx]||{}).values||{})
                    :this.building.values;
     const cur=(vals[key]||{}).v||null;
-    const text=(cur&&cur.text)||'', mail=!!(cur&&cur.mail);
+    const text=this.tokensToNames((cur&&cur.text)||''), mail=!!(cur&&cur.mail);
     showModal(`<h2><i class="fa-solid fa-bell" style="color:var(--primary)"></i> נוסח ההתראה</h2>
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px"><i class="fa-solid fa-circle-info"></i>
-          מה שההתראה תגיד. אפשר לשלב ערכים מהפריט שעליו הכלל פעל — הם נפתרים
-          בכל הפעלה מחדש, כך שאותו נוסח מדבר על כל פריט בשמו. נוסח ריק משאיר
-          את ההתראה הרגילה של המערכת.</div>
+          מה שההתראה תגיד. אפשר לשלב ערכים מהפריט שעליו הכלל פעל — בחרו אותם
+          מתוך «ערך מהפריט» והם ייכנסו בשמם, למשל <code>{{שם הפריט}}</code>.
+          הם נפתרים בכל הפעלה מחדש, כך שאותו נוסח מדבר על כל פריט בשמו.
+          נוסח ריק משאיר את ההתראה הרגילה של המערכת.</div>
         <textarea id="au-notice" class="au-notice" maxlength="2000"
-                  placeholder="היי,&#10;תזכורת להמשך טיפול&#10;לרשות: {{item.name}}&#10;תודה.">${esc(text)}</textarea>
+                  placeholder="היי,&#10;תזכורת להמשך טיפול&#10;לרשות: {{שם הפריט}}&#10;תודה.">${esc(text)}</textarea>
         ${this.tokenMenuHTML('au-notice')}
         <label class="subc-opt" style="align-items:center;margin-top:10px">
           <input type="checkbox" id="au-notice-mail" ${mail?'checked':''}>
@@ -10908,7 +11261,19 @@ const Automations = {
     const c=this._noticeInto; if(!c)return;
     const ta=document.getElementById('au-notice');
     const mail=!!((document.getElementById('au-notice-mail')||{}).checked);
-    const text=((ta&&ta.value)||'').trim();
+    // back to the codes the engine resolves — see tokensToNames for why the
+    // box and the wire hold different things
+    const text=this.namesToTokens(((ta&&ta.value)||'').trim());
+    /* Said here rather than only at the save. The server refuses an unknown
+       value and is the authority, but by the time it answers the dialog has
+       closed and the text is gone; this keeps her in front of the word she
+       mistyped. */
+    const bad=this.unknownTokens(text);
+    if(bad.length){
+      toast('אין ערך בשם «'+bad[0]+'» — אפשר לבחור ערך מתוך «ערך מהפריט»');
+      if(ta)ta.focus();
+      return;
+    }
     // empty is the default notice, not a notice that says nothing — so an
     // empty box with the mail switch on clears the blank rather than storing a
     // flag nobody would ever find again
@@ -10928,8 +11293,92 @@ const Automations = {
     if(cell===undefined) delete vals[c.key]; else vals[c.key]=cell;
   },
 
-  /* ---- ערכים דינמיים ----
-     A text can be built from the item it will be written on. The menu puts the
+  /* ---- ערכים דינמיים: הקוד נשמר, השם נקרא ----
+
+     A notice is built from the item it will be written on, and until now the
+     box she typed it in said so in the engine's words:
+
+         לרשות: {{item.name}}
+         שם הנוהל: {{field.col_7a1}}
+
+     She picked "שם הנוהל" off the menu and then had to read col_7a1 back. The
+     second line is unreadable, unverifiable and — the part that actually
+     costs — uneditable: there is no way to tell at a glance whether the rule
+     is about the right column, and nothing to do about it but delete the
+     line and pick again.
+
+     So the editor shows the names and the wire keeps the codes. The stored
+     form never changes — {{field.col_7a1}} is what the engine resolves, what
+     every rule written before now holds, and what survives the column being
+     RENAMED, which is the whole reason the code is what is stored. It is
+     translated on the way into the box and back on the way out.
+
+     Two things this has to get right, and both are about a name that does
+     not name one thing:
+
+       · a label shared by two columns — or by a column and a built-in —
+         cannot stand for either, so it is dropped from the mapping and those
+         tokens stay in their code form. Readable for most and honest for the
+         rest beats a guess that writes the wrong column into a rule.
+       · a token whose column was DELETED has no name to show. It stays as it
+         is rather than disappearing: a rule that quietly lost a line is
+         worse than one with a line that looks wrong. */
+  /* [{token,label}] for every value that has exactly one name. Built-ins are
+     listed first, but the filter below drops BOTH sides of a collision — a
+     column titled "שם הפריט" must not silently become the item's name, and
+     the item's name must not silently become that column. */
+  _tokenNames(){
+    const out=[];
+    (((this.caps||{}).tokens)||[]).filter(t=>!t.takes_column)
+      .forEach(t=>out.push({token:t.token,label:t.label}));
+    (customColumns()||[]).filter(c=>c.type!=='connect')
+      .forEach(c=>out.push({token:'field.'+c.id,label:c.title||c.id}));
+    const n={}; out.forEach(x=>{n[x.label]=(n[x.label]||0)+1;});
+    /* …and a label that is somebody ELSE's code is dropped too. A column
+       titled "item.name" is odd but allowed, and without this line typing
+       {{item.name}} — the spelling anybody who has seen the stored form
+       would reach for — would quietly store that column instead of the
+       item's name. Wrong-column-in-a-rule is the one outcome worth a line of
+       code to rule out: it does not look like a failure, it looks like a
+       rule that is about something else. */
+    const codes=new Set(out.map(x=>x.token));
+    return out.filter(x=>n[x.label]===1 && !codes.has(x.label));
+  },
+  /* stored → what she reads. Only a token this board can name is rewritten. */
+  tokensToNames(text){
+    const by={}; this._tokenNames().forEach(x=>{by[x.token]=x.label;});
+    return String(text||'').replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g,
+      (m,name)=>by[name]?('{{'+by[name]+'}}'):m);
+  },
+  /* …and back. A name nobody recognises is left exactly as typed, so the
+     check below can say which one it was instead of dropping it. */
+  namesToTokens(text){
+    const by={}; this._tokenNames().forEach(x=>{by[x.label]=x.token;});
+    return String(text||'').replace(/\{\{\s*([^{}]+?)\s*\}\}/g,
+      (m,name)=>by[name]?('{{'+by[name]+'}}'):m);
+  },
+  /* The ones the engine has no answer for. The server refuses these at the
+     save and is the authority; asking here too is so the answer arrives
+     while the text is still on screen and the caret is still in it, rather
+     than as a rejected save with the dialog already closed. */
+  unknownTokens(stored){
+    const all=((this.caps||{}).tokens)||[];
+    /* No catalog, no opinion. The caps are fetched, and a fetch that has not
+       landed — or failed — would otherwise make every value unknown and hold
+       a save that is perfectly good. The server checks the same thing and is
+       the authority; this is only here to answer sooner. */
+    if(!all.length) return [];
+    const known=new Set(all.filter(t=>!t.takes_column).map(t=>t.token));
+    const pre=all.filter(t=>t.takes_column).map(t=>t.token);
+    const bad=[];
+    String(stored||'').replace(/\{\{\s*([^{}]+?)\s*\}\}/g,(m,name)=>{
+      if(!known.has(name) && !pre.some(p=>name.startsWith(p)&&name.length>p.length))
+        bad.push(name);
+      return m;
+    });
+    return bad;
+  },
+  /* A text can be built from the item it will be written on. The menu puts the
      token where the caret is, because somebody writing "המשך ל-" wants the
      name to land after it and not at the end. */
   tokenMenuHTML(into){
@@ -10940,6 +11389,10 @@ const Automations = {
     // the notice's textarea. Named rather than assumed, because the two are on
     // screen in different dialogs and the menu is one function.
     const t=into||'au-txt';
+    /* What goes INTO the box is the name where this board has one for it —
+       the same translation the text itself gets, so a token she inserts and
+       a token she loaded read alike. `putToken` is still given the code, and
+       does the lookup itself, so there is one place that decides. */
     return `<details class="au-tok"><summary>ערך מהפריט</summary>
       ${toks.map(x=>`<button class="rm-item" onclick="event.stopPropagation();Automations.putToken('${x.token}','${t}')">
           ${esc(x.label)}</button>`).join('')}
@@ -10950,7 +11403,9 @@ const Automations = {
   putToken(name,into){
     const el=document.getElementById(into||'au-txt'); if(!el)return;
     const at=el.selectionStart==null?el.value.length:el.selectionStart;
-    const ins='{{'+name+'}}';
+    // the name where this board has one for it, the code where it does not
+    const show=(this._tokenNames().find(x=>x.token===name)||{}).label||name;
+    const ins='{{'+show+'}}';
     el.value=el.value.slice(0,at)+ins+el.value.slice(el.selectionEnd==null?at:el.selectionEnd);
     el.focus();
     el.selectionStart=el.selectionEnd=at+ins.length;
@@ -11035,10 +11490,45 @@ const Automations = {
     const d=Math.floor(m/1440); return d===1?'יום':(d===2?'יומיים':d+' ימים');
   },
 
-  setDays(key){
-    const el=document.getElementById('au-txt');
-    const n=Math.max(0,Math.min(365,parseInt((el?el.value:'')||'',10)));
+  /* A count of days as somebody says it out loud. Hebrew has a word for two
+     of them, and "2 ימים" in a sentence a person is meant to read is the kind
+     of thing that makes an interface feel translated. */
+  daysHe(n){ return n===1?'יום':(n===2?'יומיים':n+' ימים'); },
+  /* …and the same count as the phrase this particular blank turns it into.
+     The blank's own label is the frame: "כל כמה ימים" makes "כל 7 ימים",
+     "ימים לפני" makes "7 ימים לפני". Derived from the label rather than from
+     a table of recipe ids, so a recipe added tomorrow reads correctly without
+     anybody coming back here. */
+  daysEcho(f,n){
+    const lab=String((f&&f.label)||'');
+    if(/^כל /.test(lab)) return n===1?'כל יום':'כל '+this.daysHe(n);
+    // nought days before or after the due date is the due date, and saying
+    // so plainly beats "0 ימים לפני", which reads like a rule that is off
+    if(n===0) return 'באותו יום';
+    const tail=lab.replace(/^ימים\s*/,'').trim();
+    return tail?(this.daysHe(n)+' '+tail):this.daysHe(n);
+  },
+  /* The line under the box, rewritten as she types. It is the only thing in
+     the popup that says what the number means. */
+  echoDays(){
+    const el=document.getElementById('au-txt'), out=document.getElementById('au-days-echo');
+    if(!out)return;
+    const n=parseInt((el&&el.value)||'',10);
+    out.textContent=isFinite(n)?this.daysEcho(this._daysField,n):'';
+  },
+  /* `n` comes from a quick chip; without one the box is read. The floor is
+     the field's own — see the picker for why a silent round-up is the wrong
+     way to handle "כל 0 ימים". */
+  setDays(key,n){
+    const f=this._daysField||{};
+    const lo=(typeof f.min==='number')?f.min:0;
+    if(n===undefined){
+      const el=document.getElementById('au-txt');
+      n=parseInt((el?el.value:'')||'',10);
+    }
     if(!isFinite(n)){ toast('יש להזין מספר ימים'); return; }
+    if(n<lo){ toast(lo===1?'צריך יום אחד לפחות':'המספר קטן מדי'); return; }
+    n=Math.min(365,n);
     this.building.values[key]={v:n,label:String(n),color:''};
     closeCellPops(); this.render();
   },
@@ -11132,6 +11622,37 @@ const Automations = {
      vocabulary: «אושר» in "שלב" is not the board status of that name. `into`
      is an extra action's ({actIdx,key}) — the question is the same one, only
      the place the answer lands differs. */
+  /* "למי משייכים?" — the board's own אחראים, or one of its people columns.
+     Unlike the status question this one is never forced: the blank already
+     stands at a real answer, so pressing it is changing a choice rather than
+     making a first one, and nothing is cleared by changing it — the person
+     the rule names is the same person whichever column they go into. */
+  pickPeopleSource(anchor,side,into){
+    const items=this._peopleSources();
+    this._popItems=items;
+    const call=into?`Automations.setActPeopleSource(${into.actIdx},'${into.key}',`
+                   :`Automations.setPeopleSource('${side}',`;
+    const body=items.map((it,i)=>`<button class="rm-item" onclick="${call}${i})">
+        <i class="fa-solid ${it.v?'fa-table-columns':'fa-user-group'}"
+           style="font-size:11px;color:var(--primary)"></i> ${esc(it.label)}</button>`).join('');
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
+      <div class="rm-note">באיזו עמודת אנשים מדובר?</div>${body}</div>`,'row-menu-pop');
+  },
+  setActPeopleSource(i,key,idx){
+    const it=(this._popItems||[])[idx], a=(this.building.acts||[])[i]; if(!it||!a)return;
+    (a.values=a.values||{})[key]={v:it.v||'',label:it.label,color:''};
+    closeCellPops(); this.render();
+  },
+  setPeopleSource(side,idx){
+    const it=(this._popItems||[])[idx]; if(!it)return;
+    const key=side+'_person_col';
+    // the board's own אחראים is RECORDED as a choice ({v:''}) rather than
+    // left as an absence, for the same reason the status source is: the two
+    // are the same thing to the engine and to save(), which sends neither,
+    // but an absence on screen reads as a question nobody has answered
+    this.building.values[key]={v:it.v||'',label:it.label,color:''};
+    closeCellPops(); this.render();
+  },
   pickStatusSource(anchor,key,into){
     const items=this._statusSources();
     this._popItems=items;
@@ -11163,8 +11684,19 @@ const Automations = {
      Without it the board's own status is a one-way door: it takes the column
      wording out of the sentence, and with it the blank that would have asked
      again. */
+  /* The way to change which status a blank is about, at the top of its
+     values. Shown on EVERY board now, not only one carrying status columns:
+     עדיפות is a source on all of them, and without this line a plain board
+     would have no way to reach it.
+
+     Deliberately here and not as a step before the values. A board with no
+     status column of its own has one obvious answer — the board's own
+     statuses — and making everybody confirm it before every status rule
+     would be a click bought with nothing. The step before the values stays
+     gated on there actually being a column; this is the way in for the
+     board that has none. */
   _statusSourceLine(key,into){
-    if(!this._statusCols().length) return '';
+    if(this._statusSources().length<2) return '';
     const vals=into?(((this.building.acts||[])[into.actIdx]||{}).values||{})
                    :this.building.values;
     const cur=(vals[key+'_col']||{}).label||'הסטטוס של הלוח';
@@ -11219,6 +11751,13 @@ const Automations = {
       const col=this._statusColOf(this.building.values,k);
       if(col) config[k+'_col']=col;
     }
+    // …and the people column, on whichever half names one. Empty is not sent
+    // for the same reason: empty IS the board's own אחראים.
+    ['t','a'].forEach(side=>{
+      if(this._colKind(side)!=='people')return;
+      const col=this._peopleColOf(this.building.values,side);
+      if(col) config[side+'_person_col']=col;
+    });
     // a condition still missing its value is refused here rather than sent: the
     // server would reject it, and a draft must not silently save a condition
     // that would widen the rule instead of narrowing it
@@ -11238,12 +11777,15 @@ const Automations = {
         // an operator that asks about emptiness takes no value at all, and one
         // that asks about a range takes two
         if(this.condNeedsValue(c)){
+          // a side naming a second COLUMN is sent as it is: it is a reference
+          // the server resolves when the rule runs, not a value to coerce
+          const side=v=>this.condRef(v)||num(v);
           if(c.v===null||c.v===undefined||c.v===''){ toast('יש להשלים את הערך בתנאי'); return; }
-          val.value=num(c.v);
+          val.value=side(c.v);
           const two=((this.caps||{}).operators_with_two_values||['between']);
           if(two.includes(c.op||'')){
             if(c.v2===null||c.v2===undefined||c.v2===''){ toast('יש להשלים את שני הערכים בתנאי'); return; }
-            val.value2=num(c.v2);
+            val.value2=side(c.v2);
           }
         }else if(c.op==='linked'||c.op==='not_linked'){
           if(c.v!==null&&c.v!==undefined&&c.v!=='') val.value=+c.v;
@@ -11282,6 +11824,11 @@ const Automations = {
           if(col) values[f.key+'_col']=col;
         }
       }
+      // …and the people column this action names, under the bare key the
+      // server reads it from. Empty is not sent: empty IS the board's own
+      // אחראים.
+      const pc=((a.values||{}).person_col||{}).v;
+      if(pc) values.person_col=pc;
       acts.push({key:a.key,values});
     }
     if(acts.length) config.actions=acts;
@@ -13700,9 +14247,13 @@ function refreshToolbar(){
      search box. */
   if(st.board && filterMode()==='server'){
     if(filtersActive()){
+      /* Marked as asked HERE rather than when the request goes out, so the
+         render that happens on this very keystroke already knows an answer
+         is coming and does not report the board as empty while it waits. */
+      Paged.pending=true;
       clearTimeout(_pagedTimer);
       _pagedTimer=setTimeout(()=>Paged.load(true),250);
-    } else if(Paged.on){
+    } else if(Paged.on||Paged.pending){
       Paged.reset(); renderView();
     }
   }
@@ -13939,7 +14490,17 @@ function vTable(el){
   if(openV&&openV.blocked){ el.innerHTML=restrictedViewHTML(); return; }
   if(openV&&(openV.needs_fix||[]).length){ el.innerHTML=brokenViewHTML(openV); return; }
   if(!(st.board.tasks||[]).length){ el.innerHTML=emptyBoardHTML(); return; }
-  if(!groups.reduce((n,g)=>n+g.tasks.length,0)){ el.innerHTML=noMatchHTML(); return; }
+  /* A search still running on the server is a fifth state, and it is the one
+     that looked most like "no results". Before any answer has arrived there
+     is nothing on screen but the local engine's pass over one page of rows,
+     which is not an answer to the question that was asked — so the board says
+     it is still looking rather than that it found nothing. Once an answer HAS
+     arrived the rows from it stay up while the next one is fetched: a refined
+     search should not blank the board on every keystroke. */
+  const pending=searchPending();
+  if(pending && !Paged.on){ el.innerHTML=searchingHTML(); return; }
+  if(!groups.reduce((n,g)=>n+g.tasks.length,0)){
+    el.innerHTML=pending?searchingHTML():noMatchHTML(); return; }
   /* Only the first group is on screen when a board opens, and the expensive
      part of a row is the input fields in it — which stay editable in place, so
      they cannot be made cheap. What is left is to stop building the ones she
@@ -17848,7 +18409,10 @@ async function deleteItem(e,id){
 function vKanban(el){
   const cols=boardStatusList();
   const tasks=applyFilters(st.board.tasks||[]);
-  if((st.board.tasks||[]).length && !tasks.length){el.innerHTML=noMatchHTML();return;}
+  const pending=searchPending();            // see vTable — a running search is not "no results"
+  if(pending && !Paged.on){ el.innerHTML=searchingHTML(); return; }
+  if((st.board.tasks||[]).length && !tasks.length){
+    el.innerHTML=pending?searchingHTML():noMatchHTML(); return;}
   el.innerHTML='<div class="kanban">'+cols.map(sv=>{const s=sv.key;
     const ts=tasks.filter(t=>t.status===s);
     return `<div class="kcol"><div class="kcol-head" style="--kc:${sv.c}">${esc(sv.he)}<span class="cnt">${ts.length}</span></div>
@@ -20249,6 +20813,17 @@ const Chat = {
   seenPopClose(){ const p=document.getElementById('seen-pop'); if(p)p.remove(); },
   composerHTML(mode,cid){
     const edit=mode==='edit';
+    /* A fresh textarea is about to be built, so the height somebody dragged
+       the LAST one to is not an instruction about this one — posting a
+       message or opening another item starts over at one line. */
+    this._compFloor=0; this._compAuto=0;
+    /* The wrap point moves with the window, and so does the height the same
+       text needs. Bound once, here, because this is the only place that knows
+       a composer exists at all. */
+    if(!this._compResizeBound){
+      this._compResizeBound=true;
+      addEventListener('resize',()=>{ try{ this.grow(); }catch(e){} });
+    }
     const foot=edit
       ? `<button class="btn btn-primary" title="שמור (Ctrl+S)" onclick="Chat.saveEdit(${cid})"><i class="fa-solid fa-check"></i> שמור</button><button class="btn btn-ghost" onclick="Chat.cancelEdit()">ביטול</button>`
       : `<button class="btn btn-primary" title="שלח (Ctrl+S)" onclick="Chat.post()"><i class="fa-solid fa-paper-plane"></i> שלח</button>`;
@@ -20266,7 +20841,7 @@ const Chat = {
         <div class="comp-check" id="comp-check"></div>
         <div class="comp-hl-wrap">
           <div class="comp-hl" id="comp-hl" aria-hidden="true"></div>
-          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…  (Ctrl+S לשמירה)':'כתוב הודעה…  (Ctrl+S לשליחה · Enter לשורה חדשה · ניתן להדביק או לגרור קובץ)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL();Chat.saveDraft()" onscroll="Chat.syncHL()"></textarea>
+          <textarea id="comp-text" placeholder="${edit?'ערוך את ההודעה…  (Ctrl+S לשמירה)':'כתוב הודעה…  (Ctrl+S לשליחה · Enter לשורה חדשה · ניתן להדביק או לגרור קובץ)'}" onkeydown="Chat.keydown(event)" oninput="Chat.onType(event);Chat.syncHL();Chat.saveDraft()" onscroll="Chat.syncHLScroll()" onmouseup="Chat.compMouseUp()"></textarea>
         </div>
       </div>
       <div class="comp-atts" id="comp-atts"></div>
@@ -20370,7 +20945,53 @@ const Chat = {
     if(!ta||!hl)return;
     let v=ta.value; if(v.endsWith('\n'))v+=' ';   // ensure a trailing newline is shown
     hl.innerHTML=this.highlightMentions(v);
-    hl.scrollTop=ta.scrollTop;
+    this.syncHLScroll();
+    this.grow();
+  },
+  /* Only the scroll offset, for the scroll handler. Split out from syncHL
+     because that one now RESIZES the box, and resizing from inside a scroll
+     handler is how a textarea ends up fighting itself. */
+  syncHLScroll(){
+    const ta=document.getElementById('comp-text'), hl=document.getElementById('comp-hl');
+    if(ta&&hl) hl.scrollTop=ta.scrollTop;
+  },
+  /* ---- the box grows with what is written in it ----
+
+     It was 44px and stayed there however long the message got, so writing
+     anything substantial meant composing through a three-line window — or
+     finding the drag handle, which is a thing you have to know is there.
+
+     Hooked into syncHL rather than onto the half-dozen places that change
+     the text, because every one of them already calls syncHL: typing, the
+     bullet and emoji buttons, a restored draft, opening a comment for
+     editing. The next one added gets this for free, which is the only way a
+     list like that stays complete.
+
+     The mirror behind the textarea needs nothing: it is inset:0 inside a
+     wrapper the textarea's own height drives, so it follows.
+
+     Past COMPOSER_MAX it scrolls instead of growing — a composer that eats
+     the conversation it belongs to has stopped being a composer. */
+  COMPOSER_MAX_VH: 40,
+  grow(){
+    const ta=document.getElementById('comp-text'); if(!ta)return;
+    const max=Math.max(120, Math.round(innerHeight*this.COMPOSER_MAX_VH/100));
+    ta.style.height='auto';            // measure the TEXT, not the box it is in
+    const want=Math.max(ta.scrollHeight, this._compFloor||0);
+    const h=Math.min(want,max);
+    ta.style.height=h+'px';
+    // hidden while it still fits, so a scrollbar does not flash in and out on
+    // the keystroke that adds a line
+    ta.style.overflowY=want>max?'auto':'hidden';
+    this._compAuto=ta.offsetHeight;    // what WE set — see compMouseUp
+  },
+  /* Somebody who drags the handle has said how big they want it, and the next
+     keystroke must not take that away. The drag is told apart from an
+     ordinary click by the height no longer being the one grow() last set. */
+  compMouseUp(){
+    const ta=document.getElementById('comp-text'); if(!ta)return;
+    if(this._compAuto && Math.abs(ta.offsetHeight-this._compAuto)>1)
+      this._compFloor=ta.offsetHeight;
   },
   keydown(e){
     // Ctrl/Cmd+S sends (or saves while editing). Enter never sends — it only

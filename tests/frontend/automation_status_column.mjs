@@ -149,11 +149,26 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
      menu.includes('שלב תכנון') && menu.includes('שלב ביצוע'), menu);
 }
 
+/* Which source, by NAME. The list is the board's own status, then עדיפות —
+   a board-defined vocabulary like any other, offered as a source of its own —
+   then the status columns. Indexing into it made these cases depend on the
+   order of a list none of them is about, and the list grew. */
+const SRC=(A,label)=>{
+  const i=A._statusSources().findIndex(x=>x.label===label);
+  if(i<0) throw new Error('no such status source: '+label);
+  return i;
+};
+
 // ── choosing a column changes both the options and the sentence ───────────
 {
   const A=build([PLAN,DO]);
   A.pickField(EV,'t_status');
-  A.setStatusSource('t_status',1);                 // שלב תכנון
+  /* By NAME, not by position. The list of sources is the board's own status,
+     then עדיפות — which is a board-defined vocabulary like any other and is
+     offered as a source of its own — then the status columns. Indexing into
+     it made this test about the order of that list rather than about what
+     picking a column does. */
+  A.setStatusSource('t_status',SRC(A,'שלב תכנון'));
   ck('the column is kept beside the value',
      (A.building.values['t_status_col']||{}).v==='c_plan',
      JSON.stringify(A.building.values));
@@ -174,7 +189,7 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 // ── asked once: the second click is about the value ───────────────────────
 {
   const A=build([PLAN,DO]);
-  A.pickField(EV,'t_status'); A.setStatusSource('t_status',1);   // שלב תכנון
+  A.pickField(EV,'t_status'); A.setStatusSource('t_status',SRC(A,'שלב תכנון'));
   A.pickField(EV,'t_status');
   ck('a blank already told which status goes straight to the values',
      !last().includes('על איזה סטטוס'), last());
@@ -186,9 +201,9 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 // ── two columns sharing a label stay apart ────────────────────────────────
 {
   const A=build([PLAN,DO]);
-  A.pickField(EV,'t_status'); A.setStatusSource('t_status',1);   // שלב תכנון
+  A.pickField(EV,'t_status'); A.setStatusSource('t_status',SRC(A,'שלב תכנון'));
   A.pickField(EV,'t_status'); A.setField('t_status',1);          // אושר → p2
-  A.pickField(EV,'t_status_col'); A.setStatusSource('t_status',2); // שלב ביצוע
+  A.pickField(EV,'t_status_col'); A.setStatusSource('t_status',SRC(A,'שלב ביצוע'));
   ck('changing the column drops the value chosen for the previous one',
      A.building.values['t_status']===undefined, JSON.stringify(A.building.values));
   A.pickField(EV,'t_status'); A.setField('t_status',0);          // אושר → d1
@@ -199,8 +214,8 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 // ── back to the board's own status ────────────────────────────────────────
 {
   const A=build([PLAN]);
-  A.pickField(EV,'t_status'); A.setStatusSource('t_status',1);
-  A.pickField(EV,'t_status_col'); A.setStatusSource('t_status',0); // הסטטוס של הלוח
+  A.pickField(EV,'t_status'); A.setStatusSource('t_status',SRC(A,'שלב תכנון'));
+  A.pickField(EV,'t_status_col'); A.setStatusSource('t_status',SRC(A,'הסטטוס של הלוח'));
   ck('choosing the board\'s own status names no column',
      A.building.values['t_status_col'].v==='', JSON.stringify(A.building.values));
   ck('...and the sentence is the built-in one again',
@@ -214,7 +229,7 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 // ── what reaches the server ───────────────────────────────────────────────
 {
   const A=build([PLAN]);
-  A.pickField(EV,'t_status'); A.setStatusSource('t_status',1);
+  A.pickField(EV,'t_status'); A.setStatusSource('t_status',SRC(A,'שלב תכנון'));
   A.pickField(EV,'t_status'); A.setField('t_status',0);          // הוגש → p1
   await A.save(false);
   ck('the column is sent beside the value',
@@ -224,7 +239,7 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 }
 {
   const A=build([PLAN]);
-  A.pickField(EV,'t_status'); A.setStatusSource('t_status',0);   // the board's own
+  A.pickField(EV,'t_status'); A.setStatusSource('t_status',SRC(A,'הסטטוס של הלוח'));
   A.pickField(EV,'t_status'); A.setField('t_status',0);          // הושלם
   await A.save(false);
   ck('and an empty one is not sent at all — empty IS the board\'s own status',
@@ -243,7 +258,7 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
   A.addAct(i);
   A.pickActValue(EV,0,'status');
   ck('an extra action asks which status too', last().includes('על איזה סטטוס'), last());
-  A.setActStatusSource(0,'status',2);                            // שלב ביצוע
+  A.setActStatusSource(0,'status',SRC(A,'שלב ביצוע'));
   A.pickActValue(EV,0,'status');
   ck("...then offers that column's options",
      last().includes('אושר') && !last().includes('בתהליך'), last());
@@ -260,21 +275,26 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 
 // ── a status on BOTH sides: four readings of one sentence ────────────────
 {
-  const pick=(A,key,srcIdx,valIdx)=>{
-    A.pickField(EV,key); A.setStatusSource(key,srcIdx);
+  /* `src` is the source's NAME. It used to be its position, which made every
+     case below depend on the order of a list that is not what any of them is
+     about — and the list grew: עדיפות is a board-defined vocabulary like any
+     other and is offered as a source of its own now. */
+  const pick=(A,key,src,valIdx)=>{
+    A.pickField(EV,key); A.setStatusSource(key,SRC(A,src));
     A.pickField(EV,key); A.setField(key,valIdx);
   };
+  const OWN='הסטטוס של הלוח';
   {
     const A=build([PLAN,DO]); A.pick('status_set_status');
-    pick(A,'t_status',0,0); pick(A,'a_status',0,1);
+    pick(A,'t_status',OWN,0); pick(A,'a_status',OWN,1);
     const h=A.buildHTML();
     ck('neither side names a column — the sentence is the built-in one',
        h.includes('כאשר הסטטוס משתנה') && h.includes('שנה את הסטטוס'), '');
   }
   {
     const A=build([PLAN,DO]); A.pick('status_set_status');
-    pick(A,'t_status',0,0);                    // the board's own status
-    pick(A,'a_status',2,0);                    // → שלב ביצוע
+    pick(A,'t_status',OWN,0);                  // the board's own status
+    pick(A,'a_status','שלב ביצוע',0);
     const h=A.buildHTML();
     ck('a column on the ACTION side only leaves the trigger half alone',
        h.includes('כאשר הסטטוס משתנה') && !h.includes('שנה את הסטטוס')
@@ -284,8 +304,8 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
   }
   {
     const A=build([PLAN,DO]); A.pick('status_set_status');
-    pick(A,'t_status',1,1);                    // שלב תכנון → אושר
-    pick(A,'a_status',0,0);                    // the board's own status
+    pick(A,'t_status','שלב תכנון',1);          // → אושר
+    pick(A,'a_status',OWN,0);                  // the board's own status
     const h=A.buildHTML();
     ck('a column on the TRIGGER side only leaves the action half alone',
        !h.includes('כאשר הסטטוס משתנה') && h.includes('שנה את הסטטוס')
@@ -293,8 +313,8 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
   }
   {
     const A=build([PLAN,DO]); A.pick('status_set_status');
-    pick(A,'t_status',1,1);                    // שלב תכנון → אושר
-    pick(A,'a_status',2,0);                    // שלב ביצוע → אושר
+    pick(A,'t_status','שלב תכנון',1);          // → אושר
+    pick(A,'a_status','שלב ביצוע',0);          // → אושר
     const h=A.buildHTML();
     ck('and one column on each side reads about both',
        h.includes('data-k="t_status_col"') && h.includes('data-k="a_status_col"')

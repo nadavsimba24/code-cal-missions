@@ -58,6 +58,45 @@ MAX_CONDITIONS = 3
 # copy of that table here is how the two would come to disagree.
 COLUMN_CONDITIONS = ("column_is", "column_is_not")
 
+# ── the other side of the comparison, when it is a column too ───────────────
+# "רק אם «תאריך סיום» לפני «תאריך התחלה»" — the question somebody arrives with
+# as soon as the board holds two columns that mean something to each other, and
+# which a literal value cannot ask: the answer is not a date, it is whatever
+# the OTHER column happens to say on that item.
+#
+# So a side of a column condition is either a literal, as it has always been,
+# or a reference to a second column read off the SAME item at the moment the
+# rule runs:
+#
+#     {"col": "<column id>", "type": "<the column's own type>"}
+#
+# Deliberately the same shape as the left-hand side. Both ends of a comparison
+# are the same sort of thing, and somebody reading the stored rule should not
+# have to learn two spellings of "a column". It carries its type for the same
+# reason the left side does: a rule whose column was deleted or changed type
+# has to stay legible enough to fix.
+#
+# Both ends must be the same KIND. "is this date bigger than this person" is
+# not a narrower rule, it is a rule that can never hold, and this module
+# refuses those where they are written rather than skipping them for ever
+# afterwards. A kind whose questions take no value at all — a checkbox, a
+# connect column — has no right-hand side to put a column in, and is absent
+# from this list for that reason and not by oversight.
+COMPARE_KINDS = ("text", "number", "date", "status", "people")
+
+
+def column_ref(v):
+    """(column id, declared type) when this side of a condition names a column,
+    and None when it is an ordinary value.
+
+    A literal is a string, a number, a date or a person's id; nothing but a
+    reference is ever stored as a dict, so the shape IS the question.
+    """
+    if isinstance(v, dict) and str(v.get("col") or "").strip():
+        return str(v["col"]).strip(), str(v.get("type") or "").strip()
+    return None
+
+
 # ── the field matrix ────────────────────────────────────────────────────────
 # What each kind of column may be in a rule: something that sets it off,
 # something it asks about, something it writes — and the rule that governs it.
@@ -186,6 +225,11 @@ def capabilities():
         "operator_labels": dict(OPS_HE),
         "operators_without_value": list(OPS_NO_VALUE),
         "operators_with_two_values": list(OPS_TWO_VALUES),
+        # the kinds of column whose value may be a second COLUMN rather than a
+        # fixed value. Served rather than assumed by the screen, for the same
+        # reason the rest of this is: a comparison the engine would refuse must
+        # not be offered as a choice somebody can make.
+        "compare_to_column": list(COMPARE_KINDS),
         "group_operators": list(CONDITION_GROUP_OPS),
         "max_conditions": MAX_CONDITIONS,
         "mirror_match": list(MIRROR_MATCH),
@@ -493,19 +537,44 @@ def column_condition_value(raw):
                 out["value"] = None
         return out, None
     if op in OPS_TWO_VALUES:
-        a, aerr = _cond_one_value(kind, raw.get("value"))
+        a, aerr = _cond_side(kind, raw.get("value"), col)
         if aerr:
             return None, aerr
-        b, berr = _cond_one_value(kind, raw.get("value2"))
+        b, berr = _cond_side(kind, raw.get("value2"), col)
         if berr:
             return None, berr
         out["value"], out["value2"] = a, b
         return out, None
-    v, err = _cond_one_value(kind, raw.get("value"))
+    v, err = _cond_side(kind, raw.get("value"), col)
     if err:
         return None, err
     out["value"] = v
     return out, None
+
+
+def _cond_side(kind, v, own_col):
+    """(value, error) for one side of a column condition — a literal, or the
+    column the comparison is to read instead.
+
+    The checks a reference is held to are the ones that can be made without a
+    board in front of us: the kinds have to match, and a column cannot be
+    compared with itself — "העמודה «תקציב» שווה לעמודה «תקציב»" is true of
+    every item there has ever been, which is the rule without the condition.
+    That the column still EXISTS is asked again every time the rule runs, the
+    same way the left-hand column is, because a column can be deleted long
+    after the rule was written.
+    """
+    ref = column_ref(v)
+    if ref is None:
+        return _cond_one_value(kind, v)
+    col, col_type = ref
+    if kind not in COMPARE_KINDS:
+        return None, "לא ניתן להשוות עמודה מסוג זה לעמודה אחרת"
+    if column_kind(col_type) != kind:
+        return None, "אפשר להשוות רק לעמודה מאותו סוג"
+    if col == str(own_col):
+        return None, "אי אפשר להשוות עמודה לעצמה"
+    return {"col": col, "type": col_type}, None
 
 
 # What a kind is asked with when nothing says — the question people mean by
@@ -637,9 +706,16 @@ def _impossible(conds):
     # Only the plain "is this value" questions can contradict each other this
     # way. An operator that takes no value, or two of them, is a different
     # question about the same column and two of those are an ordinary pair.
+    # A side that names a COLUMN is left out of this too, and for the same
+    # reason the multi-select is: "התקציב הוא 1000" and "התקציב הוא הערך
+    # שבעמודה «תקציב מאושר»" are not two values fighting over one column —
+    # they are both true of an item whose approved budget is 1000. What the
+    # second one holds is not known until the rule runs, so nothing here can
+    # call the pair impossible.
     def _plain(c, kind):
         return (c["kind"] == kind and c["value"].get("op", "eq") == "eq"
-                and "value" in c["value"] and c["value"].get("value2") is None)
+                and "value" in c["value"] and c["value"].get("value2") is None
+                and column_ref(c["value"].get("value")) is None)
 
     for col in {c["value"]["col"] for c in conds if c["kind"] in COLUMN_CONDITIONS}:
         vals = {str(c["value"]["value"]) for c in conds
@@ -694,6 +770,72 @@ def status_col_key(field_key):
 def status_col_of(values, field_key):
     """The column this status blank names, or "" for the board's own status."""
     return str((values or {}).get(status_col_key(field_key)) or "").strip()
+
+
+# ── …and which PEOPLE column, by exactly the same bargain ───────────────────
+# A board has one built-in אחראים and it may also carry columns of type
+# people: מנהל פרויקט, רכזת, מפקח. "שייך את רות" could only ever mean the
+# built-in one, so a board that runs its work through a מנהל פרויקט column
+# could not be automated on it at all — only through the generic "עדכן את
+# העמודה", which says nothing about assigning and reads as a cell being
+# overwritten rather than as somebody being put on the job.
+#
+# Deliberately the same mechanism as the status column above and not a second
+# one: the column travels beside the value under a derived key, an absent one
+# means the board's own field, and nothing already stored has to be rewritten.
+# A half of a sentence is never both — a trigger is "כאשר הסטטוס משתנה" or
+# "כאשר משויך אדם", never the two at once — so the two tables are read as one
+# below and the halves cannot collide.
+PEOPLE_COL_TEXT = {
+    "person_assigned":   "כאשר משויך אדם ל{col}",
+    "person_unassigned": "כאשר מוסר אדם מ{col}",
+    "assign_person":     "שייך את {person} ל{col}",
+    "unassign_person":   "הסר את {person} מ{col}",
+}
+
+# Which config key holds the column, per side. The triggers have no person
+# blank of their own to derive it from — "כאשר משויך אדם לפריט" never took a
+# value — so the key is named here rather than computed off a field that does
+# not exist.
+PEOPLE_COL_KEY = {"t": "t_person_col", "a": "a_person_col"}
+
+
+def people_col_of(values, side):
+    """The people column this half names, or "" for the board's own אחראים."""
+    return str((values or {}).get(PEOPLE_COL_KEY[side]) or "").strip()
+
+
+# One table, because one half of a sentence can name at most one column and
+# every reader of these wants the same two answers: is there an alternative
+# wording for this half, and which key holds the column it needs.
+COL_TEXT = {**STATUS_COL_TEXT, **PEOPLE_COL_TEXT}
+# …and what KIND of column each half may name, which is what the picker needs
+# in order to offer the right list. "" for a half that names none.
+COL_KINDS = {k: "status" for k in STATUS_COL_TEXT}
+COL_KINDS.update({k: "people" for k in PEOPLE_COL_TEXT})
+
+
+def col_kind_of(r, side):
+    """"status", "people" or "" — which column list this half of the recipe
+    offers. `side` is "t" or "a"."""
+    return COL_KINDS.get(r["trigger"] if side == "t" else r["action"], "")
+
+
+def col_key_of(r, side):
+    """The config key the column for this half is kept under, or "" when the
+    half names none."""
+    kind = col_kind_of(r, side)
+    if kind == "people":
+        return PEOPLE_COL_KEY[side]
+    if kind == "status":
+        return status_col_key(side + "_status")
+    return ""
+
+
+def col_of(r, config, side):
+    """What this half of the rule names, or "" for the board's own field."""
+    key = col_key_of(r, side)
+    return str((config or {}).get(key) or "").strip() if key else ""
 
 
 TRIGGERS = {
@@ -1079,7 +1221,7 @@ def actions_catalog():
     return [{"key": k, "label": plain(text), "text": text,
              # how it reads once it names a status column of its own; "" when
              # it cannot name one — see STATUS_COL_TEXT
-             "text_col": STATUS_COL_TEXT.get(k, ""),
+             "text_col": COL_TEXT.get(k, ""),
              "fields": action_fields(k)} for k, text in ACTIONS.items()]
 
 
@@ -1092,8 +1234,8 @@ def action_text(key, shown=None):
     action has — see STATUS_COL_TEXT. When it is there the action is said about
     that column instead of about the board's own status.
     """
-    col = (shown or {}).get("status_col")
-    text = (STATUS_COL_TEXT[key] if col not in (None, "") and key in STATUS_COL_TEXT
+    col = (shown or {}).get("status_col") or (shown or {}).get("person_col")
+    text = (COL_TEXT[key] if col not in (None, "") and key in COL_TEXT
             else ACTIONS.get(key, ""))
     for f in action_fields(key):
         v = (shown or {}).get(f["key"])
@@ -1233,6 +1375,13 @@ def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
         if given is not None and not isinstance(given, dict):
             return None, "פעולות לא תקינות"
         values = {}
+        # …and the people column, which this action carries under a bare key
+        # rather than off a field of its own — the same bargain the status
+        # column below strikes, and an empty one is the board's own אחראים.
+        if key in PEOPLE_COL_TEXT:
+            _pc = str((given or {}).get("person_col") or "").strip()
+            if _pc:
+                values["person_col"] = _pc
         for f in action_fields(key):
             if f["type"] == "status":
                 sc = status_col_of(given, f["key"])
@@ -1266,6 +1415,13 @@ def _primary_values(recipe_id, config):
     cfg = config or {}
     out = {f["key"][2:]: cfg.get(f["key"])
            for f in r.get("fields", []) if f["key"].startswith("a_")}
+    # …and the people column the action names, under the bare key an extra
+    # action would use for it, so the engine reads one key whichever half of
+    # the rule the action came from
+    if r.get("action") and col_kind_of(r, "a") == "people":
+        _pc = people_col_of(cfg, "a")
+        if _pc:
+            out["person_col"] = _pc
     # the status column rides beside the status under a derived key the field
     # list does not carry, and the duplicate-action check below reads it off
     # these values — without it two actions on two different columns would
@@ -1530,6 +1686,77 @@ RECIPES = [
                 _f("a_fields", "fields", "השדות להעתקה")]},
 ]
 
+# ── עדיפות היא עמודה מסוג סטטוס, ובקטלוג היא לא נהגה ככזו ──────────────────
+# FIELD_MATRIX has said so all along — priority's `kind` is "status", and the
+# filter engine, the conditions and the operators have all treated it that way.
+# The CATALOG had not: "כאשר הסטטוס משתנה" could be paired with twelve actions
+# and "כאשר העדיפות משתנה" with two; "שנה את הסטטוס" was reachable from
+# thirteen triggers and "שנה את העדיפות" from five.
+#
+# Nothing in the engine was missing. The pairings had simply never been written
+# down, so ordinary rules — "כאשר העדיפות משתנה ל«דחוף», העבר לקבוצה «בטיפול
+# מיידי»" — could not be built at all, and the reason was invisible: the
+# builder offers what the catalog holds, so an absent pairing looks like a
+# product decision rather than a list nobody finished.
+#
+# Derived rather than written out, for the same reason the action-field
+# injection below is: eighteen near-identical literals are eighteen chances to
+# miss one, and the one that is missed is a rule somebody cannot write.
+#
+# Two pairings are deliberately NOT derived:
+#   · priority → priority, which is a rule that answers itself. The status
+#     twin of it exists only because a board may have several status COLUMNS
+#     and "שנה את «שלב» כאשר «סטטוס אישור» משתנה" is two different columns.
+#     There is one priority, so the same shape is a self-loop.
+#   · anything already carrying a priority CONDITION, where the trigger twin
+#     would read "כאשר העדיפות משתנה ל«דחוף», רק אם העדיפות היא «דחוף»".
+def _priority_twin(r, side):
+    """A copy of this recipe with one half swapped from status to priority."""
+    old, new = ("t_status", "t_priority") if side == "t" else ("a_status", "a_priority")
+    fields = []
+    for f in r["fields"]:
+        if f["key"] == old and f["type"] == "status":
+            fields.append(_f(new, "priority", "עדיפות"))
+        else:
+            fields.append(dict(f))
+    out = dict(r, fields=fields)
+    if side == "t":
+        out["trigger"] = "priority_changes_to"
+    else:
+        out["action"] = "set_priority"
+    out["id"] = r["id"].replace("status", "priority", 1) if side == "t" \
+        else r["id"].rsplit("set_status", 1)[0] + "set_priority"
+    return out
+
+
+def _derive_priority_recipes(rs):
+    have = {(r["trigger"], r["action"]) for r in rs}
+    ids = {r["id"] for r in rs}
+    out = []
+    for r in rs:
+        for side in ("t", "a"):
+            if side == "t" and r["trigger"] != "status_changes_to":
+                continue
+            if side == "a" and r["action"] != "set_status":
+                continue
+            # the linked-item status is another board's field, and a trigger
+            # for "a linked item's priority changed" does not exist
+            if side == "t" and any(c.startswith("priority") for c in r.get("conds") or []):
+                continue
+            twin = _priority_twin(r, side)
+            pair = (twin["trigger"], twin["action"])
+            if pair in have or pair == ("priority_changes_to", "set_priority"):
+                continue
+            if twin["id"] in ids:
+                continue
+            have.add(pair)
+            ids.add(twin["id"])
+            out.append(twin)
+    return out
+
+
+RECIPES.extend(_derive_priority_recipes(RECIPES))
+
 # Every recipe declares the blanks its ACTION has, named with the a_ prefix the
 # sentence uses. Derived here rather than repeated in ninety literals: an action
 # that gains a blank — "התראה" is the first in a long while — would otherwise
@@ -1728,18 +1955,18 @@ def _sentence_halves(r, config=None, on_trigger=None, on_action=None):
     which has no config and has to serve both readings of each half.
     """
     trig = TRIGGERS[r["trigger"]]
-    want = status_col_of(config, "t_status") if on_trigger is None else on_trigger
-    if r["trigger"] in STATUS_COL_TEXT and want:
+    want = col_of(r, config, "t") if on_trigger is None else on_trigger
+    if r["trigger"] in COL_TEXT and want:
         # "{col}" is spelled out rather than run through the loop below: the
-        # column's key is derived from the status blank's (t_status_col), not
-        # from the blank's own name
-        trig = STATUS_COL_TEXT[r["trigger"]].replace("{col}", "{t_status_col}")
+        # column's key is derived (t_status_col, t_person_col) rather than
+        # being a blank of the recipe's own
+        trig = COL_TEXT[r["trigger"]].replace("{col}", "{" + col_key_of(r, "t") + "}")
     for k in ("status", "priority", "group", "column", "days"):
         trig = trig.replace("{" + k + "}", "{t_" + k + "}")
     act = ACTIONS[r["action"]]
-    want = status_col_of(config, "a_status") if on_action is None else on_action
-    if r["action"] in STATUS_COL_TEXT and want:
-        act = STATUS_COL_TEXT[r["action"]].replace("{col}", "{a_status_col}")
+    want = col_of(r, config, "a") if on_action is None else on_action
+    if r["action"] in COL_TEXT and want:
+        act = COL_TEXT[r["action"]].replace("{col}", "{" + col_key_of(r, "a") + "}")
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
               "fields", "target_group", "column", "days", "map", "targets", "on_missing",
               "notice"):
@@ -1881,11 +2108,23 @@ def _sentence_parts(r):
     if tail:
         more = " · " + " · ".join("{" + k + "}" for k in tail)
         act, acol = act + more, acol + more
-    can = lambda k: any(f["key"] == k and f["type"] == "status"
-                        and _takes_status_col(r, k) for f in r["fields"])
+    # A half offers the choice when it has an alternative wording for it. For
+    # a status that also takes a status BLANK to hang the column off; a people
+    # half needs no blank — "כאשר משויך אדם לפריט" never took a value — which
+    # is why this asks the recipe and not the field list.
+    def can(side):
+        kind = col_kind_of(r, side)
+        if kind == "status":
+            return any(f["key"] == side + "_status" and f["type"] == "status"
+                       for f in r["fields"])
+        return kind == "people"
     return {"trigger": trig, "action": act,
-            "trigger_col": tcol if can("t_status") else "",
-            "action_col": acol if can("a_status") else ""}
+            "trigger_col": tcol if can("t") else "",
+            "action_col": acol if can("a") else "",
+            # which list the picker offers for each half — "status", "people"
+            # or "" for a half that names no column at all
+            "trigger_col_kind": col_kind_of(r, "t") if can("t") else "",
+            "action_col_kind": col_kind_of(r, "a") if can("a") else ""}
 
 
 def catalog():
@@ -1927,6 +2166,16 @@ def validate_partial(recipe_id, config):
     if not isinstance(config, dict):
         return None, "הגדרות לא תקינות"
     clean = {}
+    # The PEOPLE column a half names has no blank to hang off — "כאשר משויך
+    # אדם לפריט" never took a value — so it is carried before the loop, which
+    # walks the recipe's own fields and knows nothing about `t_person_col`.
+    # Empty is not kept: that is the board's own אחראים, which is what silence
+    # has always meant and what every rule written before this holds.
+    for _side in ("t", "a"):
+        if col_kind_of(r, _side) == "people":
+            _pc = people_col_of(config, _side)
+            if _pc:
+                clean[PEOPLE_COL_KEY[_side]] = _pc
     for f in r["fields"]:
         # The status column travels beside the value and not inside it, so it
         # has to be carried here by hand — the loop walks the recipe's own
@@ -2042,6 +2291,14 @@ def validate(recipe_id, config):
     if not isinstance(config, dict):
         return None, "הגדרות לא תקינות"
     clean = {}
+    # …and the people column, which has no blank of the recipe's own to hang
+    # off. Same bargain as the status column below: beside the value, never
+    # inside it, and an empty one means the board's own אחראים.
+    for _side in ("t", "a"):
+        if col_kind_of(r, _side) == "people":
+            _pc = people_col_of(config, _side)
+            if _pc:
+                clean[PEOPLE_COL_KEY[_side]] = _pc
     for f in r["fields"]:
         # see clean(): the column a status blank names rides beside it, under a
         # derived key the recipe's own field list does not mention

@@ -6,6 +6,10 @@ a slow client from hurting the server, and the fact that the stream itself is
 closed to anonymous callers.
 """
 import asyncio
+import json
+import pathlib
+import shutil
+import subprocess
 
 import pytest
 from sqlalchemy.orm import Session
@@ -13,6 +17,8 @@ from sqlalchemy.orm import Session
 import main as cityos_main
 from events import Bus
 from models import Task
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _mk(client, admin_id, title="פריט חי"):
@@ -152,3 +158,80 @@ def test_updating_an_item_announces_it(client, admin_id):
     assert set(ev) == {"seq", "type", "board_id", "task_id", "actor_id"}
     with Session(cityos_main.engine) as db:
         assert db.query(Task).filter(Task.id == tid).first().title == "שם חדש"
+
+
+# ── the wire ──────────────────────────────────────────────────────────────
+# Everything above this line tests the bus and the refetch — which half of
+# the feature works was never in doubt. What nothing tested was the four
+# lines that go down the socket, and that is where live updates were broken:
+# the stream named every event (`event: task.changed`), and a named frame is
+# not delivered to EventSource.onmessage, which is the only handler the
+# browser has. The bus fanned out correctly, the outbox drained correctly,
+# the frames arrived correctly, and the client discarded every one of them.
+
+def test_a_frame_is_not_named_so_onmessage_receives_it():
+    """`onmessage` receives only frames of the default type "message". A frame
+    carrying `event: automation.ran` goes to addEventListener and nowhere
+    else — so naming them made the whole stream invisible to this client."""
+    frame = cityos_main._sse_frame(
+        {"seq": 7, "type": "automation.ran", "board_id": 3, "task_id": 9})
+    assert "\nevent:" not in frame and not frame.startswith("event:"), frame
+    # …and the type is still there, in the payload the client dispatches on
+    body = [ln for ln in frame.split("\n") if ln.startswith("data: ")]
+    assert len(body) == 1, frame
+    assert json.loads(body[0][6:])["type"] == "automation.ran"
+    # the id line stays: it is what a reconnect sends back as Last-Event-ID
+    assert frame.startswith("id: 7\n"), frame
+    assert frame.endswith("\n\n"), "a frame that does not end blank is never dispatched"
+
+
+def test_the_browser_dispatches_on_the_type_inside_the_payload():
+    """The client reads ev.type out of the JSON — which is what makes the
+    `event:` line unnecessary, and is why dropping it costs nothing."""
+    src = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    i = src.index("  onEvent(ev){")
+    body = src[i:src.index("\n  },", i)]
+    assert "ev.type" in body, body
+    # and the stream is still wired to onmessage alone, which is the whole
+    # reason the frame must not be named
+    assert "es.onmessage=" in src
+    assert "es.addEventListener(" not in src, \
+        "a per-type listener was added — then the frame may be named again"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_a_real_eventsource_receives_this_frame(tmp_path):
+    """The claim above is about a browser API, so it is checked against one
+    rather than against the specification as remembered.
+
+    Node's EventSource is the same WHATWG implementation. It serves the real
+    frame this module builds, next to a named one, and reports which of them
+    reached onmessage.
+    """
+    out = subprocess.run(["node", "-e", "console.log(typeof EventSource)"],
+                         capture_output=True, text=True)
+    flag = [] if out.stdout.strip() == "function" else ["--experimental-eventsource"]
+    named = "id: 1\nevent: automation.ran\ndata: {\"type\":\"named\"}\n\n"
+    ours = cityos_main._sse_frame({"seq": 2, "type": "automation.ran"})
+    script = tmp_path / "sse.mjs"
+    script.write_text("""
+import http from 'http';
+const NAMED = %s, OURS = %s;
+const srv = http.createServer((q, s) => {
+  s.writeHead(200, {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache'});
+  s.write(': hi\\n\\n'); s.write(NAMED); s.write(OURS);
+});
+await new Promise(r => srv.listen(0, r));
+const es = new EventSource('http://127.0.0.1:' + srv.address().port + '/');
+const seen = [];
+es.onmessage = e => seen.push(JSON.parse(e.data).type);
+await new Promise(r => setTimeout(r, 500));
+es.close(); srv.close();
+console.log(JSON.stringify(seen));
+""" % (json.dumps(named), json.dumps(ours)), encoding="utf-8")
+    r = subprocess.run(["node", *flag, str(script)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = json.loads(r.stdout.strip().splitlines()[-1])
+    assert seen == ["automation.ran"], (
+        f"onmessage saw {seen} — the named frame must be invisible to it and "
+        "ours must not be")

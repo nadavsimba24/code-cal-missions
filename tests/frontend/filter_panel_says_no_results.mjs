@@ -28,15 +28,16 @@ function grab(name){
 const TASKS=[{id:1,title:'א',status:'done',assignees:[],custom_fields:{}},
              {id:2,title:'ב',status:'done',assignees:[],custom_fields:{}}];
 
-function world({tasks=TASKS, matched=null, views=null, paged={on:false,total:0}}={}){
+function world({tasks=TASKS, matched=null, views=null,
+                paged={on:false,matched:0,pending:false}, mode='client'}={}){
   const st={board:{id:1,name:'לוח',tasks:tasks.slice(),columns:[],groups:[],
                    my_role:'admin',col_perms:{},col_hidden:[]},
             users:[], me:{id:1}, filters:{}};
-  const fns = new Function('st','Paged','Views','applyFilters','esc',
-    grab('cutMatchesNothing')+'\n'+grab('clearCutAction')+'\n'
-    +';return {cutMatchesNothing,clearCutAction};')(
+  const fns = new Function('st','Paged','Views','applyFilters','esc','filterMode',
+    grab('cutMatchesNothing')+'\n'+grab('searchPending')+'\n'+grab('clearCutAction')+'\n'
+    +';return {cutMatchesNothing,searchPending,clearCutAction};')(
       st, paged, views, rows=>(matched===null?rows:rows.slice(0,matched)),
-      x=>String(x==null?'':x));
+      x=>String(x==null?'':x), ()=>mode);
   return [fns, st];
 }
 
@@ -60,12 +61,48 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
   ck('an empty board is not a failed filter', f.cutMatchesNothing()===false);
 }
 {
-  // on a server-paged board the count is the server's, not the page's
-  const [f]=world({paged:{on:true,total:0}, matched:null});
-  ck('a paged board with no total answers nothing', f.cutMatchesNothing()===true);
-  const [g]=world({paged:{on:true,total:7}, matched:0});
-  ck('...and one with a total does not, whatever this page holds',
+  /* On a server-paged board the count is the server's, not the page's — and
+     it is the MATCHED count. `total` is how many rows the board has, which on
+     a paged board is never zero, so reading it here meant the panel could
+     never say "אין תוצאות" at exactly the board size where it was the only
+     thing standing between somebody and a blank strip of columns. */
+  const [f]=world({paged:{on:true,matched:0,total:9000,pending:false}, matched:null});
+  ck('a paged board whose cut matched nothing answers nothing',
+     f.cutMatchesNothing()===true);
+  const [g]=world({paged:{on:true,matched:7,total:9000,pending:false}, matched:0});
+  ck('...and one whose cut matched something does not, whatever this page holds',
      g.cutMatchesNothing()===false);
+}
+
+// ── a search still running has not found nothing ──────────────────────────
+/* Past the client threshold the server's answer IS what the board shows, and
+   it takes a round trip to arrive. In that gap the only thing left to filter
+   is the one page of rows this browser happens to hold, which answers with
+   nothing on a board of fifteen thousand items — so the panel said "אין
+   תוצאות לסינון הנוכחי" over a search that had not been run yet, and then
+   filled with rows seconds later. A question in flight is not an answer. */
+{
+  const [f]=world({paged:{on:false,matched:0,pending:true}, mode:'server', matched:0});
+  ck('a search the server has not answered yet is not "no results"',
+     f.cutMatchesNothing()===false);
+  ck('...and the board knows it is still searching', f.searchPending()===true);
+}
+{
+  const [f]=world({paged:{on:true,matched:0,pending:true}, mode:'server', matched:null});
+  ck('...nor is a refined search over a board that already has an answer',
+     f.cutMatchesNothing()===false);
+}
+{
+  const [f]=world({paged:{on:true,matched:0,pending:false}, mode:'server', matched:null});
+  ck('...but once the answer is in, nothing found is nothing found',
+     f.cutMatchesNothing()===true);
+}
+{
+  // below the threshold there is no round trip to wait for: the browser
+  // filters what it holds and the answer is on the keystroke
+  const [f]=world({paged:{on:false,matched:0,pending:true}, mode:'client', matched:0});
+  ck('a small board never waits — it answers on the keystroke',
+     f.searchPending()===false && f.cutMatchesNothing()===true);
 }
 
 // ── the way out is the same offer the board makes ─────────────────────────

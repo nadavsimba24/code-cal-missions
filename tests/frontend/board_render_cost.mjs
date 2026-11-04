@@ -118,6 +118,11 @@ const env3={
   st:{board:{tasks:new Array(546).fill(0)}},
   groupsOf:()=>GROUPS,
   noMatchHTML:()=>'NOMATCH',
+  // a search still running on the server is not "no results" — see vTable.
+  // This board is not waiting for one.
+  searchPending:()=>false,
+  searchingHTML:()=>'SEARCHING',
+  Paged:{on:false},
   groupHTML:g=>`<div class="group" data-g="${g.id}"></div>`,
   groupEst:g=>g.tasks.length*47+160,
   addGroupBtnHTML:()=>'<button class="add-group-btn"></button>',

@@ -39,8 +39,10 @@ def test_there_is_exactly_one_column_picker():
     condition and the blanks came to disagree in the first place."""
     src = _src()
     assert src.count("colPickOpen(anchor,cols,onPick,empty){") == 1
-    # and all three callers go through it
-    assert src.count("this.colPickOpen(") == 4, \
+    # and every caller goes through it: a condition's column, a blank in the
+    # sentence, a blank in an extra action, the way back out of the kind menu,
+    # and — since conditions may compare two columns — the condition's VALUE
+    assert src.count("this.colPickOpen(") == 5, \
         "a caller was added or removed without this test being looked at"
 
 

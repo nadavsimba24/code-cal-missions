@@ -33,9 +33,14 @@ const applyFilters=new Function(// applyFilters now also runs the advanced condi
 // build none, so it counts nothing and matches everything
   // Paged: on a large board the rows on screen are the server's answer.
 // These cases are a small board, so it is simply off.
+  // searchWordsOf: the box reads the board's own cells too — these cases carry
+// no columns, so it comes back to the title and the description
   'st','linkNamesOf','linkIdsOf','statusKeyOf','priorityKeyOf','advCount','advMatch','Paged',
-  IS_ITEM_ID+'\n'+grab('applyFilters')+'\nreturn applyFilters;')(
-  st, t=>t.linkNames||[], ()=>[], t=>t.status, t=>t.priority, ()=>0, ()=>true, {on:false,rows:[]});
+  'customColumns',
+  IS_ITEM_ID+'\n'+grab('cellWords')+'\n'+grab('fdatePlain')+'\n'+grab('cellSearchWords')+'\n'+grab('searchWordsOf')+'\n'+grab('searchRow')+'\n'
+  +grab('applyFilters')+'\nreturn applyFilters;')(
+  st, t=>t.linkNames||[], ()=>[], t=>t.status, t=>t.priority, ()=>0, ()=>true, {on:false,rows:[]},
+  ()=>[]);
 
 const BOARD=[
   {id:1, title:'תיקון מדרכה', item_uid:'20250611473'},

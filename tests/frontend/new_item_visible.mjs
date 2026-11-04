@@ -36,7 +36,11 @@ async function add({filters, group=7}){
     // applyFilters and filtersActive now also consult the advanced condition
     // tree; these cases build none, so it counts nothing and matches all
     'advCount','advMatch','Paged',
-    grab('applyFilters')+grab('filtersActive')+grab('openNewItem')+'; return openNewItem;')(
+    // …and the search box reads the board's own cells now. This board carries
+    // no columns, so searchWordsOf comes back to the title and the description.
+    'customColumns',
+    grab('cellWords')+grab('fdatePlain')+grab('cellSearchWords')+grab('searchWordsOf')+grab('searchRow')
+    +grab('applyFilters')+grab('filtersActive')+grab('openNewItem')+'; return openNewItem;')(
     st,
     async(url,opt)=>{ log.posted=JSON.parse(opt.body); return made; },
     x=>JSON.stringify(x),
@@ -48,7 +52,7 @@ async function add({filters, group=7}){
     ()=>7,
     t=>t.status, t=>t.priority||'', ()=>[], ()=>[], {}, /^\d{3,}$/,
     (gid,shut)=>log.unfolded.push([gid,shut]),
-    ()=>0, ()=>true, {on:false,rows:[]});
+    ()=>0, ()=>true, {on:false,rows:[]}, ()=>[]);
   await fn(group);
   return {log, st, visible:st.board.tasks.length};
 }

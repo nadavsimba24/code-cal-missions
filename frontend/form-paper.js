@@ -32,11 +32,19 @@ const FormPaper = {
   /* A heading's level, as a size relative to the form's own. Three, named,
      for the same reason. */
   LEVELS: {1:'1.45em', 2:'1.18em', 3:'1em'},
-  /* The ten kinds of question the specification names. Anything else is a
-     board column a form can display and not one it can collect — see
-     inputHTML, which says so on the page rather than drawing a box that does
-     nothing. */
-  FILLABLE: ['text','long_text','number','status','dropdown',
+  /* The kinds of question the specification names. Anything else is a board
+     column a form can display and not one it can collect — see inputHTML,
+     which says so on the page rather than drawing a box that does nothing.
+
+     `priority` was missing from this list and from nothing else. The server
+     offers it as one of the five built-in fields the plan names, serves it
+     with the board's own priority vocabulary, and checks a submitted answer
+     against that vocabulary; the two places in this file that render a
+     vocabulary and validate against one both already name it beside
+     `status`. Only this list did not — so a priority question reached the
+     page and drew "שדה מסוג זה אינו נתמך במילוי טופס" over a question the
+     whole rest of the stack was ready to answer. */
+  FILLABLE: ['text','long_text','number','status','priority','dropdown',
              'checkbox','date','phone','email','files','people'],
 
   /* The product's own font stack and nothing else — Figtree for the Latin,

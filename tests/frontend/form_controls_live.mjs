@@ -161,6 +161,11 @@ const KINDS = [
   {type: 'long_text', el: 'textarea'},
   {type: 'number',    el: 'input',    attr: 'number'},
   {type: 'status',    el: 'select',   options: CHOICES},
+  /* A priority is a labelled, board-defined vocabulary — the same shape as a
+     status, and drawn by the same branch. It was missing from FILLABLE alone,
+     so the question reached the page and drew the refusal meant for a column
+     a form genuinely cannot collect. */
+  {type: 'priority',  el: 'select',   options: CHOICES},
   {type: 'dropdown',  el: 'multi',    options: CHOICES},
   {type: 'checkbox',  el: 'input',    attr: 'checkbox'},
   {type: 'date',      el: 'input',    attr: 'date'},
@@ -373,27 +378,36 @@ ck('…which the preview says out loud rather than drawing a dead picker',
 /* collect() is the other half of a usable control: a field that takes a
    value and does not give it back is a field that does not work either. */
 {
-  const vals = {1: 'שורה', 2: 'פסקה', 3: '7', 4: 'א', 6: true, 7: '2026-10-28',
-                8: '050-1234567', 9: 'a@b.co', 10: null};
-  const ticked = {5: [{value: 'ב'}], 11: [{value: '4'}]};
+  /* Keyed by the question's TYPE and resolved to its id, not written out as
+     numbers. The ids come from a KIND's position in the list, so a type added
+     in the middle used to renumber every answer after it and the stub went on
+     quietly handing the wrong value to the wrong question. */
+  const ID = t => DOC.components.find(c => c.type === t).id;
+  const by = {text: 'שורה', long_text: 'פסקה', number: '7', status: 'א',
+              priority: 'א', checkbox: true, date: '2026-10-28',
+              phone: '050-1234567', email: 'a@b.co', files: null};
+  const vals = {}; for (const t in by) vals[ID(t)] = by[t];
+  const ticked = {[ID('dropdown')]: [{value: 'ב'}], [ID('people')]: [{value: '4'}]};
+  const MULTI = [ID('dropdown'), ID('people')];
   const root = {querySelector(sel) {
     const id = +sel.replace('#fa-', '');
-    if (id === 5 || id === 11) return {
+    if (MULTI.indexOf(id) >= 0) return {
       classList: {contains: c => c === 'fv-multi'},
       querySelectorAll: () => ticked[id]};
-    if (id === 10) return {_tokens: [{token: 'tk'}]};
-    if (id === 6) return {checked: vals[6], classList: {contains: () => false}};
+    if (id === ID('files')) return {_tokens: [{token: 'tk'}]};
+    if (id === ID('checkbox')) return {checked: true,
+                                       classList: {contains: () => false}};
     return {value: vals[id] == null ? '' : vals[id], classList: {contains: () => false}};
   }};
   const got = FormPaper.collect(DOC, root);
   ck('every answered question comes back out of the form',
      Object.keys(got.answers).length === KINDS.length, JSON.stringify(got.answers));
-  ck('…a number as a number', got.answers['3'] === 7);
-  ck('…a ticked box as true, not as nothing', got.answers['6'] === true);
-  ck('…a multi select as its values', JSON.stringify(got.answers['5']) === '["ב"]');
-  ck('…a person as an id, which is a number', JSON.stringify(got.answers['11']) === '[4]');
+  ck('…a number as a number', got.answers[ID('number')] === 7);
+  ck('…a ticked box as true, not as nothing', got.answers[ID('checkbox')] === true);
+  ck('…a multi select as its values', JSON.stringify(got.answers[ID('dropdown')]) === '["ב"]');
+  ck('…a person as an id, which is a number', JSON.stringify(got.answers[ID('people')]) === '[4]');
   ck('…a file as the token the upload answered with',
-     JSON.stringify(got.answers['10']) === '["tk"]');
+     JSON.stringify(got.answers[ID('files')]) === '["tk"]');
   ck('…and nothing was refused', !got.bad.length && !got.missing.length,
      JSON.stringify(got.bad) + JSON.stringify(got.missing));
 }

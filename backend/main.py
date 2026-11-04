@@ -5666,6 +5666,145 @@ def preview_form_view(form_id: int, user_id: int = Depends(current_user_id)):
         return _form_public_json(db, f, b, user_id)
 
 
+def _cell_search_words(v):
+    """Every word a cell holds, flattened — the raw reading, before the column
+    says what kind of thing it is.
+
+    A cell is a JSON value whose shape depends on the column: a string for
+    text, a list of strings for a multi-select, {id,label,color} for a status
+    written by a form or by the monday import, {from,to} for a timeline. All
+    of them are things somebody typed into the board and can therefore expect
+    to find again, so this is deliberately generous about shape and narrow
+    about keys — an option's id and a colour are not words anybody searches
+    for, and matching them would answer a search for "e2" with a third of the
+    board.
+
+    A bool is absent on purpose and not by oversight: "true" is the stored
+    value of a ticked box and never the word anybody typed. What a checkbox
+    DOES answer to is in _searchable_words, where the column says so.
+    """
+    if isinstance(v, bool) or v is None or v == "" or v == [] or v == {}:
+        return []
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, (int, float)):
+        return [str(v)]
+    if isinstance(v, list):
+        out = []
+        for x in v:
+            out.extend(_cell_search_words(x))
+        return out
+    if isinstance(v, dict):
+        return [x for x in (v.get("label"), v.get("text"), v.get("name"),
+                            v.get("value"), v.get("address"), v.get("url"),
+                            v.get("from"), v.get("to"))
+                if isinstance(x, str) and x]
+    return []
+
+
+# A ticked box, in the word the board shows for it. Its own constant because
+# the browser has to say the same word — see the frontend's TICK_WORD.
+TICK_WORD = "מסומן"
+
+
+def _searchable_words(ctype, v, names, vocab=None):
+    """How one cell reads to somebody searching, given the kind of column it
+    is — (substring words, whole words).
+
+    Most cells read as what they store and come back in the first list, which
+    is matched the way a search box is expected to match: anywhere inside.
+    Four kinds do not read as what they store, and each one was a value
+    sitting in plain sight on the board that the search box could not find:
+
+      · PEOPLE stores user ids. Nobody searches "7"; they search "רות לוי".
+        The ids are REPLACED by the names rather than added to them — an id
+        left in the haystack is a row answering a search for a digit.
+      · a DATE stores 2026-11-04 and the board shows 04/11/2026. Both are
+        kept: the first is what somebody pastes out of a system, the second
+        is what they read off the screen and retype.
+      · a STATUS cell holds the option's LABEL when the grid wrote it and the
+        option's stable id when a form or the monday import did. The label is
+        the word; the id is resolved to it rather than matched raw.
+      · a CHECKBOX has no content at all. It answers to the word the board
+        shows for a tick — but as a WHOLE word, which is the second list and
+        the only place in this search that is not a substring match. The
+        reason is specific rather than fastidious: every other word in the
+        haystack is something a person typed into one row, so over-matching it
+        costs a few rows. "מסומן" is a word this system invents for every
+        ticked row on the board, so matching it on "מס" — a prefix of מסמך,
+        מספר, מסירה — would answer an ordinary search with half the board.
+    """
+    words = _cell_search_words(v)
+    if ctype == "checkbox":
+        return [], ([TICK_WORD] if (v is True or v == 1 or
+                                    (isinstance(v, list) and len(v))) else [])
+    if ctype in ("people", "created_by", "assignees"):
+        out = []
+        for w in words:
+            try:
+                out.append(names.get(int(w)) or "")
+            except (TypeError, ValueError):
+                out.append(w)          # a name already, from an older cell
+        return [x for x in out if x], []
+    if ctype in ("date", "timeline", "created_at", "due"):
+        return words + [_fmt_day(str(w)[:10]) for w in words], []
+    if vocab:
+        return words + [vocab[w] for w in words if w in vocab], []
+    return words, []
+
+
+def _linked_title_hits(db, tasks, cols, needle, viewer):
+    """Which of `tasks` are linked to an item whose title contains `needle`.
+
+    An item is findable by what it is linked to and not only by its own words —
+    the browser has always searched connect cells that way, off the titles it
+    already holds in its link cache. Past the client threshold the browser
+    holds no such thing and the server is the one answering, so without this
+    the same search quietly stops working at exactly the board size where it
+    matters.
+
+    Three queries however large the board, rather than one per cell: the
+    relationships in one, the titles that match in one more, and the viewer's
+    access to the handful that matched in the last. Seeing a link is not
+    permission to read what it points at, so the titles that matched are put
+    through the same gate every other door into a linked item uses.
+    """
+    conn = [c for c in (cols or []) if c.get("type") == "connect"]
+    if not conn or not tasks or not needle:
+        return set()
+    far_of = {}                                    # this board's item -> far ids
+    one_way = [str(c.get("id")) for c in conn if not _is_two_way(c)]
+    for t in tasks:
+        cf = t.custom_fields or {}
+        got = [i for cid in one_way for i in (cf.get(cid) or []) if isinstance(i, int)]
+        if got:
+            far_of.setdefault(t.id, set()).update(got)
+    if any(_is_two_way(c) for c in conn):
+        two = {str(c.get("id")) for c in conn if _is_two_way(c)}
+        ids = [t.id for t in tasks]
+        for part in [ids[i:i + _PREFETCH_CHUNK] for i in range(0, len(ids), _PREFETCH_CHUNK)]:
+            for l in db.query(ItemLink).filter(or_(ItemLink.a_task_id.in_(part),
+                                                   ItemLink.b_task_id.in_(part))).all():
+                if l.a_col in two:
+                    far_of.setdefault(l.a_task_id, set()).add(l.b_task_id)
+                if l.b_col in two:
+                    far_of.setdefault(l.b_task_id, set()).add(l.a_task_id)
+    far = sorted({i for v in far_of.values() for i in v})
+    if not far:
+        return set()
+    # LIKE's own wildcards, escaped: a search for "50%" is a search for the
+    # characters, not for "anything after 50".
+    pat = "%" + needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    hit = set()
+    for part in [far[i:i + _PREFETCH_CHUNK] for i in range(0, len(far), _PREFETCH_CHUNK)]:
+        hit.update(r[0] for r in db.query(Task.id).filter(
+            Task.id.in_(part), func.lower(Task.title).like(pat, escape="\\")).all())
+    if not hit:
+        return set()
+    hit = set(_visible_link_ids(db, sorted(hit), viewer))
+    return {tid for tid, v in far_of.items() if v & hit} if hit else set()
+
+
 # ── the advanced filter, evaluated here ────────────────────────────────
 # The client sends the condition tree as JSON — an AST, groups holding groups —
 # and gets back the ids that answer it. It filters locally too, for the
@@ -5759,7 +5898,17 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         # Ordered, and not by chance: pages are cut out of this list, and a
         # list whose order is whatever the database felt like means page two
         # can repeat a row from page one and skip another entirely.
+        #
+        # The people on each row are loaded WITH the rows, and that is not a
+        # micro-optimisation. Every row here is asked for its assignees — the
+        # toolbar's people filter reads them, and the shape the condition tree
+        # matches against carries them — and the relationship is lazy, so a
+        # board of fifteen thousand items asked the database fifteen thousand
+        # and eleven times for one keystroke in the search box. That is the
+        # whole of why free-text search on a large board took seconds: not the
+        # matching, which is a string compare, but the round trip per row.
         rows = (db.query(Task)
+                  .options(selectinload(Task.assignees))
                   .filter(Task.board_id == board_id, Task.parent_id.is_(None),
                           Task.is_archived == False, Task.deleted_at.is_(None))
                   .order_by(Task.position, Task.id)
@@ -5800,6 +5949,84 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         want_status = str(data.get("status") or "")
         want_prio = str(data.get("priority") or "")
 
+        # ── what the free-text box actually searches ─────────────────────
+        # "רשות" is a column on the board, and somebody typing a municipality
+        # into the search box means "the items whose רשות is that one". The box
+        # read four things — the title, the description, the item's number and
+        # the people on it — so every column the board arranges itself BY was
+        # unsearchable, and on a large board, where this answer is the whole of
+        # what the screen shows, there was nothing else to fall back on.
+        #
+        # So the board's own cells are read too. Only columns this reader may
+        # SEE: a hidden column that narrowed the board would be answering a
+        # question about hidden data with a row set, and a row set is an
+        # answer. A mirror is left out — it is a field of a LINKED item,
+        # resolved per row per column, and reading every one of them on every
+        # keystroke is the cost this endpoint has just stopped paying.
+        all_cols = (b.settings or {}).get("columns") or []
+        seen_cols = [c for c in all_cols
+                     if user_id is None or _col_perm(c, user_id, my_role) != "none"]
+        # EVERY column, not a chosen few. The first pass at this left four
+        # kinds out and each one was a value somebody could read off the board
+        # and not find: a people cell (it stores ids), a date (it stores ISO
+        # and shows dd/mm/yyyy), a tick, and a mirror. A column the board
+        # draws is a column the search box answers for — that is the whole
+        # rule, and the exceptions below are the two that cannot be kept.
+        #
+        # CONNECT is handled apart rather than skipped: its cell holds ids,
+        # and the words are the TITLES at the other end — see
+        # _linked_title_hits, which resolves them in three queries for the
+        # whole board instead of one per cell.
+        #
+        # FORMULA is the one column this cannot answer for, and it is said
+        # out loud rather than left to be discovered: it is computed and never
+        # stored, and the engine that computes it lives in the browser. The
+        # browser leaves it out too — a board that crosses the client
+        # threshold overnight must not change what it finds.
+        search_cols, mirror_cols, status_vocab = [], [], {}
+        if q:
+            for c in seen_cols:
+                cid, ctype = str(c.get("id") or ""), c.get("type")
+                if ctype in ("connect", "formula"):
+                    continue
+                if ctype == "mirror":
+                    mirror_cols.append(c)
+                    continue
+                search_cols.append((cid, ctype))
+                if ctype == "status":
+                    status_vocab[cid] = {str(o["key"]): o["label"]
+                                         for o in _status_vocab(b, cid)[0]}
+        # …and the three columns that store nothing of their own: מועד יצירה,
+        # יוצר הרשומה and מזהה פריט are read off the item, not out of its
+        # cells, so they reach the haystack the way the filter engine gets
+        # them — through _derived_cells.
+        derived_cols = [(str(c.get("id") or ""), c.get("type")) for c in seen_cols
+                        if q and c.get("type") in DERIVED_CELLS]
+        # Filled once the sub-items are loaded too — see below. Declared here
+        # because _searchable closes over it and runs long after.
+        people_names = {}
+
+        def _searchable(t):
+            """(substring words, whole words) — everything on this row
+            somebody could be typing, and see _searchable_words for why a tick
+            is the one that is matched whole."""
+            hay = [(t.title or ""), (t.description or ""), str(t.item_uid or "")]
+            hay += [u.name or "" for u in t.assignees]
+            exact = []
+            cf = t.custom_fields or {}
+            cells = [(cf.get(cid), ct, status_vocab.get(cid)) for cid, ct in search_cols]
+            if derived_cols:
+                d = _derived_cells(b, t)
+                cells += [(d.get(cid), ct, None) for cid, ct in derived_cols]
+            for v, ct, voc in cells:
+                sub, whole = _searchable_words(ct, v, people_names, voc)
+                hay += sub
+                exact += whole
+            for col in mirror_cols:
+                hay += [c.get("text") or ""
+                        for c in (_mirror_cells(db, t, col, user_id, seen_cols) or [])]
+            return hay, exact
+
         def _passes_toolbar(t):
             if want_status and _task_status_key(t) != want_status:
                 return False
@@ -5808,10 +6035,12 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             if want_people and not ({u.id for u in t.assignees} & want_people):
                 return False
             if q:
-                hay = [(t.title or ""), (t.description or ""), str(t.item_uid or "")]
-                hay += [u.name or "" for u in t.assignees]
-                if not any(q in h.lower() for h in hay):
-                    return False
+                hay, exact = _searchable(t)
+                if any(q in h.lower() for h in hay):
+                    return True
+                if any(q == e.lower() for e in exact):
+                    return True
+                return t.id in link_hits
             return True
 
         # ── the hierarchy rules ──────────────────────────────────────────
@@ -5830,6 +6059,7 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         # because of its children is marked, because it is there to say WHERE
         # they are: unmarked, it reads as a row that answered the filter.
         subs_all = (db.query(Task)
+                      .options(selectinload(Task.assignees))
                       .filter(Task.board_id == board_id, Task.parent_id.isnot(None),
                               Task.is_archived == False, Task.deleted_at.is_(None))
                       .order_by(Task.position, Task.id)
@@ -5840,6 +6070,42 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             subs_all = [t for t in subs_all if _item_perm(t, user_id, my_role) != "none"]
         if isinstance(only, list):
             subs_all = []          # a question about named rows is about those rows
+
+        # One name per user id, for every people cell on the board at once.
+        # A query per cell is the shape this endpoint has just stopped paying
+        # for, and a people column on a large board is thousands of them.
+        if q and any(ct in ("people", "created_by", "assignees")
+                     for _cid, ct in search_cols + derived_cols):
+            want = set()
+            for t in rows + subs_all:
+                for cid, ct in search_cols:
+                    if ct in ("people", "created_by", "assignees"):
+                        for x in (t.custom_fields or {}).get(cid) or []:
+                            if isinstance(x, int):
+                                want.add(x)
+                if t.created_by is not None:
+                    want.add(t.created_by)
+            ids = sorted(want)
+            for part in [ids[i:i + _PREFETCH_CHUNK]
+                         for i in range(0, len(ids), _PREFETCH_CHUNK)]:
+                for uid_, nm in db.query(User.id, User.name).filter(User.id.in_(part)):
+                    people_names[uid_] = nm or ""
+
+        # A mirror is a field of a LINKED item, so resolving one costs a query
+        # per row per column — 750ms and five thousand queries on a board of
+        # five thousand, which is why it was left out of the search at first.
+        # That was a fact about the naive path and not about the column:
+        # warming the links once first brings the same work to 98ms and
+        # eighteen queries, which a search can afford. Only when the board
+        # actually has one.
+        if q and mirror_cols:
+            _prefetch_links(db, rows + subs_all, seen_cols, user_id)
+
+        # …and the other half of the search: the items THESE rows point at.
+        # Computed here, over the parents and the sub-items together, because
+        # it is one pass over the whole board whichever of them asks for it.
+        link_hits = _linked_title_hits(db, rows + subs_all, seen_cols, q, user_id) \
+            if q else set()
 
         total = len(rows)
 
@@ -12333,6 +12599,13 @@ def _automation_matches(a, event):
         return str(cfg.get("t_group")) == str(event.get("group_id"))
     if event["type"] == "column_changed":
         return str(cfg.get("t_column")) == str(event.get("col"))
+    if event["type"] in ("person_assigned", "person_unassigned"):
+        # which people COLUMN as well: a board with מנהל פרויקט and רכזת has
+        # two rules that both fire on somebody being put on the job, and each
+        # of them is about one of the columns. "" on both sides is the board's
+        # own אחראים — what a rule written before columns could be named
+        # holds, and what the built-in event reports.
+        return recipes.people_col_of(cfg, "t") == str(event.get("col") or "")
     if event["type"] in ("due_date_near", "due_date_passed"):
         # the sweep has already decided the day; what it asks here is whether
         # this rule is the one that asked for that distance
@@ -12351,6 +12624,45 @@ def _automation_matches(a, event):
 # _status_col_options mints ("o_a1b2") — so everything that renders a status or
 # compares one has to be told which of the two it is holding. That is what
 # these are for, and why they take the column id rather than looking it up.
+# ── עדיפות, בתור מקור סטטוס ────────────────────────────────────────────────
+# A priority is a labelled, coloured, board-defined vocabulary — the same
+# shape as a status, which is why FIELD_MATRIX has called its kind "status"
+# all along and why the advanced filter has always offered it as one.
+#
+# Automations did not. A rule could ask about "הסטטוס של הלוח" or about a
+# column of type status, and priority was neither: naming it got a rule that
+# SAVED and then sat there blocked, reporting that a column had been deleted
+# which had never existed.
+#
+# So it is offered as a source of its own, under this id. Deliberately the
+# built-in's own name rather than a column that gets created on every board:
+# there is nothing to migrate, nothing to keep in step, and a board that
+# never customised its priorities still has a vocabulary to answer with.
+PRIORITY_AS_STATUS = "priority"
+
+
+def _priority_pseudo_col(board):
+    """The board's priority vocabulary, dressed as the status column that
+    everything downstream expects — one shape, so _status_cell_key,
+    _status_label, the blockers and the sentence need to know nothing about
+    priorities at all."""
+    return {"id": PRIORITY_AS_STATUS, "type": "status", "title": "עדיפות",
+            "options": [{"id": p["key"], "label": p["label"],
+                         "color": p.get("color")}
+                        for p in _board_priorities(board)]}
+
+
+def _status_col_title(db, board, col_id):
+    """What a status source is CALLED, for a sentence. A column's own title,
+    "עדיפות" for the built-in priority, and the raw id for one the board no
+    longer has — which is a rule that needs fixing and has to stay legible
+    enough to fix."""
+    if str(col_id or "") == PRIORITY_AS_STATUS:
+        return "עדיפות"
+    col = _find_col(db, board.id, col_id) if board else None
+    return (col or {}).get("title") or str(col_id or "")
+
+
 def _status_vocab(board, col_id):
     """(options, column) for a status blank. `options` are {key,label,color};
     `column` is the board column they came from, or None for the board's own
@@ -12359,6 +12671,12 @@ def _status_vocab(board, col_id):
     cid = str(col_id or "").strip()
     if not cid:
         return list(_board_statuses(board)), None
+    if cid == PRIORITY_AS_STATUS and board:
+        # keyed the way every other status vocabulary comes back from here —
+        # "key", not the "id" the column shape carries
+        col = _priority_pseudo_col(board)
+        return ([{"key": o["id"], "label": o["label"], "color": o.get("color")}
+                 for o in col["options"]], col)
     col = next((c for c in ((board.settings or {}).get("columns") or [])
                 if str(c.get("id")) == cid and c.get("type") == "status"), None) \
         if board else None
@@ -12649,6 +12967,54 @@ def _cond_cell_raw(db, task, col, viewer=None):
     return [c.get("text") for c in (cells or []) if c.get("text") not in (None, "")]
 
 
+def _cond_side_value(db, task, kind, side, offset_min):
+    """(value, answerable) for one side of a column condition.
+
+    A literal is itself. A reference to a second column is that column's cell
+    on this same item, normalised through filter_ast._cell — the very function
+    the left-hand cell goes through inside match_rule. One implementation of
+    "what does this column hold", so the two ends of a comparison cannot come
+    to disagree about a status's label or which day a timestamp falls on.
+
+    NOT answerable — and the rule then holds its fire, exactly as it does over
+    a deleted column — when the column is gone, is no longer the same kind of
+    column, or is empty on this item. The empty case is the one that matters:
+    an empty right-hand side is not "compare against nothing", it is a
+    comparison that cannot be made, and filter_ast reads a missing value as
+    "nothing chosen yet, match everything" — which would quietly widen the rule
+    to every item its trigger catches.
+    """
+    ref = recipes.column_ref(side)
+    if ref is None:
+        return side, True
+    cid, _declared = ref
+    col = _find_col(db, task.board_id, cid)
+    if not col or recipes.column_kind(col.get("type")) != kind:
+        return None, False
+    raw = _cond_cell_raw(db, task, col)
+    if isinstance(raw, list) and kind != "people":
+        # a cell holding several values at once — a multi-select, a mirror of
+        # several linked items — has no single answer to be compared against,
+        # and taking the first of them would be the engine deciding which one
+        # the rule meant. One value is a value; more than one is a question
+        # with no answer, and the rule holds its fire over it.
+        vals = [x for x in raw if x not in (None, "")]
+        if len(vals) != 1:
+            return None, False
+        raw = vals[0]
+    v = filter_ast._cell({"custom_fields": {col["id"]: raw}},
+                         col["id"], kind, offset_min)
+    if kind == "people":
+        # "האחראי הוא מי שרשום ב«מנהל פרויקט»" has an answer only while that
+        # column names exactly one person. Two names is not two questions, and
+        # picking the first of them would be the engine deciding which colleague
+        # the rule meant.
+        v = v[0] if isinstance(v, list) and len(v) == 1 else None
+    if v is None or filter_ast.is_empty(v):
+        return None, False
+    return v, True
+
+
 def _column_cond_holds(db, task, spec):
     """A condition about one of the board's columns. None when it cannot be
     answered at all — the column is gone, or is no longer a kind of column
@@ -12684,8 +13050,15 @@ def _column_cond_holds(db, task, spec):
     board = db.query(Board).filter(Board.id == task.board_id).first()
     today, off = _il_day(_board_tz(db, board))
     raw = _cond_cell_raw(db, task, col)
+    # the other side may be a second COLUMN rather than a fixed value, and it
+    # is read off this same item here — before any action writes, like every
+    # other value a condition asks about
+    v1, ok1 = _cond_side_value(db, task, kind, spec.get("value"), off)
+    v2, ok2 = _cond_side_value(db, task, kind, spec.get("value2"), off)
+    if not (ok1 and ok2):
+        return None
     rule = {"field": col["id"], "operator": op,
-            "value": spec.get("value"), "value2": spec.get("value2")}
+            "value": v1, "value2": v2}
     fields = {col["id"]: kind}
     ask = lambda cell: filter_ast.match_rule({"custom_fields": {col["id"]: cell}},
                                              rule, fields, today, off, None)
@@ -12776,6 +13149,15 @@ def _column_cond_shown(db, board, spec, quote=True):
     title = (col or {}).get("title") or str(spec.get("col") or "—")
     kind = recipes.column_kind(spec.get("type"))
     v = spec.get("value")
+    wrap = (lambda x: f"«{x}»") if quote else (lambda x: x)
+    # the other side may be a second column. Said in words — "הערך שבעמודה
+    # «תאריך התחלה»" — and not as a bare name, because a name on its own in
+    # that slot reads as the literal text the rule is looking for.
+    ref = recipes.column_ref(v)
+    if ref:
+        other = _find_col(db, board.id, ref[0]) if board else None
+        return {"column": wrap(title),
+                "value": "הערך שבעמודה " + wrap((other or {}).get("title") or ref[0])}
     if kind == "check":
         shown = "מסומן" if v else "לא מסומן"
     elif kind == "people":
@@ -12784,7 +13166,6 @@ def _column_cond_shown(db, board, spec, quote=True):
         shown = _DATE_TOKEN_HE.get(str(v)) or _fmt_day(v)
     else:
         shown = str(v)
-    wrap = (lambda x: f"«{x}»") if quote else (lambda x: x)
     return {"column": wrap(title), "value": wrap(shown)}
 
 
@@ -13105,6 +13486,67 @@ def _map_write(db, task, name, value, actor_id, board_id=None):
     return True, ""
 
 
+# ── אחראים: the board's own, or a column of its own ────────────────────────
+# A board has one built-in אחראים and may also carry columns of type people —
+# מנהל פרויקט, רכזת, מפקח. "שייך את רות" could only ever mean the built-in
+# one, so a board that runs its work through a מנהל פרויקט column could not be
+# automated on it except through the generic "עדכן את העמודה", which reads as
+# a cell being overwritten rather than as somebody being put on the job.
+#
+# These three are the column half of that, and they are deliberately the same
+# shape as the built-in half beside them: refuse somebody not on the board,
+# refuse a second copy, write, log, announce.
+def _people_cell_events(col, was, now_v):
+    """The assignment events a people cell's move is also. Empty for any other
+    kind of column, and empty when the same people are in it either way."""
+    if (col or {}).get("type") != "people":
+        return []
+    ids = lambda v: {x for x in (v if isinstance(v, list) else []) if isinstance(x, int)}
+    before, after = ids(was), ids(now_v)
+    out = []
+    for uid in sorted(after - before):
+        out.append({"type": "person_assigned", "user_id": uid, "col": col["id"]})
+    gone = sorted(before - after)
+    if gone:
+        out.append({"type": "person_unassigned", "user_ids": gone, "col": col["id"]})
+    return out
+
+
+def _people_col_or_skip(db, task, cfg):
+    """The people column this action names, or None for the board's own
+    אחראים. Raises _Skipped when the rule names one the board no longer has —
+    silently falling back to the built-in would assign somebody somewhere the
+    author never asked for, which is worse than not running."""
+    cid = str((cfg or {}).get("person_col") or "").strip()
+    if not cid:
+        return None
+    col = _find_col(db, task.board_id, cid)
+    if not col or col.get("type") != "people":
+        raise _Skipped("עמודת האנשים שהכלל מעדכן אינה קיימת בלוח")
+    return col
+
+
+def _people_cell(task, col):
+    """Who is in this people cell, as a list of ids. A cell may also hold a
+    bare name, imported from a board that had no account for that person —
+    those are kept as they are and only the ids are compared."""
+    v = (task.custom_fields or {}).get(col["id"])
+    return [x for x in (v if isinstance(v, list) else []) if isinstance(x, int)]
+
+
+def _write_people_cell(db, board, task, col, was, now_v):
+    """Put this list of ids into the cell, and leave the same trail behind as
+    any other column write — the history is what the board DID, and a rule
+    that assigned somebody invisibly is a rule nobody can account for."""
+    cf = dict(task.custom_fields or {})
+    others = [x for x in ((task.custom_fields or {}).get(col["id"]) or [])
+              if not isinstance(x, int)]      # imported names, left alone
+    cf[col["id"]] = now_v + others
+    task.custom_fields = cf
+    _audit(db, task.id, "update", f"col:{col['id']}",
+           _shown_cell(db, board, was), _shown_cell(db, board, now_v), None)
+
+
 def _coerce_cell(db, board_id, col, value):
     """(stored value, error) for writing `value` into this column.
 
@@ -13244,8 +13686,7 @@ def _action_phrases(db, board, extras, quote=True):
                 continue
             col_id = recipes.status_col_of(values, f["key"]) if f["type"] == "status" else ""
             if col_id:
-                scol = _find_col(db, board.id, col_id) if board else None
-                name = (scol or {}).get("title") or col_id
+                name = _status_col_title(db, board, col_id)
                 shown["status_col"] = f"«{name}»" if quote else name
             if v in (None, ""):
                 continue
@@ -13289,9 +13730,22 @@ def _automation_label(db, board, a):
         if col_id:
             # the column's own blank, read off the board every time so a
             # renamed column reads correctly the moment it is renamed
-            scol = _find_col(db, board.id, col_id) if board else None
             text = text.replace("{" + recipes.status_col_key(f["key"]) + "}",
-                                f"«{(scol or {}).get('title') or col_id}»")
+                                f"«{_status_col_title(db, board, col_id)}»")
+    # …and the people column, which has no field of the recipe's own to hang
+    # off and so is filled outside the loop. Read off the board every time,
+    # for the same reason the status column is: a renamed column reads
+    # correctly the moment it is renamed, with nothing re-saved.
+    for side in ("t", "a"):
+        key = recipes.col_key_of(r, side) if r else ""
+        if not key or recipes.col_kind_of(r, side) != "people":
+            continue
+        cid = recipes.people_col_of(cfg, side)
+        if not cid:
+            continue
+        pcol = _find_col(db, board.id, cid) if board else None
+        text = text.replace("{" + key + "}",
+                            f"«{(pcol or {}).get('title') or cid}»")
     return text
 
 
@@ -13940,19 +14394,56 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         if not u or not _can_be_assigned(db, task.board_id, u.id):
             raise _Skipped("האדם שהכלל משייך מושבת" if u is not None and u.is_active is False
                            else "האדם שהכלל משייך אינו חבר בלוח")
-        if u in task.assignees:
-            raise _Skipped("האדם משויך לפריט כבר")
-        task.assignees.append(u)
-        _notify(db, u.id, "assign", "שויכת למשימה", body,
-                board_id=task.board_id, task_id=task.id)
-        out.append({"type": "person_assigned", "user_id": u.id})
+        # Which אחראים: the board's own, or one of its columns of type people.
+        # The column branch is the same work the built-in does — refuse
+        # somebody who is not on the board, refuse a second copy, write, log,
+        # announce — against a cell instead of against the relationship.
+        pcol = _people_col_or_skip(db, task, cfg)
+        if pcol is not None:
+            was = _people_cell(task, pcol)
+            if u.id in was:
+                raise _Skipped(f"האדם כבר ב«{pcol.get('title') or pcol['id']}»")
+            now_v = was + [u.id]
+            _write_people_cell(db, board, task, pcol, was, now_v)
+            _notify(db, u.id, "assign", "שויכת למשימה", body,
+                    board_id=task.board_id, task_id=task.id)
+            out.append({"type": "person_assigned", "user_id": u.id, "col": pcol["id"]})
+        else:
+            if u in task.assignees:
+                raise _Skipped("האדם משויך לפריט כבר")
+            task.assignees.append(u)
+            _notify(db, u.id, "assign", "שויכת למשימה", body,
+                    board_id=task.board_id, task_id=task.id)
+            out.append({"type": "person_assigned", "user_id": u.id})
     elif act == "set_status":
         # Which status the rule writes: the board's own, or one of its columns
         # of type status. The column branch is the same work _apply_status_key
         # does for the built-in — read the vocabulary, refuse a value that is
         # not in it, write the cell, log it — against a different vocabulary.
         _scol = recipes.status_col_of(cfg, "status")
-        if _scol:
+        if _scol == PRIORITY_AS_STATUS:
+            # "שנה את «עדיפות» ל«גבוהה»" is the same rule as "שנה את העדיפות",
+            # written through the status blank because that is where somebody
+            # who thinks of priority as a status column goes looking for it.
+            # It lands in the same place and emits the same events, so the
+            # two spellings cannot drift.
+            if _task_priority_key(task) == str(cfg.get("status")):
+                raise _Skipped("לפריט יש את העדיפות הזאת כבר")
+            _was_p = _task_priority_key(task)
+            if not _apply_priority_key(db, task, cfg.get("status")):
+                raise _Skipped("העדיפות שהכלל מבקש אינה קיימת בלוח")
+            _audit(db, task.id, "update", "priority",
+                   _status_label(board, PRIORITY_AS_STATUS, _was_p),
+                   _status_label(board, PRIORITY_AS_STATUS,
+                                 _task_priority_key(task)), None)
+            # Both events, because both questions are asked of this change:
+            # the rule written as "כאשר העדיפות משתנה" and the one written as
+            # "כאשר «עדיפות» משתנה" are about the same moment.
+            out.append({"type": "priority_changes_to",
+                        "priority": _task_priority_key(task), "was": _was_p})
+            out.append({"type": "status_changes_to", "col": PRIORITY_AS_STATUS,
+                        "status": _task_priority_key(task), "was": _was_p})
+        elif _scol:
             col = _find_col(db, task.board_id, _scol)
             if not col or col.get("type") != "status":
                 raise _Skipped("עמודת הסטטוס שהכלל מעדכן אינה קיימת בלוח")
@@ -13992,6 +14483,9 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             raise _Skipped("העדיפות שהכלל מבקש אינה קיימת בלוח")
         _audit(db, task.id, "update", "priority", _was, _logged_priority(task), None)
         out.append({"type": "priority_changes_to", "priority": str(cfg.get("priority"))})
+        # the other spelling of the same change — see PRIORITY_AS_STATUS
+        out.append({"type": "status_changes_to", "col": PRIORITY_AS_STATUS,
+                    "status": _task_priority_key(task)})
     elif act == "move_to_group":
         g = db.query(Group).filter(Group.id == cfg.get("group"),
                                    Group.board_id == task.board_id).first()
@@ -14104,12 +14598,29 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             out.append({"type": "status_changes_to", "col": col["id"],
                         "status": _status_cell_key(col, now_v),
                         "was": _status_cell_key(col, was)})
+        # …and a people column gaining or losing somebody is an assignment, for
+        # the same reason: "כאשר משויך אדם ל«מנהל פרויקט»" has to hear it
+        # however the name got into the cell, not only when another rule used
+        # "שייך את".
+        out.extend(_people_cell_events(col, was, now_v))
     elif act == "unassign_person":
         u = db.query(User).filter(User.id == cfg.get("person")).first()
-        if not u or u not in task.assignees:
+        if not u:
             raise _Skipped("האדם אינו משויך לפריט")
-        task.assignees.remove(u)
-        out.append({"type": "person_unassigned", "user_ids": [u.id]})
+        pcol = _people_col_or_skip(db, task, cfg)
+        if pcol is not None:
+            was = _people_cell(task, pcol)
+            if u.id not in was:
+                raise _Skipped(f"האדם אינו ב«{pcol.get('title') or pcol['id']}»")
+            _write_people_cell(db, board, task, pcol, was,
+                               [i for i in was if i != u.id])
+            out.append({"type": "person_unassigned", "user_ids": [u.id],
+                        "col": pcol["id"]})
+        else:
+            if u not in task.assignees:
+                raise _Skipped("האדם אינו משויך לפריט")
+            task.assignees.remove(u)
+            out.append({"type": "person_unassigned", "user_ids": [u.id]})
     elif act == "create_item":
         grp = db.query(Group).filter(Group.id == cfg.get("group"),
                                      Group.board_id == task.board_id).first()
@@ -15199,6 +15710,21 @@ def _automation_blockers(db, board, a):
             out.append({"kind": "dependency",
                         "text": f"סוג העמודה '{col.get('title') or spec.get('col')}' "
                                 f"שונה מאז שהתנאי נכתב"})
+        # a condition comparing one column with another stands on BOTH of them,
+        # and the second one is the easier of the two to delete without anybody
+        # connecting it to the rule that quietly stopped firing
+        for side in (spec.get("value"), spec.get("value2")):
+            ref = recipes.column_ref(side)
+            if not ref:
+                continue
+            other = _find_col(db, a.board_id, ref[0])
+            if not other:
+                out.append({"kind": "dependency",
+                            "text": "העמודה שהתנאי משווה אליה נמחקה מהלוח"})
+            elif recipes.column_kind(other.get("type")) != recipes.column_kind(ref[1]):
+                out.append({"kind": "dependency",
+                            "text": f"סוג העמודה '{other.get('title') or ref[0]}' "
+                                    f"שאליה התנאי משווה שונה מאז שהתנאי נכתב"})
     # the trigger's own placeholders are a dependency like any other: a rule
     # listening to a column somebody deleted will never fire again, and one
     # pointed at a column that has since become a mirror never should
@@ -15241,6 +15767,24 @@ def _automation_blockers(db, board, a):
                 out.append({"kind": "dependency",
                             "text": f"הסטטוס '{_status_label(board, scol, v)}' "
                                     f"אינו קיים בעמודה"})
+    # …and the same for a people column the rule names, on either half. A
+    # column that was deleted — or that stopped being a people column — takes
+    # the rule out of service silently otherwise: "כאשר משויך אדם ל«מנהל
+    # פרויקט»" waits for an event nothing emits any more, and the rule goes on
+    # looking active.
+    _r = recipes.recipe(a.recipe_id) or {}
+    for _side in ("t", "a"):
+        if recipes.col_kind_of(_r, _side) != "people":
+            continue
+        _pid = recipes.people_col_of(cfg, _side)
+        if not _pid:
+            continue
+        _pc = _find_col(db, a.board_id, _pid)
+        if not _pc or _pc.get("type") != "people":
+            out.append({"kind": "dependency",
+                        "text": ("עמודת האנשים שהכלל מאזין לה נמחקה מהלוח"
+                                 if _side == "t" else
+                                 "עמודת האנשים שהכלל מעדכן נמחקה מהלוח")})
     for one in acts:
         for f in recipes.action_fields(one["key"]):
             v = one["values"].get(f["key"])
@@ -15397,7 +15941,10 @@ def _rule_uses(db, a, kind, ref):
     # the conditions
     for c in cfg.get(recipes.CONDITION_KEY) or []:
         spec = c.get("value") if isinstance(c.get("value"), dict) else {}
-        if kind == "column" and same(spec.get("col")):
+        if kind == "column" and (same(spec.get("col"))
+                                 or any(same((recipes.column_ref(side) or ("",))[0])
+                                        for side in (spec.get("value"),
+                                                     spec.get("value2")))):
             used.append("תנאי")
         elif kind == "status" and c.get("kind") == "status" and same(c.get("value")):
             used.append("תנאי")
@@ -17697,6 +18244,27 @@ def list_board_automations(board_id: int, include_deleting: bool = False,
                 "due_default_hour": DUE_DEFAULT_HOUR}
 
 
+def _check_automation_people_col(db, board_id, recipe_id, cfg):
+    """A rule may only name a people column the board actually has.
+
+    Refused at the save, for the same reason the person beside it is: a rule
+    that names a column which is not there does nothing and says nothing, and
+    nobody finds out until the assignment they were counting on never happens.
+    An empty one is not an error — it is the board's own אחראים, which is what
+    every rule written before columns could be named means.
+    """
+    r = recipes.recipe(recipe_id) or {}
+    for side in ("t", "a"):
+        if recipes.col_kind_of(r, side) != "people":
+            continue
+        cid = recipes.people_col_of(cfg or {}, side)
+        if not cid:
+            continue
+        col = _find_col(db, board_id, cid)
+        if not col or col.get("type") != "people":
+            raise HTTPException(400, "עמודת האנשים שנבחרה אינה קיימת בלוח")
+
+
 def _check_automation_person(db, board_id, cfg):
     """A rule may only name someone invited to the board.
 
@@ -17718,7 +18286,11 @@ def _check_automation_person(db, board_id, cfg):
             # somebody who was never invited is a rule that can never hold
             val = c.get("value") or {}
             if recipes.column_kind(val.get("type")) == "people":
-                who = val.get("value")
+                # unless the other side names a COLUMN rather than a person:
+                # "האחראי הוא מי שרשום ב«מנהל פרויקט»" names nobody in advance,
+                # and there is nothing here to check until an item has one
+                who = (None if recipes.column_ref(val.get("value"))
+                       else val.get("value"))
         if who is None:
             continue
         if not _can_be_assigned(db, board_id, who):
@@ -17903,6 +18475,7 @@ def create_automation(board_id: int, data: dict, request: Request = None,
         if err:
             raise HTTPException(400, err)
         _check_automation_person(db, board_id, cfg)
+        _check_automation_people_col(db, board_id, data["recipe_id"], cfg)
         _check_automation_map(db, board_id, data["recipe_id"], cfg)
         _check_automation_reach(db, board_id, data["recipe_id"], cfg, user_id)
         meta = _automation_meta(db, board_id, data)
@@ -18116,6 +18689,7 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
             if err:
                 raise HTTPException(400, err)
             _check_automation_person(db, a.board_id, cfg)
+            _check_automation_people_col(db, a.board_id, a.recipe_id, cfg)
             _check_automation_map(db, a.board_id, a.recipe_id, cfg)
             _check_automation_reach(db, a.board_id, a.recipe_id, cfg, user_id)
             if live:
@@ -19653,6 +20227,7 @@ def publish_automation_draft(automation_id: int, data: dict = None,
         if err:
             raise HTTPException(400, f"לא ניתן להפעיל את הטיוטה: {err}")
         _check_automation_person(db, a.board_id, cfg)
+        _check_automation_people_col(db, a.board_id, a.recipe_id, cfg)
         _check_automation_map(db, a.board_id, a.recipe_id, cfg)
         _check_automation_reach(db, a.board_id, a.recipe_id, cfg, user_id)
         before = _snapshot_automation(a)
@@ -20809,6 +21384,33 @@ def get_task(task_id: int, user_id: int = Depends(current_user_id)):
         return _serialize_task(t, db, user_id=user_id, board_role=role, columns=cols)
 
 
+def _sse_frame(ev):
+    """One event as it goes down the wire.
+
+    Its own function because the shape of these four lines is a correctness
+    question and not a formatting one, and buried inside a generator it could
+    not be read back by anything.
+
+    **There is deliberately no `event:` line**, and its absence is the whole
+    of a bug that made live updates look intermittent for months. A frame
+    carrying `event: automation.ran` is NOT delivered to
+    `EventSource.onmessage`: by the specification onmessage receives only
+    frames of the default type "message", and a named one goes to
+    `addEventListener('automation.ran', …)` and nowhere else. The browser here
+    has only ever had `onmessage`, so every business event this stream sent
+    was dropped on the floor on arrival. What went on working — a tab regaining
+    focus, a reconnect, the refetch after your own write — is why this read as
+    "the board refreshes sometimes" rather than as "the stream is dead".
+
+    Fixed here rather than by registering a listener per type in the browser,
+    because that list would then have to be kept in step with this module for
+    ever, and the next type added would fail in exactly this way and just as
+    silently. Nothing is lost by dropping the line: `type` travels inside the
+    payload, which is what the client has always dispatched on.
+    """
+    return f"id: {ev['seq']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+
 @app.get("/api/events")
 async def events_stream(request: Request, user_id: int = Depends(current_user_id)):
     """Server-sent events: the doorbell for live updates.
@@ -20848,8 +21450,7 @@ async def events_stream(request: Request, user_id: int = Depends(current_user_id
                 bid = ev.get("board_id")
                 if ev.get("type") != "resync" and bid is not None and bid not in visible:
                     continue
-                yield (f"id: {ev['seq']}\nevent: {ev['type']}\n"
-                       f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
+                yield _sse_frame(ev)
         finally:
             bus.unsubscribe(q)
 
@@ -21144,6 +21745,14 @@ def update_task(task_id: int, data: dict, request: Request = None,
             _run_automations(db, task, _ev("priority_changes_to",
                                            priority=_task_priority_key(task),
                                            was=_before_priority), actor)
+            # …and the same moment, for a rule written as "כאשר «עדיפות»
+            # משתנה". A priority is a board-defined vocabulary like a status
+            # column's, and somebody who thinks of it that way writes the rule
+            # that way — both spellings have to hear the same change.
+            _run_automations(db, task, _ev("status_changes_to",
+                                           col=PRIORITY_AS_STATUS,
+                                           status=_task_priority_key(task),
+                                           was=_before_priority), actor)
         _after_assignees = {u.id for u in task.assignees}
         if _after_assignees - _before_assignees:
             _run_automations(db, task, _ev("person_assigned",
@@ -21172,6 +21781,14 @@ def update_task(task_id: int, data: dict, request: Request = None,
                 _run_automations(db, task, _ev("status_changes_to", col=_cid,
                                                status=_status_cell_key(_scol, _now),
                                                was=_status_cell_key(_scol, _was)), actor)
+            # …and the same for a people column, for the same reason: somebody
+            # being put on the job is a different question from the cell
+            # having changed, and "כאשר משויך אדם ל«מנהל פרויקט»" has to hear
+            # it whoever typed the name in.
+            for _pe in _people_cell_events(_scol, _was, _now):
+                _run_automations(db, task, _ev(_pe["type"], **{k: v for k, v
+                                                               in _pe.items()
+                                                               if k != "type"}), actor)
         # a link being made or unmade is an event in its own right, and one edit
         # can do both in the same cell (a replacement), so both are reported
         for _k, (_added, _removed) in _link_delta.items():
