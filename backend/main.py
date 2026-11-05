@@ -1425,6 +1425,48 @@ def _status_col_options(raw):
             break
     return out or None
 
+
+# The vocabulary a status COLUMN falls back to when it has none of its own —
+# the same five words in the same colours as STATUS_OPTS in index.html, which
+# is where this list has lived alone until now.
+#
+# That it lived only in the browser is the whole of a bug worth writing down.
+# A status column born from the board's "+" is given this vocabulary outright
+# and stores it, so most columns have their own. A column that arrives without
+# one — imported from a monday export whose status column was empty and whose
+# file carried no column definitions, or made before columns were given a
+# vocabulary at all — has `options` of None, and the two halves of the product
+# then disagreed about what it offers. The grid falls back to this list in
+# statusColOpts and lets anybody pick from it. The form's options are served
+# by THIS process, which had no such list: a published form drew the question
+# as an empty "—" and refused every answer with "הערך אינו אחת האפשרויות",
+# while the form editor beside it — drawing from statusColOpts — showed the
+# five words and looked perfectly well. A question nobody could answer, in a
+# form that previewed correctly.
+#
+# `id` is None on purpose and is not an oversight: these options are not in
+# the column, so there is nothing for a cell to point AT. A cell written
+# against one carries the label and the colour, which is exactly what
+# pickStatusCell writes in the browser for the same pick.
+STATUS_COL_FALLBACK = (
+    {"id": None, "label": "בוצע", "color": "#1AC877"},
+    {"id": None, "label": "בטיפול", "color": "#FBAA47"},
+    {"id": None, "label": "תקוע", "color": "#DB2D4C"},
+    {"id": None, "label": "הקפאה", "color": "#FD5AC3"},
+    {"id": None, "label": "בוטל", "color": "#9BADBC"},
+)
+
+
+def _status_col_vocab(col):
+    """What a status column offers: its own list, or the default behind it.
+
+    One function so that what a form offers and what a form accepts cannot
+    drift apart — they are the two places that were already written twice.
+    """
+    return _status_col_options((col or {}).get("options")) or [
+        dict(o) for o in STATUS_COL_FALLBACK]
+
+
 # A board may define up to this many statuses. Only seven of them can be a
 # TaskStatus value — the ones the engine keys off for automation conditions,
 # kanban columns and charts. Any status beyond those seven is a board-defined label
@@ -1579,14 +1621,28 @@ def _board_role(db, board_id, user_id):
     """Board-scoped role (admin/editor/viewer) for a user, or None if no access."""
     if user_id is None:
         return None
+    # System (workspace) admins are admins of every board, and this is asked
+    # BEFORE the membership row rather than after it.
+    #
+    # Asked after, being invited to a board — an act that only ever adds — took
+    # rights away: a system administrator holds admin on every board they were
+    # never added to, and the moment somebody invited them to one as "חבר לוח"
+    # the explicit row answered "editor" and the board became the single place
+    # in the system they could not manage. That is how "מנהל מערכת לא יכול
+    # למחוק אוטומציה" happened: _can_manage_automations reads this function,
+    # saw "editor", and the delete came back 403 — on a board the same person
+    # administers in every other respect.
+    #
+    # An explicit row still decides everything for everybody else, and still
+    # decides the role of an admin's membership for anything that reads the row
+    # itself (the members list shows what they were invited as). What it no
+    # longer does is lower what being a system administrator already granted.
+    if _ws_role(db, user_id) == "admin":
+        return "admin"
     m = db.query(BoardMember).filter(BoardMember.board_id == board_id,
                                      BoardMember.user_id == user_id).first()
     if m:
         return m.role
-    # system (workspace) admins have admin access to every board, even ones
-    # they were never explicitly added to
-    if _ws_role(db, user_id) == "admin":
-        return "admin"
     # A public board is readable by everyone in its environment, with no invite.
     # Deliberately 'viewer': being able to see a board is not permission to
     # change it, so contributing still requires being invited. An explicit
@@ -4603,8 +4659,13 @@ def _form_question_shape(db, b, key, people_options=None):
         return None, []
     t = col.get("type") or "text"
     if t == "status":
-        return t, [{"value": o["id"], "label": o["label"]}
-                   for o in (_status_col_options(col.get("options")) or [])]
+        # `o["id"] or o["label"]` rather than the id alone: a column with no
+        # vocabulary of its own is answered by the default one, whose options
+        # are not in the column and so have no id to point at. The browser's
+        # own canvas has always keyed these the same way — see optionsFor in
+        # index.html, `o.id||o.label`.
+        return t, [{"value": o["id"] or o["label"], "label": o["label"]}
+                   for o in _status_col_vocab(col)]
     if t == "dropdown":
         return t, [{"value": o, "label": o} for o in (col.get("options") or [])]
     if t == "people":
@@ -4957,8 +5018,12 @@ def _form_value(db, b, c, ctype, val, label):
             if str(val) not in keys:
                 _form_bad(label, "הערך אינו אחת האפשרויות")
             return str(val)
-        opts = _status_col_options(col.get("options")) or []
-        hit = next((o for o in opts if str(o["id"]) == str(val)
+        # The same vocabulary the question was DRAWN from, default included —
+        # a form that offers five words and then refuses all five is worse
+        # than one that offers none.
+        opts = _status_col_vocab(col)
+        hit = next((o for o in opts
+                    if (o["id"] is not None and str(o["id"]) == str(val))
                     or o["label"] == str(val)), None)
         if not hit:
             _form_bad(label, "הערך אינו אחת האפשרויות")
