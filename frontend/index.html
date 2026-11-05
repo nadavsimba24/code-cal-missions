@@ -19051,6 +19051,16 @@ const FORM_BUILTIN_FIELDS=[
   {key:'priority', label:'עדיפות',   type:'priority'},
   {key:'due_date', label:'תאריך יעד',type:'date'},
 ];
+/* Which board column each built-in field IS, so the one question that
+   matters about it can be asked: is it still on the board?
+
+   col_hidden speaks the board's column keys, where the due date is `due`.
+   A form field calls that same thing `due_date`. The two vocabularies agree
+   everywhere else, and in that one place they do not — written down here
+   rather than left to line up by accident, because a lookup that silently
+   misses just stops hiding the one column it was asked about. */
+const FORM_BUILTIN_COL_KEY={title:'item', assignees:'assignees', status:'status',
+                            priority:'priority', due_date:'due'};
 
 /* Where every form-level setting lives on the loaded form, and what the
    server calls it. One map, read by both directions: an edit writes through
@@ -19372,7 +19382,34 @@ const FormEditor={
   available(){
     const used=new Set(((this.form&&this.form.components)||[])
       .filter(c=>c.kind==='question').map(c=>c.field_key));
-    const out=FORM_BUILTIN_FIELDS.filter(f=>!used.has(f.key)).map(f=>({...f}));
+    /* A built-in column the board does not show is not a field a form may
+       ask for. The five were offered unconditionally, and on an imported
+       board that is four questions about columns that are not there: the
+       monday import hides אחראים, סטטוס, עדיפות and תאריך יעד outright,
+       because the file fills none of them and they would otherwise stand in
+       front of the board as four columns of "טרם הוגדר".
+
+       What it looked like from the outside: a board whose own "עדיפות" is a
+       status column offered TWO fields called עדיפות, the hidden built-in
+       first and the real column under it, with nothing on the row to tell
+       them apart. Choosing the top one bound the question to a column the
+       board does not draw — the answer landed somewhere invisible, and the
+       question looked broken.
+
+       The same rule the filter panel already applies for the same reason:
+       see advFields, "a column taken off the board is not a column to filter
+       by". "שם הפריט" is exempt there and here — it is the item itself and
+       the board cannot hide it.
+
+       Only what is OFFERED. A question already bound to a built-in that was
+       hidden afterwards keeps working: hiding is reversible, `used` takes it
+       out of this list anyway, and fieldOf still resolves it for the
+       inspector. */
+    const gone=new Set(((st.board&&st.board.col_hidden)||[]).map(String));
+    const onBoard=f=>f.key==='title'
+      || !gone.has(FORM_BUILTIN_COL_KEY[f.key]||f.key);
+    const out=FORM_BUILTIN_FIELDS.filter(f=>!used.has(f.key)&&onBoard(f))
+                                 .map(f=>({...f}));
     (customColumns()||[]).forEach(c=>{
       if(DERIVED_COLS.includes(c.type)||used.has(c.id))return;
       out.push({key:c.id, label:c.title, type:c.type});

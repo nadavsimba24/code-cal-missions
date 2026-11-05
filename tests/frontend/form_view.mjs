@@ -241,6 +241,7 @@ const ctx=new Function(
   ${grabDecl('FORM_STATUS_HE')}
   ${grabDecl('FORM_FIELD_TYPE_HE')}
   ${grabDecl('FORM_BUILTIN_FIELDS')}
+  ${grabDecl('FORM_BUILTIN_COL_KEY')}
   ${grabDecl('FORM_SETTING_PATH')}
   ${grabDecl('FORM_SAVE_HE')}
   ${grabDecl('FORM_NEW_FIELD_TYPES')}
