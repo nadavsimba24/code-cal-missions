@@ -317,6 +317,18 @@ def _cell(item, field, kind, offset_min):
     if kind == "status":
         if v in (None, ""):
             return None
+        # A `dropdown` — "רשימה נפתחת" on screen — shares this kind with a
+        # status and does NOT share its shape: a status cell holds one option,
+        # a dropdown cell holds the LIST of options ticked in it, which is the
+        # whole point of the type. Read through the status branch as it stood,
+        # a list came back as its own repr — "['ראש העיר']" — so "שווה ל
+        # ראש העיר" matched nothing on a board where every row said so, "לא
+        # שווה ל" matched all of them, and a cell cleared back to [] counted
+        # as filled. The list is returned AS a list; is_empty already knows an
+        # empty one is empty, and match_rule compares by membership below.
+        if isinstance(v, list):
+            out = [(x.get("label") if isinstance(x, dict) else x) for x in v]
+            return [str(x) for x in out if x is not None and str(x) != ""]
         return v.get("label") if isinstance(v, dict) else str(v)
     if kind == "number":
         # `v in (None, "", False)` would be a trap here: in Python 0 == False,
@@ -416,6 +428,18 @@ def match_rule(item, rule, fields, today, offset_min, me_id):
         return got != want if op == "ne" else got == want
     if is_empty(c):
         return op in ("ne", "nhas")
+    # A cell holding SEVERAL values answers for any one of them. "שווה ל
+    # ראש העיר" asked of a multi-select means "ראש העיר is one of the things
+    # ticked here", not "it is the only thing ticked" — anything else makes
+    # the question unanswerable on a column built to take more than one
+    # answer. "לא שווה ל" is its exact negation, so the two still partition
+    # the board between them.
+    if isinstance(c, (list, tuple)):
+        vals = [str(x).lower() for x in c]
+        b = want.lower()
+        return {"eq": b in vals, "ne": b not in vals,
+                "has": any(b in a for a in vals),
+                "nhas": not any(b in a for a in vals)}.get(op, True)
     a, b = str(c).lower(), want.lower()
     return {"eq": a == b, "ne": a != b,
             "has": b in a, "nhas": b not in a}.get(op, True)

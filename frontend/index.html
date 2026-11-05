@@ -6896,6 +6896,18 @@ function advCell(t,f){
     }
     case 'status': {
       if(v==null||v==='')return null;
+      /* A `dropdown` — "רשימה נפתחת" — is asked about as a status and is not
+         SHAPED like one: a status cell holds the one option chosen, a
+         dropdown cell holds the LIST of options ticked in it. `typeof [] ===
+         'object'` is true, so the line below read an array as a status
+         object, found no `.label` on it, and answered null — every cell of
+         every dropdown on the board read as empty. "שווה ל" then matched
+         nothing, "ריק" matched everything, and the column looked like a
+         filter that does not run. Returned AS a list: advEmpty already knows
+         an empty one is empty, and advRuleMatch compares by membership. */
+      if(Array.isArray(v))
+        return v.map(x=>(x&&typeof x==='object')?x.label:x)
+                .filter(x=>x!=null&&String(x)!=='').map(String);
       return (typeof v==='object')?(v.label||null):String(v);
     }
     case 'number': {
@@ -7000,6 +7012,20 @@ function advRuleMatch(t,r){
     return String(got||'')===want;
   }
   if(advEmpty(got))return op==='ne'||op==='nhas';
+  /* A cell holding SEVERAL values answers for any one of them. "שווה ל
+     ראש העיר" asked of a multi-select means "ראש העיר is one of the things
+     ticked here" — on a column built to take more than one answer, anything
+     stricter is a question nobody can satisfy. "לא שווה ל" is its exact
+     negation, so the two still divide the board between them. Mirrors the
+     same branch in filter_ast.match_rule. */
+  if(Array.isArray(got)){
+    const vals=got.map(x=>String(x).toLowerCase()), b=want.toLowerCase();
+    if(op==='eq')  return vals.includes(b);
+    if(op==='ne')  return !vals.includes(b);
+    if(op==='has') return vals.some(a=>a.includes(b));
+    if(op==='nhas')return !vals.some(a=>a.includes(b));
+    return true;
+  }
   got=String(got);
   const a=got.toLowerCase(), b=want.toLowerCase();
   if(op==='eq')  return a===b;
@@ -13742,7 +13768,12 @@ function qfCounts(){
       else if(K==='check') bump(c===true?'yes|':'no|');
       // a cell with nothing in it is counted by ריק and is not a value of
       // its own — tallied as one it would be a number no chip ever shows
-      else if(K==='status'&&!blank)bump('eq|'+String(c));
+      // …and a dropdown cell holds several values, each of which is a chip
+      // in this panel. Tallied as `String(c)` the whole list became one key
+      // — "ראש העיר,מהנדס" — which matches no chip, so every option on a
+      // multi-select column showed a count of nothing beside it.
+      else if(K==='status'&&!blank)
+        (Array.isArray(c)?c:[c]).forEach(x=>bump('eq|'+String(x)));
     });
     if(K==='people'&&meId()!=null)n['has|me']=n['has|'+meId()]||0;
     if(K==='date')ADV_DATES.forEach(([tok])=>{
