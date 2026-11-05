@@ -13414,8 +13414,16 @@ const ColPerms = {
 const Members = {
   async open(){
     if(!st.board)return;
-    let d={members:[],available:[]}; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
-    this.data=d;
+    /* `null` when the request failed, and not the empty default: an empty
+       member list is never a true answer about a board you are looking at —
+       you are on it — so it can only mean the fetch did not land, and
+       syncing it would take every person off every picker on the board
+       because one request timed out. See _syncBoardPeople. */
+    let d=null; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
+    // the dialog still has to open and say so, so it falls back to the empty
+    // shape its own markup reads — what it must NOT do is write that through
+    this.data=d||{members:[],available:[]};
+    if(d) this._syncBoardPeople();
     showModal(`<h2><i class="fa-solid fa-user-shield" style="color:var(--primary)"></i> חברים והרשאות — ${esc(st.board.name)}</h2>
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> רק חברי הלוח רואים אותו. מנהל לוח מנהל הזמנות והרשאות. גישת אדמין אינה גלובלית — לוחות שלא הוזמנת אליהם אינם נראים.</div>
@@ -13435,6 +13443,46 @@ const Members = {
         <button class="btn btn-danger" style="margin-inline-start:auto" onclick="Members.deleteBoard()"><i class="fa-solid fa-trash"></i> מחק לוח</button>
       </div>`);
   },
+  /* The board's own list of who may be tagged — st.board.members, which
+     boardPeople() reads and therefore every picker on the page: a people
+     column, the assignee menu, the filter's people chips, a form's אנשים
+     question, and the chat's @ menu.
+
+     This dialog used to update only its own list. So a board admin invited
+     somebody, watched them appear in the dialog, closed it — and could not
+     tag them anywhere, because st.board.members still held the list the
+     board was loaded with. Only F5 fixed it, and "ללא רענון יזום" is exactly
+     what was missing. The live stream could not cover it either: Live drops
+     an event whose actor is me, on the grounds that I can already see what I
+     did, which is true of a row I edited and not of a picker I am not
+     looking at.
+
+     Built to the same rule as the board payload's own "members" key: active
+     accounts only, ordered by name. A member whose account was deactivated
+     stays in the dialog — somebody has to be able to take them off the board
+     — and is offered to no picker, because the server would refuse the tag.
+
+     The avatar comes down with the list; `was` is only for a server that has
+     not been restarted into the version that sends it, so a stale process
+     loses nobody's face. */
+  _syncBoardPeople(){
+    if(!st.board)return;
+    /* A board you can see always has at least one member — you. So a list
+       with nobody on it is a request that did not land, never a board with
+       nobody on it, and writing it through would empty every picker on the
+       page. Both callers already decline to sync a failed fetch; this is the
+       floor under them, because the cost of being wrong here is the whole
+       board losing its people over one timeout. */
+    const got=((this.data&&this.data.members)||[]);
+    if(!got.length)return;
+    const was=new Map(((st.board.members)||[]).map(m=>[m.id,m]));
+    st.board.members=(got
+      .filter(m=>m.is_active!==false)
+      .map(m=>({id:m.user_id, name:m.name,
+                avatar_url:(m.avatar_url!==undefined&&m.avatar_url!==null)
+                  ? m.avatar_url : ((was.get(m.user_id)||{}).avatar_url||null)}))
+      .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'he')));
+  },
   deleteBoard(){ if(st.board) deleteBoardById(st.board.id); },
   async toggleNotif(on){
     try{
@@ -13450,7 +13498,11 @@ const Members = {
       <button class="mem-del" title="הסר מהלוח" onclick="Members.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>
     </div>`).join('');
   },
-  async refresh(){ let d={members:[],available:[]}; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){} this.data=d;
+  async refresh(){ let d=null; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
+    // a failed fetch leaves the list that is on screen alone — see open()
+    if(!d) return;
+    this.data=d;
+    this._syncBoardPeople();
     const l=document.getElementById('mem-list'); if(l)l.innerHTML=this.listHTML();
     const s=document.getElementById('mem-user'); if(s)s.innerHTML=d.available.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')||'<option value="">— אין חברי סביבה שאפשר להוסיף —</option>';
   },

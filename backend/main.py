@@ -9708,7 +9708,16 @@ def list_board_members(board_id: int):
                         "email": u.email if u else "", "role": m.role,
                         # a member who was deactivated stays listed: somebody
                         # has to be able to see them and take them off the board
-                        "is_active": (u.is_active is not False) if u else True})
+                        "is_active": (u.is_active is not False) if u else True,
+                        # The face, because this list is no longer drawn only
+                        # in the members dialog: the browser rebuilds
+                        # st.board.members out of it the moment somebody is
+                        # invited, and that is the list every picker on the
+                        # board draws from. The board payload's own "members"
+                        # key carries exactly these three things; without the
+                        # avatar here, everyone just invited lost their photo
+                        # until the next full load of the board.
+                        "avatar_url": u.avatar_url if u else None})
         # Who could still be invited: never a deactivated account, and never
         # somebody from outside this board's environment — see
         # _outside_board_env, which the POST below holds to as well.
@@ -9763,6 +9772,21 @@ def add_board_member(board_id: int, data: dict, request: Request = None,
                             _board_invite_html(invitee.name, board.name,
                                                inviter.name if inviter else "מנהל הלוח",
                                                board.id, _app_base_url(request)))
+        # Everybody with this board open is looking at a stale list of who
+        # may be tagged in it. The board payload's "members" is what every
+        # picker draws from — a people column, the assignee menu, the
+        # filter's people chips, a form's אנשים question, the chat's @ menu —
+        # so a membership change is a change to the board itself, and is
+        # announced as one. board.changed is what the browser already
+        # reconciles a whole board on.
+        #
+        # The admin who made the change is deliberately NOT covered by this:
+        # Live.onEvent drops an event whose actor is me, on the grounds that I
+        # can already see what I did. Here I cannot — the dialog I am looking
+        # at is not the picker that went stale — so the browser updates
+        # st.board.members itself the moment this answers. Two halves, and
+        # neither is redundant: this one is for everyone else.
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
         return {"status": "ok", "invited": is_new}
 
 @app.patch("/api/boards/{board_id}/members/{uid}")
@@ -9782,6 +9806,9 @@ def update_board_member(board_id: int, uid: int, data: dict, actor_id: int = Dep
                     raise HTTPException(400, "חייב להישאר לפחות מנהל אחד ללוח")
             m.role = role
         db.commit()
+        # A role is who may do what, and a viewer is not offered where an
+        # editor is — the same reason as the invitation above.
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
         return {"status": "ok"}
 
 @app.delete("/api/boards/{board_id}/members/{uid}")
@@ -9804,6 +9831,10 @@ def remove_board_member(board_id: int, uid: int, actor_id: int = Depends(current
             _notify(db, uid, "board_remove", f"הוסרת מהלוח '{board.name if board else ''}'",
                     f"{(actor.name + ' ') if actor else ''}הסיר/ה אותך מהלוח.")
         db.commit()
+        # …and off every picker on the board, for the same reason. A name
+        # still offered after the person was removed is a tag the server
+        # refuses — see _can_be_assigned.
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
         return {"status": "removed"}
 
 # ── In-app notifications (התראות) ───────────────────────────────────
