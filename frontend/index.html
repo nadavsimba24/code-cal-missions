@@ -420,22 +420,15 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 /* board header
    Three stacked rows — title, view tabs, actions — cost some 170px before the
    first item of the board was on screen, on a page whose whole point is the
-   table underneath. They are two now: the board's identity on a short line, and
-   one bar carrying the view tabs at the start and the search/filter/new-item
-   actions at the far end. Nothing was removed, only re-seated. */
+   table underneath. They are still three, by request: the actions read better
+   on a line of their own than squeezed against the tabs, and a strip the eye
+   can run along in one direction is worth the row it costs. What came off is
+   the air — the title is a line rather than a banner, and every row is padded
+   for a header bar instead of a page heading. */
 #boardhead{background:var(--surface);padding:9px 22px 0;border-bottom:1px solid var(--border)}
 #boardhead .bh-top{display:flex;align-items:center;gap:10px;margin-bottom:3px;min-height:30px}
 #boardhead h1{font-size:17px;font-weight:800;display:flex;align-items:center;gap:8px;min-width:0}
 #boardhead .bh-desc{color:var(--text-muted);font-size:13px;font-weight:400}
-/* The one bar. The tabs never shrink — a half-drawn tab strip is unreadable —
-   so when the row runs out of room it is the toolbar that gives, and inside it
-   the search box, which has a sensible minimum and nothing else to lose. */
-.bh-bar{display:flex;align-items:stretch;gap:14px;min-width:0}
-.bh-bar>.tabs{flex:0 0 auto}
-.bh-bar>#toolbar{flex:0 1 auto;min-width:0;margin-inline-start:auto;align-self:center}
-/* The save-failed banner is drawn into the tab strip, and at its own 640px it
-   would shove the actions off the end of a bar they now share. */
-.bh-bar .save-failed{max-width:min(420px,32vw)}
 #boardhead .board-name{color:var(--text-strong)}
 #boardhead .board-name.editable{cursor:text;border-radius:6px;padding:1px 5px;margin-inline-start:-5px}
 #boardhead .board-name.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
@@ -469,9 +462,9 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .icon-sw:hover{border-color:var(--text-light)}
 .icon-sw.sel{border-color:var(--primary);background:var(--primary-soft);transform:scale(1.05)}
 
-/* toolbar — the action half of .bh-bar. No background, padding or rule of its
-   own any more: it sits on the header's surface and the header draws the line. */
-#toolbar{display:flex;align-items:center;gap:7px;padding:0}
+/* toolbar — its own row under the view tabs, on the header's surface and
+   closing the chrome off from the table. Padded for a strip, not a section. */
+#toolbar{background:var(--surface);display:flex;align-items:center;gap:7px;padding:6px 22px;border-bottom:1px solid var(--border)}
 .tb-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:6px;font-size:13px;color:var(--text-muted);white-space:nowrap}
 .tb-btn:hover{background:var(--row-hover);color:var(--text)}
 .tb-btn:disabled{opacity:.55;cursor:default}
@@ -479,7 +472,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 @keyframes tb-spin{to{transform:rotate(360deg)}}
 .tb-sep{width:1px;height:22px;background:var(--border);margin:0 3px}
 /* inline search */
-.tb-search{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border-strong);border-radius:7px;padding:0 10px;height:34px;width:210px;flex:0 1 210px;min-width:92px;transition:border-color .12s,box-shadow .12s,width .15s}
+.tb-search{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border-strong);border-radius:7px;padding:0 10px;height:34px;width:210px;transition:border-color .12s,box-shadow .12s,width .15s}
 .tb-search:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);width:240px}
 .tb-search i{color:var(--text-light);font-size:13px}
 .tb-search input{flex:1;border:none;background:none;font-family:inherit;font-size:13px;color:var(--text);padding:0;width:100%}
@@ -2556,7 +2549,7 @@ input.has-err:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--red,#d83a52) 25
 @media (hover:none),(pointer:coarse){ .sf-x{width:44px;height:44px} }
 
 /* ===== board screen — design polish (ui-ux-pro-max: clean · high-contrast · corporate) ===== */
-/* board header — calmer rhythm, elegant title, two rows instead of three */
+/* board header — calmer rhythm, elegant title, every row sized for a bar */
 #boardhead{padding:9px 26px 0}
 #boardhead .bh-top{margin-bottom:3px}
 #boardhead h1{font-weight:700;letter-spacing:-.015em;font-size:17px}
@@ -2564,8 +2557,8 @@ input.has-err:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--red,#d83a52) 25
 .tabs{gap:2px}
 .tab{padding:8px 13px;border-bottom-width:2px;transition:color .15s,background .15s,border-color .15s}
 .tab.active{font-weight:700}
-/* toolbar — a touch more air between its own controls, none around it */
-#toolbar{gap:8px}
+/* toolbar — a touch more air between its own controls */
+#toolbar{padding:7px 26px;gap:8px}
 #view{--view-pad:26px;padding:0 var(--view-pad) 22px}
 /* table — premium data grid: hairline frame, soft depth, refined header */
 .tbl{border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(29,42,68,.04), 0 8px 24px rgba(29,42,68,.055)}
@@ -2667,15 +2660,9 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   .tab-dd .tab-dd-caret{color:var(--text-light);font-size:12px;flex-shrink:0}
   /* the list matches the control it drops from, instead of the 170px a row menu wants */
   .view-pick-pop .row-menu{min-width:min(320px,86vw)}
-  /* No room for tabs and actions side by side on a phone: .bh-bar unstacks
-     into the two rows it used to be, the view picker above its own actions.
-     The negative inline margin lets the scrolling strip run to the screen
-     edge rather than stopping inside the header's padding. */
-  .bh-bar{flex-direction:column;align-items:stretch;gap:0}
-  .bh-bar>#toolbar{margin-inline-start:0;flex:none;align-self:stretch}
-  #toolbar{padding:0 12px 8px;margin-inline:-12px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap}
+  #toolbar{padding:8px 12px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap}
   #toolbar>*{flex-shrink:0}
-  .tb-search{width:150px;flex:0 0 150px}
+  .tb-search{width:150px}
   .tb-search:focus-within{width:160px}
   #view{--view-pad:12px;padding:0 var(--view-pad) 12px}
   /* modals go near-full-screen for reachability */
@@ -2826,37 +2813,36 @@ body, body *{ font-weight:400!important; }
         <h1 id="bh-title"><span class="spin" style="width:18px;height:18px;margin:0"></span></h1>
         <span class="bh-desc" id="bh-desc"></span>
       </div>
-      <!-- One bar: which view, then how it is cut, then the one thing you came
-           to do. It used to be two, and the tabs row carried nothing but tabs. -->
-      <div class="bh-bar">
-        <div class="tabs" id="tabs"></div>
-        <div id="toolbar">
-          <!-- One filter control with two doors: the button opens the panel of
-               values, the caret beside it opens the builder straight away. Not a
-               second filter button — it carries no label and no badge of its own,
-               and the badge on "סינון" goes on counting whatever is in the filter
-               whichever door wrote it. The panel's foot still leads to the builder
-               too, for somebody who gets there and finds that picking values is
-               not enough; this is the way in for somebody who already knows it. -->
-          <div class="tb-ctl" id="ctl-arrange">
-            <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון <span class="tb-badge" id="badge-arrange"></span></button>
-            <button class="tb-caret" title="סינון מתקדם — עמודה, אופרטור, ערך, וקבוצות של וגם/או"
-                    aria-label="סינון מתקדם" onclick="event.stopPropagation();closePops();Adv.open()"><i class="fa-solid fa-chevron-down"></i></button>
-            <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
-          </div>
-          <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
-          <div class="tb-search">
-            <i class="fa-solid fa-magnifying-glass"></i>
-            <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
-            <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
-          </div>
-          <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
-          <!-- The one thing you came here to do sits at the far end of the bar,
-               where nothing else competes with it. -->
-          <div class="tb-sep"></div>
-          <button class="btn btn-primary" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> פריט חדש</button>
-        </div>
+      <div class="tabs" id="tabs"></div>
+    </div>
+
+    <!-- The order is the order of the work: make an item, find one, narrow the
+         board to a few, put the board back. RTL reads the first of these at the
+         right-hand end of the strip, which is where the eye starts. -->
+    <div id="toolbar">
+      <button class="btn btn-primary" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> פריט חדש</button>
+      <div class="tb-sep"></div>
+      <div class="tb-search">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
+        <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
       </div>
+      <!-- One filter control with two doors: the button opens the panel of
+           values, the caret beside it opens the builder straight away. Not a
+           second filter button — it carries no label and no badge of its own,
+           and the badge on "סינון" goes on counting whatever is in the filter
+           whichever door wrote it. The panel's foot still leads to the builder
+           too, for somebody who gets there and finds that picking values is
+           not enough; this is the way in for somebody who already knows it. -->
+      <div class="tb-ctl" id="ctl-arrange">
+        <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון <span class="tb-badge" id="badge-arrange"></span></button>
+        <button class="tb-caret" title="סינון מתקדם — עמודה, אופרטור, ערך, וקבוצות של וגם/או"
+                aria-label="סינון מתקדם" onclick="event.stopPropagation();closePops();Adv.open()"><i class="fa-solid fa-chevron-down"></i></button>
+        <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
+      </div>
+      <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
+      <div style="flex:1"></div>
+      <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
     </div>
 
     <div id="view"><div class="spin"></div></div>
