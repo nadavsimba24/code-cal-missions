@@ -43,11 +43,16 @@ ck('the title keeps its own line above the bar',
 
 /* The order along the bar is the order of the question being asked: which view,
    then how it is cut, then the one thing you came here to do. "פריט חדש" is
-   last so it lands at the far end of the row with nothing competing with it. */
+   last so it lands at the far end of the row with nothing competing with it.
+
+   Filter before search, and in RTL that puts it at the right-hand end of the
+   actions — nearest the tabs, because narrowing the board is the question you
+   ask of a view before you ask it anything else. "נקה סינון" stays beside the
+   filter it clears rather than on the far side of the search box. */
 const tb = /<div id="toolbar">([\s\S]*?)\n        <\/div>/.exec(src);
-const order = ['tb-search','ctl-arrange','tb-clear','openNewItem()']
+const order = ['ctl-arrange','tb-clear','tb-search','openNewItem()']
   .map(k => tb ? tb[1].indexOf(k) : -1);
-ck('search, then filter, then the new-item button at the end',
+ck('filter, its clear, then search, then the new-item button at the end',
    order.every(i=>i>=0) && order.every((v,i)=>i===0||v>order[i-1]), String(order));
 
 // ── the bar gives in the right order when it is crowded ────────────────────

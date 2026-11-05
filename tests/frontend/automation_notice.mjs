@@ -368,5 +368,39 @@ const last=()=>modals[modals.length-1]||'';
   ck('…a save with no dialog behind it changes nothing', drawn===1, drawn);
 }
 
+/* ── and the two doors that were not buttons ──────────────────────────────
+   «שמור נוסח», ביטול and the × were each repaired one at a time. Dismissing
+   is not a button, though: the page backdrop and Escape both ran closeModals
+   straight, which shut the automations window and read as the half-built rule
+   being thrown away — the same complaint, through the openings the repair did
+   not cover. Both give the open sub-screen first refusal now.
+
+   dismissModal lives outside Automations, so it is lifted out of the source
+   and run against a stub rather than through build(). */
+{
+  const fn = /function dismissModal\(\)\{[\s\S]*?\n\}/.exec(src);
+  ck('there is one place that decides what a dismissal means', !!fn);
+  ck('the page backdrop asks it rather than closing outright',
+     /id="overlay" onclick="dismissModal\(\)"/.test(src),
+     (/id="overlay" onclick="[^"]*"/.exec(src)||[])[0]);
+  ck('…and so does Escape',
+     /Automations\.closeTimeline\(\); return; \}\n  dismissModal\(\);/.test(src));
+
+  /* Guarded rather than left to throw: a harness that dies names nothing, and
+     the whole point of these lines is to say which door was left open. */
+  const run = !fn ? () => ({back:-1, shut:-1}) : (notice) => {
+    let back=0, shut=0;
+    const f = new Function('window','closeModals', fn[0]+' return dismissModal;')
+      ({Automations:{_noticeInto:notice, _noticeBack(){back++;}}}, ()=>{shut++;});
+    f(); return {back, shut};
+  };
+  let r = run({key:'a_notice',into:null});
+  ck('with the notice editor open a dismissal goes back to the rule',
+     r.back===1 && r.shut===0, JSON.stringify(r));
+  r = run(null);
+  ck('…and with nothing in front of it, it closes as it always did',
+     r.back===0 && r.shut===1, JSON.stringify(r));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

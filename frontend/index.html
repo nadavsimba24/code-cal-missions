@@ -1855,14 +1855,15 @@ img.pf-av{object-fit:cover;background:#fff}
 .av-ini{width:100%;height:100%;display:grid;place-items:center;border-radius:50%;color:#fff;font-size:inherit;font-weight:inherit;line-height:1;letter-spacing:.3px;text-transform:uppercase}
 .pf-name{font-size:19px;font-weight:800;line-height:1.2}
 .pf-role{font-size:13px;opacity:.92;margin-top:3px}
-.pf-body{padding:16px 22px 4px}
+/* The 4px that used to close the card was enough while a row of status chips
+   sat at the bottom carrying its own height. The card ends on a toggle row now,
+   and 4px under one of those reads as the card having been cut off. */
+.pf-body{padding:16px 22px 14px}
 .pf-row{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--text);padding:7px 0}
 .pf-row i{width:18px;color:var(--text-light);text-align:center;font-size:14px}
 .pf-row a{color:var(--primary);text-decoration:none}
 .pf-row a:hover{text-decoration:underline}
 .pf-sec{font-size:11px;font-weight:700;color:var(--text-light);text-transform:uppercase;letter-spacing:.4px;margin:14px 0 9px;border-top:1px solid var(--border);padding-top:13px}
-.pf-stats{display:flex;flex-wrap:wrap;gap:6px}
-.pf-stat-chip{color:#fff;border-radius:12px;padding:3px 11px;font-size:12px;font-weight:600}
 .pf-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
 .pf-row.pf-toggle{justify-content:space-between}
 .pf-row.pf-toggle>span{display:flex;align-items:center;gap:11px}
@@ -2830,11 +2831,6 @@ body, body *{ font-weight:400!important; }
       <div class="bh-bar">
         <div class="tabs" id="tabs"></div>
         <div id="toolbar">
-          <div class="tb-search">
-            <i class="fa-solid fa-magnifying-glass"></i>
-            <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
-            <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
-          </div>
           <!-- One filter control with two doors: the button opens the panel of
                values, the caret beside it opens the builder straight away. Not a
                second filter button — it carries no label and no badge of its own,
@@ -2849,6 +2845,11 @@ body, body *{ font-weight:400!important; }
             <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
           </div>
           <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
+          <div class="tb-search">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
+            <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
+          </div>
           <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
           <!-- The one thing you came here to do sits at the far end of the bar,
                where nothing else competes with it. -->
@@ -2901,7 +2902,7 @@ body, body *{ font-weight:400!important; }
   </div>
 </div>
 
-<div class="overlay" id="overlay" onclick="closeModals()"></div>
+<div class="overlay" id="overlay" onclick="dismissModal()"></div>
 <div class="modal" id="modal"></div>
 
 <!-- Item conversation slideover -->
@@ -6362,11 +6363,6 @@ const Profile = {
     const deptColor=dept?dept.color:'#0073ea';
     const wsm=(st.wsMembers||[]).find(m=>m.user_id===userId);
     const wsRole=wsm?WSROLE_HE[wsm.role]:null;
-    // tasks assigned to this user in the current board, grouped by status
-    const tasks=((st.board&&st.board.tasks)||[]).filter(t=>(t.assignees||[]).some(a=>a.id===userId));
-    const byStatus={}; tasks.forEach(t=>{byStatus[t.status]=(byStatus[t.status]||0)+1;});
-    const chips=Object.entries(byStatus).map(([s,n])=>`<span class="pf-stat-chip" style="background:${bStat(s).c}">${esc(bStat(s).he)} · ${n}</span>`).join('')
-      ||'<span style="color:var(--text-light);font-size:12.5px">אין משימות משויכות בלוח זה</span>';
     const avInner=u.avatar_url?`<img class="pf-av" src="${esc(u.avatar_url)}" alt="">`:`<span class="pf-av">${avatarInner(u)}</span>`;
     const canEditAv=(userId===meId()||isSysAdmin());
     // the camera uploads; the × removes and falls back to the initials avatar
@@ -6406,8 +6402,6 @@ const Profile = {
         <div class="pf-row pf-toggle"><span><i id="theme-ic" class="fa-solid ${Settings.isDark()?'fa-moon':'fa-sun'} theme-ic ${Settings.isDark()?'moon':'sun'}"></i> <span id="theme-lbl">${Settings.themeLabel()}</span></span>
           <label class="switch"><input type="checkbox" ${Settings.isDark()?'checked':''} onchange="Settings.setTheme(this.checked)"><span class="slider"></span></label>
         </div>`:''}
-        <div class="pf-sec">משימות בלוח "${esc((st.board&&st.board.name)||'')}" · ${tasks.length}</div>
-        <div class="pf-stats">${chips}</div>
       </div>
       `);
     document.getElementById('modal').classList.add('profile-modal');
@@ -22203,8 +22197,34 @@ document.addEventListener('keydown',e=>{
   // the backdrop click does — otherwise Escape on an open timeline throws away
   // the log behind it as well
   if(window.Automations&&Automations.tl){ Automations.closeTimeline(); return; }
-  closeModals();
+  dismissModal();
 });
+
+/* Dismissing by backdrop or by Escape means "I am done with what is in front of
+   me" — and when a sub-screen is in front, that is the sub-screen, not the work
+   behind it.
+
+   «נוסח ההתראה» is the case this exists for. The timeline draws its own
+   backdrop inside the automations window, so a click beside it is already a
+   click on the timeline's own way out; the notice editor instead takes #modal
+   over wholesale, and the only backdrop left around it is the page's. So
+   clicking beside it, or pressing Escape, ran closeModals() and shut the
+   automations window — and the half-built rule behind it read as thrown away,
+   which is exactly the complaint «שמור נוסח» and ביטול were repaired for. They
+   were repaired one button at a time; these are the two doors that was not a
+   button, and they stayed open.
+
+   Everything else dismisses as it always did. closeModals() is still what the
+   ×, the explicit "סגור" buttons and every deliberate close call — this is only
+   about the two gestures that mean "go back". */
+function dismissModal(){
+  /* Read through `window.` rather than the bare global: the guard and the call
+     then name the same thing, and a dismissal cannot become a backdrop that
+     does nothing at all because one of them resolved and the other threw. */
+  const A=window.Automations;
+  if(A&&A._noticeInto){ A._noticeBack(); return; }
+  closeModals();
+}
 
 function closeModals(){const m=document.getElementById('modal');m.classList.remove('open','confirm-modal','profile-modal','modal-wide','modal-80','modal-narrow');document.getElementById('overlay').classList.remove('open','confirm-overlay');}
 /* styled confirmation dialog (replaces native confirm) */
