@@ -45,7 +45,11 @@ const env = {
 };
 const names = Object.keys(env);
 const make = code => new Function(...names, code).apply(null, names.map(n => env[n]));
-const itemRow = make(grab('itemRow') + '; return itemRow;');
+// the row's conversation badge is its own function now (it reads the board's
+// grey-after-how-many-days threshold), so it comes along — a stub here would
+// be this harness drawing a cell the board does not
+const itemRow = make(grab('chatStaleDays') + grab('chatIdleDays')
+                     + grab('chatBtnHTML') + grab('itemRow') + '; return itemRow;');
 
 let html = itemRow(TASK, '#579bfc');
 ck('a closed row still carries its wrap, so lookups by data-parent keep working',
@@ -124,7 +128,10 @@ const env3={
   searchingHTML:()=>'SEARCHING',
   Paged:{on:false},
   groupHTML:g=>`<div class="group" data-g="${g.id}"></div>`,
-  groupEst:g=>g.tasks.length*47+160,
+  // the slot a group takes in the list: the group itself plus the gap under
+  // it. vTable asks for the slot and not the bare height on purpose — a
+  // spacer standing in for a dozen groups stands in for their gaps too.
+  groupSlot:g=>g.tasks.length*47+160+16,
   addGroupBtnHTML:()=>'<button class="add-group-btn"></button>',
   wireTable:()=>{ wired++; },
   fitLinkChips:()=>{},
@@ -146,8 +153,8 @@ ck('the first frame draws the group on screen and no other',
 ck('...and the rest is queued, not dropped', typeof deferred==='function');
 const res=/class="grp-reserve" style="height:(\d+)px"/.exec(painted);
 ck('...with a spacer holding exactly the height they will need',
-   !!res && +res[1]===(223*47+160)*2,
-   res?('reserved '+res[1]+'px, expected '+((223*47+160)*2)):painted);
+   !!res && +res[1]===(223*47+160+16)*2,
+   res?('reserved '+res[1]+'px, expected '+((223*47+160+16)*2)):painted);
 ck('...so the scrollbar is the right length from the first frame, not growing later',
    !!res);
 ck('the wiring ran for what was drawn', wired===1, 'wired '+wired+' times');

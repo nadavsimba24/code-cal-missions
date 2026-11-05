@@ -55,7 +55,11 @@ const env = {
 };
 const names = Object.keys(env);
 const make = code => new Function(...names, code).apply(null, names.map(n => env[n]));
-const itemRow = make(grab('itemRow') + '; return itemRow;');
+// the row's conversation badge is its own function now (it reads the board's
+// grey-after-how-many-days threshold), so it comes along — a stub here would
+// be this harness drawing a cell the board does not
+const itemRow = make(grab('chatStaleDays') + grab('chatIdleDays')
+                     + grab('chatBtnHTML') + grab('itemRow') + '; return itemRow;');
 
 const html = itemRow(TASK, '#579bfc');
 

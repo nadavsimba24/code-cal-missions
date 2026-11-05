@@ -67,7 +67,7 @@ def test_upload_size_limit_is_10mb(client):
     assert r.status_code == 413, r.text
 
 
-def test_chat_file_delete_and_permissions(client):
+def test_chat_file_delete_and_permissions(client, guinea_id):
     """A chat attachment appears in the item's files, can be deleted by its
     uploader (removing it from the comment + files list + the stored blob), and a
     different non-privileged user is refused."""
@@ -80,8 +80,14 @@ def test_chat_file_delete_and_permissions(client):
     try:
         files = client.get("/api/tasks/1/files").json()["files"]
         assert any(f["url"] == url for f in files)
-        # a non-privileged, non-uploader user cannot delete it
-        r = client.post("/api/tasks/1/files/delete", json={"user_id": 5, "url": url})
+        # a non-privileged, non-uploader user cannot delete it. Named by the
+        # fixture and not by the number 5: that id belonged to nobody when this
+        # was written, so the refusal was really "no such user", and the first
+        # test file that created a user of its own took the id and turned the
+        # case into its opposite — a system administrator, who may delete it.
+        # guinea is a board-1 editor, which for a CHAT attachment is exactly
+        # the unprivileged non-uploader this case is about.
+        r = client.post("/api/tasks/1/files/delete", json={"user_id": guinea_id, "url": url})
         assert r.status_code == 403
         # the uploader deletes it → gone from the list and the blob is removed
         r = client.post("/api/tasks/1/files/delete", json={"user_id": 1, "url": url})

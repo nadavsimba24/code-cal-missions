@@ -52,12 +52,101 @@ def test_every_group_states_the_height_it_will_turn_out_to_be():
     """
     assert "contain-intrinsic-height:auto ${est}px" in SRC, (
         "vTable stopped writing a per-group estimate")
+    # ...and it is the one the reserve spacer uses, asked of the same function.
+    # Two copies of this sum drift apart, and a wrong estimate does not fail —
+    # it jumps.
+    assert "const est=groupEst(g);" in SRC, (
+        "groupHTML works the estimate out for itself again instead of asking "
+        "groupEst, so the group and the spacer that reserves its room can "
+        "disagree")
+    body = _fn_body("groupEst")
     # the estimate has to follow the row count, not be a constant
-    est = re.search(r"const est=shut\?\d+:\(g\.tasks\.length\*(\w+)\(\)\+(\w+)\)", SRC)
-    assert est, "the estimate no longer scales with the number of rows"
-    fn, const = est.groups()
+    assert re.search(r"tasks\.length\*(\w+)\(\)", body), (
+        "the estimate no longer scales with the number of rows")
+    fn = re.search(r"tasks\.length\*(\w+)\(\)", body).group(1)
     assert f"function {fn}(" in SRC, f"{fn} is not defined"
-    assert re.search(r"\b" + const + r"\s*=\s*\d+", SRC), f"{const} is not defined"
+    assert re.search(r"\bGROUP_CHROME_EST\s*=\s*\d+", SRC), "GROUP_CHROME_EST is not defined"
+
+
+def _fn_body(name):
+    """The source of one top-level function, by brace counting."""
+    i = SRC.index(f"function {name}(")
+    j = SRC.index("{", i)
+    depth, k = 0, j
+    while k < len(SRC):
+        if SRC[k] == "{":
+            depth += 1
+        elif SRC[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return SRC[j:k + 1]
+        k += 1
+    raise AssertionError(f"{name} does not close")
+
+
+def test_a_group_says_what_its_own_furniture_costs():
+    """The jump that was left, and why it was only on SOME boards.
+
+    One constant stood in for furniture that is not the same on every board.
+    A group whose number column has values in it draws a סה"כ row under the
+    rows — on the boards that have a number column and on no others — and it
+    was counted nowhere: a dozen such groups are some six hundred pixels the
+    board does not know it owns, and it spends them one group at a time as
+    each comes into view. An open sub-item panel is a nested table, and it was
+    counted as nothing at all.
+    """
+    body = _fn_body("groupEst")
+    assert "groupHasSum(g)" in body and "sumRowEst()" in body, (
+        "a group that totals a number column draws a סה\"כ row the estimate "
+        "does not know about, and the board jumps by one row per group")
+    assert "subPanelEst(t)" in body, (
+        "an open sub-item panel is a whole nested table and the estimate "
+        "counts it as nothing")
+    # groupHasSum has to answer the same question groupSumRowHTML answers by
+    # building one — the number columns, and whether any of them is filled in
+    ask = _fn_body("groupHasSum")
+    assert "customColumns()" in ask and "'number'" in ask, (
+        "groupHasSum no longer asks about the number columns")
+
+
+def test_the_spacer_reserves_the_gaps_between_the_groups_too():
+    """A margin is outside the box the estimate describes.
+
+    The spacer stands in for a dozen groups, so it stands in for the gaps
+    under them as well — without them the board is a dozen gaps shorter than
+    it will be, and spends the difference the moment the groups arrive.
+    """
+    assert "n+groupSlot(g)" in SRC, "the reserve no longer goes through groupSlot"
+    slot = _fn_body("groupSlot")
+    assert "groupEst(g)" in slot and "GROUP_GAP" in slot, (
+        "the slot is no longer the group plus the gap under it")
+    gap = re.search(r"GROUP_GAP=(\d+)", SRC)
+    assert gap, "GROUP_GAP is gone"
+    css = re.search(r"\n\.group\{([^}]*)\}", SRC).group(1)
+    real = re.search(r"margin-bottom:(\d+)px", css)
+    assert real and int(real.group(1)) == int(gap.group(1)), (
+        f"the gap under a group is {real and real.group(1)}px on screen but "
+        f"the spacer reserves {gap.group(1)}px")
+
+
+def test_the_furniture_is_corrected_from_the_screen_as_well():
+    """A constant drifts; a measurement does not — and not only for the row."""
+    body = _fn_body("learnRowHeight")
+    for part in ("m.chrome=chrome", "m.sum=Math.round(sh)"):
+        assert part in body, f"learnRowHeight stopped measuring: {part}"
+    assert "function learnSubPanel(" in SRC and "learnSubPanel(el,m)" in SRC, (
+        "nothing measures a real sub-item panel")
+    assert "function learnFoldedGroup(" in SRC and "learnFoldedGroup(el,m)" in SRC, (
+        "nothing measures a folded group — the written-down 64 went on being "
+        "claimed after the gap under a group moved from 22px to 16px")
+    # ...and a measurement must not land between the two halves of one render:
+    # the spacer and the groups it reserves room for are drawn a frame apart,
+    # and sizing them from different numbers is the jump itself.
+    assert "_estNext=m" in body, (
+        "learnRowHeight applies its measurement at once instead of holding it "
+        "for the next render")
+    assert "useLatestMeasurements();" in SRC and "function useLatestMeasurements(" in SRC, (
+        "nothing promotes the measurement at the start of a render")
     assert "auto " in SRC[SRC.index("contain-intrinsic-height:auto ${est}px"):][:42], (
         "the estimate must be `auto <length>`, so the browser replaces it with "
         "the real size once the group has been rendered once")

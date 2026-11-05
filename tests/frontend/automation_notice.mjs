@@ -49,9 +49,18 @@ let COLS_NOW=COLS.slice();
 const st={board:{id:1,name:'לוח',groups:[],my_role:'admin',col_perms:{},
                  columns:COLS.slice(),tasks:[]},boards:[]};
 let modals=[], area=null, mailBox=null;
+/* The notice dialog and the rule being written share ONE #modal — showModal
+   rewrites it — so the only way to tell "went back to the rule" from "threw
+   the rule away" is to watch whether closeModals was called and whether the
+   element kept the class the automations window is sized by. */
+let closed=0, modalEl=null, xBtn=null, overlayEl=null;
+const fakeEl=(...cls)=>({classList:{_s:new Set(cls),add(c){this._s.add(c);},
+  remove(c){this._s.delete(c);},contains(c){return this._s.has(c);}}});
 
 function build(){
-  modals=[]; COLS_NOW=COLS.slice();
+  modals=[]; COLS_NOW=COLS.slice(); closed=0;
+  modalEl=fakeEl('open','modal-80'); overlayEl=fakeEl('open');
+  xBtn={attr:{},setAttribute(k,v){this.attr[k]=v;}};
   area={value:'',focus(){},setSelectionRange(){}};
   mailBox={checked:false};
   const A=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','fdate',
@@ -67,9 +76,10 @@ function build(){
     ()=>'', ()=>[], ()=>[],
     ()=>COLS_NOW.slice(), ()=>[], ()=>false, ()=>1, async()=>({}),
     ()=>{}, ()=>{}, ()=>{},
-    h=>modals.push(h), ()=>{},
-    {getElementById:id=>(id==='au-notice'?area:(id==='au-notice-mail'?mailBox:null)),
-     querySelector:()=>null, querySelectorAll:()=>[]},
+    h=>modals.push(h), ()=>{closed++;},
+    {getElementById:id=>(id==='au-notice'?area:(id==='au-notice-mail'?mailBox
+                        :(id==='modal'?modalEl:(id==='overlay'?overlayEl:null)))),
+     querySelector:sel=>(sel==='#modal .modal-x'?xBtn:null), querySelectorAll:()=>[]},
     ()=>{}, {getItem:()=>null,setItem(){}},
     t=>t, (t,f)=>null);
   A.conds=[]; A.maxConds=3; A.maxActs=4; A.members=[{user_id:3,name:'דנה'}];
@@ -302,6 +312,60 @@ const last=()=>modals[modals.length-1]||'';
   const v=((A.building.acts[0]||{}).values||{}).notice;
   ck('…and stores it on that action', v && v.v.text==='של הפעולה הנוספת', JSON.stringify(v));
   ck('…and not on the sentence', A.building.values['a_notice']===undefined);
+}
+
+/* ── every way out of the dialog goes back to the rule ────────────────────
+   The dialog is not a window of its own: it took the automations window over.
+   So the save button called closeModals(), the whole thing shut, render()
+   found the modal closed and returned without drawing anything — and the
+   trigger, the conditions and every blank filled in up to that point were
+   still sitting in `building` with no screen left to show them. It read as
+   "pressing שמור נוסח deletes the automation". ביטול did the same. */
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  ck('ביטול goes back to the rule', last().includes('onclick="Automations._noticeBack()">ביטול'), last());
+  ck('…and nothing in the dialog still closes the window',
+     !/onclick="closeModals\(\)"/.test(last()), last());
+  ck('the × of the sub-screen goes back too, not out',
+     xBtn.attr.onclick==='Automations._noticeBack()', JSON.stringify(xBtn.attr));
+}
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  let drawn=0; A.render=()=>drawn++;
+  area.value='היי,\nלרשות: {{שם הפריט}}';
+  A.saveNotice();
+  ck('saving the wording does not shut the window', closed===0, 'closeModals ×'+closed);
+  ck('…it draws the rule again', drawn===1, drawn);
+  ck('…the rule being written is still the one it was',
+     A.building && A.building.recipe===RECIPE, A.building&&A.building.recipe);
+  ck('…the wording it just saved is on it',
+     (A.building.values['a_notice']||{}).label==='התראה מותאמת');
+  ck('…and the window is back at the size the automations screen uses',
+     modalEl.classList.contains('modal-80'));
+}
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  area.value='משהו'; A.saveNotice();
+  await A.pickField(EV,'a_notice');
+  let drawn=0; A.render=()=>drawn++;
+  A.clearNotice();
+  ck('«חזרה לנוסח הרגיל» also comes back to the rule', closed===0 && drawn===1,
+     'closeModals ×'+closed+', render ×'+drawn);
+  ck('…having cleared the blank', A.building.values['a_notice']===undefined);
+}
+{
+  const A=build();
+  await A.pickField(EV,'a_notice');
+  let drawn=0; A.render=()=>drawn++;
+  A._noticeBack();
+  ck('going back twice in a row does not reopen anything', modals.length===1, modals.length);
+  ck('…and the dialog it left is forgotten, so a stray save cannot land',
+     A._noticeInto===null, A._noticeInto);
+  A.saveNotice();
+  ck('…a save with no dialog behind it changes nothing', drawn===1, drawn);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -260,7 +260,7 @@ const ctx=new Function(
   const vKanban=vTable, vDashboard=vTable, vCeo=vTable, vCalendar=vTable, vMap=vTable,
         vGis=vTable, vWorkPlan=vTable, vBudget=vTable, vApprovals=vTable, vGantt=vTable,
         vLinks=vTable, vCeoEnhanced=vTable;
-  function learnRowHeight(){} function renderSelBar(){}
+  function learnRowHeight(){} function useLatestMeasurements(){} function renderSelBar(){}
   function syncItemColWidth(){} function fitLinkChips(){}
   ${grab('boardViewsRaw')}
   ${grab('boardViews')}

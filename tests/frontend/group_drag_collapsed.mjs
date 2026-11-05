@@ -1,7 +1,7 @@
 /* A folded board can still be put in order.
 
    A group in its collapsed state is a name and nothing else — some 28px of
-   header — and the 22px that separates it from the next group was margin.
+   header — and the gap that separates it from the next group was margin.
    Margin belongs to no element, so a pointer in it hit-tests to the board
    rather than to a group, and Sortable, asked what the row is being dragged
    over, is told "nothing". With almost half of every slot answering that way, a
@@ -29,16 +29,19 @@ const rule = re => { const m=re.exec(src); return m?m[0]:null; };
 const collapsed = rule(/\.group:has\(>\.grp-stick>\.group-head\.collapsed\)\{[^}]*\}/);
 ck('a collapsed group has a rule of its own', !!collapsed);
 ck('and the gap under it is padding — inside the box the pointer can hit',
-   !!collapsed && /padding-bottom:22px/.test(collapsed), collapsed);
+   !!collapsed && /padding-bottom:\d+px/.test(collapsed), collapsed);
 ck('with the margin that used to hold that space taken back off',
    !!collapsed && /margin-bottom:0/.test(collapsed), collapsed);
 
-/* the two together are what keeps the board looking identical: 22px of margin
-   traded for 22px of padding, so nothing on screen moves by a pixel */
+/* The two together are what keeps the board looking identical: the margin an
+   expanded group spaces itself with, traded for the same number of pixels of
+   padding, so nothing on screen moves when a group folds. The number itself is
+   a design decision and has changed since — what is pinned here is that the two
+   stay equal, not which value they settled on. */
 const gap = s => { const m=/(\d+)px/.exec(s||''); return m?+m[1]:null; };
 const base = rule(/\.group\{[^}]*\}/);
 ck('an expanded group still spaces itself with margin, untouched',
-   !!base && /margin-bottom:22px/.test(base) && !/padding-bottom/.test(base), base);
+   !!base && /margin-bottom:\d+px/.test(base) && !/padding-bottom/.test(base), base);
 ck('and the space taken is the same either way, so the board does not shift',
    gap(base)===gap(collapsed), base+' vs '+collapsed);
 

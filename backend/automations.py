@@ -871,6 +871,25 @@ TRIGGERS = {
     # this product, so a recurring rule is swept when the board is read, and
     # "every 0 days" would be "on every read".
     "every_n_days":        "כל {days} ימים",
+    # ── a conversation going quiet ──
+    # Every other trigger here fires on something somebody DID. This one fires
+    # on nobody having done anything: an item whose thread has had no update
+    # for {days} days. It is the "בועית אפורה" the board already draws — the
+    # chat icon on a row goes from blue to grey once its last update is older
+    # than the board's threshold — said as a rule, so the same silence that
+    # greys the icon can also notify somebody about it.
+    #
+    # And it is where that threshold LIVES. The board greys at
+    # CHAT_STALE_DAYS_DEFAULT until a rule of this kind is switched on, and at
+    # whatever the rule says afterwards (see _board_chat_stale_days). One
+    # number, in one place, said once: a board that greys at ten days and
+    # notifies at seven would be two different definitions of "ללא מענה", and
+    # the icon is the one people read.
+    #
+    # MIN_IDLE_DAYS is a floor for the same reason MIN_EVERY_DAYS is: there is
+    # no scheduler here, the rule is swept when the board is read, and "0 ימים
+    # ללא עדכון" would be every item on every read.
+    "chat_idle_days":      "{days} ימים ללא עדכון בשיחת הפריט",
     # ── a sub-item finishing, reported to its PARENT ──
     # The item the rule then acts on is the parent, which is what makes
     # "עדכן שדה בפריט האב" every action the catalog already has rather than a
@@ -976,6 +995,12 @@ MAX_TRIGGER_DAYS = 365
 # counts is days and because the sweep that runs it happens when somebody opens
 # the board — anything finer would be a promise the engine cannot keep.
 MIN_EVERY_DAYS = 1
+# The shortest silence a "ללא עדכון בשיחה" rule may watch for, and the number
+# of days a board greys its chat bubbles at while no such rule is switched on.
+# Seven because that is the week the specification names, and because a bubble
+# that greys the day after somebody wrote in it says nothing about the item.
+MIN_IDLE_DAYS = 1
+CHAT_STALE_DAYS_DEFAULT = 7
 
 COPY_FIELDS = {
     "status":      "סטטוס",
@@ -1665,6 +1690,25 @@ RECIPES = [
     {"id": "every_days_post_update", "trigger": "every_n_days", "action": "post_update",
      "fields": [_f("t_days", "days", "כל כמה ימים", min=MIN_EVERY_DAYS),
                 _f("a_text", "text", "תוכן העדכון")]},
+    # ── ללא עדכון בשיחה ──
+    # The chase's quieter twin: "כל 7 ימים" comes round whatever anybody did,
+    # and this one comes round only where nobody did anything. Paired with the
+    # four actions that read as an answer to silence — tell the אחראים, tell a
+    # named person, move the status, or write in the thread itself, which is
+    # the one action that ends the silence it was called about.
+    {"id": "chat_idle_notify_assignees", "trigger": "chat_idle_days",
+     "action": "notify_assignees",
+     "fields": [_f("t_days", "days", "ימים ללא עדכון", min=MIN_IDLE_DAYS)]},
+    {"id": "chat_idle_notify_person", "trigger": "chat_idle_days",
+     "action": "notify_person",
+     "fields": [_f("t_days", "days", "ימים ללא עדכון", min=MIN_IDLE_DAYS),
+                _f("a_person", "recipient", "נמען")]},
+    {"id": "chat_idle_set_status", "trigger": "chat_idle_days", "action": "set_status",
+     "fields": [_f("t_days", "days", "ימים ללא עדכון", min=MIN_IDLE_DAYS),
+                _f("a_status", "status", "סטטוס")]},
+    {"id": "chat_idle_post_update", "trigger": "chat_idle_days", "action": "post_update",
+     "fields": [_f("t_days", "days", "ימים ללא עדכון", min=MIN_IDLE_DAYS),
+                _f("a_text", "text", "תוכן העדכון")]},
     {"id": "due_near_notify_assignees", "trigger": "due_date_near",
      "action": "notify_assignees", "conds": ["status_is_not"],
      "fields": [_f("t_days", "days", "ימים לפני")]},
@@ -1804,6 +1848,9 @@ _TRIGGER_TAGS = {
     "person_unassigned":        ("assign",),
     "due_date_near":            ("date",),
     "due_date_passed":          ("date",),
+    # "ימים ללא עדכון" is a clock, like the two above it — a number of days
+    # is what a person searching for it has in mind
+    "chat_idle_days":           ("date",),
 }
 _ACTION_TAGS = {
     "notify_person":    ("notify",),
@@ -1902,6 +1949,11 @@ EXTRA_TEMPLATES = [
      "כאשר נוצר פריט, מלא ערך בעמודה"),
     ("moved_group_create_in_board",
      "כאשר פריט מועבר לקבוצה, צור פריט בלוח אחר"),
+    # Named, because the bare sentence ("7 ימים ללא עדכון בשיחת הפריט, שלח
+    # התראה למשויכים") does not say the other half of what switching it on
+    # does: it is also where the board's grey-bubble threshold is set.
+    ("chat_idle_notify_assignees",
+     "כאשר שיחת הפריט שותקת כמה ימים, שלח התראה לאחראים — וקבע מתי הבועית מאפירה"),
 ]
 
 LIBRARY_TEMPLATES = MVP_TEMPLATES + EXTRA_TEMPLATES

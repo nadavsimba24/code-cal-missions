@@ -417,11 +417,25 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .btn-ai{background:linear-gradient(120deg,#0073ea,#00c875);color:#fff}
 .btn-ai:hover{filter:brightness(1.05)}
 
-/* board header */
-#boardhead{background:var(--surface);padding:14px 22px 0;border-bottom:1px solid var(--border)}
-#boardhead .bh-top{display:flex;align-items:center;gap:12px;margin-bottom:10px}
-#boardhead h1{font-size:22px;font-weight:800;display:flex;align-items:center;gap:10px}
+/* board header
+   Three stacked rows — title, view tabs, actions — cost some 170px before the
+   first item of the board was on screen, on a page whose whole point is the
+   table underneath. They are two now: the board's identity on a short line, and
+   one bar carrying the view tabs at the start and the search/filter/new-item
+   actions at the far end. Nothing was removed, only re-seated. */
+#boardhead{background:var(--surface);padding:9px 22px 0;border-bottom:1px solid var(--border)}
+#boardhead .bh-top{display:flex;align-items:center;gap:10px;margin-bottom:3px;min-height:30px}
+#boardhead h1{font-size:17px;font-weight:800;display:flex;align-items:center;gap:8px;min-width:0}
 #boardhead .bh-desc{color:var(--text-muted);font-size:13px;font-weight:400}
+/* The one bar. The tabs never shrink — a half-drawn tab strip is unreadable —
+   so when the row runs out of room it is the toolbar that gives, and inside it
+   the search box, which has a sensible minimum and nothing else to lose. */
+.bh-bar{display:flex;align-items:stretch;gap:14px;min-width:0}
+.bh-bar>.tabs{flex:0 0 auto}
+.bh-bar>#toolbar{flex:0 1 auto;min-width:0;margin-inline-start:auto;align-self:center}
+/* The save-failed banner is drawn into the tab strip, and at its own 640px it
+   would shove the actions off the end of a bar they now share. */
+.bh-bar .save-failed{max-width:min(420px,32vw)}
 #boardhead .board-name{color:var(--text-strong)}
 #boardhead .board-name.editable{cursor:text;border-radius:6px;padding:1px 5px;margin-inline-start:-5px}
 #boardhead .board-name.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
@@ -455,8 +469,9 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .icon-sw:hover{border-color:var(--text-light)}
 .icon-sw.sel{border-color:var(--primary);background:var(--primary-soft);transform:scale(1.05)}
 
-/* toolbar */
-#toolbar{background:var(--surface);display:flex;align-items:center;gap:7px;padding:9px 22px;border-bottom:1px solid var(--border)}
+/* toolbar — the action half of .bh-bar. No background, padding or rule of its
+   own any more: it sits on the header's surface and the header draws the line. */
+#toolbar{display:flex;align-items:center;gap:7px;padding:0}
 .tb-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:6px;font-size:13px;color:var(--text-muted);white-space:nowrap}
 .tb-btn:hover{background:var(--row-hover);color:var(--text)}
 .tb-btn:disabled{opacity:.55;cursor:default}
@@ -464,7 +479,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 @keyframes tb-spin{to{transform:rotate(360deg)}}
 .tb-sep{width:1px;height:22px;background:var(--border);margin:0 3px}
 /* inline search */
-.tb-search{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border-strong);border-radius:7px;padding:0 10px;height:34px;width:210px;transition:border-color .12s,box-shadow .12s,width .15s}
+.tb-search{display:flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border-strong);border-radius:7px;padding:0 10px;height:34px;width:210px;flex:0 1 210px;min-width:92px;transition:border-color .12s,box-shadow .12s,width .15s}
 .tb-search:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);width:240px}
 .tb-search i{color:var(--text-light);font-size:13px}
 .tb-search input{flex:1;border:none;background:none;font-family:inherit;font-size:13px;color:var(--text);padding:0;width:100%}
@@ -930,7 +945,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    scrollbar would stretch to fit a width nothing is drawn at. With the width
    axis left at `none` a skipped group measures empty across, which is what it
    is, and takes the container's width. */
-.group{margin-bottom:22px;min-width:max-content;content-visibility:auto;contain-intrinsic-width:none;contain-intrinsic-height:auto 600px}
+.group{margin-bottom:16px;min-width:max-content;content-visibility:auto;contain-intrinsic-width:none;contain-intrinsic-height:auto 600px}
 /* ...and that is also why a re-render loses the sideways scroll position.
    Every group is built fresh, a fresh content-visibility:auto element starts
    SKIPPED — the browser has not decided yet which of them are on screen — and
@@ -954,7 +969,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    same spacing on screen, and a slot that answers along its whole height.
    Expanded groups are left alone — theirs is a gap under a tall table, not a
    hole in the middle of the list. */
-.group:has(>.grp-stick>.group-head.collapsed){margin-bottom:0;padding-bottom:22px}
+.group:has(>.grp-stick>.group-head.collapsed){margin-bottom:0;padding-bottom:16px}
 .group-head{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;padding-bottom:6px;cursor:pointer;position:sticky;top:0;z-index:5;background:var(--bg)}
 .group-head .caret{transition:.15s;font-size:12px;cursor:pointer;padding:4px;margin:-4px;border-radius:5px}
 .group-head .caret:hover{background:var(--row-hover)}
@@ -2050,7 +2065,16 @@ img.pf-av{object-fit:cover;background:#fff}
 .chat-btn{margin-inline-start:auto;display:inline-flex;align-items:center;gap:4px;color:var(--text-light);font-size:12px;padding:3px 7px;border-radius:12px;opacity:0;transition:.12s}
 .tbl tr:hover .chat-btn{opacity:1}
 .chat-btn.has{opacity:1;color:var(--primary);background:var(--primary-soft);font-weight:600}
+/* A thread nobody has written in for the board's threshold of days. Still a
+   conversation — still shown, still counted — but no longer the blue that says
+   "there is something here", because after a week of silence there is not.
+   The grey is the palette's own --dark-grey on a plain hover-grey ground, so
+   it reads as a dimmed version of the badge beside it rather than as a
+   different badge. Comes after .has on purpose: both classes are on the
+   element and this one is the later word. */
+.chat-btn.has.stale{color:var(--dark-grey);background:var(--row-hover)}
 .chat-btn:hover{background:var(--row-hover);color:var(--primary)}
+.chat-btn.has.stale:hover{color:var(--primary)}
 
 /* ===== conversation slideover ===== */
 /* The item whose conversation is open. The panel covers part of the board, so
@@ -2531,16 +2555,16 @@ input.has-err:focus{box-shadow:0 0 0 2px color-mix(in srgb,var(--red,#d83a52) 25
 @media (hover:none),(pointer:coarse){ .sf-x{width:44px;height:44px} }
 
 /* ===== board screen — design polish (ui-ux-pro-max: clean · high-contrast · corporate) ===== */
-/* board header — calmer rhythm, more elegant title */
-#boardhead{padding:18px 26px 0}
-#boardhead .bh-top{margin-bottom:14px}
-#boardhead h1{font-weight:700;letter-spacing:-.015em;font-size:23px}
+/* board header — calmer rhythm, elegant title, two rows instead of three */
+#boardhead{padding:9px 26px 0}
+#boardhead .bh-top{margin-bottom:3px}
+#boardhead h1{font-weight:700;letter-spacing:-.015em;font-size:17px}
 /* tabs — refined, tighter, cleaner active state */
 .tabs{gap:2px}
-.tab{padding:10px 15px;border-bottom-width:2px;transition:color .15s,background .15s,border-color .15s}
+.tab{padding:8px 13px;border-bottom-width:2px;transition:color .15s,background .15s,border-color .15s}
 .tab.active{font-weight:700}
-/* toolbar — a touch more air */
-#toolbar{padding:11px 26px;gap:8px}
+/* toolbar — a touch more air between its own controls, none around it */
+#toolbar{gap:8px}
 #view{--view-pad:26px;padding:0 var(--view-pad) 22px}
 /* table — premium data grid: hairline frame, soft depth, refined header */
 .tbl{border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(29,42,68,.04), 0 8px 24px rgba(29,42,68,.055)}
@@ -2642,9 +2666,15 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   .tab-dd .tab-dd-caret{color:var(--text-light);font-size:12px;flex-shrink:0}
   /* the list matches the control it drops from, instead of the 170px a row menu wants */
   .view-pick-pop .row-menu{min-width:min(320px,86vw)}
-  #toolbar{padding:8px 12px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap}
+  /* No room for tabs and actions side by side on a phone: .bh-bar unstacks
+     into the two rows it used to be, the view picker above its own actions.
+     The negative inline margin lets the scrolling strip run to the screen
+     edge rather than stopping inside the header's padding. */
+  .bh-bar{flex-direction:column;align-items:stretch;gap:0}
+  .bh-bar>#toolbar{margin-inline-start:0;flex:none;align-self:stretch}
+  #toolbar{padding:0 12px 8px;margin-inline:-12px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap}
   #toolbar>*{flex-shrink:0}
-  .tb-search{width:150px}
+  .tb-search{width:150px;flex:0 0 150px}
   .tb-search:focus-within{width:160px}
   #view{--view-pad:12px;padding:0 var(--view-pad) 12px}
   /* modals go near-full-screen for reachability */
@@ -2795,33 +2825,37 @@ body, body *{ font-weight:400!important; }
         <h1 id="bh-title"><span class="spin" style="width:18px;height:18px;margin:0"></span></h1>
         <span class="bh-desc" id="bh-desc"></span>
       </div>
-      <div class="tabs" id="tabs"></div>
-    </div>
-
-    <div id="toolbar">
-      <button class="btn btn-primary" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> פריט חדש</button>
-      <div class="tb-sep"></div>
-      <div class="tb-search">
-        <i class="fa-solid fa-magnifying-glass"></i>
-        <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
-        <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
+      <!-- One bar: which view, then how it is cut, then the one thing you came
+           to do. It used to be two, and the tabs row carried nothing but tabs. -->
+      <div class="bh-bar">
+        <div class="tabs" id="tabs"></div>
+        <div id="toolbar">
+          <div class="tb-search">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <input id="tb-q" placeholder="חיפוש פריטים..." oninput="setSearch(this.value)" aria-label="חיפוש פריטים">
+            <button class="tb-q-clear" id="tb-q-clear" onclick="setSearch('')" title="נקה חיפוש"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+          <!-- One filter control with two doors: the button opens the panel of
+               values, the caret beside it opens the builder straight away. Not a
+               second filter button — it carries no label and no badge of its own,
+               and the badge on "סינון" goes on counting whatever is in the filter
+               whichever door wrote it. The panel's foot still leads to the builder
+               too, for somebody who gets there and finds that picking values is
+               not enough; this is the way in for somebody who already knows it. -->
+          <div class="tb-ctl" id="ctl-arrange">
+            <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון <span class="tb-badge" id="badge-arrange"></span></button>
+            <button class="tb-caret" title="סינון מתקדם — עמודה, אופרטור, ערך, וקבוצות של וגם/או"
+                    aria-label="סינון מתקדם" onclick="event.stopPropagation();closePops();Adv.open()"><i class="fa-solid fa-chevron-down"></i></button>
+            <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
+          </div>
+          <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
+          <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
+          <!-- The one thing you came here to do sits at the far end of the bar,
+               where nothing else competes with it. -->
+          <div class="tb-sep"></div>
+          <button class="btn btn-primary" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> פריט חדש</button>
+        </div>
       </div>
-      <!-- One filter control with two doors: the button opens the panel of
-           values, the caret beside it opens the builder straight away. Not a
-           second filter button — it carries no label and no badge of its own,
-           and the badge on "סינון" goes on counting whatever is in the filter
-           whichever door wrote it. The panel's foot still leads to the builder
-           too, for somebody who gets there and finds that picking values is
-           not enough; this is the way in for somebody who already knows it. -->
-      <div class="tb-ctl" id="ctl-arrange">
-        <button class="tb-btn" onclick="togglePop('arrange')"><i class="fa-solid fa-sliders"></i> סינון <span class="tb-badge" id="badge-arrange"></span></button>
-        <button class="tb-caret" title="סינון מתקדם — עמודה, אופרטור, ערך, וקבוצות של וגם/או"
-                aria-label="סינון מתקדם" onclick="event.stopPropagation();closePops();Adv.open()"><i class="fa-solid fa-chevron-down"></i></button>
-        <div class="tb-pop tb-pop-wide tb-pop-qf" id="pop-arrange"></div>
-      </div>
-      <button class="tb-btn tb-clear" id="tb-clear" onclick="clearFilters()"><i class="fa-solid fa-xmark"></i> נקה סינון</button>
-      <div style="flex:1"></div>
-      <button class="tb-btn" style="display:none" onclick="AI.quick('summarize')"><i class="fa-solid fa-wand-magic-sparkles" style="color:var(--primary)"></i> סיכום AI</button>
     </div>
 
     <div id="view"><div class="spin"></div></div>
@@ -6157,6 +6191,9 @@ function renderView(){
     FormEditor.paint(el);
     return;
   }
+  // whatever the last render measured off the screen comes into force here,
+  // at the start of a render, and not part-way through one — see _estNext
+  useLatestMeasurements();
   const key=(st.board?st.board.id:'-')+'/'+st.view;
   const same=(key===_viewScrollKey);
   // rebuilding innerHTML drops the scroll offset — remember it first, and the
@@ -11278,8 +11315,13 @@ const Automations = {
       <div class="mfoot">
         <button class="btn btn-primary" onclick="Automations.saveNotice()"><i class="fa-solid fa-check"></i> שמור נוסח</button>
         ${text?`<button class="btn btn-ghost" onclick="Automations.clearNotice()"><i class="fa-solid fa-rotate-left"></i> חזרה לנוסח הרגיל</button>`:''}
-        <button class="btn btn-ghost" onclick="closeModals()">ביטול</button>
+        <button class="btn btn-ghost" onclick="Automations._noticeBack()">ביטול</button>
       </div>`);
+    /* The × belongs to this sub-screen and not to the automations window
+       behind it — showModal writes its own, pointed at closeModals, and
+       leaving it there is the same lost rule by another button. */
+    const x=document.querySelector('#modal .modal-x');
+    if(x) x.setAttribute('onclick','Automations._noticeBack()');
     setTimeout(()=>{const t=document.getElementById('au-notice'); if(t){t.focus();
       t.setSelectionRange(t.value.length,t.value.length);}},30);
   },
@@ -11304,12 +11346,34 @@ const Automations = {
     // empty box with the mail switch on clears the blank rather than storing a
     // flag nobody would ever find again
     this._putNotice(c, text?{v:{text:text,mail:mail},label:'התראה מותאמת',color:''}:undefined);
-    closeModals(); this.render();
+    this._noticeBack();
   },
   clearNotice(){
     const c=this._noticeInto; if(!c)return;
     this._putNotice(c,undefined);
-    closeModals(); this.render();
+    this._noticeBack();
+  },
+  /* Back to the rule being written — the screen this dialog came from.
+     There is one #modal on the page and showModal rewrites it, so opening the
+     notice had already replaced the half-built rule on screen; closing the
+     modal from here therefore read as throwing the rule away. It never was
+     thrown away: `building` still held the trigger, the conditions and every
+     blank filled in so far, and render() simply returned without drawing them
+     because it found the modal shut. Save, «חזרה לנוסח הרגיל», ביטול and the
+     × all come back here, to the same rule with the same blanks — and the
+     notice is in `building` by the time save calls this, so the sentence shows
+     what was just written in it. */
+  _noticeBack(){
+    this._noticeInto=null;
+    const m=document.getElementById('modal'); if(!m)return;
+    // open() widened the automations window; showModal stripped that class off
+    // when it took the element over
+    m.classList.add('modal-80');
+    if(!m.classList.contains('open')){
+      m.classList.add('open');
+      document.getElementById('overlay').classList.add('open');
+    }
+    this.render();
   },
   _putNotice(c,cell){
     let vals;
@@ -14474,22 +14538,151 @@ let _itemDragFrom=null, _subDragFrom=null, _groupDragFrom=null;
    which is what tests/test_board_paint_skips_offscreen.py checks.
 
    _rowH corrects it from the screen after the first render, so a CSS change or
-   a zoom level does not quietly put the jumping back. */
-const ROW_H_EST=47, GROUP_CHROME_EST=160;
-let _rowH=0;
-function rowHeightEst(){ return _rowH||ROW_H_EST; }
-/* Measure one real row and keep it. Cheap: one element, read once per render. */
+   a zoom level does not quietly put the jumping back.
+
+   And then the jump came back on SOME boards and not on others — which is the
+   tell that what is being guessed is not the same thing on every board. One
+   constant was standing in for furniture that varies:
+
+     · a group whose number column has values in it draws a סה"כ row under
+       the rows (see groupSumRowHTML) — a whole row of furniture that exists on
+       the boards with a number column and on no others, and it was counted
+       nowhere. A board of a dozen such groups was some six hundred pixels
+       shorter than it said it was, and spent them one group at a time as each
+       came into view;
+     · an open sub-item panel is a nested table with a header and an add-row of
+       its own, and it was counted as nothing at all.
+
+   So the estimate is per group rather than per board, and the furniture is
+   measured off the screen rather than written down — the same treatment the
+   row height already had, for the same reason: a constant drifts. The
+   constants below are only what is used before anything has been drawn once. */
+const ROW_H_EST=47, GROUP_CHROME_EST=160, SUM_ROW_EST=47,
+      SUB_ROW_EST=39, SUB_CHROME_EST=85, FOLD_EST=64, GROUP_GAP=16;
+/* What the screen last said these come to — and the one the render in progress
+   is allowed to read.
+
+   They are two on purpose. A board is drawn in two halves a frame apart (see
+   vTable): the spacer that reserves room for the groups below the fold, and
+   then those groups. The measurement is taken in between the two. Letting it
+   land there would size the spacer from one set of numbers and the groups it
+   stands in for from another — the exact jump this is all here to stop. So a
+   measurement is held until the next render begins, and renderView promotes
+   it; within one render nothing moves under the estimate's feet. */
+const _est={row:0,chrome:0,sum:0,subRow:0,subChrome:0,fold:0};
+let _estNext=null;
+function useLatestMeasurements(){ if(_estNext){ Object.assign(_est,_estNext); _estNext=null; } }
+function rowHeightEst(){ return _est.row||ROW_H_EST; }
+function groupChromeEst(){ return _est.chrome||GROUP_CHROME_EST; }
+function sumRowEst(){ return _est.sum||SUM_ROW_EST; }
+/* Measure what is really on screen and keep it. Cheap: a handful of elements,
+   read once per render.
+
+   Only off a group the browser has actually laid out, though. A group that
+   content-visibility is still skipping measures the estimate it was handed a
+   moment ago rather than what it would come to, so believing it would make
+   the guess confirm itself — whatever we said the group was, it would
+   measure. Its rows collapse to nothing, and that is the tell. */
 function learnRowHeight(el){
+  const m=Object.assign({},_est,_estNext||{});
   const tr=el.querySelector('.tbl tbody tr[data-tid]');
-  if(!tr)return;
-  const h=tr.getBoundingClientRect().height;
-  if(h>8&&h<200)_rowH=Math.round(h);
+  const h=tr?tr.getBoundingClientRect().height:0;
+  if(h>8&&h<200){
+    m.row=Math.round(h);
+    /* The furniture is what is left of the group once everything countable is
+       taken out of it: its rows, the סה"כ row if it has one, and any sub-item
+       panel standing open inside it. */
+    const grp=tr.closest('.group');
+    if(grp){
+      let inner=grp.querySelectorAll('.tbl tbody tr[data-tid]').length*m.row, ok=true;
+      const sum=grp.querySelector('tfoot .group-sum');
+      if(sum){
+        const sh=sum.getBoundingClientRect().height;
+        if(sh>8&&sh<200){ m.sum=Math.round(sh); inner+=m.sum; }
+        else ok=false;                  // not laid out after all — learn nothing from it
+      }
+      grp.querySelectorAll('tr.sub-wrap').forEach(w=>{ inner+=w.getBoundingClientRect().height; });
+      const chrome=Math.round(grp.getBoundingClientRect().height-inner);
+      if(ok&&chrome>40&&chrome<500)m.chrome=chrome;
+    }
+  }
+  learnSubPanel(el,m);
+  learnFoldedGroup(el,m);
+  _estNext=m;
 }
-/* The height a group will come to once it is drawn — its rows plus its own
-   furniture. Shared by the group itself (contain-intrinsic-size) and by the
-   spacer that holds the place of the groups not drawn yet. */
+/* …and a folded group, which is a name, the summary line that only a folded
+   one shows, and the gap under it. Written down it was 64, and the gap moved
+   from 22px to 16px when the board header was compacted — the kind of drift
+   that nobody notices because a wrong estimate does not fail, it jumps. */
+function learnFoldedGroup(el,m){
+  const head=el.querySelector('.group-head.collapsed');
+  if(!head)return;
+  const hh=head.getBoundingClientRect().height;
+  if(!(hh>8&&hh<200))return;            // its group is skipped, not drawn
+  const grp=head.closest('.group');
+  if(!grp)return;
+  const h=Math.round(grp.getBoundingClientRect().height);
+  if(h>8&&h<300)m.fold=h;
+}
+/* The same, for the panel a sub-item list is drawn in: a row of it, and the
+   header and add-row that frame however many rows there are. */
+function learnSubPanel(el,m){
+  const sr=el.querySelector('.sub-panel .subtbl tbody tr[data-sid]');
+  if(!sr)return;
+  const h=sr.getBoundingClientRect().height;
+  if(!(h>8&&h<200))return;
+  m.subRow=Math.round(h);
+  const panel=sr.closest('.sub-panel');
+  if(!panel)return;
+  const rows=panel.querySelectorAll('.subtbl tbody tr[data-sid]').length;
+  // the panel's own margins sit outside its box and the wrap row carries
+  // them, so the room it takes is measured from the row rather than the panel
+  const wrap=panel.closest('tr.sub-wrap');
+  const chrome=Math.round((wrap||panel).getBoundingClientRect().height-rows*m.subRow);
+  if(chrome>20&&chrome<400)m.subChrome=chrome;
+}
+/* The room an open sub-item panel takes under its row. Closed ones take none:
+   the panel is not built until it is opened (see itemRow). */
+function subPanelEst(t){
+  if(!st.openSubs.has(t.id))return 0;
+  return (t.subtasks||[]).length*(_est.subRow||SUB_ROW_EST)+(_est.subChrome||SUB_CHROME_EST);
+}
+/* Will this group draw a סה"כ row? The same question groupSumRowHTML answers
+   by building one, asked without building anything: one number column with
+   one usable value in it anywhere in the group is enough, and both .some()
+   calls stop at it. */
+function groupHasSum(g){
+  const nums=customColumns().filter(c=>c.type==='number');
+  if(!nums.length)return false;
+  return (g.tasks||[]).some(t=>{
+    const cf=t.custom_fields||{};
+    return nums.some(c=>{
+      const v=cf[c.id];
+      return v!=null&&v!==''&&isFinite(Number(v));
+    });
+  });
+}
+/* The height a group will come to once it is drawn — its rows, whatever is
+   open inside them, and its own furniture. Shared by the group itself
+   (contain-intrinsic-height) and by the spacer that holds the place of the
+   groups not drawn yet, which is why the two can never disagree. */
 function groupEst(g){
-  return groupCollapsed(g.id) ? 64 : (g.tasks.length*rowHeightEst()+GROUP_CHROME_EST);
+  if(groupCollapsed(g.id))return _est.fold||FOLD_EST;
+  const tasks=g.tasks||[];
+  let h=tasks.length*rowHeightEst()+groupChromeEst();
+  if(groupHasSum(g))h+=sumRowEst();
+  // the walk is skipped outright when nothing is open, which is most of the
+  // time and most of the rows: this runs once per group per render, and a
+  // board can be ten thousand rows
+  if(st.openSubs.size)tasks.forEach(t=>{ h+=subPanelEst(t); });
+  return Math.round(h);
+}
+/* ...and the room the group occupies in the list, which is that plus the gap
+   under it. The gap is a margin, so it is outside the box the estimate above
+   describes — and the spacer that stands in for a dozen groups stands in for
+   their gaps too, or the board is a dozen gaps shorter until they arrive. */
+function groupSlot(g){
+  return groupEst(g)+(groupCollapsed(g.id)?0:GROUP_GAP);
 }
 function groupHTML(g){
     const col=g.color||'#0073ea';
@@ -14527,8 +14720,13 @@ function groupHTML(g){
         </span></div>`;
     /* The height this group will turn out to be, so the scrollbar is honest
        before the browser has laid it out (see .group in the CSS). A collapsed
-       group is a name and nothing else. */
-    const est=shut?64:(g.tasks.length*rowHeightEst()+GROUP_CHROME_EST);
+       group is a name and nothing else.
+
+       Asked of groupEst rather than worked out again here: the spacer that
+       holds the place of the groups not yet drawn asks the same function, and
+       two copies of this sum would drift apart — one of them silently, since
+       a wrong estimate does not fail, it jumps. */
+    const est=groupEst(g);
     // the block axis only — see .group in the CSS. As the shorthand this also
     // claimed `est` pixels of width for a skipped group, and inline styles beat
     // the sheet, so the width axis had to be named here rather than there.
@@ -14596,7 +14794,7 @@ function vTable(el){
      deferred groups' height is held by a spacer, so the scrollbar is the right
      length from the first frame and does not grow under her hand. */
   const rest=groups.slice(1);
-  const reserve=rest.reduce((n,g)=>n+groupEst(g),0);
+  const reserve=rest.reduce((n,g)=>n+groupSlot(g),0);
   el.innerHTML = groups.slice(0,1).map(groupHTML).join('')
     + (rest.length ? `<div class="grp-reserve" style="height:${reserve}px"></div>`
                    : addGroupBtnHTML());
@@ -14788,6 +14986,37 @@ document.addEventListener('mousedown',cellTipHide,true);
 document.addEventListener('scroll',cellTipHide,true);
 window.addEventListener('blur',cellTipHide);
 
+/* ---- the conversation badge on a row ---- */
+/* Blue while the thread is live, grey once it has gone quiet for as long as
+   the board says (board.chat_stale_days, which is set by the "ללא עדכון
+   בשיחה" automation — see _board_chat_stale_days). Seven days until a board
+   says otherwise.
+
+   Only a badge that was BLUE can go grey: an item nobody has ever written on
+   has no conversation to have gone quiet, and coming back from the server
+   wearing a "nobody answered" colour would be a complaint about a thread that
+   does not exist. That is also why this reads last_comment_at and not
+   updated_at — somebody flipping a status is not somebody answering. */
+function chatStaleDays(){
+  const d=st.board&&+st.board.chat_stale_days;
+  return (d&&d>0)?d:7;
+}
+function chatIdleDays(t){
+  if(!t.last_comment_at)return null;
+  const at=new Date(t.last_comment_at);
+  if(isNaN(at))return null;
+  return (Date.now()-at.getTime())/86400000;
+}
+function chatBtnHTML(t){
+  const n=t.comment_count||0;
+  const idle=n?chatIdleDays(t):null;
+  const stale=idle!=null&&idle>=chatStaleDays();
+  const title=!n?'שיחה'
+    :stale?`שיחה · ללא עדכון כבר ${Math.floor(idle)} ימים`
+    :'שיחה';
+  return `<button class="chat-btn ${n?'has':''}${stale?' stale':''}" title="${esc(title)}" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${n?`<span>${n}</span>`:''}</button>`;
+}
+
 /* ============ items + sub-items (פריט / תת-פריט) ============ */
 function itemRow(t,col){
   const subs=sortedSubs(t.subtasks||[]);
@@ -14801,7 +15030,7 @@ function itemRow(t,col){
         <button class="sub-toggle ${open?'open':''}" title="תת-פריטים" onclick="toggleSubs(event,${t.id})"><i class="fa-solid fa-caret-left"></i></button>
         <span class="item-title editable" data-tipf="${esc(t.title)}" data-tiph="לחץ לעריכת השם" onclick="titleEdit(event,${t.id})">${esc(t.title)}</span>
         ${cnt?`<span class="sub-badge${open?' open':''}" role="button" tabindex="0" title="${cnt} תת-פריטים · לחץ להצגה/הסתרה" onclick="toggleSubs(event,${t.id})" onkeydown="if(event.key==='Enter'||event.key===' ')toggleSubs(event,${t.id})"><i class="fa-solid fa-diagram-next"></i> ${cnt}</span>`:''}
-        <button class="chat-btn ${t.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${t.id})"><i class="fa-regular fa-comment"></i>${t.comment_count?`<span>${t.comment_count}</span>`:''}</button>
+        ${chatBtnHTML(t)}
       </div></td>
       ${rowCellsAfterItem(t)}
       <td class="cell"></td>
@@ -14882,7 +15111,7 @@ function subItemRowHTML(s,cols,admin,parentId){
   return `<tr class="sub-item-row" data-sid="${s.id}" data-parent="${parentId}">
       <td class="sub-name-cell" data-tipf="${esc(s.title)}"><div class="ci-flex">
         <span class="item-title editable" data-tipf="${esc(s.title)}" data-tiph="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
-        <button class="chat-btn ${s.comment_count?'has':''}" title="שיחה" onclick="Chat.open(${s.id})"><i class="fa-regular fa-comment"></i>${s.comment_count?`<span>${s.comment_count}</span>`:''}</button>
+        ${chatBtnHTML(s)}
         <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button>
       </div></td>
       ${rest}
@@ -20903,7 +21132,12 @@ const Chat = {
     // is updated from it. It used to come from bump() — a second, identical
     // GET of the whole thread fired immediately before every renderChat — so
     // posting one comment read the entire conversation back twice.
-    if(d){ const _t=findAnyTask(this.taskId); if(_t&&_t.comment_count!==d.count){ _t.comment_count=d.count; if(st.view==='table')renderView(); } }
+    // …and the moment of the newest message with it, so posting into a thread
+    // that had gone grey turns the badge blue again without a board reload
+    if(d){ const _t=findAnyTask(this.taskId);
+      if(_t&&(_t.comment_count!==d.count||_t.last_comment_at!==d.last_comment_at)){
+        _t.comment_count=d.count; _t.last_comment_at=d.last_comment_at||null;
+        if(st.view==='table')renderView(); } }
     // flat id→comment lookup (incl. replies) so the "seen by" hover can find viewers
     this._commentsById={}; const _flat=arr=>arr.forEach(c=>{this._commentsById[c.id]=c; if(c.replies)_flat(c.replies);}); _flat(this.comments);
     const list=this.comments.length? this.comments.map(c=>this.commentHTML(c)).join('')

@@ -1173,6 +1173,25 @@ def _cap(db, uid, cap):
     return bool(row and row.allowed)
 
 
+def _ws_role_stored(db, uid, wanted):
+    """What the workspace screen may actually store for `uid`.
+
+    The screen offers מנהל / חבר / צופה and writes whichever was chosen. On a
+    system administrator that wrote a row contradicting User.role, which is the
+    authority — see _ws_role, which now reads past such a row rather than
+    obeying it. The row is pinned here too so the members list does not go on
+    showing "חבר" beside somebody the users screen calls מנהל מערכת: the two
+    screens disagreeing is how this went unnoticed in the first place.
+
+    Lowering a system administrator is done in the users screen, where it means
+    what it says and _sync_ws_role carries it here.
+    """
+    u = db.query(User).filter(User.id == uid).first()
+    if u is not None and u.role == "admin":
+        return "admin"
+    return wanted
+
+
 def _ws_role_for(user_role):
     """The workspace-membership role a User.role implies.
 
@@ -1808,8 +1827,31 @@ def _user_env_ids(db, user_id):
             db.query(EnvironmentMember).filter(EnvironmentMember.user_id == user_id).all()}
 
 def _ws_role(db, user_id):
+    """The workspace role everything reads — and it answers for User.role first.
+
+    Two rows carry "is this person an admin": User.role, which the users screen
+    edits, and this one. _sync_ws_role makes the second follow the first when a
+    role is CHANGED there; it cannot stop the workspace screen from writing a
+    row that contradicts it afterwards, and that screen does exactly that.
+    Inviting a מנהל מערכת to the workspace as "חבר" overwrote their row with
+    "member", and since this function is what _board_role, _can_admin_envs and
+    the automations gate all read, the administrator was left with User.role
+    still saying admin — the users screen went on listing them as one — and no
+    rights on a single board in the system. That is the second half of
+    "מנהל מערכת לא יכול למחוק אוטומציה": the first was the board row winning
+    over the system role, this is the workspace row doing the same.
+
+    Answered here rather than only at the write sites because a database that
+    already holds such a row would stay broken until someone noticed and
+    re-saved the user. A system administrator is a workspace admin by
+    definition — _ws_role_for has always said so — so the row is not consulted
+    to find that out.
+    """
     if user_id is None:
         return None
+    u = db.query(User).filter(User.id == user_id).first()
+    if u is not None and u.role == "admin":
+        return "admin"
     m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user_id).first()
     return m.role if m else None
 
@@ -2315,10 +2357,16 @@ def _prefetch_items(db, tasks):
     ass = info.setdefault("_assignees_by", {})
     nsub = info.setdefault("_nsub_by", {})
     ncom = info.setdefault("_ncom_by", {})
+    # when the thread was last written in — the other half of the same
+    # group-by, because the board's chat bubble asks both questions at once:
+    # whether there is a conversation, and whether anybody has said anything
+    # in it lately (see chat_stale_days)
+    lcom = info.setdefault("_lcom_by", {})
     for tid in every:
         ass.setdefault(tid, [])
         nsub.setdefault(tid, 0)
         ncom.setdefault(tid, 0)
+        lcom.setdefault(tid, None)
     for part in [every[i:i + _PREFETCH_CHUNK] for i in range(0, len(every), _PREFETCH_CHUNK)]:
         for tid, uid, uname, uav in (db.query(assignee_rows.c.task_id, User.id,
                                               User.name, User.avatar_url)
@@ -2333,10 +2381,12 @@ def _prefetch_items(db, tasks):
                          .filter(Task.parent_id.in_(part))
                          .group_by(Task.parent_id).all()):
             nsub[pid] = n
-        for tid, n in (db.query(Comment.task_id, func.count(Comment.id))
-                         .filter(Comment.task_id.in_(part))
-                         .group_by(Comment.task_id).all()):
+        for tid, n, last in (db.query(Comment.task_id, func.count(Comment.id),
+                                      func.max(Comment.created_at))
+                               .filter(Comment.task_id.in_(part))
+                               .group_by(Comment.task_id).all()):
             ncom[tid] = n
+            lcom[tid] = last
     return subs
 
 
@@ -2355,6 +2405,10 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
     _nc = _pre.get("_ncom_by")
     comment_count = (_nc[t.id] if _nc is not None and t.id in _nc
                      else db.query(Comment).filter(Comment.task_id == t.id).count())
+    _lc = _pre.get("_lcom_by")
+    last_comment_at = (_lc[t.id] if _lc is not None and t.id in _lc
+                       else db.query(func.max(Comment.created_at))
+                              .filter(Comment.task_id == t.id).scalar())
     my_perm = _item_perm(t, user_id, board_role) if user_id is not None else "delete"
     cf = dict(t.custom_fields or {})
     # Which columns need anything doing to them is a property of the board and
@@ -2408,6 +2462,11 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         "assignees": assignees,
         "subtask_count": subtask_count,
         "comment_count": comment_count,
+        # When the thread was last written in, or null when nobody ever has.
+        # The board greys the chat bubble off this (see chat_stale_days); it is
+        # not "when the item changed", which updated_at already says — an item
+        # whose status somebody flipped has not been answered.
+        "last_comment_at": last_comment_at,
     }
     if with_subs:
         _kids = _pre.get("_kids_by")
@@ -2439,7 +2498,7 @@ def _context_shell(parent, kids, db, user_id=None, board_role=None, columns=None
         "assignees": [], "custom_fields": {}, "permissions": {},
         "my_perm": "none", "is_archived": False,
         "created_by": None, "created_at": None, "updated_at": None,
-        "item_uid": None, "comment_count": 0,
+        "item_uid": None, "comment_count": 0, "last_comment_at": None,
         "subtask_count": len(kids),
         "subtasks": [_serialize_task(k, db, with_subs=False, user_id=user_id,
                                      board_role=board_role, columns=columns)
@@ -6374,6 +6433,8 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # and the same for the rules on a clock, which come round again rather
         # than firing once (see _sweep_recurring_automations)
         _sweep_recurring_automations(db, board_id, user_id)
+        # and the rules watching for an item nobody has written on
+        _sweep_chat_idle_automations(db, board_id, user_id)
         my_role = _board_role(db, board_id, user_id)
         if user_id is not None and my_role is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
@@ -6455,6 +6516,12 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "col_hidden": (b.settings or {}).get("col_hidden", []),
             "col_order": (b.settings or {}).get("col_order", []),
             "notifications_enabled": bool((b.settings or {}).get("notifications_enabled", True)),
+            # After how many silent days this board draws an item's chat bubble
+            # grey instead of blue. A property of the board, answered by the
+            # "ללא עדכון בשיחה" rule it has switched on — see
+            # _board_chat_stale_days. It travels with the board because the
+            # browser needs it before it draws the first row.
+            "chat_stale_days": _board_chat_stale_days(db, b.id),
             # Where this board's filtering runs. The browser has to know
             # before it asks anything — it is the number that decides whether
             # to ask at all — so it travels with the board rather than with
@@ -8966,11 +9033,51 @@ def _hard_delete_board(db, board_id: int):
     for t in tasks:          # clear assignee links via the ORM relationship
         t.assignees = []
     db.flush()
-    db.query(Task).filter(Task.board_id == board_id).delete(synchronize_session=False)
-    db.query(Group).filter(Group.board_id == board_id).delete(synchronize_session=False)
-    db.query(BoardMember).filter(BoardMember.board_id == board_id).delete(synchronize_session=False)
+    # ...and everything else that names this board, found rather than listed
+    _delete_rows_pointing_at_board(db, board_id, task_ids)
     db.delete(b)
     return True
+
+
+def _delete_rows_pointing_at_board(db, board_id, task_ids):
+    """Empty every table that points at this board, children before parents.
+
+    A sweep over the schema rather than a list of tables, because the list was
+    the bug. Twenty-two tables carry a board id and this deleted three of them
+    — tasks, groups, members — so on Postgres, where the foreign keys are
+    real, purging a board raised ForeignKeyViolation on board_views and the
+    recycle bin answered 500 to everybody who opened it. Restoring a board
+    went the same way: _purge_expired_boards runs first there too, so one
+    board past its retention window took the whole bin down with it. SQLite
+    does not enforce foreign keys unless it is asked to, which is why every
+    test here passed and only QA ever showed it.
+
+    `sorted_tables` is the dependency order SQLAlchemy already works out for
+    create_all; reversed, it is the order it is safe to delete in — a table is
+    emptied before the table it points at.
+
+    Three ways a row can belong to this board, and only the first names it:
+    the board itself, one of its items (a comment, a permit), or one of its
+    forms (a file somebody uploaded into one). The ones that name nothing are
+    exactly the ones a list of tables would go on missing.
+    """
+    form_ids = [i for (i,) in db.query(FormView.id)
+                .filter(FormView.board_id == board_id).all()]
+    for table in reversed(Board.metadata.sorted_tables):
+        if table.name == "boards":
+            continue
+        where = [table.c[name] == board_id
+                 for name in ("board_id", "target_board_id") if name in table.c]
+        if task_ids and "task_id" in table.c:
+            where.append(table.c.task_id.in_(task_ids))
+        if form_ids and "form_view_id" in table.c:
+            where.append(table.c.form_view_id.in_(form_ids))
+        if where:
+            db.execute(table.delete().where(or_(*where)))
+    # the ORM still holds the rows just deleted underneath it; expiring them
+    # here is what keeps db.delete(b) from flushing a stale task back out
+    db.expire_all()
+    db.flush()
 
 
 def _sweep_stray_audit(db):
@@ -10265,6 +10372,7 @@ def workspace_add(data: dict, actor_id: int = Depends(current_user_id)):
             raise HTTPException(400, "לא ניתן להזמין לסביבה משתמש מושבת")
         if role not in WS_ROLES:
             role = "member"
+        role = _ws_role_stored(db, uid, role)
         m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == uid).first()
         if m:
             m.role = role
@@ -10283,6 +10391,7 @@ def workspace_update(uid: int, data: dict, actor_id: int = Depends(current_user_
             raise HTTPException(404, "member not found")
         role = data.get("role")
         if role in WS_ROLES:
+            role = _ws_role_stored(db, uid, role)
             if m.role == "admin" and role != "admin":
                 if db.query(WorkspaceMember).filter(WorkspaceMember.role == "admin").count() <= 1:
                     raise HTTPException(400, "חייב להישאר מנהל סביבה אחד")
@@ -15348,7 +15457,7 @@ def _outbox_after_commit(db):
             print(f"⚠️  outbox not drained (board {bid}): {e}", flush=True)
 
 
-def _drain_outbox(db, board_id=None, limit=200):
+def _drain_outbox(db, board_id=None, limit=200, commit=True):
     """Send what has not gone out, oldest first. Returns how many went.
 
     Ascending by id, which for one item is ascending by `seq` — they were
@@ -15357,6 +15466,25 @@ def _drain_outbox(db, board_id=None, limit=200):
     At-least-once: a row is marked sent only after the bus has taken it, so a
     crash in between means it goes again. Every consumer in this module keys
     off an idempotency key, which is what makes the second one harmless.
+
+    And the mark is COMMITTED here, which is the whole difference between
+    at-least-once and every-single-time. It used to be left to the caller, and
+    the caller that reads a board — _sweep_due_date_automations, which runs on
+    every GET /api/boards/{id} — returns early in three places, none of them
+    reaching a commit. So the rows went out, the session was thrown away, and
+    the next read found them unsent and published them again.
+
+    That is a loop with its feedback path through the browser: each delivered
+    event makes the client refetch the board (an `automation.ran` is refetched
+    even by the person who caused it), the refetch republishes the same events,
+    and round it goes at the speed of a round trip. On QA two boards sat at
+    some fifty-five board reads a minute for hours — 3,176 board fetches
+    against 24 actual board opens — and what that looks like on screen is a
+    board that will not stop jumping.
+
+    `commit=False` is for the one caller that owns a wider transaction and
+    commits the drain together with the rest of its own work (the admin
+    replay), so that one stays all-or-nothing.
     """
     q = (db.query(EventOutbox)
            .filter(EventOutbox.sent_at == None,                     # noqa: E711
@@ -15364,20 +15492,32 @@ def _drain_outbox(db, board_id=None, limit=200):
     if board_id is not None:
         q = q.filter(EventOutbox.board_id == board_id)
     sent = 0
+    touched = False
     for row in q.order_by(EventOutbox.id).limit(max(1, limit)).all():
         try:
             bus.publish(row.kind, board_id=row.board_id, task_id=row.task_id,
                         **(row.payload or {}))
             row.sent_at = _now_naive()
             sent += 1
+            touched = True
         except Exception as e:                     # noqa: BLE001
             row.attempts = (row.attempts or 0) + 1
             row.last_error = str(e)[:400]
+            touched = True                         # the count is the evidence
             if row.attempts >= OUTBOX_MAX_ATTEMPTS:
                 # the dead-letter queue: set aside, counted, and visible —
                 # never deleted, because the one thing worse than an event
                 # that did not arrive is one nobody can find afterwards
                 row.dead_at = _now_naive()
+    if commit and touched:
+        # Never raises: the drain is a side errand of whatever read it from,
+        # and a board that cannot be opened because an event could not be
+        # marked sent would be the worse failure of the two.
+        try:
+            db.commit()
+        except Exception as e:                     # noqa: BLE001
+            db.rollback()
+            print(f"⚠️  outbox marks not saved (board {board_id}): {e}", flush=True)
     return sent
 
 
@@ -16914,6 +17054,140 @@ def _sweep_recurring_automations(db, board_id, actor_id):
         recur["done"] = sorted(done)[-_DUE_FIRED_MAX:]
         recur["period"] = period
         state["recur"] = recur
+        a.state = state
+    if fired_any:
+        db.commit()
+
+
+# ── a conversation that went quiet ──────────────────────────────────────────
+# "בועית השיחה לא עודכנה כבר שבוע" is the one thing on a board that is visible
+# before anybody asks for it: the chat icon on the row goes from blue to grey,
+# and that is the whole of what most people want from it. The rule is the same
+# silence said out loud — and, because a board should not grey at one number
+# and notify at another, the rule is also where the number lives.
+_IDLE_TRIGGERS = ("chat_idle_days",)
+
+
+def _board_chat_stale_days(db, board_id):
+    """After how many silent days this board greys an item's chat bubble.
+
+    The board's own answer is the "ללא עדכון בשיחה" rule it has switched on —
+    that is what "הפרמטר מנוהל ברמת לוח" means here, and it is the reason the
+    threshold is not a second setting somewhere else: a board that greys at ten
+    and chases at seven holds two definitions of "ללא מענה", and the icon is
+    the one people read without being told.
+
+    The SMALLEST of them when there is more than one. A board watching both
+    three days and fourteen is watching three — the bubble has one colour, and
+    the earliest alarm is the one that is still true at fourteen.
+
+    recipes.CHAT_STALE_DAYS_DEFAULT while no such rule is on, which is every
+    board today: the icon greys after a week whether or not anybody ever opens
+    the automations page.
+    """
+    days = [int((a.config or {}).get("t_days") or 0)
+            for a in db.query(Automation).filter(
+                Automation.board_id == board_id,
+                Automation.is_active == True).all()                        # noqa: E712
+            if (recipes.recipe(a.recipe_id) or {}).get("trigger") in _IDLE_TRIGGERS]
+    days = [d for d in days if d >= recipes.MIN_IDLE_DAYS]
+    return min(days) if days else recipes.CHAT_STALE_DAYS_DEFAULT
+
+
+def _last_activity(db, board_id):
+    """{task_id: when the thread was last written in} for one board.
+
+    One group-by rather than a query per item: the sweep below asks this of
+    every item on the board, and a board of several hundred items would
+    otherwise be several hundred round trips on an ordinary board read.
+    """
+    return {tid: last for tid, last in
+            db.query(Comment.task_id, func.max(Comment.created_at))
+              .join(Task, Task.id == Comment.task_id)
+              .filter(Task.board_id == board_id)
+              .group_by(Comment.task_id).all()}
+
+
+def _idle_key(task_id, since):
+    """What an idle rule remembers having fired for: the item, and the silence.
+
+    The second half is what makes the rule re-arm. Keeping the item id alone
+    would mean an item chased once in March is never chased again, however long
+    it goes quiet afterwards — somebody answering the thread and then
+    abandoning it for another month is exactly the case the rule is for. A
+    reply starts a new silence, which is a new key, which the rule has not
+    fired for.
+    """
+    return f"{int(task_id)}@{since.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M')}"
+
+
+def _sweep_chat_idle_automations(db, board_id, actor_id):
+    """Fire the "ללא עדכון בשיחה" rules for items that have gone quiet.
+
+    Swept on a board read like the other two timed sweeps, and for the same
+    reason: there is no scheduler in this build.
+
+    Unlike the date rules this one does NOT skip a silence that began before
+    the rule was switched on. "7 ימים ללא עדכון" is a description of how an
+    item is RIGHT NOW, not of something that happened at a moment the rule may
+    have missed — and a rule switched on to find the forgotten items that says
+    nothing about the items that were already forgotten is the one reading
+    nobody wants. It does mean the first sweep after switching the rule on can
+    notify about a stretch of the board at once, which is the honest answer to
+    "which of these has nobody touched in a week".
+
+    An item with no conversation at all is measured from when it was created:
+    an item opened three weeks ago that nobody has written a word on is the
+    clearest case of what this rule is looking for, not an item it has no
+    opinion about. (The BUBBLE is different — it only greys a bubble that was
+    blue, because an item with no thread has nothing to go stale.)
+    """
+    if _automation_freeze(db, board_id) is not None:
+        return
+    rules = [a for a in db.query(Automation).filter(
+                Automation.board_id == board_id,
+                Automation.is_active == True)                              # noqa: E712
+                .order_by(Automation.run_order, Automation.activated_at,
+                          Automation.id).all()
+             if (recipes.recipe(a.recipe_id) or {}).get("trigger") in _IDLE_TRIGGERS]
+    if not rules:
+        return
+    now = datetime.now(timezone.utc)
+    board = db.query(Board).filter(Board.id == board_id).first()
+    tz = _board_tz(db, board)
+    items = db.query(Task).filter(
+        Task.board_id == board_id,
+        Task.is_archived == False,                                         # noqa: E712
+        Task.deleted_at == None).all()                                     # noqa: E711
+    if not items:
+        return
+    last_by = _last_activity(db, board_id)
+    fired_any = False
+    for a in rules:
+        days = int((a.config or {}).get("t_days") or 0)
+        if days < recipes.MIN_IDLE_DAYS:
+            continue
+        state = dict(a.state or {})
+        fired = list(state.get("idle") or [])
+        seen = set(fired)
+        for t in items:
+            # a finished item is not "waiting for an answer" in any sense the
+            # user cares about — the same exclusion the due-date sweep makes
+            if _st_of(t) in ("done", "cancelled"):
+                continue
+            since = _as_utc(last_by.get(t.id) or t.created_at, tz)
+            if since is None or since + timedelta(days=days) > now:
+                continue
+            key = _idle_key(t.id, since)
+            if key in seen:
+                continue
+            _run_one_automation(db, a, t, actor_id, "chat_idle_days", days)
+            fired.append(key)
+            seen.add(key)
+            fired_any = True
+        if len(fired) > _DUE_FIRED_MAX:
+            fired = fired[-_DUE_FIRED_MAX:]
+        state["idle"] = fired
         a.state = state
     if fired_any:
         db.commit()
@@ -19535,6 +19809,7 @@ AUTOMATION_TRIGGER_READS = {
     "person_unassigned":        ["אחראים"],
     "due_date_near":            ["תאריך יעד"],
     "due_date_passed":          ["תאריך יעד"],
+    "chat_idle_days":           ["שיחת הפריט"],
 }
 
 
@@ -21112,7 +21387,9 @@ def replay_dead_events(data: dict = None, user_id: int = Depends(current_user_id
             r.dead_at, r.attempts, r.last_error = None, 0, None
         boards = {r.board_id for r in rows}
         db.flush()
-        sent = sum(_drain_outbox(db, bid) for bid in boards) if boards else 0
+        # commit=False: the replay, the sends and the audit line below are one
+        # transaction — an admin's "send these again" either happened or did not
+        sent = sum(_drain_outbox(db, bid, commit=False) for bid in boards) if boards else 0
         db.add(AuditLog(entity_type="automation_export", entity_id=0,
                         action="export", field_name="outbox_replay",
                         old_value=f"{len(rows)} הודעות",
@@ -22164,7 +22441,11 @@ def list_comments(task_id: int, actor_id: int = Depends(current_user_id)):
                 roots.append(node)
         # newest main comment pinned on top
         roots.sort(key=lambda x: str(x["created_at"]), reverse=True)
-        return {"comments": roots, "count": len(items)}
+        # the moment of the newest message, beside the count and for the same
+        # reason: the row's bubble is drawn from both, and the panel that just
+        # read the thread is holding the fresher answer
+        last = max((c.created_at for c in cs if c.created_at), default=None)
+        return {"comments": roots, "count": len(items), "last_comment_at": last}
 
 @app.post("/api/tasks/{task_id}/comments")
 def add_comment(task_id: int, data: dict, request: Request = None,
