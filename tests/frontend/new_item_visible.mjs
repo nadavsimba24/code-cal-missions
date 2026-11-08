@@ -21,12 +21,12 @@ function grab(name){
 
 const GROUP={id:7, task_status:'backlog'};
 
-async function add({filters, group=7}){
+async function add({filters, group=7, view='table', paged=null}){
   const st={board:{id:1, groups:[GROUP], tasks:[{id:1, title:'קיים', status:'done',
                     assignees:[{id:9,name:'דנה'}], custom_fields:{}}]},
             filters:Object.assign({q:'',people:[],status:'',priority:'',sort:'',
                                    links:{col:'',mode:'',item:0}}, filters),
-            colSort:null};
+            view, colSort:null};
   const log={rendered:0, cleared:0, toasts:[], focused:[], posted:null, unfolded:[]};
   const made={id:42, title:'פריט חדש', group_id:group, status:'backlog',
               assignees:[], custom_fields:{status_unset:true}};
@@ -52,7 +52,7 @@ async function add({filters, group=7}){
     ()=>7,
     t=>t.status, t=>t.priority||'', ()=>[], ()=>[], {}, /^\d{3,}$/,
     (gid,shut)=>log.unfolded.push([gid,shut]),
-    ()=>0, ()=>true, {on:false,rows:[]}, ()=>[]);
+    ()=>0, ()=>true, paged||{on:false,rows:[]}, ()=>[]);
   await fn(group);
   return {log, st, visible:st.board.tasks.length};
 }
@@ -99,6 +99,41 @@ let pass=0,fail=0; const ck=(n,c,x='')=>{c?(pass++,console.log('  OK   '+n)):(fa
   const r=await add({filters:{}, group:7});
   ck('the item is created in the group whose row was clicked',
      r.log.posted.group_id===7 && r.log.posted.status==='backlog', JSON.stringify(r.log.posted));
+}
+{
+  /* Past the client-filter threshold the rows on screen are the server's answer
+     to the filter and the new item is not in it — and applyFilters, with the
+     paging on, hands that page straight back whatever it is asked about. The
+     old test "is the new row visible?" therefore answered yes about a row that
+     was nowhere, and the item was created and hidden by the one route the
+     clearing exists to prevent. */
+  const r=await add({filters:{q:'תשתית'}, paged:{on:true, rows:[{id:1,title:'קיים'}]}});
+  ck('a paged board clears its filter — the server page cannot hold the new item',
+     r.log.cleared===1, JSON.stringify(r.log.toasts));
+  ck('...and the rename still has a row to open', r.log.focused[0]===42);
+}
+{
+  /* Only a table has rows, and the inline rename is a row. On a kanban board
+     the item used to appear as a card already named "פריט חדש", with nothing
+     to type into — the one thing the button promises. */
+  const r=await add({filters:{}, view:'kanban'});
+  ck('a view with no rows in it gives way to the table', r.st.view==='table');
+  ck('...and that is said out loud',
+     r.log.toasts.some(t=>t.includes('התצוגה הוחלפה לטבלה')), r.log.toasts.join('|'));
+  ck('...and the rename is still what happens next', r.log.focused[0]===42);
+}
+{
+  const r=await add({filters:{}, view:'table'});
+  ck('the table is left alone', r.st.view==='table' && r.log.toasts.length===0,
+     r.log.toasts.join('|'));
+}
+{
+  // both at once is one sentence, because there is one toast element and the
+  // second call would wipe the first before anybody read it
+  const r=await add({filters:{people:[9]}, view:'gantt'});
+  ck('a view change and a cleared filter are said together',
+     r.log.toasts.length===1 && r.log.toasts[0]==='התצוגה הוחלפה לטבלה והסינון נוקה כדי להציג את הפריט החדש',
+     JSON.stringify(r.log.toasts));
 }
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

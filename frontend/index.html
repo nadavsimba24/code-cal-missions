@@ -1106,8 +1106,29 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    than filled — it is a record of who was on the item, not a person here */
 .av-ghost{background:var(--bg)!important;color:var(--text-light)!important;
   box-shadow:inset 0 0 0 1px var(--border-strong);cursor:help}
-.add-row td{padding:8px 12px;color:var(--text-muted);font-size:13px;cursor:pointer;border-inline-start:4px solid transparent}
-.add-row:hover td{color:var(--primary)}
+.add-row td{padding:8px 12px;color:var(--text-muted);font-size:13px;border-inline-start:4px solid transparent}
+/* The words are the button, and the rest of the row is not.
+
+   The handler used to sit on the whole <tr>, so the full width of the table
+   answered a click — including the empty stretch past the last column, where
+   there is nothing to read and nothing suggesting there is anything to press.
+   A click aimed at nothing in particular, or a click that came down a few
+   pixels low of the last row, filed a new item. So the target is the label it
+   is written on, and the row lights up no further than that.
+
+   Vertical padding with the matching negative margin: the highlight wants a
+   little room around the text, and the add-row's height is part of the
+   estimate that holds a group's place before it is laid out (see ROW_H_EST) —
+   a margin box the same height as the text leaves that arithmetic alone. */
+.add-item{display:inline-block;cursor:pointer;border-radius:6px;
+  padding:3px 7px;margin-block:-3px;margin-inline:-7px;transition:background .12s,color .12s}
+.add-item:hover{color:var(--primary);background:var(--primary-soft)}
+.add-item:focus-visible{outline:2px solid var(--primary);outline-offset:1px;color:var(--primary)}
+/* …and the row itself no longer lights up as if it answered a click. The
+   pinned cell keeps an opaque background of its own — it is sticky, and the
+   board scrolls underneath it. */
+.tbl tr.add-row:hover td{background:transparent}
+.tbl tr.add-row:hover td.c-item{background:var(--surface)}
 /* "+ הוסף פריט" sits in the pinned column's own cell, so it stays where the
    item names are instead of sliding out of the board with everything else.
    .c-item brings the pinning and the background; the group's colour bar is not
@@ -1152,8 +1173,7 @@ tr:hover .row-grip{opacity:.55}
 .subtbl .sub-item-row.sortable-drag .sub-name-cell,.subtbl .sub-item-row:active .sub-name-cell{cursor:grabbing}
 .subtbl .sub-name-cell .ci-flex{display:flex;align-items:center;gap:6px;min-height:26px}
 .subtbl .sub-h-add,.subtbl .sub-endcell{border-inline-start:none;background:var(--bg)}
-.sub-add-cell{padding:9px 18px;color:var(--text-muted);font-size:13px;cursor:pointer;text-align:start}
-.sub-add-row:hover .sub-add-cell{color:var(--primary)}
+.sub-add-cell{padding:9px 18px;color:var(--text-muted);font-size:13px;text-align:start}
 .sub-del{margin-inline-start:auto;color:var(--text-light);opacity:0;transition:.12s;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px}
 .sub-item-row:hover .sub-del{opacity:1}
 .sub-del:hover{background:#fdebed;color:var(--red)}
@@ -1403,6 +1423,20 @@ body.coldragging .col-grip{opacity:1}
 .file-x:hover{color:var(--red)}
 .file-add{width:24px;height:24px;border-radius:6px;border:1px dashed var(--border-strong);color:var(--text-light);font-size:11px;margin-inline-start:3px}
 .file-add:hover{border-color:var(--primary);color:var(--primary)}
+/* From three files up the cell stops spelling names out. Three names never fit
+   a grid column — each was cut to nine characters and the row grew a line per
+   chip — so what was on screen said neither what the files are nor how many.
+   The icons say the type, the +X says how many more, the hover says the names,
+   and the strip opens the list, which is where a file is opened or removed. */
+.cell-custom .file-icons{display:inline-flex;align-items:center;gap:3px;vertical-align:middle;cursor:pointer;padding:1px 3px;border-radius:6px}
+.cell-custom .file-icons:hover{background:var(--row-hover)}
+.cell-custom .file-ic{display:inline-flex;align-items:center;font-size:15px;line-height:1}
+.cell-custom .file-ic.file-dead-ic{color:var(--text-light)}
+.cell-custom .file-more{font-size:11px;font-weight:700;color:var(--text-muted);background:var(--bg);border:1px solid var(--border-strong);border-radius:9px;padding:0 5px;line-height:16px}
+.file-pop-row{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;font-size:12.5px;color:var(--text);text-decoration:none}
+.file-pop-row:hover{background:var(--row-hover)}
+.file-pop-row .fpr-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-pop-row.file-dead .fpr-name{color:var(--text-light);cursor:help}
 /* accounts */
 .acct-chip{display:inline-flex;align-items:center;gap:5px;background:var(--primary-soft);color:var(--primary-hover);border-radius:14px;padding:3px 11px;font-size:12.5px;font-weight:600}
 /* connect (cross-board link) */
@@ -14717,7 +14751,7 @@ function groupHTML(g){
         ${colgroupHTML()}
         <thead><tr class="col-head-row">${columnHeadersHTML(col,g)}<th class="th-spacer"></th></tr></thead>
         <tbody data-gid="${g.id===null?'':g.id}" style="--gcolor:${col}">${rows}
-          <tr class="add-row" onclick="openNewItem(${g.id===null?'null':g.id})"><td class="c-item">+ הוסף פריט</td><td colspan="${totalCols()}"></td></tr>
+          <tr class="add-row"><td class="c-item"><span class="add-item" role="button" tabindex="0" onclick="openNewItem(${g.id===null?'null':g.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openNewItem(${g.id===null?'null':g.id});}">+ הוסף פריט</span></td><td colspan="${totalCols()}"></td></tr>
         </tbody>
         ${groupSumRowHTML(g.tasks)}
       </table>
@@ -15058,7 +15092,7 @@ function itemRow(t,col){
 function subPanelHTML(t,subs,col){
   const cols=subColumns(), admin=isBoardAdmin();
   const rows=subs.map(s=>subItemRowHTML(s,cols,admin,t.id)).join('');
-  const addRow=`<tr class="sub-add-row"><td class="sub-add-cell" colspan="${cols.length+(admin?1:0)}" onclick="addSubItem(${t.id})">+ הוסף תת-פריט</td></tr>`;
+  const addRow=`<tr class="sub-add-row"><td class="sub-add-cell" colspan="${cols.length+(admin?1:0)}"><span class="add-item" role="button" tabindex="0" onclick="addSubItem(${t.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();addSubItem(${t.id});}">+ הוסף תת-פריט</span></td></tr>`;
   return `<div class="sub-panel" style="--gcolor:${col}">
     <table class="tbl subtbl">${subColgroupHTML(cols,admin)}
       <thead>${subHeadHTML(t.id,cols,admin)}</thead>
@@ -16485,14 +16519,79 @@ const FILE_DEAD_HE={
   over_budget:'הקובץ לא יובא — מעבר לתקציב הקבצים של הייבוא',
   gone:'הקובץ אינו קיים יותר במערכת — נשמר השם בלבד'};
 const fileDeadWhy=f=>FILE_DEAD_HE[f&&f.why]||'הקובץ לא יובא — נשמר השם בלבד';
+/* The icon a file gets in the collapsed cell, by what the file IS. The
+   extension is worked out by Chat.fileExt, which falls back to the MIME type
+   the server recorded when the name carries no extension of its own. The
+   colours are the palette variables; the chat's ext-badge has an older set of
+   its own and the two are deliberately not shared. */
+const FILE_TYPE_ICONS=[
+  [/^pdf$/,                                             'fa-file-pdf',        'var(--red)'],
+  [/^(docx?|rtf|odt|pages)$/,                           'fa-file-word',       'var(--primary)'],
+  [/^(xlsx?|xlsm|csv|ods)$/,                            'fa-file-excel',      'var(--green)'],
+  [/^(pptx?|odp|key)$/,                                 'fa-file-powerpoint', 'var(--orange)'],
+  [/^(png|jpe?g|gif|webp|svg|bmp|avif|heic|heif|img)$/, 'fa-file-image',      'var(--blue)'],
+  [/^(mp4|mov|webm|mkv|avi|video)$/,                    'fa-file-video',      'var(--blue)'],
+  [/^(mp3|wav|m4a|aac|ogg|audio)$/,                     'fa-file-audio',      'var(--orange)'],
+  [/^(zip|rar|7z|gz|tar)$/,                             'fa-file-zipper',     'var(--text-muted)'],
+  [/^(json|xml|html?|js|css|py|sql|ts)$/,               'fa-file-code',       'var(--text-muted)'],
+  [/^(txt|md|log)$/,                                    'fa-file-lines',      'var(--text-muted)'],
+  [/^(eml|msg)$/,                                       'fa-envelope',        'var(--primary)'],
+  [/^(dwg|dxf|ifc|rvt|skp)$/,                           'fa-compass-drafting','var(--primary)']];
+function fileTypeIcon(f){
+  const ext=Chat.fileExt(f&&f.name,f&&f.type);
+  const hit=FILE_TYPE_ICONS.find(r=>r[0].test(ext));
+  return {ic:hit?hit[1]:'fa-file',color:hit?hit[2]:'var(--text-light)'};
+}
+/* The names of everything in the cell, one per line — the hover text of the
+   collapsed strip. It goes in data-tipf rather than title so our own box
+   answers once, straight away, and keeps the line breaks (see cellTipShow). */
+const filesTip=files=>files.map(f=>(f&&f.name||'')+(f&&f.dead?' — '+fileDeadWhy(f):'')).join('\n');
 function filesDisp(files,taskId,colId){
   files=Array.isArray(files)?files:[];
+  const add=`<button class="file-add" title="העלה קובץ" onclick="uploadFileCell(${taskId},'${colId}')"><i class="fa-solid fa-plus"></i></button>`;
+  /* Three files or more: type icons for the first three and a +X for whatever
+     is left, instead of three clipped names that wrapped the row. An icon is
+     still the file's own link; the strip around them opens the full list. */
+  if(files.length>=3){
+    const icons=files.slice(0,3).map(f=>(f&&f.dead)
+      ? `<span class="file-ic file-dead-ic"><i class="fa-solid fa-link-slash"></i></span>`
+      : `<a class="file-ic" href="${esc(f&&f.url)}" target="_blank" onclick="event.stopPropagation()"><i class="fa-solid ${fileTypeIcon(f).ic}" style="color:${fileTypeIcon(f).color}"></i></a>`).join('');
+    const more=files.length>3?`<span class="file-more">+${files.length-3}</span>`:'';
+    return `<span class="file-icons" data-tipf="${esc(filesTip(files))}" data-tiph="לחץ לרשימת הקבצים" onclick="openFilesList(event,${taskId},'${colId}')">${icons}${more}</span>`+add;
+  }
   const chips=files.map((f,i)=>`<span class="file-chip${f&&f.dead?' file-dead':''}">${
     (f&&f.dead)
       ? `<span title="${esc(f.name+' — '+fileDeadWhy(f))}"><i class="fa-solid fa-link-slash"></i> ${esc(f.name.length>10?f.name.slice(0,9)+'…':f.name)}</span>`
       : `<a href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><i class="fa-solid fa-paperclip"></i> ${esc(f.name.length>10?f.name.slice(0,9)+'…':f.name)}</a>`
   }<i class="fa-solid fa-xmark file-x" onclick="removeFile(event,${taskId},'${colId}',${i})"></i></span>`).join('');
-  return chips+`<button class="file-add" title="העלה קובץ" onclick="uploadFileCell(${taskId},'${colId}')"><i class="fa-solid fa-plus"></i></button>`;
+  return chips+add;
+}
+/* The collapsed strip hides the per-file × that the chips carry, so the list it
+   opens is the only way to drop a file once a cell holds three — it names them
+   in full, opens them, removes them, and takes another one. */
+function openFilesList(e,taskId,colId){
+  e.stopPropagation();
+  buildFilesPop(openCellPop(e.currentTarget,'','list-pop'),taskId,colId);
+}
+function buildFilesPop(pop,taskId,colId){
+  const t=findAnyTask(taskId);
+  const files=((t&&t.custom_fields||{})[colId])||[];
+  pop.innerHTML=(Array.isArray(files)?files:[]).map((f,i)=>{
+    const x=`<i class="fa-solid fa-xmark file-x" title="הסר" onclick="removeFileFromList(event,${taskId},'${colId}',${i})"></i>`;
+    const name=`<span class="fpr-name">${esc(f&&f.name||'')}</span>`;
+    return (f&&f.dead)
+      ? `<div class="file-pop-row file-dead" title="${esc((f.name||'')+' — '+fileDeadWhy(f))}"><i class="fa-solid fa-link-slash" style="color:var(--text-light)"></i>${name}${x}</div>`
+      : `<a class="file-pop-row" href="${esc(f&&f.url)}" target="_blank"><i class="fa-solid ${fileTypeIcon(f).ic}" style="color:${fileTypeIcon(f).color}"></i>${name}${x}</a>`;
+  }).join('')+`<button class="cell-pop-opt2" onclick="closeCellPops();uploadFileCell(${taskId},'${colId}')"><i class="fa-solid fa-plus"></i> העלה קובץ</button>`;
+}
+async function removeFileFromList(e,taskId,colId,idx){
+  const pop=e.target&&e.target.closest?e.target.closest('.cell-pop'):null;
+  await removeFile(e,taskId,colId,idx);       // this re-renders the grid under us
+  if(!pop||!document.body.contains(pop))return;
+  const left=((findAnyTask(taskId)||{}).custom_fields||{})[colId]||[];
+  // an empty list is a list of nothing to do — close it rather than leave a
+  // popover holding only its own upload button
+  if(left.length) buildFilesPop(pop,taskId,colId); else closeCellPops();
 }
 function uploadFileCell(taskId,colId){
   const inp=document.createElement('input');inp.type='file';
@@ -18398,7 +18497,7 @@ async function addSubItem(parentId){
       if(p){ p.subtasks=(p.subtasks||[]).concat(s); p.subtask_count=(p.subtask_count||0)+1; }
       st.openSubs.add(parentId);                        // keep the sub-items open
       renderView();
-      setTimeout(()=>focusNewItemTitle(s.id),40);       // rename it inline
+      focusNewItemTitle(s.id);                          // rename it inline
     }
   }catch(e){ toast('שגיאה ביצירת תת-הפריט'); }
   finally{ window._creatingItem=false; }
@@ -19151,21 +19250,69 @@ async function openNewItem(group){
       // and the one the "פריט חדש" button can reach on its own since it picks
       // the group rather than being clicked inside it
       setGroupCollapsed(gid, false);
-      if(!applyFilters([t]).length){
+      /* Everything that would keep the new row off the screen, said in one
+         breath: the toast is a single element, so two of them in a row is one
+         message nobody gets to read. */
+      const said=[];
+      /* The inline rename is a row in a table, and only the table has rows. On
+         a kanban board, a calendar, a gantt or a map the item was created out
+         of sight of anything that could name it: a card turned up in some
+         column reading "פריט חדש" and that is the name it kept, because the
+         one thing the button promises — the cursor in the title, waiting — has
+         nowhere to happen. The board therefore goes to the view where the
+         promise can be kept. Out loud: the view was also something somebody
+         chose, and a board that changes shape without a word is its own small
+         mystery.
+         Not while a form is open over the board — leaving one asks about
+         unsaved changes, and that question has no business arriving as a side
+         effect of adding an item. */
+      if(st.view && st.view!=='table'
+         && !(typeof FormEditor!=='undefined' && FormEditor.isOpen())){
+        st.view='table';
+        if(typeof renderTabs==='function') renderTabs();
+        said.push('התצוגה הוחלפה לטבלה');
+      }
+      /* Past the client-filter threshold the rows on screen are the server's
+         answer to the filter, and an item created a second ago is not in it.
+         applyFilters cannot be asked about it either: with the paging on it
+         ignores what it is handed and gives back that same page, so the test
+         below answered "visible" about a row that was nowhere — the created-
+         and-hidden case all over again, reached by the one route the clearing
+         was written to cover. A paged board is a filtered board by definition
+         (nothing else turns the paging on), so the filter goes. */
+      if((typeof Paged!=='undefined' && Paged.on) || !applyFilters([t]).length){
         clearFilters();                       // re-renders and refreshes the toolbar
-        toast('הסינון נוקה כדי להציג את הפריט החדש');
+        said.push('הסינון נוקה');
       }
       else renderView();
-      setTimeout(()=>focusNewItemTitle(t.id),40);   // rename it inline
+      if(said.length) toast(said.join(' ו')+' כדי להציג את הפריט החדש');
+      focusNewItemTitle(t.id);                // rename it inline
     }
   }catch(e){ toast('שגיאה ביצירת הפריט'); }
   finally{ window._creatingItem=false; }
 }
-// open the freshly-created row's title in inline-edit mode (text pre-selected).
-// Works for an item row (data-tid) and a sub-item row (data-sid) alike.
-function focusNewItemTitle(id){
+/* Open the freshly-created row's title in inline-edit mode, with the
+   placeholder selected so the first keystroke replaces it. Works for an item
+   row (data-tid) and a sub-item row (data-sid) alike.
+
+   The row is not always in the document the moment the render returns. A
+   table paints its first group now and the rest one frame later, so an item
+   added to any other group is still a spacer when this first looks. It used
+   to wait a flat 40ms and give up — which held on a quiet board and lost on a
+   heavy one, where the frame that builds the second half is easily further
+   off than that. The item was then created with nothing to rename and kept
+   the placeholder, which is the whole of what the button was for.
+
+   So it asks again, briefly, and stops for the two reasons worth stopping
+   for: the row arrived, or somebody is already typing somewhere else and
+   stealing the caret off them would be worse than the name. */
+function focusNewItemTitle(id,tries){
   const span=document.querySelector('tr[data-tid="'+id+'"] .item-title, tr[data-sid="'+id+'"] .item-title');
-  if(span){ span.scrollIntoView({block:'center'}); titleEdit({currentTarget:span,stopPropagation(){}},id); }
+  if(span){ span.scrollIntoView({block:'center'}); titleEdit({currentTarget:span,stopPropagation(){}},id); return; }
+  const ae=document.activeElement;
+  if(ae && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable))return;
+  const n=(tries||0)+1;
+  if(n<=20) setTimeout(()=>focusNewItemTitle(id,n),40);   // ~0.8s, then let it be
 }
 /* The group a new item goes into when the "פריט חדש" button at the top of the
    board is what created it. A group's own "+ הוסף פריט" names its group and
@@ -21251,27 +21398,59 @@ const Chat = {
       return `<div>${this.inline(line)||'&nbsp;'}</div>`;
     }).join('');
   },
+  /* A link, an e-mail address, or words that may still hold a tag — and each
+     stretch of the line is claimed by exactly one of the three.
+
+     Not three passes over the same string, which is what it was: the tag pass
+     ran over the markup the link pass had just written, so an "@" inside an
+     href was coloured as a tag, inside the attribute, where a <span> is not
+     markup at all. The one-pass walk below hands the tag colouring only the
+     text between the links, so it can no longer reach inside one.
+
+     An address is a link too — a mailto: one. It used to be neither: nothing
+     linked it, and the tag rule saw a bare "@" and coloured whatever followed
+     it up to the first dot, so "shelly@mashcal.co.il" arrived in the thread
+     with "@mashcal" highlighted in tag blue, reading as a tag of somebody who
+     does not exist. It is an address; it should look like one and open the
+     mail app. dir="ltr" because it sits inside Hebrew, where otherwise the
+     full stop at the end of the sentence jumps to the front of it. */
+  MAIL:/[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+/,
   inline(s){
     s=esc(s);
-    s=s.replace(/(https?:\/\/[^\s]+)/g,'<a href="$1" target="_blank">$1</a>');
-    // mentions: color the FULL user name (incl. spaces) when it matches a known
-    // user. One pass: known names (longest first) win over a single-token @handle.
+    // the URL branch first, so an address inside a link stays part of the link
+    const re=new RegExp('(https?:\\/\\/[^\\s]+)|('+this.MAIL.source+')','g');
+    let out='', last=0, m;
+    while((m=re.exec(s))){
+      out+=this.markMentions(s.slice(last,m.index));
+      out+= m[1] ? `<a href="${m[1]}" target="_blank">${m[1]}</a>`
+                 : `<a href="mailto:${m[2]}" dir="ltr">${m[2]}</a>`;
+      last=re.lastIndex;
+    }
+    return out+this.markMentions(s.slice(last));
+  },
+  /* Colour the FULL user name (incl. spaces) when it matches a known user.
+     One pass: known names (longest first) win over a single-token @handle.
+
+     The "@" has to start a word, which is the same question mentionCtx asks
+     before it offers the tag menu — the two had drifted apart, and it was the
+     drift that painted the middle of an e-mail address blue. Written as "the
+     character before it is not one an address can end with" rather than as a
+     lookbehind, which Safari only learned recently. */
+  markMentions(s){
+    if(!s)return '';
     const names=(boardPeople().map(u=>u.name).filter(Boolean))
       .sort((a,b)=>b.length-a.length)
       .map(n=>esc(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
     const alt=names.length?'(?:'+names.join('|')+'|[^\\s@,.]{1,30})':'[^\\s@,.]{1,30}';
-    s=s.replace(new RegExp('@'+alt,'g'),m=>`<span class="mention">${m}</span>`);
-    return s;
+    return s.replace(new RegExp('(^|[^A-Za-z0-9._%+-])(@'+alt+')','g'),
+                     (all,pre,tag)=>pre+'<span class="mention">'+tag+'</span>');
   },
   // mention highlighting for the LIVE composer (no links/checklist — plain text
-  // + colored @mentions, newlines preserved by white-space:pre-wrap).
+  // + colored @mentions, newlines preserved by white-space:pre-wrap). The same
+  // rule as the posted comment, so an address typed into the box does not light
+  // up blue only to arrive as a plain link a moment later.
   highlightMentions(text){
-    let s=esc(text||'');
-    const names=(boardPeople().map(u=>u.name).filter(Boolean))
-      .sort((a,b)=>b.length-a.length)
-      .map(n=>esc(n).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));
-    const alt=names.length?'(?:'+names.join('|')+'|[^\\s@,.]{1,30})':'[^\\s@,.]{1,30}';
-    return s.replace(new RegExp('@'+alt,'g'),m=>`<span class="mention">${m}</span>`);
+    return this.markMentions(esc(text||''));
   },
   // mirror the textarea content (with highlights) into the overlay div, in sync
   syncHL(){

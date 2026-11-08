@@ -93,7 +93,10 @@ const pinned = first => /class="[^"]*\bc-item\b/.test(first) || /\bdata-fixed\b/
    and the label is IN it, which is what keeps it on screen while the board is
    scrolled sideways. */
 {
-  const m = /<tr class="add-row"[^>]*>(<td[^>]*>)([^<]*)<\/td><td colspan="\$\{totalCols\(\)\}"><\/td>/.exec(src);
+  // the cell holds markup now, not bare words — the label is a button the width
+  // of itself rather than the whole row (tests/test_add_item_is_the_label.py).
+  // The question here is unchanged: which cell comes first, and is the label in it.
+  const m = /<tr class="add-row"[^>]*>(<td[^>]*>)([\s\S]*?)<\/td><td colspan="\$\{totalCols\(\)\}"><\/td>/.exec(src);
   ck('"+ הוסף פריט" starts with a cell in the pinned column', !!m && pinned(m[1]),
      m && m[1]);
   ck('...and the label is in that cell, so it stays where the item names are',
