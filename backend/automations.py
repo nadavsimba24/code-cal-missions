@@ -936,6 +936,27 @@ ACTIONS = {
     "clear_column":     "נקה את העמודה {column}",
     "unassign_person":  "הסר את השיוך של {person}",
     "create_item":      "צור פריט בשם {text} בקבוצה {group}",
+    # ── שכפול הפריט עצמו ───────────────────────────────────────────────────
+    # "צור פריט" makes an EMPTY item with a name on it, and that is the wrong
+    # shape for the commonest hand-off a board has: an item reaching «מוכן
+    # לבדיקות» and a copy of it — the same values, the same אחראים, the same
+    # columns — opening for QA to work through while the original goes on
+    # living its own life. Said with the actions that already existed, that
+    # rule was "צור פריט" followed by one "עדכן את העמודה" per column, and it
+    # had to be re-written by hand every time somebody added a column.
+    #
+    # The copy lands on THIS board, and that is exactly what lets it be a copy:
+    # the two items share one column list, so every cell travels verbatim and
+    # nothing has to be matched up. A copy onto ANOTHER board is a different
+    # action and both already exist — create_in_board for a bare one,
+    # create_mapped_and_link for one whose columns are paired by hand.
+    #
+    # A תצוגה is not a place an item can be put — it is a filter over the
+    # board, drawn as a tab — so a rule that wants the copy to show up in a
+    # particular tab names the group here and lets that view's own filter do
+    # the rest. "שכפל לתצוגת QA" is this action pointed at a group, on a board
+    # whose QA view selects the rows it selects.
+    "duplicate_item":   "שכפל את הפריט לקבוצה {group} בשם {text}",
     # Waiting is an action like any other: it sits between two of them and the
     # ones after it happen later. A minute is the shortest wait worth having
     # and thirty days the longest the specification asks for.
@@ -1196,6 +1217,15 @@ ACTION_FIELDS = {
     "unassign_person":  [_f("person", "person", "אחראי")],
     "create_item":      [_f("text", "text", "שם הפריט"),
                          _f("group", "group", "קבוצה")],
+    # The name is a blank rather than «העתק של …» decided here, because
+    # {{item.name}} is already a token, and «QA — {{item.name}}» is the thing
+    # most people actually want on the copy — a hard-coded prefix could not
+    # say it. It is filled in like any other blank; what the engine guards
+    # against is a name that renders EMPTY, which is a token on a cell nobody
+    # filled. There it falls back to the source item's own name rather than to
+    # «פריט חדש», because a copy with no name is still a copy of something.
+    "duplicate_item":   [_f("group", "group", "הקבוצה שהעותק נוצר בה"),
+                         _f("text", "text", "שם העותק")],
     "wait":             [_f("days", "wait", "המתנה")],
     "create_mapped_and_link":
                         [_f("connect", "connect", "עמודת הקישור"),
@@ -1495,6 +1525,14 @@ RECIPES = [
                 _f("a_board", "board", "לוח היעד"),
                 _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
                 _f("a_text", "text", "שם הפריט החדש")]},
+    # The rule the hand-off is actually written as: "כאשר הסטטוס משתנה ל«מוכן
+    # לבדיקות», שכפל את הפריט לקבוצה «QA»". Its priority twin is derived rather
+    # than written out, like every other status pairing here.
+    {"id": "status_duplicate_item", "trigger": "status_changes_to",
+     "action": "duplicate_item",
+     "fields": [_f("t_status", "status", "סטטוס"),
+                _f("a_group", "group", "הקבוצה שהעותק נוצר בה"),
+                _f("a_text", "text", "שם העותק")]},
     {"id": "status_set_column", "trigger": "status_changes_to", "action": "set_column",
      "fields": [_f("t_status", "status", "סטטוס"),
                 _f("a_column", "column", "העמודה לעדכון"),
@@ -1901,6 +1939,7 @@ _ACTION_NEEDS = {
     "create_in_group_and_link": ("connect", "group"),
     "copy_to_linked":           ("connect",),
     "move_to_group":            ("group",),
+    "duplicate_item":           ("group",),
     "assign_person":            ("people",),
     "notify_person":            ("people",),
 }

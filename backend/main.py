@@ -12460,7 +12460,7 @@ AUTOMATION_GRANTED_ACTIONS = frozenset({
     "create_and_link", "post_update", "copy_to_linked",
     "create_in_group_and_link", "set_column", "clear_column",
     "unassign_person", "create_item", "wait", "create_mapped_and_link",
-    "create_in_board",
+    "create_in_board", "duplicate_item",
 })
 # The item fields automation may write. The recipes only ever touch these, and
 # an action that reached past them would be doing something nobody approved.
@@ -12503,6 +12503,13 @@ AUTOMATION_ACTION_FIELDS = {
     "clear_column":     ("custom_fields_value",),
     "unassign_person":  ("assignees",),
     "create_item":      ("item",),
+    # It makes an item and fills that item in; nothing on the SOURCE is
+    # touched. "item" is therefore the whole of the ceiling, the same as
+    # create_item's — the cells it writes are cells of a row that did not
+    # exist a moment ago, which is what "יצירת פריט" already covers. Declaring
+    # the column writes too would have every duplicate rule reported as
+    # fighting over the board's columns with every rule that sets one.
+    "duplicate_item":   ("item",),
     "wait":             (),          # it writes nothing; it only delays
     "create_mapped_and_link": ("custom_fields",),
     # it writes on the item at the other end of the link, and only the fields
@@ -14840,6 +14847,46 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         _ensure_item_uid(db, made)
         _audit(db, made.id, "create", field="item", old=None, new=made.title,
                user_id=actor_id)
+    elif act == "duplicate_item":
+        grp = db.query(Group).filter(Group.id == cfg.get("group"),
+                                     Group.board_id == task.board_id).first()
+        if not grp:
+            raise _Skipped("הקבוצה שהכלל משכפל אליה אינה קיימת בלוח")
+        # The same ledger every other creating action keeps, and for the same
+        # reason: a status that leaves «מוכן לבדיקות» and comes back, a retry,
+        # a repeat event — all of them are one item that has already been
+        # handed over, and a second copy of it is the duplicate the ledger
+        # exists to prevent. It skips rather than fails, so the history says
+        # so instead of going quiet.
+        _creation_guard(db, rule, task)
+        made = Task(board_id=task.board_id, group_id=grp.id,
+                    # a name that renders empty is a token on a blank cell,
+                    # and the source's own name says more there than
+                    # "פריט חדש" would
+                    title=((text(cfg.get("text")) or "").strip()[:500]
+                           or (task.title or "")[:500] or "פריט חדש"),
+                    status=task.status, priority=task.priority,
+                    description=task.description, due_date=task.due_date,
+                    start_date=task.start_date,
+                    estimated_hours=task.estimated_hours,
+                    location_lat=task.location_lat, location_lng=task.location_lng,
+                    address=task.address, created_by=actor_id)
+        db.add(made)
+        db.flush()
+        _ensure_item_uid(db, made)
+        # actual_hours is deliberately NOT among the fields above: it is work
+        # somebody logged against the original, and a copy that opens with
+        # eleven hours already on it is a lie about the copy.
+        made.custom_fields = _duplicable_cells(db, task)
+        for u in list(task.assignees):
+            if _can_be_assigned(db, made.board_id, u.id):
+                made.assignees.append(u)
+        _audit(db, made.id, "create", field="item", old=None, new=made.title,
+               user_id=actor_id)
+        _note_creation(db, rule, task, made, records, group=grp)
+        # nothing is appended to `out`: a brand-new row has no "before" for
+        # anything to have changed from, which is the same silence create_item
+        # and create_in_board keep.
     elif act == "create_mapped_and_link":
         col = _find_col(db, task.board_id, cfg.get("connect"))
         if not col or col.get("type") != "connect":
@@ -15028,6 +15075,33 @@ def _cross_board_refusal(db, board, target_board_id, col=None):
         if int(target_board_id) not in allowed:
             return f"לוח '{tb.name}' אינו מאושר יותר לעמודת הקישור"
     return ""
+
+
+# What a duplicate does not carry, and why each one. A mirror and a formula
+# are computed from somewhere else, so a copied value is a number that stops
+# agreeing with its own source the moment either side moves. A connect cell is
+# a RELATIONSHIP, and duplicating it would hand the far item a second thing
+# pointing at it that nobody asked for — a copy of an item is not a copy of
+# everyone it was connected to. A files cell names uploads that live on disk
+# under the cell that owns them, and two cells naming one file is one delete
+# away from a broken link in the other.
+DUPLICATE_SKIPS_COLUMNS = ("mirror", "formula", "connect", "file", "files")
+
+
+def _duplicable_cells(db, task):
+    """The item's column values as the copy of it should hold them.
+
+    Verbatim, with no mapping, and that is only safe because the copy lands on
+    the SAME board: the two rows share a column list, so a cell means on one
+    of them exactly what it means on the other. The cross-board actions beside
+    this one cannot assume that and ask for a mapping instead.
+    """
+    cells = dict(task.custom_fields or {})
+    if not cells:
+        return {}
+    skip = {c.get("id") for c in (_board_columns(db, task.board_id) or [])
+            if str(c.get("type") or "") in DUPLICATE_SKIPS_COLUMNS}
+    return {k: v for k, v in cells.items() if k not in skip}
 
 
 def _copy_item_fields(db, src, dst, fields, actor_id):
@@ -19088,6 +19162,47 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
         return {**_automation_json(db, b, a), "warnings": _warn, "said": _said}
 
 
+# Ten tables point at a rule by id. Deleting the rule without saying what
+# becomes of their rows read as working for a long time, because SQLite does
+# not enforce a foreign key unless it is asked to and neither the developer's
+# database nor the test suite asks. Production and QA run Postgres
+# (DATABASE_URL), which always enforces them, and there the DELETE came back a
+# foreign-key violation — a 500, with no `detail` for the screen to show, so
+# the board admin pressing מחק was told "לא ניתן למחוק": refused, apparently,
+# by a permission check that had in fact passed. Nothing was refusing it. It
+# was crashing.
+#
+# The split is the one this route already states: the rule goes, what it DID
+# stays. What it did is history about items — the runs, the individual actions
+# inside them, the events it put on the outbox — and each of those rows carries
+# its own sentence and item title, so it goes on reading with no rule behind
+# it. What the rule WAS has no meaning without it: its versions, what it was
+# allowed to reach on another board, the ledger that stopped it creating a
+# second item for one source, whatever was still queued, the once-only keys and
+# its test runs. Those go with it.
+#
+# A waiting run counts as history and is kept, detached: the route has just
+# cancelled it by name — "האוטומציה נמחקה" — and a wait the board was promised
+# and did not get is exactly the thing somebody comes looking for afterwards.
+# Nothing can act on it once it is detached: it is cancelled, so `done_at` is
+# set and the drain (_queue_due_for) only ever reads rows that have none.
+AUTOMATION_HISTORY_TABLES = (AutomationRun, AutomationActionExecution,
+                             EventOutbox, AutomationQueue)
+AUTOMATION_OWN_TABLES = (AutomationVersion, AutomationAuthorizationGrant,
+                         AutomationCreation, AutomationActionKey,
+                         AutomationTestRun, AutomationIncident)
+
+
+def _release_automation_rows(db, automation_id):
+    """Detach the history and remove the rule's own rows, before the rule goes."""
+    for model in AUTOMATION_HISTORY_TABLES:
+        (db.query(model).filter(model.automation_id == automation_id)
+           .update({model.automation_id: None}, synchronize_session=False))
+    for model in AUTOMATION_OWN_TABLES:
+        (db.query(model).filter(model.automation_id == automation_id)
+           .delete(synchronize_session=False))
+
+
 @app.delete("/api/automations/{automation_id}")
 def delete_automation(automation_id: int, cancel_pending: bool = False,
                       expected_version: int = None,
@@ -19110,15 +19225,15 @@ def delete_automation(automation_id: int, cancel_pending: bool = False,
                 "pending": len(waiting), "needs": "cancel_pending"})
         _check_etag(db, a, given=expected_version)
         _queue_set_state(db, waiting, "cancelled", "האוטומציה נמחקה", user_id)
-        # the rule goes; what it did stays. Each history row already carries the
-        # sentence and the item title, so it still reads without the rule behind it
-        (db.query(AutomationRun).filter(AutomationRun.automation_id == a.id)
-           .update({AutomationRun.automation_id: None}, synchronize_session=False))
         # written BEFORE the delete, while there is still a rule to describe —
         # and it outlives it, which is the whole point of a separate trail
         _audit_automation(db, a, "delete", "automation",
                           before=_automation_label(db, b, a), after="נמחקה",
                           actor_id=user_id, board_id=a.board_id)
+        # the rule goes; what it did stays — and every other table that names
+        # it is settled here, or the delete itself is refused (see above)
+        db.flush()
+        _release_automation_rows(db, a.id)
         db.delete(a)
         db.commit()
         return {"status": "deleted", "id": automation_id}
@@ -19788,6 +19903,7 @@ AUTOMATION_ACTION_WRITES = {
     "clear_column":     ["עמודה בלוח"],
     "unassign_person":  ["אחראים"],
     "create_item":      ["פריט חדש"],
+    "duplicate_item":   ["פריט חדש"],
     "wait":             [],
     "create_mapped_and_link": ["קישור בין לוחות", "קבוצה", "שדות ממופים"],
     "copy_to_linked":   ["שדות בפריט המקושר"],
@@ -20472,6 +20588,17 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
         g = db.query(Group).filter(Group.id == values.get("group")).first()
         return {"what": "יצירת פריט", "to": values.get("text") or "", "from": "",
                 "no_op": not g, "note": f"בקבוצה {g.name}" if g else "הקבוצה אינה קיימת"}
+    if key == "duplicate_item":
+        g = db.query(Group).filter(Group.id == values.get("group")).first()
+        skips = {c.get("id") for c in (_board_columns(db, task.board_id) or [])
+                 if str(c.get("type") or "") in DUPLICATE_SKIPS_COLUMNS}
+        kept = len([k for k in (task.custom_fields or {}) if k not in skips])
+        return {"what": "שכפול הפריט",
+                "to": values.get("text") or task.title, "from": task.title,
+                "no_op": not g,
+                "note": (f"עותק בקבוצה «{g.name}» · {kept} ערכי עמודות, "
+                         "סטטוס, עדיפות, תאריכים ואחראים" if g
+                         else "הקבוצה אינה קיימת")}
     if key == "wait":
         return {"what": "המתנה", "to": _duration_he(values.get("days")), "from": "",
                 "no_op": False, "note": "הפעולות שאחריה יתבצעו מאוחר יותר"}
