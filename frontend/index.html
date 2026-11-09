@@ -2475,6 +2475,9 @@ tr.chat-open>td{background:var(--primary-soft)!important}
 .fr-name{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fr-meta{font-size:11.5px;color:var(--text-light)}
 .fr-dl{color:var(--text-light);flex-shrink:0}
+/* A file nobody here may download: the row is still a row — the name, the type,
+   who put it there — and it is plainly not a thing to click. */
+a[aria-disabled="true"]{opacity:.6;cursor:not-allowed}
 .fr-del{flex-shrink:0;width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--text-light);font-size:12.5px;cursor:pointer;transition:background .12s,color .12s}
 .fr-del:hover{background:#fdebed;color:var(--red)}
 /* logs tab */
@@ -2839,6 +2842,38 @@ body, body *{ font-weight:400!important; }
    sidebar list is a list, not a heading: bolding every board name there flattened
    the contrast that marks which one is actually open. */
 #bh-title, #bh-title *{ font-weight:700!important; }
+
+/* ===== סימן מים, והדפסה שמסרבת לעצמה =====
+
+   What this is NOT: a way to stop a screenshot. Nothing in a browser is. The
+   page cannot see Cmd+Shift+4, cannot see the system's own capture tool,
+   cannot see a screen recording, and cannot see the phone somebody points at
+   the monitor. Scripts that claim otherwise catch the PrintScreen key on
+   Windows and nothing else, and reading one as protection is worse than
+   having none — it is a lock on a door that is not there.
+
+   What this IS: the two things that do work against the same worry. The
+   screen an אורח looks at carries their own name, so a picture of it is
+   traceable back to the person who took it and is useless as an anonymous
+   leak; and the one copy the browser DOES control — the print, which is also
+   "save as PDF", which is the whole board as a file — refuses itself.
+
+   The mark sits above everything the app paints (the board is z-index 400 at
+   its highest) and takes no clicks, so it is in every screenshot and in the
+   way of nothing. */
+#wm{position:fixed;inset:0;z-index:9000;pointer-events:none;color:var(--text);opacity:.085;
+    overflow:hidden;user-select:none;-webkit-user-select:none}
+#wm svg{width:100%;height:100%;display:block}
+#wm text{fill:currentColor;font-family:Rubik,Figtree,sans-serif;font-weight:700;
+         white-space:pre}
+/* A print that refuses itself. `*` cannot match body's own ::before, which is
+   how the sheet goes out carrying the reason instead of a blank page — a blank
+   one reads as a broken feature and gets tried again. */
+@media print{
+  body.no-print *{display:none!important}
+  body.no-print::before{display:block!important;content:"הדפסת הלוח אינה זמינה לחשבון זה";
+    font:700 15px Rubik,sans-serif;padding:40mm 10mm;text-align:center;color:#1d2a44}
+}
 </style>
 </head>
 <body>
@@ -3492,6 +3527,7 @@ async function boot(){
       }
     }catch(e){}
     renderMe();
+    Screen.sync();            // the matrix and the account are both known by here
     await enterApp();
     Trash.load().catch(()=>{});   // recycle-bin counter, non-blocking
     try{ Live.start(); }catch(e){}   // live updates — events, with polling as the fallback
@@ -4634,7 +4670,8 @@ function boardMenu(e){
     ${mob?item('fa-clock-rotate-left','לוג הלוח','BoardLog.open()',true):''}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
     ${item('fa-trash-can','סל מחזור','BoardTrash.open()',true)}
-    ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',true)}
+    ${item('fa-file-excel','ייצוא לאקסל','exportBoardExcel()',hasCap('export_excel'),
+           'אין לך הרשאה לייצא לוח לאקסל — פנה למנהל המערכת')}
     ${mob?'':item('fa-file-import','ייבוא לוח מקובץ','importBoardFile()',hasCap('create_board'),'אין לך הרשאה ליצור לוח חדש')}
     <div class="rm-sep"></div>
     ${item('fa-trash','מחק לוח','deleteBoardById('+st.board.id+')',canDelete,'רק מנהל הלוח או מנהל הסביבה יכול למחוק אותו','danger')}
@@ -13163,6 +13200,9 @@ const SysAdmin = {
     try{
       const r=await api('/api/role-permissions',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role,capability:cap,allowed})});
       if(st.rolePerms&&st.rolePerms.matrix&&r.matrix) st.rolePerms.matrix[role]=r.matrix[role];
+      /* An administrator who has just switched one of these on their own screen
+         should see the answer on it, not after the next reload. */
+      try{ Screen.sync(); }catch(_){ }
       toast('ההרשאה עודכנה');
       updateNewBoardBtn(); renderSidebar();
     }catch(err){
@@ -13698,6 +13738,60 @@ const Settings={
 
 const ROLE_HE={admin:'מנהל מערכת',manager:'מנהל',member:'חבר צוות',viewer:'צפייה בלבד',guest:'אורח'};
 // capability check against the configurable role→feature matrix (admins always pass)
+/* ===== What an אורח's screen says about itself =====
+
+   Two capabilities, both read from the same matrix as everything else so that
+   a system administrator can hand either back without a release:
+
+   `clean_screen`  — a screen with no mark on it. Off for אורח, so their screen
+                     carries their name, their address and the date, faintly,
+                     across everything. A screenshot of it is still a
+                     screenshot; it is just no longer anonymous.
+   `print_board`   — printing, which in every browser is also "save as PDF" and
+                     therefore the whole board as a file. This one really is
+                     blocked, because printing is the one copy the page is
+                     asked about before it happens.
+
+   Neither is enforced on the server, and neither could be: the browser owns
+   the print dialogue and the operating system owns the pixels. The server says
+   so in CAP_HE rather than pretending otherwise.
+
+   The mark is drawn as one inline <svg> pattern rather than a few hundred
+   positioned spans: it tiles itself, it costs one node, it rescales with the
+   window on its own — and being in the document, it is laid out in the page's
+   own Rubik, which an SVG loaded as a background-image would not be. */
+const Screen={
+  sync(){
+    const body=document.body; if(!body)return;
+    body.classList.toggle('no-print',!hasCap('print_board'));
+    const had=document.getElementById('wm');
+    if(hasCap('clean_screen')||!st.me){ if(had)had.remove(); return; }
+    const who=(st.me.name||'').trim(), mail=(st.me.email||'').trim();
+    const when=new Date().toLocaleDateString('he-IL');
+    const line=[who,mail,when].filter(Boolean).join(' · ');
+    const el=had||document.createElement('div');
+    el.id='wm'; el.setAttribute('aria-hidden','true');
+    /* Two lines a tile, the second offset, so a crop of any corner of the
+       screen still catches a whole one. The rotation is on the pattern and
+       not on the text, or the tiles stop meeting at their edges. */
+    el.innerHTML=`<svg xmlns="http://www.w3.org/2000/svg"><defs>
+      <pattern id="wm-p" width="330" height="200" patternUnits="userSpaceOnUse"
+               patternTransform="rotate(-24)">
+        <text x="0" y="40" font-size="13">${esc(line)}</text>
+        <text x="110" y="140" font-size="13">${esc(line)}</text>
+      </pattern></defs>
+      <rect width="100%" height="100%" fill="url(#wm-p)"></rect></svg>`;
+    if(!had) body.appendChild(el);
+  },
+  /* Ctrl/Cmd+P as well. The stylesheet is the rule — it covers the browser's
+     own menu, which no key handler can see — but a dialogue that opens onto a
+     refusal is a worse answer than a sentence saying so before it opens. */
+  key(e){
+    if(!(e.key==='p'||e.key==='P')||!(e.ctrlKey||e.metaKey))return;
+    if(hasCap('print_board'))return;
+    e.preventDefault(); toast('הדפסת הלוח אינה זמינה לחשבון זה');
+  },
+};
 function hasCap(cap){
   if(isSysAdmin())return true;
   const role=(st.me&&st.me.role)||'guest';
@@ -16073,6 +16167,11 @@ function exportGrid(){
 }
 async function exportBoardExcel(){
   if(!st.board)return;
+  /* The menu does not offer this where it is not allowed, and the check is
+     here too: a screen can be stale — a role changed while the board sits
+     open — and a refusal should name the reason rather than report a failure
+     that reads like a fault. The server is the rule either way. */
+  if(!hasCap('export_excel')){ toast('אין לך הרשאה לייצא לוח לאקסל'); return; }
   const btn=document.getElementById('bh-menu');   // export is reached from the board menu
   const grid=exportGrid();
   if(!grid.rows.length){toast('אין פריטים לייצוא');return;}
@@ -16630,7 +16729,16 @@ const fileDeadWhy=f=>FILE_DEAD_HE[f&&f.why]||'הקובץ לא יובא — נש�
    same address. Resolving against location.href settles both at once, and
    what goes into the href afterwards is the path alone — same origin by
    construction, which is the condition download needs. */
+/* Whether files may leave the system at all. The server is the rule — it
+   refuses the bytes — and this is the screen not offering what would be
+   refused: a link that answers 403 is worse than no link, because it reads as
+   a broken file rather than as a permission that was never given. The matrix
+   is what both of them read, so a system administrator turning it back on for
+   אורח turns the links back on too, with no release. */
+function mayDownloadFiles(){ return hasCap('download_files'); }
 function fileLinkAttrs(url,name){
+  if(!mayDownloadFiles())
+    return `title="${esc((name?name+' — ':'')+'אין לך הרשאה להוריד קבצים')}" aria-disabled="true"`;
   const u=String(url||'');
   let path=null;
   try{ const a=new URL(u,location.href);
@@ -22057,12 +22165,16 @@ const Chat = {
   attPreview(f){
     // an imported attachment that never arrived — see filesDisp
     if(f&&f.dead) return `<span class="att-prev att-file att-dead" title="${esc(f.name+' — '+fileDeadWhy(f))}"><i class="fa-solid fa-link-slash"></i><span class="att-name">${esc(f.name)}</span></span>`;
-    if(this.isImg(f.name,f.type)) return `<a class="att-prev" ${fileLinkAttrs(f.url,f.name)} title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"><span class="att-name">${esc(f.name)}</span></a>`;
+    /* The thumbnail is the file itself, fetched and drawn — so where the file
+       may not be fetched there is no thumbnail to draw, and asking for one
+       anyway puts a broken-image glyph on the screen instead of an answer.
+       The badge says what the file is, which is what is left to say. */
+    if(this.isImg(f.name,f.type)&&mayDownloadFiles()) return `<a class="att-prev" ${fileLinkAttrs(f.url,f.name)} title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"><span class="att-name">${esc(f.name)}</span></a>`;
     return `<a class="att-prev att-file" ${fileLinkAttrs(f.url,f.name)} title="${esc(f.name)}">${this.extBadge(f.name,f.type)}<span class="att-name">${esc(f.name)}</span></a>`;
   },
   renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return;
     let h=this.atts.map((f,i)=>{
-      const thumb=this.isImg(f.name,f.type)?`<img src="${esc(f.url)}" class="chip-thumb" alt="">`:this.extBadge(f.name,f.type);
+      const thumb=(this.isImg(f.name,f.type)&&mayDownloadFiles())?`<img src="${esc(f.url)}" class="chip-thumb" alt="">`:this.extBadge(f.name,f.type);
       return `<span class="file-chip">${thumb} ${esc(f.name)} <i class="fa-solid fa-xmark" style="cursor:pointer" onclick="Chat.rmAtt(${i})"></i></span>`;
     }).join('');
     if(this._uploading) h+=`<span class="file-chip uploading"><i class="fa-solid fa-spinner fa-spin"></i> ${esc(this._uploading)} — מעלה…</span>`;
@@ -22128,7 +22240,7 @@ const Chat = {
       <a class="file-row" ${fileLinkAttrs(f.url,f.name)}>
         ${this.extBadge(f.name,f.type)}
         <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}${f.created_at?' · <i class="fa-regular fa-clock" style="font-size:10px"></i> '+fdatetimeY(f.created_at):''}</div></div>
-        <i class="fa-solid fa-download fr-dl"></i>
+        ${mayDownloadFiles()?'<i class="fa-solid fa-download fr-dl"></i>':''}
         ${this.canDeleteFile(f)?`<button class="fr-del" title="מחק קובץ" onclick="Chat.deleteFile(event,'${encodeURIComponent(f.url)}')"><i class="fa-solid fa-trash-can"></i></button>`:''}
       </a>`).join('')}</div>`
       : `<div class="empty" style="padding:30px"><i class="fa-regular fa-face-frown"></i><div>לא נמצאו קבצים בשם "${esc(this._fileQuery||'')}"</div></div>`;
@@ -22495,6 +22607,12 @@ function showModal(html){const m=document.getElementById('modal');m.classList.re
    dealt with the key is not second-guessed; and a confirm dialog on top of a
    modal closes the confirm first, not both. */
 document.addEventListener('keydown',e=>{
+  /* One keydown listener in the whole app, on purpose — tests/test_automation
+     _mobile_a11y.py pins that, because two of them is how the order in which
+     a key is answered becomes a matter of which file loaded first. So the
+     print shortcut is answered here rather than beside the thing it belongs
+     to, ahead of the Escape this handler exists for and without touching it. */
+  try{ Screen.key(e); }catch(_){ }
   if(e.key!=='Escape'||e.defaultPrevented) return;
   const t=e.target||{};
   const tag=(t.tagName||'').toLowerCase();

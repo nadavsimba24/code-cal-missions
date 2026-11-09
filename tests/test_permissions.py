@@ -23,10 +23,26 @@ def test_matrix_shape_and_admin_locked(client):
 
 
 def test_defaults_are_all_false_for_non_admin(client):
-    """Out of the box no non-admin role has any capability (matches prior behavior)."""
+    """Out of the box a non-admin role has no capability — except the ones
+    CAP_DEFAULT_ON names, and naming them there is the whole point.
+
+    A capability is normally a power granted: nobody had it until somebody said
+    so, so False is the only safe thing to be born with. export_excel and
+    download_files are the other kind — they describe something every role could
+    already do, written down so that it can be taken away from אורח. Born False
+    they would have taken Excel and every attachment away from every member of
+    every board on the first restart after they were added, which is the bug this
+    test would then have been pinning in place."""
+    import main as cityos_main
     d = _matrix(client)
     for role in ("manager", "member", "viewer", "guest"):
-        assert not any(d["matrix"][role].values()), f"{role} should start with no capabilities"
+        for cap, allowed in d["matrix"][role].items():
+            on_by_default = role in cityos_main.CAP_DEFAULT_ON.get(cap, ())
+            assert allowed is on_by_default, \
+                f"{role} should start {'with' if on_by_default else 'without'} {cap}"
+    # and the one role the exceptions exist for starts without them
+    for cap in cityos_main.CAP_DEFAULT_ON:
+        assert d["matrix"]["guest"][cap] is False, cap
 
 
 def test_non_admin_cannot_edit_matrix(client, member_id):

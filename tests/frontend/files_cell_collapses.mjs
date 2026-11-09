@@ -52,7 +52,11 @@ function grabArrow(name){
 const fileExt = new Function('return ('+/fileExt\(name,type\)\{[\s\S]*?\n  \},/.exec(src)[0].replace(/^fileExt/,'function fileExt').replace(/,$/,'')+')')();
 
 let TASK={custom_fields:{}};
-const build = () => new Function('esc','Chat','fileDeadWhy','findAnyTask','location',
+/* Whether files may be downloaded at all — the role matrix's `download_files`,
+   which fileLinkAttrs asks before it builds an address. True for most of this
+   file; the last section turns it off, which is what an אורח sees. */
+let MAY=true;
+const build = () => new Function('esc','Chat','fileDeadWhy','findAnyTask','location','mayDownloadFiles',
   grabTable('const FILE_TYPE_ICONS=[')
   +grabFn('fileTypeIcon')
   +grabArrow('filesTip')
@@ -65,7 +69,8 @@ const build = () => new Function('esc','Chat','fileDeadWhy','findAnyTask','locat
   /* fileLinkAttrs resolves a file's address against the page's, so the page
      has to have one here. The host is arbitrary; what the tests turn on is
      whether the file's address resolves to the SAME one. */
-  {href:'https://missions.example/boards/7', origin:'https://missions.example'});
+  {href:'https://missions.example/boards/7', origin:'https://missions.example'},
+  ()=>MAY);
 
 const F = build();
 const file=(name,extra)=>Object.assign({name,url:'/api/files/'+name},extra||{});
@@ -171,6 +176,25 @@ ck('the list takes another file too, without leaving itself open over a redrawn 
 ck('and a row in the list downloads its file rather than opening a tab',
    (pop.innerHTML.match(/<a class="file-pop-row" href="\/api\/files\/[^"]*\?dl=1" download="/g)||[]).length===4
    && !/target="_blank"/.test(pop.innerHTML), pop.innerHTML);
+
+/* ── and what the same cell is for somebody who may not download ──
+   An אורח works on the board and does not take its files away (the server
+   refuses the bytes — tests/test_guest_cannot_take_data_out.py). The cell has
+   to say that by not offering the link at all: a link that answers 403 reads
+   as a broken file rather than as a permission nobody gave. */
+MAY=false;
+const blocked = F.filesDisp([file('תוכנית.pdf'),file('תקציב.xlsx'),file('חזית.png')],7,'c_f');
+ck('with downloading blocked, no icon in the strip is a link to anything',
+   !/href=/.test(blocked), blocked);
+ck('…the files are still there, and still say what they are',
+   (blocked.match(/class="file-ic"/g)||[]).length===3 && /fa-file-pdf/.test(blocked), blocked);
+ck('…and each one says why it cannot be taken',
+   (blocked.match(/אין לך הרשאה להוריד קבצים/g)||[]).length===3, blocked);
+const blockedTwo = F.filesDisp([file('תוכנית.pdf'),file('מצגת.pptx')],7,'c_f');
+ck('the named chips go the same way, and keep their ×',
+   !/href=/.test(blockedTwo)
+   && (blockedTwo.match(/removeFile\(event,7,'c_f',\d\)/g)||[]).length===2, blockedTwo);
+MAY=true;
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

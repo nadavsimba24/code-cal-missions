@@ -1083,7 +1083,8 @@ _safe_startup(_backfill_auto_columns)
 # editable by a system admin from the SysAdmin → role-permissions panel.
 CAPABILITIES = ["manage_system", "create_environment", "create_board",
                 "view_automations", "export_automation_log",
-                "hide_form_branding"]
+                "hide_form_branding", "export_excel", "download_files",
+                "print_board", "clean_screen"]
 CAP_HE = {
     "manage_system": "ניהול מערכת",
     "create_environment": "יצירת סביבה חדשה",
@@ -1097,6 +1098,33 @@ CAP_HE = {
     # will read. A board admin builds the form; whether it may go out
     # unbranded is the system's to say, which is what this table is for.
     "hide_form_branding": "הסרת מיתוג Missions מטופס",
+    # Taking the data itself out of the system, in bulk and one file at a time.
+    # Both are off for אורח and on for everybody else — see CAP_DEFAULT_ON.
+    "export_excel": "ייצוא לוח לאקסל",
+    "download_files": "הורדת קבצים מצורפים",
+    # The two the server cannot enforce and says so. Printing happens inside
+    # the browser and never asks us; a screenshot is the operating system
+    # photographing its own screen, and no web page has ever been able to stop
+    # one. What CAN be done is to make the copy traceable and the print refuse
+    # itself, which is what these two switch on — see the Screen object in
+    # frontend/index.html, where the whole reasoning is written out.
+    "print_board": "הדפסת לוח ושמירה כ-PDF",
+    "clean_screen": "מסך ללא סימן מים",
+}
+
+# What a (role, capability) row is born with, where it is not False.
+#
+# Every other capability in this table starts at False: it is a power granted,
+# and until somebody grants it nobody had it. These two are the other kind —
+# not a new power being handed out but an existing one being taken away from a
+# single role. Seeded False for everybody, the first restart after this would
+# have taken Excel and every attachment away from every member of every board,
+# which is not what "block it for a guest" asked for.
+CAP_DEFAULT_ON = {
+    "export_excel": ["manager", "member", "viewer"],
+    "download_files": ["manager", "member", "viewer"],
+    "print_board": ["manager", "member", "viewer"],
+    "clean_screen": ["manager", "member", "viewer"],
 }
 EDITABLE_ROLES = ["manager", "member", "viewer", "guest"]
 ROLE_HE_BE = {"admin": "מנהל מערכת", "manager": "מנהל", "member": "חבר צוות",
@@ -1104,14 +1132,18 @@ ROLE_HE_BE = {"admin": "מנהל מערכת", "manager": "מנהל", "member": "
 
 def _seed_role_permissions():
     """Ensure a row exists for every (editable role × capability). Defaults to
-    False — only 'admin' (implicit) starts with access, matching prior behavior."""
+    False — only 'admin' (implicit) starts with access, matching prior behavior.
+    CAP_DEFAULT_ON names the exceptions, and says there why they have to exist:
+    a capability that describes something every role could already do cannot be
+    born switched off without taking it away from everybody."""
     with Session(engine) as db:
         existing = {(r.role, r.capability) for r in db.query(RolePermission).all()}
         added = False
         for role in EDITABLE_ROLES:
             for cap in CAPABILITIES:
                 if (role, cap) not in existing:
-                    db.add(RolePermission(role=role, capability=cap, allowed=False))
+                    db.add(RolePermission(role=role, capability=cap,
+                                          allowed=role in CAP_DEFAULT_ON.get(cap, ())))
                     added = True
         if added:
             db.commit()
@@ -10200,6 +10232,12 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
         # (this used to skip the check when the caller omitted user_id)
         if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
+        # Being allowed to READ the board and being allowed to take a copy of it
+        # out of the system are two different permissions. A guest is invited to
+        # work on a board, not to walk away with it; the matrix says so, and a
+        # system administrator can say otherwise there without a code change.
+        if not _cap(db, actor_id, "export_excel"):
+            raise HTTPException(403, "אין לך הרשאה לייצא לוח לאקסל")
         board_color = b.color if _valid_hex(b.color) else "#0073ea"
         talk = _export_conversation(db, board_id)
         attached = _export_files(db, board_id)
@@ -22451,6 +22489,33 @@ def upload_file(file: UploadFile = File(...), actor_id: int = Depends(current_us
         db.commit()
     return {"name": file.filename, "url": f"/api/files/{token}", "type": media_type}
 
+def _file_is_interface_picture(db, token: str) -> bool:
+    """Whether this upload is a picture the INTERFACE is made of, rather than
+    content somebody attached to an item.
+
+    One route serves both, and the difference matters only here: somebody who
+    may not download files must still be able to see the app they are working
+    in — their own face in the corner, the environment's icon in the switcher,
+    the logo and cover on a form. Those four are the whole list; anything else
+    an upload is used for is content, and content is what the block is about.
+
+    Checked only for a user the block applies to, so the queries cost nothing
+    for everybody else. If the interface ever grows a fifth picture of its own,
+    it belongs in this function — the symptom of forgetting is a guest looking
+    at a broken image where the app's own chrome should be.
+    """
+    url = f"/api/files/{token}"
+    if db.query(User.id).filter(User.avatar_url == url).first():
+        return True
+    if db.query(Environment.id).filter(Environment.icon == url).first():
+        return True
+    if (db.query(FormView.id)
+            .filter((FormView.logo_token == token) | (FormView.cover_token == token))
+            .first()):
+        return True
+    return False
+
+
 @app.get("/api/files/{token}")
 def serve_file(token: str, dl: int = 0, actor_id: int = Depends(current_user_id)):
     """Serve an uploaded file. `?dl=1` asks for it as a download.
@@ -22468,6 +22533,21 @@ def serve_file(token: str, dl: int = 0, actor_id: int = Depends(current_user_id)
         f = db.query(UploadedFile).filter(UploadedFile.token == token).first()
         if not f:
             raise HTTPException(404, "file not found")
+        # A guest does not take files out of the system — not in bulk and not
+        # one at a time, and not by asking for the address without the `dl=1`
+        # that the links in the app put there. The bytes ARE the download; what
+        # the browser then does with them is not the thing being refused, which
+        # is why this is not a check on the Content-Disposition below.
+        #
+        # A stranger reading a public form is not caught by this: that page's
+        # logo has a route of its own (public_form_logo) for exactly the reason
+        # given there — this one needs an identity. The `is not None` is cheap
+        # defence for an auth mode that someday lets a request through without
+        # one; today resolve_user raises 401 instead.
+        if (actor_id is not None
+                and not _cap(db, actor_id, "download_files")
+                and not _file_is_interface_picture(db, token)):
+            raise HTTPException(403, "אין לך הרשאה להוריד קבצים")
         from urllib.parse import quote
         media_type, may_inline = _safe_media_type(f.content_type)
         how = "inline" if (may_inline and not dl) else "attachment"
