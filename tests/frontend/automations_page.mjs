@@ -10,6 +10,13 @@ import {fileURLToPath} from 'url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const src = fs.readFileSync(path.join(ROOT,'frontend','index.html'),'utf8');
 
+function grabFn(name){
+  const m = new RegExp(`^(?:async )?function ${name}\\(`,'m').exec(src);
+  if(!m) throw new Error('not found: '+name);
+  let i=src.indexOf('{',m.index), d=0;
+  for(let j=i;j<src.length;j++){ if(src[j]==='{')d++; else if(src[j]==='}'){d--; if(!d) return src.slice(m.index,j+1);} }
+}
+
 function grabConst(name){
   const m = new RegExp(`^const ${name} = \\{`,'m').exec(src);
   if(!m) throw new Error('not found: '+name);
@@ -24,7 +31,7 @@ const localStorage={getItem:k=>stored[k]||null,setItem:(k,v)=>{stored[k]=String(
 const A=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','avatarInner','boardStatusList',
   'boardPriorityList','customColumns','meId','api','openCellPop','closeCellPops','askConfirm',
   'showModal','closeModals','document','renderView','localStorage',
-  grabConst('Automations')+' return Automations;')(
+  grabFn('robotIcon')+'\n'+grabConst('Automations')+' return Automations;')(
   st, x=>String(x==null?'':x), ()=>{}, {ago:()=>'עכשיו',goto(){}}, ()=>'01/01/2026',
   ()=>'01/01/2026',
   ()=>'', ()=>[], ()=>[],
@@ -498,10 +505,15 @@ ck('...and an empty FILTER says that instead',
 // ── the way in: the board header ──
 ck('the board header carries an automations button',
    /id="bh-auto"[^>]*onclick="Automations\.open\(\)"/.test(src), 'no bh-auto button');
-ck('...styled and hidden on a phone like the log button beside it',
-   /id="bh-auto"/.test(src) && /class="bh-log" id="bh-auto"/.test(src));
-ck('...with the menu entry still there for the phone',
+ck('...wearing the log button\'s styling',
+   /class="bh-log bh-auto" id="bh-auto"/.test(src));
+ck('...and unlike the log it stays in the header on a phone',
+   /#boardhead \.bh-auto\{display:inline-grid\}/.test(src),
+   'the phone rule hides it with the log');
+ck('...with the menu entry there as well, not instead',
    src.includes("'אוטומציות','Automations.open()'"));
+ck('the mark is drawn, not fetched from a CDN',
+   /id="bh-auto"[^>]*>\$\{robotIcon\(\)\}/.test(src) && !/fa-robot"><\/i><\/button>/.test(src));
 ck('the log button no longer wears the same icon as it',
    /id="bh-log"[^>]*>\s*<i class="fa-solid fa-clock-rotate-left">/.test(src),
    'two identical ⚡ buttons in the header');
@@ -966,7 +978,7 @@ ck('a board that is running says nothing',
   const A2=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY','avatarInner',
     'boardStatusList','boardPriorityList','customColumns','meId','api','openCellPop',
     'closeCellPops','askConfirm','showModal','closeModals','document','renderView','localStorage',
-    grabConst('Automations')+' return Automations;')(
+    grabFn('robotIcon')+'\n'+grabConst('Automations')+' return Automations;')(
     st, x=>String(x==null?'':x), ()=>{}, {ago:()=>'עכשיו',goto(){}}, ()=>'01/01/2026',
     ()=>'01/01/2026', ()=>'', ()=>[], ()=>[], ()=>[], ()=>1,
     async(p,o)=>{
@@ -1072,7 +1084,7 @@ ck('a board that is running says nothing',
     const A3=new Function('st','esc','toast','BoardLog','fdatetime','fdatetimeY',
       'avatarInner','boardStatusList','boardPriorityList','customColumns','meId','api',
       'openCellPop','closeCellPops','askConfirm','showModal','closeModals','document',
-      'renderView','localStorage', grabConst('Automations')+' return Automations;')(
+      'renderView','localStorage', grabFn('robotIcon')+'\n'+grabConst('Automations')+' return Automations;')(
       st, realEsc, ()=>{}, {ago:()=>'עכשיו',goto(){}}, ()=>'01/01/2026',
       ()=>'01/01/2026', ()=>'', ()=>[], ()=>[], ()=>[], ()=>1, async()=>({}),
       ()=>{}, ()=>{}, ()=>{}, ()=>{}, ()=>{}, {getElementById:()=>null}, ()=>{},

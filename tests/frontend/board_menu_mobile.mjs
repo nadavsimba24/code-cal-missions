@@ -16,13 +16,17 @@ function grab(name){
 
 let mobile=true, html='';
 const st={board:{id:1,my_role:'admin',visibility:'private',environment_id:5,name:'לוח'}};
+// boardMenu draws the automations mark through robotIcon, so the real one
+// comes along — a stub would hide a mark that stopped being produced.
 const ctx=new Function('st','isMobile','esc','openCellPop','Env','hasCap',
-  grab('boardMenu')+'; return boardMenu;')(
+  grab('robotIcon')+'\n'+grab('boardMenu')+'; return boardMenu;')(
   st, ()=>mobile, x=>String(x), (a,h)=>{html=h;},
   {items:[{id:5,can_manage:true}]}, ()=>true);
 
 const ev={stopPropagation(){}};
-const labels = () => [...html.matchAll(/<i class="fa-solid [^"]*"><\/i>\s*([^<]+)</g)].map(m=>m[1].trim());
+// an entry's icon is a Font Awesome <i> or an <i> holding a drawn svg; the
+// label is the text after whichever of the two closed
+const labels = () => [...html.matchAll(/<\/i>\s*([^<]+)</g)].map(m=>m[1].trim());
 
 let pass=0,fail=0; const ck=(n,c,x='')=>{c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+x:'')));};
 

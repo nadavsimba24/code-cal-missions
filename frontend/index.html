@@ -176,6 +176,20 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 #modal .logs-list{border:1px solid var(--border);border-radius:9px;overflow:hidden}
 .bh-log{width:30px;height:30px;border-radius:7px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:inline-grid;place-items:center;font-size:14px;vertical-align:middle;margin-inline-start:6px}
 .bh-log:hover{background:var(--row-hover);border-color:var(--border);color:var(--primary)}
+/* The automations mark is drawn here rather than taken from Font Awesome.
+   Two reasons, both learned the hard way. Font Awesome arrives from a CDN,
+   and on a network that does not reach it the button is there and empty —
+   which is exactly what "the icon did not come up" looked like in QA. And
+   fa-robot's mouth is a grille that reads as a row of teeth; this face
+   smiles instead. Everything is currentColor, so it takes the colour of
+   whatever it sits in — muted in the header, --text-light in the ⋯ menu,
+   --primary in a dialog heading — with no second rule to keep in step. */
+.ic-robot{display:inline-flex;align-items:center;justify-content:center;vertical-align:-.14em}
+.ic-robot svg{width:1.08em;height:1.08em;display:block}
+.ic-robot.ic-pri{color:var(--primary)}
+/* an empty state lays its icon out as a block and centres the text around
+   it; a block-level drawing has to be told to centre itself. */
+.empty .ic-robot svg{margin-inline:auto}
 .log-item{background:none;border:none;padding:0;font:inherit;color:var(--primary);cursor:pointer;font-weight:600}
 .log-item:hover{text-decoration:underline}
 /* ===== ציר זמן — a compact cell popover, the weight of the תאריך יעד editor
@@ -2719,6 +2733,12 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
      screen names the board admins too, but boardMenu disables that entry for
      anyone who is not one. Removing it was the explicit request. */
   #boardhead .bh-log,#boardhead .bh-owner{display:none}
+  /* The automations button is the exception among them. It is the control
+     people were told to look for in the header, and it is the entrance to a
+     screen a phone can genuinely use (viewing rules, owners, runs, failures
+     — see the mobile notice inside Automations), so it keeps its place here
+     and the ⋯ menu carries it as well rather than instead. */
+  #boardhead .bh-auto{display:inline-grid}
   /* the view picker becomes a list field; the strip and the add-view button
      (board configuration, desktop-only here as elsewhere) step aside */
   .tabs{overflow:visible}
@@ -4358,6 +4378,30 @@ function reportBoardOpen(id,fetchMs,renderMs,t0,how){
     +`request ${Math.round(fetchMs)}ms  ·  render ${Math.round(renderMs)}ms  ·  `
     +`on screen after ${Math.round(performance.now()-t0)}ms`);
 }
+/* The automations face.
+
+   It is drawn here instead of being named as a Font Awesome class for the two
+   reasons written out beside .ic-robot in the CSS: a glyph that arrives from a
+   CDN is missing on any network that cannot reach it, and fa-robot's mouth is
+   a grille that reads as a row of teeth. This one has eyes and a smile and
+   nothing between them.
+
+   `cls` adds a class — 'ic-pri' for a dialog heading. The colour is never set
+   here: every stroke is currentColor, so the mark takes the colour of whatever
+   it sits in and there is no second place to keep in step. */
+function robotIcon(cls){
+  return '<i class="ic-robot'+(cls?' '+cls:'')+'" aria-hidden="true">'
+    +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
+    +'stroke-linecap="round" stroke-linejoin="round" focusable="false">'
+    +'<circle cx="12" cy="2.4" r="1.15" fill="currentColor" stroke="none"/>'
+    +'<path d="M12 3.55V5.6"/>'
+    +'<rect x="3.7" y="5.6" width="16.6" height="14" rx="4.2"/>'
+    +'<path d="M2.4 11.1v3M21.6 11.1v3"/>'
+    +'<circle cx="9.1" cy="11.4" r="1.3" fill="currentColor" stroke="none"/>'
+    +'<circle cx="14.9" cy="11.4" r="1.3" fill="currentColor" stroke="none"/>'
+    +'<path d="M9.3 16.1c.76.68 1.66 1.02 2.7 1.02s1.94-.34 2.7-1.02"/>'
+    +'</svg></i>';
+}
 function renderBoardHead(){
   if(!st.board)return;
   const canEdit=st.board.my_role==='admin'||st.board.my_role==='editor';
@@ -4366,7 +4410,7 @@ function renderBoardHead(){
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
     ownerChipHTML()+
     (st.board.can_view_automations!==false
-      ? `<button class="bh-log" id="bh-auto" onclick="Automations.open()" title="אוטומציות" aria-label="אוטומציות"><i class="fa-solid fa-robot"></i></button>`
+      ? `<button class="bh-log bh-auto" id="bh-auto" onclick="Automations.open()" title="אוטומציות" aria-label="אוטומציות">${robotIcon()}</button>`
       : '')+
     `<button class="bh-log" id="bh-log" onclick="BoardLog.open()" title="לוג פעילות הלוח" aria-label="לוג פעילות הלוח"><i class="fa-solid fa-clock-rotate-left"></i></button>`+
     `<button class="bh-menu" id="bh-menu" onclick="boardMenu(event)" title="תפריט הלוח" aria-label="תפריט הלוח"><i class="fa-solid fa-ellipsis"></i></button>`;
@@ -4653,9 +4697,14 @@ function boardMenu(e){
                    && (!st.board.environment_id || !!(cur&&cur.can_manage));
   // deleting mirrors the server rule: board admin, or a manager of its workspace
   const canDelete=admin||!!(cur&&cur.can_manage);
-  const item=(icon,label,action,enabled,why,cls)=>enabled
-    ? `<button class="rm-item${cls?' '+cls:''}" onclick="closeCellPops();${action}"><i class="fa-solid ${icon}"></i> ${label}</button>`
-    : `<button class="rm-item${cls?' '+cls:''}" disabled title="${esc(why||'')}"><i class="fa-solid ${icon}"></i> ${label}</button>`;
+  // an entry's icon is a Font Awesome class, or ready-made markup when the
+  // mark is drawn rather than named — robotIcon() is the one such mark today
+  const item=(icon,label,action,enabled,why,cls)=>{
+    const ic=icon.charAt(0)==='<'?icon:`<i class="fa-solid ${icon}"></i>`;
+    return enabled
+      ? `<button class="rm-item${cls?' '+cls:''}" onclick="closeCellPops();${action}">${ic} ${label}</button>`
+      : `<button class="rm-item${cls?' '+cls:''}" disabled title="${esc(why||'')}">${ic} ${label}</button>`;
+  };
   // moving a board and importing one are desktop-only; the board log goes the
   // other way — its header button is hidden on a phone, so it lives here instead
   const mob=isMobile();
@@ -4665,7 +4714,7 @@ function boardMenu(e){
            'סוג לוח · '+(st.board.visibility==='public'?'ציבורי':'פרטי'),
            'boardVisibility()',admin,'רק מנהל הלוח יכול לשנות את חשיפת הלוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
-    ${item('fa-robot','אוטומציות','Automations.open()',st.board.can_view_automations!==false,
+    ${item(robotIcon(),'אוטומציות','Automations.open()',st.board.can_view_automations!==false,
            'צפייה באוטומציות דורשת הרשאה — פנה למנהל המערכת')}
     ${mob?item('fa-clock-rotate-left','לוג הלוח','BoardLog.open()',true):''}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
@@ -8414,7 +8463,7 @@ const Automations = {
 
   async open(){
     if(!st.board){ toast('פתח לוח תחילה'); return; }
-    showModal('<h2><i class="fa-solid fa-robot" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
+    showModal('<h2>'+robotIcon('ic-pri')+' אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
     document.getElementById('modal').classList.add('modal-80');
     this.building=null; this.mode='templates'; this.scratch={trigger:'',conds:[]};
     this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=this.ord=null;
@@ -8480,7 +8529,7 @@ const Automations = {
       :this.tab==='history'?this.historyHTML()
       :this.tab==='audit'?this.auditHTML():this.manageHTML();
     m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+
-      `<h2><i class="fa-solid fa-robot" style="color:var(--primary)"></i> אוטומציות — ${esc(st.board.name)}</h2>
+      `<h2>${robotIcon('ic-pri')} אוטומציות — ${esc(st.board.name)}</h2>
       <div class="mbody">${this.tabsHTML()}${body}</div>`;
   },
 
@@ -8758,7 +8807,7 @@ const Automations = {
     if(this.tlog) return this.testLogHTML();
     const rows=this.data.automations||[], can=this.data.can_manage, c=this.data.counts||{};
     if(!rows.length)
-      return `<div class="empty" style="padding:30px"><i class="fa-solid fa-robot"></i><div>אין אוטומציות בלוח הזה</div></div>`+
+      return `<div class="empty" style="padding:30px">${robotIcon()}<div>אין אוטומציות בלוח הזה</div></div>`+
         (can?`<div style="text-align:center"><button class="btn btn-primary" onclick="Automations.setTab('create')"><i class="fa-solid fa-plus"></i> בנה את הראשונה</button></div>`:'');
     return this.freezeHTML()+this.tilesHTML(c)+this.barHTML(rows)+
       (can?'':'<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i> <b>רק מנהל הלוח יכול להגדיר או לשנות.</b></div>')+
@@ -12739,7 +12788,7 @@ const SysAdmin = {
           <button class="sa-tab" data-tab="guests" onclick="SysAdmin.go('guests')"><i class="fa-solid fa-user-plus"></i> אורחים</button>
           <button class="sa-tab" data-tab="depts" onclick="SysAdmin.go('depts')"><i class="fa-solid fa-sitemap"></i> יחידות ארגוניות</button>
           <button class="sa-tab" data-tab="envs" onclick="SysAdmin.go('envs')"><i class="fa-solid fa-layer-group"></i> סביבות</button>
-          <button class="sa-tab" data-tab="autos" onclick="SysAdmin.go('autos')"><i class="fa-solid fa-robot"></i> אוטומציות</button>
+          <button class="sa-tab" data-tab="autos" onclick="SysAdmin.go('autos')">${robotIcon()} אוטומציות</button>
           <button class="sa-tab" data-tab="history" onclick="SysAdmin.go('history')"><i class="fa-solid fa-clock-rotate-left"></i> היסטוריית התחברות</button>
         </div>
         <div id="sa-body"></div>
