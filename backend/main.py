@@ -2349,7 +2349,7 @@ def _prefetch_items(db, tasks):
     for part in [ids[i:i + _PREFETCH_CHUNK] for i in range(0, len(ids), _PREFETCH_CHUNK)]:
         for sub in (db.query(Task)
                       .filter(Task.parent_id.in_(part), Task.is_archived == False)   # noqa: E712
-                      .order_by(Task.position).all()):
+                      .order_by(Task.position, Task.id).all()):
             kids.setdefault(sub.parent_id, []).append(sub)
             subs.append(sub)
     # a sub-item is serialized too, so it needs the same three answers
@@ -5479,7 +5479,9 @@ def _form_submit(db, f, b, answers, user, request, submission_id=None):
     if cf:
         task.custom_fields = cf
 
-    maxpos = (db.query(func.max(Task.position))
+    # include_deleted for the reason create_task gives: a number held by an
+    # item in the bin is a number that can come back
+    maxpos = (db.query(func.max(Task.position)).execution_options(include_deleted=True)
                 .filter(Task.board_id == b.id, Task.parent_id == None,
                         Task.group_id == f.target_group_id).scalar())
     task.position = (maxpos + 1) if maxpos is not None else 0
@@ -6440,8 +6442,16 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             raise HTTPException(403, "אין לך גישה ללוח זה")
         groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
         # only top-level items as rows; sub-items are nested under their parent
+        # position, and then id — because "position" is not unique and never was.
+        # Two items can claim one slot (every board that predates the fix in
+        # create_task has groups where they do), and ORDER BY position alone
+        # leaves the tie to SQLite, which is free to answer differently on
+        # consecutive reads. That is rows swapping places on a refresh nobody
+        # asked for anything by. The id is arbitrary as a rule and that is the
+        # point: it is the same arbitrary answer every time, and it puts the
+        # newer of two tied items below the older, which is where it was added.
         tasks = db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False,
-                                      Task.parent_id == None).order_by(Task.position).all()
+                                      Task.parent_id == None).order_by(Task.position, Task.id).all()
         dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
         columns = (b.settings or {}).get("columns", [])
         # a board carrying a "מזהה פריט" column shows an identifier for every
@@ -10916,12 +10926,23 @@ def create_task(data: dict, request: Request = None,
                     cf.setdefault("sys_created_by", [creator])
         if cf:
             task.custom_fields = cf
-        # place the new item last — bottom of its group (or its parent's sub-list)
+        # Place the new item last — bottom of its group (or its parent's
+        # sub-list). Past EVERY sibling, including the ones in the recycle bin:
+        # _hide_deleted_tasks takes them out of this question too, and a deleted
+        # item keeps the number it had. So the group's bottom item was deleted,
+        # the next "+ הוסף פריט" was handed that same number back, and the two
+        # of them owned one slot the moment anybody restored the old one —
+        # after which the board, which reads back ordered by position, put them
+        # in whichever order the database felt like. The new row stopped being
+        # the bottom row for no reason anyone could see, and only on the groups
+        # something had been deleted from, which is what made it "sometimes".
+        # A number in the bin is a number that can come back, so it is taken.
         from sqlalchemy import func as _func
+        _q = db.query(_func.max(Task.position)).execution_options(include_deleted=True)
         if parent_id is not None:
-            maxpos = db.query(_func.max(Task.position)).filter(Task.parent_id == parent_id).scalar()
+            maxpos = _q.filter(Task.parent_id == parent_id).scalar()
         else:
-            _q = db.query(_func.max(Task.position)).filter(Task.board_id == board_id, Task.parent_id == None)
+            _q = _q.filter(Task.board_id == board_id, Task.parent_id == None)
             _q = _q.filter(Task.group_id == group_id) if group_id is not None else _q.filter(Task.group_id == None)
             maxpos = _q.scalar()
         task.position = (maxpos + 1) if maxpos is not None else 0
@@ -14500,6 +14521,45 @@ def _notice_body(db, task, board, label, act, event=None, name=""):
     return "\n".join([x for x in lines if x and x.strip()])
 
 
+def _assigned_body(db, task, board, name="", event=None, col=None):
+    """What somebody reads when a rule assigned them — the assignment itself.
+
+    "שויכת למשימה" from a rule and "שויכת למשימה" by hand are the same news and
+    arrived as two different messages. By hand it is a sentence that names the
+    item: "דנה שייך/ה אותך למשימה «X»". From a rule it was _notice_body — which
+    rule, what happened, the item, the board, the time — and that is a
+    description of the RULE, not of the assignment. Read in the bell it looks
+    like a template that was never filled in:
+
+        שויכת למשימה
+        כאשר נוצר פריט חדש
+        שיוך אחראי
+        פריט: פריט חדש
+
+    Four lines before the reader learns anything they did not know from the
+    title. So the item leads here, the way it does by hand, and which rule did
+    it stays — on a line of its own, below — because an assignment nobody can
+    account for is the thing the rule line was added to prevent.
+
+    _notice_body is still right for "אוטומציה הופעלה", where the rule IS the
+    news, and is still what that path sends.
+    """
+    now = datetime.now(_board_tz(db, board)).strftime("%d/%m/%Y %H:%M")
+    # a people column is the assignment's address: "שויכת" against a cell says
+    # less than the board's own אחראים does, and the reader opens the item
+    # looking for a field that has their name in it
+    where = f" בעמודה «{col.get('title') or col['id']}»" if col else ""
+    trig = recipes.plain(recipes.TRIGGERS.get((event or {}).get("type"), "")) \
+        or (event or {}).get("type") or ""
+    named = (name or "").strip()
+    by = (f"שיוך אוטומטי לפי הכלל «{named}»" if named
+          else (f"שיוך אוטומטי · {trig}" if trig else "שיוך אוטומטי"))
+    lines = [f"שויכת למשימה «{task.title or ''}»{where}.",
+             f"לוח: {board.name if board else ''}",
+             by, f"זמן: {now}"]
+    return "\n".join([x for x in lines if x and x.strip()])
+
+
 def _recipient_ids(db, board, task, spec, human=None, owner=None):
     """(who, why_empty) for a notification's recipient.
 
@@ -14617,14 +14677,18 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                 raise _Skipped(f"האדם כבר ב«{pcol.get('title') or pcol['id']}»")
             now_v = was + [u.id]
             _write_people_cell(db, board, task, pcol, was, now_v)
-            _notify(db, u.id, "assign", "שויכת למשימה", body,
+            _notify(db, u.id, "assign", "שויכת למשימה",
+                    _assigned_body(db, task, board, getattr(rule, "name", "") or "",
+                                   event, pcol),
                     board_id=task.board_id, task_id=task.id)
             out.append({"type": "person_assigned", "user_id": u.id, "col": pcol["id"]})
         else:
             if u in task.assignees:
                 raise _Skipped("האדם משויך לפריט כבר")
             task.assignees.append(u)
-            _notify(db, u.id, "assign", "שויכת למשימה", body,
+            _notify(db, u.id, "assign", "שויכת למשימה",
+                    _assigned_body(db, task, board, getattr(rule, "name", "") or "",
+                                   event),
                     board_id=task.board_id, task_id=task.id)
             out.append({"type": "person_assigned", "user_id": u.id})
     elif act == "set_status":
@@ -22388,14 +22452,25 @@ def upload_file(file: UploadFile = File(...), actor_id: int = Depends(current_us
     return {"name": file.filename, "url": f"/api/files/{token}", "type": media_type}
 
 @app.get("/api/files/{token}")
-def serve_file(token: str, actor_id: int = Depends(current_user_id)):
+def serve_file(token: str, dl: int = 0, actor_id: int = Depends(current_user_id)):
+    """Serve an uploaded file. `?dl=1` asks for it as a download.
+
+    Clicking a file in the app means "give me the file", not "show it to me in
+    a tab": the front end links to it with the `download` attribute. That
+    attribute is advisory and a few browsers (iOS Safari among them) ignore it,
+    and then a PDF or a picture — the types we are willing to serve inline —
+    would open in the built-in viewer instead of being saved. `dl=1` settles it
+    on the side that does not depend on the browser. Inline is still the
+    default, because the same URL is what an <img> preview and the form logo
+    point at.
+    """
     with Session(engine) as db:
         f = db.query(UploadedFile).filter(UploadedFile.token == token).first()
         if not f:
             raise HTTPException(404, "file not found")
         from urllib.parse import quote
         media_type, may_inline = _safe_media_type(f.content_type)
-        how = "inline" if may_inline else "attachment"
+        how = "inline" if (may_inline and not dl) else "attachment"
         disp = f"{how}; filename*=UTF-8''{quote(f.name or 'file')}"
         return Response(content=f.data, media_type=media_type,
                         headers={"Content-Disposition": disp,
@@ -23485,7 +23560,7 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             # an item sits; the status is what someone said about it, and it
             # survives the move like every other field on the item. A board that
             # wants the two tied together says so in its automations.
-            maxpos = (db.query(func.max(Task.position))
+            maxpos = (db.query(func.max(Task.position)).execution_options(include_deleted=True)
                       .filter(Task.board_id == target, Task.parent_id == None,
                               Task.group_id == (grp.id if grp else None)).scalar())
             task.position = (maxpos + 1) if maxpos is not None else 0

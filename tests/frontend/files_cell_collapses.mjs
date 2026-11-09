@@ -52,15 +52,20 @@ function grabArrow(name){
 const fileExt = new Function('return ('+/fileExt\(name,type\)\{[\s\S]*?\n  \},/.exec(src)[0].replace(/^fileExt/,'function fileExt').replace(/,$/,'')+')')();
 
 let TASK={custom_fields:{}};
-const build = () => new Function('esc','Chat','fileDeadWhy','findAnyTask',
+const build = () => new Function('esc','Chat','fileDeadWhy','findAnyTask','location',
   grabTable('const FILE_TYPE_ICONS=[')
   +grabFn('fileTypeIcon')
   +grabArrow('filesTip')
+  +grabFn('fileLinkAttrs')
   +grabFn('filesDisp')
   +grabFn('buildFilesPop')
   +' return {filesDisp,buildFilesPop,fileTypeIcon};')(
   s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
-  {fileExt}, f=>'הקובץ לא יובא', ()=>TASK);
+  {fileExt}, f=>'הקובץ לא יובא', ()=>TASK,
+  /* fileLinkAttrs resolves a file's address against the page's, so the page
+     has to have one here. The host is arbitrary; what the tests turn on is
+     whether the file's address resolves to the SAME one. */
+  {href:'https://missions.example/boards/7', origin:'https://missions.example'});
 
 const F = build();
 const file=(name,extra)=>Object.assign({name,url:'/api/files/'+name},extra||{});
@@ -83,7 +88,44 @@ ck('one icon per file, and the icon says what the file is',
 ck('with nothing left over, there is no +X to show',
    !/file-more/.test(three), three);
 ck('every icon is still the file\'s own link, and opening one is not opening the list',
-   (three.match(/<a class="file-ic" href="[^"]+" target="_blank" onclick="event\.stopPropagation\(\)"/g)||[]).length===3, three);
+   (three.match(/<a class="file-ic" href="[^"]+" download="[^"]*" onclick="event\.stopPropagation\(\)"/g)||[]).length===3, three);
+
+/* Clicking a file takes the file. It used to be target=_blank, which for
+   anything the server refuses to serve inline flashed a tab open and shut
+   again, and for a PDF left a tab standing. download + ?dl=1 saves it where
+   the browser saves things and leaves the board where it was. */
+ck('a file is a download, not a new tab',
+   !/target="_blank"/.test(three) && (three.match(/download="/g)||[]).length===3, three);
+ck('and the server is asked for it as an attachment too',
+   (three.match(/href="\/api\/files\/[^"]*\?dl=1"/g)||[]).length===3, three);
+ck('the saved name is the file\'s own',
+   /download="תקציב\.xlsx"/.test(three), three);
+
+/* How the address is SPELLED must not decide this. A board exported from here
+   and imported back carries its file cells as absolute addresses, and the
+   first version of fileLinkAttrs matched a leading slash and nothing else —
+   so those files alone went on opening in a window, which reads as "it works
+   for some people and not others" rather than as two spellings of one
+   address. */
+const abs = F.filesDisp([{name:'מפרט.pdf',url:'https://missions.example/api/files/abc123'},
+                         {name:'ב.pdf',url:'/api/files/b'},
+                         {name:'ג.pdf',url:'/api/files/c'}],7,'c_f');
+ck('a file written as a full address is still our own file',
+   !/target="_blank"/.test(abs) && (abs.match(/download="/g)||[]).length===3, abs);
+ck('and it is linked by path, so the download attribute applies to it',
+   /href="\/api\/files\/abc123\?dl=1"/.test(abs), abs);
+
+/* The other direction: an imported link still pointing at monday is not ours.
+   download is honoured same-origin only — left on, the click would navigate
+   the board away instead of saving anything — so that one keeps its tab. */
+const far = F.filesDisp([{name:'מפרט.pdf',url:'https://files.monday.com/x/y.pdf'},
+                         {name:'ב.pdf',url:'/api/files/b'},
+                         {name:'ג.pdf',url:'/api/files/c'}],7,'c_f');
+ck('a file that lives somewhere else keeps the new tab',
+   (far.match(/target="_blank"/g)||[]).length===1
+   && (far.match(/download="/g)||[]).length===2, far);
+ck('and it is not sent our ?dl=1, which means nothing there',
+   !/files\.monday\.com[^"]*dl=1/.test(far), far);
 
 // ── four and up: three icons, then how many more ──────────────────────────
 const six = F.filesDisp([file('א.pdf'),file('ב.docx'),file('ג.zip'),file('ד.mp4'),file('ה.txt'),file('ו.dwg')],7,'c_f');
@@ -126,6 +168,9 @@ ck('and every one of them can be removed from there',
    (pop.innerHTML.match(/removeFileFromList\(event,7,'c_f',\d\)/g)||[]).length===4, pop.innerHTML);
 ck('the list takes another file too, without leaving itself open over a redrawn grid',
    /closeCellPops\(\);uploadFileCell\(7,'c_f'\)/.test(pop.innerHTML), pop.innerHTML);
+ck('and a row in the list downloads its file rather than opening a tab',
+   (pop.innerHTML.match(/<a class="file-pop-row" href="\/api\/files\/[^"]*\?dl=1" download="/g)||[]).length===4
+   && !/target="_blank"/.test(pop.innerHTML), pop.innerHTML);
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

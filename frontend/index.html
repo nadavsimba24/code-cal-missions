@@ -490,6 +490,45 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   border-radius:6px;font-size:10px;color:var(--text-muted);cursor:pointer;font-family:inherit}
 .tb-caret:hover{background:var(--row-hover);color:var(--primary)}
 #ctl-arrange.on .tb-caret{color:var(--primary-hover)}
+/* The same joint on the primary button: "פריט חדש" keeps doing what it
+   says and the caret opens the menu that can add a group as well.
+
+   ONE button. Two elements are needed because the halves do two different
+   things, but nothing on screen may give that away: the frame is rounded
+   around the outside only and squared off where the two meet, there is no
+   rule between them, the shadow belongs to the whole control rather than to
+   each half, and a hover anywhere on it lights all of it — without that last
+   one the halves colour separately under the pointer, which is the moment a
+   single button turns back into two glued together. */
+#ctl-new{display:inline-flex}
+/* The frame is one element and the radius is on it alone: it rounds its own
+   four corners and CLIPS the two halves to them, so the corner that shows is
+   the frame's corner wherever the halves happen to sit.
+
+   The other way round — each half keeping its outer corners and squaring the
+   two where they meet — put the square corners on the outside of the control
+   instead of in the middle of it: which of a half's corners is "the one facing
+   the seam" is a question about the inline direction, and the answer came back
+   the wrong way round. A frame that clips is not asking the question. */
+#new-split{display:inline-flex;align-items:stretch;border-radius:8px;overflow:hidden;
+  box-shadow:0 1px 2px rgba(0,115,234,.22);transition:box-shadow .12s}
+#new-split:hover{box-shadow:0 3px 10px rgba(0,115,234,.26)}
+#new-split>.btn-primary{border-radius:0;box-shadow:none;padding-inline-end:9px}
+#new-split>.tb-caret-pri{padding-block:8px;padding-inline:10px 12px;font-size:10px}
+/* One button: a hover anywhere on it lights all of it. Without this the
+   pointer colours only the half under it, which is the moment a single button
+   turns back into two glued together. */
+#new-split:hover>.btn-primary{background:var(--primary-hover)}
+/* The frame clips an outline drawn outside it, so the keyboard's ring is drawn
+   inside — white on the button's own blue, which is the one place it can still
+   be seen. Without this the ring is cut off by the very frame it is on. */
+#new-split>.btn-primary:focus-visible{outline:2px solid #fff;outline-offset:-4px}
+/* Nothing to drop for somebody who cannot add a group: the menu would hold one
+   row, and that row is the button it hangs off. The caret goes, and what is
+   left is a button again — with its full padding back, or the label sits
+   off-centre in a frame that has no second half to lean on. */
+#ctl-new.no-caret .tb-caret-pri{display:none}
+#ctl-new.no-caret .btn-primary{padding-inline-end:14px}
 .tb-ctl.on .tb-btn{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .tb-badge{display:none;min-width:17px;height:17px;padding:0 4px;border-radius:9px;background:var(--primary);color:#fff;font-size:11px;font-weight:700;align-items:center;justify-content:center}
 .tb-ctl.on .tb-badge{display:inline-flex}
@@ -2729,6 +2768,11 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
                box-shadow:0 -12px 34px rgba(0,0,0,.24);z-index:190;
                padding-bottom:env(safe-area-inset-bottom)}
   .tb-pop-wide .pop-people{max-height:32vh}   /* keep sort reachable without a long scroll */
+  /* The "פריט חדש" menu hangs off the same scrolling strip and would be
+     clipped away in exactly the same manner, so it is a bottom sheet too. */
+  #pop-new{position:fixed;inset-inline:0;top:auto;bottom:0;min-width:0;
+           border-radius:16px 16px 0 0;box-shadow:0 -12px 34px rgba(0,0,0,.24);
+           z-index:190;padding-bottom:calc(10px + env(safe-area-inset-bottom))}
   .arr-head .arr-x{display:grid}
   /* ===== board log: six columns across become two lines down =====
      The row was laid out for a wide dialog — when · who · item · column · what
@@ -2854,7 +2898,22 @@ body, body *{ font-weight:400!important; }
          board to a few, put the board back. RTL reads the first of these at the
          right-hand end of the strip, which is where the eye starts. -->
     <div id="toolbar">
-      <button class="btn btn-primary" onclick="openNewItem()"><i class="fa-solid fa-plus"></i> פריט חדש</button>
+      <!-- Two doors, like the filter further along the strip: the button makes
+           an item, the caret beside it opens the menu where a group can be made
+           too. Until now a group could only be added from the very foot of the
+           board, past every row of it — on a board of any size the way to add
+           one was a scroll away from the board’s own actions, and the group
+           then landed at the bottom, away from where the eye was. From here it
+           lands at the top. -->
+      <div class="tb-ctl" id="ctl-new">
+        <div id="new-split">
+          <button class="btn btn-primary" onclick="openNewItem()">פריט חדש</button>
+          <button class="btn btn-primary tb-caret-pri" title="הוספת פריט או קבוצה"
+                  aria-label="אפשרויות הוספה" aria-haspopup="true"
+                  onclick="togglePop('new')"><i class="fa-solid fa-chevron-down"></i></button>
+        </div>
+        <div class="tb-pop" id="pop-new"></div>
+      </div>
       <div class="tb-sep"></div>
       <div class="tb-search">
         <i class="fa-solid fa-magnifying-glass"></i>
@@ -4271,7 +4330,7 @@ function renderBoardHead(){
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
     ownerChipHTML()+
     (st.board.can_view_automations!==false
-      ? `<button class="bh-log" id="bh-auto" onclick="Automations.open()" title="אוטומציות" aria-label="אוטומציות"><i class="fa-solid fa-bolt"></i></button>`
+      ? `<button class="bh-log" id="bh-auto" onclick="Automations.open()" title="אוטומציות" aria-label="אוטומציות"><i class="fa-solid fa-robot"></i></button>`
       : '')+
     `<button class="bh-log" id="bh-log" onclick="BoardLog.open()" title="לוג פעילות הלוח" aria-label="לוג פעילות הלוח"><i class="fa-solid fa-clock-rotate-left"></i></button>`+
     `<button class="bh-menu" id="bh-menu" onclick="boardMenu(event)" title="תפריט הלוח" aria-label="תפריט הלוח"><i class="fa-solid fa-ellipsis"></i></button>`;
@@ -4570,7 +4629,7 @@ function boardMenu(e){
            'סוג לוח · '+(st.board.visibility==='public'?'ציבורי':'פרטי'),
            'boardVisibility()',admin,'רק מנהל הלוח יכול לשנות את חשיפת הלוח')}
     ${item('fa-bell','הגדרת התראות','boardNotifSettings()',admin,'רק מנהל הלוח יכול לשנות התראות')}
-    ${item('fa-bolt','אוטומציות','Automations.open()',st.board.can_view_automations!==false,
+    ${item('fa-robot','אוטומציות','Automations.open()',st.board.can_view_automations!==false,
            'צפייה באוטומציות דורשת הרשאה — פנה למנהל המערכת')}
     ${mob?item('fa-clock-rotate-left','לוג הלוח','BoardLog.open()',true):''}
     ${item('fa-user-shield','הגדרת הרשאות','Members.open()',admin,'רק מנהל הלוח יכול לנהל הרשאות')}
@@ -8318,7 +8377,7 @@ const Automations = {
 
   async open(){
     if(!st.board){ toast('פתח לוח תחילה'); return; }
-    showModal('<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
+    showModal('<h2><i class="fa-solid fa-robot" style="color:var(--primary)"></i> אוטומציות</h2><div class="mbody"><div class="spin"></div></div>');
     document.getElementById('modal').classList.add('modal-80');
     this.building=null; this.mode='templates'; this.scratch={trigger:'',conds:[]};
     this.editing=this.viewing=this.testing=this.cmp=this.imp=this.tlog=this.imprt=this.ord=null;
@@ -8384,7 +8443,7 @@ const Automations = {
       :this.tab==='history'?this.historyHTML()
       :this.tab==='audit'?this.auditHTML():this.manageHTML();
     m.innerHTML='<button class="modal-x" title="סגור" aria-label="סגור" onclick="closeModals()">&times;</button>'+
-      `<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> אוטומציות — ${esc(st.board.name)}</h2>
+      `<h2><i class="fa-solid fa-robot" style="color:var(--primary)"></i> אוטומציות — ${esc(st.board.name)}</h2>
       <div class="mbody">${this.tabsHTML()}${body}</div>`;
   },
 
@@ -8662,7 +8721,7 @@ const Automations = {
     if(this.tlog) return this.testLogHTML();
     const rows=this.data.automations||[], can=this.data.can_manage, c=this.data.counts||{};
     if(!rows.length)
-      return `<div class="empty" style="padding:30px"><i class="fa-solid fa-bolt"></i><div>אין אוטומציות בלוח הזה</div></div>`+
+      return `<div class="empty" style="padding:30px"><i class="fa-solid fa-robot"></i><div>אין אוטומציות בלוח הזה</div></div>`+
         (can?`<div style="text-align:center"><button class="btn btn-primary" onclick="Automations.setTab('create')"><i class="fa-solid fa-plus"></i> בנה את הראשונה</button></div>`:'');
     return this.freezeHTML()+this.tilesHTML(c)+this.barHTML(rows)+
       (can?'':'<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px"><i class="fa-solid fa-circle-info"></i> <b>רק מנהל הלוח יכול להגדיר או לשנות.</b></div>')+
@@ -12643,7 +12702,7 @@ const SysAdmin = {
           <button class="sa-tab" data-tab="guests" onclick="SysAdmin.go('guests')"><i class="fa-solid fa-user-plus"></i> אורחים</button>
           <button class="sa-tab" data-tab="depts" onclick="SysAdmin.go('depts')"><i class="fa-solid fa-sitemap"></i> יחידות ארגוניות</button>
           <button class="sa-tab" data-tab="envs" onclick="SysAdmin.go('envs')"><i class="fa-solid fa-layer-group"></i> סביבות</button>
-          <button class="sa-tab" data-tab="autos" onclick="SysAdmin.go('autos')"><i class="fa-solid fa-bolt"></i> אוטומציות</button>
+          <button class="sa-tab" data-tab="autos" onclick="SysAdmin.go('autos')"><i class="fa-solid fa-robot"></i> אוטומציות</button>
           <button class="sa-tab" data-tab="history" onclick="SysAdmin.go('history')"><i class="fa-solid fa-clock-rotate-left"></i> היסטוריית התחברות</button>
         </div>
         <div id="sa-body"></div>
@@ -13680,6 +13739,22 @@ function renderMe(){
 }
 
 function renderPop(name){
+  if(name==='new'){
+    const el=document.getElementById('pop-new'); if(!el)return;
+    /* The item is first because it is what the button itself does: somebody who
+       opened the menu by mistake should find the thing they were already aiming
+       at under the caret, not a reordered list.
+
+       The group is offered only where it can actually be added — see
+       canAddGroupHere. The caret itself is hidden in that case (refreshToolbar),
+       so this is the second half of one rule rather than a different one: a
+       stale screen must not offer a row whose answer is already no. */
+    setHTML(el, `<button class="pop-row-act" onclick="closePops();openNewItem()">
+        <span style="width:20px;text-align:center"><i class="fa-solid fa-plus"></i></span> הוספת פריט</button>`
+      + (canAddGroupHere() ? `<button class="pop-row-act" onclick="closePops();addGroup(true)">
+        <span style="width:20px;text-align:center"><i class="fa-solid fa-layer-group"></i></span> הוספת קבוצה</button>` : ''));
+    return;
+  }
   if(name==='me'){
     const el=document.getElementById('pop-me'); if(!el)return;
     setHTML(el, (st.me?`<button class="pop-row" style="width:100%;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:5px" onclick="closePops();Profile.open(${meId()})" title="הצג פרופיל אישי">
@@ -14400,6 +14475,12 @@ function refreshToolbar(){
   if(c){c.classList.toggle('on',!!total);const b=document.getElementById('badge-arrange');if(b)b.textContent=total||'';}
   const qc=document.getElementById('tb-q-clear'); if(qc)qc.classList.toggle('show',!!f.q);
   const cl=document.getElementById('tb-clear'); if(cl)cl.classList.toggle('show',boardIsCut());
+  /* The "פריט חדש" caret drops a menu whose second row is adding a group, and
+     whether that row exists depends on the role AND on whether the board is
+     narrowed — which is a filter, which is this function. So the caret is
+     settled here, where every change to a filter already ends up, rather than
+     at the dozen places that change one. */
+  const cn=document.getElementById('ctl-new'); if(cn)cn.classList.toggle('no-caret',!canAddGroupHere());
   /* A large board re-asks the server. Every filter in the app ends here,
      which is why the re-ask lives here and not at each of the dozen places
      that change one — a dozen copies of this would drift, and the one that
@@ -14759,6 +14840,14 @@ function groupHTML(g){
       <div class="grp-batt" style="margin-top:6px"${shut?' hidden':''}>${battery(g.tasks)}</div>
     </div>`;
 }
+/* Whether a group can be added from where she is standing. The board's admin
+   makes a group — the server is the rule, this is the screen not offering what
+   would be refused — and only a board that is whole can show the empty group
+   that comes back from it. Both ways in ask this: the caret in the toolbar and
+   the button at the foot of the board. addGroupBtnHTML spells the same thing
+   out again instead of calling this, because tests/frontend/add_group_is_admin
+   _only.mjs reads that line to check the button is not offered to an editor. */
+function canAddGroupHere(){ return !boardIsNarrowed() && isBoardAdmin(); }
 function addGroupBtnHTML(){
   /* Not while the board is narrowed. A new group is born empty and an empty
      group is exactly what a filtered board no longer draws, so the button
@@ -16519,6 +16608,37 @@ const FILE_DEAD_HE={
   over_budget:'הקובץ לא יובא — מעבר לתקציב הקבצים של הייבוא',
   gone:'הקובץ אינו קיים יותר במערכת — נשמר השם בלבד'};
 const fileDeadWhy=f=>FILE_DEAD_HE[f&&f.why]||'הקובץ לא יובא — נשמר השם בלבד';
+/* The attributes of a link to a file. A file is clicked to be taken, not to
+   be looked at: target=_blank opened a tab that the browser then closed again
+   the moment the download started (an xlsx, a zip, anything we refuse to serve
+   inline), and parked a PDF or a picture in a tab the reader has to close
+   himself. The download attribute does neither — the browser saves the file
+   and the page never moves — and ?dl=1 makes the server say "attachment" too,
+   for the browsers that ignore the attribute (iOS Safari), where a PDF would
+   otherwise still open in the viewer.
+   Only for our own /api/files/… : download is honoured same-origin only, so an
+   imported link still pointing at monday would navigate the app away instead
+   of saving anything. Those keep the new tab.
+
+   "Ours" is decided by resolving the address, not by how it is spelled. A
+   board exported from here and imported back carries its file cells as
+   absolute addresses — https://<host>/api/files/<token> — which is why
+   _stored_file_token on the server accepts both forms. A first version of
+   this matched the leading slash and nothing else, so exactly those files
+   went on opening in a window instead of downloading, and it looked like a
+   browser difference rather than a difference between two spellings of the
+   same address. Resolving against location.href settles both at once, and
+   what goes into the href afterwards is the path alone — same origin by
+   construction, which is the condition download needs. */
+function fileLinkAttrs(url,name){
+  const u=String(url||'');
+  let path=null;
+  try{ const a=new URL(u,location.href);
+       if(a.origin===location.origin) path=a.pathname+a.search; }catch(e){}
+  if(!path||!/^\/api\/files\//.test(path))
+    return `href="${esc(u)}" target="_blank" rel="noopener"`;
+  return `href="${esc(path+(path.indexOf('?')<0?'?':'&')+'dl=1')}" download="${esc(name||'')}"`;
+}
 /* The icon a file gets in the collapsed cell, by what the file IS. The
    extension is worked out by Chat.fileExt, which falls back to the MIME type
    the server recorded when the name carries no extension of its own. The
@@ -16555,14 +16675,14 @@ function filesDisp(files,taskId,colId){
   if(files.length>=3){
     const icons=files.slice(0,3).map(f=>(f&&f.dead)
       ? `<span class="file-ic file-dead-ic"><i class="fa-solid fa-link-slash"></i></span>`
-      : `<a class="file-ic" href="${esc(f&&f.url)}" target="_blank" onclick="event.stopPropagation()"><i class="fa-solid ${fileTypeIcon(f).ic}" style="color:${fileTypeIcon(f).color}"></i></a>`).join('');
+      : `<a class="file-ic" ${fileLinkAttrs(f&&f.url,f&&f.name)} onclick="event.stopPropagation()"><i class="fa-solid ${fileTypeIcon(f).ic}" style="color:${fileTypeIcon(f).color}"></i></a>`).join('');
     const more=files.length>3?`<span class="file-more">+${files.length-3}</span>`:'';
     return `<span class="file-icons" data-tipf="${esc(filesTip(files))}" data-tiph="לחץ לרשימת הקבצים" onclick="openFilesList(event,${taskId},'${colId}')">${icons}${more}</span>`+add;
   }
   const chips=files.map((f,i)=>`<span class="file-chip${f&&f.dead?' file-dead':''}">${
     (f&&f.dead)
       ? `<span title="${esc(f.name+' — '+fileDeadWhy(f))}"><i class="fa-solid fa-link-slash"></i> ${esc(f.name.length>10?f.name.slice(0,9)+'…':f.name)}</span>`
-      : `<a href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><i class="fa-solid fa-paperclip"></i> ${esc(f.name.length>10?f.name.slice(0,9)+'…':f.name)}</a>`
+      : `<a ${fileLinkAttrs(f.url,f.name)} title="${esc(f.name)}"><i class="fa-solid fa-paperclip"></i> ${esc(f.name.length>10?f.name.slice(0,9)+'…':f.name)}</a>`
   }<i class="fa-solid fa-xmark file-x" onclick="removeFile(event,${taskId},'${colId}',${i})"></i></span>`).join('');
   return chips+add;
 }
@@ -16581,7 +16701,7 @@ function buildFilesPop(pop,taskId,colId){
     const name=`<span class="fpr-name">${esc(f&&f.name||'')}</span>`;
     return (f&&f.dead)
       ? `<div class="file-pop-row file-dead" title="${esc((f.name||'')+' — '+fileDeadWhy(f))}"><i class="fa-solid fa-link-slash" style="color:var(--text-light)"></i>${name}${x}</div>`
-      : `<a class="file-pop-row" href="${esc(f&&f.url)}" target="_blank"><i class="fa-solid ${fileTypeIcon(f).ic}" style="color:${fileTypeIcon(f).color}"></i>${name}${x}</a>`;
+      : `<a class="file-pop-row" ${fileLinkAttrs(f&&f.url,f&&f.name)}><i class="fa-solid ${fileTypeIcon(f).ic}" style="color:${fileTypeIcon(f).color}"></i>${name}${x}</a>`;
   }).join('')+`<button class="cell-pop-opt2" onclick="closeCellPops();uploadFileCell(${taskId},'${colId}')"><i class="fa-solid fa-plus"></i> העלה קובץ</button>`;
 }
 async function removeFileFromList(e,taskId,colId,idx){
@@ -19344,18 +19464,43 @@ const GROUP_COLORS=['#0073ea','#00c875','#fdab3d','#e2445c','#579bfc','#5559df',
    while the board is open — and the button is not the rule, the server is. What
    the server says is what is shown, so a refusal names the reason instead of
    reporting a failure that looks like a fault. */
-async function addGroup(){
+async function addGroup(atTop){
   if(!isBoardAdmin()){ toast('רק מנהל הלוח יכול להוסיף קבוצות'); return; }
   try{
+    /* The order as it stands, read the way the board reads it, and read BEFORE
+       the group is made so that the new one is not in it. Position first and
+       then id, the same tie-break as defaultGroupId: two groups can carry the
+       same position after a reorder. */
+    const was=(st.board.groups||[]).slice()
+      .sort((a,b)=>(a.position||0)-(b.position||0)||(a.id-b.id)).map(g=>g.id);
+    const body={board_id:st.board.id,name:'קבוצה חדשה',
+      color:GROUP_COLORS[(st.board.groups||[]).length%GROUP_COLORS.length],actor_id:meId()};
+    if(atTop)body.position=0;
     /* The answer IS the group — id, name, position and colour, the same shape
        the board carries — so it goes straight onto the board. openBoard paints
        a board it has seen from memory first, and a group that is only on the
        server is not on the board she is looking at until the recheck comes
        back. The same reasoning as in saveGroup. */
     const made=await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({board_id:st.board.id,name:'קבוצה חדשה',color:GROUP_COLORS[(st.board.groups||[]).length%GROUP_COLORS.length],actor_id:meId()})});
+      body:JSON.stringify(body)});
     if(made&&made.id){ (st.board.groups=st.board.groups||[]).push(made); }
-    toast('קבוצה נוספה');await openBoard(st.board.id);
+    let said='קבוצה נוספה';
+    /* Asking for position 0 is not enough to be first. Every other group goes
+       on claiming the position it already had, so the new group and the group
+       that was first both say 0 — and a tie is broken by id, which puts the
+       new one second. The order is therefore stated in full, with the new group
+       at its head, through the same route a drag of the groups takes. Its own
+       catch: the group exists either way by this point, and "it was added, just
+       not where you asked" is a different sentence from "it was not added". */
+    if(atTop&&made&&made.id&&was.length){
+      const order=[made.id].concat(was);
+      try{
+        await api('/api/groups/reorder',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({order})});
+        order.forEach((id,i)=>{const g=(st.board.groups||[]).find(x=>x.id===id); if(g)g.position=i;});
+      }catch(e){ said='הקבוצה נוספה, אך לא בראש הלוח'; }
+    }
+    toast(said);await openBoard(st.board.id);
   }catch(e){ toast((e&&e.detail)||'שגיאה ביצירת קבוצה'); }
 }
 function editGroup(gid){
@@ -21912,8 +22057,8 @@ const Chat = {
   attPreview(f){
     // an imported attachment that never arrived — see filesDisp
     if(f&&f.dead) return `<span class="att-prev att-file att-dead" title="${esc(f.name+' — '+fileDeadWhy(f))}"><i class="fa-solid fa-link-slash"></i><span class="att-name">${esc(f.name)}</span></span>`;
-    if(this.isImg(f.name,f.type)) return `<a class="att-prev" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"><span class="att-name">${esc(f.name)}</span></a>`;
-    return `<a class="att-prev att-file" href="${esc(f.url)}" target="_blank" title="${esc(f.name)}">${this.extBadge(f.name,f.type)}<span class="att-name">${esc(f.name)}</span></a>`;
+    if(this.isImg(f.name,f.type)) return `<a class="att-prev" ${fileLinkAttrs(f.url,f.name)} title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"><span class="att-name">${esc(f.name)}</span></a>`;
+    return `<a class="att-prev att-file" ${fileLinkAttrs(f.url,f.name)} title="${esc(f.name)}">${this.extBadge(f.name,f.type)}<span class="att-name">${esc(f.name)}</span></a>`;
   },
   renderAtts(){ const el=document.getElementById('comp-atts'); if(!el)return;
     let h=this.atts.map((f,i)=>{
@@ -21980,7 +22125,7 @@ const Chat = {
     const q=(this._fileQuery||'').trim().toLowerCase();
     const list=(this._filesCache||[]).filter(f=>!q||(f.name||'').toLowerCase().includes(q));
     wrap.innerHTML=list.length? `<div class="files-list">${list.map(f=>`
-      <a class="file-row" href="${esc(f.url)}" target="_blank">
+      <a class="file-row" ${fileLinkAttrs(f.url,f.name)}>
         ${this.extBadge(f.name,f.type)}
         <div style="flex:1;min-width:0"><div class="fr-name">${esc(f.name)}</div><div class="fr-meta">${esc(f.source||'')}${f.user_name?' · '+esc(f.user_name):''}${f.created_at?' · <i class="fa-regular fa-clock" style="font-size:10px"></i> '+fdatetimeY(f.created_at):''}</div></div>
         <i class="fa-solid fa-download fr-dl"></i>

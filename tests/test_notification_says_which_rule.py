@@ -46,15 +46,25 @@ def _member(client, bid, admin_id, uid):
                              "role": "editor"}).status_code in (200, 201)
 
 
-def _rule(client, bid, admin_id, uid, **kw):
+def _rule(client, bid, admin_id, uid, recipe="created_notify_person", **kw):
+    """A rule whose action is "send a notification".
+
+    It was "assign somebody" here, and that moved: an assignment now arrives as
+    the sentence a person was assigned to an item (see
+    test_assignment_notification_says_the_assignment). The notice this system
+    sends for a rule that says nothing of its own — which rule, what happened,
+    the item, the board, the time — is what this file is about, and that is the
+    notify action's.
+    """
+    cfg = {"a_person": uid}
     r = client.post(f"/api/boards/{bid}/automations",
-                    json={"actor_id": admin_id, "recipe_id": "created_assign_person",
-                          "config": {"a_person": uid}, **kw})
+                    json={"actor_id": admin_id, "recipe_id": recipe,
+                          "config": cfg, **kw})
     assert r.status_code == 200, r.text
     return r.json()
 
 
-def _last(uid, kind="assign"):
+def _last(uid, kind="automation"):
     with Session(cityos_main.engine) as db:
         return (db.query(Notification)
                   .filter(Notification.user_id == uid, Notification.type == kind)
@@ -95,7 +105,7 @@ def test_a_rule_with_no_name_is_called_by_its_trigger_and_said_once(
     # no dangling blank anywhere…
     assert "…" not in n.body, n.body
     # …and what happened is still said, in plain words
-    assert lines[1] == "שיוך אחראי", lines
+    assert lines[1] == "שליחת התראה", lines
 
 
 def test_the_five_things_are_all_there(client, admin_id, member_id):
@@ -106,7 +116,7 @@ def test_the_five_things_are_all_there(client, admin_id, member_id):
                                     "user_id": admin_id})
     n = _last(member_id)
     assert "כלל" in n.body
-    assert "שיוך אחראי" in n.body
+    assert "שליחת התראה" in n.body
     assert "פריט: הפריט שלי" in n.body, n.body
     assert "לוח: לוח חמישה" in n.body, n.body
     assert "זמן: " in n.body, n.body

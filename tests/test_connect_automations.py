@@ -49,12 +49,17 @@ def _setup(client, admin_id, tag, two_way=True):
 
 
 def _notes(client, uid):
-    """Counted off the endpoint, which returns the newest 30. A test that
-    compares a before and an after has to ask for more than the cap, or a busy
-    user's list stops changing and every assertion here reads as "nothing
-    happened"."""
-    return client.get(f"/api/notifications?user_id={uid}&limit=100",
-                      headers=AS(uid)).json()["notifications"]
+    """The newest notification id for this user, or 0.
+
+    It was the LENGTH of the list, and that is a number with a ceiling: the
+    endpoint hands back 30 by default and refuses to go past 100 however much
+    is asked for, so once anything else in the suite had written this user
+    their hundredth notification the before and the after were both 100 and
+    "nothing arrived" was what every assertion here read. The newest id only
+    ever goes up."""
+    items = client.get(f"/api/notifications?user_id={uid}&limit=100",
+                       headers=AS(uid)).json()["notifications"]
+    return max([n["id"] for n in items] or [0])
 
 
 # ── the recipes exist and validate ──────────────────────────────────────────
@@ -149,9 +154,9 @@ def test_making_a_link_notifies(client, admin_id, member_id):
                 json={"actor_id": admin_id, "user_id": member_id, "role": "editor"})
     _rule(client, admin_id, a, "link_added_notify_person", {"a_person": member_id})
     src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "יעד")
-    before = len(_notes(client, member_id))
+    before = _notes(client, member_id)
     _set(client, src, c["id"], [x], admin_id)
-    assert len(_notes(client, member_id)) > before, "no notification when the link was made"
+    assert _notes(client, member_id) > before, "no notification when the link was made"
 
 
 def test_removing_a_link_runs_an_action(client, admin_id):
