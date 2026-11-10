@@ -9996,8 +9996,72 @@ def remove_board_member(board_id: int, uid: int, actor_id: int = Depends(current
         return {"status": "removed"}
 
 # ── In-app notifications (התראות) ───────────────────────────────────
+# A notification's body is a sentence frozen at the moment it was sent, and
+# nothing in the app ever rewrites one. So a release that fixes the wording
+# fixes it only for the notifications sent after it, and every bell that
+# already had a list goes on reading the old template — which is why QA, where
+# the testers have weeks of them, still showed
+#
+#     שויכת למשימה «פריט חדש».
+#     שיוך אוטומטי · כאשר נוצר פריט חדש
+#
+# beside a local list written entirely after the change, which read cleanly.
+# The same code, different ages of row. The row is therefore left exactly as it
+# was written and the sentence is brought up to date on the way out, the way
+# the item's name is read rather than remembered (see _live_item_titles).
+_PLACEHOLDER_QUOTED = "|".join(re.escape(t) for t in PLACEHOLDER_ITEM_TITLES)
+# "שויכת למשימה «פריט חדש» בעמודה «אחראי»." — the name the app gives a row
+# nobody has named yet, quoted as though somebody had chosen it. Both quotings
+# appear because the automation wrote «» and the hand-assign on a just-created
+# item writes ''.
+_NOTIF_PLACEHOLDER_ASSIGN = re.compile(
+    "^שויכת למשימה (?:«(?:" + _PLACEHOLDER_QUOTED + ")»|'(?:"
+    + _PLACEHOLDER_QUOTED + ")')(?P<where>.*?)\\.?$")
+# "שיוך אוטומטי · כאשר נוצר פריט חדש" — the rule's trigger, in the rule's own
+# words, about a thing the reader cannot open and did not ask about. A rule
+# with a name still says which one ("…לפי הכלל «X»"), and is left alone.
+_NOTIF_TRIGGER_TAIL = re.compile("^שיוך אוטומטי\\s+·")
+
+
+def _clean_notif_body(body):
+    """A stored body, read in the wording it would be written in today: the
+    placeholder name unquoted, the rule's trigger line dropped, the "פריט:"
+    line gone where it only ever held that placeholder.
+
+    Each substitution produces exactly what _assigned_body / _notice_body now
+    write, so a body written since the change passes through untouched and two
+    notifications of the same event read alike however old they are. Nothing is
+    written back: a notification is the record of what was sent, and this is
+    the bell reading it.
+    """
+    if not body:
+        return body
+    out, changed = [], False
+    for line in body.split("\n"):
+        s = line.strip()
+        m = _NOTIF_PLACEHOLDER_ASSIGN.match(s)
+        if m:
+            # the column survives — it is the field the reader opens the item
+            # looking for their own name in
+            out.append("שויכת לפריט חדש%s, שטרם ניתן לו שם." % m.group("where"))
+            changed = True
+            continue
+        if _NOTIF_TRIGGER_TAIL.match(s):
+            out.append("שיוך אוטומטי")
+            changed = True
+            continue
+        # "פריט: פריט חדש" — the line people read as a template that was never
+        # filled in. The bell carries the item's live name beside the row.
+        if s.startswith("פריט:") and s[len("פריט:"):].strip() in PLACEHOLDER_ITEM_TITLES:
+            changed = True
+            continue
+        out.append(line)
+    return "\n".join(out) if changed else body
+
+
 def _serialize_notif(n, item_title=None):
-    return {"id": n.id, "type": n.type, "title": n.title, "body": n.body,
+    return {"id": n.id, "type": n.type, "title": n.title,
+            "body": _clean_notif_body(n.body),
             "board_id": n.board_id, "task_id": n.task_id,
             # The item's name as it is NOW, not as it was when the row was
             # written — see _live_item_titles.
@@ -10035,7 +10099,15 @@ def _live_item_titles(db, notifs, user_id):
         role = roles[t.board_id]
         if role is None or _item_perm(t, user_id, role) == "none":
             continue
-        out[t.id] = t.title or ""
+        title = (t.title or "").strip()
+        # A placeholder is not a name. The live title exists to replace the
+        # «פריט חדש» frozen into the sentence with what the item is really
+        # called — an item still waiting for a name has nothing to replace it
+        # with, and drawing "פריט: «פריט חדש»" beside a sentence that already
+        # says the item has no name yet is the same template read twice.
+        if not title or title in PLACEHOLDER_ITEM_TITLES:
+            continue
+        out[t.id] = title
     return out
 
 @app.get("/api/notifications")
