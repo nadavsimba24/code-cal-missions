@@ -833,6 +833,11 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    came to be a single sentence nobody could read. */
 .notif-body{font-size:12.5px;color:var(--text-muted);margin-top:2px;line-height:1.45;
   white-space:pre-line}
+/* The item's live name, under the frozen sentence. Its own line and its own
+   weight because it is the one thing in the row that is read off the board as
+   it is now, rather than off what was written when the notification was sent. */
+.notif-item{font-size:12.5px;color:var(--text);margin-top:3px;font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .notif-time{font-size:11px;color:var(--text-light);margin-top:3px}
 .notif-dot{width:8px;height:8px;border-radius:50%;background:var(--primary);flex-shrink:0;margin-top:6px}
 .notif-empty{padding:34px 14px;text-align:center;color:var(--text-light);font-size:13px}
@@ -8100,11 +8105,24 @@ const Notif={
       : '<div class="notif-empty"><i class="fa-regular fa-bell-slash"></i><div>אין התראות</div></div>';
     el.innerHTML=head+`<div class="notif-list">${body}</div>`;
   },
+  /* The item's name as it is NOW, where the written-down text does not already
+     carry it. A notification's body is frozen at the moment it was sent, and
+     the one sent by a rule on "כאשר נוצר פריט חדש" is written while the row
+     still has the name the app gives a new item — so the bell went on showing
+     «פריט חדש» for an item that had been given a real name hours earlier. The
+     server sends the live name beside the row (item_title); this adds it only
+     when the sentence does not already say it, so an ordinary notification —
+     "דנה שייך/ה אותך למשימה «X»" — is not made to say «X» twice. */
+  itemLineHTML(n){
+    const live=(n.item_title||'').trim();
+    if(!live || (n.body||'').indexOf(live)>=0) return '';
+    return `<div class="notif-item">פריט: «${esc(live)}»</div>`;
+  },
   rowHTML(n){
     const icon=n.type==='board_remove'?'fa-user-minus':n.type==='board_add'?'fa-user-plus':n.type==='mention'?'fa-at':n.type==='assign'?'fa-user-check':n.type==='comment_like'?'fa-thumbs-up':'fa-bell';
     return `<div class="notif-row ${n.is_read?'':'unread'}" onclick="Notif.click(${n.id},${n.board_id==null?'null':n.board_id},${n.task_id==null?'null':n.task_id})">
       <span class="notif-ic ${esc(n.type||'')}"><i class="fa-solid ${icon}"></i></span>
-      <div class="notif-txt"><div class="notif-title">${esc(n.title||'')}</div>${n.body?`<div class="notif-body">${esc(n.body)}</div>`:''}<div class="notif-time">${fdatetime(n.created_at)}</div></div>
+      <div class="notif-txt"><div class="notif-title">${esc(n.title||'')}</div>${n.body?`<div class="notif-body">${esc(n.body)}</div>`:''}${this.itemLineHTML(n)}<div class="notif-time">${fdatetime(n.created_at)}</div></div>
       ${n.is_read?'':'<span class="notif-dot"></span>'}
     </div>`;
   },

@@ -2214,6 +2214,15 @@ def list_boards(user_id: int = Depends(current_user_id)):
 ITEM_UID_MIN = 10_000_000_000     # smallest 11-digit number
 ITEM_UID_MAX = 99_999_999_999
 
+# The names the system puts on a row that nobody has named yet. "פריט חדש" is
+# what the board's own "פריט חדש" button sends and what every route here falls
+# back to; "Untitled" is what create_task has always used when a caller sends
+# no title at all. Neither is a name a person chose, and anything that QUOTES
+# an item's name to somebody has to be able to tell the difference — see
+# _assigned_body, where «פריט חדש» read as a template that was never filled in.
+NEW_ITEM_TITLE = "פריט חדש"
+PLACEHOLDER_ITEM_TITLES = (NEW_ITEM_TITLE, "Untitled")
+
 def _new_item_uid(db, board_id):
     for _ in range(60):
         cand = str(secrets.randbelow(ITEM_UID_MAX - ITEM_UID_MIN + 1) + ITEM_UID_MIN)
@@ -9987,10 +9996,47 @@ def remove_board_member(board_id: int, uid: int, actor_id: int = Depends(current
         return {"status": "removed"}
 
 # ── In-app notifications (התראות) ───────────────────────────────────
-def _serialize_notif(n):
+def _serialize_notif(n, item_title=None):
     return {"id": n.id, "type": n.type, "title": n.title, "body": n.body,
             "board_id": n.board_id, "task_id": n.task_id,
+            # The item's name as it is NOW, not as it was when the row was
+            # written — see _live_item_titles.
+            "item_title": item_title,
             "is_read": bool(n.is_read), "created_at": n.created_at}
+
+
+def _live_item_titles(db, notifs, user_id):
+    """{task_id: the item's current name} for the items these notifications
+    point at, and only those this person may still open.
+
+    A notification's body is a sentence frozen at the moment it was written. An
+    automation that fires on item_created fires while the row still carries the
+    name the app gives a new one, so the sentence quoted «פריט חדש» — and went
+    on quoting it after the item was given a real name, because nothing ever
+    rewrites a body. The bell therefore showed a notification that looked like
+    a template that had never been filled in, for an item that by then had a
+    name everybody else could see.
+
+    So the name is read here instead of being remembered. One query for the
+    items, one role lookup per board (cached — thirty notifications are
+    routinely the same two or three boards), and the same item-level check the
+    rest of the notifications already obey: what somebody may not see, they are
+    not told about either. A deleted item has no live name to show.
+    """
+    ids = {n.task_id for n in notifs if n.task_id}
+    if not ids:
+        return {}
+    roles, out = {}, {}
+    for t in db.query(Task).filter(Task.id.in_(ids)).all():
+        if t.deleted_at:
+            continue
+        if t.board_id not in roles:
+            roles[t.board_id] = _board_role(db, t.board_id, user_id)
+        role = roles[t.board_id]
+        if role is None or _item_perm(t, user_id, role) == "none":
+            continue
+        out[t.id] = t.title or ""
+    return out
 
 @app.get("/api/notifications")
 def list_notifications(user_id: int = Depends(current_user_id), limit: int = 30):
@@ -10000,7 +10046,10 @@ def list_notifications(user_id: int = Depends(current_user_id), limit: int = 30)
         q = db.query(Notification).filter(Notification.user_id == user_id)
         unread = q.filter(Notification.is_read == False).count()
         items = q.order_by(Notification.created_at.desc()).limit(max(1, min(100, limit))).all()
-        return {"notifications": [_serialize_notif(n) for n in items], "unread_count": unread}
+        live = _live_item_titles(db, items, user_id)
+        return {"notifications": [_serialize_notif(n, live.get(n.task_id))
+                                  for n in items],
+                "unread_count": unread}
 
 @app.post("/api/notifications/{nid}/read")
 def read_notification(nid: int, data: dict, actor_id: int = Depends(current_user_id)):
@@ -14552,8 +14601,16 @@ def _notice_body(db, task, board, label, act, event=None, name=""):
     # No raw address. The notification is itself the way to the item — the row
     # opens it (see Notif.click) — so the line only ever added a URL to read,
     # and while APP_BASE_URL went unset it was not even that.
+    # The item, unless the only name it has is the one the app gave it a second
+    # ago — a rule on "כאשר נוצר פריט חדש" fires inside the creation itself, so
+    # "פריט: פריט חדש" was the line people read as a template that had never
+    # been filled in. Left out rather than guessed at: the bell carries the
+    # item's live name beside the row (see _live_item_titles), which is the one
+    # that is still right after somebody types a real name over the blank.
+    titled = (task.title or "").strip()
     lines = [who, said,
-             f"פריט: {task.title or ''}",
+             (f"פריט: {titled}" if titled and titled not in PLACEHOLDER_ITEM_TITLES
+              else ""),
              f"לוח: {board.name if board else ''}",
              f"זמן: {now}"]
     return "\n".join([x for x in lines if x and x.strip()])
@@ -14587,12 +14644,27 @@ def _assigned_body(db, task, board, name="", event=None, col=None):
     # less than the board's own אחראים does, and the reader opens the item
     # looking for a field that has their name in it
     where = f" בעמודה «{col.get('title') or col['id']}»" if col else ""
-    trig = recipes.plain(recipes.TRIGGERS.get((event or {}).get("type"), "")) \
-        or (event or {}).get("type") or ""
     named = (name or "").strip()
-    by = (f"שיוך אוטומטי לפי הכלל «{named}»" if named
-          else (f"שיוך אוטומטי · {trig}" if trig else "שיוך אוטומטי"))
-    lines = [f"שויכת למשימה «{task.title or ''}»{where}.",
+    # WHICH RULE, and nothing else. It used to fall back to the trigger where
+    # the rule had no name — "שיוך אוטומטי · כאשר נוצר פריט חדש" — which is a
+    # line out of the rule's own template, in the rule's own words, telling the
+    # reader about a thing they cannot see and did not ask about. A rule that
+    # has a name identifies itself by it; one that has none is still worth
+    # saying is a rule rather than a colleague, and that is the whole of what
+    # the reader needs here.
+    by = f"שיוך אוטומטי לפי הכלל «{named}»" if named else "שיוך אוטומטי"
+    # An item created a moment ago still carries the name the app gives a new
+    # row, because a rule on "כאשר נוצר פריט חדש" fires inside the creation
+    # itself — nobody has typed anything yet. Quoting it produced «פריט חדש»,
+    # which reads as a blank somebody forgot to fill in rather than as a name,
+    # and stayed in the text after the item was named. So it is not quoted; the
+    # bell shows the item's live name beside the row (see _live_item_titles),
+    # and the row opens the item.
+    titled = (task.title or "").strip()
+    first = (f"שויכת למשימה «{titled}»{where}."
+             if titled and titled not in PLACEHOLDER_ITEM_TITLES
+             else f"שויכת לפריט חדש{where}, שטרם ניתן לו שם.")
+    lines = [first,
              f"לוח: {board.name if board else ''}",
              by, f"זמן: {now}"]
     return "\n".join([x for x in lines if x and x.strip()])

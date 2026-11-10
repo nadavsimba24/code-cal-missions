@@ -27,6 +27,26 @@ test_notification_says_which_rule) and the wrong one here.
 So the item leads, the way it does by hand, and which rule did it stays on a
 line of its own below — an assignment nobody can account for is the thing that
 line was added to prevent.
+
+## 10/11/2026 — the same complaint again, about what was left
+
+That round left two pieces of the template standing, and they were what she
+read next:
+
+    שויכת למשימה «פריט חדש».
+    לוח: MISSIONS רעות ושלי
+    שיוך אוטומטי · כאשר נוצר פריט חדש
+    זמן: 10/11/2026 09:09
+
+  · «פריט חדש» is not a name. A rule on "כאשר נוצר פריט חדש" fires INSIDE the
+    creation, while the row still carries the name the app gives a new item —
+    and a body is frozen when it is written, so it went on saying «פריט חדש»
+    after the item had been given a real name. The name is not quoted at all
+    in that case now, and the bell reads the item's live name off the board
+    instead (tests/test_notification_names_the_item_now.py).
+  · "· כאשר נוצר פריט חדש" is the rule's trigger, in the rule's own words,
+    about a thing the reader cannot see. A named rule still names itself; an
+    unnamed one says only that a rule did this and not a colleague.
 """
 from sqlalchemy.orm import Session
 
@@ -107,17 +127,50 @@ def test_a_named_rule_is_still_named(client, admin_id, member_id):
     assert "זמן: " in n.body, n.body
 
 
-def test_an_unnamed_rule_is_still_an_automatic_assignment(client, admin_id,
-                                                          member_id):
-    """Without a name there is nothing to quote, so the reader is told at
-    least that nobody chose them by hand, and what moment did."""
+def test_an_unnamed_rule_says_a_rule_did_it_and_stops_there(client, admin_id,
+                                                            member_id):
+    """Without a name there is nothing to quote. "שיוך אוטומטי" is the whole of
+    what the reader needs — somebody did not choose them by hand.
+
+    The trigger used to be added after it, and that is the line she read as the
+    template: it describes the RULE, in the words the rule was built from, and
+    a reader who cannot open the automations screen can do nothing with it."""
     bid = _board(client, admin_id, "לוח אנונימי")
     _member(client, bid, admin_id, member_id)
     _rule(client, bid, admin_id, member_id)
     _fire(client, bid, admin_id, "פריט")
     n = _last_assign(member_id)
     assert "שיוך אוטומטי" in n.body, n.body
-    assert "כאשר נוצר פריט חדש" in n.body, n.body
+    assert "כאשר נוצר פריט חדש" not in n.body, n.body
+    assert "·" not in n.body, n.body
+
+
+# ── and a row that has not been named is not quoted as if it had ──────────
+
+def test_a_brand_new_item_is_not_quoted_by_its_placeholder(client, admin_id,
+                                                           member_id):
+    """The case the rule actually fires in: "כאשר נוצר פריט חדש" runs inside
+    the creation, so the only name the item has is the one the app typed into
+    it. «פריט חדש» in quotation marks reads as a blank nobody filled in."""
+    bid = _board(client, admin_id, "לוח פריט חדש")
+    _member(client, bid, admin_id, member_id)
+    _rule(client, bid, admin_id, member_id)
+    _fire(client, bid, admin_id, "פריט חדש")        # exactly what the button sends
+    n = _last_assign(member_id)
+    assert "«פריט חדש»" not in n.body, n.body
+    assert n.body.split("\n")[0] == "שויכת לפריט חדש, שטרם ניתן לו שם.", n.body
+    assert "לוח: לוח פריט חדש" in n.body, n.body
+
+
+def test_an_item_someone_named_is_still_quoted(client, admin_id, member_id):
+    """The placeholder is the exception, not the rule — a name a person typed
+    is the most useful thing the notification can carry."""
+    bid = _board(client, admin_id, "לוח שם אמיתי")
+    _member(client, bid, admin_id, member_id)
+    _rule(client, bid, admin_id, member_id)
+    _fire(client, bid, admin_id, "תיקון מדרכה ברחוב הרצל")
+    n = _last_assign(member_id)
+    assert "«תיקון מדרכה ברחוב הרצל»" in n.body, n.body
 
 
 # ── a hand-made assignment is untouched ───────────────────────────────────
