@@ -14,9 +14,14 @@
 
    * the button still makes an item on its own. The caret is a second door, not
      a replacement for the first one;
-   * the caret is not offered to somebody who cannot add a group — an editor, or
-     anybody looking at a narrowed board, where a group born empty is exactly
-     what the board no longer draws;
+   * the caret is not offered to somebody who cannot add a group — an editor.
+     A narrowed board is NOT one of those cases, and that is the point of this
+     line: the caret used to go when a filter went on, and a caret that comes
+     and goes reads as the button having turned back into the old one rather
+     than as a filter being on. A group born empty is still not drawable on a
+     narrowed board, which is why addGroup clears the cut on its way out
+     instead — and why the button at the FOOT of the board, which is drawn
+     among the groups, still goes with them;
    * position 0 is not enough to BE first. Every other group goes on claiming
      the position it had, so the order is stated in full afterwards;
    * the button at the foot of the board is untouched — it is still the way in
@@ -81,8 +86,8 @@ ck('the group row is only there where a group can be added',
 
 // ── and the caret itself goes when there is nothing to drop ────────────────
 const canAdd = grab('canAddGroupHere');
-ck('"can a group be added here" is the role and the cut, together',
-   /!boardIsNarrowed\(\)\s*&&\s*isBoardAdmin\(\)/.test(canAdd), canAdd);
+ck('"can a group be added here" is the role, and only the role',
+   /isBoardAdmin\(\)/.test(canAdd) && !/boardIsNarrowed/.test(canAdd), canAdd);
 const refresh = grab('refreshToolbar');
 ck('the toolbar settles the caret on every redraw of itself',
    /ctl-new[\s\S]{0,120}?no-caret',!canAddGroupHere\(\)/.test(refresh), refresh);
@@ -154,6 +159,18 @@ ck('a board with no groups yet needs no reordering',
    /if\(atTop&&made&&made\.id&&was\.length\)/.test(fn), fn);
 ck('a plain addGroup() still appends, as the foot of the board always did',
    !/body\.position/.test(fn.slice(0, fn.indexOf('if(atTop)'))), fn);
+/* the other half of letting the caret stay while the board is narrowed: the
+   group is made, the cut goes, and the clearing is said rather than silently
+   happening under her */
+ck('a group added on a narrowed board clears the cut, and says so',
+   /boardIsNarrowed\(\)[\s\S]{0,80}said='קבוצה נוספה, הסינון נוקה'/.test(fn), fn);
+ck('…and the board is reopened afterwards, which is what resets the filters',
+   fn.indexOf('openBoard(st.board.id)') > fn.indexOf('boardIsNarrowed()'), fn);
+
+// ── a role that changes under an open board brings the caret back ─────────
+const reval = grab('revalidateBoard');
+ck('a revalidate that found a change settles the toolbar before the rows',
+   /refreshToolbar\(\);[\s\S]{0,80}renderView\(\)/.test(reval), reval);
 
 // ── the foot of the board is untouched ────────────────────────────────────
 ck('"+ הוסף קבוצה" is still at the foot of the board',

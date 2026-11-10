@@ -50,6 +50,10 @@ function harness(fields, colour = '#00c875'){
     toast: () => {},
     closeModals: () => {},
     isBoardAdmin: () => true,
+    /* addGroup asks whether the board is cut, so it can say that the cut went
+       with the new group — see add_group_from_the_toolbar.mjs. Nothing here is
+       about that; an uncut board is the plain case. */
+    boardIsNarrowed: () => false,
     opened: 0,
     openBoard: async () => { env.opened++; },
     // the one thing a stub must get right: the create route answers with the group

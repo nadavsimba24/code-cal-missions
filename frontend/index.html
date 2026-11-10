@@ -4334,6 +4334,13 @@ async function revalidateBoard(id,_t0){
   if(!changed){ reportBoardOpen(id,wait,0,_t0,'from memory, unchanged'); return; }
   st.board=fresh;
   const r=performance.now();
+  /* The toolbar before the rows. boardStamp counts my_role, so a role that
+     changed while the board was open arrives on exactly this path — and the
+     caret on "פריט חדש" is drawn from that role. Without this the board was
+     redrawn around a toolbar still answering the previous answer, and the way
+     to add a group stayed missing until something else happened to touch a
+     filter. */
+  refreshToolbar();
   renderView();                                  // keeps her scroll position
   reportBoardOpen(id,wait,performance.now()-r,_t0,'from memory, then updated');
 }
@@ -13891,7 +13898,9 @@ function renderPop(name){
        The group is offered only where it can actually be added — see
        canAddGroupHere. The caret itself is hidden in that case (refreshToolbar),
        so this is the second half of one rule rather than a different one: a
-       stale screen must not offer a row whose answer is already no. */
+       stale screen must not offer a row whose answer is already no. The rule is
+       the role now and not the filters, so the caret no longer appears and
+       disappears while she works. */
     setHTML(el, `<button class="pop-row-act" onclick="closePops();openNewItem()">
         <span style="width:20px;text-align:center"><i class="fa-solid fa-plus"></i></span> הוספת פריט</button>`
       + (canAddGroupHere() ? `<button class="pop-row-act" onclick="closePops();addGroup(true)">
@@ -14619,10 +14628,11 @@ function refreshToolbar(){
   const qc=document.getElementById('tb-q-clear'); if(qc)qc.classList.toggle('show',!!f.q);
   const cl=document.getElementById('tb-clear'); if(cl)cl.classList.toggle('show',boardIsCut());
   /* The "פריט חדש" caret drops a menu whose second row is adding a group, and
-     whether that row exists depends on the role AND on whether the board is
-     narrowed — which is a filter, which is this function. So the caret is
-     settled here, where every change to a filter already ends up, rather than
-     at the dozen places that change one. */
+     whether that row exists depends on the role on this board. Settled here
+     because this runs on every paint of a board and on every change to it —
+     one place rather than the dozen that could each forget. A role that
+     changes under an open board (revalidateBoard) comes back through here
+     too, which is how the caret returns without a reload. */
   const cn=document.getElementById('ctl-new'); if(cn)cn.classList.toggle('no-caret',!canAddGroupHere());
   /* A large board re-asks the server. Every filter in the app ends here,
      which is why the re-ask lives here and not at each of the dozen places
@@ -14985,12 +14995,27 @@ function groupHTML(g){
 }
 /* Whether a group can be added from where she is standing. The board's admin
    makes a group — the server is the rule, this is the screen not offering what
-   would be refused — and only a board that is whole can show the empty group
-   that comes back from it. Both ways in ask this: the caret in the toolbar and
-   the button at the foot of the board. addGroupBtnHTML spells the same thing
-   out again instead of calling this, because tests/frontend/add_group_is_admin
-   _only.mjs reads that line to check the button is not offered to an editor. */
-function canAddGroupHere(){ return !boardIsNarrowed() && isBoardAdmin(); }
+   would be refused.
+
+   The role and nothing else. It used to ask !boardIsNarrowed() too, because a
+   group is born empty and an empty group is what a narrowed board stops
+   drawing — but the thing that asks this is the caret on "פריט חדש", and a
+   caret that comes and goes is not read as a filter being on. It is read as
+   the button having turned back into the old one: the menu was there a minute
+   ago, a word was typed in the search box, and now the way to add a group is
+   gone with no explanation anywhere near it. That is what was reported.
+
+   So the caret stays, and the narrowing is answered where it actually is —
+   addGroup clears the cut on its way out (openBoard resets the filters), so
+   the new group is on screen instead of being swallowed by a filter.
+
+   The button at the foot of the board still goes when the board is narrowed:
+   that one is drawn among the groups, so it disappears along with the rows
+   around it rather than changing shape in a strip that stays put.
+   addGroupBtnHTML spells its own rule out instead of calling this, because
+   tests/frontend/add_group_is_admin_only.mjs reads that line to check the
+   button is not offered to an editor. */
+function canAddGroupHere(){ return isBoardAdmin(); }
 function addGroupBtnHTML(){
   /* Not while the board is narrowed. A new group is born empty and an empty
      group is exactly what a filtered board no longer draws, so the button
@@ -19657,6 +19682,12 @@ async function addGroup(atTop){
         order.forEach((id,i)=>{const g=(st.board.groups||[]).find(x=>x.id===id); if(g)g.position=i;});
       }catch(e){ said='הקבוצה נוספה, אך לא בראש הלוח'; }
     }
+    /* openBoard resets the filters, which is deliberate here rather than
+       incidental: a group is born empty, and an empty group is exactly what a
+       narrowed board does not draw. Adding one from a filtered board would
+       otherwise be a toast about something nobody can see. The clearing is
+       said out loud, because a cut vanishing unannounced is its own surprise. */
+    if(boardIsNarrowed() && said==='קבוצה נוספה') said='קבוצה נוספה, הסינון נוקה';
     toast(said);await openBoard(st.board.id);
   }catch(e){ toast((e&&e.detail)||'שגיאה ביצירת קבוצה'); }
 }
