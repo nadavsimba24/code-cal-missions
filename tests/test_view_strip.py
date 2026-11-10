@@ -100,8 +100,12 @@ def test_the_plus_offers_tavla_by_that_name():
     """It is what the thing is called everywhere else — the first one added is
     "טבלה". A menu item named "תצוגת טבלה חדשה" names a category instead."""
     i = SRC.index("function renderAddViewPop()")
-    body = SRC[i:SRC.index("\n}", SRC.index("join('')", i))]
-    assert "<span>טבלה</span>" in body, body[:400]
+    body = SRC[i:SRC.index("function closeAddView()", i)]
+    # The name in its slot, not a bare <span>: the menu was redesigned into
+    # cards that also say what each kind is for. What is asserted is the
+    # NAME — "טבלה", the thing it is called everywhere else.
+    assert 'he:\'טבלה\'' in body.replace(" ", ""), body[:400]
+    assert 'class="av-nm">${esc(k.he)}<' in body
     assert "תצוגת טבלה חדשה" not in body
 
 

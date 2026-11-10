@@ -40,10 +40,10 @@ mobile=false; ctx(ev,1);
 const desk=labels();
 ck('on desktop it is NOT duplicated into the menu', !desk.includes('לוג הלוח'), desk.join(' | '));
 ck('...because the header button is still there on desktop',
-   /class="bh-log"/.test(src) && /#boardhead \.bh-log,#boardhead \.bh-owner\{display:none\}/.test(src));
+   /class="bh-log"/.test(src) && /#boardhead \.bh-log\{display:none\}/.test(src));
 
 // the log must not have displaced anything
-['אוטומציות','סל מחזור','הגדרת הרשאות','מחק לוח'].forEach(l=>{
+['אוטומציות','סל מחזור','משתתפים והרשאות','מחק לוח'].forEach(l=>{
   ck(`"${l}" still in the menu on a phone`, mob.includes(l));
 });
 // and the desktop-only entries stay desktop-only

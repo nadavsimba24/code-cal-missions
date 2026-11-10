@@ -11,6 +11,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
 import enum
+import os
 
 Base = declarative_base()
 
@@ -592,6 +593,248 @@ class FormComponent(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     form = relationship("FormView", back_populates="components")
+
+
+# ── דשבורדים ──────────────────────────────────────────────────────────
+# A dashboard is a set of measures read off boards. Two flavours, one table:
+# "עצמאי בסביבת עבודה" combines up to ten boards, and "תצוגה בתוך לוח" shows
+# the board it is a tab on and nothing else. The spec lists ONE field set for
+# both — "מזהה, סוג, לוח מארח אם נדרש, סביבת עבודה, …" — and "אם נדרש" is the
+# whole argument for one table: the two differ by which columns are filled,
+# not by what a dashboard IS.
+DASHBOARD_KINDS = ("standalone", "board")
+# ראשי — everyone who may reach the workspace. פרטי — the people invited.
+# Deliberately not the board's "public"/"private": a board's audience is its
+# environment, a dashboard's is its invitees, and naming them alike would
+# invite one to be read through the other's rules.
+DASHBOARD_VISIBILITY = ("main", "private")
+# Owners manage; viewers look. No system roles are created — DASH-03.2 —
+# so this table is the whole of a dashboard's own audience.
+DASHBOARD_MEMBER_ROLES = ("owner", "viewer")
+# "numbers" and "chart" are the specification's two. "list" is a third,
+# asked for afterwards and not excluded by it: the dashboard could say how
+# MUCH and how it is DISTRIBUTED, and could not show the records themselves.
+# It measures nothing — it is the same population the other two are built
+# from, drawn as rows — so it inherits their sources, filters, permissions
+# and blocking rather than introducing a second way to read a board.
+WIDGET_TYPES = ("numbers", "chart", "list")
+# "לכל ווידג׳ט בוחרים פריטים בלבד, תתי־פריטים בלבד או שניהם; ברירת מחדל פריטים."
+WIDGET_SCOPES = ("items", "subitems", "both")
+
+
+class Dashboard(Base):
+    """A dashboard — the settings, never the numbers.
+
+    "תוצאות מחושבות אינן מקור אמת." Nothing computed is stored here: no
+    totals, no categories, no cached series. The row says what to measure and
+    who may see it, and every figure is worked out from the live boards at
+    read time. A stored total is a number that was true once, and a dashboard
+    that shows one cannot tell the difference between data and memory.
+
+    **A board dashboard is a tab, and reuses the tab.** `view_id` points at a
+    `SavedView` whose `kind` is "dash", exactly as `FormView` does for a form:
+    the name, the position in the strip, the lock, the recycle bin and the
+    uniqueness of the name are all things a view already is, and rebuilding
+    them here would mean two answers to "what is this tab called". A
+    standalone dashboard has no tab and no board, so both are NULL.
+
+    `config_version` is THE version of this dashboard's configuration — its
+    own settings AND its widgets. One counter and not two, because the
+    conflict a save has to catch is "somebody changed this dashboard", and a
+    widget is part of it: two versions would let a widget rewrite land on top
+    of a settings rewrite with both of them claiming to be current. The
+    compute response carries this one number for the same reason (R09, R10).
+    """
+    __tablename__ = "dashboards"
+    __table_args__ = (
+        # One dashboard per view row, the same 1:1 `form_views` declares and
+        # for the same reason: a second settings row for one tab leaves a
+        # reader to pick between them.
+        UniqueConstraint("view_id", name="uq_dashboard_view"),
+        CheckConstraint("kind IN " + _sql_in(DASHBOARD_KINDS),
+                        name="ck_dashboard_kind"),
+        CheckConstraint("visibility IN " + _sql_in(DASHBOARD_VISIBILITY),
+                        name="ck_dashboard_visibility"),
+    )
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(12), nullable=False, default="standalone")
+
+    # ── where it lives ──
+    # Both NULL for a standalone dashboard; both filled for a board one.
+    # `board_id` is carried beside `view_id` rather than read through it
+    # because it is the host board — "הלוח המארח יהיה המקור היחיד והקבוע"
+    # (DASH-06.1) — and a source that has to be joined to be known is a source
+    # that can be forgotten in the one query that matters.
+    view_id = Column(Integer, ForeignKey("saved_views.id"), nullable=True, index=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), nullable=True, index=True)
+    # The workspace a standalone dashboard belongs to. NULL for a board
+    # dashboard, whose environment is the board's and must not be able to
+    # disagree with it.
+    environment_id = Column(Integer, ForeignKey("environments.id"), nullable=True, index=True)
+    position = Column(Integer, default=0)      # order within the environment
+
+    # ── identity ──
+    # A board dashboard's name is the view's; this is NULL there, so the tab
+    # cannot be renamed in two places. Filled, and required, for a standalone.
+    name = Column(String(80), nullable=True)
+
+    # ── audience ──
+    # Only meaningful for a standalone. A board dashboard is reached through
+    # the board, by the board's own roles — DASH-03.2 — so nothing here
+    # applies to it and it is left at the default.
+    visibility = Column(String(10), nullable=False, default="main")
+    # Who made it. They are an owner by definition and are NOT written into
+    # `dashboard_members`: an owner who could be removed from their own
+    # dashboard is a dashboard that can end up belonging to nobody, which is
+    # the bug `Environment.created_by` was added to close.
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # ── what it measures ──
+    # [{board_id, groups: null | [group_id, …]}, …] — null groups means ALL
+    # groups "כולל קבוצות עתידיות" (R02), which is why it is a null and not
+    # the list of ids that happen to exist today. Capped at DASHBOARD_MAX_BOARDS
+    # by the endpoint, where the refusal can say what to do about it.
+    sources = Column(JSON, default=list)
+    # The dashboard-wide filter, in the same shape `SavedView.filters` holds —
+    # so `filter_ast` reads one tree here and on a board, and a condition
+    # cannot mean one thing in a view and another in a dashboard.
+    filters = Column(JSON, default=dict)
+    # Grid geometry for the desktop layout, by widget id. The READING ORDER
+    # is the widget's own `position` — the mobile column follows it (R08) —
+    # and this holds only what a grid adds on top: column, row, span.
+    layout = Column(JSON, default=dict)
+
+    # ── versions ──
+    config_version = Column(Integer, default=1)
+    schema_version = Column(Integer, default=1)
+
+    # ── the bin ──
+    # A dashboard other people read is deleted the way a board, an item and a
+    # view are: NULL means live. "מחיקה תחייב אישור ותסיר את הגדרות הדשבורד
+    # בלבד" (DASH-05.3) — nothing here owns a board, a column or an item, so
+    # there is nothing for a delete to take with it.
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    widgets = relationship("DashboardWidget", back_populates="dashboard",
+                           order_by="DashboardWidget.position")
+    members = relationship("DashboardMember", back_populates="dashboard")
+
+
+class DashboardMember(Base):
+    """Who may manage a standalone dashboard, and who was invited to read it.
+
+    "עריכה ליוצר ולבעלים נוספים שהוא מגדיר. ראשי נגיש למורשי סביבת העבודה;
+    פרטי למוזמנים בלבד."
+
+    **Being here grants nothing about data.** R01 is explicit — "בעלות או
+    הזמנה אינן מעניקות הרשאות לנתוני מקור" — so every figure and every
+    drill-down row is still gated by the board, column and item permissions
+    the rest of the system enforces. This table answers one question only:
+    may this person open this dashboard at all.
+    """
+    __tablename__ = "dashboard_members"
+    __table_args__ = (
+        # One row per person per dashboard. Without it an invitation sent
+        # twice leaves two rows, and removing access removes one of them.
+        UniqueConstraint("dashboard_id", "user_id", name="uq_dashboard_member"),
+        CheckConstraint("role IN " + _sql_in(DASHBOARD_MEMBER_ROLES),
+                        name="ck_dashboard_member_role"),
+    )
+    id = Column(Integer, primary_key=True)
+    dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String(10), nullable=False, default="viewer")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    dashboard = relationship("Dashboard", back_populates="members")
+
+
+class DashboardWidget(Base):
+    """One measure on a dashboard — a number or a chart.
+
+    Everything that decides what the figure IS lives here, and nothing that
+    the figure turned out to be. The split between the JSON columns is by
+    what each answers, because that is how they are read: `sources` and
+    `mapping` say WHERE from, `filters` says WHICH records, `metrics` says
+    WHAT is computed, and `chart` says how it is drawn.
+
+    `mapping` is the approved column mapping and it is kept BY COLUMN ID —
+    "המיפוי נשמר לפי מזהים; שינוי שם אינו שובר אותו" (R05). A proposal made
+    by name and type is never stored: DASH-07.1 requires somebody to approve
+    or correct it first, so what reaches this column has been agreed to.
+    """
+    __tablename__ = "dashboard_widgets"
+    __table_args__ = (
+        CheckConstraint("type IN " + _sql_in(WIDGET_TYPES),
+                        name="ck_dashboard_widget_type"),
+        CheckConstraint("record_scope IN " + _sql_in(WIDGET_SCOPES),
+                        name="ck_dashboard_widget_scope"),
+    )
+    id = Column(Integer, primary_key=True)
+    dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=False, index=True)
+    type = Column(String(10), nullable=False, default="numbers")
+
+    # ── what it says ──
+    title = Column(String(120), nullable=False, default="")   # required — DASH-11.1
+    description = Column(Text, default="")                    # optional — DASH-11.1
+    # Reading order, and the one the mobile column follows (R08). Kept apart
+    # from the desktop grid in `Dashboard.layout` because "הצגה במובייל לא
+    # תשנה את גדלי הדסקטופ" (DASH-19.3) — one of them has to survive the
+    # other being rearranged.
+    position = Column(Integer, default=0)
+
+    # ── where from ──
+    # A SUBSET of the dashboard's sources, in the same shape — "לכל ווידג׳ט
+    # תת־קבוצה מהם" (R02). Empty means every source the dashboard has, so a
+    # widget does not have to be rewritten when a board is added to it.
+    sources = Column(JSON, default=list)
+    # {board_id: {metric_key: column_id}} — the approved mapping, by id.
+    mapping = Column(JSON, default=dict)
+    record_scope = Column(String(10), nullable=False, default="items")
+
+    # ── which records ──
+    # The widget's own filter. Applied as an INTERSECTION with the
+    # dashboard's — "המסנן המקומי יחול יחד עם מסנן הדשבורד, בחיתוך ביניהם"
+    # (DASH-16.2) — never instead of it.
+    filters = Column(JSON, default=dict)
+
+    # ── what is computed ──
+    # [{key, calc: count|sum|avg, unit, scale, precision, empty_policy,
+    #   mirror_agg}, …] — one entry per measure, because "כמה מדדים מותרים
+    # באותה יחידה ובציר משותף" (R06). `empty_policy` is per widget in the
+    # spec and per metric here: a widget with two measures over two columns
+    # has two populations of blanks, and one flag could only be right about
+    # one of them. `mirror_agg` is the inner sum-or-average a multi-valued
+    # mirror needs BEFORE the widget's own calculation (R03).
+    metrics = Column(JSON, default=list)
+
+    # ── how it is drawn ──
+    # Dimension, period, split, sort, colours by id, legend, labels and the
+    # "ללא ערך" setting — DASH-02.3. Empty for a numbers widget; it is one
+    # column rather than eight because every one of them is chart-only, and a
+    # numbers widget carrying eight permanent NULLs says nothing truer.
+    chart = Column(JSON, default=dict)
+
+    # ── how a list widget is drawn ──
+    # {columns: {board_id: [column_id, …]}, limit, sort: {field, direction}}
+    # Its own column rather than a corner of `chart`, because a list is not a
+    # chart with the axes removed: it carries no dimension, no series and no
+    # measure, and the two configurations have nothing in common to share.
+    display = Column(JSON, default=dict)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    dashboard = relationship("Dashboard", back_populates="widgets")
+
+
 
 
 class Group(Base):
@@ -1440,6 +1683,86 @@ class ItemLink(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
 
+class ColumnConversion(Base):
+    """One run of "turn this column into a link to that board".
+
+    A column that already holds words — "לקוחות" typed into a text column on a
+    production board — becomes a connect column by matching each cell against
+    one named field of one target board. Only an exact, unambiguous, visible
+    match becomes a link; everything else is an exception a person resolves by
+    hand, and until they have, the words that were in the cell have to survive
+    somewhere. That is what this row and its cells are: the conversion is not
+    finished at the moment it is applied, it is finished when the last cell
+    nobody could match has been dealt with.
+
+    `from_col` keeps the WHOLE column definition, not just its type — the
+    options of a dropdown, the colours of a status, the number's unit. A revert
+    has to put the board back as it was, and a type alone cannot do that.
+
+    One target board per conversion even though a connect column may name
+    several: "exactly one record carries this value" stops meaning anything
+    once two boards are being searched at the same time.
+    """
+    __tablename__ = "column_conversions"
+    id = Column(Integer, primary_key=True)
+    board_id = Column(Integer, ForeignKey("boards.id"), index=True, nullable=False)
+    col_id = Column(String(64), index=True, nullable=False)
+    target_board_id = Column(Integer, ForeignKey("boards.id"), nullable=False)
+    match_field = Column(String(80), nullable=False)      # "title" | a column id on the target board
+    # The field to identify a record BY when the primary one is empty on it.
+    # Measured need: the target board's "שם לקוח מלא" holds the source's exact
+    # format and matches 436 of 476 cells outright — and is blank on 144 of
+    # the 500 records, which the item's own name covers.
+    match_field_fallback = Column(String(80), nullable=True)
+    from_type = Column(String(30), nullable=False)        # the type the column was
+    from_col = Column(JSON)                               # the whole definition, for the revert
+    status = Column(String(20), default="open")           # open | closed | reverted
+    # The columns this conversion CREATED on the target board — the counterpart
+    # a two-way link needs somewhere to appear. Recorded rather than inferred
+    # so a revert can take back exactly what the apply added: _ensure_mirrors
+    # reuses an existing column where it finds one, and deleting a column
+    # somebody already had is far worse than leaving an empty one behind.
+    created_cols = Column(JSON)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    closed_at = Column(DateTime, nullable=True)
+
+
+class ColumnConversionCell(Base):
+    """One item's original value, kept until its exception is dealt with.
+
+    A row per NON-EMPTY cell, matched ones included. A matched cell has nothing
+    for a person to do, but it still has an original: "שמור את הערכים המקוריים
+    עד להשלמת הטיפול" is a promise about the whole board, and a revert that put
+    back only the cells nobody could match would restore a board that never
+    existed.
+
+    An empty cell gets no row at all — there is nothing to keep and nothing to
+    resolve, and a row per blank cell would make the exception list on a sparse
+    column mostly blanks.
+    """
+    __tablename__ = "column_conversion_cells"
+    id = Column(Integer, primary_key=True)
+    conversion_id = Column(Integer, ForeignKey("column_conversions.id"), index=True, nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), index=True, nullable=False)
+    original = Column(JSON)        # the cell exactly as custom_fields held it
+    words = Column(JSON)           # what it was read as, so the dialog can show it
+    outcome = Column(String(20), nullable=False)    # matched | unmatched | ambiguous
+    reason = Column(String(30))                     # no_match | partial | several | too_many_values
+    candidates = Column(JSON)                       # [task_id, …] when ambiguous
+    # What it was linked to, when matched. Both, because a cell can hold more
+    # than one link and the scalar cannot say which of them died: a dropdown
+    # reading ["עיריית חיפה", "רשות העתיקות"] becomes two links, and the
+    # "a deleted record is listed again" guarantee has to hold when it is the
+    # SECOND one that goes. The scalar is the first id and stays because it is
+    # what the exception list reports; the list is what the liveness check and
+    # the re-point read.
+    linked_task_id = Column(Integer, nullable=True)
+    linked_task_ids = Column(JSON)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
 class AuditLog(Base):
     """Audit trail for changes across work plan entities."""
     __tablename__ = "audit_logs"
@@ -1548,10 +1871,36 @@ class Notification(Base):
 
 # ── Init DB ──────────────────────────────────────────────────────────
 
+# How many database connections the pool may hold open, and how many more it
+# may borrow under load.
+#
+# SQLAlchemy's defaults are 5 + 10, which is BELOW the thread pool the server
+# runs its synchronous endpoints on — so past fifteen concurrent requests the
+# sixteenth waits for a connection rather than for work, and after thirty
+# seconds it does not get slower, it FAILS: "QueuePool limit of size 5
+# overflow 10 reached, connection timed out".
+#
+# That is how it was found. A dashboard load measurement at the twenty
+# concurrent viewers DASH-28.2 names spent most of its time in that queue and
+# then raised, which read as the dashboard being slow and was the pool being
+# small. It was never specific to dashboards — any twenty people doing
+# anything at once would have met it.
+#
+# Settable because the right number depends on the database: SQLite
+# connections are nearly free, a managed Postgres has a ceiling of its own
+# and the pool must stay under it.
+DB_POOL_SIZE = int(os.getenv("CITYOS_DB_POOL_SIZE", "20"))
+DB_POOL_OVERFLOW = int(os.getenv("CITYOS_DB_POOL_OVERFLOW", "40"))
+DB_POOL_TIMEOUT = int(os.getenv("CITYOS_DB_POOL_TIMEOUT", "30"))
+
+
 def init_db(db_url="sqlite:///cityos.db"):
     # pool_pre_ping keeps Postgres connections healthy across serverless cold
     # starts / idle drops; harmless for SQLite.
-    engine = create_engine(db_url, echo=False, pool_pre_ping=True)
+    engine = create_engine(db_url, echo=False, pool_pre_ping=True,
+                           pool_size=DB_POOL_SIZE,
+                           max_overflow=DB_POOL_OVERFLOW,
+                           pool_timeout=DB_POOL_TIMEOUT)
     Base.metadata.create_all(engine)
     return engine
 

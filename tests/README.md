@@ -96,7 +96,7 @@
 ### `test_assets.py` — שפיות frontend והעלאת קבצים (4 בדיקות)
 | בדיקה | מוודאת |
 |-------|--------|
-| `test_index_served` | `/` מחזיר HTML עם הרכיבים `SysAdmin, avatarInner, ownerChipHTML` |
+| `test_index_served` | `/` מחזיר HTML עם הרכיבים `SysAdmin, avatarInner, membersChipHTML` |
 | `test_inline_js_syntax` | ה-JS הפנימי ב-index.html עובר `node --check` (מדלג אם אין node) |
 
 ---

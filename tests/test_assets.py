@@ -15,7 +15,7 @@ def test_index_served(client):
     assert r.status_code == 200
     assert "text/html" in r.headers.get("content-type", "")
     # key building blocks are present
-    for marker in ("SysAdmin", "avatarInner", "ownerChipHTML"):
+    for marker in ("SysAdmin", "avatarInner", "membersChipHTML"):
         assert marker in r.text, f"index.html missing '{marker}'"
 
 

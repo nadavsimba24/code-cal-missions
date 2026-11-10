@@ -21,13 +21,15 @@ import os
 from pydantic import BaseModel
 from sqlalchemy import and_, create_engine, event, func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload, with_loader_criteria
+from sqlalchemy.orm import Session, load_only, selectinload, with_loader_criteria
 
 sys.path.insert(0, os.path.dirname(__file__))
 from auth import (auth_mode, current_user, current_user_id, effective_auth_mode,
                   init_auth, resolve_user)
 import entra_guests
+import datetime as _dt
 import filter_ast
+import formula
 import import_monday
 from models import (
     Organization, Department, Environment, EnvironmentMember, Folder, User, Board, Group, Task, Comment, BoardMember, WorkspaceMember, RolePermission, Automation, AutomationRun, AutomationVersion, AutomationUsage,
@@ -35,8 +37,12 @@ from models import (
     AutomationIncident, EventOutbox,
     AutomationActionExecution, AutomationAuthorizationGrant,
     AutomationFreeze, ItemLink, BoardView, SavedView, BoardViewPrefs,
+    ColumnConversion, ColumnConversionCell,
     FormView, FormComponent, FORM_STATUSES, FORM_ACCESS_MODES,
     FORM_COMPONENT_KINDS,
+    Dashboard, DashboardMember, DashboardWidget,
+    DASHBOARD_KINDS, DASHBOARD_VISIBILITY, DASHBOARD_MEMBER_ROLES,
+    WIDGET_TYPES, WIDGET_SCOPES,
     Permit, CitizenRequest, PublicTransportStop, InfrastructureAsset,
     TaskStatus, Priority, BoardType, init_db,
     AnnualWorkPlan, Project, ProjectStep, BudgetLineItem,
@@ -344,6 +350,14 @@ def _migrate():
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_saved_views_board_name "
                 "ON saved_views (board_id, lower(trim(name))) "
                 "WHERE deleted_at IS NULL"))
+        # ── the list widget's own settings ──
+        # dashboard_widgets is a new table, so create_all builds it with this
+        # column — but a database that ran the dashboards before the list
+        # widget existed already HAS the table, and create_all does not add
+        # columns to one. Invariant 1, in its ordinary shape.
+        dwcols = {r[1] for r in conn.execute(text("PRAGMA table_info(dashboard_widgets)"))}
+        if dwcols and "display" not in dwcols:
+            conn.execute(text("ALTER TABLE dashboard_widgets ADD COLUMN display JSON"))
         # ── tables the form view adds ──
         # form_views and form_components are NEW tables, so create_all() has
         # already built them with every column and CHECK in the model. What is
@@ -548,6 +562,19 @@ def _migrate():
         # users: Entra object id for guests invited from the guests screen
         if "entra_object_id" not in ucols:
             conn.execute(text("ALTER TABLE users ADD COLUMN entra_object_id VARCHAR(64)"))
+        # The column conversion ("המרת עמודה לעמודת חיבור ללוח") shipped with
+        # both of its tables in one change and then grew two fields, so every
+        # database that ran the first version already has the tables and will
+        # never be given the new columns by create_all. Guarded on the table
+        # existing at all, because a database created fresh has them already.
+        ccols = {r[1] for r in conn.execute(text("PRAGMA table_info(column_conversions)"))}
+        if ccols and "created_cols" not in ccols:
+            conn.execute(text("ALTER TABLE column_conversions ADD COLUMN created_cols JSON"))
+        cccols = {r[1] for r in conn.execute(text("PRAGMA table_info(column_conversion_cells)"))}
+        if cccols and "linked_task_ids" not in cccols:
+            conn.execute(text("ALTER TABLE column_conversion_cells ADD COLUMN linked_task_ids JSON"))
+        if ccols and "match_field_fallback" not in ccols:
+            conn.execute(text("ALTER TABLE column_conversions ADD COLUMN match_field_fallback VARCHAR(80)"))
         _demo = {
             1: ("מנהל אגף הנדסה ותשתיות", "050-2345678"),
             2: ("מנהלת מחלקת תחבורה",     "052-3456789"),
@@ -587,6 +614,7 @@ else:
         "ALTER TABLE board_view_prefs ADD COLUMN IF NOT EXISTS last_view_id INTEGER",
         # the form view — see the SQLite side for what each one is for
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS form_view_id INTEGER",
+        "ALTER TABLE dashboard_widgets ADD COLUMN IF NOT EXISTS display JSON",
         "ALTER TABLE form_views ADD COLUMN IF NOT EXISTS submit_label VARCHAR(40) DEFAULT ''",
         "ALTER TABLE form_views ADD COLUMN IF NOT EXISTS show_branding BOOLEAN DEFAULT TRUE",
         # minted at the first publish — see the SQLite side for the long version
@@ -612,6 +640,10 @@ else:
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid VARCHAR(11)",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS item_uid_board INTEGER",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS entra_object_id VARCHAR(64)",
+        # the column conversion — see the SQLite side for why these two are here
+        "ALTER TABLE column_conversions ADD COLUMN IF NOT EXISTS created_cols JSON",
+        "ALTER TABLE column_conversion_cells ADD COLUMN IF NOT EXISTS linked_task_ids JSON",
+        "ALTER TABLE column_conversions ADD COLUMN IF NOT EXISTS match_field_fallback VARCHAR(80)",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS name VARCHAR(120)",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS description TEXT",
         "ALTER TABLE automations ADD COLUMN IF NOT EXISTS status VARCHAR(16) DEFAULT 'active'",
@@ -1563,6 +1595,78 @@ def _board_statuses(b):
             break
     return out or [dict(x, base=x.get("base", x["key"])) for x in STATUS_DEFAULTS]
 
+# ── "יש בו שימוש" — a status items wear is not a status anyone may delete ──
+# A status is a word the board agreed on, and every item wearing it points at
+# that word. Dropping it out of the vocabulary while items still point at it
+# leaves cells holding a value the board no longer offers: the grid goes on
+# drawing the label it cached, the picker does not list it, the filter cannot
+# ask for it, and no screen can say WHY the three disagree. So the removal is
+# refused while anything still carries it. Moving those items to another
+# status is a decision about the WORK — it belongs to the person making it,
+# not to a deletion that makes it for them silently.
+#
+# Counted over the items the board SHOWS: the recycle bin is out of every
+# query here already (_hide_deleted_tasks) and archived items are left out
+# too, so the number in the refusal is a number the admin can go and look at.
+
+def _status_usage_rows(db, board):
+    """Every live item of the board — its sub-items among them — carrying only
+    the two fields a status is read out of. Only those two are loaded: a board
+    holds thousands of items and this question is asked every time the status
+    editor opens."""
+    if board is None:
+        return []
+    return (db.query(Task)
+              .options(load_only(Task.status, Task.custom_fields))
+              .filter(Task.board_id == board.id,
+                      Task.is_archived == False)                     # noqa: E712
+              .all())
+
+
+def _board_status_usage(db, board, rows=None):
+    """{status key: how many items wear it} for the board's own vocabulary.
+
+    Read through _task_status_key and not off task.status, because the enum is
+    the one thing that cannot tell תקוע from הקפאה — both are stored as
+    on_hold, and counting the enum would guard one of the two and refuse the
+    other for a use that was never its own.
+    """
+    out = {}
+    for t in (_status_usage_rows(db, board) if rows is None else rows):
+        if (t.custom_fields or {}).get("status_unset"):
+            continue                    # "טרם הוגדר" is not one of the words
+        k = str(_task_status_key(t))
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def _status_col_usage(db, board, col, rows=None):
+    """{option id: how many items wear it} for one status COLUMN's vocabulary.
+
+    `col` is the column as it stands BEFORE the save — a cell written by the
+    grid holds the label rather than the id, and _status_cell_key can only
+    turn it back into an id against the options that label still belongs to.
+    """
+    cid = str((col or {}).get("id") or "")
+    out = {}
+    if not cid:
+        return out
+    for t in (_status_usage_rows(db, board) if rows is None else rows):
+        k = _status_cell_key(col, (t.custom_fields or {}).get(cid))
+        if k:
+            out[str(k)] = out.get(str(k), 0) + 1
+    return out
+
+
+# The refusal both gates raise. One shape for the board's own statuses and a
+# column's, because the editor that removed either of them is the same screen
+# and should not need two ways to read the same "no".
+def _status_in_use_409(entries):
+    raise HTTPException(409, {
+        "message": "לא ניתן למחוק סטטוס שיש בו שימוש — העבר תחילה את הפריטים לסטטוס אחר",
+        "statuses": entries})
+
+
 # ── Priority is a status column too ──────────────────────────────────────
 # "עדיפות" is the same kind of thing as "סטטוס": one value out of a named,
 # coloured vocabulary. So it gets the same treatment — a board admin renames,
@@ -2509,11 +2613,23 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         # whose status somebody flipped has not been answered.
         "last_comment_at": last_comment_at,
     }
+    # A cell whose words nobody could match to a record is not an empty cell:
+    # the value is still there, on the conversion, waiting for somebody to say
+    # what it meant. It is carried beside custom_fields rather than inside it
+    # so the connect column goes on holding only item ids — a grid that found
+    # a string in a list of links would render it as a broken chip. Absent
+    # entirely when there is nothing pending, which is every item on every
+    # board that is not mid-conversion.
+    if plan["connect"]:
+        _allowed = set(plan["connect"]) - set(plan["hidden"])
+        _pending = {k: v for k, v in _link_pending_for(db, t).items() if k in _allowed}
+        if _pending:
+            d["link_pending"] = _pending
     if with_subs:
         _kids = _pre.get("_kids_by")
         subs = (_kids[t.id] if _kids is not None and t.id in _kids
                 else db.query(Task).filter(Task.parent_id == t.id, Task.is_archived == False)
-                        .order_by(Task.position).all())
+                        .order_by(Task.position, Task.id).all())
         subs = [s for s in subs if user_id is None or _item_perm(s, user_id, board_role) != "none"]
         d["subtasks"] = [_serialize_task(s, db, with_subs=False, user_id=user_id, board_role=board_role, columns=columns) for s in subs]
     return d
@@ -3237,6 +3353,12 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
         # rows are projected separately and rejoined in strip order.
         forms = {x.view_id: x for x in db.query(FormView).filter(
             FormView.view_id.in_([v.id for v in rows])).all()} if rows else {}
+        # A dashboard is a view of this board in exactly the way a form is —
+        # same strip, same name rule, same bin — and the strip needs the same
+        # two things to draw its tab: that it IS one, and which one.
+        dashes = {x.view_id: x for x in db.query(Dashboard).filter(
+            Dashboard.view_id.in_([v.id for v in rows]),
+            Dashboard.deleted_at.is_(None)).all()} if rows else {}
         rows = [v for v in rows if _view_visible_to(v, user_id, role)]
         rows = _arrange_views(rows, _view_order_for(db, board_id, user_id))
         names = {}
@@ -3246,6 +3368,14 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
         unseen = _unseen_col_ids(_b, user_id, role)
         def one(v):
             vj = _view_json(v, db, names)
+            if _is_dash_view(v):
+                # Identity and nothing else. A dashboard holds no cut, so
+                # `filters` is empty for the same reason a form's is — and
+                # what it measures is answered by the dashboard endpoints,
+                # which do their own permission work.
+                dv = dashes.get(v.id)
+                return dict(vj, filters={}, blocked=False, needs_fix=[],
+                            dashboard_id=(dv.id if dv else None))
             if _is_form_view(v):
                 # Identity and state, which is what a strip needs to draw a
                 # tab and decide whether to offer the pencil. No filters —
@@ -3303,7 +3433,8 @@ def list_saved_views(board_id: int, user_id: int = Depends(current_user_id)):
                                # so the menu offers exactly what the server
                                # would accept and never draws a dead action.
                                can_duplicate=(role in ("admin", "editor")
-                                              and not _is_form_view(v)),
+                                              and not _is_form_view(v)
+                                              and not _is_dash_view(v)),
                                # drawn as "yours" or "somebody's" — the strip
                                # offers a different thing to save in each case
                                is_owner=(v.owner_id == user_id))
@@ -3360,6 +3491,9 @@ def update_saved_view(view_id: int, data: dict, user_id: int = Depends(current_u
         # was drawn while it was still there, and "מחיקה תיבדק שוב בזמן
         # הביצוע" is exactly about the gap between those two moments.
         v, role, may = _view_or_404(db, view_id, user_id)
+        if _is_dash_view(v):
+            raise HTTPException(400, "זוהי תצוגת דשבורד ולא חיתוך — "
+                                     "השתמשו ב‎/api/dashboards")
         if _is_form_view(v):
             raise HTTPException(400, "זהו טופס ולא חיתוך — השתמשו ב‎/api/forms")
         if not may:
@@ -3607,6 +3741,9 @@ def duplicate_saved_view(view_id: int, data: dict = None,
     """
     with Session(engine) as db:
         v, role, _may = _view_or_404(db, view_id, user_id)
+        if _is_dash_view(v):
+            raise HTTPException(400, "זוהי תצוגת דשבורד ולא חיתוך — "
+                                     "השתמשו ב‎/api/dashboards")
         if _is_form_view(v):
             raise HTTPException(400, "זהו טופס ולא חיתוך — השתמשו ב‎/api/forms")
         if role not in ("admin", "editor"):
@@ -5972,6 +6109,3329 @@ def _linked_title_hits(db, tasks, cols, needle, viewer):
     return {tid for tid, v in far_of.items() if v & hit} if hit else set()
 
 
+# ═══ דשבורדים ════════════════════════════════════════════════════════
+# A dashboard is a set of measures read off boards. Everything below is the
+# settings half — who may open one, what it points at, and the permission
+# closure that decides whether a widget may be computed at all. Nothing here
+# computes anything: "תוצאות מחושבות אינן מקור אמת", and the calculation is
+# DASH-09's.
+#
+# ── the view kind, and why it is not "dashboard" ──
+# `SavedView.kind` is a namespace of its own — main | saved | form — and
+# `ALL_VIEWS` is a different one, which has held an entry called "dashboard"
+# since long before this: the fixed, unconfigurable screen `/api/dashboard`
+# feeds, which sums every board the reader can see and ignores the board it
+# is a tab on. That screen is enabled on every board that never turned it
+# off, so taking its name would change what those boards already show.
+# "dash" is therefore the kind here, and the two namespaces go on meaning
+# different things without sharing a word.
+DASH_VIEW_KIND = "dash"
+NEW_DASHBOARD_NAME = "דשבורד חדש"
+# R02 — "דשבורד עצמאי: עד 10 לוחות" — and R10's ceiling on widgets. Enforced
+# at the write, because a stored configuration past the limit is one the
+# calculation would have to refuse later, in front of a reader who cannot fix
+# it. The refusal says what to do about it; it never trims the request.
+DASHBOARD_MAX_BOARDS = 10
+DASHBOARD_MAX_WIDGETS = 20
+# How deep the indirect-source walk goes. A mirror reads through a connect,
+# and a formula can name a mirror, so the closure is genuinely recursive —
+# and a configuration that points at itself must not be able to hang a
+# request. Four is past anything a person builds and far short of a loop.
+_DASH_SOURCE_DEPTH = 4
+
+
+def _dash_for_view(db, view_id):
+    """The dashboard hanging off this view row, if it is a dashboard tab."""
+    return (db.query(Dashboard)
+              .filter(Dashboard.view_id == view_id,
+                      Dashboard.deleted_at.is_(None)).first())
+
+
+def _is_dash_view(v):
+    """Is this view row a dashboard? The question the cut endpoints must ask.
+
+    A dashboard shares the table with the saved cuts because it IS a view of
+    the board — same strip, same name rule, same bin — and shares nothing
+    else. Writing a cut's `filters` onto one would produce a dashboard whose
+    widgets answer to a condition tree nobody attached to them.
+    """
+    return (v.kind or "saved") == DASH_VIEW_KIND
+
+
+def _dash_name(db, d, view=None):
+    """What this dashboard is called.
+
+    A board dashboard's name is its tab's, and is NOT copied here: two places
+    holding one name is two places that can disagree about it, and the strip
+    is the one people rename through.
+    """
+    if d.kind == "board":
+        v = view or db.query(SavedView).filter(SavedView.id == d.view_id).first()
+        return v.name if v else ""
+    return d.name or ""
+
+
+# ── מי רשאי לפתוח ולנהל ──────────────────────────────────────────────
+
+def _dash_access(db, d, user_id):
+    """This person's standing on this dashboard: "owner", "viewer" or None.
+
+    R01, in one function:
+
+      · עצמאי — the creator and the owners they named manage it. "ראשי"
+        opens to anyone who may reach its workspace; "פרטי" opens to the
+        people invited and to nobody else.
+      · תצוגת לוח — "צפייה וניהול לפי הרשאות התצוגות הקיימות בלוח", so the
+        board's own roles answer it and no new role is invented (DASH-03.2).
+        A locked tab narrows writing to the board's owner, exactly as it does
+        for a cut — the lock is a property of the tab, not of this feature.
+
+    **None of this is permission to read data.** "בעלות או הזמנה אינן
+    מעניקות הרשאות לנתוני מקור" — every figure and every drill-down row is
+    gated again, per board, per column and per item, by _widget_blocked and
+    by the ordinary item rules. This answers one question: may they open it.
+    """
+    if user_id is None or d is None:
+        return None
+    if d.kind == "board":
+        v = db.query(SavedView).filter(SavedView.id == d.view_id).first()
+        if v is None or v.deleted_at is not None:
+            return None
+        # The board itself, before its role. _board_role answers from the
+        # membership row and does not look at the board — every caller checks
+        # it separately, which is what get_board does before it asks — so a
+        # board in the recycle bin would otherwise go on opening its dashboard
+        # to everyone who was ever invited to it.
+        b = db.query(Board).filter(Board.id == d.board_id).first()
+        if b is None or b.deleted_at is not None:
+            return None
+        role = _board_role(db, d.board_id, user_id)
+        if role is None:
+            return None
+        if _may_edit_view(v, user_id, role) and (not v.locked or _may_write_locked(role)):
+            return "owner"
+        return "viewer"
+    # ── standalone ──
+    if d.created_by is not None and d.created_by == user_id:
+        return "owner"
+    # A workspace administrator manages every dashboard, and is asked BEFORE
+    # the membership row — the same ordering _board_role settled on, and for
+    # the same reason: being invited to something as a viewer must not take
+    # away what being an administrator already granted.
+    if _ws_role(db, user_id) == "admin":
+        return "owner"
+    m = (db.query(DashboardMember)
+           .filter(DashboardMember.dashboard_id == d.id,
+                   DashboardMember.user_id == user_id).first())
+    if m is not None and m.role == "owner":
+        return "owner"
+    if (d.visibility or "main") == "main":
+        # "ראשי נגיש למורשי סביבת העבודה" — the environment's own membership,
+        # which is what "מורשי סביבת העבודה" names. An explicit invitation
+        # still counts, below, for somebody outside it.
+        if _env_role(db, d.environment_id, user_id) is not None:
+            return "viewer"
+    return "viewer" if m is not None else None
+
+
+def _dash_or_404(db, dash_id, user_id, *, manage=False):
+    """The dashboard, if this person may reach it. 404 / 403 otherwise.
+
+    404 before 403 on a dashboard nobody may see, deliberately: "there is no
+    such dashboard" and "there is one and it is not yours" are different
+    disclosures, and only the first is safe to give somebody guessing ids.
+    A dashboard they may VIEW answers 403 to a write, because they already
+    know it exists.
+    """
+    d = (db.query(Dashboard)
+           .filter(Dashboard.id == dash_id, Dashboard.deleted_at.is_(None)).first())
+    if d is None:
+        raise HTTPException(404, "הדשבורד אינו קיים")
+    access = _dash_access(db, d, user_id)
+    if access is None:
+        raise HTTPException(404, "הדשבורד אינו קיים")
+    if manage and access != "owner":
+        raise HTTPException(403, "רק מורשה עריכה יכול לשנות את הדשבורד")
+    return d, access
+
+
+# ── מקורות ───────────────────────────────────────────────────────────
+
+def _dash_sources(raw, *, limit=DASHBOARD_MAX_BOARDS):
+    """Normalise the source list: [{board_id, groups}, …], ids de-duplicated.
+
+    `groups` is None — not the list of ids that happen to exist today — when
+    every group is wanted. R02 says the choice includes "קבוצות עתידיות", and
+    a list frozen at save time would quietly stop including them the first
+    time somebody added one.
+    """
+    out, seen = [], set()
+    for s in (raw or []):
+        if not isinstance(s, dict):
+            continue
+        try:
+            bid = int(s.get("board_id"))
+        except (TypeError, ValueError):
+            continue
+        if bid in seen:
+            continue
+        seen.add(bid)
+        g = s.get("groups")
+        if g is None:
+            groups = None
+        else:
+            groups = sorted({int(x) for x in g if str(x).lstrip("-").isdigit()})
+        out.append({"board_id": bid, "groups": groups})
+    if len(out) > limit:
+        raise HTTPException(400, f"דשבורד עצמאי יכול לכלול עד {limit} לוחות")
+    return out
+
+
+def _widget_sources(d, w):
+    """The boards this widget reads.
+
+    A widget names a SUBSET of the dashboard's sources — "לכל ווידג׳ט
+    תת־קבוצה מהם" (R02) — and an empty list means all of them, so adding a
+    board to the dashboard does not require rewriting every widget. A board
+    the widget names and the dashboard no longer has is dropped: the
+    dashboard's list is the authority on what this dashboard may read.
+    """
+    base = {s["board_id"]: s for s in _dash_sources(d.sources, limit=10 ** 6)}
+    own = _dash_sources(w.sources, limit=10 ** 6)
+    if not own:
+        return list(base.values())
+    out = []
+    for s in own:
+        b = base.get(s["board_id"])
+        if b is None:
+            continue
+        # The widget may narrow the groups; it may never widen past what the
+        # dashboard allows, so "all groups" on the widget still means the
+        # dashboard's choice for that board.
+        out.append({"board_id": s["board_id"],
+                    "groups": s["groups"] if s["groups"] is not None else b["groups"]})
+    return out
+
+
+_DASH_FORMULA_REF = re.compile(r"\{([^{}]*)\}")
+
+
+def _dash_cols(db, board_id):
+    """This board's columns, asked once per request.
+
+    The closure walk reads the column list for every column it expands, and
+    `_board_columns` goes to the database each time — so a dashboard of
+    twenty widgets over ten boards asked the same handful of questions some
+    hundreds of times per read. Cached on the session, the same place
+    `_col_plan` and `_prefetch_links` keep theirs, and for the same reason:
+    the answer cannot change inside one request.
+    """
+    cache = db.info.setdefault("_dash_cols", {})
+    if board_id not in cache:
+        cache[board_id] = _board_columns(db, board_id)
+    return cache[board_id]
+
+
+def _formula_refs(col, cols):
+    """Which columns a formula column names, as ids.
+
+    The formula text references a column by TITLE — "{שעות בפועל}" — because
+    that is what somebody types. Resolving those titles to ids is all that
+    happens here: this is the permission closure, not the calculator, and it
+    must answer "what does this read" for a formula the server cannot yet
+    evaluate at all (see DASH-01A in docs/DASHBOARDS_PLAN.md).
+
+    A title that matches nothing is simply not returned. It makes the formula
+    broken, which is a needs_fix and not a disclosure — and a broken formula
+    reads no data, so it cannot be a way around a permission.
+    """
+    src = (col or {}).get("formula") or ""
+    if not src:
+        return set()
+    by_title = {}
+    for c in cols:
+        t = (c.get("title") or "").strip()
+        if t and c.get("id") != col.get("id"):
+            by_title.setdefault(t, c["id"])
+    return {by_title[m.strip()] for m in _DASH_FORMULA_REF.findall(src)
+            if m.strip() in by_title}
+
+
+def _widget_field_keys(d, w):
+    """Every field key this widget's configuration names.
+
+    Four places can name one, and all four have to be in the closure or a
+    widget could read a column through a door nobody checked: the measures,
+    the dashboard's filter, the widget's own filter, and a chart's dimension
+    and split.
+    """
+    keys = set()
+    for m in (w.metrics or []):
+        if isinstance(m, dict) and m.get("field"):
+            keys.add(str(m["field"]))
+    for tree in (d.filters, w.filters):
+        keys |= _filter_field_keys(tree)
+    ch = w.chart or {}
+    for k in ("dimension", "split"):
+        if isinstance(ch, dict) and ch.get(k):
+            keys.add(str(ch[k]))
+    return keys
+
+
+def _filter_field_keys(tree):
+    """The field ids a condition tree asks about, at any depth."""
+    out = set()
+
+    def walk(n, depth=0):
+        if not isinstance(n, dict) or depth > filter_ast.MAX_DEPTH:
+            return
+        if n.get("type") == "group" or "rules" in n:
+            for kid in (n.get("rules") or []):
+                walk(kid, depth + 1)
+            return
+        if n.get("field"):
+            out.add(str(n["field"]))
+
+    walk((tree or {}).get("adv") if isinstance(tree, dict) else None)
+    return out
+
+
+# Built-in fields need no mapping: every board has a title, a status, a
+# priority, assignees and a due date, and they are gated by the board role
+# rather than by a column permission.
+_DASH_BUILTIN_FIELDS = {"title", "status", "priority", "assignees", "due"}
+
+
+def _widget_required(db, d, w):
+    """Every board and column this widget reads — directly and indirectly.
+
+    This is the whole of DASH-04.1. A mirror holds no data of its own: it
+    reads a field of a LINKED item, through a connect column, on another
+    board. A formula reads other columns, which may themselves be mirrors. So
+    "what does this widget read" is a closure and not a list, and computing a
+    widget without walking it is how a reader is shown a total drawn from a
+    board they were refused.
+
+    **The contract this closure imposes on the calculation.** A mirror's
+    reachable boards are taken from the connect column's DECLARED
+    `board_ids`, not from the link rows that happen to exist — the two can
+    differ, because narrowing a connect column's targets does not delete the
+    links already made through it. That makes this list authoritative rather
+    than descriptive: whatever computes a widget (DASH-09) must read records
+    only from the boards named here, or it will read past the set that was
+    checked. Reading the links instead would cost a query per widget per
+    read and would still have to be bounded by something; the declaration is
+    that something, and it is the same list the write path already enforces
+    when a link is created.
+
+    Returns (boards, cols, unmapped):
+      boards   — board ids whose data is read
+      cols     — (board_id, column_id) pairs whose values are read
+      unmapped — field keys with no mapping on some source board, which makes
+                 the configuration broken rather than forbidden
+    """
+    boards, cols, unmapped = set(), set(), set()
+    srcs = _widget_sources(d, w)
+    mapping = w.mapping or {}
+    # A list widget shows columns directly rather than through a mapping, and
+    # they are read exactly as a measure's are — so they are required sources
+    # too. R01 makes no exception for a column somebody is only LOOKING at:
+    # a list missing a column the viewer may not see is a partial answer, and
+    # the rule is that the whole widget goes dark instead.
+    if w is not None and w.type == "list":
+        for bid, cid in _dash_list_columns(db, d, w):
+            boards.add(bid)
+            cols.add((bid, str(cid)))
+    for s in srcs:
+        bid = s["board_id"]
+        boards.add(bid)
+        m = mapping.get(str(bid)) or mapping.get(bid) or {}
+        for key in _widget_field_keys(d, w):
+            if key in _DASH_BUILTIN_FIELDS:
+                continue
+            cid = m.get(key)
+            if not cid:
+                unmapped.add(key)
+                continue
+            cols.add((bid, str(cid)))
+
+    # ── the walk ──
+    # Each round expands the columns found so far into the columns and boards
+    # they read through. It stops when a round adds nothing, which is the
+    # normal case after one or two, and at the depth cap, which only a
+    # configuration pointing at itself can reach.
+    seen = set()
+    for _ in range(_DASH_SOURCE_DEPTH):
+        fresh = cols - seen
+        if not fresh:
+            break
+        seen |= fresh
+        for bid, cid in fresh:
+            bcols = _dash_cols(db, bid)
+            col = next((c for c in bcols if str(c.get("id")) == cid), None)
+            if col is None:
+                continue
+            ctype = col.get("type")
+            if ctype == "formula":
+                for ref in _formula_refs(col, bcols):
+                    cols.add((bid, str(ref)))
+            elif ctype == "mirror":
+                cfg = _mirror_cfg(col)
+                conn_id, field = cfg.get("connect"), cfg.get("field")
+                if not conn_id or not field:
+                    continue
+                # The connect column is read to find the linked items at all,
+                # so it is a required source in its own right.
+                cols.add((bid, str(conn_id)))
+                conn = next((c for c in bcols if str(c.get("id")) == str(conn_id)
+                             and c.get("type") == "connect"), None)
+                if conn is None:
+                    continue
+                for tb in (_connect_cfg(conn).get("board_ids") or []):
+                    try:
+                        tb = int(tb)
+                    except (TypeError, ValueError):
+                        continue
+                    boards.add(tb)
+                    # A builtin mirror field (title, status, …) is gated by
+                    # the target board's role, which `boards` already carries.
+                    if str(field) not in _MIRROR_BUILTINS:
+                        cols.add((tb, str(field)))
+    return boards, cols, unmapped
+
+
+def _widget_state(db, d, w, user_id, *, visible=None):
+    """"ok", "blocked" or "needs_fix" for this reader — never a number.
+
+    R01: "אם לצופה חסרה הרשאה למקור נדרש, לרבות מקור מאחורי מראה או נוסחה,
+    כל הווידג׳ט ייחסם." The whole widget, not the part they may see: a sum
+    over four boards with one refused is not three-quarters of an answer, it
+    is a wrong number that looks like a right one.
+
+    "blocked" wins over "needs_fix". A configuration can be both broken and
+    forbidden, and saying which would tell somebody something about a board
+    they may not open.
+    """
+    vis = _visible_board_ids(db, user_id) if visible is None else visible
+    boards, cols, unmapped = _widget_required(db, d, w)
+    if not boards:
+        return "needs_fix"
+    if any(b not in vis for b in boards):
+        return "blocked"
+    roles = {b: _board_role(db, b, user_id) for b in boards}
+    if any(r is None for r in roles.values()):
+        return "blocked"
+    missing = False
+    for bid, cid in cols:
+        col = next((c for c in _dash_cols(db, bid) if str(c.get("id")) == cid), None)
+        if col is None:
+            # The column was deleted. "מחיקת עמודה … אינם יוצרים מיפוי חלופי
+            # ואינם מומרים לאפס" (R09) — it needs fixing, and it is not a
+            # permission problem.
+            missing = True
+            continue
+        if _col_perm(col, user_id, roles.get(bid)) == "none":
+            return "blocked"
+    return "needs_fix" if (missing or unmapped) else "ok"
+
+
+
+# ── קבוצות מקור ──────────────────────────────────────────────────────
+
+def _dash_check_groups(db, srcs):
+    """Every group named belongs to the board that names it.
+
+    R02 lets a source take "כל הקבוצות כברירת מחדל, כולל קבוצות עתידיות, או
+    קבוצות מסוימות לפי מזהים". The first is a null and the second is a list,
+    and the list is checked here because a group id from another board is a
+    configuration that silently measures nothing — the records it names are
+    never in the population, so the widget answers 0 and looks correct.
+
+    An EMPTY list is refused rather than stored. "no groups" can only ever
+    produce an empty population, and a widget that can never match is not a
+    measure anybody meant to save.
+    """
+    for s in srcs:
+        if s["groups"] is None:
+            continue
+        if not s["groups"]:
+            raise HTTPException(400, "בחירת קבוצות ריקה — בחר קבוצות או בחר בכל הקבוצות")
+        have = {g.id for g in db.query(Group).filter(Group.board_id == s["board_id"]).all()}
+        stray = [g for g in s["groups"] if g not in have]
+        if stray:
+            raise HTTPException(400, "אחת הקבוצות שנבחרו אינה שייכת ללוח שנבחר")
+    return srcs
+
+
+# ── מיפוי עמודות ─────────────────────────────────────────────────────
+# "המקורות המספריים המותרים הם מספר, נוסחה מספרית ומראה מספרית" — DASH-07.2.
+_DASH_NUMERIC_TYPES = ("number", "formula", "mirror")
+# The calculations that need one. A count needs no column at all: it counts
+# records, and a record is not a value in a column.
+_DASH_VALUE_CALCS = ("sum", "avg")
+
+
+def _dash_col_unit(col):
+    """The unit a column declares, or None when it declares none.
+
+    Only a number column carries one (`_number_col_cfg`). A formula declares
+    no unit — it is an expression, and what comes out of it is whatever the
+    columns it reads were — and a mirror's unit belongs to the column it
+    mirrors, on another board, which the cell does not currently carry
+    (DASH-01B in docs/DASHBOARDS_PLAN.md). Both answer None here, which the
+    comparison below reads as "nothing to disagree with" rather than as a
+    unit of its own. Overstating what we know would block a legitimate save;
+    this understates it, and the gap is written down.
+    """
+    if (col or {}).get("type") != "number":
+        return None
+    cfg = _number_col_cfg(col.get("number")) or {}
+    return (cfg.get("unit") or "") or None
+
+
+def _dash_propose_mapping(db, sources, reference, fields):
+    """Suggest a column on every board for each field, by name and type.
+
+    DASH-07.1 — "הצעת התאמת עמודות לפי שם וסוג מחייבת אישור או תיקון לפני
+    שימוש." So this is a suggestion and NOTHING here is stored: the endpoint
+    that calls it writes no mapping, and the mapping that is eventually saved
+    is the one somebody sent back.
+
+    Each proposal says WHY it was made, because "the titles match and so do
+    the types" and "nothing matched, here is the only numeric column on that
+    board" are different degrees of confidence and the person approving them
+    deserves to be able to tell which is which.
+    """
+    ref_cols = {c["id"]: c for c in _dash_cols(db, reference)}
+    out = {}
+    for s in sources:
+        bid = s["board_id"]
+        if bid == reference:
+            continue
+        cols = _dash_cols(db, bid)
+        per = {}
+        for key, ref_id in (fields or {}).items():
+            ref = ref_cols.get(str(ref_id))
+            if ref is None:
+                per[key] = {"column_id": None, "match": "no_reference", "candidates": []}
+                continue
+            title = (ref.get("title") or "").strip()
+            same_type = [c for c in cols if c.get("type") == ref.get("type")]
+            exact = next((c for c in same_type
+                          if (c.get("title") or "").strip() == title), None)
+            # Same name, same type — the only match this proposes with
+            # confidence. Everything else is offered as a candidate and left
+            # to a person.
+            chosen, why = (exact, "name_and_type") if exact else (None, "none")
+            per[key] = {
+                "column_id": chosen["id"] if chosen else None,
+                "title": chosen.get("title") if chosen else None,
+                "unit": _dash_col_unit(chosen) if chosen else None,
+                "match": why,
+                "candidates": [{"column_id": c["id"], "title": c.get("title") or "",
+                                "type": c.get("type"), "unit": _dash_col_unit(c)}
+                               for c in same_type],
+            }
+        out[str(bid)] = per
+    return out
+
+
+def _dash_validate_mapping(db, sources, mapping, metrics):
+    """Refuse a widget whose measures cannot be computed from its sources.
+
+    DASH-07.3 — "מיפוי חסר או יחידות שאינן תואמות יחסמו שמירה, עם הודעה
+    שמסבירה מה לתקן." Refused at the SAVE and not at the calculation,
+    because the person who can fix it is the one saving it; discovered later,
+    it is a broken widget in front of a reader who did not build it.
+
+    Three things are checked, and each names what to do about it:
+      · a measure with no column on some source board
+      · a column that cannot hold a number, for a sum or an average
+      · two boards answering one measure in different units
+
+    "אין המרת מטבע אוטומטית" (R05) — mismatched units are refused, never
+    converted. A sum of shekels and hours is not a number with a problem, it
+    is not a number.
+    """
+    for m in (metrics or []):
+        if not isinstance(m, dict):
+            raise HTTPException(400, "הגדרת מדד לא תקינה")
+        calc = m.get("calc") or "count"
+        if calc not in ("count",) + _DASH_VALUE_CALCS:
+            raise HTTPException(400, "פעולת חישוב לא נתמכת — ספירה, סכום או ממוצע")
+        if calc not in _DASH_VALUE_CALCS:
+            _dash_metric_format(m, m.get("title") or m.get("key") or "")
+            # Counting records needs no column at all — a record is not a
+            # value in one. "ספירת רשומות אינה מושפעת מריק בעמודה אלא אם
+            # קיים מסנן שמחריג אותו": the way to count only the records that
+            # have a value is a condition, not a mapping, so requiring one
+            # here would refuse a configuration that is perfectly good.
+            continue
+        key = str(m.get("field") or "")
+        if not key:
+            raise HTTPException(400, "למדד חסר שדה מקור")
+        if key in _DASH_BUILTIN_FIELDS:
+            continue
+        label = m.get("title") or key
+        units = {}
+        for s in sources:
+            bid = s["board_id"]
+            cid = (mapping.get(str(bid)) or {}).get(key)
+            if not cid:
+                raise HTTPException(
+                    400, f'למדד "{label}" אין עמודה מתאימה באחד הלוחות — '
+                         "אשר מיפוי לכל לוח מקור לפני השמירה")
+            col = next((c for c in _dash_cols(db, bid) if str(c.get("id")) == str(cid)), None)
+            if col is None:
+                raise HTTPException(
+                    400, f'למדד "{label}" ממופה עמודה שאינה קיימת עוד באחד הלוחות — '
+                         "בחר עמודה אחרת")
+            if calc in _DASH_VALUE_CALCS and col.get("type") not in _DASH_NUMERIC_TYPES:
+                raise HTTPException(
+                    400, f'למדד "{label}" נבחרה עמודה שאינה מספרית — '
+                         "סכום וממוצע נתמכים במספר, בנוסחה מספרית ובמראה מספרית")
+            u = _dash_col_unit(col)
+            if u is not None:
+                units[bid] = u
+        _dash_metric_format(m, label)
+        if len(set(units.values())) > 1:
+            raise HTTPException(
+                400, f'למדד "{label}" יחידות שונות בלוחות המקור — '
+                     "אין המרה אוטומטית; בחר עמודות באותה יחידה")
+
+
+# ── אוכלוסיית הרשומות ────────────────────────────────────────────────
+
+def _dash_population(db, d, w, user_id):
+    """Every record this widget measures, once each.
+
+    R02 and DASH-08 in one pass, and every clause of them is a line here:
+
+      · פריטים / תתי־פריטים / שניהם, with items the default.
+      · "מזהה רשומה נספר פעם אחת גם אם מקושר מכמה מקומות" — `seen` is by id,
+        so a record reachable twice is still one record.
+      · "שני פריטים בשם זהה נספרים בנפרד" — nothing here looks at a title.
+        Two items called the same thing are two items, and de-duplicating by
+        name would quietly delete one of them from every total.
+      · "מחוקים ובארכיון מוחרגים" — deleted records are already invisible to
+        every query in this application (_hide_deleted_tasks), and archived
+        ones are filtered here because that one is NOT automatic.
+      · "פריט שהועבר נספר במיקומו הנוכחי בלבד" — a move rewrites `board_id`
+        on the item and its sub-items, so there is one row in one place and
+        nothing to de-duplicate across boards.
+      · "אב וילדים הם רשומות עצמאיות, ללא ירושת ערכים" — rows come back as
+        themselves. Nothing copies a parent's value onto a child or a child's
+        onto a parent, which is what makes "both" a union of two populations
+        rather than a double count of one.
+
+    **The roll-up exclusion, and why there is no code for it.** R02 asks for
+    a calculated roll-up of the same children appearing on the parent to be
+    left out of the double count, "לפי מקור הערך, לא לפי דמיון במספרים".
+    This system has no roll-up: nothing derives a parent's value from its
+    children — not a column type, not `copy_mode`, and not a formula, which
+    is evaluated per item and cannot reach a sub-item. So a value on a parent
+    is always the parent's own and there is nothing to exclude. Detecting one
+    by comparing numbers is what the rule forbids, and it is the only thing
+    that could be written here today — so nothing is. If a roll-up is ever
+    added, the exclusion keys off the value's SOURCE, at the place that
+    produces it, and this comment is the note that it is owed.
+
+    Item permissions are applied here and not afterwards: DASH-04.3 —
+    "להחיל הרשאות פריט על אוכלוסיית הנתונים" — and a population filtered
+    after it has been counted has already been counted wrong.
+    """
+    scope = (w.record_scope if w is not None else None) or "items"
+    srcs = (_widget_sources(d, w) if w is not None
+            else _dash_sources(d.sources, limit=10 ** 6))
+    # ── one load per population, per request ──
+    # Ten widgets on one dashboard usually read the same boards, and each was
+    # loading the same ten thousand rows again: the profile put 60% of a
+    # request in SQLAlchemy building those objects and decoding their JSON.
+    # The population is a pure function of (source, scope) and the database
+    # cannot change underneath one request, so it is loaded once and shared —
+    # the same bargain `_col_plan` and `_prefetch_links` strike, in the same
+    # place. Keyed by the sources themselves rather than by widget id,
+    # because that is what makes two DIFFERENT widgets over the same boards
+    # share the answer.
+    key = ("_dash_pop", user_id, scope,
+           tuple(sorted((x["board_id"], tuple(x["groups"] or ()))
+                        for x in srcs)))
+    hit = db.info.get(key)
+    if hit is not None:
+        return hit
+    # Whether the assignees are read at all. They are a relationship, so
+    # touching them per record is a query per record — and eager-loading them
+    # for ten thousand rows that never ask is a query and a hydration nobody
+    # needed. Three things want them: a chart grouped or split by person, and
+    # any condition about them.
+    ch = (w.chart or {}) if w is not None else {}
+    need_people = (ch.get("dimension") == "person" or ch.get("split") == "person"
+                   or "assignees" in _filter_field_keys(d.filters)
+                   or (w is not None and "assignees" in _filter_field_keys(w.filters)))
+    out, seen = [], set()
+    for s in srcs:
+        bid = s["board_id"]
+        role = _board_role(db, bid, user_id)
+        if role is None:
+            continue
+        # Only the columns the dashboard actually reads. The profile put most
+        # of a request in SQLAlchemy building Task objects and decoding their
+        # JSON, and `description` is a Text column nothing here looks at —
+        # loading it for ten thousand rows is pure cost. `selectinload` on the
+        # assignees is the other half: a person-grouped chart touches
+        # `t.assignees` per record, which is one query each without it.
+        q = (db.query(Task)
+               .options(load_only(Task.id, Task.board_id, Task.group_id,
+                                  Task.parent_id, Task.title, Task.status,
+                                  Task.priority, Task.due_date, Task.created_at,
+                                  Task.created_by, Task.custom_fields,
+                                  Task.permissions, Task.is_archived,
+                                  Task.item_uid),
+                        *( [selectinload(Task.assignees)] if need_people else [] ))
+               .filter(Task.board_id == bid,
+                       Task.is_archived == False))                  # noqa: E712
+        if scope == "items":
+            q = q.filter(Task.parent_id.is_(None))
+        elif scope == "subitems":
+            q = q.filter(Task.parent_id.isnot(None))
+        if s["groups"] is not None:
+            q = q.filter(Task.group_id.in_(s["groups"]))
+        for t in q.order_by(Task.id).all():
+            if t.id in seen:
+                continue
+            if _item_perm(t, user_id, role) == "none":
+                continue
+            seen.add(t.id)
+            out.append(t)
+    db.info[key] = out
+    return out
+
+
+
+
+# ── פורמט ערך ויחידה ─────────────────────────────────────────────────
+# DASH-15. All of it is presentation: "העיגול ישפיע על התצוגה בלבד" and
+# "תווית היחידה לא תשנה את הערכים". So nothing here touches a stored cell or
+# a computed total — the compute response carries the raw figure AND the
+# instructions for showing it, and the two never collapse into one rounded
+# number that nobody can get back out of.
+WIDGET_FORMATS = ("number", "currency", "percent")
+# "באחוזים יש להגדיר סולם מקור 0–1 או 0–100" — because 0.5 and 50 are the
+# same half and a column holds one of them. Without being told which, a
+# percent is a number with a sign stuck on the end of it.
+PERCENT_SCALES = ("0-1", "0-100")
+WIDGET_MAX_PRECISION = 4
+
+
+def _dash_metric_format(m, label=""):
+    """The resolved display settings for one measure, or a refusal."""
+    fmt = str(m.get("format") or "number").lower()
+    if fmt not in WIDGET_FORMATS:
+        raise HTTPException(400, "פורמט ערך לא נתמך — מספר, מטבע או אחוז")
+    p = m.get("precision", 0)
+    if p is None:
+        p = 0
+    try:
+        p = int(p)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "דיוק לא תקין")
+    if not 0 <= p <= WIDGET_MAX_PRECISION:
+        raise HTTPException(400, f"דיוק חייב להיות בין 0 ל־{WIDGET_MAX_PRECISION} ספרות")
+    scale = m.get("scale")
+    if fmt == "percent":
+        if scale not in PERCENT_SCALES:
+            raise HTTPException(
+                400, f'למדד "{label}" באחוזים יש להגדיר סולם מקור — 0–1 או 0–100')
+    elif scale is not None and scale not in PERCENT_SCALES:
+        raise HTTPException(400, "סולם מקור תקף לאחוזים בלבד")
+    return {"format": fmt, "precision": p,
+            "thousands": bool(m.get("thousands", True)),
+            "scale": scale if fmt == "percent" else None}
+
+
+# ── מיפוי לשדות שהמסנן נוגע בהם ──────────────────────────────────────
+
+def _dash_filter_unmapped(sources, mapping, filters):
+    """The first field a condition names that some source has no column for.
+
+    R05 — "מסנן יוחל רק כשקיים מיפוי תקין לכל המקורות שעליהם הוא משפיע. אין
+    סינון חלקי בשקט." DASH-16.1 makes it a save-time rule for a widget's own
+    filter and DASH-17.1 for the dashboard's, which is why this is asked in
+    both places rather than only at calculation time: a condition that cannot
+    run is a configuration its author can fix, and discovering it later means
+    discovering it in front of a reader who cannot.
+    """
+    for key in sorted(_filter_field_keys(filters)):
+        if key in _DASH_BUILTIN_FIELDS:
+            continue
+        for s in sources:
+            if not (mapping.get(str(s["board_id"])) or {}).get(key):
+                return key
+    return None
+
+
+def _dash_check_filter_mapping(sources, mapping, widget_filters, dash_filters):
+    """Both filters that will run over this widget, checked against it.
+
+    The dashboard's is checked here as well as at its own save, because a
+    widget added AFTER a dashboard filter was saved would otherwise slip past
+    the rule — the dashboard was valid when it was stored and the widget is
+    the thing that made it not.
+    """
+    gap = _dash_filter_unmapped(sources, mapping, widget_filters)
+    if gap:
+        raise HTTPException(
+            400, f'לא ניתן לשמור מסנן על "{gap}" — השדה אינו ממופה בכל מקורות הווידג׳ט')
+    gap = _dash_filter_unmapped(sources, mapping, dash_filters)
+    if gap:
+        raise HTTPException(
+            400, f'מסנן הדשבורד מסנן לפי "{gap}", שאינו ממופה בווידג׳ט הזה — '
+                 "מפה את השדה או הסר את התנאי")
+
+
+def _dash_explicit_columns_on_calc_change(old_metrics, new_metrics, data):
+    """Moving a measure from a count to a sum or an average needs a column.
+
+    DASH-11.2 — "מעבר מספירה לחישוב יחייב בחירת עמודות מפורשת." A count needs
+    no column, so a widget that was counting may be carrying a mapping from
+    some earlier shape of itself, or none at all. Inheriting whatever is
+    lying there would quietly pick the column for somebody — and the first
+    they would know of it is a total.
+    """
+    was = {str(m.get("key") or ""): (m.get("calc") or "count").lower()
+           for m in (old_metrics or []) if isinstance(m, dict)}
+    for m in (new_metrics or []):
+        if not isinstance(m, dict):
+            continue
+        key = str(m.get("key") or "")
+        calc = (m.get("calc") or "count").lower()
+        if calc in _DASH_VALUE_CALCS and was.get(key) == "count" and "mapping" not in data:
+            raise HTTPException(
+                400, "מעבר מספירה לסכום או לממוצע מחייב בחירת עמודות מפורשת — "
+                     "שלח את המיפוי יחד עם החישוב")
+
+
+# ── קריאת ערך מספרי מתא ──────────────────────────────────────────────
+# Three sources are allowed for a sum or an average — "מספר, נוסחה שמחזירה
+# מספר ומראה מספרית" (R03) — and each of them can fail in a way the other
+# two cannot. What they share is the ANSWER's shape: a value, a blank, or a
+# reason it is neither. Keeping those three apart is the whole of DASH-09.1:
+# "פלט נוסחה שאינו מספרי או שיש בו שגיאה אינו ערך תקין לחישוב; אין להתייחס
+# אליו כאל ריק בלי להתריע."
+
+def _dash_raw_number(v):
+    """A stored cell as a number — ("value", x) or ("empty", None).
+
+    `v in (None, "", False)` would be a trap here: in Python 0 == False, so a
+    cell holding zero would read as an empty cell. "אפס תקין תמיד משתתף"
+    (R03), and this is the line that makes it true — the same care
+    filter_ast._cell takes, for the same reason.
+    """
+    if v is None or isinstance(v, bool):
+        return ("empty", None)
+    if isinstance(v, str) and not v.strip():
+        return ("empty", None)
+    if isinstance(v, dict):
+        v = v.get("value")
+        if v is None:
+            return ("empty", None)
+    try:
+        n = float(str(v).replace(",", "") if isinstance(v, str) else v)
+    except (TypeError, ValueError):
+        return ("error", "הערך אינו מספר")
+    return ("value", n) if n == n and abs(n) != float("inf") else ("error", "הערך אינו מספר")
+
+
+def _dash_mirror_numbers(db, task, col, viewer):
+    """The mirrored column's values on each linked item the viewer may see.
+
+    `_mirror_cells` answers the same question for the GRID and answers it as
+    display text — a status with its colour, a date formatted, a number
+    stringified. A total cannot be added up from that, so this walks the same
+    links and reads the SOURCE cell instead. (The typed mirror contract,
+    DASH-01B in docs/DASHBOARDS_PLAN.md.)
+
+    The link resolution is deliberately identical, `_visible_link_ids`
+    included — but note what that filtering means here and did not mean
+    there. In the grid, dropping a link the viewer may not open is correct.
+    In a total it would be a partial sum, which R01 forbids; the widget is
+    therefore blocked before this is ever reached (`_widget_state`), and the
+    filter below is the belt to that brace rather than the policy itself.
+    """
+    cfg = _mirror_cfg(col)
+    src_id, field = cfg.get("connect"), cfg.get("field")
+    if not src_id or not field:
+        return ("error", "הגדרת המראה אינה שלמה")
+    if str(field) in _MIRROR_BUILTINS:
+        # title, status, priority, due, assignees — none of them is a
+        # quantity. Said rather than quietly answered as blank.
+        return ("error", "המראה אינו מצביע על עמודה מספרית")
+    cols = _dash_cols(db, task.board_id)
+    src = next((c for c in cols if c.get("id") == src_id
+                and c.get("type") == "connect"), None)
+    if src is None:
+        return ("error", "עמודת הקישור שעליה נבנה המראה אינה קיימת")
+    ids = (_linked_ids(db, task.id, src_id) if _is_two_way(src)
+           else [i for i in ((task.custom_fields or {}).get(src_id) or [])
+                 if isinstance(i, int)])
+    ids = _visible_link_ids(db, ids, viewer)
+    if not ids:
+        return ("values", [])
+    rows = {t.id: t for t in db.query(Task).filter(Task.id.in_(ids)).all()}
+    out = []
+    for i in ids:
+        t = rows.get(i)
+        if t is None:
+            continue
+        kind, val = _dash_raw_number((t.custom_fields or {}).get(str(field)))
+        if kind == "error":
+            return ("error", "אחד הערכים במראה אינו מספר")
+        if kind == "value":
+            out.append(val)
+    return ("values", out)
+
+
+def _dash_formula_number(db, task, col, cols, today):
+    """A formula column, worked out here. See backend/formula.py."""
+    by_title = {}
+    for c in cols:
+        t = (c.get("title") or "").strip()
+        if t and c.get("id") != col.get("id"):
+            by_title.setdefault(t, c)
+    cf = task.custom_fields or {}
+
+    def lookup(ref):
+        c = by_title.get(str(ref).strip())
+        if c is None:
+            # Exactly what the browser's lookup does, and for the reason its
+            # comment gives: answering 0 for a column that is not there would
+            # show a confident number computed from something missing.
+            raise formula.FormulaError("אין עמודה בשם " + str(ref))
+        v = cf.get(c["id"])
+        if c.get("type") == "checkbox":
+            return 1 if v else 0
+        if c.get("type") == "number":
+            return None if v is None or v == "" else formula._fnum(v)
+        if isinstance(v, dict):
+            return formula._ftext(v.get("label") or v.get("text") or "")
+        return v
+
+    return formula.number_of(col.get("formula"), lookup, today=today)
+
+
+def _dash_value(db, task, col, cols, viewer, *, mirror_agg="sum", today=None):
+    """One record's contribution to one measure.
+
+    ("value", float) · ("empty", None) · ("error", reason).
+
+    A multi-valued mirror is reduced to ONE number for the item before the
+    widget's own calculation ever sees it — R03: "במראה מרובת ערכים מגדירים
+    סכום או ממוצע לכל פריט, ואז מבצעים את חישוב הווידג׳ט בין הפריטים.
+    בממוצע החיצוני כל פריט בעל פלט תקין מקבל משקל אחד." That last sentence is
+    why this returns one value and not a list: an item with nine linked
+    records must not outvote an item with one.
+    """
+    ctype = (col or {}).get("type")
+    if ctype == "number":
+        return _dash_raw_number((task.custom_fields or {}).get(col["id"]))
+    if ctype == "formula":
+        return _dash_formula_number(db, task, col, cols, today)
+    if ctype == "mirror":
+        kind, got = _dash_mirror_numbers(db, task, col, viewer)
+        if kind == "error":
+            return ("error", got)
+        if not got:
+            # No linked records, or none of them holding a number. That is a
+            # blank for this item — the empty policy decides what it is
+            # worth, which is what "מדיניות הריק חלה על הפלט המסוכם של
+            # הפריט" means.
+            return ("empty", None)
+        if mirror_agg == "avg":
+            return ("value", sum(got) / len(got))
+        return ("value", sum(got))
+    return ("error", "העמודה אינה מקור מספרי")
+
+
+# ── איחוד הערכים וחישובם ─────────────────────────────────────────────
+
+def _dash_reduce(values, calc, empty_policy, n_records):
+    """The measure itself, from values already gathered across every source.
+
+    "כמה לוחות מחושבים מאיחוד הערכים, ללא ממוצע של ממוצעים וללא עיגול
+    ביניים" (R03) — so this is handed ONE flat list from every board at once
+    and never a per-board subtotal. An average of averages weights a board of
+    three records the same as a board of three hundred, which is a different
+    number and a wrong one.
+
+    Returns (state, result, n_values).
+    """
+    present = [v for k, v in values if k == "value"]
+    blanks = sum(1 for k, _ in values if k == "empty")
+    if calc == "count":
+        # "ספירת רשומות אינה מושפעת מריק בעמודה אלא אם קיים מסנן שמחריג אותו"
+        # — a count counts records, and a record with a blank cell is still a
+        # record. The filter is the only thing that removes one.
+        return ("ok", float(n_records), n_records)
+    if empty_policy == "zero":
+        present = present + [0.0] * blanks
+    if calc == "sum":
+        # No values at all is zero and NOT "no data": "סכום ללא ערכים
+        # מספריים: 0 עם אין ערכים מספריים לחישוב" (R04). The caller says so
+        # in words; the number is still 0.
+        return ("ok", float(sum(present)), len(present))
+    if calc == "avg":
+        if not present:
+            # "ממוצע ללא ערכים בהתעלמות מריקים: אין נתונים", and with no
+            # records at all there is no denominator either way.
+            return ("no_data", None, 0)
+        return ("ok", sum(present) / len(present), len(present))
+    return ("error", None, 0)
+
+
+# ── הסינון המשותף ────────────────────────────────────────────────────
+# DASH-10. One filter mechanism, applied the same way to the measure and to
+# the records behind it — "להחיל כל תנאי סינון באותה דרך על המדד ועל רשומות
+# הפירוט". Nothing here re-implements the operators: `filter_ast` already
+# holds the field kinds, the operators, the AND/OR logic and the inclusive
+# range bounds R05 asks for, and it is the same engine a board filter and an
+# automation condition run through. What a dashboard adds is that a field is
+# answered by a DIFFERENT column on every board, so the tree is rewritten
+# per board before it is evaluated.
+
+
+class _DashUnmapped(Exception):
+    """A condition names a field this board has no column for."""
+
+    def __init__(self, field):
+        super().__init__(field)
+        self.field = field
+
+
+def _dash_tree_for_board(tree, board_map):
+    """The condition tree with every field replaced by this board's column.
+
+    Raises `_DashUnmapped` rather than dropping the rule. R05 — "מסנן יוחל רק
+    כשקיים מיפוי תקין לכל המקורות שעליהם הוא משפיע. אין סינון חלקי בשקט."
+    Dropping it is the silent half of that: inside an OR group a missing rule
+    and a false one are opposites, and the forgiving reading quietly returns
+    the whole board.
+    """
+    if not isinstance(tree, dict):
+        return None
+    if tree.get("type") == "group" or "rules" in tree:
+        return {"type": "group", "operator": tree.get("operator", "and"),
+                "rules": [_dash_tree_for_board(k, board_map)
+                          for k in (tree.get("rules") or [])]}
+    field = str(tree.get("field") or "")
+    if field in _DASH_BUILTIN_FIELDS:
+        return dict(tree)
+    cid = (board_map or {}).get(field)
+    if not cid:
+        raise _DashUnmapped(field)
+    return dict(tree, field=str(cid))
+
+
+def _dash_filter_fields(db, board_id, tree):
+    """What each field in this (already rewritten) tree may be asked about."""
+    b = db.query(Board).filter(Board.id == board_id).first()
+    fields = {"title": "text", "status": "status", "priority": "status",
+              "assignees": "people", "due": "date"}
+    for c in _dash_cols(db, board_id):
+        kind = filter_ast.KINDS.get(c.get("type"))
+        if kind:
+            fields[str(c.get("id"))] = kind
+    return fields
+
+
+def _dash_filter_item(db, board, task):
+    """One record in the shape `filter_ast` reads.
+
+    The same shape `_filter_item` builds for a board filter and an automation
+    condition — on purpose. A question about a cell must answer the same way
+    wherever it is asked, or the board's filter and the dashboard's will
+    disagree about the same record.
+    """
+    return {"id": task.id, "title": task.title,
+            "status": _task_status_key(task), "priority": _task_priority_key(task),
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "assignees": [{"id": u.id} for u in list(task.assignees or [])],
+            "custom_fields": {**(task.custom_fields or {}),
+                              **_derived_cells(board, task)}}
+
+
+def _dash_clock(db):
+    """The organisation's day and offset — not the server's, not the reader's.
+
+    R05 and R07 both say "אזור הזמן הארגוני". The board filter resolves dates
+    against the CLIENT's clock, deliberately and for a good reason of its own
+    ("Dates belong to the person looking"), but a dashboard cannot: two
+    readers in two zones would see two different totals for one saved
+    configuration, and a measure is a statement about the organisation.
+    """
+    tz = _board_tz(db, None)
+    now = datetime.now(tz)
+    return now.date(), int(now.utcoffset().total_seconds() // 60)
+
+
+def _dash_matching(db, d, w, user_id, temp=None):
+    """The records this widget measures, after every layer of filtering.
+
+    DASH-10.2 — "לחשב אוכלוסיית רשומות אחת לפי כל שכבות הסינון וההרשאות,
+    בלי תלות בעמוד התוצאות שנטען." This is that one population, and it is
+    what BOTH the measure and the drill-down are built from: the drill-down
+    pages this list, it does not re-derive it. A list computed twice is two
+    lists the moment the two derivations differ by a line.
+
+    Returns (records, blocked_field) — a field name instead of records when a
+    condition could not be applied to one of the sources.
+    """
+    today, offset = _dash_clock(db)
+    mapping = w.mapping or {} if w is not None else {}
+    # Three layers, intersected: what the dashboard saved, what the widget
+    # saved, and what this visitor is trying out. The third is never stored —
+    # R05, "צופה מסנן זמנית לאורך הביקור בלבד, ללא השפעה על אחרים" — and it
+    # is applied here rather than anywhere else precisely so that it cannot
+    # take a different path from the saved two and see a different set.
+    trees = [t for t in ((d.filters or {}).get("adv"),
+                         ((w.filters or {}) if w is not None else {}).get("adv"),
+                         (temp or {}).get("adv")) if t]
+    out = []
+    boards = {}
+    for t in _dash_population(db, d, w, user_id):
+        if t.board_id not in boards:
+            boards[t.board_id] = db.query(Board).filter(Board.id == t.board_id).first()
+        board = boards[t.board_id]
+        if not trees:
+            out.append(t)
+            continue
+        bmap = mapping.get(str(t.board_id)) or {}
+        item = _dash_filter_item(db, board, t)
+        keep = True
+        for raw in trees:
+            try:
+                tree = _dash_tree_for_board(raw, bmap)
+            except _DashUnmapped as e:
+                return ([], e.field)
+            try:
+                parsed = filter_ast.parse(tree)
+            except filter_ast.BadFilter:
+                return ([], "__bad__")
+            fields = _dash_filter_fields(db, t.board_id, tree)
+            # A rule naming a column this board does not have is the same
+            # refusal as an unmapped field, not a rule to skip.
+            pruned, gone = filter_ast.prune(parsed, fields)
+            if gone:
+                return ([], gone[0])
+            if not filter_ast.match(item, pruned, fields, today.isoformat(),
+                                    offset, user_id):
+                keep = False
+                break
+        if keep:
+            out.append(t)
+    return (out, None)
+
+
+# ── המדד ─────────────────────────────────────────────────────────────
+
+def _dash_metric(db, d, w, metric, records, user_id):
+    """One measure over an already-settled population.
+
+    Returns the dict the compute response carries per measure. The population
+    is passed IN rather than derived here, so the measure and the drill-down
+    cannot disagree about which records they are about.
+    """
+    calc = (metric.get("calc") or "count").lower()
+    key = str(metric.get("field") or "")
+    policy = (metric.get("empty_policy") or "ignore").lower()
+    mirror_agg = (metric.get("mirror_agg") or "sum").lower()
+    unit = metric.get("unit") or None
+    today, _off = _dash_clock(db)
+    values, errors, first_error = [], 0, None
+    if calc != "count" and key and key not in _DASH_BUILTIN_FIELDS:
+        mapping = w.mapping or {}
+        for t in records:
+            cid = (mapping.get(str(t.board_id)) or {}).get(key)
+            if not cid:
+                errors += 1
+                first_error = first_error or "חסר מיפוי עמודה באחד הלוחות"
+                continue
+            col = next((c for c in _dash_cols(db, t.board_id)
+                        if str(c.get("id")) == str(cid)), None)
+            if col is None:
+                errors += 1
+                first_error = first_error or "עמודה שממופה למדד אינה קיימת עוד"
+                continue
+            kind, got = _dash_value(db, t, col, _dash_cols(db, t.board_id), user_id,
+                                    mirror_agg=mirror_agg, today=today)
+            if kind == "error":
+                errors += 1
+                first_error = first_error or got
+            else:
+                values.append((kind, got))
+            # The unit travels from the column rather than from the request:
+            # the figure's unit is a property of what was added up.
+            if unit is None:
+                unit = _dash_col_unit(col)
+    state, result, n_values = _dash_reduce(values, calc, policy, len(records))
+    # DASH-15, and the reason it rides along with the number instead of being
+    # applied to it: "העיגול ישפיע על התצוגה בלבד". The raw figure is what
+    # was computed and what a reader gets on touch and focus; this is how to
+    # show it. Collapsing the two would throw away the full value.
+    fmt = _dash_metric_format(metric, metric.get("title") or "")
+    if errors:
+        # "אין להתייחס אליו כאל ריק בלי להתריע" (DASH-09.1) and "כשל שרת,
+        # שגיאת חישוב או מקור חסום אינם מוצגים כ־0" (R04). A record whose
+        # value could not be worked out is neither blank nor zero, so the
+        # measure is not presented as a total at all — it is presented as a
+        # configuration that needs fixing, with the count of what failed.
+        # Deliberately `needs_fix` and not `error`: nothing went wrong on the
+        # server, something is wrong in the settings, and DASH-20.2 wants
+        # those told apart so the link to fix it goes only to whoever may.
+        return {"key": metric.get("key") or key or "metric",
+                "title": metric.get("title") or "",
+                "calc": calc, "state": "needs_fix", "result": None,
+                "unit": unit, "empty_policy": policy,
+                "records": len(records), "values": n_values,
+                "failed": errors, "reason": first_error, **fmt}
+    return {"key": metric.get("key") or key or "metric",
+            "title": metric.get("title") or "",
+            "calc": calc, "state": state, "result": result,
+            "unit": unit, "empty_policy": policy,
+            "records": len(records), "values": n_values,
+            **fmt,
+            # "סכום ללא ערכים מספריים: 0 עם אין ערכים מספריים לחישוב" — the
+            # figure is a true zero and the sentence beside it is why.
+            "note": ("אין ערכים מספריים לחישוב"
+                     if calc == "sum" and n_values == 0 and len(records) else None)}
+
+
+# ── מה יוצא החוצה ────────────────────────────────────────────────────
+
+def _widget_json(db, d, w, user_id, *, visible=None):
+    """One widget, as much of it as this reader is allowed to know.
+
+    A blocked widget keeps its identity and loses its configuration — the
+    same shape `_view_blocked_for` settled on for a cut filtering by a column
+    the reader may not see, and for the same reason: naming the source, the
+    column or the condition is the disclosure the block exists to prevent.
+
+    What stays is the title and the type. The title is the author's own
+    label, not a fact about a board — it is how a reader knows a widget is
+    there to ask for access to — and the precedent keeps the view's name for
+    exactly that. What does NOT stay is anything a quantity could be inferred
+    from: no sources, no mapping, no filters, no measures, no chart.
+
+    No result travels either way. Computation is DASH-09's, and a widget's
+    settings are not the place a number would live even once it exists.
+    """
+    state = _widget_state(db, d, w, user_id, visible=visible)
+    base = {"id": w.id, "type": w.type, "title": w.title or "",
+            "position": w.position or 0, "state": state}
+    if state == "blocked":
+        return dict(base, description="")
+    return dict(base,
+                description=w.description or "",
+                sources=_dash_sources(w.sources, limit=10 ** 6),
+                mapping=w.mapping or {},
+                record_scope=w.record_scope or "items",
+                filters=w.filters or {},
+                metrics=w.metrics or [],
+                chart=w.chart or {},
+                display=w.display or {},
+                created_by=w.created_by, updated_by=w.updated_by,
+                created_at=w.created_at, updated_at=w.updated_at)
+
+
+def _dash_json(db, d, user_id, access=None, *, with_widgets=True):
+    """One dashboard for one reader.
+
+    `sources` is filtered to the boards this reader may open — DASH-05.2 asks
+    the header to show "המקורות המותרים", and the allowed ones are what that
+    means. A board they cannot open is not named: the dashboard's own
+    audience and the boards' audiences are separate questions, and being
+    invited here answers neither of them about a board.
+    """
+    access = access or _dash_access(db, d, user_id)
+    view = (db.query(SavedView).filter(SavedView.id == d.view_id).first()
+            if d.kind == "board" else None)
+    vis = _visible_board_ids(db, user_id)
+    allowed = [s for s in _dash_sources(d.sources, limit=10 ** 6)
+               if s["board_id"] in vis]
+    out = {
+        "id": d.id, "kind": d.kind,
+        "name": _dash_name(db, d, view),
+        "board_id": d.board_id, "view_id": d.view_id,
+        "environment_id": d.environment_id,
+        "position": d.position or 0,
+        "visibility": d.visibility or "main",
+        "sources": allowed,
+        # How many were withheld, without saying which. A reader whose
+        # totals are short deserves to know that the dashboard reaches
+        # further than they do; naming the boards would be the disclosure.
+        "sources_hidden": max(0, len(_dash_sources(d.sources, limit=10 ** 6)) - len(allowed)),
+        "filters": d.filters or {},
+        "layout": d.layout or {},
+        "config_version": d.config_version or 1,
+        "schema_version": d.schema_version or 1,
+        "can_edit": access == "owner",
+        "created_by": d.created_by, "updated_by": d.updated_by,
+        "created_at": d.created_at, "updated_at": d.updated_at,
+    }
+    if with_widgets:
+        ws = (db.query(DashboardWidget)
+                .filter(DashboardWidget.dashboard_id == d.id)
+                .order_by(DashboardWidget.position, DashboardWidget.id).all())
+        out["widgets"] = [_widget_json(db, d, w, user_id, visible=vis) for w in ws]
+        # Which boards a change would make these figures stale — the ones the
+        # widgets name AND the ones they reach through a mirror. DASH-21.1
+        # asks for a refresh on "שינוי במקורות עקיפים של נוסחה ומראה", and
+        # the browser cannot work out what those are: the closure that knows
+        # is here. Only for widgets this reader is not blocked from, so the
+        # list never names a board they could not already see.
+        watch = set()
+        for w in ws:
+            if _widget_state(db, d, w, user_id, visible=vis) == "blocked":
+                continue
+            boards, _cols, _unmapped = _widget_required(db, d, w)
+            watch |= {b for b in boards if b in vis}
+        out["watch_boards"] = sorted(watch)
+    return out
+
+
+def _dash_member_json(db, d):
+    rows = (db.query(DashboardMember, User)
+              .join(User, User.id == DashboardMember.user_id)
+              .filter(DashboardMember.dashboard_id == d.id)
+              .order_by(DashboardMember.role, User.name).all())
+    out = []
+    if d.created_by is not None:
+        u = db.query(User).filter(User.id == d.created_by).first()
+        if u is not None:
+            # The creator is an owner by definition and carries no row, so
+            # the list says so rather than leaving the dashboard looking
+            # like it belongs to whoever was invited afterwards.
+            out.append({"id": u.id, "name": u.name, "avatar_url": u.avatar_url,
+                        "role": "owner", "is_creator": True})
+    for m, u in rows:
+        if u.id == d.created_by:
+            continue
+        out.append({"id": u.id, "name": u.name, "avatar_url": u.avatar_url,
+                    "role": m.role, "is_creator": False})
+    return out
+
+
+def _log_dash(db, d, action, field=None, old=None, new=None, actor=None):
+    """One line in the log for a change to a dashboard.
+
+    The same shape `_log_view` writes, and the same restraint: what changed
+    and from what to what, never the configuration itself. A dashboard's
+    sources and filters name boards and columns, and a log is read by more
+    people than any one dashboard.
+    """
+    db.add(AuditLog(entity_type="dashboard", entity_id=d.id, action=action,
+                    field_name=field, old_value=old, new_value=new,
+                    changed_by=actor))
+
+
+def _dash_bump(db, d, user_id):
+    """The configuration moved, so the version does — and only here.
+
+    One counter for the dashboard AND its widgets. A widget rewrite and a
+    settings rewrite are both "this dashboard changed" to the person holding
+    the old one, and two counters would let each land on top of the other
+    while both claimed to be current.
+    """
+    d.config_version = (d.config_version or 1) + 1
+    d.updated_by = user_id
+    d.updated_at = datetime.now(timezone.utc)
+    return d.config_version
+
+
+def _dash_check_version(data, d):
+    """Refuse a save that is not based on what is stored.
+
+    R09: "שמירה מאומתת בשרת ומוגנת בגרסה; התנגשות מציגה 'התצוגה עודכנה על ידי
+    משתמש אחר' ללא דריסה שקטה."
+
+    A save arriving without a version is a save that cannot be checked, and
+    accepting it is the silent overwrite this exists to stop — so an absent
+    version is refused as firmly as a stale one. 409 and not 403, because the
+    two are different answers: one is "you may not", the other is "you are
+    behind", and the current version travels back so the client can reload
+    and retry rather than guess.
+    """
+    have = d.config_version or 1
+    want = data.get("config_version")
+    if want is None:
+        raise HTTPException(400, "שמירת דשבורד חייבת לכלול את גרסת התצורה הנוכחית")
+    try:
+        want = int(want)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "גרסת תצורה לא תקינה")
+    if want != have:
+        raise HTTPException(409, {"error": "stale_config",
+                                  "detail": "הדשבורד עודכן על ידי משתמש אחר",
+                                  "config_version": have})
+    return have
+
+
+def _dash_check_sources(db, srcs, user_id):
+    """"עורך דשבורד רשאי לחבר לוח שיש לו בו הרשאת צפייה."
+
+    Checked at the write and not only at the read, so a dashboard cannot be
+    built pointing at a board its author never had — which would otherwise be
+    a way to find out whether a board id exists by watching what the server
+    accepts.
+    """
+    vis = _visible_board_ids(db, user_id)
+    bad = [s["board_id"] for s in srcs if s["board_id"] not in vis]
+    if bad:
+        raise HTTPException(403, "אפשר לחבר רק לוחות שיש לך בהם הרשאת צפייה")
+    return srcs
+
+
+def _dash_validate_filters(raw):
+    """A filter stored here is a filter `filter_ast` can read."""
+    if raw in (None, {}):
+        return {}
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "מסנן לא תקין")
+    try:
+        filter_ast.parse(raw.get("adv"))
+    except filter_ast.BadFilter as e:
+        raise HTTPException(400, str(e))
+    return raw
+
+
+# ── דשבורד עצמאי בסביבת עבודה ────────────────────────────────────────
+
+@app.post("/api/dashboards")
+def create_dashboard(data: dict = None, user_id: int = Depends(current_user_id)):
+    """A new standalone dashboard in a workspace.
+
+    "יצירה למי שמורשה ליצור לוחות" (R01) — the same capability, asked the
+    same way, rather than a permission of its own. A dashboard is a way of
+    reading boards, and somebody trusted to make one of those is trusted to
+    make a view across them.
+    """
+    data = data or {}
+    with Session(engine) as db:
+        if not _cap(db, user_id, "create_board"):
+            raise HTTPException(403, "אין לך הרשאה ליצור דשבורד")
+        try:
+            env_id = int(data.get("environment_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "נדרשת סביבת עבודה")
+        env = db.query(Environment).filter(Environment.id == env_id).first()
+        if env is None:
+            raise HTTPException(404, "סביבת העבודה אינה קיימת")
+        if _env_role(db, env_id, user_id) is None:
+            raise HTTPException(403, "אין לך גישה לסביבת העבודה הזו")
+        name = (data.get("name") or "").strip() or NEW_DASHBOARD_NAME
+        if len(name) > 80:
+            raise HTTPException(400, "שם הדשבורד ארוך מדי")
+        vis = data.get("visibility") or "main"
+        if vis not in DASHBOARD_VISIBILITY:
+            raise HTTPException(400, "סוג דשבורד לא תקין")
+        srcs = _dash_check_groups(
+            db, _dash_check_sources(db, _dash_sources(data.get("sources")), user_id))
+        pos = (db.query(func.max(Dashboard.position))
+                 .filter(Dashboard.environment_id == env_id,
+                         Dashboard.deleted_at.is_(None)).scalar())
+        d = Dashboard(kind="standalone", environment_id=env_id, name=name,
+                      visibility=vis, created_by=user_id, updated_by=user_id,
+                      sources=srcs, filters={}, layout={},
+                      position=(pos + 1) if pos is not None else 0)
+        db.add(d)
+        db.flush()
+        _log_dash(db, d, "create", field="name", new=name, actor=user_id)
+        db.commit()
+        db.refresh(d)
+        return _json(_dash_json(db, d, user_id, "owner"))
+
+
+@app.get("/api/dashboards")
+def list_dashboards(environment_id: int = None,
+                    user_id: int = Depends(current_user_id)):
+    """The standalone dashboards this person may open.
+
+    Filtered by _dash_access one row at a time rather than by a clever query:
+    "ראשי" and "פרטי" answer to different tables, and a join that got one of
+    them subtly wrong would list a private dashboard to the workspace.
+    """
+    with Session(engine) as db:
+        q = (db.query(Dashboard)
+               .filter(Dashboard.kind == "standalone",
+                       Dashboard.deleted_at.is_(None)))
+        if environment_id is not None:
+            q = q.filter(Dashboard.environment_id == environment_id)
+        rows = q.order_by(Dashboard.position, Dashboard.id).all()
+        out = []
+        for d in rows:
+            access = _dash_access(db, d, user_id)
+            if access is None:
+                continue
+            out.append(_dash_json(db, d, user_id, access, with_widgets=False))
+        return _json({"dashboards": out})
+
+
+@app.get("/api/dashboards/{dash_id}")
+def get_dashboard(dash_id: int, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        d, access = _dash_or_404(db, dash_id, user_id)
+        return _json(_dash_json(db, d, user_id, access))
+
+
+@app.patch("/api/dashboards/{dash_id}")
+def update_dashboard(dash_id: int, data: dict,
+                     user_id: int = Depends(current_user_id)):
+    """Rename it, change its audience, its sources, its filter or its layout.
+
+    Every one of these is a change to what other people see, so every one of
+    them is version-checked and bumps the version. "תצוגה מקדימה אינה שמירה"
+    (R09) — a preview never reaches here at all.
+    """
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        _dash_check_version(data, d)
+        if "name" in data:
+            name = (data.get("name") or "").strip()
+            if not name:
+                raise HTTPException(400, "נדרש שם לדשבורד")
+            if len(name) > 80:
+                raise HTTPException(400, "שם הדשבורד ארוך מדי")
+            if d.kind == "board":
+                # The name of a board dashboard IS its tab's, and it stays
+                # there — two places holding one name is two places that can
+                # disagree about it. What this endpoint does is give the tab
+                # ONE door to be renamed through: the view endpoint refuses a
+                # dashboard outright (it is not a cut), and before this it
+                # refused the name as well, so a dashboard tab could not be
+                # renamed at all. The board's own uniqueness rule is applied
+                # here, by the board's own checker.
+                v = db.query(SavedView).filter(SavedView.id == d.view_id).first()
+                if v is None:
+                    raise HTTPException(404, "התצוגה אינה קיימת")
+                if name != v.name:
+                    checked = _check_view_name(db, d.board_id, name, exclude_id=v.id)
+                    _log_view(db, v, "rename", field="name", old=v.name,
+                              new=checked, actor=user_id)
+                    v.name = checked
+                    v.updated_at = datetime.now(timezone.utc)
+            elif name != d.name:
+                _log_dash(db, d, "rename", field="name", old=d.name, new=name,
+                          actor=user_id)
+                d.name = name
+        if "visibility" in data:
+            if d.kind == "board":
+                raise HTTPException(400, "קהל הצפייה של תצוגת דשבורד נקבע בלוח")
+            vis = data.get("visibility")
+            if vis not in DASHBOARD_VISIBILITY:
+                raise HTTPException(400, "סוג דשבורד לא תקין")
+            if vis != d.visibility:
+                _log_dash(db, d, "visibility", field="visibility",
+                          old=d.visibility, new=vis, actor=user_id)
+                d.visibility = vis
+        if "sources" in data:
+            limit = DASHBOARD_MAX_BOARDS if d.kind == "standalone" else 1
+            srcs = _dash_check_groups(
+                db, _dash_check_sources(db, _dash_sources(data.get("sources"),
+                                                          limit=limit), user_id))
+            if d.kind == "board":
+                # "בתצוגת לוח, הלוח המארח יהיה המקור היחיד והקבוע" — DASH-06.1.
+                # Refused rather than silently corrected: a caller asking for
+                # another board is asking for something this view cannot be.
+                if [s["board_id"] for s in srcs] not in ([], [d.board_id]):
+                    raise HTTPException(400, "תצוגת דשבורד מציגה את הלוח המארח בלבד")
+                if not srcs:
+                    srcs = [{"board_id": d.board_id, "groups": None}]
+            d.sources = srcs
+        if "filters" in data:
+            want = _dash_validate_filters(data.get("filters"))
+            # DASH-17.1 — "להחיל מסנן משותף רק כשהשדה ממופה בכל המקורות
+            # שעליהם הוא משפיע. אין להפעיל סינון חלקי בלי ליידע את המשתמש."
+            # Refusing IS the informing: the alternative is a dashboard-wide
+            # condition that runs on four widgets and silently does nothing
+            # on the fifth, which reads as five answers to one question.
+            for _w in (db.query(DashboardWidget)
+                         .filter(DashboardWidget.dashboard_id == d.id).all()):
+                gap = _dash_filter_unmapped(_widget_sources(d, _w),
+                                            _w.mapping or {}, want)
+                if gap:
+                    raise HTTPException(
+                        400, f'לא ניתן לסנן לפי "{gap}" — השדה אינו ממופה '
+                             f'בווידג׳ט "{_w.title or _w.id}"')
+            d.filters = want
+        if "layout" in data:
+            lay = data.get("layout")
+            if lay is not None and not isinstance(lay, dict):
+                raise HTTPException(400, "פריסה לא תקינה")
+            d.layout = lay or {}
+        if isinstance(data.get("position"), int) and d.kind == "standalone":
+            d.position = data["position"]
+        ver = _dash_bump(db, d, user_id)
+        _log_dash(db, d, "config", field="config_version",
+                  old=str(ver - 1), new=str(ver), actor=user_id)
+        db.commit()
+        db.refresh(d)
+        return _json(_dash_json(db, d, user_id, "owner"))
+
+
+@app.delete("/api/dashboards/{dash_id}")
+def delete_dashboard(dash_id: int, user_id: int = Depends(current_user_id)):
+    """Into the bin, and nothing else goes with it.
+
+    "מחיקה … תסיר את הגדרות הדשבורד בלבד" (DASH-05.3). Nothing here owns a
+    board, a column or an item — a dashboard only ever pointed at them — so
+    there is nothing for this to cascade into. Soft, like every other
+    deletion in this system, so an accident is recoverable.
+    """
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        if d.kind == "board":
+            raise HTTPException(400, "תצוגת דשבורד נמחקת דרך רצועת התצוגות של הלוח")
+        d.deleted_at = datetime.now(timezone.utc)
+        d.deleted_by = user_id
+        _log_dash(db, d, "delete", field="name", old=d.name, actor=user_id)
+        db.commit()
+        return {"status": "deleted"}
+
+
+# ── קהל הצפייה ───────────────────────────────────────────────────────
+
+@app.get("/api/dashboards/{dash_id}/members")
+def list_dashboard_members(dash_id: int, user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id)
+        if d.kind == "board":
+            raise HTTPException(400, "קהל הצפייה של תצוגת דשבורד הוא חברי הלוח")
+        return {"members": _dash_member_json(db, d)}
+
+
+@app.post("/api/dashboards/{dash_id}/members")
+def add_dashboard_member(dash_id: int, data: dict,
+                         user_id: int = Depends(current_user_id)):
+    """Name another owner, or invite somebody to read it.
+
+    R01 again, and it bears repeating at the one endpoint that could be
+    mistaken for granting access to data: "בעלות או הזמנה אינן מעניקות
+    הרשאות לנתוני מקור". This row lets somebody open the dashboard. What
+    they then see in it is decided, board by board and column by column, by
+    _widget_state — and a widget whose sources they lack stays blocked no
+    matter who invited them here.
+    """
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        if d.kind == "board":
+            raise HTTPException(400, "קהל הצפייה של תצוגת דשבורד נקבע בלוח")
+        try:
+            uid = int(data.get("user_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "נדרש מזהה משתמש")
+        role = data.get("role") or "viewer"
+        if role not in DASHBOARD_MEMBER_ROLES:
+            raise HTTPException(400, "תפקיד לא תקין")
+        u = db.query(User).filter(User.id == uid).first()
+        if u is None:
+            raise HTTPException(404, "המשתמש אינו קיים")
+        if _account_blocked(db, uid):
+            raise HTTPException(400, "לא ניתן לצרף חשבון מושבת")
+        if uid == d.created_by:
+            raise HTTPException(400, "יוצר הדשבורד הוא בעלים מלכתחילה")
+        m = (db.query(DashboardMember)
+               .filter(DashboardMember.dashboard_id == d.id,
+                       DashboardMember.user_id == uid).first())
+        if m is None:
+            db.add(DashboardMember(dashboard_id=d.id, user_id=uid, role=role))
+        else:
+            m.role = role
+        _log_dash(db, d, "member", field="role", new=f"{uid}:{role}", actor=user_id)
+        db.commit()
+        return {"members": _dash_member_json(db, d)}
+
+
+@app.delete("/api/dashboards/{dash_id}/members/{member_id}")
+def remove_dashboard_member(dash_id: int, member_id: int,
+                            user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        if member_id == d.created_by:
+            raise HTTPException(400, "לא ניתן להסיר את יוצר הדשבורד")
+        (db.query(DashboardMember)
+           .filter(DashboardMember.dashboard_id == d.id,
+                   DashboardMember.user_id == member_id)
+           .delete(synchronize_session=False))
+        _log_dash(db, d, "member", field="role", old=str(member_id), actor=user_id)
+        db.commit()
+        return {"members": _dash_member_json(db, d)}
+
+
+# ── תצוגת דשבורד בתוך לוח ────────────────────────────────────────────
+
+@app.post("/api/boards/{board_id}/dashboards")
+def create_board_dashboard(board_id: int, data: dict = None,
+                           user_id: int = Depends(current_user_id)):
+    """A dashboard tab on this board — a view row and its settings, together.
+
+    The same two-row shape a form uses: the tab is a `SavedView`, so the
+    name, the strip position, the lock and the bin are the board's existing
+    machinery, and this row holds only what a dashboard has and a cut does
+    not. The host board is the one source and it is written here at creation,
+    never afterwards (DASH-06.1).
+    """
+    data = data or {}
+    with Session(engine) as db:
+        _b, role = _board_role_or_403(db, board_id, user_id)
+        if role not in ("admin", "editor"):
+            raise HTTPException(403, "תצוגה בלוח היא טאב על הלוח — רק עורך או מנהל לוח יכול ליצור אחת")
+        if (data.get("name") or "").strip():
+            name = _check_view_name(db, board_id, data.get("name"))
+        else:
+            name = _free_name(db, board_id, NEW_DASHBOARD_NAME, "")
+        _check_view_room(db, board_id)
+        maxpos = (db.query(func.max(SavedView.position))
+                    .filter(SavedView.board_id == board_id).scalar())
+        v = SavedView(board_id=board_id, owner_id=user_id, name=name,
+                      kind=DASH_VIEW_KIND, visibility="public",
+                      # A dashboard holds no cut. Empty rather than absent, so
+                      # anything reading `filters` on any view gets a dict.
+                      filters={}, schema_version=1,
+                      position=(maxpos + 1) if maxpos is not None else 0)
+        db.add(v)
+        db.flush()
+        d = Dashboard(kind="board", view_id=v.id, board_id=board_id,
+                      created_by=user_id, updated_by=user_id,
+                      sources=[{"board_id": board_id, "groups": None}],
+                      filters={}, layout={})
+        db.add(d)
+        _commit_view(db, board_id,
+                     log=lambda: _log_view(db, v, "create", field="dashboard",
+                                           new=v.name, actor=user_id))
+        db.refresh(d)
+        return _json(_dash_json(db, d, user_id, "owner"))
+
+
+@app.get("/api/boards/{board_id}/dashboards")
+def list_board_dashboards(board_id: int, user_id: int = Depends(current_user_id)):
+    """Every live dashboard tab on this board, for anyone who may open it."""
+    with Session(engine) as db:
+        _b, _role = _board_role_or_403(db, board_id, user_id)
+        rows = (db.query(Dashboard, SavedView)
+                  .join(SavedView, SavedView.id == Dashboard.view_id)
+                  .filter(Dashboard.board_id == board_id,
+                          Dashboard.kind == "board",
+                          Dashboard.deleted_at.is_(None),
+                          SavedView.deleted_at.is_(None))
+                  .order_by(SavedView.position, SavedView.id).all())
+        out = []
+        for d, _v in rows:
+            access = _dash_access(db, d, user_id)
+            if access is None:
+                continue
+            out.append(_dash_json(db, d, user_id, access, with_widgets=False))
+        return _json({"dashboards": out})
+
+
+# ── ווידג׳טים ────────────────────────────────────────────────────────
+
+def _widget_payload(db, d, data, user_id, w=None):
+    """Read a widget's settings off a request, refusing what cannot be stored.
+
+    Validation and not correction: a widget saved with a source its author
+    may not open, or with a filter `filter_ast` cannot parse, is a widget
+    that would have to be refused at calculation time instead — in front of
+    a reader who did not write it and cannot fix it.
+    """
+    wtype = data.get("type") or (w.type if w else "numbers")
+    if wtype not in WIDGET_TYPES:
+        raise HTTPException(400, "סוג ווידג׳ט לא תקין")
+    title = (data.get("title") if "title" in data else (w.title if w else "")) or ""
+    title = str(title).strip()
+    if not title:
+        raise HTTPException(400, "נדרשת כותרת לווידג׳ט")      # DASH-11.1
+    if len(title) > 120:
+        raise HTTPException(400, "כותרת הווידג׳ט ארוכה מדי")
+    scope = data.get("record_scope") or (w.record_scope if w else "items")
+    if scope not in WIDGET_SCOPES:
+        raise HTTPException(400, "אוכלוסיית רשומות לא תקינה")
+    out = {"type": wtype, "title": title, "record_scope": scope,
+           "description": str(data.get("description")
+                              if "description" in data
+                              else (w.description if w else "") or "")[:2000]}
+    if "sources" in data or w is None:
+        srcs = _dash_sources(data.get("sources"), limit=DASHBOARD_MAX_BOARDS)
+        allowed = {s["board_id"] for s in _dash_sources(d.sources, limit=10 ** 6)}
+        stray = [s["board_id"] for s in srcs if s["board_id"] not in allowed]
+        if stray:
+            raise HTTPException(400, "ווידג׳ט יכול להשתמש רק בלוחות של הדשבורד")
+        _dash_check_groups(db, _dash_check_sources(db, srcs, user_id))
+        out["sources"] = srcs
+    if "filters" in data or w is None:
+        out["filters"] = _dash_validate_filters(data.get("filters"))
+    for key, default in (("mapping", {}), ("metrics", []), ("chart", {}),
+                         ("display", {})):
+        if key in data or w is None:
+            val = data.get(key, default)
+            if val is None:
+                val = default
+            if not isinstance(val, type(default)):
+                raise HTTPException(400, f"ערך לא תקין בשדה {key}")
+            out[key] = val
+    # ── DASH-07.3, against what the widget will BE ──
+    # A patch carries only what changed, so validating the payload alone
+    # would pass a mapping that is wrong once merged — change the measures
+    # today and the columns they need tomorrow, and neither save is refused
+    # while the widget between them cannot be computed. The effective state
+    # is what has to answer for itself, so it is assembled first.
+    eff_sources = out.get("sources", _dash_sources(w.sources, limit=10 ** 6) if w else [])
+    if not eff_sources:
+        eff_sources = _dash_sources(d.sources, limit=10 ** 6)
+    eff_mapping = out.get("mapping", (w.mapping if w else {}) or {})
+    eff_metrics = out.get("metrics", (w.metrics if w else []) or [])
+    eff_filters = out.get("filters", (w.filters if w else {}) or {})
+    _dash_explicit_columns_on_calc_change(w.metrics if w else [], eff_metrics, data)
+    # A list measures nothing, so it carries no metrics and none are checked.
+    # Demanding one would be demanding a mapping for a column it never maps.
+    if out["type"] != "list":
+        _dash_validate_mapping(db, eff_sources, eff_mapping, eff_metrics)
+    else:
+        _dash_validate_list(db, eff_sources, out.get("display",
+                                                     (w.display if w else {}) or {}))
+    _dash_check_filter_mapping(eff_sources, eff_mapping, eff_filters, d.filters or {})
+    _dash_validate_chart(out["type"],
+                         out.get("chart", (w.chart if w else {}) or {}), eff_metrics,
+                         db=db, sources=eff_sources, mapping=eff_mapping)
+    return out
+
+
+def _dash_reorder(db, d, w, want):
+    """Put this widget at `want` and re-pack the rest around it.
+
+    Writing the position and leaving the others alone is how two widgets come
+    to claim one slot — and the list reads back ordered by position, so the
+    tie is then broken by id and the saved order is quietly not the saved
+    order. The board learned this the hard way with groups (see
+    `move_items_bulk`, which renumbers each group it touches exactly once);
+    this is the same rule for the same reason.
+
+    It matters more here than it looks: the reading order IS the mobile
+    column (R08, DASH-19.3), so a tie is not a cosmetic wobble on the desktop
+    grid — it is a phone showing a different order from the one somebody
+    saved.
+    """
+    rest = [x for x in (db.query(DashboardWidget)
+                          .filter(DashboardWidget.dashboard_id == d.id)
+                          .order_by(DashboardWidget.position, DashboardWidget.id).all())
+            if x.id != w.id]
+    want = max(0, min(len(rest), int(want)))
+    rest.insert(want, w)
+    for i, x in enumerate(rest):
+        x.position = i
+
+
+@app.post("/api/dashboards/{dash_id}/widgets")
+def create_widget(dash_id: int, data: dict,
+                  user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        _dash_check_version(data, d)
+        n = (db.query(DashboardWidget)
+               .filter(DashboardWidget.dashboard_id == d.id).count())
+        # R10, enforced at the write and in the direct request both — a
+        # ceiling only the screen keeps is not a ceiling (DASH-12.3).
+        if n >= DASHBOARD_MAX_WIDGETS:
+            raise HTTPException(400,
+                                f"יש כבר {DASHBOARD_MAX_WIDGETS} ווידג׳טים בדשבורד — "
+                                "הסר אחד או פצל לדשבורד נוסף")
+        fields = _widget_payload(db, d, data, user_id)
+        pos = (db.query(func.max(DashboardWidget.position))
+                 .filter(DashboardWidget.dashboard_id == d.id).scalar())
+        w = DashboardWidget(dashboard_id=d.id, created_by=user_id,
+                            updated_by=user_id,
+                            position=(pos + 1) if pos is not None else 0,
+                            **fields)
+        db.add(w)
+        db.flush()
+        ver = _dash_bump(db, d, user_id)
+        _log_dash(db, d, "widget", field="create", new=str(w.id), actor=user_id)
+        db.commit()
+        db.refresh(w); db.refresh(d)
+        return _json({"widget": _widget_json(db, d, w, user_id),
+                      "config_version": ver})
+
+
+@app.patch("/api/dashboards/{dash_id}/widgets/{widget_id}")
+def update_widget(dash_id: int, widget_id: int, data: dict,
+                  user_id: int = Depends(current_user_id)):
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        _dash_check_version(data, d)
+        w = (db.query(DashboardWidget)
+               .filter(DashboardWidget.id == widget_id,
+                       DashboardWidget.dashboard_id == d.id).first())
+        if w is None:
+            raise HTTPException(404, "הווידג׳ט אינו קיים")
+        for k, v in _widget_payload(db, d, data, user_id, w).items():
+            setattr(w, k, v)
+        if isinstance(data.get("position"), int):
+            _dash_reorder(db, d, w, data["position"])
+        w.updated_by = user_id
+        w.updated_at = datetime.now(timezone.utc)
+        ver = _dash_bump(db, d, user_id)
+        _log_dash(db, d, "widget", field="update", new=str(w.id), actor=user_id)
+        db.commit()
+        db.refresh(w); db.refresh(d)
+        return _json({"widget": _widget_json(db, d, w, user_id),
+                      "config_version": ver})
+
+
+@app.delete("/api/dashboards/{dash_id}/widgets/{widget_id}")
+def delete_widget(dash_id: int, widget_id: int, config_version: int = None,
+                  user_id: int = Depends(current_user_id)):
+    """Remove one measure. "מחיקת ווידג׳ט לא תשנה נתוני לוחות" — DASH-12.2."""
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        _dash_check_version({"config_version": config_version}, d)
+        w = (db.query(DashboardWidget)
+               .filter(DashboardWidget.id == widget_id,
+                       DashboardWidget.dashboard_id == d.id).first())
+        if w is None:
+            raise HTTPException(404, "הווידג׳ט אינו קיים")
+        db.delete(w)
+        # The grid remembers geometry by widget id, and a key pointing at a
+        # widget that no longer exists is a hole the layout would carry for
+        # ever. Removed here because this is the one place that knows.
+        lay = dict(d.layout or {})
+        lay.pop(str(widget_id), None)
+        d.layout = lay
+        ver = _dash_bump(db, d, user_id)
+        _log_dash(db, d, "widget", field="delete", old=str(widget_id), actor=user_id)
+        db.commit()
+        return {"status": "deleted", "config_version": ver}
+
+
+
+def _dash_validate_list(db, sources, display):
+    """Refuse a list whose columns cannot be shown.
+
+    The two things it can get wrong are a column that is not on the board it
+    is claimed for, and one of a type a list has no honest way to draw — a
+    connect cell is a set of ids from other boards and a mirror reads through
+    it, and both have a disclosure story (see _visible_link_ids) that a row
+    of text cannot tell. They are one click away, on the item itself.
+    """
+    if not isinstance(display, dict):
+        raise HTTPException(400, "הגדרת רשימה לא תקינה")
+    allowed = {s["board_id"] for s in sources}
+    picked = display.get("columns") or {}
+    if not isinstance(picked, dict):
+        raise HTTPException(400, "בחירת עמודות לא תקינה")
+    total = 0
+    for bid_s, ids in picked.items():
+        try:
+            bid = int(bid_s)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "בחירת עמודות לא תקינה")
+        if bid not in allowed:
+            raise HTTPException(400, "אפשר להציג עמודות מלוחות המקור של הווידג\u05f3ט בלבד")
+        have = {str(c.get("id")): c for c in _dash_cols(db, bid)}
+        for cid in (ids or []):
+            col = have.get(str(cid))
+            if col is None:
+                raise HTTPException(400, "אחת העמודות שנבחרו אינה קיימת בלוח")
+            if col.get("type") not in LIST_COLUMN_TYPES:
+                raise HTTPException(
+                    400, f'לא ניתן להציג ברשימה עמודה מסוג "{col.get("title") or cid}" — '
+                         "עמודת קישור או מראה נפתחת מתוך הפריט עצמו")
+            total += 1
+    if total > 8:
+        raise HTTPException(400, "אפשר להציג עד 8 עמודות ברשימה")
+
+
+# Which built-in field each built-in dimension and split actually reads, and
+# what to call it in a refusal.
+#
+# A board may take any of the four built-in columns off itself (`col_hidden`,
+# and HIDEABLE_BUILTIN_COLS is the list) — a monday import switches all four
+# off, so most imported boards show no סטטוס, no אחראים and no תאריך יעד at
+# all. Grouping a chart by one of those is then grouping by a field the board
+# does not have: every record carries the default status, nobody is assigned
+# and no due date is set, so the chart comes out as a single bar or as one
+# "ללא ערך" column, and the reader is left with a distribution of something
+# that is not on their board.
+#
+# The board's own filter has refused a hidden built-in since
+# `query_board_items` learned to prune one — "a board whose admin had used
+# מחק עמודה on סטטוס went on answering filters about it while the browser
+# drew no such column". A chart is that same question asked a different way,
+# so it gets the same answer rather than a bar nobody can explain.
+_DIM_BUILTIN_FIELD = {"status": ("status", "סטטוס"),
+                      "person": ("assignees", "אחראים"),
+                      "date": ("due", "תאריך יעד")}
+
+
+def _dash_builtin_off(db, sources, field, mapping=None):
+    """The first source board that has taken this built-in column off itself.
+
+    The date dimension is the one exception: it reads the item's due date
+    only while nothing better is named, so a board that maps `__date__` to a
+    date column of its own is answering with a column it does have.
+    """
+    for sc in (sources or []):
+        bid = sc["board_id"]
+        if field == "due" and ((mapping or {}).get(str(bid)) or {}).get("__date__"):
+            continue
+        b = db.query(Board).filter(Board.id == bid).first()
+        if b is None:
+            continue
+        if field in {str(k) for k in ((b.settings or {}).get("col_hidden") or [])}:
+            return b
+    return None
+
+
+def _dash_check_builtin_dim(db, sources, key, mapping, what):
+    """Refuse a built-in dimension or split the source boards do not show."""
+    if db is None or key not in _DIM_BUILTIN_FIELD:
+        return
+    field, he = _DIM_BUILTIN_FIELD[key]
+    off = _dash_builtin_off(db, sources, field, mapping)
+    if off is not None:
+        raise HTTPException(
+            400, f'לא ניתן {what} לפי {he} — הלוח "{off.name}" אינו מציג את העמודה הזו. '
+                 "בחרי עמודה של הלוח.")
+
+
+def _dash_dim_ok(db, sources, dim, mapping):
+    """A dimension is one of the four kinds, or a column that can be one.
+
+    Returns the kind it behaves as, or raises. A text column is refused by
+    name: R06 names four kinds rather than saying "any column" precisely
+    because a chart grouped by free text is a chart with one bar per record.
+    """
+    if not dim or dim in CHART_DIMS:
+        return dim
+    seen = None
+    for sc in sources:
+        col = _dash_dim_column(db, sc["board_id"], dim, mapping)
+        if col is None:
+            raise HTTPException(400, "העמודה שנבחרה לקיבוץ אינה קיימת בלוח המקור")
+        if col.get("type") not in CHART_DIM_COLUMN_TYPES:
+            raise HTTPException(
+                400, f'לא ניתן לקבץ לפי "{col.get("title") or dim}" — '
+                     "קיבוץ אפשרי לפי סטטוס, רשימה נפתחת, אדם, תאריך או סימון")
+        seen = col.get("type")
+    return "date" if seen in ("date", "created_at") else seen
+
+
+def _dash_validate_chart(w_type, chart, metrics, db=None, sources=None, mapping=None):
+    """Refuse a chart configuration that cannot be drawn from what it names.
+
+    Each type has a rule of its own and each one is a save-time refusal,
+    because the alternative is a chart that is accepted and then cannot be
+    computed — in front of a reader who did not configure it (DASH-26.3,
+    DASH-27.1).
+    """
+    if w_type != "chart":
+        return
+    c = dict(chart or {})
+    ctype = c.get("type") or "vbar"
+    if ctype not in CHART_TYPES:
+        raise HTTPException(400, "סוג תרשים לא נתמך")
+    dim = c.get("dimension")
+    dim_kind = dim
+    if not dim:
+        # DASH-11.2 — "מקור, מיפוי, חישוב או יחידה שאינם תקינים יחסמו שמירה."
+        # A chart IS its distribution: without one there is nothing to draw,
+        # and the widget could only ever say "נדרש תיקון" to somebody who did
+        # not configure it.
+        raise HTTPException(400, "לתרשים יש לבחור התפלגות — לפי מה לקבץ את הנתונים")
+    if dim not in CHART_DIMS:
+        if db is None:
+            raise HTTPException(400, "קיבוץ אפשרי לפי קבוצה, סטטוס, אדם או תאריך בלבד")
+        dim_kind = _dash_dim_ok(db, sources or [], dim, mapping or {})
+    else:
+        _dash_check_builtin_dim(db, sources or [], dim, mapping or {}, "לקבץ")
+    split = c.get("split")
+    if split:
+        if ctype in ("pie", "donut"):
+            # R06 — "עוגה ודונאט משתמשות במדד אחד וללא פיצול נוסף."
+            raise HTTPException(400, "עוגה ודונאט אינן תומכות בפיצול לסדרות")
+        if split not in CHART_SPLITS:
+            raise HTTPException(400, "פיצול אפשרי לפי קבוצה, סטטוס, אדם או לוח מקור")
+        _dash_check_builtin_dim(db, sources or [], split, mapping or {}, "לפצל")
+        if split == dim or split == dim_kind:
+            # "לוח מקור אינו ממד קיבוץ נוסף", and no more is the dimension
+            # itself: splitting by what you grouped by yields one series per
+            # category and a chart that says nothing.
+            raise HTTPException(400, "לא ניתן לפצל לפי אותו שדה שלפיו מקבצים")
+    if c.get("period") and c["period"] not in CHART_PERIODS:
+        raise HTTPException(400, "תקופה לא נתמכת")
+
+    calcs = {(m.get("calc") or "count").lower() for m in (metrics or []) if isinstance(m, dict)}
+    if ctype == "line" and dim is not None and dim_kind != "date":
+        # DASH-27.1 — "הוא יחייב ממד תאריך; בחירה בממד אחר תחסום שמירה."
+        raise HTTPException(400, "תרשים קו מחייב קיבוץ לפי תאריך")
+    if ctype == "stacked" and "avg" in calcs:
+        # DASH-26.1 — "הן יתמכו בספירה ובסכום בלבד, ללא ממוצע." Stacking
+        # averages adds up numbers whose total means nothing.
+        raise HTTPException(400, "עמודות מוערמות תומכות בספירה ובסכום בלבד, ללא ממוצע — "
+                                 "שנה את החישוב או בחר סוג תרשים אחר")
+    if ctype in ("pie", "donut") and len([m for m in (metrics or [])]) > 1:
+        raise HTTPException(400, "עוגה ודונאט מציגות מדד יחיד")
+    if len(metrics or []) > 1:
+        # R06 — "כמה מדדים מותרים באותה יחידה ובציר משותף בלבד", and
+        # DASH-26.2 says it again for a stack: "אין לשלב כמות וסכום כספי
+        # באותה ערימה." Two measures on one axis with two units is two
+        # different quantities drawn as if they were comparable.
+        units = {(m.get("unit") or "") for m in metrics if isinstance(m, dict)}
+        if len(units) > 1:
+            raise HTTPException(400, "כמה מדדים מותרים באותה יחידה ובציר משותף בלבד")
+        if ctype == "stacked" and len(calcs) > 1:
+            raise HTTPException(400, "אין לערום מדדים בחישובים שונים באותה ערימה")
+
+
+@app.post("/api/dashboards/{dash_id}/widgets/{widget_id}/chart")
+def compute_chart(dash_id: int, widget_id: int, data: dict = None,
+                  user_id: int = Depends(current_user_id)):
+    """The chart\'s categories and series, for this reader, now."""
+    data = data or {}
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id)
+        w = (db.query(DashboardWidget)
+               .filter(DashboardWidget.id == widget_id,
+                       DashboardWidget.dashboard_id == d.id).first())
+        if w is None:
+            raise HTTPException(404, "הווידג\u05f3ט אינו קיים")
+        temp = _dash_validate_filters(data.get("temp_filter"))
+        return _json(_dash_chart(db, d, w, user_id, temp))
+
+
+@app.post("/api/dashboards/{dash_id}/widgets/{widget_id}/chart-preview")
+def preview_chart(dash_id: int, widget_id: int = 0, data: dict = None,
+                  user_id: int = Depends(current_user_id)):
+    """A chart worked out from a draft, stored nowhere — DASH-11.2 for charts."""
+    data = data or {}
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        fields = _widget_payload(db, d, data, user_id)
+        draft = DashboardWidget(dashboard_id=d.id, position=0, **fields)
+        draft.id = None
+        temp = _dash_validate_filters(data.get("temp_filter"))
+        out = _dash_chart(db, d, draft, user_id, temp)
+        out["widget_id"] = None
+        out["preview"] = True
+        return _json(out)
+
+
+@app.post("/api/dashboards/{dash_id}/widgets/preview")
+def preview_widget(dash_id: int, data: dict,
+                   user_id: int = Depends(current_user_id)):
+    """Work out what a widget WOULD say, without making it one.
+
+    DASH-11.2 — "להציג תצוגה מקדימה לפני שמירה" — and R09's first sentence
+    about saving: "תצוגה מקדימה אינה שמירה."
+
+    So this is deliberately not a save that gets rolled back. Nothing is
+    added to the session, no version moves, and no `config_version` is even
+    required on the way in: a preview has nothing to conflict with, and
+    demanding one would make the draft behave like the thing it exists to
+    come before.
+
+    Everything else IS the real path. The same validation refuses the same
+    configurations with the same sentences, and the same permission closure
+    blocks the same sources — a preview that was more permissive than the
+    save would be a way to compute over a board through a widget that could
+    never exist.
+    """
+    with Session(engine) as db:
+        # A preview is an authoring action, so it asks for the rights of one.
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        fields = _widget_payload(db, d, data, user_id)
+        # Transient on purpose: built, used, and never added to the session.
+        draft = DashboardWidget(dashboard_id=d.id, position=0, **fields)
+        draft.id = None
+        temp = _dash_validate_filters(data.get("temp_filter"))
+        # Dispatched on the kind, like every other path that computes a
+        # widget — a preview that answered as a different kind would be
+        # showing something the save cannot produce.
+        out = (_dash_list(db, d, draft, user_id, temp) if draft.type == "list"
+               else _dash_compute(db, d, draft, user_id, temp))
+        # It has no identity, and saying it had one would invite a client to
+        # send it back as though it did.
+        out["widget_id"] = None
+        out["preview"] = True
+        return _json(out)
+
+
+@app.post("/api/dashboards/{dash_id}/widgets/{widget_id}/duplicate")
+def duplicate_widget(dash_id: int, widget_id: int, data: dict = None,
+                     user_id: int = Depends(current_user_id)):
+    """A copy of this measure, beside it.
+
+    DASH-12.1 — "שכפול יעתיק את הגדרות המקורות, החישוב, המסננים והעיצוב
+    וייצור מזהה חדש. שינוי בעותק לא ישנה את המקור." The JSON columns are
+    copied by value rather than assigned across, because two rows pointing at
+    one dict is exactly how a change to the copy reaches the original.
+
+    DASH-12.3 — the ceiling is enforced here too. A limit that a duplicate
+    could step over is not a limit.
+    """
+    data = data or {}
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        _dash_check_version(data, d)
+        w = (db.query(DashboardWidget)
+               .filter(DashboardWidget.id == widget_id,
+                       DashboardWidget.dashboard_id == d.id).first())
+        if w is None:
+            raise HTTPException(404, "הווידג׳ט אינו קיים")
+        n = (db.query(DashboardWidget)
+               .filter(DashboardWidget.dashboard_id == d.id).count())
+        if n >= DASHBOARD_MAX_WIDGETS:
+            raise HTTPException(400,
+                                f"יש כבר {DASHBOARD_MAX_WIDGETS} ווידג׳טים בדשבורד — "
+                                "הסר אחד לפני שכפול")
+        title = (data.get("title") or "").strip() or f"{w.title} (עותק)"
+        pos = (db.query(func.max(DashboardWidget.position))
+                 .filter(DashboardWidget.dashboard_id == d.id).scalar())
+        copy = DashboardWidget(
+            dashboard_id=d.id, type=w.type, title=title[:120],
+            description=w.description,
+            position=(pos + 1) if pos is not None else 0,
+            # by value — see the docstring
+            sources=list(w.sources or []), mapping=dict(w.mapping or {}),
+            record_scope=w.record_scope, filters=dict(w.filters or {}),
+            metrics=[dict(m) for m in (w.metrics or []) if isinstance(m, dict)],
+            chart=dict(w.chart or {}),
+            created_by=user_id, updated_by=user_id)
+        db.add(copy)
+        db.flush()
+        ver = _dash_bump(db, d, user_id)
+        _log_dash(db, d, "widget", field="duplicate",
+                  old=str(w.id), new=str(copy.id), actor=user_id)
+        db.commit()
+        db.refresh(copy); db.refresh(d)
+        return _json({"widget": _widget_json(db, d, copy, user_id),
+                      "config_version": ver})
+
+
+@app.post("/api/dashboards/{dash_id}/duplicate")
+def duplicate_dashboard(dash_id: int, data: dict = None,
+                        user_id: int = Depends(current_user_id)):
+    """A copy of this dashboard, with new ids and no borrowed permissions.
+
+    DASH-05.3 — "שכפול ייצור מזהים חדשים בלי להקנות הרשאות למקורות."
+
+    Three things a copy deliberately does NOT inherit:
+
+      · **The audience.** Invitees are not copied. Sharing is a deliberate
+        act, and a duplicate that arrived pre-shared would hand a private
+        dashboard's readership to whoever pressed copy.
+      · **The creator.** Whoever makes the copy owns it; the original's
+        owner has nothing to do with a dashboard they have not seen.
+      · **Access to the sources.** Checked rather than assumed: a copy may
+        only name boards the person copying can already open.
+
+    The sources are refused and not quietly dropped. A copy missing a board
+    computes different numbers from the original while looking like it — and
+    "there is a board in here you cannot open" is a sentence somebody can
+    act on, where a silently smaller total is not.
+    """
+    data = data or {}
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id)
+        if d.kind == "board":
+            raise HTTPException(400, "תצוגת דשבורד משוכפלת דרך רצועת התצוגות של הלוח")
+        if not _cap(db, user_id, "create_board"):
+            raise HTTPException(403, "אין לך הרשאה ליצור דשבורד")
+        srcs = _dash_sources(d.sources, limit=10 ** 6)
+        _dash_check_sources(db, srcs, user_id)
+        name = (data.get("name") or "").strip() or f"{_dash_name(db, d)} (עותק)"
+        if len(name) > 80:
+            name = name[:80]
+        env_id = d.environment_id
+        if _env_role(db, env_id, user_id) is None:
+            raise HTTPException(403, "אין לך גישה לסביבת העבודה הזו")
+        pos = (db.query(func.max(Dashboard.position))
+                 .filter(Dashboard.environment_id == env_id,
+                         Dashboard.deleted_at.is_(None)).scalar())
+        copy = Dashboard(kind="standalone", environment_id=env_id, name=name,
+                         # A copy of a private dashboard starts private. The
+                         # safer of the two is the one to inherit: widening
+                         # an audience must be a decision somebody took.
+                         visibility=d.visibility or "main",
+                         created_by=user_id, updated_by=user_id,
+                         sources=srcs, filters=d.filters or {},
+                         position=(pos + 1) if pos is not None else 0,
+                         layout={})
+        db.add(copy)
+        db.flush()
+        # The grid is keyed by widget id, so it cannot be copied as it
+        # stands — every key would point at a widget belonging to the
+        # original. It is rebuilt as the new widgets are made.
+        old_layout = d.layout or {}
+        layout = {}
+        for w in (db.query(DashboardWidget)
+                    .filter(DashboardWidget.dashboard_id == d.id)
+                    .order_by(DashboardWidget.position, DashboardWidget.id).all()):
+            nw = DashboardWidget(
+                dashboard_id=copy.id, type=w.type, title=w.title,
+                description=w.description, position=w.position,
+                sources=w.sources, mapping=w.mapping,
+                record_scope=w.record_scope, filters=w.filters,
+                metrics=w.metrics, chart=w.chart,
+                created_by=user_id, updated_by=user_id)
+            db.add(nw)
+            db.flush()
+            geom = old_layout.get(str(w.id))
+            if geom is not None:
+                layout[str(nw.id)] = geom
+        copy.layout = layout
+        _log_dash(db, copy, "duplicate", field="name",
+                  old=_dash_name(db, d), new=name, actor=user_id)
+        db.commit()
+        db.refresh(copy)
+        return _json(_dash_json(db, copy, user_id, "owner"))
+
+
+@app.get("/api/dashboards/{dash_id}/sources/{board_id}/impact")
+def source_removal_impact(dash_id: int, board_id: int,
+                          user_id: int = Depends(current_user_id)):
+    """What removing this board from the dashboard would do to its widgets.
+
+    DASH-06.3 — "לפני הסרת לוח, להציג אילו ווידג׳טים יושפעו ולבקש אישור. אם
+    נותר מקור תקין, ניתן להמשיך לפי התצורה. מקור חסר או הגדרה שנשברה ידרשו
+    תיקון."
+
+    Counted on the server and not from what the client is holding, for the
+    same reason `column_impact` is: the configuration a reader has has
+    already been filtered to what they may see, so counting there would
+    understate a destructive action in front of exactly the person about to
+    take it.
+
+    Each widget comes back as one of two answers — it carries on with the
+    sources it has left, or it is left with none and needs its settings
+    fixed. The caller decides; this says nothing about whether to proceed.
+    """
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        if d.kind == "board":
+            raise HTTPException(400, "תצוגת דשבורד מציגה את הלוח המארח בלבד")
+        have = {s["board_id"] for s in _dash_sources(d.sources, limit=10 ** 6)}
+        if board_id not in have:
+            raise HTTPException(404, "הלוח אינו מקור של הדשבורד הזה")
+        remaining = have - {board_id}
+        affected, orphaned = [], 0
+        for w in (db.query(DashboardWidget)
+                    .filter(DashboardWidget.dashboard_id == d.id)
+                    .order_by(DashboardWidget.position, DashboardWidget.id).all()):
+            own = {s["board_id"] for s in _dash_sources(w.sources, limit=10 ** 6)}
+            # An empty list means "every source the dashboard has", so such a
+            # widget is affected only when nothing is left at all.
+            after = (own - {board_id}) if own else remaining
+            if own and board_id not in own:
+                continue
+            verdict = "ok" if after else "needs_fix"
+            if verdict == "needs_fix":
+                orphaned += 1
+            affected.append({"id": w.id, "title": w.title or "",
+                             "verdict": verdict,
+                             "sources_left": len(after)})
+        return {"board_id": board_id,
+                "board_name": (db.query(Board.name)
+                                 .filter(Board.id == board_id).scalar() or ""),
+                "widgets": affected, "orphaned": orphaned,
+                "sources_left": len(remaining)}
+
+
+@app.post("/api/dashboards/{dash_id}/mapping-proposal")
+def propose_mapping(dash_id: int, data: dict,
+                    user_id: int = Depends(current_user_id)):
+    """Suggest how the other boards answer the measures the reference board does.
+
+    DASH-07.1 — "הצעת התאמת עמודות לפי שם וסוג מחייבת אישור או תיקון לפני
+    שימוש." **Nothing is stored by this endpoint.** It reads boards and
+    answers; the mapping that is eventually kept is the one somebody sends
+    back to the widget, having looked at this and agreed with it or changed
+    it. A proposal that wrote itself in would be exactly the automatic
+    column substitution R09 forbids.
+    """
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id, manage=True)
+        try:
+            reference = int(data.get("reference_board_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "נדרש לוח ייחוס")
+        srcs = _dash_sources(data.get("sources") or d.sources, limit=10 ** 6)
+        allowed = {s["board_id"] for s in _dash_sources(d.sources, limit=10 ** 6)}
+        if reference not in allowed or any(s["board_id"] not in allowed for s in srcs):
+            raise HTTPException(400, "אפשר למפות רק בין לוחות הדשבורד")
+        _dash_check_sources(db, srcs + [{"board_id": reference, "groups": None}], user_id)
+        fields = data.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            raise HTTPException(400, "נדרשים שדות למיפוי")
+        return {"reference_board_id": reference,
+                "proposals": _dash_propose_mapping(db, srcs, reference, fields)}
+
+
+def _dash_conditions(d, w, temp):
+    """How many conditions are actually running — DASH-17.3.
+
+    Reported rather than left to the client to add up: the compact filter
+    button shows this number, and three places counting one thing is three
+    places that can disagree about it.
+    """
+    n = 0
+    for f in ((d.filters or {}), ((w.filters or {}) if w is not None else {}), (temp or {})):
+        try:
+            n += filter_ast.count(filter_ast.parse((f or {}).get("adv")))
+        except filter_ast.BadFilter:
+            pass
+    return n
+
+
+
+# ── תרשימים: קיבוץ, סדרות וזמן ───────────────────────────────────────
+# DASH-22, and the two rules it is built out of.
+#
+# R06 decides what a chart may be grouped by and how its series are formed;
+# R07 decides what a period is and how a gap in one is told from a blank.
+# Everything below is one of those two sentences made executable, and the
+# comments say which — because the rules are not obvious and the wrong
+# reading produces a chart that looks right.
+#
+# "קיבוץ לפי קבוצה, סטטוס, אדם ותאריך בלבד" — four, and no more. A chart
+# grouped by a free-text column is a chart with one bar per item.
+CHART_DIMS = ("group", "status", "person", "date")
+# …and so may a COLUMN of the board, which is the same four kinds wearing a
+# column's name: a board can have several status columns, and "חלוקה לפי
+# סטטוסים" is as likely to mean one of those as the built-in one. R06 bars a
+# free-text dimension and this keeps that bar — a chart grouped by a text
+# column is a chart with one bar per record, which is the whole reason the
+# rule names four kinds instead of saying "any column".
+CHART_DIM_COLUMN_TYPES = ("status", "dropdown", "people", "date", "created_at",
+                          "checkbox", "created_by")
+# "בעמודות, במוערם ובקו ניתן לפצל לפי שדה קטגוריאלי נתמך אחד נוסף או להציג
+# לוחות מקור כסדרות; לוח מקור אינו ממד קיבוץ נוסף" — so `board` is a legal
+# SPLIT and never a legal dimension, which is why the two tuples differ.
+CHART_SPLITS = ("group", "status", "person", "board")
+CHART_TYPES = ("vbar", "hbar", "pie", "donut", "stacked", "line")
+CHART_PERIODS = ("day", "week", "month", "quarter", "year")
+# R10. The series cap counts every combination that reaches the legend —
+# "כולל סדרות שנוצרו ממדדים מרובים" — so two metrics split three ways is six.
+CHART_MAX_CATEGORIES = 50
+CHART_MAX_SERIES = 10
+# The category a record with no value for the dimension falls into. "ממד ריק
+# מוצג בקטגוריית ללא ערך כברירת מחדל וניתן להסתירו" — and R06 is explicit
+# that this is a DIFFERENT setting from the numeric empty policy of R03.
+NO_VALUE_KEY = "__none__"
+NO_VALUE_LABEL = "ללא ערך"
+
+
+def _chart_cfg(w):
+    """A chart's settings, with every default spelled out.
+
+    Read through one function so a chart saved before a setting existed
+    behaves like one saved after it, rather than like one with a null in it.
+    """
+    c = dict(w.chart or {})
+    return {
+        "dimension": c.get("dimension") or None,
+        "period": c.get("period") if c.get("period") in CHART_PERIODS else "month",
+        "split": c.get("split") or None,
+        "sort": c.get("sort") if c.get("sort") in ("label", "value") else "label",
+        "direction": c.get("direction") if c.get("direction") in ("asc", "desc") else "asc",
+        "sort_metric": c.get("sort_metric") or None,
+        "legend": c.get("legend", True) is not False,
+        "value_labels": bool(c.get("value_labels")),
+        "show_no_value": c.get("show_no_value", True) is not False,
+        # Colours are kept BY ID — "הצבעים יישמרו לפי מזהים" (R06/DASH-22.2)
+        # — so renaming a status or a group keeps its colour, and two
+        # categories that happen to share a label do not share one.
+        "colors": dict(c.get("colors") or {}),
+    }
+
+
+def _dash_person_names(db, ids):
+    rows = db.query(User.id, User.name).filter(User.id.in_(list(ids) or [0])).all()
+    return {i: n for i, n in rows}
+
+
+def _period_bucket(d, period):
+    """The period a date falls in: (sort key, label key).
+
+    "שבוע שמתחיל בראשון" — Sunday, not Monday. Python's weekday() calls
+    Monday 0, so Sunday is 6 and the offset back to the start of the week is
+    (weekday + 1) % 7. Getting this wrong moves every weekly bar by a day and
+    the chart still looks plausible.
+    """
+    if period == "day":
+        return d.isoformat()
+    if period == "week":
+        start = d - _dt.timedelta(days=(d.weekday() + 1) % 7)
+        return start.isoformat()
+    if period == "month":
+        return f"{d.year:04d}-{d.month:02d}"
+    if period == "quarter":
+        return f"{d.year:04d}-Q{(d.month - 1) // 3 + 1}"
+    return f"{d.year:04d}"
+
+
+def _period_label(key, period):
+    """A label that can be told apart from its neighbours.
+
+    R07 — "תווית כוללת שנה או תאריך מלא כשנדרש להבחין בין תקופות." A chart
+    spanning two years that labels both Marches "מרץ" has two bars nobody can
+    tell apart, so the year is always carried.
+    """
+    if period == "day":
+        y, m, dd = key.split("-")
+        return f"{dd}/{m}/{y}"
+    if period == "week":
+        y, m, dd = key.split("-")
+        return f"שבוע {dd}/{m}/{y}"
+    if period == "month":
+        y, m = key.split("-")
+        return f"{_HE_MONTHS[int(m) - 1]} {y}"
+    return key.replace("-", " ")
+
+
+_HE_MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני",
+              "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"]
+
+
+def _period_next(key, period):
+    """The period after this one — how the gaps get filled.
+
+    R07 — "מציגים תקופות ביניים בין הראשונה לאחרונה". A month with no records
+    is not a missing row, it is a month in which nothing happened, and a
+    chart that simply skips it draws a straight line over a hole.
+    """
+    if period == "day":
+        return (_dt.date.fromisoformat(key) + _dt.timedelta(days=1)).isoformat()
+    if period == "week":
+        return (_dt.date.fromisoformat(key) + _dt.timedelta(days=7)).isoformat()
+    if period == "month":
+        y, m = (int(x) for x in key.split("-"))
+        return f"{y + (m == 12):04d}-{(m % 12) + 1:02d}"
+    if period == "quarter":
+        y, q = key.split("-Q")
+        y, q = int(y), int(q)
+        return f"{y + (q == 4):04d}-Q{(q % 4) + 1}"
+    return f"{int(key) + 1:04d}"
+
+
+def _dash_dim_column(db, board_id, dim, mapping):
+    """The column a dimension names, when it names one rather than a kind."""
+    if not dim or dim in CHART_DIMS:
+        return None
+    cid = (mapping.get(str(board_id)) or {}).get(dim) or dim
+    return next((c for c in _dash_cols(db, board_id)
+                 if str(c.get("id")) == str(cid)), None)
+
+
+def _dash_column_dim_values(db, task, col, period, names):
+    """Which categories this record falls into, for a COLUMN dimension.
+
+    A list, like the person case and for the same reason: a dropdown holds
+    the options ticked in it, so one record belongs to each of them and
+    carries its whole value into each (R06). The overlap is flagged by the
+    caller exactly as it is for people.
+    """
+    ctype = col.get("type")
+    v = (task.custom_fields or {}).get(str(col.get("id")))
+    if ctype == "created_at":
+        d = task.created_at.date() if task.created_at else None
+        if d is None:
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        k = _period_bucket(d, period)
+        return [(k, _period_label(k, period))]
+    if ctype == "created_by":
+        if not task.created_by:
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        nm = names.get(task.created_by) or (
+            db.query(User.name).filter(User.id == task.created_by).scalar() or "")
+        return [(str(task.created_by), nm)]
+    if v in (None, "", [], {}):
+        return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+    if ctype == "checkbox":
+        return [("1", "מסומן")] if v else [("0", "אינו מסומן")]
+    if ctype == "date":
+        raw = v.get("from") or v.get("date") if isinstance(v, dict) else v
+        d = formula._fdate(raw)
+        if d is None:
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        k = _period_bucket(d, period)
+        return [(k, _period_label(k, period))]
+    if ctype == "people":
+        ids = [x.get("id") if isinstance(x, dict) else x for x in v] if isinstance(v, list) else []
+        ids = [i for i in ids if isinstance(i, int)]
+        if not ids:
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        have = {i: n for i, n in db.query(User.id, User.name).filter(User.id.in_(ids)).all()}
+        return [(str(i), have.get(i) or str(i)) for i in ids]
+    # status and dropdown — one option, or the several ticked in it
+    if isinstance(v, list):
+        out = [(x.get("label") if isinstance(x, dict) else x) for x in v]
+        out = [str(x) for x in out if x not in (None, "")]
+        return [(x, x) for x in out] or [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+    label = v.get("label") if isinstance(v, dict) else v
+    return [(str(label), str(label))] if label not in (None, "") \
+        else [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+
+
+def _dash_dim_values(db, task, board, kind, mapping, period, names):
+    """Which categories this record belongs to — a LIST, not a value.
+
+    People is the reason it is a list. R06 — "ריבוי אנשים משייך את הרשומה
+    ואת מלוא ערכה לכל אדם, עם חיווי שרשומה עשויה להופיע ביותר מקטגוריה
+    אחת." The full value goes to each of them, deliberately: the question a
+    person-grouped chart answers is "how much is on each person's plate", and
+    splitting 90 three ways answers a different one. The consequence — that
+    the bars add up to more than the total — is a FACT about the data and is
+    flagged rather than smoothed away.
+    """
+    if kind == "group":
+        g = db.info.setdefault("_dash_groups", {})
+        if task.group_id and task.group_id not in g:
+            row = db.query(Group).filter(Group.id == task.group_id).first()
+            g[task.group_id] = row.name if row else None
+        label = g.get(task.group_id)
+        return [(str(task.group_id), label)] if label else [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+    if kind == "status":
+        if (task.custom_fields or {}).get("status_unset"):
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        key = str(_task_status_key(task))
+        entry = next((x for x in _board_statuses(board) if x["key"] == key), None)
+        return [(key, (entry or {}).get("label") or key)]
+    if kind == "person":
+        people = list(task.assignees or [])
+        if not people:
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        return [(str(u.id), names.get(u.id) or u.name) for u in people]
+    if kind == "board":
+        b = db.info.setdefault("_dash_bnames", {})
+        if task.board_id not in b:
+            b[task.board_id] = (db.query(Board.name)
+                                  .filter(Board.id == task.board_id).scalar() or "")
+        return [(str(task.board_id), b[task.board_id])]
+    if kind not in CHART_DIMS:
+        col = _dash_dim_column(db, task.board_id, kind, mapping)
+        if col is None:
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        return _dash_column_dim_values(db, task, col, period, names)
+    if kind == "date":
+        cid = (mapping.get(str(task.board_id)) or {}).get("__date__")
+        raw = (task.custom_fields or {}).get(str(cid)) if cid else task.due_date
+        if isinstance(raw, dict):
+            raw = raw.get("from") or raw.get("date")
+        if raw in (None, ""):
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        d = raw.date() if hasattr(raw, "date") else formula._fdate(raw)
+        if d is None:
+            return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+        k = _period_bucket(d, period)
+        return [(k, _period_label(k, period))]
+    return [(NO_VALUE_KEY, NO_VALUE_LABEL)]
+
+
+def _dash_status_colors(db, d, w):
+    """The board's own status colours, as the starting point.
+
+    DASH-22.2 — "ברירת המחדל לצבעי סטטוס תילקח מהלוח. שינוי מקומי לא ישנה
+    את הלוח." So the board is read, never written: a colour chosen on a
+    chart lives in the chart's own `colors` map and the board goes on
+    looking the way it looked.
+    """
+    out = {}
+    for s in _widget_sources(d, w):
+        b = db.query(Board).filter(Board.id == s["board_id"]).first()
+        if b is None:
+            continue
+        for e in _board_statuses(b):
+            out.setdefault(str(e["key"]), e.get("color"))
+    return out
+
+
+# A palette for series that have no colour of their own. The monday values
+# the rest of the product uses — nothing is invented here, and nothing is
+# purple (invariant 7).
+_CHART_PALETTE = ["#0073ea", "#00c875", "#fdab3d", "#e2445c", "#579bfc",
+                  "#ffcb00", "#037f4c", "#bb3354", "#00c2b8", "#9badbc"]
+# How a series key carries its metric and its split half. Two characters that
+# cannot appear in a metric key or a board id, so splitting it back apart is
+# exact rather than a guess.
+_SER_SEP = "::"
+CALC_HE_SRV = {"count": "ספירה", "sum": "סכום", "avg": "ממוצע"}
+
+
+def _ser_metric(series_key):
+    return series_key.split(_SER_SEP)[0]
+
+
+def _dash_metric_cell(db, d, w, m, t, user_id, today):
+    """One record's contribution to one measure, for a chart.
+
+    A count contributes a placeholder and deliberately not a 1: `_dash_reduce`
+    counts a count from the NUMBER of entries, so making this a 1 and summing
+    would give the same answer today and the wrong one the moment the empty
+    policy touched it.
+    """
+    calc = (m.get("calc") or "count").lower()
+    key = str(m.get("field") or "")
+    if calc == "count" or not key or key in _DASH_BUILTIN_FIELDS:
+        return ("value", 0.0)
+    cid = ((w.mapping or {}).get(str(t.board_id)) or {}).get(key)
+    col = next((c for c in _dash_cols(db, t.board_id)
+                if str(c.get("id")) == str(cid)), None) if cid else None
+    if col is None:
+        return ("empty", None)
+    kind, got = _dash_value(db, t, col, _dash_cols(db, t.board_id), user_id,
+                            mirror_agg=(m.get("mirror_agg") or "sum").lower(),
+                            today=today)
+    return ("empty", None) if kind == "error" else (kind, got)
+
+
+def _dash_sort_categories(keys, labels, cells, metrics, cfg):
+    """Order the categories — by label or by value, ascending or descending.
+
+    R06 — "מיון לפי תווית או ערך, עולה או יורד; במדדים מרובים יש לבחור מדד
+    למיון ערך. שוויון לפי תווית ומזהה." The tie-break is not decoration: two
+    categories with the same total would otherwise swap places between two
+    requests over identical data, and a chart that reorders itself on refresh
+    is one nobody trusts.
+    """
+    rev = cfg["direction"] == "desc"
+    if cfg["sort"] == "value":
+        want = cfg["sort_metric"] or str(
+            (metrics[0] if metrics else {}).get("key") or "m")
+        wantm = next((m for m in (metrics or [])
+                      if str(m.get("key") or m.get("calc") or "m") == want), None)
+        # A count is the NUMBER of cells, not the sum of them: a count cell
+        # carries a placeholder (see _dash_metric_cell), so summing it sorts
+        # every category to zero and the order silently falls back to label.
+        counting = ((wantm or {}).get("calc") or "count").lower() == "count"
+
+        def total(k):
+            s = 0.0
+            for (sk, ck), vals in cells.items():
+                if ck != k or _ser_metric(sk) != want:
+                    continue
+                s += (len(vals) if counting
+                      else sum(v for kind, v in vals if kind == "value" and v is not None))
+            return s
+        return sorted(keys, key=lambda k: (-total(k) if rev else total(k),
+                                           labels.get(k, k), k))
+    return sorted(keys, key=lambda k: (labels.get(k, k), k), reverse=rev)
+
+
+def _dash_chart(db, d, w, user_id, temp=None):
+    """A chart\'s categories, series and cells — the whole of DASH-22.
+
+    The shape is one for every chart type, because the five types differ in
+    how they are DRAWN and not in what they are made of: a stacked column and
+    a line over the same configuration hold the same numbers. DASH-24.2 says
+    so for two of them — "מעבר בין אנכי לאופקי ישמור על המקורות, החישוב,
+    המסננים, הצבעים והמיון ויציג את אותם ערכים" — and the only way to be sure
+    of that is for there to be one computation.
+
+    The population is `_dash_matching`, the same call the numbers widget and
+    the drill-down make. That is what makes DASH-23.3 true — "קטגוריה יחידה
+    עם אותן הגדרות תציג ערך זהה לווידג\u05f3ט מספרים" — rather than nearly true.
+    """
+    cfg = _chart_cfg(w)
+    ctype = (w.chart or {}).get("type") or "vbar"
+    computed_at = datetime.now(timezone.utc)
+    base = {"widget_id": w.id, "type": ctype,
+            "config_version": d.config_version or 1,
+            "computed_at": computed_at,
+            "conditions": _dash_conditions(d, w, temp),
+            "temporary_filter": bool((temp or {}).get("adv")),
+            "can_fix": _dash_access(db, d, user_id) == "owner"}
+    if _widget_state(db, d, w, user_id) == "blocked":
+        return dict(base, state="blocked", categories=[], series=[])
+    dim = cfg["dimension"]
+    if not dim:
+        return dict(base, state="needs_fix", categories=[], series=[],
+                    reason="לא נבחר ממד קיבוץ")
+    records, blocked_field = _dash_matching(db, d, w, user_id, temp)
+    if blocked_field is not None:
+        return dict(base, state="needs_fix", categories=[], series=[],
+                    reason="לא ניתן להחיל מסנן — חסר מיפוי לשדה",
+                    field=(None if blocked_field == "__bad__" else blocked_field))
+
+    metrics = w.metrics or [{"key": "m", "calc": "count"}]
+    split = cfg["split"] if cfg["split"] in CHART_SPLITS else None
+    if ctype in ("pie", "donut"):
+        # "עוגה ודונאט משתמשות במדד אחד וללא פיצול נוסף" (R06).
+        metrics, split = metrics[:1], None
+    mapping = w.mapping or {}
+    today, _off = _dash_clock(db)
+    names = (_dash_person_names(db, {u.id for t in records for u in (t.assignees or [])})
+             if dim == "person" or split == "person" else {})
+
+    cells, cat_label, ser_label, counts = {}, {}, {}, {}
+    overlap = False
+    boards = {}
+    for t in records:
+        if t.board_id not in boards:
+            boards[t.board_id] = db.query(Board).filter(Board.id == t.board_id).first()
+        board = boards[t.board_id]
+        cats = _dash_dim_values(db, t, board, dim, mapping, cfg["period"], names)
+        if len(cats) > 1:
+            overlap = True                      # R06 "חיווי חפיפה"
+        splits = (_dash_dim_values(db, t, board, split, mapping, cfg["period"], names)
+                  if split else [(None, None)])
+        if split and len(splits) > 1:
+            overlap = True
+        for m in metrics:
+            mk = str(m.get("key") or m.get("calc") or "m")
+            val = _dash_metric_cell(db, d, w, m, t, user_id, today)
+            mlabel = m.get("title") or CALC_HE_SRV.get((m.get("calc") or "count"), mk)
+            for ck, cl in cats:
+                cat_label.setdefault(ck, cl)
+                for sk, sl in splits:
+                    full = mk if sk is None else mk + _SER_SEP + sk
+                    ser_label.setdefault(full, mlabel if sl is None else mlabel + " · " + sl)
+                    cells.setdefault((full, ck), []).append(val)
+                    counts[(full, ck)] = counts.get((full, ck), 0) + 1
+
+    cat_keys = list(cat_label)
+    if not cfg["show_no_value"]:
+        cat_keys = [k for k in cat_keys if k != NO_VALUE_KEY]
+    if dim == "date":
+        # "תאריך תמיד כרונולוגי" (R06), and the intervening periods are filled
+        # in so a gap is drawn as a gap rather than skipped (R07).
+        real = sorted(k for k in cat_keys if k != NO_VALUE_KEY)
+        filled, guard = [], 0
+        if real:
+            cur, last = real[0], real[-1]
+            while cur <= last and guard < 2000:
+                filled.append(cur)
+                cur = _period_next(cur, cfg["period"])
+                guard += 1
+        for k in filled:
+            cat_label.setdefault(k, _period_label(k, cfg["period"]))
+        cat_keys = filled + ([NO_VALUE_KEY] if NO_VALUE_KEY in cat_keys else [])
+    else:
+        cat_keys = _dash_sort_categories(cat_keys, cat_label, cells, metrics, cfg)
+
+    ser_keys = list(ser_label)
+    if len(cat_keys) > CHART_MAX_CATEGORIES:
+        return dict(base, state="too_many", categories=[], series=[],
+                    limit="categories", found=len(cat_keys), max=CHART_MAX_CATEGORIES,
+                    reason="התרשים מפיק " + str(len(cat_keys)) + " קטגוריות, והמגבלה היא "
+                           + str(CHART_MAX_CATEGORIES) + " — צמצם בעזרת מסנן או ממד אחר")
+    if len(ser_keys) > CHART_MAX_SERIES:
+        return dict(base, state="too_many", categories=[], series=[],
+                    limit="series", found=len(ser_keys), max=CHART_MAX_SERIES,
+                    reason="התרשים מפיק " + str(len(ser_keys)) + " סדרות, והמגבלה היא "
+                           + str(CHART_MAX_SERIES) + " — צמצם מדדים או פיצול")
+
+    # The board's own status colours, for the built-in status dimension. A
+    # status COLUMN carries its own vocabulary and its own colours, which are
+    # a different list — it falls through to the shared palette rather than
+    # borrowing the board's, which would put the wrong colour on a label that
+    # happens to share a name.
+    status_colors = _dash_status_colors(db, d, w) if dim == "status" else {}
+    out_cats = []
+    for i, ck in enumerate(cat_keys):
+        colour = (cfg["colors"].get(ck)
+                  or (status_colors.get(ck) if dim == "status" else None)
+                  or _CHART_PALETTE[i % len(_CHART_PALETTE)])
+        out_cats.append({"key": ck, "label": cat_label.get(ck, ck), "color": colour})
+    out_series = []
+    for i, sk in enumerate(ser_keys):
+        mk = _ser_metric(sk)
+        m = next((x for x in metrics
+                  if str(x.get("key") or x.get("calc") or "m") == mk), metrics[0])
+        fmt = _dash_metric_format(m, m.get("title") or "")
+        calc = (m.get("calc") or "count").lower()
+        policy = (m.get("empty_policy") or "ignore").lower()
+        points = []
+        for ck in cat_keys:
+            vals = cells.get((sk, ck))
+            if vals is None:
+                # R07 — "תקופה חסרה היא 0 בספירה ובסכום ופער בממוצע; היא אינה
+                # רשומה בעלת ערך ריק." A gap is a null, and DASH-27.3 forbids
+                # the line being drawn across one.
+                points.append(None if calc == "avg" else 0.0)
+                continue
+            state, result, _n = _dash_reduce(vals, calc, policy, counts.get((sk, ck), 0))
+            points.append(None if state == "no_data" else result)
+        out_series.append({
+            "key": sk, "label": ser_label.get(sk, sk), "metric": mk, "calc": calc,
+            "color": cfg["colors"].get(sk) or _CHART_PALETTE[i % len(_CHART_PALETTE)],
+            "unit": m.get("unit"), "points": points, **fmt})
+    return dict(base, state=("ok" if out_cats else "no_data"),
+                dimension=dim, period=cfg["period"], split=split,
+                legend=cfg["legend"], value_labels=cfg["value_labels"],
+                overlap=overlap, records=len(records),
+                categories=out_cats, series=out_series)
+
+
+def _dash_narrow_to_cell(db, d, w, records, category, series, user_id):
+    """The records behind ONE element of a chart.
+
+    DASH-18.1 — "לחיצה על רכיב תרשים תפתח את הקטגוריה, הסדרה והמדד
+    המתאימים, עם אותם מקורות, מסננים וגרסת הגדרות" — and DASH-26.3 says the
+    same for a segment of a stack.
+
+    It narrows the population the chart was built from rather than deriving a
+    new one, which is the only way the list can be guaranteed to be the rows
+    that made that bar. A record in several categories (R06\'s multi-person
+    case) appears under each of them, exactly as it was counted.
+    """
+    if not category:
+        return records
+    cfg = _chart_cfg(w)
+    dim = cfg["dimension"]
+    split = cfg["split"] if cfg["split"] in CHART_SPLITS else None
+    want_split = None
+    if series and _SER_SEP in series:
+        want_split = series.split(_SER_SEP, 1)[1]
+    mapping = w.mapping or {}
+    names = _dash_person_names(
+        db, {u.id for t in records for u in (t.assignees or [])})
+    boards, out = {}, []
+    for t in records:
+        if t.board_id not in boards:
+            boards[t.board_id] = db.query(Board).filter(Board.id == t.board_id).first()
+        b = boards[t.board_id]
+        cats = {k for k, _l in _dash_dim_values(db, t, b, dim, mapping,
+                                                cfg["period"], names)}
+        if category not in cats:
+            continue
+        if want_split and split:
+            sp = {k for k, _l in _dash_dim_values(db, t, b, split, mapping,
+                                                  cfg["period"], names)}
+            if want_split not in sp:
+                continue
+        out.append(t)
+    return out
+
+
+# ── ווידג\u05f3ט רשימה ──────────────────────────────────────────────────
+# The records themselves, drawn as rows. It measures nothing, so none of the
+# numeric machinery applies to it — but everything that decides WHICH records
+# does, and it is the same code: the same sources, the same filters, the same
+# population, the same per-item permission and the same blocking. A second
+# way of choosing records would be a second set of answers to "what is on
+# this board", and the two would drift.
+LIST_MAX_ROWS = 50
+LIST_DEFAULT_ROWS = 10
+# What a list may show. Deliberately not "every column": a connect cell is a
+# set of ids from other boards and a mirror reads through it, both of which
+# have a disclosure story of their own (see _visible_link_ids) that a list
+# has no way to tell. They are reachable from the item itself, one click on.
+LIST_COLUMN_TYPES = ("text", "long_text", "email", "phone", "number", "rating",
+                     "status", "dropdown", "date", "timeline", "checkbox",
+                     "people", "formula", "created_at", "created_by", "item_id")
+
+
+def _dash_list_cfg(w):
+    c = dict((w.display or {}))
+    try:
+        limit = int(c.get("limit") or LIST_DEFAULT_ROWS)
+    except (TypeError, ValueError):
+        limit = LIST_DEFAULT_ROWS
+    cols = c.get("columns") if isinstance(c.get("columns"), dict) else {}
+    sort = c.get("sort") if isinstance(c.get("sort"), dict) else {}
+    return {"columns": cols,
+            "limit": max(1, min(LIST_MAX_ROWS, limit)),
+            "sort": {"field": sort.get("field") or "title",
+                     "direction": "desc" if sort.get("direction") == "desc" else "asc"}}
+
+
+def _dash_list_columns(db, d, w):
+    """(board_id, column_id) for every column this list is set to show."""
+    cfg = _dash_list_cfg(w)
+    out = []
+    for s in _widget_sources(d, w):
+        for cid in (cfg["columns"].get(str(s["board_id"])) or []):
+            out.append((s["board_id"], str(cid)))
+    return out
+
+
+def _dash_cell_text(db, t, col, cols, viewer, today):
+    """One cell, as the text a row shows — never as markup.
+
+    A list is read, not computed, so a status comes back as its label and a
+    date as the day somebody wrote. The one thing it must not do is show a
+    value the viewer may not see, and that is settled before this is
+    reached: a column they lack is part of the widget\'s required sources, so
+    the whole widget is blocked rather than this cell being blanked.
+    """
+    ctype = (col or {}).get("type")
+    cid = str(col.get("id"))
+    cf = t.custom_fields or {}
+    if ctype == "created_at":
+        return t.created_at.isoformat()[:10] if t.created_at else ""
+    if ctype == "created_by":
+        u = db.query(User.name).filter(User.id == t.created_by).scalar() if t.created_by else None
+        return u or ""
+    if ctype == "item_id":
+        return str(t.item_uid or "")
+    if ctype == "formula":
+        kind, got = _dash_formula_number(db, t, col, cols, today)
+        if kind == "value":
+            return got
+        # a formula that answers text is still a thing to read in a list,
+        # which is exactly where it is NOT a quantity
+        try:
+            v = formula.evaluate(col.get("formula"), _dash_formula_lookup(db, t, col, cols), today)
+            return "" if v is None else v
+        except formula.FormulaError:
+            return None                      # the row says "לא ניתן לחשב"
+    v = cf.get(cid)
+    if v in (None, "", [], {}):
+        return ""
+    if ctype == "people":
+        ids = [x.get("id") if isinstance(x, dict) else x for x in v] if isinstance(v, list) else []
+        names = {i: n for i, n in db.query(User.id, User.name)
+                 .filter(User.id.in_([i for i in ids if isinstance(i, int)] or [0])).all()}
+        return ", ".join(names[i] for i in ids if i in names)
+    if ctype == "checkbox":
+        return "כן" if v else "לא"
+    if ctype == "timeline" and isinstance(v, dict):
+        a, b = v.get("from") or v.get("start"), v.get("to") or v.get("end")
+        return f"{a} – {b}" if a and b else (a or b or "")
+    if isinstance(v, dict):
+        return v.get("label") or v.get("text") or ""
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v if x not in (None, ""))
+    return v
+
+
+def _dash_formula_lookup(db, t, col, cols):
+    """The lookup `_dash_formula_number` builds, reused for a text answer."""
+    by_title = {}
+    for c in cols:
+        ttl = (c.get("title") or "").strip()
+        if ttl and c.get("id") != col.get("id"):
+            by_title.setdefault(ttl, c)
+    cf = t.custom_fields or {}
+
+    def lookup(ref):
+        c = by_title.get(str(ref).strip())
+        if c is None:
+            raise formula.FormulaError("אין עמודה בשם " + str(ref))
+        v = cf.get(c["id"])
+        if c.get("type") == "checkbox":
+            return 1 if v else 0
+        if c.get("type") == "number":
+            return None if v is None or v == "" else formula._fnum(v)
+        if isinstance(v, dict):
+            return formula._ftext(v.get("label") or v.get("text") or "")
+        return v
+    return lookup
+
+
+def _dash_list(db, d, w, user_id, temp=None):
+    """A list widget: the records themselves, with the columns it was given.
+
+    Capped at LIST_MAX_ROWS and saying how many there are in total, because
+    a list that silently shows the first ten of four hundred is the "חיתוך
+    בשקט" R10 forbids — the count beside it is what makes the ten honest.
+    """
+    cfg = _dash_list_cfg(w)
+    computed_at = datetime.now(timezone.utc)
+    base = {"widget_id": w.id, "type": "list",
+            "config_version": d.config_version or 1,
+            "computed_at": computed_at,
+            "conditions": _dash_conditions(d, w, temp),
+            "temporary_filter": bool((temp or {}).get("adv")),
+            "can_fix": _dash_access(db, d, user_id) == "owner"}
+    if _widget_state(db, d, w, user_id) == "blocked":
+        return dict(base, state="blocked", rows=[], columns=[])
+    records, blocked_field = _dash_matching(db, d, w, user_id, temp)
+    if blocked_field is not None:
+        return dict(base, state="needs_fix", rows=[], columns=[],
+                    reason="לא ניתן להחיל מסנן — חסר מיפוי לשדה",
+                    field=(None if blocked_field == "__bad__" else blocked_field))
+
+    today, _off = _dash_clock(db)
+    wanted = _dash_list_columns(db, d, w)
+    # The column list is per board, and a list over several boards shows the
+    # union: a row simply has nothing under a column its own board does not
+    # have, which is truer than hiding the column for everybody.
+    headers, seen = [], set()
+    for bid, cid in wanted:
+        col = next((c for c in _dash_cols(db, bid) if str(c.get("id")) == cid), None)
+        if col is None:
+            continue
+        key = (col.get("title") or cid)
+        if key in seen:
+            continue
+        seen.add(key)
+        headers.append({"key": cid, "label": key, "type": col.get("type")})
+
+    sort = cfg["sort"]
+    rev = sort["direction"] == "desc"
+    if sort["field"] == "title":
+        records = sorted(records, key=lambda t: (t.title or ""), reverse=rev)
+    elif sort["field"] == "created_at":
+        records = sorted(records, key=lambda t: (t.created_at or datetime.min), reverse=rev)
+
+    names = {b.id: b.name for b in db.query(Board).filter(
+        Board.id.in_({t.board_id for t in records} or {0})).all()}
+    rows = []
+    for t in records[:cfg["limit"]]:
+        role = _board_role(db, t.board_id, user_id)
+        cols = _dash_cols(db, t.board_id)
+        cells = {}
+        for h in headers:
+            col = next((c for c in cols if (c.get("title") or c.get("id")) == h["label"]), None)
+            if col is None:
+                cells[h["key"]] = None
+                continue
+            cells[h["key"]] = _dash_cell_text(db, t, col, cols, user_id, today)
+        rows.append({"id": t.id, "title": t.title, "board_id": t.board_id,
+                     "board_name": names.get(t.board_id, ""),
+                     "kind": "subitem" if t.parent_id else "item",
+                     "my_perm": _item_perm(t, user_id, role),
+                     "cells": cells})
+    return dict(base, state=("ok" if rows else "no_data"),
+                columns=headers, rows=rows,
+                records=len(records), shown=len(rows),
+                limit=cfg["limit"], sort=sort)
+
+
+def _dash_compute(db, d, w, user_id, temp=None):
+    """The compute response for one widget — the contract DASH-01.3 names.
+
+    "תוצאה, זמן חישוב, גרסת הגדרות, יחידה, מספר רשומות וערכים שהשתתפו
+    בחישוב, מצב תקין או שגיאה, ומזהי קטגוריה, סדרה ומדד לפתיחת הפירוט."
+
+    A blocked widget carries none of it. Not the result, not the record
+    count, not the sources — R01 forbids "מידע שניתן להסיק ממנו כמויות
+    וסכומים", and a population size is exactly that.
+    """
+    computed_at = datetime.now(timezone.utc)
+    state = _widget_state(db, d, w, user_id)
+    base = {"widget_id": w.id, "config_version": d.config_version or 1,
+            "computed_at": computed_at,
+            "conditions": _dash_conditions(d, w, temp),
+            "temporary_filter": bool((temp or {}).get("adv")),
+            # DASH-20.2 — "הקישור לתיקון יוצג למורשה בלבד". Answered here
+            # rather than inferred in the browser: a viewer shown a repair
+            # link would be sent to a screen that then refuses them, which
+            # reads as a broken product rather than as a permission.
+            "can_fix": _dash_access(db, d, user_id) == "owner"}
+    if state == "blocked":
+        return dict(base, state="blocked", metrics=[])
+    records, blocked_field = _dash_matching(db, d, w, user_id, temp)
+    if blocked_field is not None:
+        # DASH-10.3 — a condition that could not be applied stops the
+        # measure rather than running without it. The field is named: it is
+        # the dashboard's own configuration, not a board's secret, and
+        # whoever can fix it needs to know which one.
+        return dict(base, state="needs_fix", metrics=[],
+                    reason="לא ניתן להחיל מסנן — חסר מיפוי לשדה",
+                    field=(None if blocked_field == "__bad__" else blocked_field))
+    metrics = w.metrics or []
+    if not metrics:
+        # A widget with no measure defined yet. Not an error and not a zero:
+        # there is nothing to compute, and saying "0" would invent a fact.
+        metrics = [{"key": "count", "calc": "count"}]
+    out = [_dash_metric(db, d, w, m, records, user_id) for m in metrics]
+    if state == "needs_fix" or any(m["state"] == "needs_fix" for m in out):
+        overall = "needs_fix"
+    elif all(m["state"] == "no_data" for m in out):
+        overall = "no_data"
+    else:
+        overall = "ok"
+    return dict(base, state=overall, metrics=out, records=len(records))
+
+
+@app.post("/api/dashboards/{dash_id}/widgets/{widget_id}/compute")
+def compute_widget(dash_id: int, widget_id: int, data: dict = None,
+                   user_id: int = Depends(current_user_id)):
+    """Work this widget out, now, for this reader.
+
+    POST and not GET because the temporary filter travels with it: "צופה מסנן
+    זמנית לאורך הביקור בלבד, ללא השפעה על אחרים" (R05), and a visit's own
+    filter is a body rather than a saved setting.
+    """
+    data = data or {}
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id)
+        w = (db.query(DashboardWidget)
+               .filter(DashboardWidget.id == widget_id,
+                       DashboardWidget.dashboard_id == d.id).first())
+        if w is None:
+            raise HTTPException(404, "הווידג׳ט אינו קיים")
+        # A visitor's own filter, for this request and no longer. Validated
+        # like any other tree — a temporary filter that cannot be parsed is
+        # told about rather than dropped — but never written anywhere, so
+        # "איפוס יחזיר למסננים השמורים" is simply the next request without it.
+        temp = _dash_validate_filters(data.get("temp_filter"))
+        if w.type == "list":
+            return _json(_dash_list(db, d, w, user_id, temp))
+        return _json(_dash_compute(db, d, w, user_id, temp))
+
+
+@app.post("/api/dashboards/{dash_id}/compute")
+def compute_dashboard(dash_id: int, data: dict = None,
+                      user_id: int = Depends(current_user_id)):
+    """Every widget at once, each answering for itself.
+
+    R09 — "טעינה וכשל נפרדים לכל ווידג׳ט; כשל יחיד לא חוסם אחרים." So a
+    widget that cannot be computed comes back with its own state beside the
+    ones that could, and never as an error for the whole dashboard.
+    """
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id)
+        ws = (db.query(DashboardWidget)
+                .filter(DashboardWidget.dashboard_id == d.id)
+                .order_by(DashboardWidget.position, DashboardWidget.id).all())
+        temp = _dash_validate_filters((data or {}).get("temp_filter"))
+        out = []
+        for w in ws:
+            try:
+                # Charts and figures answer through the same session, which is
+                # the point of asking for them together: the population is
+                # loaded once (see _dash_population) and every widget over the
+                # same boards reads it rather than fetching it again.
+                out.append(_dash_chart(db, d, w, user_id, temp) if w.type == "chart"
+                           else _dash_list(db, d, w, user_id, temp) if w.type == "list"
+                           else _dash_compute(db, d, w, user_id, temp))
+            except HTTPException:
+                raise
+            except Exception as e:                 # noqa: BLE001
+                # A calculation that threw is a server failure, which R04 separates
+                # from every other state: "כשל שרת, שגיאת חישוב או מקור חסום
+                # אינם מוצגים כ־0".
+                print(f"⚠️  widget {w.id} failed to compute: {e}", flush=True)
+                out.append({"widget_id": w.id, "state": "error",
+                            "config_version": d.config_version or 1,
+                            "metrics": []})
+        return _json({"dashboard_id": d.id,
+                      "config_version": d.config_version or 1,
+                      "widgets": out})
+
+
+DASH_PAGE_SIZE = 50
+DASH_PAGE_MAX = 200
+
+
+@app.post("/api/dashboards/{dash_id}/widgets/{widget_id}/records")
+def widget_records(dash_id: int, widget_id: int, data: dict = None,
+                   user_id: int = Depends(current_user_id)):
+    """The records behind the measure — the drill-down of R10.
+
+    "פירוט משתמש באותם מקורות, אוכלוסייה, מסננים, מדד והרשאות של הרכיב
+    שנלחץ. הרשימה מעומדת אך המדד על כל הרשומות."
+
+    Both halves of that sentence are structural here. The population comes
+    from `_dash_matching`, the same call the measure makes, so the two cannot
+    drift; and the totals reported beside the page are counted over the WHOLE
+    population, never over the slice that was returned. The request carries
+    no conditions of its own — only which widget, which measure and which
+    page — because a drill-down that could filter independently could show a
+    different set from the number that led to it, and that is the one thing
+    R10 exists to prevent.
+    """
+    data = data or {}
+    with Session(engine) as db:
+        d, _access = _dash_or_404(db, dash_id, user_id)
+        w = (db.query(DashboardWidget)
+               .filter(DashboardWidget.id == widget_id,
+                       DashboardWidget.dashboard_id == d.id).first())
+        if w is None:
+            raise HTTPException(404, "הווידג׳ט אינו קיים")
+        # DASH-04.1 — "לפני חישוב **או פתיחת פירוט**". A blocked source
+        # returns an empty block and not an empty page: a page of no rows is
+        # itself a statement that the population is empty.
+        if _widget_state(db, d, w, user_id) == "blocked":
+            return _json({"widget_id": w.id, "state": "blocked", "rows": [],
+                          "records": None, "values": None,
+                          "config_version": d.config_version or 1})
+        temp = _dash_validate_filters(data.get("temp_filter"))
+        records, blocked_field = _dash_matching(db, d, w, user_id, temp)
+        if blocked_field is not None:
+            return _json({"widget_id": w.id, "state": "needs_fix", "rows": [],
+                          "records": None, "values": None,
+                          "field": (None if blocked_field == "__bad__" else blocked_field),
+                          "config_version": d.config_version or 1})
+        metrics = w.metrics or [{"key": "count", "calc": "count"}]
+        want = str(data.get("metric") or "")
+        # A chart element names its series, and the series carries the metric
+        # — so clicking a bar opens the measure that bar was drawn from
+        # without the caller having to say it twice.
+        series = str(data.get("series") or "")
+        if not want and series:
+            want = _ser_metric(series)
+        metric = next((m for m in metrics
+                       if str(m.get("key") or "") == want), metrics[0])
+        category = data.get("category")
+        if category:
+            records = _dash_narrow_to_cell(db, d, w, records, str(category),
+                                           series, user_id)
+        summary = _dash_metric(db, d, w, metric, records, user_id)
+        try:
+            offset = max(0, int(data.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            limit = int(data.get("limit") or DASH_PAGE_SIZE)
+        except (TypeError, ValueError):
+            limit = DASH_PAGE_SIZE
+        limit = max(1, min(DASH_PAGE_MAX, limit))
+        page = records[offset:offset + limit]
+        calc = (metric.get("calc") or "count").lower()
+        key = str(metric.get("field") or "")
+        mirror_agg = (metric.get("mirror_agg") or "sum").lower()
+        policy = (metric.get("empty_policy") or "ignore").lower()
+        today, _off = _dash_clock(db)
+        names = {b.id: b.name for b in db.query(Board).filter(
+            Board.id.in_({t.board_id for t in page} or {0})).all()}
+        rows = []
+        for t in page:
+            role = _board_role(db, t.board_id, user_id)
+            entry = {"id": t.id, "title": t.title,
+                     "board_id": t.board_id,
+                     "board_name": names.get(t.board_id, ""),
+                     # DASH-18.2 asks the list to say which kind of record
+                     # each row is, because "both" mixes two populations and
+                     # a reader cannot tell them apart by name.
+                     "kind": "subitem" if t.parent_id else "item",
+                     "my_perm": _item_perm(t, user_id, role)}
+            if calc != "count" and key and key not in _DASH_BUILTIN_FIELDS:
+                cid = ((w.mapping or {}).get(str(t.board_id)) or {}).get(key)
+                col = next((c for c in _dash_cols(db, t.board_id)
+                            if str(c.get("id")) == str(cid)), None) if cid else None
+                if col is None:
+                    entry.update(value=None, value_state="error")
+                else:
+                    kind, got = _dash_value(db, t, col, _dash_cols(db, t.board_id),
+                                            user_id, mirror_agg=mirror_agg,
+                                            today=today)
+                    entry.update(value=(got if kind == "value" else None),
+                                 value_state=kind)
+                    if kind == "empty":
+                        # DASH-14.3 — "בפירוט יופיעו גם רשומות ריקות
+                        # ששייכות לאוכלוסייה, עם הסבר אם וכיצד הן משתתפות
+                        # בחישוב." The row is here either way; this is the
+                        # explanation that belongs beside it.
+                        entry["empty_handling"] = (
+                            "נספרת כאפס" if policy == "zero" else "לא משתתפת בחישוב")
+            rows.append(entry)
+        return _json({"widget_id": w.id, "state": summary["state"],
+                      "metric": summary["key"], "calc": calc,
+                      "category": category or None, "series": series or None,
+                      "result": summary["result"], "unit": summary["unit"],
+                      # Counted over the whole population and not over the
+                      # page — R10's "הרשימה מעומדת אך המדד על כל הרשומות".
+                      "records": summary["records"], "values": summary["values"],
+                      "empty_policy": policy,
+                      "offset": offset, "limit": limit,
+                      "has_more": offset + limit < len(records),
+                      "config_version": d.config_version or 1,
+                      "computed_at": datetime.now(timezone.utc),
+                      "rows": rows})
+
+
 # ── the advanced filter, evaluated here ────────────────────────────────
 # The client sends the condition tree as JSON — an AST, groups holding groups —
 # and gets back the ids that answer it. It filters locally too, for the
@@ -6552,7 +10012,18 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
                                      .filter(BoardMember.board_id == b.id,
                                              User.is_active.isnot(False))
                                      .order_by(User.name).all())],
-            "columns": (b.settings or {}).get("columns", []),
+            # A connect column mid-conversion carries the state of it, so the
+            # header can offer "טיפול בחריגות" and say how many are left. Added
+            # to a COPY of the definition — b.settings is the stored JSON, and
+            # a count written into it would be persisted on the next save.
+            "columns": _columns_with_conversions(db, b.id, columns),
+            # What a connect cell reads as, where its column was told to show
+            # a field of the linked record rather than its title. An OVERRIDE
+            # map — {col_id: {item_id: text}} — because the browser already
+            # resolves the titles through /api/tasks/lookup, and anything that
+            # reads as its own title is simply not in here. Built from what
+            # _prefetch_links already loaded, so it costs no query of its own.
+            "link_display": _board_link_display(db, tasks_out, columns, user_id),
             # which columns sub-items show (ids, name column first). None = never
             # configured → sub-items mirror the item columns.
             "sub_cols": (b.settings or {}).get("sub_cols"),
@@ -8807,9 +12278,18 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # A rename keeps the key, so only a key that is GONE is a deletion —
             # which is the whole of "שינוי שם רכיב — המשך לפי מזהה קבוע".
             was = {x["key"]: x.get("label") or x["key"] for x in _board_statuses(b)}
-            for key, label in was.items():
-                if key not in {x["key"] for x in out}:
-                    _suspend_dependents(db, b, "status", key, actor_id, label)
+            gone = [k for k in was if k not in {x["key"] for x in out}]
+            # Refused before anything is written, and before the dependents are
+            # suspended below: a save that does not happen must not leave a
+            # stopped automation behind it — see _status_in_use_409.
+            if gone:
+                _used = _board_status_usage(db, b)
+                _busy = [{"key": k, "label": was[k], "items": _used[k]}
+                         for k in gone if _used.get(k)]
+                if _busy:
+                    _status_in_use_409(_busy)
+            for key in gone:
+                _suspend_dependents(db, b, "status", key, actor_id, was[key])
             s = dict(b.settings or {})
             s["statuses"] = out
             b.settings = s
@@ -8939,6 +12419,37 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             # השהיה אם אינו תואם". A rename is neither: the id carries on and
             # the sentence simply shows the new name.
             now_by_id = {x["id"]: x for x in cols}
+            # ── a status option items wear cannot be dropped either ──
+            # The same rule as the board's own statuses, one level down: a
+            # status COLUMN's vocabulary is an agreement too, and a cell
+            # pointing at an option the column no longer offers is the same
+            # unreadable disagreement. Only columns that SURVIVE this save are
+            # asked: removing the whole column is a different act, with its own
+            # warning, its own recycle bin and its own way back.
+            _busy_opts = []
+            _rows = None
+            for cid, prev in old_cols.items():
+                nxt = now_by_id.get(cid)
+                if (not nxt or prev.get("type") != "status"
+                        or nxt.get("type") != "status"):
+                    continue
+                kept = {str(o["id"])
+                        for o in (_status_col_options(nxt.get("options")) or [])}
+                dropped = [o for o in (_status_col_options(prev.get("options")) or [])
+                           if str(o["id"]) not in kept]
+                if not dropped:
+                    continue
+                if _rows is None:
+                    _rows = _status_usage_rows(db, b)
+                used = _status_col_usage(db, b, prev, _rows)
+                for o in dropped:
+                    if used.get(str(o["id"])):
+                        _busy_opts.append({"col_id": cid,
+                                      "column": prev.get("title") or cid,
+                                      "key": o["id"], "label": o["label"],
+                                      "items": used[str(o["id"])]})
+            if _busy_opts:
+                _status_in_use_409(_busy_opts)
             # ── what this change does to the board's forms ──
             # Gone, or changed into a type the old questions cannot mean.
             # Both are a change to a form somebody published, so both need
@@ -8981,6 +12492,10 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     _row = _log_board(db, board_id, "delete", field="column",
                                       old=title, actor=actor_id)
                     _bin_a_column(db, b, prev, _row.id, actor_id, _old_at.get(cid))
+                    # the column is gone, so the conversion that was waiting
+                    # on it has nowhere left to put an answer — see
+                    # _close_conversions_for_columns
+                    _close_conversions_for_columns(db, board_id, [cid], actor_id)
                 elif not _column_types_compatible(prev.get("type"), nxt.get("type")):
                     _suspend_dependents(db, b, "column", cid, actor_id,
                                         f"{title} (שונתה מ{prev.get('type')} ל{nxt.get('type')})")
@@ -9251,6 +12766,29 @@ def _trash_board_json(db, b):
         "days_left": max(0, days_left),
         "retention_days": RECYCLE_BIN_DAYS,
     }
+
+
+@app.get("/api/boards/{board_id}/status-usage")
+def board_status_usage(board_id: int, actor_id: int = Depends(current_user_id)):
+    """How many items wear each status — the board's own vocabulary, and every
+    status column's.
+
+    What the editor needs in order to say "4 פריטים" beside a status and put
+    its bin out of reach BEFORE anybody presses it. The refusal on save is the
+    authority and this is not a second one; it exists so that the screen stops
+    being a place where an action that cannot succeed still looks available.
+
+    Open to anyone on the board, not just its admins: the counts are the board
+    reading itself back, and every one of them is already on screen as rows.
+    """
+    with Session(engine) as db:
+        b, _role = _board_role_or_403(db, board_id, actor_id)
+        rows = _status_usage_rows(db, b)
+        cols = [c for c in ((b.settings or {}).get("columns") or [])
+                if c.get("type") == "status" and c.get("id")]
+        return {"statuses": _board_status_usage(db, b, rows),
+                "columns": {str(c["id"]): _status_col_usage(db, b, c, rows)
+                            for c in cols}}
 
 
 @app.delete("/api/boards/{board_id}")
@@ -9855,8 +13393,25 @@ def _outside_board_env(db, board, user_id):
 
 
 @app.get("/api/boards/{board_id}/members")
-def list_board_members(board_id: int):
+def list_board_members(board_id: int, user_id: int = Depends(current_user_id)):
+    """Who is on this board, and what each of them may do.
+
+    Readable by anyone who is on the board — the header's "משתתפים" button
+    opens this for a viewer too, and seeing who you work with is not an
+    administrative act. It is still not public: a board nobody invited you to
+    does not answer, the same as every other board-scoped route, which is why
+    this goes through _board_role_or_403 rather than trusting the caller to
+    only ask about boards they can see.
+
+    `can_manage` is the one thing the dialog cannot work out for itself. It
+    says whether to draw the role pickers, the remove buttons and the
+    invitation — and it is advice about what to draw, never a grant: every
+    write below re-asks _is_board_admin, so a browser that drew the controls
+    anyway gets a 403 out of each of them.
+    """
     with Session(engine) as db:
+        board, _role = _board_role_or_403(db, board_id, user_id)
+        can_manage = _is_board_admin(db, board_id, user_id)
         ms = db.query(BoardMember).filter(BoardMember.board_id == board_id).all()
         member_ids = {m.user_id for m in ms}
         out = []
@@ -9879,11 +13434,16 @@ def list_board_members(board_id: int):
         # Who could still be invited: never a deactivated account, and never
         # somebody from outside this board's environment — see
         # _outside_board_env, which the POST below holds to as well.
-        board = db.query(Board).filter(Board.id == board_id).first()
-        available = [{"id": u.id, "name": u.name} for u in db.query(User).all()
-                     if u.id not in member_ids and u.is_active is not False
-                     and not _outside_board_env(db, board, u.id)]
-        return {"members": out, "available": available}
+        #
+        # Only for somebody who could actually issue the invitation. For
+        # everyone else this is a directory of colleagues they did not ask
+        # for and cannot act on, and the dialog draws no invitation at all,
+        # so it is left empty rather than sent and ignored.
+        available = ([{"id": u.id, "name": u.name} for u in db.query(User).all()
+                      if u.id not in member_ids and u.is_active is not False
+                      and not _outside_board_env(db, board, u.id)]
+                     if can_manage else [])
+        return {"members": out, "available": available, "can_manage": can_manage}
 
 @app.post("/api/boards/{board_id}/members")
 def add_board_member(board_id: int, data: dict, request: Request = None,
@@ -10511,6 +14071,10 @@ def set_col_permissions(board_id: int, col_id: str, data: dict, actor_id: int = 
         if not found:
             raise HTTPException(404, "column not found")
         s["columns"] = cols; b.settings = s; db.commit()
+        # Somebody's access to a column just changed, and a dashboard they
+        # have open may be showing a figure drawn from it. R01 — "שלילת
+        # הרשאה תסיר מיד מידע לא מורשה גם מפירוט שכבר פתוח."
+        bus.publish("perm.changed", board_id=board_id, actor_id=actor_id)
         return {"columns": cols}
 
 # ── Environment / workspace members (הזמנה לסביבה) ──────────────────
@@ -11423,8 +14987,20 @@ def _mirror_one(db, t, field):
         entry = next((x for x in _board_priorities(board) if x["key"] == str(key)), None) if board else None
         return e(entry["label"] if entry else key, (entry or {}).get("color"))
 
-    # a custom column on the linked item's own board
-    col = _find_col(db, t.board_id, field) if board else None
+    # A custom column on the linked item's own board, read off the board row
+    # already resolved above rather than fetched again.
+    #
+    # This was _find_col(db, t.board_id, field), which issues its own SELECT —
+    # three lines after `board` was taken out of the per-request cache for
+    # exactly this. One query per linked record per render: 40 records cost 74
+    # queries, 240 cost 274, and a lookup of 240 chips cost 731. It was
+    # survivable while only a `mirror` column reached here; a connect column's
+    # display_field put it on the ordinary path, which is 476 round trips to
+    # open one board — each a network hop on Postgres. The builtin fields
+    # (status, assignees) returned before this line and cost nothing, which is
+    # what pinned it.
+    col = next((c for c in ((board.settings or {}).get("columns") or [])
+                if str(c.get("id")) == str(field)), None) if board else None
     v = (t.custom_fields or {}).get(field)
     if col is None or v in (None, "", [], {}):
         return []
@@ -11534,6 +15110,9 @@ def _prefetch_links(db, tasks, columns, viewer):
     cols = [c for c in (columns or []) if c.get("type") == "connect"]
     if not cols or not tasks:
         return
+    # the cells of an open conversion that are still waiting for a person, for
+    # the whole board at once — see _prefetch_link_pending
+    _prefetch_link_pending(db, tasks, cols)
     ids = {t.id for t in tasks}
     two_way = {c["id"] for c in cols if _is_two_way(c)}
     cache = db.info.setdefault("_links_by", {})
@@ -11690,6 +15269,195 @@ def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] =
                           for t in rows],
                 "total": total, "has_more": off + len(rows) < total}
 
+# ── what a connect cell SAYS ────────────────────────────────────────────────
+# A connect cell has always shown the linked item's title, because a title is
+# what an item is called. On a real customers board it is not what a person
+# needs to read: the record is called "בית דגן" and the thing everybody says
+# out loud is "בית דגן - מועצה מקומית", which lives in a column beside it.
+#
+# So a connect column may name a field of the linked record to show instead:
+#     col["connect"]["display_field"]  —  "title" (the default) or a column id
+#
+# DISPLAY ONLY. Links are stored by item id and nothing about matching,
+# writing, reverting or the two-way rows knows this exists. Turning it off
+# changes what a cell reads and nothing else.
+#
+# Not to be confused with the `mirror` COLUMN TYPE, which shows a field of the
+# linked item in a column of its own. Same question, two answers, and both are
+# wanted: a mirror is a second column you can sort and filter by, this is the
+# chip itself reading usefully.
+#
+# ── and it is a permission surface, which match_field was not ───────────────
+# A match field is read once, by the one board admin running a conversion. A
+# display field is read by EVERY person who can open the source board, on
+# every render, and the value comes off a column on ANOTHER board — one they
+# may never have been given. So the gate is per viewer and at read time, and
+# the admin's own sight of the column when they configured it grants nothing:
+# see _link_display_text, where a refusal falls back to the title rather than
+# blanking the cell. A blank chip would read as a broken link, and the word
+# "מוסתר" would itself be the disclosure.
+def _display_field(col):
+    f = str(_connect_cfg(col).get("display_field") or "title").strip()
+    return f or "title"
+
+
+def _display_field_or_400(db, target_board_id, field, actor_id):
+    """The display field as it will be stored, or the refusal that says why not.
+
+    Wider than a match field on purpose. A match field has to IDENTIFY a
+    record, so it is restricted to the handful of types that can; a display
+    field only has to be worth looking at, and a date, a person or a status
+    all are. What it may not be is a link or another mirror — a chip showing
+    a chip is its own feature and not this one.
+    """
+    f = str(field or "title").strip() or "title"
+    if f == "title" or f in _MIRROR_BUILTINS:
+        return f
+    col = _find_col(db, target_board_id, f)
+    # The same 404 a column that is not there gets, for a column this person
+    # may not read: see _match_field_col. Nothing is hidden by it — the board
+    # payload already lists the column with col_perms saying "none" — it is
+    # simply not a field they can choose to show.
+    if col is None or _col_perm(col, actor_id,
+                               _board_role(db, target_board_id, actor_id)) == "none":
+        raise HTTPException(404, "השדה שנבחר אינו קיים בלוח היעד")
+    if (col.get("type") or "") in ("connect", "mirror"):
+        raise HTTPException(400, "אי אפשר להציג עמודת קישור או שדה מראה בתוך תא קישור")
+    return f
+
+
+def _far_board(db, board_id):
+    """A linked item's board, out of the per-request cache where there is one."""
+    bb = db.info.get("_board_by")
+    if bb is not None and board_id in bb:
+        return bb[board_id]
+    return (db.query(Board).filter(Board.id == board_id)
+            .execution_options(include_deleted=True).first())
+
+
+def _far_role(db, board_id, viewer):
+    """The viewer's role on a linked item's board, out of _link_states' cache."""
+    if viewer is None:
+        return None
+    roles = db.info.setdefault(("_brole", viewer), {})
+    if board_id not in roles:
+        roles[board_id] = _board_role(db, board_id, viewer)
+    return roles[board_id]
+
+
+def _link_display_text(db, t, field, viewer):
+    """What this connect cell shows for this linked record, for THIS reader.
+
+    Three things send it back to the title, and all three are the same
+    decision — the cell must keep saying something true that the reader was
+    already entitled to, because the title is what /api/tasks/lookup has
+    always given them:
+
+      · the field is not a column on that record's board any more
+      · the reader may not see that column there (_col_perm, per viewer, now —
+        the admin who chose the field is not who is reading it)
+      · the record has no value in it. 144 of the 500 records on the board
+        this was built for leave "שם לקוח מלא" empty, so this is the common
+        case and not an edge: an empty chip reads as a broken link.
+    """
+    if not field or field == "title" or t is None:
+        return (t.title if t is not None else "") or ""
+    if field in _MIRROR_BUILTINS:
+        # status, priority, due, assignees — part of the item rather than a
+        # column of its own, so there is no per-column permission to ask about.
+        # Seeing the item at all is the gate, and the connect column already
+        # enforced that (_visible_link_ids) before any id got this far.
+        text = ", ".join(e["text"] for e in _mirror_one(db, t, field) if e.get("text"))
+        return text or (t.title or "")
+    board = _far_board(db, t.board_id)
+    col = next((c for c in ((board.settings or {}).get("columns") or [])
+                if str(c.get("id")) == str(field)), None) if board else None
+    if col is None:
+        return t.title or ""
+    if viewer is not None and _col_perm(col, viewer, _far_role(db, t.board_id, viewer)) == "none":
+        return t.title or ""
+    text = ", ".join(e["text"] for e in _mirror_one(db, t, field) if e.get("text"))
+    return text or (t.title or "")
+
+
+def _link_display_map(db, ids, field, viewer):
+    """{id: text} for the records a cell shows, skipping the ones that read as
+    their own title — the caller already has those."""
+    out = {}
+    if not field or field == "title":
+        return out
+    tb = db.info.get("_task_by") or {}
+    missing = [i for i in ids if i not in tb]
+    if missing:                                   # a path that never prefetched
+        for part in [missing[i:i + _PREFETCH_CHUNK]
+                     for i in range(0, len(missing), _PREFETCH_CHUNK)]:
+            for ft in (db.query(Task).options(selectinload(Task.assignees))
+                       .filter(Task.id.in_(part))
+                       .execution_options(include_deleted=True).all()):
+                tb[ft.id] = ft
+        db.info["_task_by"] = tb
+    # And their boards, in one query, for the same reason. The display text is
+    # read off the far board's column list, so without this every record costs
+    # a SELECT boards — twice, once here and once inside _mirror_one. A lookup
+    # of 240 chips was 491 queries on that account; the board read never paid
+    # it only because _prefetch_links happens to warm the same cache.
+    bb = db.info.setdefault("_board_by", {})
+    bneed = sorted({tb[i].board_id for i in ids
+                    if i in tb and tb[i].board_id is not None and tb[i].board_id not in bb})
+    if bneed:
+        for part in [bneed[i:i + _PREFETCH_CHUNK]
+                     for i in range(0, len(bneed), _PREFETCH_CHUNK)]:
+            for fb in (db.query(Board).filter(Board.id.in_(part))
+                       .execution_options(include_deleted=True).all()):
+                bb[fb.id] = fb
+    for i in ids:
+        t = tb.get(i)
+        if t is None:
+            continue
+        text = _link_display_text(db, t, field, viewer)
+        if text and text != (t.title or ""):
+            out[str(i)] = text
+    return out
+
+
+def _board_link_display(db, tasks_out, columns, viewer):
+    """{col_id: {id: text}} for a whole board render, off what is already loaded.
+
+    An override map and not a copy of every chip: the browser resolves a
+    connect cell's titles through /api/tasks/lookup as it always has, and this
+    says only where the column was told to show something else. A record whose
+    display field is empty or closed to this reader is simply absent from it.
+
+    Nothing is fetched per record. _prefetch_links has already loaded every
+    linked item and its board for the link cells themselves, and this reads
+    the same two caches — the discipline _prefetch_link_pending follows, for
+    the same reason: it runs once per render, never once per record.
+
+    "No queries of its own" is what this said before, and it was not true —
+    _mirror_one underneath was re-fetching the far board for every record
+    (see the comment there). It is true now, and it is the kind of claim
+    somebody will build on, so it is worth keeping honest.
+    """
+    cols = [c for c in (columns or []) if c.get("type") == "connect"
+            and _display_field(c) != "title"]
+    if not cols or not tasks_out:
+        return {}
+    out = {}
+    for c in cols:
+        cid, field, ids = str(c["id"]), _display_field(c), []
+        seen = set()
+        for row in tasks_out:
+            for holder in [row] + list(row.get("subtasks") or []):
+                for i in ((holder.get("custom_fields") or {}).get(cid) or []):
+                    if isinstance(i, int) and i not in seen:
+                        seen.add(i)
+                        ids.append(i)
+        m = _link_display_map(db, ids, field, viewer)
+        if m:
+            out[cid] = m
+    return out
+
+
 def _item_link_map(db, task, cols, viewer):
     """Every connect column on this item → the linked ids the viewer may see."""
     out = {}
@@ -11825,14 +15593,29 @@ def task_related(task_id: int, actor_id: int = Depends(current_user_id)):
 
 @app.get("/api/boards/{board_id}/mirror-sources")
 def mirror_sources(board_id: int, connect: str = "", actor_id: int = Depends(current_user_id)):
-    """Which fields a mirror column on this board could show, per connect column.
+    """Which fields of a linked record this board could show, per connect column.
 
     Built from the boards the connect column actually points at, so the admin
     picks from what exists rather than typing a field name and finding out later
     that nothing resolves. Fields common to several target boards are offered
     once; a custom column that exists on only one of them is labelled with the
-    board it comes from, because picking it means the mirror is empty for links
+    board it comes from, because picking it means the value is empty for links
     into the others.
+
+    Two features read this one list, and deliberately so: the mirror COLUMN,
+    which shows a linked field in a column of its own, and a connect column\'s
+    `display_field`, which shows it in the chip. They are the same question —
+    "which field of the far record can be shown?" — so a second endpoint
+    answering it would be a second list to keep in step. It is NOT the same
+    question link-match/fields answers: that one asks which field can IDENTIFY
+    a record, which is a much narrower thing (a date identifies nobody).
+
+    The columns are filtered by what the ASKER may see, which is new. Offering
+    a column by name with its type, from a board where it is closed to them,
+    is the same small leak the match-field list had. Note what it is not: this
+    is a configuration-time courtesy, and it authorises nothing at read time —
+    every reader of the resulting cell is gated again, per reader, in
+    _link_display_text.
     """
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
@@ -11853,10 +15636,13 @@ def mirror_sources(board_id: int, connect: str = "", actor_id: int = Depends(cur
             seen = {}
             for tb in targets:
                 tboard = db.query(Board).filter(Board.id == tb).first()
+                trole = _board_role(db, tb, actor_id)
                 for tc in _board_columns(db, tb):
                     # a mirror of a link, or of another mirror, is its own
                     # feature — not offered here
                     if tc.get("type") in ("connect", "mirror") or not tc.get("id"):
+                        continue
+                    if _col_perm(tc, actor_id, trole) == "none":
                         continue
                     seen.setdefault(tc["id"], {"key": tc["id"], "label": tc.get("title") or tc["id"],
                                                "builtin": False, "type": tc.get("type"), "boards": []})
@@ -12361,8 +16147,2020 @@ def column_retype(board_id: int, col_id: str, data: dict,
                 "options": p["options"]}
 
 
+# ── המרת עמודה לעמודת "חיבור ללוח" ──
+# The retype above carries a column's words into another SHAPE. This carries
+# them into a RELATIONSHIP, which is a different kind of change and is why
+# "connect" is not in COLUMN_RETYPE_TYPES: there is no rule that turns the word
+# "עיריית חיפה" into a link, only a record on some other board that happens to
+# be called that. So the conversion is a search, and a search can fail.
+#
+# The whole feature is the discipline around that failure. A link is written
+# only where exactly one record the actor may see carries exactly that value;
+# anything else — nothing found, two things found, more values than a
+# single-link column can hold — is an exception a person resolves by hand. The
+# board is never guessed at: no record is invented on the target board, and no
+# original value is destroyed. Every non-empty cell's value is copied into a
+# ColumnConversionCell first, and it stays there until the last exception has
+# been dealt with, which is both what makes the exception list readable and
+# what makes "ביטול ההמרה" able to put the board back exactly.
+
+# The one normalisation, and there is deliberately nothing else. Trim, collapse
+# internal whitespace, casefold. No punctuation stripping, no prefix match, no
+# edit distance: a conversion that guesses is a conversion whose output nobody
+# can check, and the entire value of this feature is that its output can be
+# checked. Hebrew is unaffected by casefold; the column may well hold Latin.
+def _match_key(v):
+    return " ".join(str(v).split()).casefold()
+
+
+# The four shapes a cell holds when it holds nothing — exactly what _cell_words
+# short-circuits on. Told apart from "holds something that reads as no words",
+# which is a checkbox that is False, a text cell of spaces, a date nothing can
+# parse: those have a value to keep and a value that must not be left sitting
+# under a column that has become a link.
+def _blank_cell(v):
+    return v is None or v == "" or v == [] or v == {}
+
+
+# What a record can be identified BY. Everything here reads back as a word a
+# person could have typed into the source column. A people or date column
+# could too, in principle, but neither identifies a record — two items with
+# the same owner or the same deadline are not the same customer — and offering
+# them would mostly produce ambiguity.
+LINK_MATCH_FIELD_TYPES = frozenset({
+    "text", "long_text", "email", "phone", "number", "status", "dropdown",
+    "item_id"})
+
+LINK_MATCH_FIELD_HE = {"title": "שם הפריט"}
+
+
+# ── השוואה חכמה: the tier ladder ────────────────────────────────────────────
+# The exact rule above is right and is also, on real data, too strict. Three
+# shapes a person reads instantly and `" ".join(split()).casefold()` cannot:
+#
+#     אשדוד עירייה      ↔  אשדוד          the descriptor is not the identity
+#     קרן קיימת לישראל  ↔  קק״ל           an acronym, once the gershayim go
+#     ירוחם מועצה מקומית ↔ ירוחם          the same, two descriptors deep
+#
+# So there is a ladder of five tiers, walked loosest-last, and two rules hold
+# it together.
+#
+# The first: ONLY tiers 0 and 1 link by themselves. A tier-1 match is one
+# string spelled two ways — קק״ל and קקל are not two claims about the world —
+# whereas tiers 2 to 4 change WHICH WORDS are being compared, and that is a
+# judgement. Those become `suggested`: proposed with their reason, accepted by
+# a person in bulk or row by row. אשדוד by containment can reach נמל אשדוד as
+# easily as עיריית אשדוד, and a wrong link here is the wrong customer on a
+# project, found months later. "אין לנחש התאמות" survives intact, because a
+# proposal somebody confirmed is not a guess.
+#
+# The second: A TIER IS TAKEN ONLY WHEN IT YIELDS EXACTLY ONE CANDIDATE, and
+# when it yields two or more the walk STOPS there. It does not fall through to
+# a looser tier hoping for a cleaner answer — two records answering at tier 2
+# is genuine ambiguity, and letting tier 3 overrule it is exactly how a precise
+# rule turns into a sloppy one. The caller sees which tier answered and how
+# many it answered with; the ladder never decides between them.
+
+# Removed outright, because they are spelling and not words: the Hebrew geresh
+# and gershayim and their ASCII stand-ins, and the dots an abbreviation is
+# written with — מ.מ. is ממ, not two words.
+_PUNCT_DROP = "׳״'\"`‘’“”."
+# Turned into a space, because they SEPARATE words. The hyphen is the whole
+# reason this tier matters: on the board this was measured against, 416 of 476
+# cells read "<town> - <what kind of body>" — 'אשדוד - עיריה',
+# 'הוד השרון -עיריה' with no space in front of it, 'שפיר - מועצה אזורית'. A
+# hyphen normalised to a space turns every one of those into ordinary words
+# that tier 2 can then take the descriptor off.
+#
+# Normalised and not SPLIT ON, which was the first idea and is wrong: the
+# target side holds 'מודיעין-מכבים-רעות', one town written with two hyphens,
+# and splitting at the first one would have left 'מודיעין' and lost the rest.
+_PUNCT_SPACE = "-–—,()[]{}/\\|:;_"
+_PUNCT_TABLE = {ord(c): None for c in _PUNCT_DROP}
+_PUNCT_TABLE.update({ord(c): " " for c in _PUNCT_SPACE})
+# כתיב מלא/חסר. The same name is written both ways by different people and
+# both ways on the same board: פתח תקווה and פתח תקוה, גן רווה and גן רוה,
+# עירייה and עיריה. Doubled ו and doubled י are the two that carry nearly all
+# of it, and collapsing them is reversible nonsense in neither direction — no
+# pair of DIFFERENT Hebrew names is told apart by it alone.
+_KTIV_RE = re.compile(r"ו{2,}|י{2,}")
+
+
+def _punct_key(v):
+    """Tier 1 — the exact key with the spelling taken out of it.
+
+    Deliberately an AUTO-link tier and not a suggestion. קק״ל, קק"ל and קקל
+    are one name typed three ways; פתח תקוה and פתח תקווה are one town spelled
+    two ways; 'מודיעין מכבים רעות' and 'מודיעין-מכבים-רעות' are one town
+    punctuated two ways. None of those is two claims about the world, and
+    refusing to join them would be pedantry rather than caution — the same set
+    of letters is in the same order and the same words are in the same places.
+
+    What it does NOT do is remove the spaces. Word boundaries are information:
+    'עיריית חיפה' and 'עירייתחיפה' may well be the same thing, but deciding
+    that is a judgement, so it waits for the `spelling` tier and a person.
+    """
+    out = str(v).translate(_PUNCT_TABLE)
+    return _KTIV_RE.sub(lambda m: m.group(0)[0], _match_key(out))
+
+
+def _spelling_key(v):
+    """Tier 1.5 — tier 1 with the word boundaries gone as well.
+
+    The one thing tier 1 refuses to decide by itself. "ג'סר א זרקא" and
+    "ג'סר אזרקא" are the same village with the space in a different place, and
+    that is worth proposing; it is not worth linking unasked, because dropping
+    the boundaries is the one normalisation here that can weld two different
+    names into one string.
+
+    It is a SUGGEST tier for that reason, and it sits above the descriptor tier
+    rather than below it: it changes how the words are spelled, not which of
+    them are being compared.
+
+    Measured: this tier earns NOTHING on the board it was built against — the
+    one cell it was meant for, "ג'סר א זרקא -מועצה מקו", also carries a
+    truncated descriptor, so it misses anyway. Kept deliberately all the same.
+    It is cheap, it cannot link anything on its own, and the next board will
+    not have this one's shape. Do not read it as load-bearing.
+    """
+    return _punct_key(v).replace(" ", "")
+
+
+# Words that say what KIND of body this is and not WHICH one. Written the way
+# a person would write them and normalised through _punct_key below, so "בע״מ"
+# and "מ.מ." are listed as they are read rather than as they are stored, and
+# so both spellings of עירייה/עיריה collapse onto one entry.
+#
+# ── BEFORE ADDING A WORD HERE, READ THIS ───────────────────────────────────
+# This list feeds the one tier whose proposals are reliable enough to accept
+# in bulk, so a wrong entry here is not a bad suggestion somebody reviews —
+# it is a wrong link written by a button nobody looked at twice. Two words
+# nearly made it in and must not: עירונית and כלכלית. The target board holds
+# municipal companies beside the municipalities that own them — 'חברה עירונית
+# ראשון לציון' next to 'ראשון לציון', 'חכ"ל אשקלון' and 'מי אשקלון' next to
+# 'אשקלון'. Those two words are the ONLY thing telling the company from the
+# town. With them dropped, five measured cells would have proposed the wrong
+# customer from inside the bulk-accept band; left in, those same five land on
+# `contains`, where they are reviewed one at a time.
+#
+# This is the tier that does the work: 416 of 476 cells on the board this was
+# measured against are a town followed by one of these, either after a hyphen
+# ('אשדוד - עיריה') or in front of it as a bare prefix ('עירית נהריה'). Both
+# shapes are the same thing once the hyphen is a space — a token to drop.
+#
+# A multi-word descriptor is listed as its words: 'מועצה מקומית תעשייתית' is
+# מועצה + מקומית + תעשייתית, all three of which are safe to drop on their own.
+#
+# The list exists to be extended as real data arrives, and the test for adding
+# to it is one question: could dropping this word make two DIFFERENT records
+# read alike? If it could, it is not a descriptor.
+#
+# Which is why none of these is here, and none of them may be added:
+# קיבוץ · מושב · כפר · בית · נווה · רמת · קרית/קריית · גבעת. They look like
+# the same sort of prefix and they are the opposite — they are the identity.
+# קריית גת minus קריית is גת, a different place entirely, and a conversion
+# that proposed one for the other would be proposing the wrong town.
+#
+# Nor עירונית and כלכלית, and that one is less obvious. The target board
+# holds municipal companies beside their municipalities — 'חברה עירונית
+# ראשון לציון' next to 'ראשון לציון', 'חכ"ל אשקלון' and 'מי אשקלון' next to
+# 'אשקלון'. Those words are what tells the company from the town that owns
+# it. Dropping them would collapse six records onto one and, worse, would do
+# it at the DESCRIPTOR tier, where the proposals are otherwise reliable
+# enough to accept in bulk.
+_ORG_DESCRIPTOR_WORDS = (
+    "עירייה", "עיריה", "עיריית", "עירית", "עיר",
+    "מועצה", "מקומית", "אזורית", "תעשייתית", "מ.מ.", "מ.א.",
+    "רשות", "ועד", "חברת", "חברה", 'בע"מ', "עמותת", "עמותה", "איגוד",
+    "מנהלת",
+)
+# Each of them again with the definite article, generated rather than listed.
+# "אשדוד העירייה" and "רמלה המועצה" are written as often as the bare forms
+# and were missing the descriptor tier entirely, falling all the way to
+# `contains` — the one tier that regularly names the wrong customer.
+#
+# Generated and not hand-listed so the two can never drift: the list's single
+# test is "could dropping this word make two DIFFERENT records read alike?",
+# and a word that passes it passes it with its article too. The corollary is
+# worth knowing before adding anything — a word added here is stripped in
+# both forms, so the judgement that keeps עירונית and כלכלית OUT (above)
+# governs העירונית and הכלכלית with it.
+_ORG_DESCRIPTORS = frozenset(
+    [_punct_key(w) for w in _ORG_DESCRIPTOR_WORDS]
+    + [_punct_key("ה" + w) for w in _ORG_DESCRIPTOR_WORDS if w[:1] != "ה"])
+
+
+def _descriptor_key(v):
+    """Tier 2 — the tier-1 key with the organisational descriptors removed.
+
+    "" when there is nothing left, and that is not the same as "no match": a
+    side that is ALL descriptor — a cell reading just "עירייה" — says which
+    kind of body and never which one, so it sits out tiers 2 and 4 rather than
+    matching every municipality on the board.
+
+    Both sides go through it, which is what keeps it honest: if the record is
+    called 'חברה עירונית ראשון לציון' the word חברה comes off the record too,
+    so the comparison is still between what the two names actually say.
+    """
+    toks = [w for w in _punct_key(v).split() if w not in _ORG_DESCRIPTORS]
+    return " ".join(toks)
+
+
+def _acronym_key(toks):
+    """Tier 3 — the first letter of each word, for a side of two words or more.
+
+    Only ever built from the long side: the acronym of a single word is its
+    first letter, which would match a third of the board.
+
+    Measured: like `spelling`, this earns nothing on the board it was built
+    against — "קרן קיימת לישראל" appears nine times there and the קק״ל record
+    simply is not on the target board, so there is no acronym to find. Kept
+    for the same reasons: cheap, suggest-only, and the case it answers is real
+    even where this dataset has no instance of it. Not load-bearing.
+    """
+    return "".join(t[0] for t in toks if t) if len(toks) >= 2 else ""
+
+
+# Loosest last, and the order is load-bearing twice: _match_tier walks it in
+# this order, and a cell whose words landed on different tiers is described by
+# the loosest of them.
+# Ordered by TIGHTNESS, loosest last, and that is what the walk below obeys:
+# a tier may only ever be overruled by a tighter one. `truncated` demands the
+# leftover be nothing but a cut-off descriptor, which cannot change which body
+# is named; `abbrev` demands both sides be consumed entirely; `contains` asks
+# only that one name sit inside the other, which is why it comes last and is
+# the only one that regularly proposes the wrong customer.
+LINK_TIERS = ("exact", "punct", "spelling", "descriptor", "acronym",
+              "truncated", "abbrev", "contains")
+LINK_TIER_AUTO = ("exact", "punct")        # the two that link without asking
+# The suggest tiers whose proposals are reliable enough to arrive ticked. Not
+# a statement that they are always right — nothing here links by itself — but
+# that an admin skimming the list will be agreeing with them, so making them
+# tick the box each time teaches them to stop reading it.
+LINK_TIER_ON_BY_DEFAULT = ("descriptor", "truncated")
+LINK_TIER_HE = {
+    "exact":      "התאמה מדויקת",
+    "punct":      "אותו שם, בכתיב אחר",
+    "spelling":   "אותו שם, רווחים במקום אחר",
+    "descriptor": "אותו שם ללא תיאור סוג הגוף",
+    "acronym":    "ראשי תיבות",
+    "abbrev":     "אותו שם, חלק מהמילים מקוצרות",
+    "truncated":  "אותו שם, תיאור הגוף נקטע",
+    "contains":   "שם אחד מוכל בשני",
+}
+LINK_TIER_NOTE_HE = {
+    "abbrev":     "מילים מקוצרות הושלמו — ודאו שזו אותה רשומה ולא חברת בת "
+                  "של אותו גוף",
+    "truncated":  "הערך בתא נקטע באמצע תיאור סוג הגוף — השם עצמו זהה",
+    "contains":   "השם מוכל בשני, אך נותרו מילים נוספות — ודאו שזה אותו גוף "
+                  "ולא חברה עירונית של אותה רשות",
+}
+
+# How much of a descriptor has to survive a truncation before the leftover
+# counts as one. Three, so a stray letter does not qualify: 'אזו' and 'מקו'
+# are plainly the start of אזורית and מקומית, 'מי' is a word.
+LINK_TRUNCATION_MIN = 3
+
+# Prefixes that clear that bar and are ordinary words in their own right, so
+# they are not evidence of anything having been cut short. Length alone
+# cannot tell them apart — חבר is three letters of חברה and is also "member",
+# מנהל is four of מנהלת and is also "manager" — and this is the band whose
+# proposals arrive ticked, so it gets a list rather than a heuristic.
+#
+# אזור is the one worth naming: it is the start of אזורית AND a town near
+# Holon that is on the live customers board, which is exactly the collision
+# the truncated tier must not make. Extend this whenever a leftover turns out
+# to be a word somebody could have meant.
+_NOT_REMNANTS = frozenset(_punct_key(w) for w in (
+    "חבר", "חברי", "מנה", "מנהל", "מנהלי", "עמו", "רשו", "אזור", "ועדה",
+))
+
+
+# ── abbreviation matching ───────────────────────────────────────────────────
+# The loosest rule in the feature, and the one that needed the most bounding.
+#
+# "חב' עירונית ראשון לציון" has to reach "חברה עירונית ראשון לציון", and that
+# needs two things nothing above can do: חב ↔ חברה, and — on the records that
+# spell it that way — ראשלצ ↔ ראשון לציון. One rule covers both. A token is an
+# abbreviation of a word when it is a PREFIX of it, and one token may stand for
+# several consecutive words when it is their prefixes run together: ראשלצ is
+# ראש|לצ. (The acronym tier cannot reach it; first letters give רל.)
+#
+# What keeps it from being sloppy is that the whole of both sides must be
+# consumed. Not "one name contains the other" — that is the tier below, and it
+# is the one that attaches municipal companies to their municipalities. Here
+# every word on each side has to be answered by a word on the other, so
+# 'החברה העירונית ראשל"צ לבטחון וסדר ציבורי' does NOT align with
+# "חב' עירונית ראשון לציון": the security subsidiary has three words the cell
+# never said, and a conversion that shrugged those off would be picking one
+# subsidiary out of five at random.
+LINK_ABBREV_MIN_FRAG = 2     # letters per piece of a run-together abbreviation
+LINK_ABBREV_MIN_TOKEN = 2    # a single letter abbreviates nothing; מ is half the board
+LINK_ABBREV_MAX_RUN = 4      # how many words one token may stand for
+
+
+def _abbrev_covers(tok, words):
+    """Is `tok` the prefixes of exactly these words, in order, with none left over?
+
+    ראשלצ over [ראשון, לציון] → ראש|לצ, yes. The whole token has to be spent
+    and every word has to get a piece of it, which is what stops a short token
+    from quietly standing for a long phrase.
+    """
+    if not words:
+        return not tok
+    w = words[0]
+    for n in range(LINK_ABBREV_MIN_FRAG, min(len(w), len(tok)) + 1):
+        if tok[:n] == w[:n] and _abbrev_covers(tok[n:], words[1:]):
+            return True
+    return False
+
+
+def _abbrev_one_word(tok, w):
+    """Does `tok` stand for the single word `w`, as an abbreviation of it?
+
+    A prefix is not enough, and this is where the rule nearly went wrong.
+    Screened over 1,285,606 pairs of real names from the live boards, a bare
+    prefix test admitted exactly three kinds of thing: ראשלצ ↔ ראשון לציון,
+    which is the point of the tier — and תמר ↔ תמרית and חב מודיעין ↔
+    חבל מודיעין, which are different places. A shorter word that happens to
+    start the same way is not an abbreviation of the longer one.
+
+    So a one-word-for-one-word abbreviation must be a real contraction: at
+    most HALF the word it stands for. חב for חברה is two letters of four and
+    passes; תמר for תמרית is three of five and does not; חב for חבל is two of
+    three and does not. The half rule is what separates every measured false
+    positive from every measured true one.
+
+    It applies only here, to a token standing for a SINGLE word. A token
+    standing for several — ראש|לצ — is self-evidently an abbreviation by its
+    shape, and holding its fragments to the same ratio would reject it.
+    """
+    if tok == w:
+        return True
+    if len(tok) < LINK_ABBREV_MIN_TOKEN or not w.startswith(tok):
+        return False
+    return len(tok) * 2 <= len(w)
+
+
+def _abbrev_align(a, b):
+    """Do these two token lists say the same thing, one of them abbreviated?
+
+    Both sides must be consumed entirely — that is the whole safety of the
+    rule, and the difference between it and containment. Either side may be
+    the abbreviated one, and which it is can change from word to word: a cell
+    may say חב for חברה and spell ראשון לציון out in full while the record
+    does the opposite.
+    """
+    memo = {}
+
+    def go(i, j):
+        if i == len(a) and j == len(b):
+            return True
+        if i >= len(a) or j >= len(b):
+            return False
+        if (i, j) in memo:
+            return memo[(i, j)]
+        ok = False
+        if len(a[i]) >= LINK_ABBREV_MIN_TOKEN:
+            for k in range(1, min(LINK_ABBREV_MAX_RUN, len(b) - j) + 1):
+                seg = b[j:j + k]
+                fits = (_abbrev_one_word(a[i], seg[0]) if k == 1
+                        else _abbrev_covers(a[i], seg))
+                if fits and go(i + 1, j + k):
+                    ok = True
+                    break
+        if not ok and len(b[j]) >= LINK_ABBREV_MIN_TOKEN:
+            for k in range(1, min(LINK_ABBREV_MAX_RUN, len(a) - i) + 1):
+                seg = a[i:i + k]
+                fits = (_abbrev_one_word(b[j], seg[0]) if k == 1
+                        else _abbrev_covers(b[j], seg))
+                if fits and go(i + k, j + 1):
+                    ok = True
+                    break
+        memo[(i, j)] = ok
+        return ok
+
+    return bool(a) and bool(b) and go(0, 0)
+
+
+def _descriptor_remnant(tok):
+    """Is this leftover word a descriptor, or the visible start of one?
+
+    What separates the containment this board actually needs from the one that
+    attaches the wrong customer. "חלקו מוכל" is a real and common case — the
+    source dropdown truncated its options at 22 characters, so
+    'שדות נגב - מועצה אזורי' is 'שדות נגב' with a HALF of a descriptor left
+    on the end. A half descriptor cannot change which body is named.
+
+    A leftover that is a real word can and does: 'החברה העירונית אשקלון' is
+    not 'אשקלון' and 'קרית הספורט והחינוך חיפה' is not 'חיפה'. This rule only
+    works because עירונית and כלכלית were kept OUT of _ORG_DESCRIPTORS — had
+    they been dropped as descriptors, those leftovers would read as remnants
+    and the wrong customers would arrive pre-ticked. That judgement is what
+    makes this one possible; do not undo it.
+    """
+    if tok in _ORG_DESCRIPTORS:
+        return True
+    if len(tok) < LINK_TRUNCATION_MIN or tok in _NOT_REMNANTS:
+        return False
+    return any(d.startswith(tok) and len(d) > len(tok) for d in _ORG_DESCRIPTORS)
+
+
+# Smart matching is the product's default and a deployment can switch the whole
+# ladder off, the way CITYOS_DUPLICATE_ITEM_LINKS switches a copy's links off:
+# an organisation whose boards are machine-generated wants tier 0 and nothing
+# else, and would rather not have the option in the wizard at all.
+def _smart_match_enabled():
+    return os.getenv("CITYOS_SMART_LINK_MATCH", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _link_match_ladder(records, fields):
+    """Every tier's index over the target board, built in ONE pass.
+
+    One pass and not one per tier, and certainly not one per word: the per-word
+    walk below asks up to six questions of this structure for every cell on
+    the source board, and re-reading the target board for any of them would
+    turn a conversion of six hundred items into a scan of the customers board
+    six hundred times over.
+
+    `fields` is [(field, col), …] in order of preference, and a record is
+    indexed under the FIRST of them it actually fills in — not under all of
+    them. Per record and not per board, because that is the shape the need
+    has: on the board this was built against, "שם לקוח מלא" carries the
+    source's exact format and is blank on 144 of the 500 records, whose own
+    name covers them. Indexing a record under every field it fills would be a
+    different and worse thing: it would let a record answer to a name its
+    admin chose not to identify it by, and manufacture ambiguity out of
+    fields nobody asked to match on.
+    """
+    lad = {"exact": {}, "punct": {}, "spelling": {}, "descriptor": {},
+           "acronym": {}, "abbrev_first": {}, "tokens": {}, "tokenset": {}}
+    for t in records:
+        words = []
+        for field, col in fields:
+            words = _match_words(t, field, col)
+            if words:
+                break
+        for w in words:
+            k0 = _match_key(w)
+            if not k0:
+                continue
+            lad["exact"].setdefault(k0, [])
+            if t.id not in lad["exact"][k0]:
+                lad["exact"][k0].append(t.id)
+            k1 = _punct_key(w)
+            if k1:
+                lad["punct"].setdefault(k1, [])
+                if t.id not in lad["punct"][k1]:
+                    lad["punct"][k1].append(t.id)
+                acro = _acronym_key(k1.split())
+                if acro:
+                    lad["acronym"].setdefault(acro, [])
+                    if t.id not in lad["acronym"][acro]:
+                        lad["acronym"][acro].append(t.id)
+                sp = k1.replace(" ", "")
+                lad["spelling"].setdefault(sp, [])
+                if t.id not in lad["spelling"][sp]:
+                    lad["spelling"][sp].append(t.id)
+                # Abbreviation is a pairwise alignment, not a key, so it
+                # cannot be a dict lookup — but it has one necessary
+                # condition that can be: an alignment has to start by
+                # matching the two FIRST tokens, and whichever way round
+                # that goes the first LINK_ABBREV_MIN_FRAG letters are
+                # shared. Bucketing on those turns "test this cell against
+                # every record on the board" into "test it against the
+                # handful whose name starts the same way".
+                _tk = k1.split()
+                if _tk:
+                    lad["abbrev_first"].setdefault(_tk[0][:LINK_ABBREV_MIN_FRAG], []) \
+                        .append((t.id, tuple(_tk)))
+            d = _descriptor_key(w)
+            if d:
+                lad["descriptor"].setdefault(d, [])
+                if t.id not in lad["descriptor"][d]:
+                    lad["descriptor"][d].append(t.id)
+                # the inverted index tier 4 narrows its subset test with — a
+                # record can only be a subset or a superset of a cell it shares
+                # at least one word with
+                toks = frozenset(d.split())
+                lad["tokenset"].setdefault(t.id, set()).update(toks)
+                for tok in toks:
+                    lad["tokens"].setdefault(tok, set()).add(t.id)
+    lad["tokenset"] = {i: frozenset(s) for i, s in lad["tokenset"].items()}
+    return lad
+
+
+def _match_tier(word, lad, smart):
+    """(tier, [candidate ids]) — the first tier that answers anything at all.
+
+    "Anything at all" and not "exactly one" on purpose: a tier that answers
+    with two is the end of the walk, and the caller reports those two as the
+    ambiguity they are. Descending to a looser tier to break a tie would mean
+    the sloppier rule overruling the stricter one, which is the wrong way round.
+    """
+    hit = lad["exact"].get(_match_key(word)) or []
+    if hit or not smart:
+        return ("exact", hit) if hit else ("", [])
+
+    k1 = _punct_key(word)
+    hit = lad["punct"].get(k1) or [] if k1 else []
+    if hit:
+        return "punct", hit
+
+    sp = k1.replace(" ", "")
+    hit = (lad["spelling"].get(sp) or []) if sp else []
+    if hit:
+        return "spelling", hit
+
+    d = _descriptor_key(word)
+    if d:
+        hit = lad["descriptor"].get(d) or []
+        if hit:
+            return "descriptor", hit
+
+    # Tier 3 reads whichever side is the long one. A one-word cell is looked up
+    # among the acronyms of the board's multi-word records (קק״ל → קרן קיימת
+    # לישראל); a multi-word cell has its own acronym looked up among the
+    # board's plain names (קרן קיימת לישראל → קק״ל).
+    toks1 = k1.split()
+    if len(toks1) == 1:
+        hit = lad["acronym"].get(k1) or []
+    else:
+        acro = _acronym_key(toks1)
+        hit = (lad["punct"].get(acro) or []) if acro else []
+    if hit:
+        return "acronym", hit
+
+    # ── the last three, and they are asked in order of tightness ──
+    # Containment is computed first because the tightest of the three comes
+    # out of it: a cell that is a record plus a cut-off descriptor. Then
+    # abbreviation, which may overrule a containment ambiguity precisely
+    # BECAUSE it is tighter — "חב' עירונית ראשון לציון" is two records by
+    # containment (the city and its company) and one by alignment, and the
+    # one is right. Bare containment is the last thing tried and the only one
+    # of the three that regularly names the wrong customer.
+    #
+    # This is not the fall-through the rule above forbids. That one is
+    # descending to a LOOSER tier to break a tie, which lets the sloppier rule
+    # overrule the stricter. This is the opposite and is the same principle
+    # read in the right direction.
+    con_hit, con_kind = [], {}
+    if d:
+        want = frozenset(d.split())
+        near = set()
+        for tok in want:
+            near |= lad["tokens"].get(tok, set())
+        # A subset of the TOKENS, never a substring of the letters, and the
+        # difference is the whole safety of this tier. The target board holds
+        # municipal companies beside their municipalities — אשקלון alongside
+        # חכ"ל אשקלון, מי אשקלון, חוף אשקלון and three more — and "אשקלון" as
+        # a substring reaches all seven of them. As a token subset it reaches
+        # them too, which is exactly why the caller refuses a tier that
+        # answers more than once: seven candidates is ambiguity and the walk
+        # stops there.
+        #
+        # The case to keep in mind when touching this: "חב' עירונית ראשון
+        # לציון" is a DIFFERENT customer from "ראשון לציון", and the only
+        # thing standing between them is that this tier proposes rather than
+        # links, and that a second near-record turns the proposal into an
+        # ambiguity. Never loosen it into a substring test.
+        #
+        # Strict either way: equality was tier 2 and would be counted twice,
+        # and a record sharing no words is not a containment at all.
+        for i in sorted(near):
+            them = lad["tokenset"].get(i, frozenset())
+            # strict either way: equality was tier 2 and would be counted twice
+            if want < them:
+                leftover = them - want
+            elif them < want:
+                leftover = want - them
+            else:
+                continue
+            con_hit.append(i)
+            # The whole of the difference between the two tiers is in the
+            # LEFTOVER — the words one side has that the other does not. All
+            # of them descriptor remnants and the value was simply cut short;
+            # one real word among them and it may well be a different body.
+            con_kind[i] = ("truncated"
+                           if leftover and all(_descriptor_remnant(x) for x in leftover)
+                           else "contains")
+
+    # The tightest of the three: ONE record, plus a descriptor somebody's field
+    # length cut in half.
+    #
+    # One, and the count is the whole of it. This used to filter a
+    # multi-candidate containment down to its single `truncated` member and
+    # return that — so a board holding both אשקלון and אשקלון אזורי מפעלים
+    # answered the cell אשקלון מועצה אזורי with אשקלון alone, on the tier that
+    # arrives TICKED, and the admin never saw the second. "A tier yielding two
+    # or more stops the walk" is not a rule about how the candidates are
+    # labelled; X beside X-plus-two-words is the commonest shape on a
+    # customers board, and it is the same shape that produced every wrong
+    # containment we have measured.
+    if len(con_hit) == 1 and con_kind[con_hit[0]] == "truncated":
+        return "truncated", con_hit
+
+    # Abbreviation is asked even where containment found several, and that is
+    # NOT the fall-through the rule forbids. The distinction is whether a
+    # tier is a different SEARCH or merely a different LABEL on the same hits.
+    # `truncated` is a label on containment's own candidates, so filtering
+    # them by it is the tier contradicting its own search — the bug above.
+    # `abbrev` is a different predicate over the whole board with a candidate
+    # set of its own: "חב' עירונית ראשון לציון" is two records by containment
+    # (a city and its company) and exactly one by alignment, because only one
+    # of them says the same words. A tighter question with a unique answer is
+    # not a tie being broken by a looser rule.
+    if toks1:
+        near = lad["abbrev_first"].get(toks1[0][:LINK_ABBREV_MIN_FRAG]) or []
+        hit = []
+        for rid, rtoks in near:
+            if rid not in hit and _abbrev_align(toks1, list(rtoks)):
+                hit.append(rid)
+        if hit:
+            return "abbrev", sorted(hit)
+
+    if con_hit:
+        # One candidate keeps its own label; two or more is an ambiguity and
+        # is reported as every record that answered, under the looser name.
+        return (con_kind[con_hit[0]] if len(con_hit) == 1 else "contains"), con_hit
+    return "", []
+
+
+def _match_field_offered(col, actor_id, target_role):
+    """Is this column of the target board one this person may identify a record by?
+
+    Its TYPE was the only question here, and that made a column closed to
+    somebody usable BY them: type a candidate ח.פ. into a column on your own
+    board, run the preview, and `matched: 1` with the record's title in
+    `samples` confirms whose number it is. No write and no audit line, through
+    a column the board admin had explicitly set to "none".
+
+    What leaked was the VALUES, not the existence — the board payload already
+    hands every member the full column list with col_perms saying "none", so
+    there was never anything secret about the column being there. Offering it
+    here is dropped all the same: a field nobody may read the values of cannot
+    identify a record for them, so naming it is only an invitation to the
+    above. Every other read path asks _col_perm (see _col_plan's `hidden`);
+    this one now does too.
+    """
+    if (col.get("type") or "") not in LINK_MATCH_FIELD_TYPES:
+        return False
+    return _col_perm(col, actor_id, target_role) != "none"
+
+
+def _match_field_col(db, target_board_id, match_field, actor_id):
+    """The target column a match field names, or None for "title".
+
+    A column this person may not read the values of answers the same 404 a
+    column that does not exist does. Not to hide that it is there — the board
+    payload already tells them, with col_perms saying "none" — but because for
+    the purpose of this endpoint it genuinely is not a field: there is nothing
+    in it they may be matched against, so there is nothing to refuse them with
+    a second, more specific sentence.
+    """
+    if match_field == "title":
+        return None
+    col = _find_col(db, target_board_id, match_field)
+    if col is None:
+        raise HTTPException(404, "השדה שנבחר אינו קיים בלוח היעד")
+    if (col.get("type") or "") not in LINK_MATCH_FIELD_TYPES:
+        raise HTTPException(400, "אי אפשר לזהות רשומה לפי השדה הזה")
+    if _col_perm(col, actor_id, _board_role(db, target_board_id, actor_id)) == "none":
+        raise HTTPException(404, "השדה שנבחר אינו קיים בלוח היעד")
+    return col
+
+
+def _match_field_chain(db, target_board_id, match_field, fallback, actor_id):
+    """[(field, col), …] — the field a record is identified by, then the spare.
+
+    A second field, used only where the first is empty on that record. It is
+    one option and not a list of them on purpose: "identify a customer by its
+    full name, or by its name if it has no full name" is a sentence an admin
+    can check against the board in front of them, and a chain of five is not.
+
+    What the measurement said, because the shape of the answer came from it:
+    on the board this was built against the right primary field matched 436
+    of 476 cells with no smart matching at all, and the fallback added one
+    more. Its real value was elsewhere — it put 144 otherwise-unindexed
+    records into the ladder, and five cells that had been proposing the WRONG
+    customer with perfect confidence ("חב' עירונית ראשון לציון" → "ראשון
+    לציון") became honest ambiguities the moment the record they really meant
+    was in the index beside it. A second identity does not only find more; it
+    stops the first one being sure when it should not be.
+    """
+    out = [(match_field, _match_field_col(db, target_board_id, match_field, actor_id))]
+    fb = str(fallback or "").strip()
+    if fb and fb != match_field:
+        out.append((fb, _match_field_col(db, target_board_id, fb, actor_id)))
+    return out
+
+
+def _match_words(task, field, col):
+    """The words this record is known by, in the field the admin chose.
+
+    Through _cell_words, so a status reads as its label and a dropdown as each
+    of its values — a record whose "סוג" says both "עירייה" and "מועצה" is
+    findable under either, which is what a person reading that cell expects.
+    "מזהה פריט" is the one field that is not a cell at all: it is minted onto
+    the item itself, so it is read from there.
+    """
+    if field == "title":
+        s = str(task.title or "").strip()
+        return [s] if s else []
+    if col is None:
+        return []
+    if (col.get("type") or "") == "item_id":
+        s = str(task.item_uid or "").strip()
+        return [s] if s else []
+    return _cell_words(col, task, {})
+
+
+def _link_match_records(db, target_board_id, actor_id):
+    """The records on the target board that may be matched against, for this actor.
+
+    Deliberately the same population the connect picker offers (see
+    /api/items/search): live, not archived, not a sub-item, and not individually
+    closed to this person. A record they cannot see must not produce a match —
+    that would link them to something they are not allowed to open — and must
+    not produce an AMBIGUITY either: it does not exist for this run, so it
+    cannot be a second answer to a question that otherwise had one.
+    """
+    q = (db.query(Task).filter(Task.board_id == target_board_id,
+                               Task.is_archived == False,          # noqa: E712
+                               Task.parent_id == None))            # noqa: E711
+    denied = [r[0] for r in db.query(Task.id).filter(
+        Task.board_id == target_board_id,
+        Task.permissions[str(actor_id)].as_string() == "none").all()]
+    if denied:
+        q = q.filter(~Task.id.in_(denied))
+    return q.order_by(Task.position, Task.id).all()
+
+
+def _link_match_index(records, field, col):
+    """value → the records carrying it, in board order.
+
+    A list rather than a single id because "two records answer to this name" is
+    the answer the dialog has to be able to give; collapsing it to the first
+    would be the guess this whole feature refuses to make.
+    """
+    index = {}
+    filled = 0
+    for t in records:
+        ws = _match_words(t, field, col)
+        hit = False
+        for w in ws:
+            k = _match_key(w)
+            if not k:
+                continue
+            hit = True
+            ids = index.setdefault(k, [])
+            if t.id not in ids:
+                ids.append(t.id)
+        if hit:
+            filled += 1
+    return index, filled
+
+
+def _link_match_boards(db, board_id, target_board_id, actor_id):
+    """The two boards, or the refusal that says why this conversion cannot run.
+
+    Board admin on the SOURCE, because this rewrites a column; plain membership
+    on the TARGET, because the preview and the exception list quote the titles
+    of records that live there, and a conversion must not be a way to read a
+    board you were never invited to.
+    """
+    b = db.query(Board).filter(Board.id == board_id).first()
+    if not b or b.deleted_at:
+        raise HTTPException(404, "board not found")
+    if _board_role(db, board_id, actor_id) != "admin":
+        raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+    try:
+        tid = int(target_board_id)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "יש לבחור לוח יעד")
+    if tid <= 0:
+        raise HTTPException(400, "יש לבחור לוח יעד")
+    tb = (db.query(Board).filter(Board.id == tid)
+          .execution_options(include_deleted=True).first())
+    if tb is None or tb.deleted_at is not None:
+        raise HTTPException(404, "לוח היעד לא נמצא")
+    # Membership BEFORE the organisation gate, and the order is the whole
+    # point: _cross_board_refusal names the board it is refusing
+    # ("לוח 'X' שייך לארגון אחר"), so asking it first let anyone who
+    # administers any one board walk target_board_id upwards and read out the
+    # name of every board in every other organisation on the deployment. A
+    # board they may not open does not get to tell them why.
+    if _board_role(db, tid, actor_id) is None:
+        raise HTTPException(403, "אין לך גישה ללוח היעד")
+    # the organisation gate, the same one every cross-board write goes through
+    no = _cross_board_refusal(db, b, tid)
+    if no:
+        raise HTTPException(400, no)
+    return b, tb
+
+
+def _link_match_col(db, board_id, col_id):
+    """The source column, if it is one a conversion can read."""
+    col = _find_col(db, board_id, col_id)
+    if not col:
+        raise HTTPException(404, "column not found")
+    was = col.get("type") or "text"
+    if was not in COLUMN_RETYPE_TYPES:
+        raise HTTPException(400, "אי אפשר להמיר עמודה זו לעמודת קישור — היא אינה "
+                                 "מחזיקה ערך משלה (נוסחה, שדה מראה, קישור, קבצים "
+                                 "או עמודה שהמערכת מייצרת)")
+    return col, was
+
+
+def _open_conversion(db, board_id, col_id):
+    return (db.query(ColumnConversion)
+              .filter(ColumnConversion.board_id == board_id,
+                      ColumnConversion.col_id == str(col_id),
+                      ColumnConversion.status == "open")
+              .order_by(ColumnConversion.id.desc()).first())
+
+
+def _link_match_plan(db, board, col, target_board, match_field, multiple, actor_id,
+                     smart=True, fallback=None):
+    """What converting this column would do, cell by cell — one pass, no writes.
+
+    Counted over every item on the board, the ones in the recycle bin included,
+    for the same reason _retype_plan counts them: a cell left holding the old
+    type's value is a wrong cell the day somebody restores the item, and a
+    restore is the worst place to discover it.
+
+    The precedence between the ways a cell can fail is deliberate. A value that
+    exists nowhere on the target board is reported before a cardinality
+    complaint, because "this customer is not on that board" is the thing the
+    admin has to act on and the other is a setting they can change. A cell is
+    `matched` only when EVERY one of its words matched exactly one record:
+    half-converting a dropdown that says two things would silently drop one of
+    them, and the cell would look finished.
+
+    With the ladder on, a cell is `matched` only when every word landed on a
+    tier that links by itself (see LINK_TIER_AUTO). One word on a looser tier
+    and the whole cell is `suggested` — it is one cell and one link, and
+    half of it confirmed by a person is not a state worth having. One word
+    failing outright and the cell is an ordinary exception, whatever the rest
+    of it managed: a failure is never improved by a suggestion beside it.
+    """
+    fields = _match_field_chain(db, target_board.id, match_field, fallback, actor_id)
+    tcol = fields[0][1]
+    # Every tier over the SAME population: the records this actor may see.
+    # A looser rule must not reach further than the strict one did — it is the
+    # same oracle with a wider net, and that is the one thing none of the
+    # tiers may buy. The fallback field is read under the same gate for the
+    # same reason.
+    lad = _link_match_ladder(_link_match_records(db, target_board.id, actor_id), fields)
+    smart = bool(smart) and _smart_match_enabled()
+    tasks = (db.query(Task).execution_options(include_deleted=True)
+               .filter(Task.board_id == board.id).all())
+    names = {}
+    if col.get("type") == "people":
+        names = {u.id: u.name for u in db.query(User).all()}
+
+    rows, counts = [], {"empty": 0, "matched": 0, "unmatched": 0, "ambiguous": 0,
+                        "suggested": 0}
+    for t in tasks:
+        words = _cell_words(col, t, names)
+        if not words:
+            counts["empty"] += 1
+            rows.append({"task": t, "words": [], "outcome": "empty",
+                         "reason": None, "ids": [], "candidates": [],
+                         "tier": None})
+            continue
+        missing, several, ids, cands = [], [], [], []
+        # the loosest tier any word in this cell needed, kept apart so a cell
+        # that linked by itself can still say whether punctuation was involved
+        loose, auto = None, None
+        def _looser(a, b):
+            return b if a is None else max((a, b), key=LINK_TIERS.index)
+        for w in words:
+            tier, hits = _match_tier(w, lad, smart)
+            if not hits:
+                missing.append(w)
+            elif len(hits) > 1:
+                several.append(w)
+                cands.extend(i for i in hits if i not in cands)
+            else:
+                ids.append(hits[0])
+                if tier in LINK_TIER_AUTO:
+                    auto = _looser(auto, tier)
+                else:
+                    loose = _looser(loose, tier)
+        if missing:
+            outcome = "unmatched"
+            reason = "no_match" if len(missing) == len(words) else "partial"
+            cands = []
+        elif several:
+            outcome, reason = "ambiguous", "several"
+        elif (len(ids) > 1 and not multiple) or len(ids) > _max_links_per_cell():
+            # Every word found its record, and the column cannot hold them all
+            # — either because it is single-link, or because the cell is over
+            # the system's links-per-cell ceiling. A person chooses; nothing is
+            # truncated behind their back. The ceiling is here and not only in
+            # the writer because _merge_link_ids caps silently with report=None,
+            # so a two-way cell of a hundred and one words was reported
+            # `matched` by both the preview and the apply and quietly lost its
+            # tail — the one place this feature could drop a value.
+            outcome, reason = "ambiguous", "too_many_values"
+            cands = list(ids)
+            ids = []
+        elif loose:
+            # Every word found exactly one record, and at least one of them
+            # needed a tier that changes which words are compared. Proposed
+            # with the reason, never written on its own — the ids travel as
+            # CANDIDATES so an apply that was not told to accept them leaves
+            # an exception the resolver can answer with one click.
+            outcome, reason = "suggested", loose
+            cands = list(ids)
+        else:
+            outcome, reason = "matched", None
+        counts[outcome] += 1
+        rows.append({"task": t, "words": words, "outcome": outcome,
+                     "reason": reason, "ids": ids, "candidates": cands,
+                     "tier": loose or (auto if outcome == "matched" else None)})
+    return {"rows": rows, "counts": counts, "total": len(tasks),
+            "ladder": lad, "match_col": tcol, "smart": smart,
+            "fallback": fields[1][0] if len(fields) > 1 else None}
+
+
+def _link_titles(db, ids):
+    """id → title, for the records a preview or an exception list names."""
+    ids = [int(i) for i in dict.fromkeys(ids or []) if isinstance(i, int)]
+    if not ids:
+        return {}
+    return {t.id: t.title for t in db.query(Task).filter(Task.id.in_(ids))
+            .execution_options(include_deleted=True).all()}
+
+
+LINK_MATCH_SAMPLES = 6
+LINK_MATCH_EXCEPTIONS = 50
+
+
+LINK_MATCH_SUGGESTIONS = 50
+
+
+def _link_match_payload(db, plan):
+    """The preview's three lists: what links, what is proposed, what failed.
+
+    Suggestions get a list of their own rather than being folded into the
+    exceptions. They are not failures — every word found exactly one record —
+    and the dialog does a different thing with them: one button accepts the
+    lot. Mixed into the exception list they would read as thirty more problems
+    instead of thirty answers waiting for a nod.
+    """
+    want = set()
+    samples_rows = [r for r in plan["rows"] if r["outcome"] == "matched"][:LINK_MATCH_SAMPLES]
+    sug_rows = [r for r in plan["rows"] if r["outcome"] == "suggested"]
+    exc_rows = [r for r in plan["rows"] if r["outcome"] in ("unmatched", "ambiguous")]
+    for r in samples_rows:
+        want.update(r["ids"][:1])
+    for r in sug_rows[:LINK_MATCH_SUGGESTIONS]:
+        want.update(r["ids"])
+    for r in exc_rows[:LINK_MATCH_EXCEPTIONS]:
+        want.update(r["candidates"])
+    titles = _link_titles(db, sorted(want))
+
+    def _after(r):
+        return ({"id": r["ids"][0], "title": titles.get(r["ids"][0], "")}
+                if r["ids"] else None)
+
+    samples = [{"task_id": r["task"].id, "item": r["task"].title,
+                "before": ", ".join(r["words"]), "after": _after(r),
+                "tier": r.get("tier"),
+                "tier_he": LINK_TIER_HE.get(r.get("tier") or "", "")}
+               for r in samples_rows]
+    suggestions = [{"task_id": r["task"].id, "item": r["task"].title,
+                    "before": ", ".join(r["words"]), "after": _after(r),
+                    "tier": r.get("tier"),
+                    "tier_he": LINK_TIER_HE.get(r.get("tier") or "", ""),
+                    "candidates": [{"id": i, "title": titles.get(i, "")}
+                                   for i in r["ids"]]}
+                   for r in sug_rows[:LINK_MATCH_SUGGESTIONS]]
+    exceptions = [{"task_id": r["task"].id, "item": r["task"].title,
+                   "before": ", ".join(r["words"]),
+                   "outcome": r["outcome"], "reason": r["reason"],
+                   "tier": r.get("tier"),
+                   "candidates": [{"id": i, "title": titles.get(i, "")}
+                                  for i in r["candidates"]]}
+                  for r in exc_rows[:LINK_MATCH_EXCEPTIONS]]
+    return {"samples": samples, "suggestions": suggestions,
+            "suggestions_total": len(sug_rows),
+            "exceptions": exceptions, "exceptions_total": len(exc_rows)}
+
+
+@app.get("/api/boards/{board_id}/link-match/fields")
+def link_match_fields(board_id: int, target_board_id: int = 0,
+                      actor_id: int = Depends(current_user_id)):
+    """Which fields of the target board can identify a record, and how well.
+
+    `duplicates` is the count of VALUES carried by more than one record. It is
+    the number that decides the choice: a field with duplicates cannot identify
+    a record, and an admin who picks it will get an ambiguity list instead of a
+    conversion. Said before they choose rather than after they have run it.
+    """
+    with Session(engine) as db:
+        b, tb = _link_match_boards(db, board_id, target_board_id, actor_id)
+        records = _link_match_records(db, tb.id, actor_id)
+        # The columns of the target board are offered through the same
+        # permission gate every other read of them goes through — a column set
+        # to "none" is not named here, and naming it with its filled and
+        # duplicate counts was enough on its own to confirm a value somebody
+        # was never shown (see _match_field_offered).
+        _trole = _board_role(db, tb.id, actor_id)
+        fields = []
+        for key, label, ctype, col in (
+                [("title", LINK_MATCH_FIELD_HE["title"], "title", None)] +
+                [(c.get("id"), c.get("title") or c.get("id"), c.get("type"), c)
+                 for c in _board_columns(db, tb.id)
+                 if c.get("id") and _match_field_offered(c, actor_id, _trole)]):
+            index, filled = _link_match_index(records, key, col)
+            fields.append({"key": key, "label": label, "type": ctype,
+                           "filled": filled, "distinct": len(index),
+                           "duplicates": sum(1 for v in index.values() if len(v) > 1)})
+        return {"target_board_id": tb.id, "target_board_name": tb.name,
+                "records": len(records), "fields": fields}
+
+
+@app.get("/api/boards/{board_id}/columns/{col_id}/link-match")
+def link_match_preview(board_id: int, col_id: str, target_board_id: int = 0,
+                       match_field: str = "title",
+                       match_field_fallback: str = "", multiple: bool = True,
+                       smart: bool = True,
+                       actor_id: int = Depends(current_user_id)):
+    """What the conversion would do, before it does anything.
+
+    Counted on the server and not off the loaded board, for the same reason the
+    retype preview is: the cells a client holds have already been filtered to
+    what its viewer may see, so counting there would understate the change for
+    exactly the person about to make it.
+
+    `multiple` and `smart` both change the answer, so the wizard has to send
+    the values it is about to apply with and re-run this when either switch
+    moves — a preview computed under different settings is a preview of a
+    different conversion.
+    """
+    with Session(engine) as db:
+        b, tb = _link_match_boards(db, board_id, target_board_id, actor_id)
+        col, was = _link_match_col(db, board_id, col_id)
+        plan = _link_match_plan(db, b, col, tb, match_field, multiple, actor_id,
+                                smart=smart, fallback=match_field_fallback)
+        lists = _link_match_payload(db, plan)
+        c = plan["counts"]
+        return {"col_id": col_id, "title": col.get("title") or "", "from": was,
+                "target_board_id": tb.id, "target_board_name": tb.name,
+                "match_field": match_field,
+                "match_field_fallback": plan["fallback"],
+                "multiple": bool(multiple),
+                # what the ladder actually ran as: asking for it does not get
+                # it where a deployment has switched it off system-wide
+                "smart": plan["smart"], "smart_available": _smart_match_enabled(),
+                "total": plan["total"], "empty": c["empty"], "matched": c["matched"],
+                "suggested": c["suggested"],
+                "unmatched": c["unmatched"], "ambiguous": c["ambiguous"],
+                # per tier, and not only in total: the wizard offers one
+                # accept button per tier because their precision is not the
+                # same (see link_match_apply), and it cannot offer that
+                # without knowing how many each one found
+                "tiers": [{"key": k, "label": LINK_TIER_HE[k],
+                           "auto": k in LINK_TIER_AUTO,
+                           # which boxes the wizard arrives with ticked, said
+                           # by the server so the two cannot drift
+                           "default_on": k in LINK_TIER_ON_BY_DEFAULT,
+                           "note": LINK_TIER_NOTE_HE.get(k, ""),
+                           "count": sum(1 for r in plan["rows"]
+                                        if r.get("tier") == k
+                                        and r["outcome"] in ("matched", "suggested"))}
+                          for k in LINK_TIERS],
+                **lists,
+                # the other thing a retype is load-bearing for — the same
+                # warning the board PATCH gives, asked before anything is written
+                "forms": _form_column_uses(db, board_id, [col_id]).get(str(col_id), [])}
+
+
+@app.post("/api/boards/{board_id}/columns/{col_id}/link-match")
+def link_match_apply(board_id: int, col_id: str, data: dict,
+                     actor_id: int = Depends(current_user_id)):
+    """Turn the column into a link to that board, and keep what could not be linked.
+
+    The plan is re-run here rather than taken from the request: the preview the
+    admin agreed to was computed seconds ago on data anybody could have changed
+    since, and a client that posts counts is a client that can post whichever
+    counts it likes.
+
+    Everything a retype owes, this owes and in the same shapes — a form that
+    asks about the column has to be agreed to out loud (409, answered by naming
+    the column back), rules written against the old type are suspended rather
+    than left to fire on a relationship they cannot read, and the board's log
+    gets the line. What it owes on top is the originals: every non-empty cell is
+    written to the conversion BEFORE the column changes under it.
+    """
+    with Session(engine) as db:
+        # Stated here as well as inside _link_match_boards, and deliberately
+        # before anything is read off the body: this is the one endpoint in the
+        # family that writes, and the gate on a write should be readable in the
+        # function that does it rather than inherited from the name of a helper
+        # two lines further down.
+        if not db.query(Board.id).filter(Board.id == board_id,
+                                         Board.deleted_at.is_(None)).first():
+            raise HTTPException(404, "board not found")
+        if not _is_board_admin(db, board_id, actor_id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+        b, tb = _link_match_boards(db, board_id, data.get("target_board_id"), actor_id)
+        if _open_conversion(db, board_id, col_id) is not None:
+            raise HTTPException(400, "לעמודה הזו כבר יש המרה פתוחה — יש לסיים "
+                                     "את הטיפול בחריגות או לבטל אותה")
+        col, was = _link_match_col(db, board_id, col_id)
+        match_field = str(data.get("match_field") or "title")
+        match_fallback = str(data.get("match_field_fallback") or "").strip()
+        display_field = _display_field_or_400(db, tb.id, data.get("display_field"), actor_id)
+        multiple = data.get("multiple") is not False
+        two_way = bool(data.get("two_way"))
+        # A two-way column CREATES a column on the target board, and writing
+        # into somebody else's board takes rights on that board. PATCH
+        # /api/boards/{id} has refused this by name for as long as two-way
+        # columns have existed; this endpoint reaches _ensure_mirrors by a
+        # different door and was letting a plain member of the organisation's
+        # "לקוחות" board add a column everyone there can see. Same gate, same
+        # sentence.
+        if two_way and _board_role(db, tb.id, actor_id) != "admin":
+            raise HTTPException(
+                403, f"קשר דו־כיווני יוצר עמודה בלוח היעד — נדרשת הרשאת "
+                     f"מנהל לוח גם ב: {tb.name}")
+        # A board over the connect-column budget stays editable, but it does
+        # not grow — the same rule the board PATCH applies, said here because
+        # this is the other door that adds one.
+        _conn_now = sum(1 for c in _board_columns(db, board_id) if c.get("type") == "connect")
+        if _conn_now + 1 > _max_connect_cols():
+            raise HTTPException(400, f"מותרות עד {_max_connect_cols()} עמודות קישור בלוח אחד")
+        smart = data.get("smart") is not False
+        plan = _link_match_plan(db, b, col, tb, match_field, multiple, actor_id,
+                                smart=smart, fallback=match_fallback)
+        # "אשר את ההצעות" — applied HERE rather than inside the plan, so the
+        # plan goes on describing what the ladder found and this stays a
+        # separate decision a person made. A promoted row keeps the tier in
+        # `reason`, so the conversion still records that the link came from a
+        # suggestion and which kind of one.
+        #
+        # Which tiers, and not merely whether: measured against the board this
+        # was built for, `descriptor` proposed 414 cells and was right on
+        # essentially all of them, while `contains` proposed 24 and was wrong
+        # on five — 'החברה העירונית אשקלון' is not 'אשקלון' and
+        # 'קרית הספורט והחינוך חיפה' is not 'חיפה'. One button covering both
+        # would hand an admin the good 414 and the bad 5 in the same click.
+        # So the request names the tiers it is accepting, and `true` (all of
+        # them) stays available for a board where that is the right call.
+        _ask = data.get("accept_suggested")
+        if _ask is True:
+            accept_tiers = set(LINK_TIERS)
+        elif isinstance(_ask, (list, tuple, set)):
+            accept_tiers = {str(x) for x in _ask}
+            unknown = accept_tiers - set(LINK_TIERS)
+            if unknown:
+                raise HTTPException(400, f"סוג התאמה לא מוכר: {', '.join(sorted(unknown))}")
+        else:
+            accept_tiers = set()
+        _accepted = 0
+        if accept_tiers:
+            for r in plan["rows"]:
+                if r["outcome"] != "suggested" or r.get("tier") not in accept_tiers:
+                    continue
+                r["outcome"], r["candidates"] = "matched", []
+                _accepted += 1
+            if _accepted:
+                plan["counts"]["matched"] += _accepted
+                plan["counts"]["suggested"] -= _accepted
+
+        uses = _form_column_uses(db, board_id, [col_id])
+        if uses:
+            agreed = {str(x) for x in (data.get("confirm_columns") or [])}
+            if str(col_id) not in agreed:
+                raise HTTPException(409, {
+                    "message": "השדות האלה נמצאים בשימוש בטפסים — "
+                               "אישור מפורש נדרש לפני השינוי",
+                    "columns": [{"col_id": str(col_id),
+                                 "title": col.get("title") or col_id,
+                                 "removed": False, "new_type": "connect",
+                                 "forms": uses[str(col_id)]}]})
+
+        # ── the record of what was there ──
+        # Written first, and from the same plan the links are written from, so
+        # the originals cannot disagree with what the conversion did to them.
+        conv = ColumnConversion(board_id=board_id, col_id=str(col_id),
+                                target_board_id=tb.id, match_field=match_field,
+                                match_field_fallback=plan["fallback"],
+                                from_type=was, from_col=dict(col), status="open",
+                                created_by=actor_id)
+        db.add(conv)
+        db.flush()
+        for r in plan["rows"]:
+            raw = (r["task"].custom_fields or {}).get(str(col_id))
+            if r["outcome"] == "empty" and _blank_cell(raw):
+                # genuinely nothing: there is no value to keep and nothing for
+                # a person to resolve, and a row per blank cell would make the
+                # exception list on a sparse column mostly blanks
+                continue
+            db.add(ColumnConversionCell(
+                conversion_id=conv.id, task_id=r["task"].id,
+                original=raw,
+                words=list(r["words"]), outcome=r["outcome"], reason=r["reason"],
+                candidates=list(r["candidates"]),
+                # only a matched cell was linked. A partial cell has ids too —
+                # the words that DID find a record — and writing one here would
+                # claim a link that was never made, which is also what the
+                # deleted-target check reads to decide a row needs re-pointing.
+                linked_task_id=(r["ids"][0] if r["outcome"] == "matched" and r["ids"]
+                                else None),
+                # A suggestion that was NOT accepted is an ordinary exception
+                # with its proposal attached: the ids ride in `candidates`, so
+                # the resolver opens with the right record already named and
+                # the admin answers it with one click. Nothing is linked.
+                linked_task_ids=(list(r["ids"]) if r["outcome"] == "matched" else [])))
+
+        # ── the definition ──
+        # Before the cells, because _set_links reads the mirror map off the
+        # column it is given and _ensure_mirrors is what fills it in.
+        cols = [dict(c) for c in ((b.settings or {}).get("columns") or [])]
+        new_col = None
+        for c in cols:
+            if str(c.get("id")) != str(col_id):
+                continue
+            c.update({"type": "connect", "options": None, "number": None,
+                      "formula": None, "copy_mode": None, "mirror_of": None,
+                      "connect": {"board_ids": [tb.id], "multiple": multiple,
+                                  "two_way": two_way, "match_field": match_field,
+                                  "match_field_fallback": plan["fallback"],
+                                  # what the cell will READ as; matching and
+                                  # writing know nothing about it
+                                  "display_field": display_field}})
+            new_col = c
+        s = dict(b.settings or {})
+        s["columns"] = cols
+        b.settings = s
+        if two_way and new_col is not None:
+            # The definition is written BEFORE the counterpart is made, and
+            # then read back afterwards, because a board can be its own target:
+            # _ensure_mirrors appends the counterpart to the TARGET board\'s
+            # settings, and when that is this board, writing a `cols` list
+            # snapshotted beforehand straight over it deleted the column it had
+            # just added. The mirror map then named a column that did not
+            # exist, so the cell could not hold a two-way link at all.
+            #
+            # Snapshotting around the call is also how the revert knows what to
+            # take back: _ensure_mirrors REUSES a counterpart that already
+            # points here and only appends one where it finds none, so the
+            # difference is the one thing that may be removed again. Inferring
+            # it afterwards would mean deleting a column somebody already had.
+            _before = {str(c.get("id")) for c in _board_columns(db, tb.id)}
+            _mirror = _ensure_mirrors(db, board_id, new_col)
+            _added = sorted({str(c.get("id")) for c in _board_columns(db, tb.id)} - _before)
+            if _added:
+                conv.created_cols = [{"board_id": tb.id, "col_id": cid} for cid in _added]
+            # Rebuilt from what the board says NOW. new_col is a dict inside a
+            # JSON column that _ensure_mirrors may have replaced wholesale, and
+            # editing it in place after that commits nothing.
+            cols = [dict(c) for c in ((b.settings or {}).get("columns") or [])]
+            for c in cols:
+                if str(c.get("id")) == str(col_id):
+                    c["connect"] = {**_connect_cfg(c), "mirror": _mirror}
+                    new_col = c
+            s = dict(b.settings or {})
+            s["columns"] = cols
+            b.settings = s
+
+        # ── the cells ──
+        # Through the existing write path in both directions: a two-way link is
+        # a shared ItemLink row and a one-way link is an id list in the cell,
+        # and a conversion that wrote either of them by hand would be a second
+        # implementation of the rule that keeps the two sides in step.
+        for r in plan["rows"]:
+            t = r["task"]
+            cf = dict(t.custom_fields or {})
+            had = str(col_id) in cf
+            if r["outcome"] == "empty":
+                # A cell can hold something and still say no words: a checkbox
+                # that is False, a text cell of spaces, a date nothing can
+                # parse. Those are not blank, and leaving them where they were
+                # left the OLD type's value sitting under a column that is now
+                # a link — a value the serializer only filters when it is a
+                # list, so a bare False reached the browser as a link cell's
+                # contents. It is cleared like any other unreadable cell, and
+                # its row above is what puts it back on a revert.
+                if had and not _blank_cell(cf.get(str(col_id))):
+                    cf.pop(str(col_id), None)
+                    t.custom_fields = cf
+                continue
+            if r["outcome"] == "matched" and two_way:
+                cf.pop(str(col_id), None)
+                if had:
+                    t.custom_fields = cf
+                _set_links(db, t, new_col, r["ids"], actor_id)
+            elif r["outcome"] == "matched":
+                cf[str(col_id)] = list(r["ids"]) if multiple else r["ids"][:1]
+                t.custom_fields = cf
+            else:
+                # the words are safe on the conversion row; what must not stay
+                # is the old type's value under a column that is now a link,
+                # which the grid would try to read as a list of item ids
+                cf.pop(str(col_id), None)
+                if had:
+                    t.custom_fields = cf
+
+        title = col.get("title") or col_id
+        # _column_types_compatible(anything, "connect") is false by definition —
+        # a relationship is not a cell — so every rule written against the old
+        # column is suspended rather than left to fire on a value it cannot read
+        _suspend_dependents(db, b, "column", col_id, actor_id,
+                            f"{title} (הומרה לעמודת קישור)")
+        _form_settings_resweep(db, board_id, {str(col_id): "connect"})
+        c = plan["counts"]
+        _waiting = c["unmatched"] + c["ambiguous"] + c["suggested"]
+        _log_board(db, board_id, "update", field="column", old=title,
+                   new=f"{title} — הומרה לקישור ללוח '{tb.name}' "
+                       f"({c['matched']} הותאמו"
+                       + (f", מתוכם {_accepted} לפי השוואה חכמה" if _accepted else "")
+                       + (f", {_waiting} ממתינים לטיפול" if _waiting else "")
+                       + ")",
+                   actor=actor_id)
+        db.commit()
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
+        return {"conversion_id": conv.id, "columns": cols,
+                "col_id": col_id, "title": title, "from": was,
+                "target_board_id": tb.id, "target_board_name": tb.name,
+                "match_field": match_field,
+                "match_field_fallback": plan["fallback"],
+                "display_field": display_field,
+                "multiple": multiple,
+                "two_way": two_way, "smart": plan["smart"],
+                "accepted_tiers": sorted(accept_tiers, key=LINK_TIERS.index),
+                "accepted": _accepted,
+                "total": plan["total"], "empty": c["empty"],
+                "matched": c["matched"], "suggested": c["suggested"],
+                "unmatched": c["unmatched"],
+                "ambiguous": c["ambiguous"]}
+
+
+# The outcomes that are somebody's to answer. An "empty" row is a value the
+# conversion kept so a revert can put it back — a checkbox that was False
+# under a column that is now a link — and it is nobody's to resolve, so it is
+# not in the exception list and not in the counts. A "suggested" row is: it is
+# a proposal nobody accepted at apply time, and until a person answers it the
+# cell is unlinked exactly like a cell nothing was found for.
+CONVERSION_EXCEPTIONS = ("unmatched", "ambiguous", "suggested")
+
+
+def _conversion_state(db, conv):
+    """What is still waiting on this conversion, as cheaply as it can be asked.
+
+    Reached from the board payload (_board_conversions → get_board), so it runs
+    on every render of a board mid-conversion, for every viewer. It used to
+    load every ColumnConversionCell of the conversion as a full ORM object —
+    the matched ones, which are the overwhelming majority, included — and then
+    look their targets up in one unchunked IN over several hundred binds. What
+    it needs is four scalars per row and the counts, so that is what it asks
+    for: one tuple query over the rows that can still be open, one aggregate
+    for the rows that are finished, and the target lookup split by
+    _PREFETCH_CHUNK like every other IN on this codebase.
+
+    Two groups come back open. The exceptions nobody could match, and the cells
+    that DID match and whose record has since been deleted: the link is by id,
+    so a renamed record simply shows its new name, but a deleted one leaves a
+    cell pointing at nothing. Those are listed again while the conversion is
+    open, which is also why a conversion with a dead target does not close.
+
+    The liveness check reads the FULL matched id list, not the first id. A
+    dropdown reading two things becomes two links, and the guarantee has to
+    hold when it is the second of them that goes.
+    """
+    pend = (db.query(ColumnConversionCell.id, ColumnConversionCell.task_id,
+                     ColumnConversionCell.outcome, ColumnConversionCell.linked_task_id,
+                     ColumnConversionCell.linked_task_ids)
+              .filter(ColumnConversionCell.conversion_id == conv.id,
+                      ColumnConversionCell.resolved_at.is_(None))
+              .order_by(ColumnConversionCell.id).all())
+    # Anything with resolved_at is something a person dealt with, whichever
+    # group it started in — an exception they answered, or a matched row they
+    # re-pointed. Counted, never loaded.
+    done = (db.query(func.count(ColumnConversionCell.id))
+              .filter(ColumnConversionCell.conversion_id == conv.id,
+                      ColumnConversionCell.resolved_at.isnot(None)).scalar() or 0)
+    exc = [r for r in pend if r.outcome in CONVERSION_EXCEPTIONS]
+    matched = [r for r in pend if r.outcome == "matched"]
+    stale = []
+    if matched:
+        want = set()
+        for r in matched:
+            want.update(_conversion_cell_links(r))
+        ids = sorted(want)
+        live = set()
+        for part in [ids[i:i + _PREFETCH_CHUNK] for i in range(0, len(ids), _PREFETCH_CHUNK)]:
+            live.update(r[0] for r in db.query(Task.id)
+                        .execution_options(include_deleted=True)
+                        .filter(Task.id.in_(part), Task.deleted_at.is_(None)).all())
+        for r in matched:
+            got = _conversion_cell_links(r)
+            if got and any(i not in live for i in got):
+                stale.append(r)
+    # Exceptions first and stale after, each in id order: the list a person is
+    # working down must not reshuffle because a record was deleted elsewhere.
+    return {"open": [r.id for r in exc] + [r.id for r in stale],
+            "open_tasks": {r.task_id for r in exc} | {r.task_id for r in stale},
+            "stale": {r.id for r in stale},
+            "resolved": done}
+
+
+def _conversion_cell_links(row):
+    """Every record this cell was linked to, from either field.
+
+    `linked_task_ids` is the whole list and `linked_task_id` the first of it.
+    Rows written before the list existed have only the scalar, so both are
+    read — a conversion that was already open across the upgrade still has its
+    deleted targets noticed.
+    """
+    got = [i for i in (row.linked_task_ids or []) if isinstance(i, int)]
+    if not got and row.linked_task_id:
+        got = [row.linked_task_id]
+    return got
+
+
+def _conversion_counts(db, conv):
+    st = _conversion_state(db, conv)
+    return {"open": len(st["open"]), "resolved": st["resolved"],
+            "total": len(st["open"]) + st["resolved"]}
+
+
+def _board_conversions(db, board_id, columns):
+    """col_id → the open conversion riding on it, for the board payload.
+
+    One query for the board's open conversions — there is almost never more
+    than one — and nothing further when there are none, which is every board
+    that is not mid-conversion.
+    """
+    cols = {str(c.get("id")) for c in (columns or []) if c.get("type") == "connect"}
+    if not cols:
+        return {}
+    out = {}
+    for conv in (db.query(ColumnConversion)
+                   .filter(ColumnConversion.board_id == board_id,
+                           ColumnConversion.status == "open").all()):
+        if conv.col_id not in cols:
+            continue
+        out[conv.col_id] = {"id": conv.id, **_conversion_counts(db, conv),
+                            "target_board_id": conv.target_board_id,
+                            "match_field": conv.match_field}
+    return out
+
+
+def _columns_with_conversions(db, board_id, columns):
+    """The board's column definitions, with the open conversion on each connect one.
+
+    A copy per touched column rather than the stored dict: b.settings IS the
+    JSON that gets written back, and a live count placed inside it would be
+    persisted by the next save of the board and then go stale where nobody
+    would think to look for it.
+    """
+    conv = _board_conversions(db, board_id, columns)
+    if not conv:
+        return columns
+    return [({**c, "conversion": conv[str(c.get("id"))]}
+             if str(c.get("id")) in conv else c) for c in columns]
+
+
+def _prefetch_link_pending(db, tasks, columns):
+    """Every unresolved exception on this board, in one query, keyed by item.
+
+    One query for the board and not one per item. The comment on _prefetch_links
+    is the same comment: serializing an item used to ask two questions of its
+    own and a board of sixty items paid a hundred and twenty round trips for a
+    table showing a handful of names. A cell waiting to be matched is the same
+    kind of per-item fact, and it is loaded the same way.
+    """
+    cache = db.info.setdefault("_link_pending", {})
+    conns = {str(c.get("id")) for c in (columns or []) if c.get("type") == "connect"}
+    ids = [t.id for t in (tasks or [])]
+    if not conns or not ids:
+        return
+    for t in tasks:
+        cache.setdefault(t.id, {})
+    for part in [ids[i:i + _PREFETCH_CHUNK] for i in range(0, len(ids), _PREFETCH_CHUNK)]:
+        for cell, conv in (db.query(ColumnConversionCell, ColumnConversion)
+                           .join(ColumnConversion,
+                                 ColumnConversion.id == ColumnConversionCell.conversion_id)
+                           .filter(ColumnConversion.status == "open",
+                                   ColumnConversion.col_id.in_(conns),
+                                   ColumnConversionCell.resolved_at.is_(None),
+                                   ColumnConversionCell.outcome.in_(CONVERSION_EXCEPTIONS),
+                                   ColumnConversionCell.task_id.in_(part)).all()):
+            cache.setdefault(cell.task_id, {})[conv.col_id] = ", ".join(cell.words or [])
+
+
+def _link_pending_for(db, task):
+    """The unresolved exceptions on this one item — {col_id: the original text}.
+
+    Answered from the board-wide prefetch on a read path. On the paths that
+    serialize a single fresh item there is nothing warmed, and rather than fall
+    back to a query per item this first asks the one question that is cheap and
+    almost always "no": does any board have a conversion open at all.
+    """
+    cache = db.info.get("_link_pending")
+    if cache is not None and task.id in cache:
+        return cache[task.id]
+    boards = db.info.get("_conv_boards")
+    if boards is None:
+        boards = db.info["_conv_boards"] = {
+            r[0] for r in db.query(ColumnConversion.board_id)
+            .filter(ColumnConversion.status == "open").distinct().all()}
+    if task.board_id not in boards:
+        return {}
+    out = {}
+    for cell, conv in (db.query(ColumnConversionCell, ColumnConversion)
+                       .join(ColumnConversion,
+                             ColumnConversion.id == ColumnConversionCell.conversion_id)
+                       .filter(ColumnConversion.status == "open",
+                               ColumnConversionCell.task_id == task.id,
+                               ColumnConversionCell.resolved_at.is_(None),
+                               ColumnConversionCell.outcome.in_(CONVERSION_EXCEPTIONS)).all()):
+        out[conv.col_id] = ", ".join(cell.words or [])
+    db.info.setdefault("_link_pending", {})[task.id] = out
+    return out
+
+
+def _conversion_drifted(db, conv, col, tasks):
+    """Has anything this conversion wrote been changed by hand since?
+
+    link_match_revert has always promised, in its own docstring, not to
+    "overwrite links somebody has since chosen by hand" — and then guarded
+    that promise on `status == "closed"`, which an all-matched conversion
+    never reaches. So a conversion where everything matched stayed open
+    forever and kept the undo armed forever with it: months later, over a
+    column in daily use, one POST discarded the links people had re-pointed
+    and wrote year-old text back over them.
+
+    Closing it by refusing the undo once there is nothing left to resolve was
+    the obvious move and is the wrong one — an all-matched conversion is
+    exactly the one an admin undoes, in the minute after running it against
+    the wrong board, and it must stay watchable for a record deleted later
+    (see _conversion_state). What actually makes the undo unsafe is not time
+    passing and not the absence of exceptions: it is somebody having touched
+    the column. So that is what is asked, and the promise becomes literally
+    true rather than aspirational.
+
+    The comparison is cell by cell against what the conversion — or its own
+    resolver, which keeps linked_task_ids current — last wrote. A matched cell
+    must still hold its matches, an exception must still hold nothing, and a
+    cell the conversion never touched must still be untouched. One
+    disagreement is enough: restoring the whole column would destroy it.
+    """
+    col_id = str(conv.col_id)
+    expect = {}
+    for r in (db.query(ColumnConversionCell.task_id,
+                       ColumnConversionCell.linked_task_id,
+                       ColumnConversionCell.linked_task_ids)
+                .filter(ColumnConversionCell.conversion_id == conv.id).all()):
+        expect[r.task_id] = set(_conversion_cell_links(r))
+    now = {}
+    if _is_two_way(col):
+        near = {t.id for t in tasks}
+        for l in db.query(ItemLink).filter(or_(ItemLink.a_col == col_id,
+                                               ItemLink.b_col == col_id)).all():
+            if l.a_col == col_id and l.a_task_id in near:
+                now.setdefault(l.a_task_id, set()).add(l.b_task_id)
+            if l.b_col == col_id and l.b_task_id in near:
+                now.setdefault(l.b_task_id, set()).add(l.a_task_id)
+    else:
+        for t in tasks:
+            v = (t.custom_fields or {}).get(col_id)
+            if isinstance(v, list):
+                got = {i for i in v if isinstance(i, int)}
+                if got:
+                    now[t.id] = got
+    # Only the items still on the board. One that has been purged since cannot
+    # have its original restored into it either way, and refusing the whole
+    # undo over a row that no longer exists would be a guard with no subject.
+    for t in tasks:
+        if now.get(t.id, set()) != expect.get(t.id, set()):
+            return True
+    return False
+
+
+def _amended_links(db, task, col, chosen):
+    """What the cell should hold after this exception was answered.
+
+    Read from the cell as it is NOW, not from what the conversion once wrote:
+    the person may have edited it since, and a resolution is an answer to one
+    row of a list, not a rewrite of the column. Everything still alive stays;
+    the records that have gone — the reason the row was listed at all — make
+    way for `chosen`, which goes where the first dead one was so the order a
+    multi-value cell was converted in survives.
+
+    `chosen` of None is "השאר ריק": the dead ends go and nothing takes their
+    place. `chosen` may also be a LIST, which is how accepting a suggestion
+    over a multi-value cell comes through — the proposals fill the dead slots
+    in order and whatever is left of them goes on the end.
+    """
+    col_id = str(col["id"])
+    have = (_linked_ids(db, task.id, col_id) if _is_two_way(col)
+            else [i for i in ((task.custom_fields or {}).get(col_id) or [])
+                  if isinstance(i, int)])
+    live = set()
+    if have:
+        live = {r[0] for r in db.query(Task.id)
+                .execution_options(include_deleted=True)
+                .filter(Task.id.in_(sorted(set(have))), Task.deleted_at.is_(None)).all()}
+    want = ([] if chosen is None else
+            [chosen] if isinstance(chosen, int) else
+            [i for i in chosen if isinstance(i, int)])
+    out, placed = [], 0
+    for i in have:
+        if i in live:
+            out.append(i)
+        elif placed < len(want):
+            out.append(want[placed])
+            placed += 1
+    for i in want[placed:]:
+        if i not in out:
+            out.append(i)
+    # the same record twice in one cell is one link, and a re-point can easily
+    # name one the cell already holds
+    return list(dict.fromkeys(out))
+
+
+def _close_conversions_for_columns(db, board_id, col_ids, actor_id):
+    """A column that goes takes its open conversion with it.
+
+    _drop_links_for_columns already removes the relationships; the conversion
+    is the other thing left pointing at a column that no longer exists. Left
+    open it would keep an exception list alive for a column nobody can see,
+    and the counts would ride on the board payload forever.
+    """
+    ids = [str(c) for c in (col_ids or []) if c]
+    if not ids:
+        return
+    for conv in (db.query(ColumnConversion)
+                   .filter(ColumnConversion.board_id == board_id,
+                           ColumnConversion.col_id.in_(ids),
+                           ColumnConversion.status == "open").all()):
+        conv.status = "closed"
+        conv.closed_at = datetime.now(timezone.utc)
+
+
+@app.get("/api/boards/{board_id}/columns/{col_id}/link-exceptions")
+def link_exceptions(board_id: int, col_id: str, offset: int = 0, limit: int = 50,
+                    actor_id: int = Depends(current_user_id)):
+    """The cells of the open conversion that still need a person, a page at a time."""
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+        conv = _open_conversion(db, board_id, col_id)
+        if conv is None:
+            raise HTTPException(404, "אין המרה פתוחה בעמודה זו")
+        tb = db.query(Board).filter(Board.id == conv.target_board_id).first()
+        if tb is None or _board_role(db, conv.target_board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח היעד")
+        st = _conversion_state(db, conv)
+        off = max(0, offset)
+        lim = max(1, min(200, limit))
+        # Only the page is loaded in full. _conversion_state answered which
+        # rows are open with four scalars each; the words and the candidate
+        # list are needed for the fifty somebody is about to read.
+        page_ids = st["open"][off:off + lim]
+        page = []
+        if page_ids:
+            by_id = {c.id: c for c in db.query(ColumnConversionCell)
+                     .filter(ColumnConversionCell.id.in_(page_ids)).all()}
+            page = [by_id[i] for i in page_ids if i in by_id]
+        want = set()
+        for c in page:
+            want.update(i for i in (c.candidates or []) if isinstance(i, int))
+            want.update(_conversion_cell_links(c))
+        want.update(c.task_id for c in page)
+        # The candidates were worked out from what the admin who RAN the
+        # conversion could see. A second admin reading the same list is a
+        # different reader, and a title they were refused must not arrive
+        # because somebody else once could.
+        seen = set(_visible_link_ids(db, sorted(want), actor_id))
+        titles = _link_titles(db, sorted(seen))
+        rows = []
+        for c in page:
+            stale = c.id in st["stale"]
+            rows.append({
+                "task_id": c.task_id, "item": titles.get(c.task_id, ""),
+                "before": ", ".join(c.words or []),
+                "outcome": "unmatched" if stale else c.outcome,
+                "reason": "target_deleted" if stale else c.reason,
+                # a suggestion carries its tier in `reason`, so the row can
+                # say in words why this record was proposed rather than
+                # leaving the admin to guess what the resolver is offering
+                "tier_he": ("" if stale else LINK_TIER_HE.get(c.reason or "", "")),
+                "linked_task_id": c.linked_task_id,
+                "candidates": [{"id": i, "title": titles.get(i, "")}
+                               for i in (c.candidates or [])
+                               if isinstance(i, int) and i in seen]})
+        return {"conversion_id": conv.id, "target_board_id": conv.target_board_id,
+                "target_board_name": tb.name, "match_field": conv.match_field,
+                "match_field_fallback": conv.match_field_fallback,
+                "col_id": conv.col_id,
+                "open": len(st["open"]), "resolved": st["resolved"],
+                "total": len(st["open"]) + st["resolved"],
+                "offset": off, "limit": lim, "rows": rows}
+
+
+@app.post("/api/boards/{board_id}/columns/{col_id}/link-exceptions/{task_id}")
+def link_exception_resolve(board_id: int, col_id: str, task_id: int, data: dict,
+                           actor_id: int = Depends(current_user_id)):
+    """Deal with one row that is waiting: point it at a record, take the
+    suggestion the ladder made, or accept the cell empty.
+
+    The original stays on the conversion row whichever of the three it is.
+    "השאר ריק" is a decision, not a deletion — it says this cell has no record
+    behind it, and the words it used to hold are still recoverable until the
+    conversion closes.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+        conv = _open_conversion(db, board_id, col_id)
+        if conv is None:
+            raise HTTPException(404, "אין המרה פתוחה בעמודה זו")
+        if _board_role(db, conv.target_board_id, actor_id) is None:
+            raise HTTPException(403, "אין לך גישה ללוח היעד")
+        # Only a row that is actually waiting for somebody. A matched cell has
+        # an unresolved row too — the original is kept on every non-empty cell,
+        # not only the exceptions — and resolving one went through, stamped it,
+        # and added it to `resolved` and `total`: a conversion with a single
+        # exception could be made to report three of them. The open set is the
+        # one _conversion_state already computes for the list and the counts,
+        # so what may be resolved is exactly what was listed, including a
+        # matched row whose record has since been deleted.
+        st = _conversion_state(db, conv)
+        cell = None
+        if task_id in st["open_tasks"]:
+            cell = (db.query(ColumnConversionCell)
+                      .filter(ColumnConversionCell.id.in_(st["open"]),
+                              ColumnConversionCell.task_id == task_id).first())
+        if cell is None:
+            other = (db.query(ColumnConversionCell)
+                       .filter(ColumnConversionCell.conversion_id == conv.id,
+                               ColumnConversionCell.task_id == task_id).first())
+            if other is None:
+                raise HTTPException(404, "אין חריגה פתוחה לפריט זה")
+            # The row exists and the request is simply not a thing to ask —
+            # which is also what two dialogs open on the same list will ask,
+            # so it says which of the two it is rather than one vague refusal.
+            raise HTTPException(400, "החריגה הזו כבר טופלה"
+                                     if other.resolved_at is not None else
+                                     "התא הזה הותאם לרשומה — אין בו חריגה לטפל בה")
+        action = str(data.get("action") or "")
+        if action == "restore_text":
+            raise HTTPException(400, "החזרת הטקסט המקורי אינה נתמכת — אפשר לבטל "
+                                     "את ההמרה כולה")
+        task = (db.query(Task).filter(Task.id == task_id)
+                .execution_options(include_deleted=True).first())
+        if task is None or task.board_id != board_id:
+            raise HTTPException(404, "task not found")
+        col = _find_col(db, board_id, col_id)
+        if col is None or col.get("type") != "connect":
+            raise HTTPException(404, "column not found")
+
+        if "item_id" in data and data.get("item_id") is not None:
+            try:
+                tid = int(data.get("item_id"))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "מזהה פריט שגוי")
+            other = db.query(Task).filter(Task.id == tid).first()
+            if other is None or other.deleted_at is not None:
+                raise HTTPException(400, "הפריט שנבחר אינו קיים עוד")
+            if other.board_id != conv.target_board_id:
+                raise HTTPException(400, "הפריט שנבחר אינו בלוח היעד")
+            if other.is_archived or other.parent_id is not None:
+                raise HTTPException(400, "אפשר לקשר רק לרשומה ראשית פעילה בלוח היעד")
+            if not _visible_link_ids(db, [tid], actor_id):
+                raise HTTPException(400, "אין לך הרשאת צפייה בפריט שנבחר")
+            # The cell is AMENDED, never replaced. A row listed because one
+            # of its records was deleted is a cell that still holds the other
+            # two, and writing [tid] over it destroyed them: three links went
+            # in, one came out. So the dead ids make way for the chosen one
+            # and everything still alive stays exactly where it was.
+            want = _amended_links(db, task, col, tid)
+            if _is_two_way(col):
+                _set_links(db, task, col, want, actor_id)
+                cf = dict(task.custom_fields or {})
+                if cf.pop(str(col_id), None) is not None:
+                    task.custom_fields = cf
+            else:
+                cf = dict(task.custom_fields or {})
+                cf[str(col_id)] = want if _is_multi(col) else want[-1:]
+                task.custom_fields = cf
+            cell.linked_task_id = tid
+            cell.linked_task_ids = list(want)
+        elif action == "accept":
+            # "אשר את ההצעה" — the row-by-row half of the bulk accept at apply
+            # time. It exists because resolving a suggestion with a single
+            # item_id cannot answer a MULTI-value cell: a dropdown reading
+            # "אשדוד עירייה, ירוחם מועצה מקומית" was proposed two records and
+            # picking one of them by hand would quietly drop the other.
+            if cell.outcome != "suggested":
+                raise HTTPException(400, "אין הצעה לאשר בשורה הזו")
+            want = [i for i in (cell.candidates or []) if isinstance(i, int)]
+            # proposed to whoever ran the conversion; accepted by whoever is
+            # reading it now, so their own visibility decides, not that of the
+            # person who saw the suggestion made
+            want = [i for i in _visible_link_ids(db, want, actor_id)
+                    if db.query(Task.id).filter(Task.id == i,
+                                                Task.board_id == conv.target_board_id)
+                    .first()]
+            if not want:
+                raise HTTPException(400, "הרשומות שהוצעו אינן זמינות עוד")
+            # Amended, like every other branch here. This one wrote the
+            # proposals straight over the cell, which threw away a link
+            # somebody had made by hand between the apply and the resolver —
+            # the exact thing _amended_links exists to stop, opted out of by
+            # the one branch added after it.
+            want = _amended_links(db, task, col, want)
+            if not _is_multi(col):
+                want = want[:1]
+            if not want:
+                raise HTTPException(400, "הרשומות שהוצעו אינן זמינות עוד")
+            if _is_two_way(col):
+                _set_links(db, task, col, want, actor_id)
+                cf = dict(task.custom_fields or {})
+                if cf.pop(str(col_id), None) is not None:
+                    task.custom_fields = cf
+            else:
+                cf = dict(task.custom_fields or {})
+                cf[str(col_id)] = want
+                task.custom_fields = cf
+            cell.linked_task_id = want[0]
+            cell.linked_task_ids = list(want)
+        elif action == "clear":
+            # "השאר ריק" answers the cell that could not be matched, so it
+            # drops the dead ends and nothing else — a three-link cell listed
+            # because one record went does not lose the other two for it.
+            want = _amended_links(db, task, col, None)
+            if _is_two_way(col):
+                _set_links(db, task, col, want, actor_id)
+                cf = dict(task.custom_fields or {})
+                if cf.pop(str(col_id), None) is not None:
+                    task.custom_fields = cf
+            else:
+                cf = dict(task.custom_fields or {})
+                if want:
+                    cf[str(col_id)] = want
+                else:
+                    cf.pop(str(col_id), None)
+                task.custom_fields = cf
+            cell.linked_task_id = want[0] if want else None
+            cell.linked_task_ids = list(want)
+        else:
+            raise HTTPException(400, "יש לבחור פריט לקישור, לאשר את ההצעה או "
+                                     "לסמן שהתא יישאר ריק")
+
+        cell.resolved_at = datetime.now(timezone.utc)
+        cell.resolved_by = actor_id
+        st = _conversion_state(db, conv)
+        closed = not st["open"]
+        if closed:
+            conv.status = "closed"
+            conv.closed_at = datetime.now(timezone.utc)
+            _log_board(db, board_id, "update", field="column",
+                       old=col.get("title") or col_id,
+                       new=f"{col.get('title') or col_id} — הטיפול בחריגות ההמרה הושלם",
+                       actor=actor_id)
+        db.commit()
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
+        return {"open": len(st["open"]), "resolved": st["resolved"],
+                "total": len(st["open"]) + st["resolved"], "closed": closed}
+
+
+@app.post("/api/boards/{board_id}/columns/{col_id}/link-revert")
+def link_match_revert(board_id: int, col_id: str, data: dict = None,
+                      actor_id: int = Depends(current_user_id)):
+    """Put the column and every cell back the way they were.
+
+    Two things have to be true. The conversion is still open — once the last
+    exception has been dealt with it is finished, and the originals are
+    history rather than a pending state. And nothing it wrote has been
+    changed by hand since, because that is the thing an undo would destroy:
+    see _conversion_drifted, which is where the sentence about overwriting
+    somebody\'s choices stopped being a hope and became a check.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+        conv = _open_conversion(db, board_id, col_id)
+        if conv is None:
+            done = (db.query(ColumnConversion)
+                      .filter(ColumnConversion.board_id == board_id,
+                              ColumnConversion.col_id == str(col_id),
+                              ColumnConversion.status == "closed").first())
+            if done is not None:
+                raise HTTPException(400, "ההמרה הושלמה — אי אפשר לבטל אותה")
+            raise HTTPException(404, "אין המרה פתוחה בעמודה זו")
+        tasks = (db.query(Task).execution_options(include_deleted=True)
+                   .filter(Task.board_id == board_id).all())
+        _now_col = _find_col(db, board_id, col_id)
+        if _now_col is not None and _conversion_drifted(db, conv, _now_col, tasks):
+            raise HTTPException(400, "מאז ההמרה שונו קישורים בעמודה הזו — ביטול "
+                                     "ההמרה היה מוחק אותם")
+        # Every relationship this column holds, gone in one statement rather
+        # than per item: the rows are keyed by (item, column), and the column
+        # is about to stop being a link at all.
+        _drop_links_for_columns(db, [str(col_id)])
+        db.info.pop("_links_by", None)
+        cells = (db.query(ColumnConversionCell)
+                   .filter(ColumnConversionCell.conversion_id == conv.id).all())
+        by_task = {c.task_id: c for c in cells}
+        for t in tasks:
+            cell = by_task.get(t.id)
+            cf = dict(t.custom_fields or {})
+            had = str(col_id) in cf
+            if cell is not None and cell.original is not None:
+                cf[str(col_id)] = cell.original
+                t.custom_fields = cf
+            elif cell is not None and had:
+                # the conversion emptied this cell — it was an exception, and
+                # its words are on the row rather than in the board. Back to
+                # the absence the apply left it in.
+                cf.pop(str(col_id), None)
+                t.custom_fields = cf
+            elif had and isinstance(cf.get(str(col_id)), list) and cf[str(col_id)]:
+                # No row means the conversion never touched this cell, so
+                # neither does the revert — otherwise a dropdown somebody had
+                # explicitly emptied came back ABSENT rather than [], and
+                # "restores the board exactly" was true only up to a shape
+                # nobody happened to be comparing.
+                #
+                # The one thing that cannot stay is a link made by hand AFTER
+                # the apply, on a cell that was empty when it ran: those are
+                # item ids, and the column is about to be a text column again.
+                cf.pop(str(col_id), None)
+                t.custom_fields = cf
+        cols = [dict(c) for c in ((b.settings or {}).get("columns") or [])]
+        for i, c in enumerate(cols):
+            if str(c.get("id")) == str(col_id):
+                cols[i] = dict(conv.from_col or c)
+        s = dict(b.settings or {})
+        s["columns"] = cols
+        b.settings = s
+        # And the counterpart a two-way conversion appended to the target
+        # board. Only the ones this conversion CREATED — recorded at the apply,
+        # because _ensure_mirrors reuses an existing column where it finds one
+        # and removing that would delete a column somebody already had. It
+        # holds nothing: every relationship in it was one end of a row keyed by
+        # the source column, and _drop_links_for_columns above took them all.
+        for made in (conv.created_cols or []):
+            _tb = db.query(Board).filter(Board.id == made.get("board_id")).first()
+            if _tb is None or _tb.deleted_at is not None:
+                continue
+            _left = [c for c in ((_tb.settings or {}).get("columns") or [])
+                     if str(c.get("id")) != str(made.get("col_id"))]
+            if len(_left) == len((_tb.settings or {}).get("columns") or []):
+                continue
+            _gone_def = next((c for c in ((_tb.settings or {}).get("columns") or [])
+                              if str(c.get("id")) == str(made.get("col_id"))), None)
+            _ts = dict(_tb.settings or {})
+            _ts["columns"] = _left
+            _tb.settings = _ts
+            _drop_links_for_columns(db, [str(made.get("col_id"))])
+            # A column disappearing from a board is a thing that board\'s log
+            # says and its column bin can undo, and this one disappears from
+            # somebody ELSE\'s board — the one place where an unexplained
+            # deletion is least recoverable. It went through neither until
+            # now: the same two calls every other column deletion makes.
+            _gone_title = (_gone_def or {}).get("title") or str(made.get("col_id"))
+            _row = _log_board(db, _tb.id, "delete", field="column",
+                              old=_gone_title,
+                              new=f"{_gone_title} — נמחקה עם ביטול ההמרה בלוח "
+                                  f"\'{b.name}\'",
+                              actor=actor_id)
+            if _gone_def is not None:
+                _bin_a_column(db, _tb, _gone_def, _row.id, actor_id)
+            bus.publish("board.changed", board_id=_tb.id)
+        conv.status = "reverted"
+        conv.closed_at = datetime.now(timezone.utc)
+        title = (conv.from_col or {}).get("title") or col_id
+        _log_board(db, board_id, "update", field="column", old=title,
+                   new=f"{title} — ההמרה לעמודת קישור בוטלה והערכים הוחזרו",
+                   actor=actor_id)
+        db.commit()
+        bus.publish("board.changed", board_id=board_id, actor_id=actor_id)
+        return {"conversion_id": conv.id, "status": "reverted",
+                "columns": cols, "restored": len(cells)}
+
+
 @app.get("/api/tasks/lookup")
-def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
+def tasks_lookup(ids: str = "", board_id: int = 0, col_id: str = "",
+                 actor_id: int = Depends(current_user_id)):
     """Resolve item ids → title/board, to display linked items in a connect cell.
 
     This took no actor and filtered nothing: any id turned into a title and the
@@ -12382,10 +18180,26 @@ def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
         bnames = {b.id: b.name for b in db.query(Board)
                   .filter(Board.id.in_({t.board_id for t in rows}))
                   .execution_options(include_deleted=True).all()}
+        # Which connect column is asking, so a cell with a display field gets
+        # the text it is configured to show. Optional and ignored when the
+        # caller cannot open the board that holds the column: the ids and
+        # titles answered here are exactly what they always were, and this
+        # only decides whether a second string rides along. The real gate is
+        # per linked record and lives in _link_display_text.
+        _field = "title"
+        if board_id and col_id and _board_role(db, board_id, actor_id) is not None:
+            _src = _find_col(db, board_id, col_id)
+            if _src is not None and _src.get("type") == "connect":
+                _field = _display_field(_src)
+        _disp = _link_display_map(db, [t.id for t in rows], _field, actor_id) if rows else {}
         # A binned item keeps its title and board — the caller was already
         # allowed to see both — and is flagged so the cell can say that the
         # item was deleted rather than pretend the link was never there.
-        out = [{"id": t.id, "title": t.title, "board_id": t.board_id,
+        out = [{"id": t.id, "title": t.title,
+                # what the cell shows: the display field where there is one
+                # and this reader may read it, the title everywhere else
+                "display": _disp.get(str(t.id)) or t.title,
+                "board_id": t.board_id,
                 "board_name": bnames.get(t.board_id, ""),
                 "deleted": state.get(t.id) in ("deleted", "deleted_board"),
                 # which bin it is in decides what the reader has to do about it
@@ -12394,8 +18208,9 @@ def tasks_lookup(ids: str = "", actor_id: int = Depends(current_user_id)):
                for t in rows]
         # Named, not silently dropped: the client needs to tell "no such item"
         # apart from "not yours", and it may render neither a title nor a board.
-        out += [{"id": i, "title": None, "board_id": None, "board_name": "",
-                 "restricted": True} for i in id_list if not state.get(i)]
+        out += [{"id": i, "title": None, "display": None, "board_id": None,
+                 "board_name": "", "restricted": True}
+                for i in id_list if not state.get(i)]
         return {"items": out}
 
 # Groups and statuses are not wired to each other. A board that wants an item
@@ -22728,6 +28543,8 @@ def set_item_permissions(task_id: int, data: dict, actor_id: int = Depends(curre
             perms.pop(uid, None)   # clear override → falls back to board role
         task.permissions = perms
         db.commit()
+        bus.publish("perm.changed", board_id=task.board_id, task_id=task.id,
+                    actor_id=actor_id)
         return {"id": task.id, "permissions": task.permissions}
 
 @app.delete("/api/tasks/{task_id}")

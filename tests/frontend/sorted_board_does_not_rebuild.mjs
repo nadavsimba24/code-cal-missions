@@ -79,7 +79,12 @@ Live.patchRow = () => { patched++; return true; };
 const callLines = src.split('\n')
   .filter(l => /\brefreshRow\(/.test(l) && !/function refreshRow/.test(l))
   .map(l => l.trim());
-ck('there are three callers and no more', callLines.length === 3, JSON.stringify(callLines));
+/* The count is deliberately a thing somebody has to come here and change: a
+   new caller that forgets its third argument silently rebuilds the whole board
+   on every edit, which is the flicker this file exists to keep out. The fourth
+   is the conversion resolver — it answers one exception at a time, and without
+   it every press repainted the board behind the dialog and lost its scroll. */
+ck('there are four callers and no more', callLines.length === 4, JSON.stringify(callLines));
 ck('every one of them names the field or column that changed',
    callLines.every(l => /refreshRow\([^;]*,[^;]*,[^;]*\)/.test(l)),
    JSON.stringify(callLines));

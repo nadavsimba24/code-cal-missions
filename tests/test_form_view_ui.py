@@ -79,7 +79,10 @@ def test_leaving_a_view_leaves_an_open_form_too():
 
 
 def test_the_editor_is_drawn_instead_of_the_board():
-    m = re.search(r"function renderView\(\)\{(.{0,2000})", SRC, re.S)
+    # The window is generous because the assertion is about ORDER, not about
+    # proximity: anything else drawn over the board — a dashboard tab, say —
+    # short-circuits in the same place and pushes the teardown further down.
+    m = re.search(r"function renderView\(\)\{(.{0,4000})", SRC, re.S)
     assert m, "renderView moved"
     head = m.group(1)
     assert "FormEditor.isOpen()" in head and "FormEditor.paint(el)" in head, \

@@ -257,7 +257,9 @@ const ctx=new Function(
   function boardPriorityList(){ return []; }
   function statusColOpts(col){ return (col.options||[]).map(o=>({id:o,label:o})); }
   const vTable=el=>{el.innerHTML='<div data-board="1"></div>';};
-  const vKanban=vTable, vDashboard=vTable, vCeo=vTable, vCalendar=vTable, vMap=vTable,
+  // Every view the dispatcher names has to exist here, or evaluating
+  // renderView throws before it reaches the question this harness asks.
+  const vKanban=vTable, vDashboard=vTable, vDash=vTable, vCeo=vTable, vCalendar=vTable, vMap=vTable,
         vGis=vTable, vWorkPlan=vTable, vBudget=vTable, vApprovals=vTable, vGantt=vTable,
         vLinks=vTable, vCeoEnhanced=vTable;
   function learnRowHeight(){} function useLatestMeasurements(){} function renderSelBar(){}
@@ -286,13 +288,19 @@ global.FormEditor=FE;        // what the real tabsHTML reaches for
 const sleep=()=>new Promise(r=>setTimeout(r,0));
 
 // ── 1 · the "+ הוספת תצוגה" menu offers a form ──
+// Matched on the NAME in its slot rather than on a bare <span>: the menu was
+// redesigned into cards that also say what each kind is for, and the thing
+// being asserted is that a form is one of the things offered — not how the
+// name happens to be wrapped.
+const named=he=>new RegExp('class="av-nm">'+he+'<').test(popHTML);
 ctx.renderAddViewPop();
-ck('the menu offers a form', /<span>טופס<\/span>/.test(popHTML));
-ck('…beside the table, as the same kind of thing', /<span>טבלה<\/span>/.test(popHTML));
+ck('the menu offers a form', named('טופס'));
+ck('…beside the table, as the same kind of thing', named('טבלה'));
 ck('…and pressing it creates one', /FormEditor\.create\(\)/.test(popHTML));
 ck('…in Hebrew, with a form icon', /fa-file-lines/.test(popHTML));
+ck('…and says what a form is for, not only its name', /כפריט חדש ללוח/.test(popHTML));
 st.board.my_role='viewer'; ctx.renderAddViewPop();
-ck('a viewer is not offered it at all', !/<span>טופס<\/span>/.test(popHTML));
+ck('a viewer is not offered it at all', !named('טופס'));
 st.board.my_role='admin';
 
 // ── 2 · creating one opens its editor ──
