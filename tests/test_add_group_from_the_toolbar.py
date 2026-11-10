@@ -3,8 +3,9 @@
 "+ הוסף קבוצה" sat at the very foot of the board, past every row of it: on a
 board of any size the way to add a shelf was a scroll away from the board's own
 actions, and the group it made appeared down there too, away from where the eye
-was. The caret on "פריט חדש" is a second way in — הוספת פריט / הוספת קבוצה —
-and a group made from there lands at the TOP of the board.
+was. The caret on "פריט חדש" is a second way in — it holds הוספת קבוצה, the
+one thing the button beside it does not do — and a group made from there lands
+at the TOP of the board.
 
 Two halves. The screen's half is the harness: the button goes on making an item
 on its own, the caret is hidden from anybody who cannot add a group, and the two

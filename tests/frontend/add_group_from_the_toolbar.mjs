@@ -7,8 +7,8 @@
 
    The way in is now the caret on "פריט חדש": the same two-door shape the filter
    beside it already wears — the button goes on doing what it says, the caret
-   drops a menu of הוספת פריט / הוספת קבוצה — and a group made from there lands
-   at the TOP of the board.
+   drops the one thing it does not, הוספת קבוצה — and a group made from there
+   lands at the TOP of the board.
 
    Four things have to stay true:
 
@@ -75,10 +75,18 @@ ck('making an item is still the first thing on the action strip',
 const pop = /if\(name==='new'\)\{([\s\S]*?)\n  \}/.exec(src);
 ck('the menu has contents', !!pop);
 const menu = pop ? pop[1] : '';
-ck('הוספת פריט is in it, and it is the first row',
-   /הוספת פריט/.test(menu) && menu.indexOf('הוספת פריט') < menu.indexOf('הוספת קבוצה'));
-ck('…and הוספת קבוצה under it', /הוספת קבוצה/.test(menu));
-ck('the item row does what the button does', /onclick="closePops\(\);openNewItem\(\)"/.test(menu));
+ck('הוספת קבוצה is in it', /הוספת קבוצה/.test(menu));
+/* And it is the only thing in it. The menu used to open with the item, which
+   is what the button the caret hangs off already does — a second copy of the
+   first half of the same control, one click further in. The caret is for what
+   the button cannot do.
+
+   Read off what is RENDERED and not off the whole branch: the comment above
+   the call is free to name the row that was taken out, and saying so must not
+   read as the row still being there. */
+const drawn = (/setHTML\(el,([\s\S]*?)\);/.exec(menu) || ['', ''])[1];
+ck('…and it is the only row: the item is the button, not a menu entry',
+   !!drawn && !/הוספת פריט/.test(drawn) && !/openNewItem\(\)/.test(drawn), drawn);
 ck('the group row asks for one at the top of the board',
    /onclick="closePops\(\);addGroup\(true\)"/.test(menu));
 ck('the group row is only there where a group can be added',

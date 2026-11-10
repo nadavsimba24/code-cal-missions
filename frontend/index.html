@@ -14563,9 +14563,12 @@ function renderMe(){
 function renderPop(name){
   if(name==='new'){
     const el=document.getElementById('pop-new'); if(!el)return;
-    /* The item is first because it is what the button itself does: somebody who
-       opened the menu by mistake should find the thing they were already aiming
-       at under the caret, not a reordered list.
+    /* The group, and nothing else. "הוספת פריט" used to lead the menu, on the
+       reasoning that somebody who opened it by mistake should find the thing
+       they were already aiming at — but the half of the control the caret
+       hangs off IS that thing, so the row was a copy of the button beside it,
+       one click further away. What the caret holds now is the one way in the
+       button itself does not offer.
 
        The group is offered only where it can actually be added — see
        canAddGroupHere. The caret itself is hidden in that case (refreshToolbar),
@@ -14573,10 +14576,8 @@ function renderPop(name){
        stale screen must not offer a row whose answer is already no. The rule is
        the role now and not the filters, so the caret no longer appears and
        disappears while she works. */
-    setHTML(el, `<button class="pop-row-act" onclick="closePops();openNewItem()">
-        <span style="width:20px;text-align:center"><i class="fa-solid fa-plus"></i></span> הוספת פריט</button>`
-      + (canAddGroupHere() ? `<button class="pop-row-act" onclick="closePops();addGroup(true)">
-        <span style="width:20px;text-align:center"><i class="fa-solid fa-layer-group"></i></span> הוספת קבוצה</button>` : ''));
+    setHTML(el, canAddGroupHere() ? `<button class="pop-row-act" onclick="closePops();addGroup(true)">
+        <span style="width:20px;text-align:center"><i class="fa-solid fa-layer-group"></i></span> הוספת קבוצה</button>` : '');
     return;
   }
   if(name==='me'){
