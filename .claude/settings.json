@@ -51,7 +51,9 @@
 
       "Bash(./scripts/security_gate.sh:*)",
       "Bash(./venv/bin/python scripts/security_agent.py scan:*)",
-      "Bash(./venv/bin/python backend/healthcheck.py:*)"
+      "Bash(./venv/bin/python backend/healthcheck.py:*)",
+
+      "Bash(./venv/bin/python scripts/copy_board_env.py:*)"
     ],
 
     "ask": [
