@@ -40,7 +40,13 @@ import urllib.error
 import urllib.request
 
 API = "https://api.monday.com/v2"
-API_VERSION = "2024-10"
+# The query asks for `assets` on a conversation REPLY, and that field does not
+# exist before 2025-07: against 2024-10 monday refuses the whole document at
+# validation — "Cannot query field \"assets\" on type \"Reply\"" — before a
+# single item is fetched, which reads like a dead token rather than a version
+# that is two releases behind the query beside it. An attachment posted in a
+# reply is the thing that goes missing without it.
+API_VERSION = "2025-07"
 HERE = pathlib.Path(__file__).resolve().parent
 GRAPHQL = HERE.parent / "backend" / "monday_export.graphql"
 MERGE = HERE / "merge_monday_export.py"

@@ -230,6 +230,12 @@ def capabilities():
         # reason the rest of this is: a comparison the engine would refuse must
         # not be offered as a choice somebody can make.
         "compare_to_column": list(COMPARE_KINDS),
+        # the wildcard a status TRIGGER may hold instead of one value, and what
+        # it reads as. Served for the same reason the rest of this is: a screen
+        # that spelled the sentinel out itself would go on offering it the day
+        # the engine stopped accepting it.
+        "any_status": ANY_STATUS,
+        "any_status_label": ANY_STATUS_LABEL,
         "group_operators": list(CONDITION_GROUP_OPS),
         "max_conditions": MAX_CONDITIONS,
         "mirror_match": list(MIRROR_MATCH),
@@ -760,6 +766,34 @@ STATUS_COL_TEXT = {
     "status_changes_to": "כאשר {col} משתנה ל{status}",
     "set_status":        "שנה את {col} ל{status}",
 }
+
+
+# ── "לכל ערך שהוא" ──────────────────────────────────────────────────────────
+# A status trigger has always named one value: "כאשר הסטטוס משתנה ל«אושר»".
+# The rule people actually write first is the other one — "כשהסטטוס זז, רשום
+# את תאריך העדכון" — and it could not be said at all. The nearest thing the
+# catalog offered was "כאשר ערך העמודה משתנה", which hears a STATUS COLUMN but
+# is deaf to the board's own status, and says nothing about a status when it
+# is read back.
+#
+# It is a value in the status blank rather than a trigger of its own, and that
+# is the whole of the change: every pairing the catalog already has — notify,
+# assign, move group, set column, duplicate — becomes sayable for "whenever it
+# moves" without one new recipe, and a rule written this way is the same row,
+# validated by the same rules, as the rule beside it that names a value. It
+# travels with the column the blank names, so "כאשר «שלב» משתנה לכל ערך שהוא"
+# is about that column and nothing else.
+#
+# "*" and not "" — an empty blank is a rule somebody has not finished, and the
+# difference between "any value" and "no value yet" is the difference between
+# a rule that fires on everything and one that may not be switched on.
+ANY_STATUS = "*"
+ANY_STATUS_LABEL = "כל ערך שהוא"
+
+
+def is_any_status(v):
+    """Whether a status blank holds the wildcard rather than one value."""
+    return str(v or "") == ANY_STATUS
 
 
 def status_col_key(field_key):

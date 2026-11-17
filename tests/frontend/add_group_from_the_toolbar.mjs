@@ -48,10 +48,10 @@ const ctl = /<div class="tb-ctl" id="ctl-new">([\s\S]*?id="pop-new"><\/div>)/.ex
 ck('the new-item button is a control with a popup of its own', !!ctl);
 const inside = ctl ? ctl[1] : '';
 ck('…and the button itself still makes an item, unasked',
-   /<button class="btn btn-primary" onclick="openNewItem\(\)"/.test(inside), inside.slice(0,90));
+   /<button class="btn btn-primary" onclick="openNewItem\([^"]*\)"/.test(inside), inside.slice(0,90));
 ck('…with the caret as the second door, beside it and after it',
    /class="btn btn-primary tb-caret-pri"/.test(inside)
-   && inside.indexOf('openNewItem()') < inside.indexOf('tb-caret-pri'));
+   && inside.indexOf('openNewItem(') < inside.indexOf('tb-caret-pri'));
 ck('the caret opens the menu rather than doing anything by itself',
    /tb-caret-pri[\s\S]{0,260}?onclick="togglePop\('new'\)"/.test(inside), inside);
 ck('…and says what it is to a screen reader',
@@ -61,13 +61,13 @@ ck('the popup is the one the control carries', /<div class="tb-pop" id="pop-new"
    frame clips what is in it, and a dropdown clipped to the height of a button
    is a menu that opens into nothing */
 ck('…and the two halves are framed together, with the popup outside the frame',
-   /<div id="new-split">[\s\S]*?openNewItem\(\)[\s\S]*?tb-caret-pri[\s\S]*?<\/div>/.test(inside)
+   /<div id="new-split">[\s\S]*?openNewItem\([^"]*\)[\s\S]*?tb-caret-pri[\s\S]*?<\/div>/.test(inside)
    && inside.indexOf('id="pop-new"') > inside.indexOf('</div>'), inside);
 ck('the caret wears a chevron', /fa-chevron-down/.test(inside));
 
 // ── it is still the first thing on the strip ───────────────────────────────
 const tb = /<div id="toolbar">([\s\S]*?)\n    <\/div>/.exec(src);
-const order = ['openNewItem()','tb-search','ctl-arrange'].map(k => tb ? tb[1].indexOf(k) : -1);
+const order = ['openNewItem(','tb-search','ctl-arrange'].map(k => tb ? tb[1].indexOf(k) : -1);
 ck('making an item is still the first thing on the action strip',
    order.every(i=>i>=0) && order.every((v,i)=>i===0||v>order[i-1]), String(order));
 
@@ -86,7 +86,7 @@ ck('הוספת קבוצה is in it', /הוספת קבוצה/.test(menu));
    read as the row still being there. */
 const drawn = (/setHTML\(el,([\s\S]*?)\);/.exec(menu) || ['', ''])[1];
 ck('…and it is the only row: the item is the button, not a menu entry',
-   !!drawn && !/הוספת פריט/.test(drawn) && !/openNewItem\(\)/.test(drawn), drawn);
+   !!drawn && !/הוספת פריט/.test(drawn) && !/openNewItem\(/.test(drawn), drawn);
 ck('the group row asks for one at the top of the board',
    /onclick="closePops\(\);addGroup\(true\)"/.test(menu));
 ck('the group row is only there where a group can be added',

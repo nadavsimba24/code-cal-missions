@@ -55,5 +55,46 @@ ck('widgets are ordered by their saved position', Dash.order(ws).map(w=>w.id).jo
 Dash.d={can_edit:true,widgets:[],sources:[]};
 ck('a narrow window is not an editing surface',(()=>{const w=Dash.isWide;Dash.isWide=()=>false;
   const card=Dash.card({id:1,title:'x'}); Dash.isWide=w; return !card.includes('dash-w-menu');})());
+/* ── DASH-18.3 · the way back from an item opened out of a dashboard ──
+ * Reported as "עולה כפתור חזרה לדשבורד במיקום לא הגיוני". It was a
+ * position:fixed button at 70px from the top and 16px from the start edge,
+ * which is where the board writes its own NAME — so the return from a
+ * drill-down covered the name of the board it had just returned to. It
+ * belongs in the header line, before the name, where RTL reads it first. */
+const fakeDom=()=>{
+  const byId={};
+  const el=t=>({tag:t,style:{cssText:''},innerHTML:'',attrs:{},children:[],
+    set id(v){this._id=v; byId[v]=this;}, get id(){return this._id||'';},
+    setAttribute(k,v){this.attrs[k]=v;},
+    prepend(c){this.children.unshift(c);}, appendChild(c){this.children.push(c);},
+    remove(){ this.children=[];
+      for(const k of Object.keys(byId)) if(byId[k]===this) delete byId[k];
+      for(const h of [head,body]) h.children=h.children.filter(x=>x!==this); }});
+  const head=el('div'), body=el('body');
+  head.appendChild(el('h1'));                       // the board's own name
+  return {head, body, byId, doc:{
+    body, createElement:t=>el(t),
+    getElementById:id=>byId[id]||null,
+    querySelector:sel=>sel==='#boardhead .bh-top'?head:null}};
+};
+const dom=fakeDom();
+const {Dash:D2}=f(esc,stub,{view:'board',boards:[]},stub,stub,stub,stub,stub,
+  {innerWidth:1400},dom.doc,stub,{},{setItem:stub,getItem:()=>null});
+D2.showReturn();
+const back=dom.byId['dash-back'];
+ck('the way back is drawn in the board header, not floated over it',
+   !!back && dom.body.children.length===0);
+ck('…before the board name, which is what it used to cover',
+   dom.head.children[0]===back && dom.head.children[1].tag==='h1');
+ck('…so it carries no fixed position of its own',
+   !!back && !/fixed/.test(back.style.cssText||''));
+ck('…and says what it is to a screen reader',
+   !!back && back.attrs['aria-label']==='חזרה לדשבורד');
+D2.showReturn();
+ck('…and is offered once, not once per visit', dom.head.children.length===2);
+D2.clearReturn();
+ck('arriving at the dashboard takes the offer away again',
+   !dom.byId['dash-back'] && dom.head.children.length===1);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

@@ -38,7 +38,7 @@ const applyFilters=new Function(// applyFilters now also runs the advanced condi
   'st','linkNamesOf','linkIdsOf','statusKeyOf','priorityKeyOf','advCount','advMatch','Paged',
   'customColumns',
   IS_ITEM_ID+'\n'+grab('cellWords')+'\n'+grab('fdatePlain')+'\n'+grab('cellSearchWords')+'\n'+grab('searchWordsOf')+'\n'+grab('searchRow')+'\n'
-  +grab('applyFilters')+'\nreturn applyFilters;')(
+  +grab('applyFilters')+grab('byPosition')+'\nreturn applyFilters;')(
   st, t=>t.linkNames||[], ()=>[], t=>t.status, t=>t.priority, ()=>0, ()=>true, {on:false,rows:[]},
   ()=>[]);
 

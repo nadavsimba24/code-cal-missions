@@ -70,7 +70,7 @@ function states(over = {}) {
   ck('...and offers a viewer nothing to press', !/openNewItem/.test(viewer), viewer);
 
   const editor = states({st: {board: {my_role: 'editor', tasks: []}}}).emptyBoardHTML();
-  ck('somebody who may add an item is offered it', /openNewItem\(null\)/.test(editor), editor);
+  ck('somebody who may add an item is offered it', /openNewItem\(null,true\)/.test(editor), editor);
 }
 
 // ── restricted ─────────────────────────────────────────────────────────────

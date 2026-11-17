@@ -40,7 +40,7 @@ async function add({filters, group=7, view='table', paged=null}){
     // no columns, so searchWordsOf comes back to the title and the description.
     'customColumns',
     grab('cellWords')+grab('fdatePlain')+grab('cellSearchWords')+grab('searchWordsOf')+grab('searchRow')
-    +grab('applyFilters')+grab('filtersActive')+grab('openNewItem')+'; return openNewItem;')(
+    +grab('applyFilters')+grab('byPosition')+grab('filtersActive')+grab('openNewItem')+'; return openNewItem;')(
     st,
     async(url,opt)=>{ log.posted=JSON.parse(opt.body); return made; },
     x=>JSON.stringify(x),

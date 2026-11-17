@@ -28,6 +28,9 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "tests" / "frontend" / "filter_asks_for_ids.mjs"
+# the same bug one layer further on: the browser asks in the right shape and
+# still shows one page of the answer, because nothing asks for the next one
+FILL_HARNESS = ROOT / "tests" / "frontend" / "filter_fills_the_screen.mjs"
 
 
 MINE = {"filter": {"type": "group", "operator": "and",
@@ -120,4 +123,22 @@ def test_the_browser_asks_in_the_shape_whose_answer_is_complete():
     if not node:
         pytest.skip("node not installed")
     r = subprocess.run([node, str(HARNESS)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, "\n" + r.stdout + r.stderr
+
+
+def test_a_short_filtered_board_still_reaches_every_match():
+    """"בסינון מתקדם הדיאלוג הבטיח 131 פריטים, ואחרי החלה מוצגים 50."
+
+    The large-board answer is a page, which is correct — but the only thing
+    that ever asked for the page after it was the scroll handler on #view, and
+    a scroll event fires only on an element with something to scroll. A cut
+    whose first fifty rows did not fill the screen therefore stopped at fifty
+    for good. Collapsed groups are the case that made it plain: the board came
+    back as two folded headers reading "48 פריטים" and "2 פריטים" — the page
+    split between them, not the answer — with no gesture left to reach the
+    rest. See the harness; it is entirely browser-side."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    r = subprocess.run([node, str(FILL_HARNESS)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, "\n" + r.stdout + r.stderr

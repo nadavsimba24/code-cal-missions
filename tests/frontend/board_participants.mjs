@@ -103,7 +103,14 @@ ck('a manager gets a הזמנת משתתפים button',
    /id="mem-invite-btn"[^>]*>[^<]*<i[^>]*><\/i> הזמנת משתתפים/.test(manage), manage);
 ck('...folded away until pressed', /id="mem-invite"[^>]*hidden/.test(manage), manage);
 ck('...and it offers who may still be invited', /value="9"/.test(manage));
-ck('a manager can still delete the board from here', /Members\.deleteBoard\(\)/.test(manage));
+/* Deleting a board is deliberately NOT offered here, for either role. This
+   dialog is about who may use the board, and the most destructive action in
+   the product has no business at the bottom of a screen people open to change
+   somebody's role — one slip beside "סגור". It is still reachable where it
+   reads as a decision about the board: the header menu and the sidebar's own
+   context menu, both of which have their own tests. */
+ck('nobody is offered the board\'s deletion from here',
+   !/Members\.deleteBoard\(\)/.test(manage) && !/מחק לוח/.test(manage), manage);
 ck('a manager can still switch the board\'s notifications', /Members\.toggleNotif\(/.test(manage));
 
 ck('a viewer gets no role picker', !/Members\.setRole\(/.test(ro));
@@ -113,7 +120,6 @@ ck('a viewer gets no remove button', !/Members\.remove\(/.test(ro));
    under the admin's name. What a viewer must not get is the control. */
 ck('a viewer gets no invitation at all',
    !/mem-invite-btn/.test(ro) && !/Members\.add\(\)/.test(ro) && !/mem-user/.test(ro));
-ck('a viewer cannot delete the board from here', !/Members\.deleteBoard\(\)/.test(ro));
 ck('a viewer cannot switch the board\'s notifications', !/Members\.toggleNotif\(/.test(ro));
 ck('a viewer is told it is read-only', /תצוגה בלבד/.test(ro));
 ck('a viewer still reads the role as text, not as a dead control',

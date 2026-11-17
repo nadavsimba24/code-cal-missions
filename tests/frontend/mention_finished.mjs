@@ -32,8 +32,13 @@ function grabMethod(name){
   }
   throw new Error('unbalanced: '+name);
 }
+// taggedAlready is here because _openMention calls it, not because this file
+// has anything to say about it — one tag per person per message is pinned in
+// tests/frontend/mention_once_per_message.mjs. Every case below names somebody
+// who is not yet in the box, so the filter it applies is always a no-op here.
 const METHODS = ['mentionCtx','mentionSettled','onType','_openMention','_closeMention',
-                 'pickMention','keydown','insert','mentionPeople'].map(grabMethod).join('\n');
+                 'pickMention','keydown','insert','mentionPeople',
+                 'taggedAlready'].map(grabMethod).join('\n');
 
 // ── the world the composer runs in ──
 let PEOPLE = [];

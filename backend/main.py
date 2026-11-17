@@ -1,7 +1,7 @@
 """
 CityOS — FastAPI Backend Server
 """
-import os, sys, json, uuid, csv, io, re, secrets, threading, time, urllib.parse, urllib.request
+import os, sys, json, uuid, csv, io, gzip, re, secrets, threading, time, urllib.parse, urllib.request
 import concurrent.futures
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
@@ -11603,6 +11603,7 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
                        folder_id: Optional[int] = Form(None),
                        actor_id: int = Depends(current_user_id)):
     raw = await file.read()
+    filename = file.filename
     if len(raw) > IMPORT_MAX_UPLOAD_MB * 1024 * 1024:
         # The size is said, because "too big" over a file the user believes is
         # small is not something they can act on — and so is the reason it is
@@ -11613,13 +11614,41 @@ async def import_board(file: UploadFile = File(...), name: Optional[str] = Form(
             f"הקובץ גדול מדי — {len(raw) / 1048576:.1f}MB, והמקסימום הוא "
             f"{IMPORT_MAX_UPLOAD_MB}MB. אם שמרת את התשובה מהתצוגה המיופה של פוסטמן, "
             "ההזחה היא כ-70% מהקובץ: שמור את ה-body הגולמי (Raw) ונסה שוב")
+    # A monday export is JSON, and the JSON of a long board is mostly the same
+    # column ids and type names written out again on every one of its rows. The
+    # 21,187-item board that prompted this came out at 78.5MB and gzips to
+    # 4.0MB — twenty times smaller for a file that says exactly the same thing.
+    #
+    # It matters because the wait people describe as "the import is slow" is not
+    # the import: writing all 21,187 items and their 9,950 history rows takes 13
+    # seconds, measured. The rest of it is 78MB climbing a home upload link to
+    # Azure, and that is the half a smaller file actually fixes.
+    #
+    # Unpacked under the SAME ceiling rather than before it: a few compressed
+    # megabytes can name a file no machine can hold, so the limit is on what the
+    # import reads, not on what arrived. Reading cap+1 is how that is noticed
+    # without materialising the bomb first.
+    if raw[:2] == b"\x1f\x8b":
+        cap = IMPORT_MAX_UPLOAD_MB * 1024 * 1024
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as _gz:
+                raw = _gz.read(cap + 1)
+        except (OSError, EOFError):
+            raise HTTPException(400,
+                "הקובץ הדחוס פגום ולא ניתן לפרוס אותו — שמור אותו שוב ונסה שנית")
+        if len(raw) > cap:
+            raise HTTPException(413,
+                f"הקובץ הדחוס נפרס ליותר מ-{IMPORT_MAX_UPLOAD_MB}MB, וזו התקרה")
+        # so the ".json" the reader dispatches on is not hidden behind ".gz"
+        if (filename or "").lower().endswith(".gz"):
+            filename = filename[:-3]
     # Reading a workbook and writing a few hundred rows is seconds of CPU and of
     # blocking database calls. Run on the event loop, that is not just this one
     # request being slow: every other request in the app waits behind it — the
     # board someone else is opening, the avatars, the live event stream — which
     # is what makes an import feel like the whole system froze. Off the loop, the
     # import takes exactly as long and nothing else notices.
-    return await run_in_threadpool(_import_board_file, raw, file.filename, name,
+    return await run_in_threadpool(_import_board_file, raw, filename, name,
                                    environment_id, folder_id, actor_id)
 
 
@@ -14671,6 +14700,31 @@ def create_task(data: dict, request: Request = None,
         task.position = (maxpos + 1) if maxpos is not None else 0
         db.add(task)
         db.flush()   # get task.id for assignment notifications
+        # …unless the caller said where. The two ways of adding an item mean
+        # two different places and always did: the "+ הוסף פריט" line sits at
+        # the foot of a group and means the row below the last one, while the
+        # "פריט חדש" button sits at the top of the board and means the top of
+        # it. Only the second one says so, by sending position 0.
+        #
+        # Placed through _place_item rather than by writing a number, because
+        # the number alone is not a position: asking for 0 while the item
+        # already there also holds 0 leaves two items claiming one slot, and
+        # the board reads back ordered by position — the tie then goes to
+        # whichever row the database felt like, which is the drag-springs-back
+        # bug one function down, reached from here instead. _place_item
+        # renumbers every sibling, so "first" is first and stays first.
+        #
+        # Top-level items only. A sub-item's position is an index in its
+        # parent's list, and _place_item renumbers a GROUP — handed one it
+        # would renumber the items around the parent instead. Nothing asks for
+        # it: the only way to add a sub-item is the line at the foot of the
+        # sub-list, which means the bottom.
+        want_pos = data.get("position")
+        if want_pos is not None and parent_id is None:
+            try:
+                _place_item(db, task, position=int(want_pos))
+            except (TypeError, ValueError):
+                raise HTTPException(400, "position must be a number")
         # a brand-new item (or sub-item) gets its own automatic identifier — an
         # item created after another was deleted never reuses that one's number
         _ensure_item_uid(db, task)
@@ -18795,9 +18849,17 @@ def _automation_matches(a, event):
         # them is about one of the columns. "" on both sides is the board's own
         # status, which is what a rule written before columns could be named
         # holds and what the built-in event reports.
-        return (str(cfg.get("t_status")) == str(event.get("status"))
-                and recipes.status_col_of(cfg, "t_status")
-                == str(event.get("col") or ""))
+        #
+        # The column still has to be the rule's column when the VALUE is the
+        # wildcard: "כאשר «שלב» משתנה לכל ערך שהוא" is about that column, and a
+        # rule that heard every status column on the board would be a different
+        # rule from the one it reads as. The event only exists because
+        # something moved, so "any value" needs no second test for "changed".
+        if not (recipes.status_col_of(cfg, "t_status")
+                == str(event.get("col") or "")):
+            return False
+        return (recipes.is_any_status(cfg.get("t_status"))
+                or str(cfg.get("t_status")) == str(event.get("status")))
     if event["type"] == "priority_changes_to":
         return str(cfg.get("t_priority")) == str(event.get("priority"))
     if event["type"] == "linked_status_changes_to":
@@ -19754,6 +19816,42 @@ def _write_people_cell(db, board, task, col, was, now_v):
            _shown_cell(db, board, was), _shown_cell(db, board, now_v), None)
 
 
+def _cell_date_iso(raw):
+    """The ISO day inside a date somebody wrote, or "" for anything else.
+
+    A date column stores the ISO day. A value on its way into one arrives here
+    as TEXT, and the text a rule carries is the text this product SHOWS: the
+    {{תאריך ההפעלה}} token resolves to 11/11/2026, because that is the date a
+    Hebrew reader expects to find in the middle of a notification, and it is
+    the same token both halves of the catalog offer.
+
+    The two were never introduced. "עדכן את «תאריך עדכון» ל{{תאריך ההפעלה}}" —
+    which is the first rule anybody writes, and the one way to say "stamp today
+    on it" — was refused by its own token: the history said "אינו תאריך — לא
+    נכתב לעמודה" on every firing and the cell stayed empty. The rule looked
+    active, ran, and did nothing.
+
+    Both spellings people use here are read, and nothing else. %m/%d/%Y is
+    deliberately absent: 03/04/2026 is the third of April in this product and
+    the fourth of March in that one, and a rule writing into a cell may not
+    guess which — a date silently off by a month is worse than one refused.
+    A time after the day is dropped rather than refused, so {{זמן ההפעלה}} is
+    as writable as {{תאריך ההפעלה}}; a date column holds a day.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    head = s.replace("T", " ").split(" ")[0]
+    if filter_ast._ISO_DAY.match(head):
+        return head
+    for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(head, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return ""
+
+
 def _coerce_cell(db, board_id, col, value):
     """(stored value, error) for writing `value` into this column.
 
@@ -19774,9 +19872,10 @@ def _coerce_cell(db, board_id, col, value):
             return None, f"'{raw}' אינו מספר — לא נכתב לעמודה"
         return (int(n) if n == int(n) else n), None
     if kind == "date":
-        if not filter_ast._ISO_DAY.match(raw[:10]):
+        iso = _cell_date_iso(raw)
+        if not iso:
             return None, f"'{raw}' אינו תאריך — לא נכתב לעמודה"
-        return raw[:10], None
+        return iso, None
     if kind == "check":
         return (raw not in ("0", "false", "לא", "")), None
     if kind == "status":
@@ -19834,6 +19933,10 @@ def _shown_value(db, board, ftype, v, col_id=""):
     the "שלב" column is not the board status of that name and must not be
     looked up among them."""
     if ftype == "status":
+        # the wildcard belongs to no vocabulary — it is the absence of a choice
+        # of value, and it reads as one
+        if recipes.is_any_status(v):
+            return recipes.ANY_STATUS_LABEL
         opts, _ = _status_vocab(board, col_id)
         e = next((x for x in opts if str(x["key"]) == str(v)), None)
         return e["label"] if e else str(v)
@@ -21943,6 +22046,176 @@ def _notify_owner_once(db, a, board, key, title, body):
         _notify(db, uid, "automation", title, body, board_id=a.board_id)
 
 
+# ── "נוצרה אוטומציה חדשה" ────────────────────────────────────────────────
+#
+# An automation is a standing instruction. The moment it is saved it starts
+# acting on everybody's items, in the board's name, without anyone pressing
+# anything — and until this existed the only trace of a new one was a line in
+# the audit log, which is a place people go after they already suspect
+# something. A rule could start moving items on a Monday and be noticed on a
+# Thursday, by whoever happened to look.
+#
+# So a new rule announces itself. In the bell it is one sentence — who created
+# which rule on which board — to the board's managers, to the rule's owner and
+# to the author, or to every member of the board when the person creating it
+# ticked the box that says so. It carries no link and nothing happens when it
+# is pressed: it is there to be read, which is why the sentence has to be
+# complete on its own.
+#
+# The mail is the longer version of the same news, and it keeps the narrower
+# audience it was written for — see _automation_created_notice. There it is
+# worth saying what the rule DOES, in its own sentence, whether it is already
+# running or was saved as a draft, and where to go and look: a mail has a
+# button, and that button lands on the board's automations with the new rule
+# picked out.
+AUTOMATION_CREATED_TYPE = "automation_created"
+
+
+def _automations_link(board_id, automation_id=None, base=None):
+    """The deep link the mail points at — the board, with its rules open.
+
+    #/board/{b}/automations/{a} is a route of the app's own (see Router.parse
+    and openDeepLink). The rule's id is optional on purpose: a rule deleted
+    between the mail and the click opens the panel rather than nothing.
+    """
+    base = (base or _app_base_url()).rstrip("/")
+    return f"{base}/#/board/{board_id}/automations" + (f"/{automation_id}"
+                                                       if automation_id else "")
+
+
+def _automation_created_audience(db, board, a, actor_id, all_members=False):
+    """Who is told that a rule was born.
+
+    The board's managers and the rule's owner — the people who answer for what
+    runs here — and the person who wrote it. The author is told on purpose:
+    "יצרתי אוטומציה" is a thing done to everybody else's board, and the bell is
+    where their own record of having done it lives, next to everyone else's
+    copy of the same sentence. Nothing else in the product can show them that.
+
+    `all_members` is the box on the creation screen, off unless somebody ticked
+    it. Some rules are the whole board's business and whoever writes one knows
+    which; most are not, and a board of forty people does not want forty bells
+    for a rule about one column — which is why the whole board is an answer
+    given at the moment of writing and never a default.
+
+    The owner is named although `_automation_meta` already refuses an owner who
+    is not a manager of this board: those are two different rules, and this one
+    must not quietly depend on the other staying true.
+
+    Each name once. The usual case — a manager who wrote the rule they also own
+    — reaches the list below three times and is told once; `seen` is the whole
+    of "כל משתמש יקבל התראה אחת בלבד". A deactivated account is skipped: it
+    cannot read the bell.
+    """
+    who = [actor_id]
+    if a.owner_id:
+        who.append(a.owner_id)
+    q = db.query(BoardMember).filter(BoardMember.board_id == board.id)
+    if not all_members:
+        q = q.filter(BoardMember.role == "admin")
+    who += [m.user_id for m in q.all()]
+    out, seen = [], set()
+    for uid in who:
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        u = db.query(User).filter(User.id == uid).first()
+        if u and u.is_active is not False:
+            out.append(uid)
+    return out
+
+
+def _automation_created_mail(db, uid, board, a, actor_name, label, request=None):
+    """(to, subject, html) for one recipient — or None where there is no mail.
+
+    The rule's own sentence arrives as text and is escaped here: a rule
+    carries a name, a description and a notice somebody typed, and what
+    somebody typed into a box is not HTML.
+    """
+    to = db.query(User).filter(User.id == uid).first()
+    if not to or not to.email or to.is_active is False:
+        return None
+    named = (a.name or "").strip()
+    desc = (a.description or "").strip()
+    owner = (db.query(User.name).filter(User.id == a.owner_id).scalar()
+             if a.owner_id else "")
+    lines = [f'<b>{_mail_esc(actor_name)}</b> יצר/ה אוטומציה חדשה בלוח '
+             f'<b>"{_mail_esc(board.name)}"</b> במערכת missions.']
+    if named:
+        lines.append(f'שם האוטומציה: <b>{_mail_esc(named)}</b>')
+    lines.append(f'מה היא עושה: {_mail_esc(label)}')
+    if desc:
+        lines.append(f'תיאור: {_mail_esc(desc)}')
+    if owner:
+        lines.append(f'באחריות: <b>{_mail_esc(owner)}</b>')
+    lines.append('מצב: <b>פעילה</b> — היא פועלת על הלוח מעכשיו.'
+                 if a.status == "active" else
+                 'מצב: <b>טיוטה</b> — היא נשמרה ואינה פועלת עד שמישהו יפעיל אותה.')
+    return (to.email,
+            f'אוטומציה חדשה בלוח "{board.name}" במערכת MISSIONS',
+            _item_mail_html(f'אוטומציה חדשה בלוח "{_mail_esc(board.name)}"',
+                            to.name, "<br>".join(lines), "כניסה לאוטומציות",
+                            _automations_link(board.id, a.id, _app_base_url(request))))
+
+
+def _automation_created_name(db, board, a):
+    """What to call the rule in the sentence — its name, or what it does.
+
+    The name is optional in the builder ("ריק — ומשפט האוטומציה משמש כשם"), and
+    a notification reading «» would name nothing at all. The fallback is the
+    same sentence the list shows under that rule, so the bell calls the rule
+    exactly what the screen it points at calls it.
+    """
+    return (a.name or "").strip() or _automation_label(db, board, a)
+
+
+def _automation_created_notice(db, board, a, actor_id, request=None,
+                               all_members=False):
+    """Announce one new rule — the bell row and the mail say the same thing.
+
+    Both or neither: the mail is built here and sent only once the transaction
+    has landed (_mail_when_committed), so nothing announces a rule that then
+    rolled back. A board whose admin switched its notifications off wholesale
+    is silent here too — that switch is the board's answer to "tell my people
+    about things", and a rule is a thing.
+
+    The bell and the mail do not share an audience, and the difference is
+    deliberate. The bell is a line in a list the recipient already opens, so it
+    can afford the author's own copy and, when asked, the whole board's. Mail
+    leaves the building: it stays with the people who answer for the board,
+    never the author (who was answered by the save itself) and never a whole
+    board at once, because ticking a box on a form must not put forty messages
+    into forty inboxes.
+    """
+    if not _board_notify_on(board):
+        return
+    who = _automation_created_audience(db, board, a, actor_id,
+                                       all_members=all_members)
+    if not who:
+        return
+    actor = db.query(User).filter(User.id == actor_id).first()
+    actor_name = (actor.name if actor else "") or "מישהו"
+    label = _automation_label(db, board, a)
+    # One sentence, and nothing to press: this notification exists to be read.
+    # Everything a reader needs is inside it — who, which rule, which board —
+    # precisely because there is nowhere for it to lead.
+    title = f'אוטומציה חדשה בלוח «{board.name}»'
+    body = (f'{actor_name} יצר/ה את האוטומציה '
+            f'«{_automation_created_name(db, board, a)}» '
+            f'בלוח «{board.name}».')
+    for uid in who:
+        _notify(db, uid, AUTOMATION_CREATED_TYPE, title, body, board_id=board.id)
+    # The mail keeps its own, narrower list — see above. It is derived from the
+    # same function with the box unticked, so the two can never drift into two
+    # different ideas of who manages this board.
+    mail_to = [uid for uid in
+               _automation_created_audience(db, board, a, actor_id)
+               if uid != actor_id]
+    _mail_when_committed(db, [_automation_created_mail(db, uid, board, a,
+                                                       actor_name, label, request)
+                              for uid in mail_to])
+
+
 def _clear_owner_notices(a):
     """A run that worked means the problems it was told about are over."""
     if (a.state or {}).get("told"):
@@ -22134,6 +22407,8 @@ def _automation_blockers(db, board, a):
             if not col:
                 out.append({"kind": "dependency",
                             "text": "עמודת הסטטוס שהכלל מאזין לה נמחקה מהלוח"})
+            elif recipes.is_any_status(v):
+                pass          # "כל ערך שהוא" is in no vocabulary, by design
             elif v and not any(str(x["key"]) == str(v) for x in opts):
                 out.append({"kind": "dependency",
                             "text": f"הסטטוס '{_status_label(board, scol, v)}' "
@@ -25015,6 +25290,23 @@ def create_automation(board_id: int, data: dict, request: Request = None,
         _audit_automation(db, a, "create", "automation",
                           after=_automation_label(db, b, a),
                           actor_id=user_id, request=request)
+        # …and the audit is not the only place it is said. A rule that starts
+        # acting on a board is news to the people who answer for that board —
+        # and, when the box on the creation screen was ticked, to all of it.
+        #
+        # Said here and only here. A rule is created once; a PATCH is a new
+        # version of a rule that already announced itself, and announcing it
+        # again would turn "נוצרה אוטומציה חדשה" into a line that arrives every
+        # time somebody fixes a typo in one. The same reason keeps it out of
+        # duplicate, import and restore: none of those is a person deciding
+        # that this board should start doing something new.
+        # read the way every other flag arriving in a JSON body is read here:
+        # the SPA sends a real boolean, and a client that sends the string
+        # "true" meant the same thing and should not be told otherwise
+        _tell_all = str(data.get("notify_all_members", "")).lower() \
+            in ("true", "1", "yes", "on")
+        _automation_created_notice(db, b, a, user_id, request,
+                                   all_members=_tell_all)
         db.commit()
         db.refresh(a)
         # "הפעלה מוצלחת" is a moment, not a state — said here and nowhere else
@@ -26463,17 +26755,24 @@ def _dry_run_automation(db, board, a, task, viewer=None):
         # a test that compared the wrong one would say a rule cannot fire when
         # it is about to
         _tcol = recipes.status_col_of(cfg, "t_status")
+        # A rule that waits for ANY value is not waiting for the item to hold
+        # a particular one, so there is nothing here to compare: it fires
+        # whenever that status moves, and the test says so rather than
+        # reporting a mismatch against a value the rule never named.
+        _any = recipes.is_any_status(cfg.get("t_status"))
         if _tcol:
             _scol = _find_col(db, task.board_id, _tcol)
             _cell = _status_cell_key(_scol, (task.custom_fields or {}).get(_tcol))
-            trigger["matches"] = bool(_scol) and str(cfg.get("t_status")) == _cell
+            trigger["matches"] = bool(_scol) and (_any or str(cfg.get("t_status")) == _cell)
             _name = (_scol or {}).get("title") or _tcol
             trigger["note"] = (f"הערך בעמודה «{_name}»: "
-                               f"{_status_label(board, _tcol, _cell)}") if _scol \
+                               f"{_status_label(board, _tcol, _cell)}"
+                               + ("; הכלל מופעל בכל שינוי שלו" if _any else "")) if _scol \
                 else f"העמודה «{_tcol}» אינה קיימת בלוח"
         else:
-            trigger["matches"] = str(cfg.get("t_status")) == str(cur_status)
-            trigger["note"] = f"הסטטוס בפריט: {label('t_status', cur_status)}"
+            trigger["matches"] = _any or str(cfg.get("t_status")) == str(cur_status)
+            trigger["note"] = (f"הסטטוס בפריט: {label('t_status', cur_status)}"
+                               + ("; הכלל מופעל בכל שינוי שלו" if _any else ""))
     elif trig == "priority_changes_to":
         trigger["matches"] = str(cfg.get("t_priority")) == str(cur_prio)
         trigger["note"] = f"העדיפות בפריט: {label('t_priority', cur_prio)}"
@@ -26490,8 +26789,13 @@ def _dry_run_automation(db, board, a, task, viewer=None):
             continue
         want = cfg.get(f["key"])
         have = cur_status if f["type"] == "status" else cur_prio
+        # a blank holding "כל ערך שהוא" is met by whatever the item holds —
+        # reporting it as a mismatch would say the rule cannot fire on an item
+        # it fires on every time
+        ok = recipes.is_any_status(want) if f["type"] == "status" else False
         conditions.append({"label": f["label"], "expected": label(f["key"], want),
-                           "actual": label(f["key"], have), "ok": str(want) == str(have)})
+                           "actual": label(f["key"], have),
+                           "ok": ok or str(want) == str(have)})
     # the rule's own "רק אם" conditions, each answered separately — a test that
     # reported only a verdict would leave the asker to guess which one held it
     for c in (cfg.get(recipes.CONDITION_KEY) or []):
@@ -26688,6 +26992,8 @@ def _automation_value_label(db, board, r, key, v, cfg=None):
     if v in (None, "", []):
         return "—"
     if t == "status" or key in ("t_status", "a_status"):
+        if recipes.is_any_status(v):
+            return recipes.ANY_STATUS_LABEL
         opts, _ = _status_vocab(board, recipes.status_col_of(cfg, key))
         e = next((x for x in opts if str(x["key"]) == str(v)), None)
         return e["label"] if e else str(v)

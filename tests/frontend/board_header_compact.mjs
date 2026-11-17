@@ -49,7 +49,7 @@ ck('…and before the board itself',
 /* The order of the work, read right to left: make an item, find one, narrow the
    board to a few, put it back. "נקה סינון" sits beside the filter it clears. */
 const tb = /<div id="toolbar">([\s\S]*?)\n    <\/div>/.exec(src);
-const order = ['openNewItem()','tb-search','ctl-arrange','tb-clear']
+const order = ['openNewItem(','tb-search','ctl-arrange','tb-clear']
   .map(k => tb ? tb[1].indexOf(k) : -1);
 ck('new item, then search, then filter, then clear-filter',
    order.every(i=>i>=0) && order.every((v,i)=>i===0||v>order[i-1]), String(order));

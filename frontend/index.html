@@ -182,9 +182,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
    and on a network that does not reach it the button is there and empty —
    which is exactly what "the icon did not come up" looked like in QA. And
    fa-robot's mouth is a grille that reads as a row of teeth; this face
-   smiles instead. Everything is currentColor, so it takes the colour of
-   whatever it sits in — muted in the header, --text-light in the ⋯ menu,
-   --primary in a dialog heading — with no second rule to keep in step. */
+   smiles instead. It is filled, not outlined, so it carries the same weight
+   as the solid icons beside it. Everything is currentColor, so it takes the
+   colour of whatever it sits in — muted in the header, --text-light in the
+   ⋯ menu, --primary in a dialog heading, white on the agent bubble — with no
+   second rule to keep in step. */
 .ic-robot{display:inline-flex;align-items:center;justify-content:center;vertical-align:-.14em}
 .ic-robot svg{width:1.08em;height:1.08em;display:block}
 .ic-robot.ic-pri{color:var(--primary)}
@@ -449,6 +451,16 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 #boardhead .board-name.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
 #boardhead .bt-icon.editable{cursor:pointer;border-radius:7px;padding:0 4px;transition:.12s}
 #boardhead .bt-icon.editable:hover{background:var(--row-hover);box-shadow:inset 0 0 0 1px var(--border-strong)}
+/* The return from an item that was opened out of a dashboard. It stands in
+   the header line before the board's name, so it reads as "back from here"
+   rather than as something floating over the page — and it is marked as the
+   way out rather than as another of the header's quiet icons, because a
+   reader who followed a figure into an item has to be able to find it. */
+#dash-back{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;cursor:pointer;
+  background:var(--primary-soft);color:var(--primary);border:1px solid var(--primary);
+  border-radius:8px;padding:4px 11px;font-size:12.5px;min-height:30px;white-space:nowrap}
+#dash-back:hover{background:var(--primary);color:#fff}
+#dash-back:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .cell-pop.board-icon-pop{padding:10px}
 .board-icon-pop .icon-grid{gap:6px}
 /* stretch, not center: every tab is as tall as the row, so the underline that
@@ -742,6 +754,10 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .am-spacer{flex:1 1 auto}
 .am-row{display:flex;align-items:flex-start;gap:11px;padding:13px 2px;border-bottom:1px solid var(--border)}
 .am-row:last-child{border-bottom:none}
+/* The rule a link pointed at — a ring that fades, not a permanent mark. A
+   link about one automation lands in a list of thirty, and "which one" has
+   to be answerable without reading them all. */
+.am-row.am-row-new{background:var(--primary-soft);box-shadow:inset 0 0 0 2px var(--primary);border-radius:8px;transition:background .4s,box-shadow .4s}
 .am-row.dim .am-main{opacity:.6}
 .am-main{flex:1;min-width:0}
 .am-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -2158,7 +2174,7 @@ img.pf-av{object-fit:cover;background:#fff}
 #agent-fab::after{content:'';position:absolute;inset:0;border-radius:50%;animation:fab-pulse 2.4s infinite;pointer-events:none}
 @keyframes fab-pulse{0%{box-shadow:0 0 0 0 rgba(0,200,117,.45)}70%{box-shadow:0 0 0 13px rgba(0,200,117,0)}100%{box-shadow:0 0 0 0 rgba(0,200,117,0)}}
 #agent-fab.loading{cursor:progress;pointer-events:none}
-#agent-fab.loading .fa-robot{display:none}
+#agent-fab.loading #fab-robot{display:none}
 #agent-fab.loading::after{animation:none}
 #agent-fab .fab-spin{display:none;width:22px;height:22px;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:fab-rot .7s linear infinite}
 #agent-fab.loading .fab-spin{display:block}
@@ -2932,6 +2948,9 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   /* board header + toolbar: tighter, allow horizontal scroll for tabs/actions */
   #boardhead{padding:10px 12px 0}
   #boardhead .bh-top h1{font-size:18px}
+  /* the header line has room for the name and an arrow, not for a sentence */
+  #dash-back .db-t{display:none}
+  #dash-back{padding:4px 9px;min-width:34px;justify-content:center}
   /* The header line has room for the board's name and not much else. The log
      is not lost — it moves into the ⋯ menu (see boardMenu). */
   #boardhead .bh-log{display:none}
@@ -3192,7 +3211,12 @@ body, body *{ font-weight:400!important; }
   font-size:12px;color:var(--text-muted)}
 .ch-legend li{display:flex;align-items:center;gap:6px}
 .ch-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
-.ch-details{margin-top:8px;font-size:12px}
+/* The widget is a flex column inside a minmax(0,1fr) grid cell, so a child
+   that is allowed to grow to its min-content width drags the table out past
+   the card's own border — which is exactly what the data table of a chart did
+   in a narrow widget. min-width:0 lets the <details> shrink to the card, and
+   the .ch-scroll inside it takes the sideways scrolling on itself. */
+.ch-details{margin-top:8px;font-size:12px;min-width:0;max-width:100%}
 .ch-details summary{cursor:pointer;color:var(--primary);font-weight:700;
   padding:6px 2px;min-height:32px;display:flex;align-items:center}
 .ch-details summary:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
@@ -3222,7 +3246,7 @@ body, body *{ font-weight:400!important; }
 .dash-lrow:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
 /* A dense chart may scroll inside itself with its axes readable, rather than
    making the page scroll sideways (R08). */
-.ch-scroll{overflow-x:auto;overflow-y:hidden}
+.ch-scroll{overflow-x:auto;overflow-y:hidden;max-width:100%;overscroll-behavior-x:contain}
 /* ===== דשבורדים =====
    A grid of measures. The palette is the board's own — no colour is invented
    here — and every state a widget can be in has a look of its own, because
@@ -3380,7 +3404,7 @@ body, body *{ font-weight:400!important; }
            lands at the top. -->
       <div class="tb-ctl" id="ctl-new">
         <div id="new-split">
-          <button class="btn btn-primary" onclick="openNewItem()">פריט חדש</button>
+          <button class="btn btn-primary" onclick="openNewItem(null,true)">פריט חדש</button>
           <button class="btn btn-primary tb-caret-pri" title="הוספת פריט או קבוצה"
                   aria-label="אפשרויות הוספה" aria-haspopup="true"
                   onclick="togglePop('new')"><i class="fa-solid fa-chevron-down"></i></button>
@@ -3497,7 +3521,7 @@ body, body *{ font-weight:400!important; }
   <button class="sel-x" title="ביטול בחירה" onclick="clearSelection()"><i class="fa-solid fa-xmark"></i></button>
 </div>
 <button id="agent-fab" style="display:none" onclick="onAgentFab()" title="עוזר עמוד (page-agent) — שליטה בממשק בשפה טבעית" aria-label="עוזר עמוד">
-  <i class="fa-solid fa-robot"></i>
+  <span id="fab-robot" aria-hidden="true"></span>
   <span class="fab-spin" aria-hidden="true"></span>
 </button>
 <div id="agent-hint" role="dialog" aria-label="עוזר העמוד">
@@ -3712,9 +3736,17 @@ const Router={
   parse(){
     const h=location.hash||'';
     const m=h.match(/board\/(\d+)/);
-    if(!m)return {boardId:null,viewId:null,itemId:null};
+    if(!m)return {boardId:null,viewId:null,itemId:null,autos:false,autoId:null};
     const v=h.match(/\/view\/(\d+)/), i=h.match(/\/item\/(\d+)/);
-    return {boardId:+m[1], viewId:v?+v[1]:null, itemId:i?+i[1]:null};
+    /* #/board/{b}/automations/{a} — where the mail about a new rule lands.
+       The rule's id is optional: the mail is written before anybody has
+       clicked it, and a rule deleted in between must open the panel rather
+       than nothing. The address is not WRITTEN by `set` below, only read:
+       the rules are a modal over the board, and a refresh that reopened it
+       would be the app deciding for you what you are looking at. */
+    const a=h.match(/\/automations(?:\/(\d+))?/);
+    return {boardId:+m[1], viewId:v?+v[1]:null, itemId:i?+i[1]:null,
+            autos:!!a, autoId:(a&&a[1])?+a[1]:null};
   },
   /* `viewId` defaults to the view actually open. Every existing caller passes
      two arguments — paintBoard, Chat.open, Chat.close — and none of them is
@@ -3731,12 +3763,13 @@ const Router={
   async apply(){   // react to manual URL edits / back-forward
     const r=this.parse();
     if(!r.boardId) return;
-    if(r.itemId===null && r.viewId===(typeof Views!=='undefined'?Views.active:null)
+    if(!r.autos && r.itemId===null
+       && r.viewId===(typeof Views!=='undefined'?Views.active:null)
        && st.board && st.board.id===r.boardId){
       if(Chat.taskId) Chat.close();
       return;
     }
-    await openDeepLink(r.boardId, r.itemId, r.viewId);
+    await openDeepLink(r.boardId, r.itemId, r.viewId, r);
   }
 };
 
@@ -3755,7 +3788,7 @@ const Router={
      * the item is gone. Silence reads exactly like the first two.
 
    So: say it is not yours, or go and look again, or say it is not there. */
-async function openDeepLink(boardId, itemId, viewId){
+async function openDeepLink(boardId, itemId, viewId, opts){
   if(!(st.boards||[]).some(b=>b.id===boardId)){
     document.getElementById('view').innerHTML=accessDeniedHTML(
       'הקישור מוביל ללוח שאינו פתוח לך. ייתכן שלא הוזמנת אליו, או שההרשאה שונתה מאז שנשלחה ההודעה. אם לדעתך זו טעות — פנה למנהל הלוח.');
@@ -3777,6 +3810,15 @@ async function openDeepLink(boardId, itemId, viewId){
     const v=(Views.items||[]).find(x=>x.id===viewId);
     if(v) Views.apply(v);
     else toast('התצוגה אינה זמינה לך — ייתכן שהיא אישית או שנמחקה. הלוח נפתח ללא סינון.');
+  }
+  /* "ואיפה" — the mail about a new automation says which board, and its
+     button opens that board's rules with the new one picked out. Done before
+     the item branch below because the two are never both in one address. */
+  if(opts&&opts.autos){
+    if(Chat.taskId) Chat.close();
+    await Automations.open();
+    Automations.highlight(opts.autoId);
+    return;
   }
   if(itemId==null){ if(Chat.taskId) Chat.close(); return; }
   if(Chat.taskId===itemId) return;
@@ -3933,6 +3975,13 @@ async function loadDirectory(){
 }
 async function boot(){
   Settings.load();
+  // The page-agent bubble wears the automations face. It is filled from
+  // robotIcon() rather than carrying a copy of the svg in the markup: two
+  // copies of a drawing drift, and a robot that differs by a tooth from the
+  // one in the menu is exactly the kind of thing nobody can name and
+  // everybody sees.
+  const fabRobot=document.getElementById('fab-robot');
+  if(fabRobot)fabRobot.innerHTML=robotIcon();
   revealWhenFontsReady();
   try{ if(localStorage.getItem('cc_sb_collapsed')==='1') document.body.classList.add('sb-collapsed'); }catch(e){}
   initSidebarResize();
@@ -4088,7 +4137,7 @@ async function enterApp(){
   if(r.boardId && (st.boards||[]).some(b=>b.id===r.boardId)) followBoardEnv(r.boardId);
   renderSidebar();
   if(r.boardId){
-    await openDeepLink(r.boardId, r.itemId, r.viewId);
+    await openDeepLink(r.boardId, r.itemId, r.viewId, r);
     Notif.start();
     setTimeout(showAgentHint,3500);
     return;
@@ -4838,20 +4887,36 @@ function reportBoardOpen(id,fetchMs,renderMs,t0,how){
    a grille that reads as a row of teeth. This one has eyes and a smile and
    nothing between them.
 
+   It is a filled silhouette, not an outline, because everything around it is:
+   the ⋯ menu, the header and the notification list are Font Awesome's solid
+   set, and a line drawing among them read as a sticker someone had dropped in.
+   The eyes and the smile are holes punched through the head by `evenodd`
+   rather than white shapes laid on top — a hole shows whatever is behind the
+   icon, so the face stays right on a white menu, on a dark theme and on the
+   coloured agent bubble alike, with no second colour to keep in step.
+
+   The drawing fills its 24-unit box on purpose. Font Awesome's solid glyphs
+   all render to the same cap height, and an earlier version of this face sat
+   a tenth short of them — not enough to name, enough to make the robot look
+   like the odd one out in a row of icons. Measured beside fa-lock, fa-bell,
+   fa-users and fa-trash-can it now matches their height and lands inside
+   their range of ink: roughly a fifth to a quarter of the box covered.
+
    `cls` adds a class — 'ic-pri' for a dialog heading. The colour is never set
-   here: every stroke is currentColor, so the mark takes the colour of whatever
-   it sits in and there is no second place to keep in step. */
+   here: the fill is currentColor, so the mark takes the colour of whatever it
+   sits in and there is no second place to keep in step. */
 function robotIcon(cls){
   return '<i class="ic-robot'+(cls?' '+cls:'')+'" aria-hidden="true">'
-    +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
-    +'stroke-linecap="round" stroke-linejoin="round" focusable="false">'
-    +'<circle cx="12" cy="2.4" r="1.15" fill="currentColor" stroke="none"/>'
-    +'<path d="M12 3.55V5.6"/>'
-    +'<rect x="3.7" y="5.6" width="16.6" height="14" rx="4.2"/>'
-    +'<path d="M2.4 11.1v3M21.6 11.1v3"/>'
-    +'<circle cx="9.1" cy="11.4" r="1.3" fill="currentColor" stroke="none"/>'
-    +'<circle cx="14.9" cy="11.4" r="1.3" fill="currentColor" stroke="none"/>'
-    +'<path d="M9.3 16.1c.76.68 1.66 1.02 2.7 1.02s1.94-.34 2.7-1.02"/>'
+    +'<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" focusable="false">'
+    +'<circle cx="12" cy="2.35" r="1.55"/>'
+    +'<rect x="11.1" y="3.5" width="1.8" height="2.9" rx=".9"/>'
+    +'<rect x=".8" y="11.9" width="2.6" height="5" rx="1.3"/>'
+    +'<rect x="20.6" y="11.9" width="2.6" height="5" rx="1.3"/>'
+    +'<path fill-rule="evenodd" d="M7.8 6h8.4a4.8 4.8 0 0 1 4.8 4.8V18a4.8 4.8 0 0 1-4.8 4.8'
+    +'H7.8A4.8 4.8 0 0 1 3 18v-7.2A4.8 4.8 0 0 1 7.8 6Z'
+    +'M8.5 11.05a1.85 1.85 0 1 0 0 3.7 1.85 1.85 0 1 0 0-3.7Z'
+    +'M15.5 11.05a1.85 1.85 0 1 0 0 3.7 1.85 1.85 0 1 0 0-3.7Z'
+    +'M8.4 17.8q3.6 4 7.2 0-3.6.8-7.2 0Z"/>'
     +'</svg></i>';
 }
 function renderBoardHead(){
@@ -5390,6 +5455,14 @@ function filterMode(){ return boardRowCount()>filterClientMax()?'server':'client
    answer, thrown away the moment the question changes. */
 const Paged = {
   on:false, rows:[], offset:0, more:false, matched:0, total:0, loading:false, seq:0,
+  /* How many rows the self-filling below has pulled down on its own, for the
+     one case where filling the screen can never finish: every group collapsed.
+     A collapsed board draws its headers and nothing else, so it is shorter
+     than the viewport however many rows have arrived, and a loop that asked
+     "does it scroll yet?" would ask for the whole board one page at a time.
+     Bounded here instead — enough to make a cut of a few hundred whole, and
+     never the fifteen thousand a big board would otherwise walk through. */
+  _filled:0,
   /* A question has been asked and its answer has not come back — the
      debounce is still counting, or the request is in flight. It is not the
      same as `loading`, which only covers the second half: on the first
@@ -5401,6 +5474,7 @@ const Paged = {
   pending:false,
   reset(){ this.on=false; this.rows=[]; this.offset=0; this.more=false;
            this.matched=0; this.total=0; this.loading=false; this.pending=false;
+           this._filled=0;
            this.seq++; clearTimeout(_pagedTimer); },
   query(){
     const f=st.filters||{};
@@ -5429,7 +5503,7 @@ const Paged = {
        `seq` already makes the older answer harmless — it is thrown away on
        arrival — so the new question simply goes out beside it. */
     if(this.loading && !fresh) return;
-    if(fresh){ this.rows=[]; this.offset=0; this.more=false; }
+    if(fresh){ this.rows=[]; this.offset=0; this.more=false; this._filled=0; }
     else if(!this.more) return;
     this.loading=true; this.pending=true;
     const mine=++this.seq;                 // a slower answer must not overwrite a newer one
@@ -5448,8 +5522,38 @@ const Paged = {
     }catch(e){
       if(mine===this.seq){ this.on=false; this.pending=false;
                            toast((e&&e.detail)||'הסינון בשרת נכשל'); }
-    }finally{ if(mine===this.seq)this.loading=false; }
+    }finally{ if(mine===this.seq){ this.loading=false; this.fill(); } }
   },
+  /* A page that does not reach the bottom of the screen asks for the next one
+     itself.
+
+     Past the client threshold the board shows the server's answer fifty rows
+     at a time, and the only thing that ever asked for row fifty-one was the
+     scroll handler below. A scroll event fires only on a #view that HAS
+     something to scroll — so a cut whose first page does not fill the screen
+     stopped at fifty for good, with no gesture available to go further.
+
+     Collapsed groups are the case that made it plain. A filter the builder had
+     promised 131 items for applied, the board came back as two folded headers
+     reading "48 פריטים" and "2 פריטים", and nothing on screen could be touched
+     to reach the other eighty-one. The same thing happened in miniature on a
+     tall screen whenever a page of rows was shorter than the viewport.
+
+     One page at a time, re-deciding after each: the moment the board is long
+     enough to scroll this stops and the scroll handler takes over, which is
+     what keeps a large board from being pulled down whole. */
+  fill(){
+    if(!this.on || !this.more || this.loading) return;
+    if(this._filled >= this.FILL_MAX) return;
+    const el=document.getElementById('view'); if(!el) return;
+    // +1 for the sub-pixel difference a fractional layout leaves behind, which
+    // would otherwise read as "it scrolls" on a board that does not
+    if(el.scrollHeight > el.clientHeight + 1) return;
+    this._filled = this.rows.length;   // counted in rows, not in requests
+    this.load(false);
+  },
+  // the ceiling on self-filling, in rows — see _filled
+  FILL_MAX: 500,
   /* Infinite scroll. Bound once to #view, and deliberately generous about
      "near the bottom": waiting for the very end means the person waits too,
      and a page that arrives before the scroll reaches it reads as a board
@@ -6284,7 +6388,7 @@ async function importBoardFile(){
   if(!hasCap('create_board')){ toast('אין לך הרשאה ליצור לוח חדש'); return; }
   const inp=document.createElement('input');
   inp.type='file';
-  inp.accept='.csv,.xlsx,.xlsm,.json,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  inp.accept='.csv,.xlsx,.xlsm,.json,.gz,text/csv,application/json,application/gzip,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   inp.onchange=async()=>{
     const f=inp.files&&inp.files[0]; if(!f)return;
     const fd=new FormData(); fd.append('file',f);
@@ -8276,7 +8380,29 @@ function applyFilters(tasks){
     }[f.sort];
     if(cmp)out.sort(cmp);
   }
+  else out.sort(byPosition);
   return out;
+}
+/* The board's own order, which is an order somebody arranged: position first,
+   then id for the ties a reorder can leave behind — the same two keys, in the
+   same order, that every query answering with items sorts by on the server.
+
+   It is said here because until now it was not said anywhere on this side.
+   The rows arrived sorted and were drawn in the order the array happened to
+   be in, which is the same thing right up to the moment something changes one
+   without rebuilding the other: a bulk "העברה לקבוצה" writes each item's new
+   position from the server's answer and leaves the array alone, and a new row
+   is pushed onto the end of it whichever end of the group it belongs to. The
+   array and the numbers then disagree, and nothing shows it until the next
+   full re-render — which is what adding an item does. The group came back in
+   an order nobody recognised, the new item among it, and the only way to see
+   the real one was to reload the board.
+
+   Only where nothing else is sorting: a column sort and the toolbar's מיון are
+   both somebody asking for a different order, and they come first. */
+function byPosition(a,b){
+  const p=(a.position==null?Infinity:a.position)-(b.position==null?Infinity:b.position);
+  return p||((a.id||0)-(b.id||0));
 }
 /* ===== per-column sorting (click the round arrows on a header) ===== */
 /* Statuses sort in the order the board lists them, like the priorities below.
@@ -8541,7 +8667,7 @@ function emptyBoardHTML(){
   return stateHTML('', 'אין עדיין פריטים בלוח',
     may ? 'אפשר להוסיף את הפריט הראשון ולהתחיל.'
         : 'כשיתווספו פריטים הם יופיעו כאן.',
-    may ? `<button class="btn btn-primary" onclick="openNewItem(null)">
+    may ? `<button class="btn btn-primary" onclick="openNewItem(null,true)">
              <i class="fa-solid fa-plus"></i> הוספת פריט</button>` : '',
     'fa-table-list');
 }
@@ -8660,8 +8786,12 @@ const Notif={
   },
   rowHTML(n){
     const icon=n.type==='board_remove'?'fa-user-minus':n.type==='board_add'?'fa-user-plus':n.type==='mention'?'fa-at':n.type==='assign'?'fa-user-check':n.type==='comment_like'?'fa-thumbs-up':'fa-bell';
+    // An automation notification wears the same face the automations dialog
+    // does, drawn rather than fetched — two robots that differ by a tooth are
+    // the kind of thing nobody can name and everybody notices.
+    const mark=n.type==='automation_created'?robotIcon():`<i class="fa-solid ${icon}"></i>`;
     return `<div class="notif-row ${n.is_read?'':'unread'}" onclick="Notif.click(${n.id},${n.board_id==null?'null':n.board_id},${n.task_id==null?'null':n.task_id})">
-      <span class="notif-ic ${esc(n.type||'')}"><i class="fa-solid ${icon}"></i></span>
+      <span class="notif-ic ${esc(n.type||'')}">${mark}</span>
       <div class="notif-txt"><div class="notif-title">${esc(n.title||'')}</div>${n.body?`<div class="notif-body">${esc(n.body)}</div>`:''}${this.itemLineHTML(n)}<div class="notif-time">${fdatetime(n.created_at)}</div></div>
       ${n.is_read?'':'<span class="notif-dot"></span>'}
     </div>`;
@@ -8678,6 +8808,14 @@ const Notif={
     this.unread=this.items.filter(x=>!x.is_read).length; this.badge();
     api('/api/notifications/'+id+'/read',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})})
       .catch(()=>{});   // a failed read-receipt must never block the navigation
+
+    /* …and for one kind of row that is the whole of it. "נוצרה אוטומציה
+       חדשה" is information: the sentence already says who created which rule
+       on which board, there is nothing further to go and look at, and a row
+       that quietly moved the whole app to another board would be a trapdoor
+       under a line somebody was only reading. It goes grey like every other
+       notification and the list stays open where it was. */
+    if(n&&n.type==='automation_created'){ this.render(); return; }
 
     if(!boardId){ this.render(); return; }
     if(!st.boards.some(b=>b.id===boardId)){ toast('אין לך גישה ללוח זה'); this.render(); return; }
@@ -9825,6 +9963,21 @@ const Automations = {
   },
   closePanel(){ this.viewing=this.testing=this.cmp=this.imp=this.tlog=null; this.render(); },
 
+  /* The rule a link pointed at — "אוטומציה חדשה בלוח X" in the bell, or the
+     button in the mail. Found and flashed, never filtered to: whoever
+     followed a link about one new rule is usually about to look at what else
+     is running there, and a list cut down to one answers a question nobody
+     asked. A rule that is no longer in the list says so, rather than opening
+     the panel and leaving somebody to search it. */
+  highlight(id){
+    if(!id)return;
+    const el=document.querySelector('.am-row[data-au="'+id+'"]');
+    if(!el){ toast('האוטומציה אינה ברשימה — ייתכן שנמחקה או שאינה פתוחה לך'); return; }
+    try{ el.scrollIntoView({block:'center',behavior:'smooth'}); }catch(e){ el.scrollIntoView(); }
+    el.classList.add('am-row-new');
+    setTimeout(()=>{ try{el.classList.remove('am-row-new');}catch(e){} },4000);
+  },
+
   versionsHTML(){
     const v=this.viewing;
     if(!v.rows) return '<div class="spin"></div>';
@@ -10495,7 +10648,7 @@ const Automations = {
     const owner=a.owner_name?`בעלים: <b>${esc(a.owner_name)}</b>${a.owner_is_creator?' (גם היוצר)':''}`:'';
     const by=a.created_by_name?` · נוצר ע"י ${esc(a.created_by_name)}`:'';
     const upd=a.updated_by_name?` · שונה לאחרונה ע"י ${esc(a.updated_by_name)}`:'';
-    return `<div class="am-row ${a.status==='active'?'':'dim'}">
+    return `<div class="am-row data-au="${a.id}" ${a.status==='active'?'':'dim'}">
       ${can?`<input type="checkbox" class="au-pick-box" ${this.picked.has(a.id)?'checked':''}
              onclick="Automations.pickToggle(${a.id})" title="בחר לפעולה מרובה">`:''}
       <div class="am-main">
@@ -10515,7 +10668,7 @@ const Automations = {
     const st=this.ST[a.status]||this.ST.active;
     const flow=`${esc((this.trigLabels||{})[a.trigger]||a.trigger)} → ${esc((this.actLabels||{})[a.action]||a.action)}`;
     const rate=a.success_rate==null?'טרם הופעלה':a.success_rate+'% הצלחה';
-    return `<div class="am-row compact ${a.status==='active'?'':'dim'}">
+    return `<div class="am-row compact data-au="${a.id}" ${a.status==='active'?'':'dim'}">
       ${can?`<input type="checkbox" class="au-pick-box" ${this.picked.has(a.id)?'checked':''}
              onclick="Automations.pickToggle(${a.id})" title="בחר לפעולה מרובה">`:''}
       <span class="am-st ${st.cls}" title="${esc(st.what||st.he)}"><i class="fa-solid ${st.ic}"></i></span>
@@ -10960,7 +11113,11 @@ const Automations = {
       if(spec.default!==undefined)
         picks[f.key]={v:spec.default,label:(spec.labels||{})[spec.default]||spec.default};
     });
-    this.building={recipe:r,values:picks,meta:{name:'',description:''},
+    /* notifyAll starts false on purpose — the notification about a new rule
+       goes to its author and the board's managers, and telling the whole board
+       is a decision somebody makes for a particular rule, never the default a
+       board of forty people lives with. */
+    this.building={recipe:r,values:picks,meta:{name:'',description:'',notifyAll:false},
                    conds:seeded.length?seeded:carried,acts:[]};
     this.tab='create'; this.render();
   },
@@ -11015,7 +11172,7 @@ const Automations = {
         !this._needs(f)||(a.values||{})[f.key]!==undefined));
     const ready=r.fields.every(f=>!this._needs(f)||this.building.values[f.key]!==undefined)
       &&condsReady&&actsReady;
-    const meta=this.building.meta||(this.building.meta={name:'',description:''});
+    const meta=this.building.meta||(this.building.meta={name:'',description:'',notifyAll:false});
     const ed=this.building.edit;
     /* The same screen either way — it has to be, or the two would drift into
        two different builders. What changes is the heading, what the button
@@ -11046,6 +11203,16 @@ const Automations = {
           <input id="au-ds" maxlength="2000" value="${esc(meta.description)}" placeholder="איזה תהליך זה משרת?"
                  oninput="Automations.building.meta.description=this.value"></div>
       </div>
+      ${ed?''/* an edit is not a birth: nothing is announced, so there is
+                nothing here to decide */:`
+      <label class="subc-opt" style="align-items:center;margin-top:4px">
+        <input type="checkbox" ${meta.notifyAll?'checked':''}
+               onchange="Automations.building.meta.notifyAll=this.checked">
+        <span style="display:flex;flex-direction:column;gap:2px">
+          <b style="font-weight:600">שליחת התראה לכל חברי הלוח על יצירת האוטומציה</b>
+          <small style="color:var(--text-light);font-size:11.5px">ללא סימון — ההתראה נשלחת אליכם ולמנהלי הלוח בלבד</small>
+        </span>
+      </label>`}
       <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
         ${ed
           /* A rule that is already a draft may be saved half-built, exactly as
@@ -11919,11 +12086,26 @@ const Automations = {
       // …and when the source IS the priority, the vocabulary is the board's
       // priorities. One branch, so a status blank pointed at it offers what
       // the engine will accept and nothing else.
-      if(colId===this.PRIORITY_AS_STATUS)
-        return boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
-      return colId
-        ? statusColOpts(colId).filter(o=>o.id).map(o=>({v:o.id,label:o.label,color:o.color}))
-        : boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+      const vals=colId===this.PRIORITY_AS_STATUS
+        ? boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}))
+        : colId
+          ? statusColOpts(colId).filter(o=>o.id).map(o=>({v:o.id,label:o.label,color:o.color}))
+          : boardStatusList().map(x=>({v:x.key,label:x.he,color:x.c}));
+      /* "לכל ערך שהוא", at the head of the list and on the TRIGGER half only.
+         "כשהסטטוס זז, רשום את תאריך העדכון" is the rule people write first and
+         the catalog could not say it: a status trigger named one value, and
+         "כאשר ערך העמודה משתנה" hears a status column but is deaf to the
+         board's own status. As an action it would be nonsense — "שנה את
+         הסטטוס לכל ערך שהוא" is not an instruction — so the action half goes
+         on offering values and nothing else.
+
+         The sentinel comes from the engine (automation-capabilities) rather
+         than being spelled out here: a screen that wrote it down itself would
+         go on offering it the day the engine stopped accepting it. */
+      const any=(this.caps||{}).any_status;
+      return (any && /^t_/.test(String(fkey||'')))
+        ? [{v:any,label:(this.caps||{}).any_status_label||'כל ערך שהוא',color:''}].concat(vals)
+        : vals;
     }
     if(type==='priority') return boardPriorityList().map(x=>({v:x.key,label:x.he,color:x.c}));
     if(type==='group')    return (st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
@@ -12687,7 +12869,11 @@ const Automations = {
                   {method:'POST',headers:{'Content-Type':'application/json'},
                    body:JSON.stringify({recipe_id:r.id,config,name:meta.name||'',
                                         description:meta.description||'',
-                                        status:asDraft?'draft':'active'})});
+                                        status:asDraft?'draft':'active',
+                                        // who hears about it — the box on this
+                                        // screen, and only on this screen: a
+                                        // PATCH announces nothing
+                                        notify_all_members:!!meta.notifyAll})});
         toast(asDraft?'האוטומציה נשמרה כטיוטה':'האוטומציה נוצרה');
       }
       this.building=null;
@@ -14271,10 +14457,20 @@ const Members = {
         :`<div class="mem-ro" id="mem-readonly"><i class="fa-solid fa-eye"></i> תצוגה בלבד — רק מנהל לוח יכול לשנות הרשאות, להסיר משתתפים ולהזמין חדשים.</div>`}
       </div>
       <div class="mfoot">
-        ${can?`<button class="btn btn-danger" onclick="Members.deleteBoard()"><i class="fa-solid fa-trash"></i> מחק לוח</button>`:''}
         <button class="btn btn-ghost" style="margin-inline-start:auto" onclick="closeModals()">סגור</button>
       </div>`);
   },
+  /* The footer deliberately offers nothing but "סגור". This dialog is about
+     WHO may use the board, and the most destructive action in the product has
+     no business at the bottom of a screen people open to change somebody's
+     role — one slip beside the close button and a board with its groups, its
+     items and its conversations is in the recycle bin. The deletion is still
+     offered where it reads as a decision about the board itself: the header's
+     board menu, and the board's own context menu in the sidebar.
+     Said here rather than in the markup, because an HTML comment is shipped to
+     every reader of the page — and this one names the very control the dialog
+     must not contain, which a test that greps the rendered dialog for it will
+     rightly fail on. */
   /* The invitation starts folded. The dialog is named for the list, people open
      it to read the list, and a form sitting open under it on a board with
      thirty members is one more thing between them and the names. */
@@ -14363,7 +14559,6 @@ const Members = {
                   ? m.avatar_url : ((was.get(m.user_id)||{}).avatar_url||null)}))
       .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'he')));
   },
-  deleteBoard(){ if(st.board) deleteBoardById(st.board.id); },
   async toggleNotif(on){
     try{
       await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({notifications_enabled:on})});
@@ -14751,7 +14946,17 @@ function qfRestore(){
    knows instead of printing a number that means something else. */
 function qfShowing(){
   const all=((st.board&&st.board.tasks)||[]).length;
-  if(Paged.on)return Paged.total?`מתוך ${Paged.total} פריטים`:'';
+  /* The server answered for the WHOLE board, so the number it matched is a
+     real number and belongs here. It used to be dropped — the sentence said
+     only "מתוך 2069 פריטים" — on the reasoning that the browser holds a page
+     and a page's count is not the board's. But `matched` is not the page's
+     count: it is what the cut answered across every row, which is exactly the
+     number somebody is looking for. Leaving it out is what made a filter the
+     builder had promised 131 items for look like a filter that found 50. */
+  if(Paged.on)return Paged.total
+    ? (Paged.matched>=Paged.total ? `מציג את כל ${Paged.total} הפריטים`
+                                  : `מציג ${Paged.matched} מתוך ${Paged.total} פריטים`)
+    : '';
   const now=applyFilters(st.board&&st.board.tasks||[]).length;
   if(!all)return '';
   return now>=all?`מציג את כל ${all} הפריטים`:`מציג ${now} מתוך ${all} פריטים`;
@@ -15180,7 +15385,13 @@ const Adv = {
      the eye already is rather than in grey under a list that scrolls. */
   preview(){
     const all=((st.board&&st.board.tasks)||[]);
-    if(typeof Paged!=='undefined'&&Paged.on)return Paged.total?`מתוך ${Paged.total} פריטים`:'';
+    // the server's own count, for the same reason qfShowing prints it: on a
+    // board it is paging, `matched` is the answer across every row and not the
+    // length of the page that happens to have arrived
+    if(typeof Paged!=='undefined'&&Paged.on)return Paged.total
+      ? (Paged.matched>=Paged.total ? `מציג את כל ${Paged.total} הפריטים`
+                                    : `מציג <b>${Paged.matched}</b> מתוך <b>${Paged.total}</b> פריטים`)
+      : '';
     if(!all.length)return '';
     // counted against the tree as it will be ASKED — an unfinished condition is
     // dropped on the way out, so counting it would predict the wrong board
@@ -16696,6 +16907,24 @@ function dateCellPick(e){
     nat.onblur=()=>setTimeout(()=>{ if(!wrap.classList.contains('cc-fallback')) nat.remove(); },200);
     wrap.appendChild(nat);
   }
+  /* Measured before it is opened, and that is the whole of this line.
+
+     The picker is placed against the input's box as the browser knows it at
+     the moment showPicker is called — and an element appended one statement
+     earlier has no box at all. Style and layout have not run for it yet, so
+     it has no layout object, the anchor rect comes back empty, and Chrome
+     falls back to putting the calendar in the top-LEFT corner of the screen:
+     the far side of an RTL board, nowhere near the cell that was pressed.
+
+     Reading offsetWidth forces exactly the style and layout pass the picker
+     is about to ask for, so by the time it asks, the answer is the cell.
+
+     It bit the FIRST press on a cell and not the ones after it — the widget
+     is built on the press and taken away again when the pick is over (see
+     above for why it does not live in the row), so a second press on a cell
+     still holding one found it already measured and opened in the right
+     place. That is why it read as "sometimes" rather than as always. */
+  void nat.offsetWidth;
   try{ nat.showPicker(); }
   catch(_){ wrap.classList.add('cc-fallback'); nat.focus(); }
 }
@@ -21015,7 +21244,7 @@ const Dash = {
 
   /* ---- opening ---- */
   async open(id){
-    this.reset();
+    this.reset(); this.clearReturn();
     st.view='dash'; st.dashId=id;
     st.board=null;
     try{ this.d=await api('/api/dashboards/'+id); }
@@ -21037,7 +21266,7 @@ const Dash = {
 
   async openOnBoard(dashId, viewId){
     if(!dashId){ toast('תצוגת הדשבורד אינה זמינה'); return; }
-    this.reset();
+    this.reset(); this.clearReturn();
     /* st.view is deliberately NOT touched. `renderTabs` resets it to the
        table for any value the board does not itself offer, so a view id of
        our own would be thrown away on the next render — which is exactly
@@ -21763,19 +21992,38 @@ const Dash = {
     toast('לחזרה לדשבורד — כפתור החזרה בראש הלוח');
     this.showReturn();
   },
+  /* The way back, drawn IN the board's header line and before the board's
+     name — which in RTL is the first thing read, and is where a back control
+     is looked for.
+
+     It used to be `position:fixed` at 70px from the top and 16px from the
+     start edge. That is not a free corner: it is exactly where the board's
+     own name is written, so returning from a drill-down covered the name of
+     the board it had just returned to, and the button looked like it had
+     landed there by accident. In the header line it is in the flow — it
+     cannot cover anything, it moves with the page, and the toast that sends
+     people to look for it ("כפתור החזרה בראש הלוח") is now literally true. */
   showReturn(){
     if(document.getElementById('dash-back'))return;
+    const host=document.querySelector('#boardhead .bh-top');
+    if(!host)return;
     const b=document.createElement('button');
-    b.id='dash-back'; b.className='btn btn-ghost';
-    b.style.cssText='position:fixed;inset-block-start:70px;inset-inline-start:16px;z-index:55';
-    b.innerHTML='<i class="fa-solid fa-arrow-right"></i> חזרה לדשבורד';
+    b.id='dash-back'; b.title='חזרה לדשבורד';
+    b.setAttribute('aria-label','חזרה לדשבורד');
+    b.innerHTML='<i class="fa-solid fa-arrow-right"></i><span class="db-t">חזרה לדשבורד</span>';
     b.onclick=()=>Dash.back();
-    document.body.appendChild(b);
+    host.prepend(b);
+  },
+  /* Nobody needs an offer to go where they already are. Called on the way
+     INTO a dashboard, because the board tab is a second way back and the
+     button would otherwise sit in the header of the board underneath it. */
+  clearReturn(){
+    const b=document.getElementById('dash-back'); if(b)b.remove();
   },
   async back(){
     let ret=null;
     try{ ret=JSON.parse(sessionStorage.getItem('dashReturn')||'null'); }catch(e){}
-    const b=document.getElementById('dash-back'); if(b)b.remove();
+    this.clearReturn();
     if(!ret)return;
     try{ sessionStorage.removeItem('dashReturn'); }catch(e){}
     await this.open(ret.dash);
@@ -21841,10 +22089,44 @@ const Charts = {
   W:320, H:180,
   PAD:{start:40, end:10, top:14, bottom:30},
 
-  plot(){
-    return {x0:this.PAD.start, y0:this.PAD.top,
-            w:this.W-this.PAD.start-this.PAD.end,
+  plot(start){
+    const s=start==null?this.PAD.start:start;
+    return {x0:s, y0:this.PAD.top,
+            w:this.W-s-this.PAD.end,
             h:this.H-this.PAD.top-this.PAD.bottom};
+  },
+
+  /* An approximation of the advance width at the label sizes. There is no
+     measuring API on the server side of this file and none worth a reflow on
+     the client, and the estimate only has to be good enough to keep a label
+     out of its neighbour — a unit or two of slack covers the difference
+     between a Hebrew letter and a digit. */
+  textW(t,size=9){
+    let w=0;
+    for(const ch of String(t==null?'':t))
+      w += ch===','||ch==='.'?0.30:ch==='-'?0.38:ch===' '?0.28:0.58;
+    return w*size;
+  },
+  /* A centred label that stays inside a box. At the two edges a middle
+     anchor puts half the text outside the plot — into the value gutter on
+     one side, off the drawing surface on the other, and an SVG does not clip
+     either. The label slides in instead: the position it marks is a few
+     units wide and the text is tens, so a nudge still points at the right
+     place, while half a number hanging off the box points at nothing. */
+  clampX(x,w,lo,hi){
+    return w>=hi-lo?(lo+hi)/2:Math.min(Math.max(x,lo+w/2),hi-w/2);
+  },
+  /* A label cut to a WIDTH rather than to a character count, for the same
+     reason `fit` cuts at all: the text is inside an SVG, where overflow does
+     not clip, so a long Hebrew name runs across its neighbours or straight
+     out of the box. The whole name stays reachable — it is in the <title>,
+     the aria-label and the data table. */
+  fitW(t,width,size=9.5){
+    t=String(t==null?'':t);
+    if(this.textW(t,size)<=width)return t;
+    let n=t.length;
+    while(n>1&&this.textW(t.slice(0,n-1)+'…',size)>width)n--;
+    return t.slice(0,Math.max(1,n-1))+'…';
   },
 
   /* The value axis "יכלול אפס ויציג ערכים שליליים בצד המתאים" (DASH-23.2):
@@ -21867,13 +22149,69 @@ const Charts = {
     if(hi===lo){ hi=lo+1; }
     return {lo,hi};
   },
-  /* A little headroom above the tallest bar. Without it the biggest value
-     reaches the top of the plot and the chart reads as a filled block
-     rather than as a measurement — most visibly when there is one category
-     and its bar IS the whole area. */
-  scale(dom){
-    const pad=(dom.hi-dom.lo)*0.12 || 1;
-    return {lo:dom.lo<0?dom.lo-pad:0, hi:dom.hi+pad};
+  /* A step a person reads without decoding it: 1, 2, 2.5 or 5 times a power
+     of ten. On a scale whose values are whole — a count of records is the
+     usual one — 2.5 is dropped and the step is rounded up to a whole number,
+     because half a record is not a quantity.
+
+     Reported as "מספור שנתות ציר Y עולה על שורות רוחב גרף": a count of 129
+     records was labelled 0.00 · 72.24 · 144.48. The old scale padded the
+     maximum by a flat 12%, which lands on an arbitrary number, and then the
+     axis printed it with the METRIC's precision — two decimals, because the
+     widget's own number format said so. Nobody puts 144.48 on an axis, and
+     at six characters it also crowded the gutter it had to fit into. */
+  niceStep(span,want,integral){
+    const raw=span/Math.max(1,want);
+    if(!(raw>0))return 1;
+    const mag=Math.pow(10,Math.floor(Math.log10(raw))), n=raw/mag;
+    const s=(n<=1?1:n<=2?2:(!integral&&n<=2.5)?2.5:n<=5?5:10)*mag;
+    return integral?Math.max(1,Math.round(s)):s;
+  },
+
+  /* The drawn range. It keeps zero (DASH-23.2), snaps both ends onto the
+     step so every tick is a round number, and ends STRICTLY above the
+     tallest bar — without that headroom the biggest value reaches the top of
+     the plot and the chart reads as a filled block rather than as a
+     measurement, most visibly when there is one category and its bar IS the
+     whole area. */
+  scale(dom,want=3){
+    const span=(dom.hi-dom.lo)||Math.abs(dom.hi)||1;
+    const integral=span>=1&&Number.isInteger(dom.lo)&&Number.isInteger(dom.hi);
+    const step=this.niceStep(span,want,integral);
+    let hi=Math.ceil(dom.hi/step)*step, lo=Math.floor(dom.lo/step)*step;
+    if(dom.hi>0&&hi<=dom.hi)hi+=step;
+    if(dom.lo<0&&lo>=dom.lo)lo-=step;
+    if(hi<=lo)hi=lo+step;
+    return {lo,hi,step};
+  },
+
+  /* Every step from lo to hi. `toFixed(10)` is there because 0.1+0.2 would
+     otherwise put 0.30000000000000004 on an axis. */
+  ticks(sc){
+    const out=[], n=Math.min(12,Math.round((sc.hi-sc.lo)/sc.step));
+    for(let i=0;i<=n;i++){
+      const v=sc.lo+i*sc.step;
+      out.push(Math.abs(v)<sc.step*1e-9?0:+v.toFixed(10));
+    }
+    return out;
+  },
+
+  /* The axis is labelled by its own STEP, never by the metric's number
+     format: a count configured to show two decimals still counts whole
+     records, and the scale beside it has to say 0 · 50 · 100 · 150. */
+  tickText(sc,v){
+    const d=sc.step>=1?0:Math.min(6,Math.max(0,-Math.floor(Math.log10(sc.step))));
+    return v.toFixed(d).replace(/\B(?=(\d{3})+(?!\d))/g,',');
+  },
+
+  /* The gutter is as wide as the widest number that has to stand in it. It
+     used to be a flat 40 units, which a four-digit count with a thousands
+     separator simply ran out of — off the left edge of the box, where an SVG
+     does not clip — and which left the numbers close enough to the first bar
+     to read as one smudge ("עמודה ראשונה על מספורים בציר Y"). */
+  tickGutter(sc){
+    const w=this.ticks(sc).reduce((m,v)=>Math.max(m,this.textW(this.tickText(sc,v),9)),0);
+    return Math.min(78,Math.max(26,Math.ceil(w)+11));
   },
   y(v,sc,h,top){ return top + (sc.hi-v)/(sc.hi-sc.lo)*h; },
 
@@ -21896,37 +22234,47 @@ const Charts = {
       >${shape}<title>${esc(this.label(out,s,c,v))}</title></g>`;
   },
 
-  /* The value axis: a line at zero and a few ticks with their numbers, so a
-     bar's height is a quantity and not a shape. */
-  axisY(out,sc,{horizontal}={}){
-    const p=this.plot(), s=out.series[0]||{precision:0};
-    const ticks=[sc.lo, sc.lo+(sc.hi-sc.lo)/2, sc.hi]
-      .filter((v,i,a)=>a.indexOf(v)===i);
+  /* The value axis: the gridlines with their numbers, so a bar's height is a
+     quantity and not a shape — plus the axis line itself at the edge of the
+     plot. The gridlines stop at that edge and the numbers stand outside it,
+     which is the whole point of the gutter: without a drawn boundary the
+     first bar and the bottom number sit side by side at the same height and
+     read as one run of characters. */
+  axisY(out,sc,p,{horizontal}={}){
+    const ticks=this.ticks(sc);
     if(horizontal){
       const x=v=>p.x0+(v-sc.lo)/(sc.hi-sc.lo)*p.w;
-      return ticks.map(v=>`
+      return `<line x1="${p.x0}" y1="${p.y0}" x2="${p.x0}" y2="${p.y0+p.h}"
+          stroke="var(--border)" stroke-width="1"/>`
+        + ticks.map(v=>`
         <line x1="${x(v)}" y1="${p.y0}" x2="${x(v)}" y2="${p.y0+p.h}"
           stroke="var(--border)" stroke-width="${v===0?1:.5}"/>
-        <text x="${x(v)}" y="${p.y0+p.h+13}" class="ch-tick"
-          text-anchor="middle">${esc(this.num(s,v))}</text>`).join('');
+        <text x="${this.clampX(x(v),this.textW(this.tickText(sc,v),9),0,this.W)}"
+          y="${p.y0+p.h+13}" class="ch-tick"
+          text-anchor="middle">${esc(this.tickText(sc,v))}</text>`).join('');
     }
-    return ticks.map(v=>`
+    return `<line x1="${p.x0}" y1="${p.y0}" x2="${p.x0}" y2="${p.y0+p.h}"
+        stroke="var(--border)" stroke-width="1"/>`
+      + ticks.map(v=>`
       <line x1="${p.x0}" y1="${this.y(v,sc,p.h,p.y0)}" x2="${p.x0+p.w}"
         y2="${this.y(v,sc,p.h,p.y0)}" stroke="var(--border)" stroke-width="${v===0?1:.5}"/>
-      <text x="${p.x0-6}" y="${this.y(v,sc,p.h,p.y0)+3.5}" class="ch-tick"
-        text-anchor="end">${esc(this.num(s,v))}</text>`).join('');
+      <text x="${p.x0-8}" y="${this.y(v,sc,p.h,p.y0)+3.3}" class="ch-tick"
+        text-anchor="end">${esc(this.tickText(sc,v))}</text>`).join('');
   },
 
   /* ---- DASH-23 · עמודות אנכיות ---- */
   vbar(out,{stacked=false}={}){
-    const sc=this.scale(this.domain(out,{stacked})), p=this.plot();
+    const sc=this.scale(this.domain(out,{stacked})), p=this.plot(this.tickGutter(sc));
     const n=out.categories.length, k=out.series.length;
     const step=p.w/Math.max(1,n), zero=this.y(0,sc,p.h,p.y0);
+    // 88% of the slot, so two neighbouring names have a gap between them and
+    // the outermost one stops short of the gutter instead of leaning on it
+    const cw=step*0.88;
     let body='', labels='';
     out.categories.forEach((c,i)=>{
       const x0=p.x0+i*step;
       labels+=`<text x="${x0+step/2}" y="${p.y0+p.h+14}" class="ch-cat"
-        text-anchor="middle">${esc(this.fit(c.label, Math.max(4, Math.floor(step/5))))}
+        text-anchor="middle">${esc(this.fitW(c.label,cw))}
         <title>${esc(c.label)}</title></text>`;
       if(stacked){
         let up=0,down=0;
@@ -21954,12 +22302,19 @@ const Charts = {
         });
       }
     });
-    return this.frame(out,this.axisY(out,sc)+body+labels);
+    return this.frame(out,this.axisY(out,sc,p)+body+labels);
   },
 
   /* ---- DASH-24 · עמודות אופקיות ---- */
   hbar(out){
-    const sc=this.scale(this.domain(out)), p=this.plot();
+    const sc=this.scale(this.domain(out));
+    // Here the gutter holds the category NAMES, not numbers, so it is
+    // measured from them — a flat 40 units was narrower than most of the
+    // names it had to hold, and the overflow went off the edge of the box.
+    const names=out.categories.map(c=>this.fit(c.label,12));
+    const gut=Math.min(84,Math.max(40,
+      Math.ceil(names.reduce((m,t)=>Math.max(m,this.textW(t,9.5)),0))+10));
+    const p=this.plot(gut);
     const n=out.categories.length, k=out.series.length;
     const step=p.h/Math.max(1,n);
     const x=v=>p.x0+(v-sc.lo)/(sc.hi-sc.lo)*p.w;
@@ -21968,8 +22323,8 @@ const Charts = {
     out.categories.forEach((c,i)=>{
       const y0=p.y0+i*step, bh=step*0.7/Math.max(1,k);
       // RTL: the names sit at the start edge, which is the right
-      labels+=`<text x="${p.x0-6}" y="${y0+step/2+3.5}" class="ch-cat"
-        text-anchor="end">${esc(this.fit(c.label,10))}<title>${esc(c.label)}</title></text>`;
+      labels+=`<text x="${p.x0-7}" y="${y0+step/2+3.3}" class="ch-cat"
+        text-anchor="end">${esc(this.fitW(names[i],gut-10))}<title>${esc(c.label)}</title></text>`;
       out.series.forEach((s,j)=>{
         const v=s.points[i]; if(v==null)return;
         const xv=x(v), xs=Math.min(xv,zero), w=Math.max(Math.abs(xv-zero),1);
@@ -21978,7 +22333,7 @@ const Charts = {
              fill="${esc(k>1?s.color:c.color)}"/>`);
       });
     });
-    return this.frame(out,this.axisY(out,sc,{horizontal:true})+body+labels);
+    return this.frame(out,this.axisY(out,sc,p,{horizontal:true})+body+labels);
   },
 
   /* ---- DASH-25 · עוגה ודונאט ---- */
@@ -22022,17 +22377,20 @@ const Charts = {
 
   /* ---- DASH-27 · קו ---- */
   line(out){
-    const sc=this.scale(this.domain(out)), p=this.plot();
+    const sc=this.scale(this.domain(out)), p=this.plot(this.tickGutter(sc));
     const n=out.categories.length;
     const step=n>1?p.w/(n-1):0;
     const X=i=>p.x0+(n>1?i*step:p.w/2);
     let body='', labels='';
     // with many periods, only every k-th label — crowded ticks are unreadable
     const every=Math.max(1,Math.ceil(n/6));
+    const cw=(step||p.w)*every*0.9;
     out.categories.forEach((c,i)=>{
       if(i%every)return;
-      labels+=`<text x="${X(i)}" y="${p.y0+p.h+14}" class="ch-cat"
-        text-anchor="middle">${esc(this.fit(c.label,9))}<title>${esc(c.label)}</title></text>`;
+      const t=this.fitW(c.label,cw);
+      labels+=`<text x="${this.clampX(X(i),this.textW(t,9.5),p.x0,p.x0+p.w)}"
+        y="${p.y0+p.h+14}" class="ch-cat"
+        text-anchor="middle">${esc(t)}<title>${esc(c.label)}</title></text>`;
     });
     out.series.forEach(s=>{
       let run=[];
@@ -22052,7 +22410,7 @@ const Charts = {
              fill="${esc(s.color)}"/>`);
       });
     });
-    return this.frame(out,this.axisY(out,sc)+body+labels);
+    return this.frame(out,this.axisY(out,sc,p)+body+labels);
   },
 
   frame(out,body){
@@ -22084,8 +22442,8 @@ const Charts = {
              onclick="Dash.openDrill(${out.widget_id},'${esc(s.metric)}','${esc(c.key)}','${esc(s.key)}')"
              >${esc(this.num(s,v))}</button>`}</td>`;
       }).join('')}</tr>`).join('');
-    return `<table class="ch-table"><caption class="sr-only">טבלת הנתונים של התרשים</caption>
-      <thead><tr><th scope="col">סדרה</th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+    return `<div class="ch-scroll"><table class="ch-table"><caption class="sr-only">טבלת הנתונים של התרשים</caption>
+      <thead><tr><th scope="col">סדרה</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
   },
 
   /* Never colour alone (R08): the legend carries a name beside every swatch,
@@ -23190,23 +23548,44 @@ function GIS_args(tool){
 
 /* ============ new item + forms ============ */
 // Add-item: no form. Clicking "פריט חדש" (or a group's "+ הוסף פריט") instantly
-// creates an item at the bottom of the target group — the board's first group
-// when the button names none — and opens its title for inline editing.
-async function openNewItem(group){
+// creates an item in the target group — the board's first group when the button
+// names none — and opens its title for inline editing. `atTop` is the half the
+// caller knows and the server cannot: which end of the group the button it was
+// clicked on sits at. See the body.
+async function openNewItem(group,atTop){
   if(!st.board||window._creatingItem)return;            // guard against double-submit
   window._creatingItem=true;
   const gid=(group==null)?defaultGroupId():group;
   const g=((st.board.groups)||[]).find(x=>x.id===gid);
   const status=(g&&g.task_status)||undefined;           // new item's status matches its group
   try{
-    // the status above places the item; nobody has chosen one yet, so it shows
-    // the "טרם הוגדר" default until someone does
+    /* Where the row goes, said out loud, because the two ways in mean two
+       different places. The "+ הוסף פריט" line is the last row of a group and
+       means the row after it — it sends no position and the server appends.
+       The "פריט חדש" button is at the top of the board, above everything, and
+       means the top: a board is read from the top down, and a new item added
+       from up there arriving eighty rows below the fold is an item nobody
+       sees. It asks for 0, and the server moves the group down one.
+
+       the status above places the item; nobody has chosen one yet, so it shows
+       the "טרם הוגדר" default until someone does */
+    const body={board_id:st.board.id,group_id:gid,title:'פריט חדש',status,
+                custom_fields:{status_unset:true}};
+    if(atTop)body.position=0;
     const t=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:withMe({board_id:st.board.id,group_id:gid,title:'פריט חדש',status,
-                   custom_fields:{status_unset:true}})});
+      body:withMe(body)});
     if(t&&t.id){
       // insert the new row in place — no full-board refetch/refresh
       (st.board.tasks=st.board.tasks||[]).push(t);
+      /* …and the group it went to the top of moved down a row, every item of
+         it, which is what the server just did to them (see _place_item). The
+         board is ordered by position, so leaving the siblings on the numbers
+         they had would leave the new item tied with the one that was first and
+         the tie broken by id — the new row second, under the button that
+         promised the top, until the next full refetch said otherwise. */
+      if(atTop)(st.board.tasks||[]).forEach(x=>{
+        if(x!==t && x.group_id===gid && !x.parent_id && typeof x.position==='number')x.position++;
+      });
       /* A new item has nobody assigned, no priority, no link, no status anyone
          chose and a placeholder for a title — so it answers almost no filter
          and almost no search. With one active it was created and hidden in the
@@ -25678,17 +26057,59 @@ const Chat = {
     if(ctx && ctx.query.length<=30 && !/^\s/.test(ctx.query)) this._openMention(ctx);
     else this._closeMention();
   },
+  /* Who this box has already tagged.
+
+     Deliberately read off the TEXT and not off `mentions`. That array only ever
+     grows — nothing prunes it when a tag is deleted — so a name the writer
+     tagged and then removed would stay suppressed for the rest of the message,
+     with no way back to it.
+
+     The test is the server's own: `("@"+name) in content`, the rule _mentioned
+     in main.py uses to decide who gets notified. Matching it rather than
+     inventing a second one is what keeps the menu honest — it can never hide a
+     name the server would still notify, nor offer one it would not. Two
+     colleagues whose names are a prefix of one another ("שלי" / "שלי פיינברג")
+     therefore share the ambiguity the server already has; one rule read two
+     ways would be a disagreement visible only in notifications, where nobody
+     can see it. */
+  taggedAlready(ctx){
+    const ta=document.getElementById('comp-text');
+    // `ta.value` and not `ta` is the thing that has to exist: the composer is
+    // rebuilt around this menu, so there are moments when the element is gone,
+    // and a box with nothing typed in it has tagged nobody either way.
+    let txt=(ta&&ta.value)||'';
+    /* The tag being written right now is not a tag that has been placed. Cut
+       it out, or a name that is the START of a longer one takes itself off the
+       menu as it is typed: with both "שלי" and "שלי פיינברג" on the board,
+       "@שלי " must keep offering the pair — the writer has not yet said which
+       of them they mean — and reading the half-written token as a finished tag
+       of the shorter name answered that question for them. */
+    if(ctx&&ctx.pos>=ctx.start) txt=txt.slice(0,ctx.start)+txt.slice(ctx.pos);
+    return new Set(this.mentionPeople()
+      .filter(u=>u.name && txt.indexOf('@'+u.name)>=0).map(u=>u.id));
+  },
   _openMention(ctx){
     const q=ctx.query.trim().toLowerCase();
     // only people invited to this board — tagging anyone else notifies someone
     // who cannot open the item they were tagged on. The server enforces the
     // same rule; this just stops offering a choice that would be rejected.
-    const matches=this.mentionPeople().filter(u=>!q||(u.name||'').toLowerCase().includes(q));
+    const named=this.mentionPeople().filter(u=>!q||(u.name||'').toLowerCase().includes(q));
+    /* One tag per person per message. A second "@שלי פיינברג" in the same box
+       notifies nobody twice — the server makes a set of the tags either way —
+       so the only thing it adds is a repeated name in the text, and every one
+       of them is a tag the writer meant to be read as new. */
+    const taken=this.taggedAlready(ctx);
+    const matches=named.filter(u=>!taken.has(u.id));
     /* A query that has run past a space and matches nobody is a message being
        written, not a name — the note helps only while the word is still one
-       word. Leaving it up is what made a finished tag look unfinished. */
-    if(!matches.length && /\s/.test(ctx.query)){ this._closeMention(); return; }
-    this._mention={ctx, matches, idx:0};
+       word. Leaving it up is what made a finished tag look unfinished.
+
+       Asked of `named` and not of `matches`: a query that DOES spell somebody
+       already tagged is still a name, and closing on it would swallow the one
+       line that explains why they are not on offer. */
+    if(!named.length && /\s/.test(ctx.query)){ this._closeMention(); return; }
+    this._mention={ctx, matches, idx:0, allTaken:!matches.length&&named.length>0,
+                   takenCount:named.length};
     this._renderMentionMenu();
   },
   _renderMentionMenu(){
@@ -25703,7 +26124,10 @@ const Chat = {
     const html=matches.length
       ? matches.map((u,i)=>`<button class="mention-opt${i===idx?' active':''}" onmousedown="event.preventDefault();Chat.pickMention(${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span> ${esc(u.name)}</button>`).join('')
       : `<div style="padding:9px;color:var(--text-light);font-size:12.5px">${
-          isSelf ? 'אי אפשר לתייג את עצמך' : 'אין חברי לוח תואמים — אפשר לתייג רק מי שהוזמן ללוח'}</div>`;
+          this._mention.allTaken ? (this._mention.takenCount>1
+              ? 'כולם כבר מתויגים בהודעה הזאת' : 'כבר מתויג/ת בהודעה הזאת')
+          : isSelf ? 'אי אפשר לתייג את עצמך'
+          : 'אין חברי לוח תואמים — אפשר לתייג רק מי שהוזמן ללוח'}</div>`;
     this._float(anchor, html);
     const a=document.querySelector('.chat-float .active'); if(a)a.scrollIntoView({block:'nearest'});
   },
@@ -26117,7 +26541,7 @@ const AI = {
   async loadAgents(){
     const b=document.getElementById('ai-body');
     try{const r=await api('/api/swarm/agents');
-      b.innerHTML=r.agents.map(a=>`<div class="agent-card"><div class="nm"><i class="fa-solid fa-robot" style="color:var(--primary)"></i> ${esc(a.name)}</div><div class="rl">${esc(a.role)}</div><button class="btn btn-ghost" style="margin-top:8px;padding:5px 10px" onclick="AI.runAgent('${a.id}')">הפעל</button></div>`).join('')||'<div class="empty">אין סוכנים</div>';
+      b.innerHTML=r.agents.map(a=>`<div class="agent-card"><div class="nm">${robotIcon('ic-pri')} ${esc(a.name)}</div><div class="rl">${esc(a.role)}</div><button class="btn btn-ghost" style="margin-top:8px;padding:5px 10px" onclick="AI.runAgent('${a.id}')">הפעל</button></div>`).join('')||'<div class="empty">אין סוכנים</div>';
     }catch(e){b.innerHTML='<div class="empty">סוכנים לא זמינים</div>';}
   },
   async runAgent(id){this.tab('chat');this.add('user','הפעלת סוכן: '+id);this.add('bot','חושב...');const r=await this.callSwarm(id,'נתח את הלוח הנוכחי ותן המלצות');this.history.pop();this.add('bot',r);},

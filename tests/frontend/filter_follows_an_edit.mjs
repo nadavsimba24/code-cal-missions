@@ -35,7 +35,7 @@ const konst = name => {
    is where advAskServer, advAnswerStale and advWrote live, with applyFilters
    taken from just below it. */
 const engine = src.slice(src.indexOf('const ADV_KINDS = {'), src.indexOf('const IS_ITEM_ID='))
-  + konst('IS_ITEM_ID') + '\n' + grab('applyFilters') + '\n';
+  + konst('IS_ITEM_ID') + '\n' + grab('applyFilters') + '\n' + grab('byPosition') + '\n';
 
 let pass=0, fail=0;
 const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('  FAIL '+n+(x?'  → '+JSON.stringify(x):''))); };

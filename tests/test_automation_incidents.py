@@ -44,8 +44,27 @@ def _add(client, bid, admin_id, recipe_id, config, **extra):
 
 
 def _notes(client, uid):
-    return client.get(f"/api/notifications?user_id={uid}&limit=100",
-                      headers=AS(uid)).json()["notifications"]
+    """The failure notices this person holds — from the table, not from the
+    bell's first page.
+
+    The page the app serves is capped at a hundred rows, which is generous for
+    a person reading a bell and useless as a measuring instrument: once an
+    account anywhere in the suite has a hundred notifications of any kind,
+    len() of that page stops moving and "they were told again" can no longer
+    be seen at all — the assertions below start comparing 100 to 100 and fail
+    while the product is doing exactly what it should.
+
+    Every test here is about the one type this group sends, so that is what is
+    asked for. Other kinds of notification arriving on the same account — the
+    line that announces a new rule, for one — are then neither counted nor in
+    the way.
+    """
+    with Session(cityos_main.engine) as db:
+        return [{"id": n.id, "type": n.type, "title": n.title, "body": n.body}
+                for n in db.query(Notification)
+                .filter(Notification.user_id == uid,
+                        Notification.type == "automation")
+                .order_by(Notification.id.desc()).all()]
 
 
 def _incidents(client, bid, admin_id, **q):

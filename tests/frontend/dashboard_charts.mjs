@@ -99,12 +99,74 @@ ck('…and draws only the periods that have a value', (line.match(/<circle /g)||
 const full=Charts.draw(chart('line',['א','ב','ג'],[{label:'x',points:[1,2,3]}]));
 ck('…while an unbroken series is one line', (full.match(/<polyline /g)||[]).length===1);
 
+/* ── the value axis has to be a scale a person reads ──
+ * Reported as "שיבושים גרף עמודות · עמודה ראשונה על מספורים בציר Y ·
+ * מספור שנתות ציר Y עולה על שורות רוחב גרף". A count of 129 records was
+ * labelled 0.00 · 72.24 · 144.48: the scale padded the maximum by a flat
+ * 12%, which never lands on a round number, and then printed it with the
+ * widget's own number format, which said two decimals. Six characters do
+ * not fit a gutter of a fixed 40 units, so the numbers ended up against the
+ * first bar and reading as one smudge. */
+const texts=(svg,cls)=>[...svg.matchAll(new RegExp('class="'+cls+'"[^>]*>([^<\n]*)','g'))]
+  .map(m=>m[1].trim()).filter(Boolean);
+const ticksOf=o=>{const sc=Charts.scale(Charts.domain(o));
+  return Charts.ticks(sc).map(v=>Charts.tickText(sc,v));};
+
+const counted=chart('vbar',['א','ב','ג','ד'],[{label:'ספירה',points:[1,1,129,1]}]);
+counted.series[0].precision=2;                 // the widget's own number format
+ck('a count of 129 gets a scale of round numbers',
+   ticksOf(counted).join(' ')==='0 50 100 150', ticksOf(counted).join(' '));
+ck('…and the axis never borrows the metric\'s decimals',
+   !texts(Charts.draw(counted),'ch-tick').some(t=>t.includes('.')));
+ck('a scale of whole things has no half-steps',
+   ticksOf(chart('vbar',['א'],[{label:'x',points:[3]}])).every(t=>!t.includes('.')));
+ck('…while a scale of fractions keeps them',
+   ticksOf(chart('vbar',['א'],[{label:'x',points:[0.05]}])).some(t=>t.includes('.')));
+ck('the tallest bar still stops short of the top',
+   Charts.scale(Charts.domain(counted)).hi > 129);
+
+/* the gutter is measured from what has to stand in it, and the axis line
+   draws the boundary the first bar used to lean on */
+const wide=chart('vbar',['א','ב'],[{label:'x',points:[12,987654]}]);
+ck('a six-figure axis widens its gutter instead of running off the box',
+   Charts.plot(Charts.tickGutter(Charts.scale(Charts.domain(wide)))).x0 >
+   Charts.plot(Charts.tickGutter(Charts.scale(Charts.domain(counted)))).x0);
+const axisLine=/<line x1="([\d.]+)" y1="14" x2="\1" y2="150"/.exec(Charts.draw(counted));
+ck('…and an axis line separates the numbers from the plot', !!axisLine);
+
+/* nothing may be drawn outside the box: an SVG does not clip, so a label
+   that does not fit simply lies on top of whatever is beside it */
+const gut=axisLine?+axisLine[1]:0;
+const inside=(svg,cls,size)=>[...svg.matchAll(
+    new RegExp('<text x="([-\\d.]+)"[^>]*class="'+cls+'"\\s*\\n?\\s*text-anchor="(\\w+)">([^<\\n]*)','g'))]
+  .map(m=>{const w=Charts.textW(m[3].trim(),size), x=+m[1];
+    const lo=m[2]==='end'?x-w:m[2]==='middle'?x-w/2:x; return [lo,lo+w,m[3].trim()];});
+const drawn=Charts.draw(counted);
+ck('every number stays inside the drawing surface',
+   inside(drawn,'ch-tick',9).every(([lo,hi])=>lo>=-0.5&&hi<=320.5));
+ck('…and no category name reaches back into the gutter',
+   inside(drawn,'ch-cat',9.5).every(([lo])=>lo>=gut-0.5),
+   JSON.stringify(inside(drawn,'ch-cat',9.5)[0]));
+const months12=Charts.draw(chart('line',
+  ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'],
+  [{label:'x',points:[1,2,3,4,5,6,7,8,9,10,11,1200]}]));
+ck('a line chart names its first period without writing over the axis',
+   inside(months12,'ch-cat',9.5).every(([lo,hi])=>lo>=-0.5&&hi<=320.5));
+const wideH=Charts.draw(chart('hbar',['קטגוריה ארוכה מאוד בעברית','ב'],[{label:'x',points:[12,987654]}]));
+ck('a horizontal chart keeps its last number on the surface too',
+   inside(wideH,'ch-tick',9).every(([lo,hi])=>lo>=-0.5&&hi<=320.5));
+
 /* ── R08 · the table and the legend ── */
 const tbl=Charts.table(v1);
 ck('every chart has a data table with headers', tbl.includes('<th scope="col">א</th>')&&tbl.includes('scope="row"'));
 ck('…whose cells open the same records', (tbl.match(/Dash\.openDrill\(7/g)||[]).length===2);
 ck('…and which says so to a screen reader', tbl.includes('<caption class="sr-only">'));
 ck('a gap in the table is a dash, never a zero', Charts.table(ln).includes('>—<'));
+/* Reported as "לחיצה על הצגת טבלה יוצא מגבולות הוויג׳ט כשהוא במצב צר". The
+ * cells are nowrap, so in a one-column widget the table is wider than the
+ * card; without a scroller of its own it simply drew past the border. */
+ck('…and the table scrolls inside the widget instead of past its border',
+   /^<div class="ch-scroll">/.test(tbl.trim())&&tbl.trim().endsWith('</div>'));
 const leg=Charts.legend(st);
 ck('the legend names every series beside its swatch', leg.includes('ס1')&&leg.includes('ס2'));
 ck('…so colour is never the only difference', (leg.match(/<li>/g)||[]).length===2);

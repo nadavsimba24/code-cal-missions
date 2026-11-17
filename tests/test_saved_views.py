@@ -381,7 +381,12 @@ def test_the_address_carries_the_open_view():
     # passes two arguments and none of them is about the view
     assert "if(viewId===undefined)" in router, \
         "opening an item drops the view out of the address"
-    assert "openDeepLink(r.boardId, r.itemId, r.viewId)" in src, \
+    # The view is the third argument wherever the link is followed. Matched
+    # as a prefix because the call grew a fourth — the parsed address itself,
+    # which is how a link to the board's automations is told apart — and what
+    # is pinned here is that the VIEW is still handed over, not how many
+    # arguments the call happens to take.
+    assert "openDeepLink(r.boardId, r.itemId, r.viewId" in src, \
         "a link carrying a view opens the board without it"
 
 

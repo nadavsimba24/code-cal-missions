@@ -248,9 +248,13 @@ function world(){
   const R2=new Function('location','history','Views','openDeepLink','st','Chat',
     src.slice(src.indexOf('const Router={'), src.indexOf('\n};', src.indexOf('const Router={')))+'\n};\nreturn Router;')(
     {hash:'#/board/3/item/42'}, {replaceState(){}}, {active:null}, null, {}, {});
+  /* Field by field, and not by comparing the whole object: what this check
+     is about is that a two-part link still reads as board + item with no
+     view, and an address that learns to carry something ELSE — the board's
+     automations did — must not read as a regression here. */
+  const r2=R2.parse();
   ck('...and the old two-part links still read the same',
-     JSON.stringify(R2.parse())===JSON.stringify({boardId:3,viewId:null,itemId:42}),
-     JSON.stringify(R2.parse()));
+     r2.boardId===3 && r2.viewId===null && r2.itemId===42, JSON.stringify(r2));
 }
 {
   /* Router.set takes two arguments everywhere it was already called —

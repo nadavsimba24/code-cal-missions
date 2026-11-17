@@ -36,13 +36,14 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
 function world({boards=[1], rows=[], afterRefresh=null, boardOpens=true}={}){
   const w = {
     view:'', toasts:[], opened:null, closed:0, refreshed:0, rendered:0, env:null,
+    autos:0, lit:undefined,
     st:{boards:boards.map(id=>({id, environment_id:1})), board:null},
   };
   const findAnyTask = id => (w.st.board ? (w.st.board.tasks||[]).find(t=>t.id===id) ||
     (w.st.board.tasks||[]).flatMap(t=>t.subtasks||[]).find(t=>t.id===id) : null) || null;
   const fn = new Function(
     'st','document','accessDeniedHTML','followBoardEnv','openBoard','findAnyTask',
-    'refreshBoardItems','renderView','Chat','toast',
+    'refreshBoardItems','renderView','Chat','toast','Automations',
     grab('openDeepLink') + '\nreturn openDeepLink;')(
       w.st,
       {getElementById: () => ({set innerHTML(v){ w.view = v; }, get innerHTML(){ return w.view; }})},
@@ -53,7 +54,8 @@ function world({boards=[1], rows=[], afterRefresh=null, boardOpens=true}={}){
       async () => { w.refreshed++; if(afterRefresh) w.st.board.tasks = afterRefresh; },
       () => { w.rendered++; },
       {taskId:null, open(id){ w.opened = id; this.taskId = id; }, close(){ w.closed++; this.taskId = null; }},
-      m => w.toasts.push(m));
+      m => w.toasts.push(m),
+      {async open(){ w.autos++; }, highlight(id){ w.lit = id; }});
   return [fn, w];
 }
 
@@ -115,6 +117,52 @@ const item = (id, subs) => ({id, title:'רשומה '+id, subtasks: subs||[]});
   const again = w.refreshed;
   await go(1, 41);
   ck('...and following the same link again does nothing', w.refreshed===again);
+}
+
+// ── the other thing a mail links to: a new automation ─────────────────────
+// "אוטומציה חדשה בלוח X" is sent to the board's managers, and the half of it
+// a subject line cannot answer is WHERE — so the button opens that board's
+// rules with the new one picked out, rather than the board and a hunt.
+{
+  const [go, w] = world({rows:[item(41)]});
+  await go(1, null, null, {autos:true, autoId:7});
+  ck('a link to the rules opens the board', w.st.board && w.st.board.id===1);
+  ck('...and the automations over it', w.autos===1);
+  ck('...on the rule the mail was about', w.lit===7);
+  ck('...and opens no conversation on the way', w.opened===null);
+}
+{
+  const [go, w] = world({rows:[item(41)]});
+  await go(1, null, null, {autos:true, autoId:null});
+  ck('a rule deleted since the mail still opens the panel', w.autos===1 && w.lit===null);
+}
+{
+  const [go, w] = world({boards:[1,2], rows:[item(41)]});
+  await go(7, null, null, {autos:true, autoId:7});
+  ck('a board they cannot see opens no rules either', w.autos===0 &&
+     w.view.startsWith('ACCESS-DENIED'), w.view);
+}
+
+// ── and the address those links are written in ────────────────────────────
+const router = (()=>{
+  const i = src.indexOf('const Router={');
+  let d=0;
+  for(let j=src.indexOf('{', i); j<src.length; j++){
+    if(src[j]==='{')d++; else if(src[j]==='}'){ d--; if(!d) return src.slice(i, j+1); }
+  }
+  throw new Error('Router not found');
+})();
+const parse = h => new Function('location','Views','st','Chat',
+  router + '\nreturn Router.parse();')({hash:h}, {active:null}, {}, {});
+{
+  const r = parse('#/board/5/automations');
+  ck('the rules of a board are an address', r.boardId===5 && r.autos===true);
+  ck('...with no rule named when none was', r.autoId===null);
+  const one = parse('#/board/5/automations/9');
+  ck('...and one rule when the mail named it', one.autos===true && one.autoId===9);
+  const plain = parse('#/board/5/item/3');
+  ck('an ordinary record link is untouched by it',
+     plain.autos===false && plain.itemId===3 && plain.boardId===5);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
