@@ -1800,6 +1800,35 @@ RECIPES = [
                 _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
                 _f("a_text", "text", "שם הפריט החדש"),
                 _f("a_fields", "fields", "השדות להעתקה")]},
+
+    # ── ואותו כלל, כשהשדות הם העמודות של שני הלוחות ──────────────────────
+    # "השדות להעתקה" above is a catalog of five built-ins, and that is the
+    # honest answer only for the five: a column lives on one board under one
+    # id and on the next board under another, so anything past
+    # סטטוס/עדיפות/תאריך/אחראים/תיאור is a PAIRING between two boards'
+    # columns and not a row of checkboxes — which is what COPY_FIELDS says
+    # about itself and why it stops where it stops.
+    #
+    # The engine has been able to carry such a pairing since
+    # create_mapped_and_link was written: it refuses a date into a number,
+    # re-checks the two sides before every firing, and takes the item it just
+    # created back with it when a value will not fit. What was missing was a
+    # way in — no trigger named that action, so the fullest cross-board rule
+    # the product has could not be built from the screen at all, and the only
+    # cross-board rule that could offered the five built-ins and nothing else.
+    #
+    # A NEW recipe rather than a wider one: swapping a_fields for a_map on the
+    # recipe above would re-ask every rule already built on it a question it
+    # was never asked, which is the versioning rule this file keeps — and the
+    # reason create_in_group_and_link is itself separate from create_and_link.
+    {"id": "status_create_mapped_and_link", "trigger": "status_changes_to",
+     "action": "create_mapped_and_link",
+     "fields": [_f("t_status", "status", "סטטוס"),
+                _f("a_connect", "connect", "עמודת הקישור"),
+                _f("a_board", "board", "לוח היעד"),
+                _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
+                _f("a_text", "text", "שם הפריט החדש"),
+                _f("a_map", "map", "מיפוי השדות")]},
 ]
 
 # ── עדיפות היא עמודה מסוג סטטוס, ובקטלוג היא לא נהגה ככזו ──────────────────
@@ -1936,6 +1965,7 @@ _ACTION_TAGS = {
     "create_and_link":  ("link",),
     "create_in_board":  (),
     "create_in_group_and_link": ("link",),
+    "create_mapped_and_link":   ("link",),
     "copy_to_linked":   ("link",),
     "post_update":      (),
 }
@@ -1971,6 +2001,13 @@ _ACTION_NEEDS = {
     "link_to_item":             ("connect",),
     "create_and_link":          ("connect",),
     "create_in_group_and_link": ("connect", "group"),
+    # the same two the rule above needs, for the same reasons: the connect
+    # column is both the route to the other board and the permission to write
+    # there, and the item has to be filed in a named group when it arrives.
+    # Missing from here while the action was unreachable, which cost nothing;
+    # now that a template leads to it, a board with no connect column would
+    # have been offered a rule it cannot build and told nothing about why.
+    "create_mapped_and_link":   ("connect", "group"),
     "copy_to_linked":           ("connect",),
     "move_to_group":            ("group",),
     "duplicate_item":           ("group",),
@@ -2027,6 +2064,14 @@ EXTRA_TEMPLATES = [
     # does: it is also where the board's grey-bubble threshold is set.
     ("chat_idle_notify_assignees",
      "כאשר שיחת הפריט שותקת כמה ימים, שלח התראה לאחראים — וקבע מתי הבועית מאפירה"),
+    # Named, because its sentence and the one above it ("...העתק שדות וקשר
+    # אותו") read almost alike, and the difference between them is the whole
+    # point: one copies five built-ins, this one pairs the two boards' own
+    # columns by hand. Without the name, the person who went looking for
+    # "להעתיק את «מספר הפנייה» ללוח היעד" would pick the first of the two and
+    # find the catalog that cannot say it.
+    ("status_create_mapped_and_link",
+     "כאשר סטטוס משתנה, צור פריט בלוח היעד ומפה עמודה לעמודה בין שני הלוחות"),
 ]
 
 LIBRARY_TEMPLATES = MVP_TEMPLATES + EXTRA_TEMPLATES

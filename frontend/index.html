@@ -640,6 +640,26 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .au-tok>summary{cursor:pointer;font-size:12px;color:var(--primary);padding:3px 6px}
 .au-tok .rm-item{font-size:12px}
 .au-tmiss{margin-top:7px;font-size:12px;color:var(--red)}
+/* "מיפוי השדות" — a table of pairs rather than a sentence, because what it
+   says is "this column over there, that column over here" and that is two
+   lists read side by side. A grid so every arrow sits under the one above it
+   however long the two boards' column names are; on a phone the pair stacks
+   instead of squeezing both selects down to nothing readable. */
+.au-map-head{display:grid;grid-template-columns:1fr 18px 1fr 28px;gap:8px;
+  font-size:11.5px;color:var(--text-light);margin-bottom:6px}
+.au-map-row{display:grid;grid-template-columns:1fr 18px 1fr 28px;gap:8px;
+  align-items:center;margin-bottom:8px}
+.au-map-row .lm-sel{min-width:0}
+.au-map-arrow{color:var(--text-muted);font-size:12px;text-align:center}
+.au-map-x{background:none;border:none;cursor:pointer;color:var(--text-muted);
+  font-size:13px;padding:4px;border-radius:6px;line-height:1}
+.au-map-x:hover{background:var(--bg);color:var(--red)}
+.au-map-bad{grid-column:1/-1;font-size:11.5px;color:var(--red);margin-top:-3px}
+@media(max-width:560px){
+  .au-map-head{display:none}
+  .au-map-row{grid-template-columns:1fr 28px;row-gap:5px;
+    padding-block-end:8px;border-block-end:1px solid var(--border)}
+  .au-map-arrow{display:none}}
 .ah-batch{cursor:pointer;border:none;font:inherit}
 .au-imp-lnk{margin-bottom:8px}
 .au-impgrid{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
@@ -11028,9 +11048,16 @@ const Automations = {
      produced reads as itself rather than as a wrong name. */
   _cellFor(f,v,siblings,built){
     const mk=(label,color)=>({v:v,label:String(label==null?'':label),color:color||''});
-    if(f.type==='text'||f.type==='days') return mk(v);
+    /* A stored text holds the engine's codes — {{item.name}}, {{field.col_7a1}}
+       — and the blank reads them back in the names this board has for them,
+       the same translation the notice's textarea has always done. Without it
+       a rule reopened for editing showed its own tokens as codes, and the box
+       is what the next save stores: one edit could turn a working token into
+       the literal word col_7a1. */
+    if(f.type==='text') return mk(this.tokensToNames(v));
+    if(f.type==='days') return mk(v);
     if(f.type==='wait')   return mk(this.waitHe(+v||0));
-    if(f.type==='map')    return mk('מיפוי שדות');   // edited through the API
+    if(f.type==='map')    return mk(this.mapLabel(v));
     // the chip says THAT there is a wording, never the wording itself — it
     // sits in a one-line sentence and the dialog is where it is read
     if(f.type==='notice')  return mk('התראה מותאמת');
@@ -11040,7 +11067,8 @@ const Automations = {
       return mk((Array.isArray(v)?v:[]).map(k=>
         ((this.copyFields||[]).find(x=>x.key===k)||{}).label||k).join(', '));
     if(f.type==='recipient'){
-      const HE={actor:'המשתמש שביצע את השינוי',owner:'בעל האוטומציה',board_admin:'מנהל הלוח'};
+      const HE={actor:'המשתמש שביצע את השינוי',owner:'בעל האוטומציה',board_admin:'מנהל הלוח',
+                event_person:'האחראי שהתווסף או הוסר'};
       const kind=(v&&v.kind)||'user', val=(v||{}).value;
       if(kind==='user') return mk((this.members.find(m=>m.user_id===val)||{}).name||val);
       if(kind==='field') return mk('אחראי משדה '+this._colCell(val).label);
@@ -11348,6 +11376,7 @@ const Automations = {
       openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
         <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
                onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setActText(${i},'${key}');}">
+        ${this.tokenMenuHTML()}
         <button class="rm-item" onclick="Automations.setActText(${i},'${key}')"><i class="fa-solid fa-check"></i> אישור</button>
       </div>`,'row-menu-pop');
       setTimeout(()=>{const el=document.getElementById('au-txt'); if(el){el.focus();el.select();}},30);
@@ -11362,7 +11391,7 @@ const Automations = {
     if(f.type==='fields'){ this.pickCopyFields(anchor,key,{actIdx:i,key}); return; }
     if(f.type==='recipient'){ this.pickRecipient(anchor,key,{actIdx:i,key}); return; }
     if(f.type==='wait'){ this.pickWait(anchor,key,{actIdx:i,key}); return; }
-    if(f.type==='map'){ toast('מיפוי שדות נערך דרך ה-API בשלב זה'); return; }
+    if(f.type==='map'){ await this.pickMap(key,{actIdx:i,key}); return; }
     if(f.type==='notice'){ this.pickNotice(key,{actIdx:i,key}); return; }
     if(f.type==='target_group'){ await this.pickActTargetGroup(anchor,i,key); return; }
     /* An extra action names a column the same way the sentence does. Its
@@ -11417,10 +11446,14 @@ const Automations = {
     openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
   setActText(i,key){
-    const el=document.getElementById('au-txt'); const v=(el?el.value:'').trim();
-    if(!v){ toast('יש להזין טקסט'); return; }
+    const el=document.getElementById('au-txt');
     const a=(this.building.acts||[])[i]; if(!a)return;
-    (a.values=a.values||{})[key]={v:v,label:v,color:''};
+    // the same translation the sentence's own text blank does — an extra
+    // action is held to the rule its neighbour is held to, here as in
+    // _coerce_field on the server
+    const cell=this._textCell(el?el.value:'');
+    if(!cell){ if(el)el.focus(); return; }
+    (a.values=a.values||{})[key]=cell;
     closeCellPops(); this.render();
   },
 
@@ -11932,10 +11965,7 @@ const Automations = {
     if(f.type==='recipient'){ this.pickRecipient(e.currentTarget,key,null); return; }
     /* ---- המתנה ---- stored in minutes, asked in the words people use ---- */
     if(f.type==='wait'){ this.pickWait(e.currentTarget,key,null); return; }
-    if(f.type==='map'){
-      toast('מיפוי שדות נערך דרך ה-API בשלב זה');
-      return;
-    }
+    if(f.type==='map'){ await this.pickMap(key,null); return; }
     // "התראה" — the word in the sentence, and a dialog behind it
     if(f.type==='notice'){ this.pickNotice(key,null); return; }
     /* ---- כל כמה ימים ----
@@ -12272,12 +12302,12 @@ const Automations = {
     // empty is the default notice, not a notice that says nothing — so an
     // empty box with the mail switch on clears the blank rather than storing a
     // flag nobody would ever find again
-    this._putNotice(c, text?{v:{text:text,mail:mail},label:'התראה מותאמת',color:''}:undefined);
+    this._putBlank(c, text?{v:{text:text,mail:mail},label:'התראה מותאמת',color:''}:undefined);
     this._noticeBack();
   },
   clearNotice(){
     const c=this._noticeInto; if(!c)return;
-    this._putNotice(c,undefined);
+    this._putBlank(c,undefined);
     this._noticeBack();
   },
   /* Back to the rule being written — the screen this dialog came from.
@@ -12290,8 +12320,12 @@ const Automations = {
      × all come back here, to the same rule with the same blanks — and the
      notice is in `building` by the time save calls this, so the sentence shows
      what was just written in it. */
-  _noticeBack(){
-    this._noticeInto=null;
+  _noticeBack(){ this._noticeInto=null; this._backToRule(); },
+  /* The way back is the same for every sub-screen a blank opens, so it is
+     written once: the field mapping below came second and would otherwise
+     have carried its own copy of this, which is how two dialogs that look
+     alike start behaving differently. */
+  _backToRule(){
     const m=document.getElementById('modal'); if(!m)return;
     // open() widened the automations window; showModal stripped that class off
     // when it took the element over
@@ -12302,13 +12336,172 @@ const Automations = {
     }
     this.render();
   },
-  _putNotice(c,cell){
+  /* …and so is the way the answer lands back in the blank, whichever half of
+     the rule the blank belongs to — the sentence's own, or an extra action's. */
+  _putBlank(c,cell){
     let vals;
     if(c.into){ const a=(this.building.acts||[])[c.into.actIdx]; if(!a)return;
                 vals=(a.values=a.values||{}); }
     else vals=this.building.values;
     if(cell===undefined) delete vals[c.key]; else vals[c.key]=cell;
   },
+
+  /* ---- מיפוי השדות בין שני לוחות ----
+
+     "השדות להעתקה" on the older cross-board rule is a catalog of five
+     built-ins — סטטוס, עדיפות, תאריך יעד, אחראים, תיאור — and for a row of
+     checkboxes that is the honest list: a column lives on one board under one
+     id and on the next board under another, so "העתק את «מספר הפנייה»" is not
+     a field to tick but a PAIR of columns, one on each board.
+
+     The engine has carried such a pair since create_mapped_and_link was
+     written. It refuses a date into a number, re-reads both sides before
+     every firing, and takes the item it has just created back with it when a
+     value will not fit. What there was no way to do was WRITE one: this blank
+     said "מיפוי שדות נערך דרך ה-API בשלב זה", so for anybody without a
+     terminal the answer to "אני מצפה שהעמודות יופיעו בהתאם" was the generic
+     five and nothing else.
+
+     Both sides come from automation-capabilities, which already answers "what
+     kind is this column" for a named board — so the target list is the target
+     board's own, and the compatibility shown here is the rule the server will
+     apply. The server stays the authority: it checks again at the save and
+     once more before every run, because a column can be deleted or re-typed
+     under a rule that was right when it was written. */
+  // the three the engine will not write into, whatever kind they report
+  MAP_UNMAPPABLE:['mirror','connect','formula'],
+  _mapSides(cols){
+    const out=((((this.caps||{}).map)||{}).builtins||[])
+                .map(b=>({key:b.key,label:b.label,kind:b.kind}));
+    (cols||[]).forEach(c=>{
+      if(!c.kind||this.MAP_UNMAPPABLE.includes(c.type))return;
+      out.push({key:String(c.id),label:c.title||c.id,kind:c.kind});
+    });
+    return out;
+  },
+  /* The chip in the sentence says HOW MANY and never the pairs themselves:
+     they are a table and the sentence is one line. "מיפוי שדות" is what a
+     rule built through the API before this screen existed reads as. */
+  mapLabel(v){
+    const n=Array.isArray(v)?v.filter(p=>p&&p.from&&p.to).length:0;
+    return n?(n===1?'שדה אחד':n+' שדות'):'מיפוי שדות';
+  },
+  async _mapTargetCols(bid){
+    this._mapCols=this._mapCols||{};
+    if(this._mapCols[bid]) return this._mapCols[bid];
+    const d=await api('/api/automation-capabilities?board_id='+bid
+                      +(meId()?'&user_id='+meId():''));
+    return (this._mapCols[bid]=d.columns||[]);
+  },
+  async pickMap(key,into){
+    const vals=into?(((this.building.acts||[])[into.actIdx]||{}).values||{})
+                   :this.building.values;
+    // the sentence names its target board a_board; an extra action carries its
+    // own under the bare key — the same split pickTargetGroup already keeps
+    const bid=((into?vals.board:vals.a_board)||{}).v;
+    if(!bid){ toast('בחר תחילה את לוח היעד'); return; }
+    let cols;
+    try{ cols=await this._mapTargetCols(bid); }
+    catch(e){ toast('לא ניתן לקרוא את העמודות בלוח היעד'); return; }
+    this._mapInto={key:key,into:into||null};
+    this._mapFrom=this._mapSides((this.caps||{}).columns);
+    this._mapTo=this._mapSides(cols);
+    const cur=(vals[key]||{}).v;
+    this._mapDraft=(Array.isArray(cur)?cur:[])
+      .map(p=>({from:String((p||{}).from||''),to:String((p||{}).to||'')}));
+    if(!this._mapDraft.length) this._mapDraft.push({from:'',to:''});
+    showModal(`<h2><i class="fa-solid fa-right-left" style="color:var(--primary)"></i> מיפוי השדות</h2>
+      <div class="mbody">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
+          איזה שדה בפריט המקור נכנס לאיזה שדה בפריט שייווצר בלוח היעד. מוצעות
+          רק עמודות של שני הלוחות עצמם, ורק מסוג תואם — תאריך לתאריך, סטטוס
+          לסטטוס. שדה שאינו מופיע כאן נשאר ריק בפריט החדש.</div>
+        <div class="au-map-head"><span>השדה בפריט המקור</span><span></span>
+          <span>השדה בלוח היעד</span><span></span></div>
+        <div id="au-map-rows"></div>
+      </div>
+      <div class="mfoot">
+        <button class="btn btn-primary" onclick="Automations.saveMap()"><i class="fa-solid fa-check"></i> שמור מיפוי</button>
+        <button class="btn btn-ghost" onclick="Automations._mapBack()">ביטול</button>
+      </div>`);
+    /* The × belongs to this sub-screen and not to the automations window
+       behind it — the same lost rule by another button the notice guards. */
+    const x=document.querySelector('#modal .modal-x');
+    if(x) x.setAttribute('onclick','Automations._mapBack()');
+    this.renderMapRows();
+  },
+  renderMapRows(){
+    const host=document.getElementById('au-map-rows'); if(!host)return;
+    const max=((((this.caps||{}).map)||{}).max_pairs)||20;
+    const opts=(list,sel)=>'<option value="">— בחרו שדה —</option>'
+      +list.map(x=>`<option value="${esc(x.key)}"${x.key===sel?' selected':''}>${esc(x.label)}</option>`).join('');
+    const rows=this._mapDraft.map((p,i)=>{
+      const src=this._mapFrom.find(x=>x.key===p.from);
+      const dst=this._mapTo.find(x=>x.key===p.to);
+      /* Only a field that can actually HOLD it — "מיפוי רק בין סוגי שדות
+         תואמים", said on screen rather than only in the rejection. A target
+         already chosen stays in its own list even when it no longer fits, so
+         the row goes on saying what it says and the mismatch is named
+         underneath instead of the select quietly emptying itself. */
+      const fit=this._mapTo.filter(x=>!src||x.kind===src.kind||x.key===p.to);
+      const bad=src&&dst&&src.kind!==dst.kind;
+      return `<div class="au-map-row">
+        <select class="lm-sel" aria-label="השדה בפריט המקור"
+                onchange="Automations.setMapSide(${i},'from',this.value)">${opts(this._mapFrom,p.from)}</select>
+        <span class="au-map-arrow"><i class="fa-solid fa-arrow-left"></i></span>
+        <select class="lm-sel" aria-label="השדה בלוח היעד"
+                onchange="Automations.setMapSide(${i},'to',this.value)">${opts(fit,p.to)}</select>
+        <button class="au-map-x" title="הסר שורה" aria-label="הסר שורה"
+                onclick="Automations.dropMapPair(${i})"><i class="fa-solid fa-xmark"></i></button>
+        ${bad?`<div class="au-map-bad">«${esc(src.label)}» ו«${esc(dst.label)}» אינם מסוג תואם</div>`:''}
+      </div>`;
+    }).join('');
+    setHTML(host,rows+(this._mapDraft.length<max
+      ? `<button class="btn btn-ghost" onclick="Automations.addMapPair()"><i class="fa-solid fa-plus"></i> הוסף שדה</button>`
+      : `<div class="rm-note">אפשר למפות עד ${max} שדות</div>`));
+  },
+  setMapSide(i,side,v){
+    const p=(this._mapDraft||[])[i]; if(!p)return;
+    p[side]=String(v||'');
+    // changing the source IS changing the question, so a target it cannot
+    // reach is let go here rather than carried to the save to be refused
+    if(side==='from'&&p.to){
+      const a=this._mapFrom.find(x=>x.key===p.from), b=this._mapTo.find(x=>x.key===p.to);
+      if(a&&b&&a.kind!==b.kind) p.to='';
+    }
+    this.renderMapRows();
+  },
+  addMapPair(){ (this._mapDraft=this._mapDraft||[]).push({from:'',to:''}); this.renderMapRows(); },
+  dropMapPair(i){
+    (this._mapDraft||[]).splice(i,1);
+    // the table never empties to nothing: a dialog with no rows in it offers
+    // no way back to having one
+    if(!this._mapDraft.length) this._mapDraft.push({from:'',to:''});
+    this.renderMapRows();
+  },
+  saveMap(){
+    const c=this._mapInto; if(!c)return;
+    const draft=this._mapDraft||[];
+    // a row with one side filled is a question somebody started and did not
+    // finish; dropping it quietly is how a mapping comes out one field short
+    if(draft.some(p=>(!!p.from)!==(!!p.to))){
+      toast('יש להשלים את שני הצדדים של כל שורה'); return;
+    }
+    const pairs=draft.filter(p=>p.from&&p.to), seen={};
+    for(const p of pairs){
+      if(seen[p.to]){ toast('אותו שדה יעד מופיע פעמיים במיפוי'); return; }
+      seen[p.to]=1;
+      const a=this._mapFrom.find(x=>x.key===p.from), b=this._mapTo.find(x=>x.key===p.to);
+      if(a&&b&&a.kind!==b.kind){
+        toast('«'+a.label+'» ו«'+b.label+'» אינם מסוג תואם'); return;
+      }
+    }
+    // an empty mapping clears the blank rather than storing a list of nothing,
+    // so the sentence goes on showing the question as the open question it is
+    this._putBlank(c,pairs.length?{v:pairs,label:this.mapLabel(pairs),color:''}:undefined);
+    this._mapBack();
+  },
+  _mapBack(){ this._mapInto=null; this._backToRule(); },
 
   /* ---- ערכים דינמיים: הקוד נשמר, השם נקרא ----
 
@@ -12435,9 +12628,21 @@ const Automations = {
       {key:'field',label:'אחראי משדה אנשים',takes_value:true},
       {key:'actor',label:'המשתמש שביצע את השינוי'},
       {key:'owner',label:'בעל האוטומציה'},
-      {key:'board_admin',label:'מנהל הלוח'}];
+      {key:'board_admin',label:'מנהל הלוח'},
+      {key:'event_person',label:'האחראי שהתווסף או הוסר',
+       triggers:['person_assigned','person_unassigned']}];
+    /* A recipient read off the event exists only where the event carries one:
+       "האחראי שהתווסף או הוסר" is a real answer under a שיוך trigger and no
+       answer at all under "כאשר נוצר פריט חדש". The server refuses that pair
+       on save, so offering it everywhere would be offering a choice that comes
+       back as an error. Which triggers it belongs to travels with the entry
+       itself — this screen holding its own copy of the pairing is how the two
+       come to disagree. No `triggers` means every rule, which is what the five
+       before it are. */
+    const trig=((this.building||{}).recipe||{}).trigger||'';
+    const shown=kinds.filter(k=>!((k.triggers||[]).length)||k.triggers.indexOf(trig)>=0);
     this._recInto={key:key,into:into||null,anchor:anchor};
-    const body=kinds.map(k=>`<button class="rm-item" onclick="event.stopPropagation();Automations.pickRecipientKind('${k.key}')">
+    const body=shown.map(k=>`<button class="rm-item" onclick="event.stopPropagation();Automations.pickRecipientKind('${k.key}')">
         ${esc(k.label)}${k.takes_value?' …':''}</button>`).join('');
     openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
@@ -12471,7 +12676,8 @@ const Automations = {
   },
   _applyRecipient(val,spec,label){
     const c=this._recInto; if(!c)return;
-    const HE={actor:'המשתמש שביצע את השינוי',owner:'בעל האוטומציה',board_admin:'מנהל הלוח'};
+    const HE={actor:'המשתמש שביצע את השינוי',owner:'בעל האוטומציה',board_admin:'מנהל הלוח',
+                event_person:'האחראי שהתווסף או הוסר'};
     const shown=label||(spec&&spec.label)||HE[val.kind]||val.kind;
     const cell={v:val,label:shown,color:''};
     if(c.into){ const a=this.building.acts[c.into.actIdx];
@@ -12618,19 +12824,64 @@ const Automations = {
     this.render();
     this.renderCopyFields();
   },
+  /* Which action this blank belongs to — the sentence's own, or an extra
+     action's. Only the one that writes onto ANOTHER board gets the line
+     below; on a same-board copy there is no second column list to point at. */
+  _copyAction(){
+    const c=this._copyInto; if(!c) return '';
+    if(c.into) return (((this.building.acts||[])[c.into.actIdx])||{}).key||'';
+    return ((this.building.recipe||{}).action)||'';
+  },
   renderCopyFields(){
     const c=this._copyInto; if(!c)return;
     const picked=this._copyCur();
-    const body=(this.copyFields||[]).map(f=>`<button class="rm-item" onclick="event.stopPropagation();Automations.toggleCopyField('${f.key}')">
+    /* These five are the item's own built-ins, which every board has, and the
+       list cannot grow: a column lives on this board under one id and on the
+       target board under another, so carrying one across is a PAIR of columns
+       and not a sixth checkbox.
+
+       Somebody who came here looking for «מספר הפנייה» finds five fields that
+       are not it and nothing saying why — and the template that CAN say it is
+       one line away in the library. So the way on is named here, at the blank
+       where the wall is, rather than left to be worked out. */
+    const cross=this._copyAction()==='create_in_group_and_link';
+    const head=cross?`<div class="rm-note" style="max-width:238px;line-height:1.55">
+        אלה חמשת השדות שיש בכל לוח. כדי למפות עמודה לעמודה בין שני הלוחות —
+        בנו את הכלל מהתבנית <b>«צור פריט בלוח היעד ומפה עמודה לעמודה»</b>.</div>`:'';
+    const body=head+(this.copyFields||[]).map(f=>`<button class="rm-item" onclick="event.stopPropagation();Automations.toggleCopyField('${f.key}')">
         <i class="fa-solid ${picked.includes(f.key)?'fa-square-check':'fa-square'}" style="color:var(--primary)"></i> ${esc(f.label)}</button>`).join('')
       +`<button class="rm-item" onclick="closeCellPops()"><i class="fa-solid fa-check"></i> סיום</button>`;
     openCellPop(c.anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
 
+  /* ---- מה שנכתב בתיבה, במילים שהמנוע מבין ----
+
+     The notice's textarea has always kept this split: the box holds the names
+     — «{{שם הפריט}}» — and the wire holds the codes the engine resolves. This
+     blank never did the translation, and it is the blank that «ערך מהפריט»
+     writes into: a token picked off that menu was stored exactly as it was
+     shown, the engine's TOKEN_RE matches ASCII and nothing else, so nothing
+     resolved and the rule created an item literally named "{{שם הפריט}}".
+
+     Refusing a name nobody recognises is said here rather than only at the
+     save, for the same reason the notice says it: the server is the authority
+     and answers after the dialog has closed, with the text already gone. */
+  _textCell(raw){
+    const shown=String(raw||'').trim();
+    if(!shown){ toast('יש להזין טקסט'); return null; }
+    const stored=this.namesToTokens(shown);
+    const bad=this.unknownTokens(stored);
+    if(bad.length){
+      toast('אין ערך בשם «'+bad[0]+'» — אפשר לבחור ערך מתוך «ערך מהפריט»');
+      return null;
+    }
+    return {v:stored,label:shown,color:''};
+  },
   setText(key){
-    const el=document.getElementById('au-txt'); const v=(el?el.value:'').trim();
-    if(!v){ toast('יש להזין טקסט'); return; }
-    this.building.values[key]={v:v,label:v,color:''};
+    const el=document.getElementById('au-txt');
+    const cell=this._textCell(el?el.value:'');
+    if(!cell){ if(el)el.focus(); return; }
+    this.building.values[key]=cell;
     closeCellPops(); this.render();
   },
 
@@ -26827,6 +27078,10 @@ function dismissModal(){
      does nothing at all because one of them resolved and the other threw. */
   const A=window.Automations;
   if(A&&A._noticeInto){ A._noticeBack(); return; }
+  // the field mapping is the second sub-screen to borrow this one #modal, and
+  // it inherits the same two doors: Escape and the backdrop mean "back to the
+  // rule", not "throw away the rule behind me"
+  if(A&&A._mapInto){ A._mapBack(); return; }
   closeModals();
 }
 
