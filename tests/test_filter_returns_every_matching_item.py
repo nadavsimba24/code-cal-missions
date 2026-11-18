@@ -31,6 +31,9 @@ HARNESS = ROOT / "tests" / "frontend" / "filter_asks_for_ids.mjs"
 # the same bug one layer further on: the browser asks in the right shape and
 # still shows one page of the answer, because nothing asks for the next one
 FILL_HARNESS = ROOT / "tests" / "frontend" / "filter_fills_the_screen.mjs"
+# …and the half that one could not see, because it stubs out the function the
+# bug was in: what the toolbar does after every page that arrives
+REASK_HARNESS = ROOT / "tests" / "frontend" / "filter_reasks_only_on_a_new_question.mjs"
 
 
 MINE = {"filter": {"type": "group", "operator": "and",
@@ -141,4 +144,31 @@ def test_a_short_filtered_board_still_reaches_every_match():
     if not node:
         pytest.skip("node not installed")
     r = subprocess.run([node, str(FILL_HARNESS)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, "\n" + r.stdout + r.stderr
+
+
+def test_a_page_arriving_is_not_a_new_question():
+    """באג 231: "בחלון כתוב 128, ואחרי החלה יש 48 + 2", וגלילה לא מביאה עוד.
+
+    The page is fetched, drawn, and then thrown away. Paged.load ends in
+    refreshToolbar, which armed a fresh Paged.load(true) 250ms later — and a
+    fresh load discards every row and starts again at offset zero. Each page
+    that arrived armed the thing that would discard it.
+
+    It is a race, which is why it never showed here and never failed a test:
+    when the answer comes back in no time, Paged.fill walks the whole cut down
+    before the timer fires. Production answers a query over a couple of
+    thousand rows, so the timer always won, and the board could not get past
+    its first fifty rows however much anybody scrolled. The same loop also
+    re-queried the server several times a second for as long as a filtered
+    board was left open.
+
+    The harness beside this one covers Paged.fill with refreshToolbar stubbed
+    to a no-op — so it passed throughout. This one runs the real re-ask block,
+    lifted verbatim out of the file, against a server that takes a realistic
+    moment to answer."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    r = subprocess.run([node, str(REASK_HARNESS)], capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, "\n" + r.stdout + r.stderr

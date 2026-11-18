@@ -5509,7 +5509,7 @@ const Paged = {
   pending:false,
   reset(){ this.on=false; this.rows=[]; this.offset=0; this.more=false;
            this.matched=0; this.total=0; this.loading=false; this.pending=false;
-           this._filled=0;
+           this._filled=0; this.question=null;
            this.seq++; clearTimeout(_pagedTimer); },
   query(){
     const f=st.filters||{};
@@ -5538,7 +5538,13 @@ const Paged = {
        `seq` already makes the older answer harmless — it is thrown away on
        arrival — so the new question simply goes out beside it. */
     if(this.loading && !fresh) return;
-    if(fresh){ this.rows=[]; this.offset=0; this.more=false; this._filled=0; }
+    /* The question this is going out with, so the toolbar can tell a filter
+       that CHANGED from a render that merely happened — see refreshToolbar.
+       A fresh load also supersedes one somebody has already armed: it is
+       starting from offset zero itself, and the armed one would do it again a
+       quarter-second later over the rows this is about to fetch. */
+    if(fresh){ this.rows=[]; this.offset=0; this.more=false; this._filled=0;
+               this.question=JSON.stringify(this.query()); clearTimeout(_pagedTimer); }
     else if(!this.more) return;
     this.loading=true; this.pending=true;
     const mine=++this.seq;                 // a slower answer must not overwrite a newer one
@@ -15800,13 +15806,38 @@ function refreshToolbar(){
      question. Debounced, because this also runs on every keystroke in the
      search box. */
   if(st.board && filterMode()==='server'){
+    /* …and only when the question has actually CHANGED.
+
+       This runs on every render, and Paged.load ENDS in one — so an
+       unconditional re-ask here armed a fresh load after every page that came
+       back, and a fresh load throws away every row and starts again at offset
+       zero. The loop fed itself: load → render → re-ask → load.
+
+       Locally it never showed. The answer comes back in no time, so the
+       self-filling in Paged.fill always won the race and the board still
+       reached every match — which is also why the harness that covers fill
+       passed: it stubs this function out. Production is where the two come
+       apart. A query over a couple of thousand rows takes longer than this
+       debounce, so the reset landed FIRST, every time, and the board could
+       never get past its first fifty rows: a cut of 128 sat on screen as two
+       folded groups reading "48 פריטים" and "2 פריטים", and scrolling brought
+       nothing back because whatever it fetched was wiped a quarter-second
+       later. It also meant a filtered board re-queried the server forever,
+       several times a second, for as long as it was left open.
+
+       Comparing the question is the whole of the fix: a keystroke in the
+       search box, a chip, a condition — each changes it and still re-asks,
+       debounced exactly as before. A page arriving does not. */
     if(filtersActive()){
-      /* Marked as asked HERE rather than when the request goes out, so the
-         render that happens on this very keystroke already knows an answer
-         is coming and does not report the board as empty while it waits. */
-      Paged.pending=true;
-      clearTimeout(_pagedTimer);
-      _pagedTimer=setTimeout(()=>Paged.load(true),250);
+      const asking=JSON.stringify(Paged.query());
+      if(asking!==Paged.question){
+        /* Marked as asked HERE rather than when the request goes out, so the
+           render that happens on this very keystroke already knows an answer
+           is coming and does not report the board as empty while it waits. */
+        Paged.pending=true;
+        clearTimeout(_pagedTimer);
+        _pagedTimer=setTimeout(()=>Paged.load(true),250);
+      }
     } else if(Paged.on||Paged.pending){
       Paged.reset(); renderView();
     }
