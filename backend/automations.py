@@ -301,13 +301,56 @@ RECIPIENTS = {
     "actor":     "המשתמש שביצע את השינוי",
     "owner":     "בעל האוטומציה",
     "board_admin": "מנהל הלוח",
+    # ── האדם שהשיוך שלו השתנה ───────────────────────────────────────────────
+    # "כשמוסיפים או מסירים אחראי, תודיעו לאחראי עצמו" could not be said, and
+    # the two things that look like they say it do not. "המשתמש שביצע את
+    # השינוי" is the person who DID the assigning — the manager, not the one
+    # put on the job. "למשויכים לפריט" is everybody currently on it, which is
+    # the wrong list when somebody is added and an empty promise when somebody
+    # is REMOVED: by the time the rule runs they are no longer among them, so
+    # the one person the news is actually about is the one person it cannot
+    # reach.
+    #
+    # It is a recipient rather than a trigger because both triggers already
+    # exist. Written here, "שויכת" and "הוסרת" are the same rule twice with
+    # one word changed, and every action beside notify — a status, an update
+    # in the thread — goes on working exactly as it did.
+    "event_person": "האחראי שהתווסף או הוסר",
 }
 RECIPIENT_NEEDS_VALUE = ("user", "field")
 
+# Which triggers each recipient needs. Empty means "any": only a recipient read
+# off something the event CARRIES is restricted, and the event carries a person
+# whose assignment changed in exactly these two. Served to the screen rather
+# than spelled out there, for the reason the rest of capabilities() is: a
+# screen that knew the pairing itself would go on offering it the day the
+# engine stopped accepting it.
+RECIPIENT_TRIGGERS = {
+    "event_person": ("person_assigned", "person_unassigned"),
+}
+
 
 def recipients_catalog():
-    return [{"key": k, "label": he, "takes_value": k in RECIPIENT_NEEDS_VALUE}
+    return [{"key": k, "label": he, "takes_value": k in RECIPIENT_NEEDS_VALUE,
+             "triggers": list(RECIPIENT_TRIGGERS.get(k, ()))}
             for k, he in RECIPIENTS.items()]
+
+
+def recipient_trigger_error(spec, trigger):
+    """Why this recipient cannot be used under this trigger, or None.
+
+    A rule saying "הודע לאחראי שהתווסף" on a trigger with no such person is
+    not a rule that notifies nobody — it is a rule somebody believes is
+    working. Refused where it is written, like an unknown token, rather than
+    left to resolve into nothing at three in the morning.
+    """
+    if not isinstance(spec, dict):
+        return None
+    need = RECIPIENT_TRIGGERS.get(spec.get("kind") or "user")
+    if need and str(trigger or "") not in need:
+        return ("«" + RECIPIENTS[spec["kind"]] + "» אפשרי רק בכלל שמופעל "
+                "משיוך אדם לפריט או מהסרת שיוך")
+    return None
 
 
 def recipient_value(raw):
@@ -1448,6 +1491,7 @@ def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
     if len(raw) > MAX_ACTIONS - 1:
         return None, f"אפשר להגדיר עד {MAX_ACTIONS} פעולות בכלל אחד"
     primary = (recipe(recipe_id) or {}).get("action")
+    trigger = (recipe(recipe_id) or {}).get("trigger")
     singles = ({_one_per_target(primary, primary_values)}
                if primary in _ONE_PER_RULE else set())
     seen = set()
@@ -1479,6 +1523,12 @@ def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
             v, err = _coerce_field(f, (given or {}).get(f["key"]), require_values)
             if err:
                 return None, f"{err} בפעולה «{plain(ACTIONS[key])}»"
+            # the recipient/trigger pairing, asked of an extra action exactly
+            # as validate() asks it of the recipe's own blank
+            if f["type"] == "recipient":
+                terr = recipient_trigger_error(v, trigger)
+                if terr:
+                    return None, f"{terr} — בפעולה «{plain(ACTIONS[key])}»"
             if v is not None:
                 values[f["key"]] = v
         if key in _ONE_PER_RULE:
@@ -2498,6 +2548,9 @@ def validate(recipe_id, config):
             v, rerr = recipient_value(v)
             if rerr:
                 return None, rerr
+            terr = recipient_trigger_error(v, r["trigger"])
+            if terr:
+                return None, terr
         elif f["type"] == "map":
             v, merr = map_value(v)
             if merr:

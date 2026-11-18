@@ -20660,10 +20660,10 @@ def _assigned_body(db, task, board, name="", event=None, col=None):
     return "\n".join([x for x in lines if x and x.strip()])
 
 
-def _recipient_ids(db, board, task, spec, human=None, owner=None):
+def _recipient_ids(db, board, task, spec, human=None, owner=None, event=None):
     """(who, why_empty) for a notification's recipient.
 
-    Five answers, and four of them are read off the thing that happened — which
+    Six answers, and five of them are read off the thing that happened — which
     is what lets one rule serve a board where the right person is different
     every time. Everyone returned may be notified: somebody who left the board,
     or whose account was turned off, is dropped here rather than written to.
@@ -20706,6 +20706,39 @@ def _recipient_ids(db, board, task, spec, human=None, owner=None):
                .filter(BoardMember.board_id == board.id,
                        BoardMember.role == "admin").all() if ok(m.user_id)]
         return ids, ("" if ids else "אין מנהל לוח פעיל להתריע לו")
+    if kind == "event_person":
+        # The person the event is ABOUT, who is not the person who caused it:
+        # "שייכתי את דנה" has an actor (me) and an event_person (דנה), and a
+        # rule meaning to tell דנה she is on the job must not reach for actor.
+        #
+        # A REMOVAL is the case this exists for. By the time the rule runs the
+        # person is off the item, so notify_assignees cannot reach them and
+        # nothing else here can either. It still arrives, because seeing an
+        # item is a board role and a per-item override and never assignment
+        # (see _item_perm) — being taken off a job does not take away being
+        # told about it.
+        #
+        # Both spellings of the event are read. The item's own אחראים report a
+        # list under `user_ids`, a people COLUMN reports one under `user_id`,
+        # and a recipient that understood only one of the two would be a rule
+        # that works on half a board's columns and is silent on the other.
+        if not event:
+            # the test screen, which runs a rule against a real item with no
+            # event behind it. Not an error — a thing to say, and the sentence
+            # says when it will be known instead of pretending it is nobody.
+            return [], "האחראי שהתווסף או הוסר ייקבע בזמן ההפעלה"
+        raw = event.get("user_ids")
+        if not raw:
+            raw = [event.get("user_id")] if event.get("user_id") else []
+        ids = []
+        for x in raw:
+            try:
+                uid = int(x)
+            except (TypeError, ValueError):
+                continue
+            if ok(uid) and uid not in ids:
+                ids.append(uid)
+        return ids, ("" if ids else "האדם שהשיוך שלו השתנה אינו חבר בלוח")
     return [], "סוג נמען לא מוכר"
 
 
@@ -20740,7 +20773,8 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         _text = _said or body
         _title = label if _said else "אוטומציה הופעלה"
         if act == "notify_person":
-            who, why = _recipient_ids(db, board, task, cfg.get("person"), human, owner)
+            who, why = _recipient_ids(db, board, task, cfg.get("person"), human, owner,
+                                      event=event)
             allowed = [u for u in who if _can_see_item(db, task, u)]
             if not allowed:
                 raise _Skipped("לנמען אין הרשאה לראות את הפריט" if who

@@ -369,9 +369,18 @@ def test_a_value_from_a_linked_item_answers_only_when_there_is_one(client, admin
 
 # ── who a notification goes to ─────────────────────────────────────────────
 
-def test_the_five_kinds_of_recipient_are_offered(client):
-    assert set(recipes.RECIPIENTS) == {"user", "field", "actor", "owner", "board_admin"}
+def test_the_six_kinds_of_recipient_are_offered(client):
+    """The sixth — "האחראי שהתווסף או הוסר" — is the one read off a שיוך
+    event, and it is the only one of them that is restricted to particular
+    triggers. The other five must stay unrestricted: a `triggers` list on one
+    of those would un-save every rule already written with it. See
+    tests/test_an_automation_notifies_the_person_whose_assignment_changed.py.
+    """
+    assert set(recipes.RECIPIENTS) == {"user", "field", "actor", "owner",
+                                       "board_admin", "event_person"}
     assert all(r["label"] for r in recipes.recipients_catalog())
+    restricted = {r["key"] for r in recipes.recipients_catalog() if r["triggers"]}
+    assert restricted == {"event_person"}
 
 
 def test_a_notification_can_go_to_whoever_made_the_change(client, admin_id, guinea_id):
