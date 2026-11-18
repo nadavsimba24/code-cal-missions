@@ -17173,9 +17173,19 @@ function dateCellPick(e){
     };
     // dismissed without choosing: take it out again rather than leave a widget
     // per cell behind, one dismissed picker at a time
-    nat.onblur=()=>setTimeout(()=>{ if(!wrap.classList.contains('cc-fallback')) nat.remove(); },200);
+    nat.onblur=()=>{ nat._rm=setTimeout(()=>{
+      if(!wrap.classList.contains('cc-fallback')) nat.remove(); },200); };
     wrap.appendChild(nat);
   }
+  /* A press that lands inside those 200ms finds this widget still in the row
+     and opens its picker — and then the armed removal fires and takes the
+     anchor out of the document from under the open calendar. Pressing the
+     button again is what blurs it in the first place, so the two are not a
+     rare pairing: press, press again, and the second calendar is anchored to
+     an element that is no longer anywhere. The removal is there to keep a
+     DISMISSED widget out of the row, and a cell being pressed is not a
+     dismissal — so every press disarms it. */
+  clearTimeout(nat._rm);
   /* Measured before it is opened, and that is the whole of this line.
 
      The picker is placed against the input's box as the browser knows it at
@@ -17185,15 +17195,26 @@ function dateCellPick(e){
      falls back to putting the calendar in the top-LEFT corner of the screen:
      the far side of an RTL board, nowhere near the cell that was pressed.
 
-     Reading offsetWidth forces exactly the style and layout pass the picker
+     Asking for the rect forces exactly the style and layout pass the picker
      is about to ask for, so by the time it asks, the answer is the cell.
 
      It bit the FIRST press on a cell and not the ones after it — the widget
      is built on the press and taken away again when the pick is over (see
      above for why it does not live in the row), so a second press on a cell
      still holding one found it already measured and opened in the right
-     place. That is why it read as "sometimes" rather than as always. */
-  void nat.offsetWidth;
+     place. That is why it read as "sometimes" rather than as always.
+
+     And if it comes back empty even now, the picker is NOT opened. Forcing
+     layout is a request, not a guarantee: a group off screen is skipped
+     entirely by content-visibility (see .group), and a cell inside one can be
+     reached — by Ctrl+F, by a keyboard walk, by a press during the frame it
+     is scrolled into — before the browser has laid it out. An unanchored
+     showPicker is the corner of the screen, which on an RTL board is as far
+     from the cell as the window goes. The cell's own fallback control is
+     drawn where the cell is, so that is the honest answer to "I could not
+     work out where to put this". */
+  const box=nat.getBoundingClientRect();
+  if(!box.width||!box.height){ wrap.classList.add('cc-fallback'); nat.focus(); return; }
   try{ nat.showPicker(); }
   catch(_){ wrap.classList.add('cc-fallback'); nat.focus(); }
 }
