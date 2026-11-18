@@ -330,6 +330,68 @@ def token_code(name):
     return None
 
 
+# ── והמשפט, לא רק הערך ──────────────────────────────────────────────────────
+# What a rule STORES in a text blank is the code, and that never changes: it is
+# what the engine resolves and what survives a column being renamed. What a
+# person READS in the list of rules is a different question, and for a long
+# time it got the same answer — the sentence said
+#
+#     עדכן את העמודה «תאריך אחרון לעדכון» ל«{{תאריך ההפעלה}}»
+#
+# which is engine code in the middle of a line somebody is scanning thirty of.
+# The braces are not information to a reader; they are punctuation they have to
+# parse past to find out that the rule stamps the date.
+#
+# Nothing on the wire moves. Only the reading.
+DATE_STAMP_CODES = ("now.date", "now")
+
+
+def is_date_stamp(text):
+    """Whether this value is the firing date and nothing else.
+
+    "כל שינוי — רשום מתי" is the first rule anybody writes here, and the
+    sentence for it is worth saying in one word. Only a value that is ENTIRELY
+    the token counts: "עודכן ב-{{תאריך ההפעלה}}" is a sentence somebody wrote
+    and it is shown as they wrote it.
+    """
+    m = TOKEN_ANY_RE.fullmatch(str(text or "").strip())
+    return bool(m) and token_code(m.group(1)) in DATE_STAMP_CODES
+
+
+def token_phrase(text, col_title=None):
+    """A value that is NOTHING BUT a token, read as words. Anything else as is.
+
+    The whole-value rule is the point, not a shortcut. "{{תאריך ההפעלה}}" in
+    the value blank means one thing — the firing date — and the braces are
+    punctuation a reader has to parse past to learn it. But "שלום {{שם
+    הפריט}}" and the literal text "שלום שם הפריט" are two different values, and
+    a sentence that printed both the same way would hide the difference in the
+    one place somebody goes to check what a rule does. Inside a longer text the
+    braces ARE the information: that part is filled in, the rest is typed.
+
+    A token the engine has no answer for keeps its braces for the same reason —
+    that value is written into the cell verbatim, and a sentence that tidied a
+    column title into words would be describing a rule that does not exist.
+
+    `col_title` answers "what is this column called" for the two tokens that
+    take one after the dot. It is passed in rather than looked up, because this
+    module knows nothing about boards; without it those tokens keep their code.
+    """
+    raw = str(text or "").strip()
+    m = TOKEN_ANY_RE.fullmatch(raw)
+    code = token_code(m.group(1)) if m else None
+    if not code:
+        return str(text or "")
+    if code in TOKENS:
+        return TOKENS[code]
+    pre = next((p for p in TOKEN_PREFIXES if code.startswith(p)), "")
+    name = col_title(code[len(pre):]) if (pre and col_title) else None
+    if not name:
+        return str(text or "")
+    return (f"ערך העמודה {name}" if pre == "field."
+            else f"ערך מפריט מקושר בעמודה {name}")
+
+
 # ── נמען ההתראה ─────────────────────────────────────────────────────────────
 # Who a notification goes to. A fixed person is one answer of five, and the
 # other four are read off the thing that happened — which is what makes one

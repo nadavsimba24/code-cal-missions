@@ -19975,7 +19975,42 @@ def _shown_value(db, board, ftype, v, col_id=""):
         return db.query(Task.title).filter(Task.id == v).scalar() or "—"
     if ftype == "board":
         return db.query(Board.name).filter(Board.id == v).scalar() or "—"
+    if ftype == "text":
+        # the tokens read as words — see recipes.token_phrase. The board is
+        # what lets {{field.…}} say which column, and it is the same lookup
+        # the "column" blank above does, so a renamed column reads correctly
+        # inside a text the moment it is renamed.
+        return recipes.token_phrase(
+            v, (lambda cid: (_find_col(db, board.id, cid) or {}).get("title"))
+            if board else None)
     return str(v)
+
+
+def _date_stamp_shown(db, board, akey, values, pre=""):
+    """"היום" when this action stamps the firing date on a DATE column, else "".
+
+    "כאשר משהו משתנה, רשום את תאריך העדכון" is the first rule anybody writes
+    on a board, and the only way to say it is to put {{תאריך ההפעלה}} in the
+    value — so the sentence for the commonest rule in the product was the one
+    that read as code. It says "היום" rather than the token's own name because
+    that is what the cell will hold the moment the rule fires, and because the
+    reader is checking whether the rule does what they meant, not which token
+    it was built from.
+
+    Only on a date column, and only when the value is nothing but the token.
+    Into a TEXT column the same token writes "18/11/2026", which is a date and
+    not the word today, and the sentence must not say otherwise.
+
+    `pre` is "a_" for the rule's own action and "" for an extra one: the same
+    two blanks are kept under prefixed keys on the recipe and under bare ones
+    on an added action, and this reads both rather than guessing.
+    """
+    if akey != "set_column" or not board:
+        return ""
+    if not recipes.is_date_stamp((values or {}).get(pre + "text")):
+        return ""
+    col = _find_col(db, board.id, str((values or {}).get(pre + "column") or ""))
+    return "היום" if col and recipes.column_kind(col.get("type")) == "date" else ""
 
 
 def _action_phrases(db, board, extras, quote=True):
@@ -19988,11 +20023,15 @@ def _action_phrases(db, board, extras, quote=True):
     for extra in extras or []:
         key = str((extra or {}).get("key") or "")
         values = (extra or {}).get("values") or {}
+        stamp = _date_stamp_shown(db, board, key, values)
         shown = {}
         for f in recipes.action_fields(key):
             v = values.get(f["key"])
             if f["type"] == "pick":
                 shown[f["key"]] = recipes.pick_label(f, v)
+                continue
+            if f["key"] == "text" and stamp:
+                shown[f["key"]] = f"«{stamp}»" if quote else stamp
                 continue
             col_id = recipes.status_col_of(values, f["key"]) if f["type"] == "status" else ""
             if col_id:
@@ -20021,10 +20060,16 @@ def _automation_label(db, board, a):
                             cfg.get(recipes.CONDITION_GROUP_KEY) or "and",
                             config=cfg)
     r = recipes.recipe(a.recipe_id)
+    # the rule's OWN action gets the same reading an extra one does: a rule
+    # that stamps today says so whichever half of the sentence it sits in
+    stamp = _date_stamp_shown(db, board, (r or {}).get("action") or "", cfg, "a_")
     for f in (r or {}).get("fields", []):
         if f["type"] == "pick":
             text = text.replace("{" + f["key"] + "}",
                                 recipes.pick_label(f, cfg.get(f["key"])))
+            continue
+        if f["key"] == "a_text" and stamp:
+            text = text.replace("{" + f["key"] + "}", f"«{stamp}»")
             continue
         if f["type"] == "notice":
             # The word itself, and not a blank in quotation marks: "שלח התראה

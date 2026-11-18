@@ -10671,6 +10671,13 @@ const Automations = {
        reading a row of highlighted fragments reads fragments. */
     const plain=String(a.sentence||'').replace(/[«»]/g,'');
     const sent=esc(a.sentence).replace(/«([^»]*)»/g,(_,v)=>'<b><bdi>'+v+'</bdi></b>');
+    /* A rule nobody named falls back to its own sentence as a display name,
+       and the row then printed that sentence twice — once plain beside the
+       chips and once again below it with the values highlighted. Two lines
+       saying the same thing is not a title and a sentence; it is a row that
+       takes twice the height and reads as a stutter. The title line is for a
+       name somebody gave the rule. */
+    const named=String(a.display_name||'')!==plain;
     // rule 3 — the edit is waiting; what runs is still the version below it
     const pend=a.draft_version?`<div class="au-pend">
         <div><i class="fa-solid fa-pen-ruler"></i> <b>גרסה ${a.draft_version} ממתינה להפעלה</b>
@@ -10693,7 +10700,7 @@ const Automations = {
       ${can?`<input type="checkbox" class="au-pick-box" ${this.picked.has(a.id)?'checked':''}
              onclick="Automations.pickToggle(${a.id})" title="בחר לפעולה מרובה">`:''}
       <div class="am-main">
-        <div class="am-head">${this.headBitsHTML(a)}<span class="am-name"><bdi>${esc(a.display_name)}</bdi></span>${gap}</div>
+        <div class="am-head">${this.headBitsHTML(a)}${named?`<span class="am-name"><bdi>${esc(a.display_name)}</bdi></span>`:''}${gap}</div>
         <div class="au-sent" style="margin-top:5px" dir="auto"
              aria-label="${esc(plain)}">${sent}</div>
         ${a.description?`<div class="am-desc"><i class="fa-solid fa-quote-right" style="font-size:9px"></i> ${esc(a.description)}</div>`:''}
