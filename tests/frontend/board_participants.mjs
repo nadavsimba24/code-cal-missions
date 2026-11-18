@@ -91,7 +91,13 @@ for(const [who,html] of [['a manager',manage],['a viewer',ro]]){
      html.includes('עריכה — הוספה ועריכה של פריטים')
      && html.includes('צפייה בלבד — ללא עריכה'));
   ck(`${who} sees a deactivated member flagged`, /לא פעיל/.test(html));
-  ck(`${who} can close the dialog with a button`, /onclick="closeModals\(\)"/.test(html));
+  /* The dialog carries no close button and no footer of its own. showModal
+     puts a × in the corner of every modal, Escape closes it and so does the
+     backdrop, so a footer holding one "סגור" and nothing else was a band of
+     height repeating what was already on screen — directly above the
+     invitation, which is the one control people open this dialog to reach. */
+  ck(`${who} is given no close button of its own`,
+     !/closeModals\(\)/.test(html) && !/class="mfoot"/.test(html), html.slice(-300));
 }
 
 ck('a manager gets a role picker per member',
@@ -106,7 +112,7 @@ ck('...and it offers who may still be invited', /value="9"/.test(manage));
 /* Deleting a board is deliberately NOT offered here, for either role. This
    dialog is about who may use the board, and the most destructive action in
    the product has no business at the bottom of a screen people open to change
-   somebody's role — one slip beside "סגור". It is still reachable where it
+   somebody's role — one slip on the way out. It is still reachable where it
    reads as a decision about the board: the header menu and the sidebar's own
    context menu, both of which have their own tests. */
 ck('nobody is offered the board\'s deletion from here',
