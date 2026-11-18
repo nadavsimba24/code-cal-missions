@@ -10973,7 +10973,13 @@ const Automations = {
      the choice's own default, "whichever link column the event came in", and
      the notice this system has always sent. */
   OPTIONAL_FIELDS:['pick','connect_opt','notice'],
-  _needs(f){ return !this.OPTIONAL_FIELDS.includes(f.type); },
+  /* Three TYPES are always optional — silence is a real answer for them —
+     and beyond those one FIELD may say so of itself. That is how a blank is
+     added to a recipe people have already built rules on: optional means a
+     rule written before it existed is still complete, so the addition is a
+     version of the template rather than a new template. See
+     recipes.field_optional, which the server holds the same line with. */
+  _needs(f){ return !(f.optional || this.OPTIONAL_FIELDS.includes(f.type)); },
 
   /* ---- editing a rule that already exists ----
      "ערוך" opened the name, the description, the owner and the running order
@@ -12856,13 +12862,13 @@ const Automations = {
        and not a sixth checkbox.
 
        Somebody who came here looking for «מספר הפנייה» finds five fields that
-       are not it and nothing saying why — and the template that CAN say it is
-       one line away in the library. So the way on is named here, at the blank
-       where the wall is, rather than left to be worked out. */
+       are not it and nothing saying why. The pairing is a blank in the very
+       same sentence, so the way on is named here, where the wall is, rather
+       than left to be worked out. */
     const cross=this._copyAction()==='create_in_group_and_link';
     const head=cross?`<div class="rm-note" style="max-width:238px;line-height:1.55">
-        אלה חמשת השדות שיש בכל לוח. כדי למפות עמודה לעמודה בין שני הלוחות —
-        בנו את הכלל מהתבנית <b>«צור פריט בלוח היעד ומפה עמודה לעמודה»</b>.</div>`:'';
+        אלה חמשת השדות שיש בכל לוח. כדי להעתיק עמודה של הלוח הזה לעמודה
+        של לוח היעד — <b>«מיפוי עמודות»</b>, באותו משפט.</div>`:'';
     const body=head+(this.copyFields||[]).map(f=>`<button class="rm-item" onclick="event.stopPropagation();Automations.toggleCopyField('${f.key}')">
         <i class="fa-solid ${picked.includes(f.key)?'fa-square-check':'fa-square'}" style="color:var(--primary)"></i> ${esc(f.label)}</button>`).join('')
       +`<button class="rm-item" onclick="closeCellPops()"><i class="fa-solid fa-check"></i> סיום</button>`;

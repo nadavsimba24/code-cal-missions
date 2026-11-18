@@ -80,7 +80,7 @@ def _setup(client, admin_id, tag):
     return a, b, link, grp, src_col, dst_col, f"col_num_{tag}"
 
 
-def _rule(client, admin_id, a, b, link, grp, mapping, text="פריט יעד"):
+def _rule(client, admin_id, a, b, link, grp, mapping, text="מק״ל פריט יעד"):
     return client.post(f"/api/boards/{a}/automations",
                        json={"actor_id": admin_id, "recipe_id": RECIPE,
                              "config": {"t_status": "done", "a_connect": link["id"],
@@ -109,13 +109,25 @@ def test_a_status_change_can_reach_the_mapped_action():
     assert "a_fields" not in kinds, "the mapped rule must not also offer the fixed five"
 
 
-def test_the_older_rule_is_left_exactly_as_it_was():
+def test_the_older_rule_keeps_its_own_question_and_gains_an_optional_one():
     """A rule somebody already built is not re-asked a question it was never
-    asked — which is why this is a new recipe and not a wider old one."""
+    asked. That rules out REPLACING its blank — not adding one beside it.
+
+    The older cross-board rule keeps "השדות להעתקה" exactly as it was, and has
+    gained the column pairing as an OPTIONAL blank. Optional is the whole of
+    the argument: a rule written before it existed holds no mapping, is still
+    complete, and runs as it always did — so this is a version of the same
+    template rather than a different one, and the person who needs «מספר
+    הפנייה» carried across reaches it on the rule they already have.
+    """
     old = recipes.recipe("status_create_in_group_and_link")
-    kinds = {f["key"]: f["type"] for f in old["fields"]}
-    assert kinds.get("a_fields") == "fields", kinds
-    assert "a_map" not in kinds, "an existing rule was handed a blank it never had"
+    by = {f["key"]: f for f in old["fields"]}
+    assert by["a_fields"]["type"] == "fields", "the original question was replaced"
+    assert by["a_map"]["type"] == "map", list(by)
+    assert recipes.field_optional(by["a_map"]), "the new blank is not optional"
+    assert not recipes.field_optional(by["a_fields"])
+    assert recipes.template_version("status_create_in_group_and_link") == 2, \
+        "a template that grew a blank has to say it is a new version of itself"
 
 
 def test_the_library_lists_it_under_a_name_of_its_own():
@@ -132,11 +144,11 @@ def test_a_column_here_lands_in_a_column_of_another_name_there(client, admin_id)
     a, b, link, grp, src_col, dst_col, _ = _setup(client, admin_id, "map1")
     r = _rule(client, admin_id, a, b, link, grp, [{"from": src_col, "to": dst_col}])
     assert r.status_code == 200, r.text
-    src = client.post("/api/tasks", json={"board_id": a, "title": "מקור",
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל מקור",
                                           "user_id": admin_id,
                                           "custom_fields": {src_col: "פ-2026-11"}}).json()["id"]
     client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
-    made = _made(b, "פריט יעד")
+    made = _made(b, "מק״ל פריט יעד")
     assert len(made) == 1, [t.title for t in made]
     assert (made[0].custom_fields or {}).get(dst_col) == "פ-2026-11", \
         "the value did not travel into the column the mapping names"
@@ -170,10 +182,10 @@ def test_a_token_in_the_new_item_s_name_resolves(client, admin_id):
     r = _rule(client, admin_id, a, b, link, grp, [{"from": src_col, "to": dst_col}],
               text="בדיקה ל{{item.name}}")
     assert r.status_code == 200, r.text
-    src = client.post("/api/tasks", json={"board_id": a, "title": "תיקון מדרכה",
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל תיקון מדרכה",
                                           "user_id": admin_id}).json()["id"]
     client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
-    made = _made(b, "בדיקה לתיקון מדרכה")
+    made = _made(b, "בדיקה למק״ל תיקון מדרכה")
     assert len(made) == 1, "the token in the name did not resolve"
 
 
@@ -201,6 +213,9 @@ def test_the_field_mapping_is_no_longer_api_only():
     assert "toast('מיפוי שדות נערך דרך ה-API" not in src, \
         "the blank still sends the person writing the rule to a terminal"
     assert "async pickMap(key,into){" in src
+    # and the blank points at the pairing beside it rather than at a template
+    # somewhere else — the answer is in the same sentence now
+    assert "«מיפוי עמודות»" in src
     # both sides come from the engine's own answer about each board, so the
     # compatibility shown on screen is the one the server will apply
     assert "_mapTargetCols(bid)" in src and "automation-capabilities?board_id=" in src
@@ -226,3 +241,105 @@ def test_the_library_says_what_the_board_must_already_have():
     """
     assert set(recipes.needs_of(RECIPE)) == {"connect", "group"}, recipes.needs_of(RECIPE)
     assert "link" in recipes.tags_of(RECIPE), recipes.tags_of(RECIPE)
+
+
+# ── ומה שצריך לעבוד על הכלל שכבר קיים, בלי לבנות אותו מחדש ────────────────
+#
+# The two fixes above are reachable only by writing a NEW rule, and that is
+# not where the rules are. They are in people's boards, running every day,
+# written through a builder that stored {{שם הפריט}} and offered five fields.
+# "Open each one and rebuild it" is not a fix anybody can be asked to carry
+# out on rules they did not write.
+
+OLD = "status_create_in_group_and_link"
+
+
+def _old_rule(client, admin_id, a, b, link, grp, text="מק״ל פריט יעד", mapping=None):
+    cfg = {"t_status": "done", "a_connect": link["id"], "a_board": b,
+           "a_target_group": grp, "a_text": text, "a_fields": ["priority"]}
+    if mapping is not None:
+        cfg["a_map"] = mapping
+    return client.post(f"/api/boards/{a}/automations",
+                       json={"actor_id": admin_id, "recipe_id": OLD, "config": cfg})
+
+
+def test_a_rule_that_stored_the_name_rather_than_the_code_still_resolves(client, admin_id):
+    """The bug as it is actually sitting in the boards.
+
+    The builder showed «שם הפריט» and stored «שם הפריט», the engine's regex
+    matched ASCII and nothing else, and the rule created an item literally
+    called "{{שם הפריט}}". The builder no longer does that — but the rules
+    that were written that way are the ones running, so the engine reads the
+    name as the code it stands for.
+    """
+    a, b, link, grp, _s, _d, _n = _setup(client, admin_id, "he1")
+    r = _old_rule(client, admin_id, a, b, link, grp, text="המשך טיפול ב{{שם הפריט}}")
+    assert r.status_code == 200, r.text
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל תיקון מדרכה",
+                                          "user_id": admin_id}).json()["id"]
+    client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
+    made = _made(b, "המשך טיפול במק״ל תיקון מדרכה")
+    assert len(made) == 1, "the name the rule already holds did not resolve"
+
+
+def test_the_code_goes_on_resolving_exactly_as_it_did(client, admin_id):
+    a, b, link, grp, _s, _d, _n = _setup(client, admin_id, "he2")
+    assert _old_rule(client, admin_id, a, b, link, grp,
+                     text="המשך ל{{item.name}}").status_code == 200
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל פריט מקור",
+                                          "user_id": admin_id}).json()["id"]
+    client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
+    assert len(_made(b, "המשך למק״ל פריט מקור")) == 1
+
+
+def test_braces_that_are_not_a_token_are_left_alone(client, admin_id):
+    """Widening what the engine LOOKS at must not widen what it deletes.
+
+    Something in braces that this engine has no answer for is not a token it
+    may quietly remove from the middle of somebody's sentence — that is a
+    silent deletion and the hardest kind of change to notice.
+    """
+    a, b, link, grp, _s, _d, _n = _setup(client, admin_id, "he3")
+    assert _old_rule(client, admin_id, a, b, link, grp,
+                     text="טופס {{א}} לחתימה").status_code == 200
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל פריט ללא טוקן",
+                                          "user_id": admin_id}).json()["id"]
+    client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
+    assert len(_made(b, "טופס {{א}} לחתימה")) == 1, "a non-token was eaten"
+
+
+def test_the_rule_people_already_have_can_now_pair_two_columns(client, admin_id):
+    a, b, link, grp, src_col, dst_col, _ = _setup(client, admin_id, "opt1")
+    r = _old_rule(client, admin_id, a, b, link, grp,
+                  mapping=[{"from": src_col, "to": dst_col}])
+    assert r.status_code == 200, r.text
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל מקור",
+                                          "user_id": admin_id,
+                                          "custom_fields": {src_col: "פ-2026-11"}}).json()["id"]
+    client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
+    made = _made(b, "מק״ל פריט יעד")
+    assert len(made) == 1, [t.title for t in made]
+    assert (made[0].custom_fields or {}).get(dst_col) == "פ-2026-11", \
+        "the pairing added to the existing rule did not carry the value"
+
+
+def test_a_rule_written_before_the_blank_existed_is_still_complete(client, admin_id):
+    """An optional blank is additive — that is the whole reason it is optional
+    rather than a new template. A rule holding no mapping is not incomplete."""
+    assert recipes.missing_fields(OLD, {
+        "t_status": "done", "a_connect": "c", "a_board": 2, "a_target_group": 3,
+        "a_text": "x", "a_fields": ["status"]}) == []
+    a, b, link, grp, _s, _d, _n = _setup(client, admin_id, "opt2")
+    assert _old_rule(client, admin_id, a, b, link, grp).status_code == 200
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל מקור",
+                                          "user_id": admin_id,
+                                          "priority": "critical"}).json()["id"]
+    client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
+    assert len(_made(b, "מק״ל פריט יעד")) == 1
+
+
+def test_a_pairing_the_engine_cannot_carry_stops_the_rule(client, admin_id):
+    a, b, link, grp, src_col, _d, num_col = _setup(client, admin_id, "opt3")
+    r = _old_rule(client, admin_id, a, b, link, grp,
+                  mapping=[{"from": src_col, "to": num_col}])
+    assert r.status_code == 400, r.text

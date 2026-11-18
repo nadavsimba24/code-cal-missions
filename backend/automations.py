@@ -286,6 +286,49 @@ TOKEN_PREFIXES = {
 }
 TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
 
+# ── והשם, לא רק הקוד ────────────────────────────────────────────────────────
+# What is STORED is the code — {{item.name}} — and that is deliberate: it
+# survives a column being renamed, and it is what every rule written through
+# the API holds. But the builder shows people the NAME, and for a long time
+# the one-line value blank stored back exactly what it showed. A rule written
+# that way holds {{שם הפריט}}, the regex above matches ASCII and nothing else,
+# so nothing resolved and the rule created an item literally called
+# "{{שם הפריט}}".
+#
+# The builder no longer does that. The rules already written that way are the
+# problem this solves: they are in people's boards, they run every day, and
+# "open each one and re-save it" is not a fix anybody can be asked to carry
+# out on rules they did not write. So the engine reads the name too.
+#
+# Only the built-ins above, and only where the name says one thing. A COLUMN
+# title is deliberately not aliased: two boards may title a column the same
+# and mean different columns, and a token that silently resolved to the wrong
+# column is the one failure that does not look like a failure — it looks like
+# a rule about something else. The builder keeps the same guard (_tokenNames).
+TOKEN_ALIASES = {he: code for code, he in TOKENS.items()
+                 if list(TOKENS.values()).count(he) == 1}
+# Anything inside {{…}}, so a name written in Hebrew is seen at all. What is
+# NOT a token is left exactly as it was found — see _resolve_tokens. Widening
+# the match is not widening what resolves.
+TOKEN_ANY_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
+def token_code(name):
+    """The code this {{…}} means, or None if it means nothing to the engine.
+
+    A code is itself; a name is the code it stands for; a prefix token
+    (field./linked.) is itself as long as something follows the dot.
+    """
+    n = str(name or "").strip()
+    if n in TOKENS:
+        return n
+    if n in TOKEN_ALIASES:
+        return TOKEN_ALIASES[n]
+    for pre in TOKEN_PREFIXES:
+        if n.startswith(pre) and len(n) > len(pre):
+            return n
+    return None
+
 
 # ── נמען ההתראה ─────────────────────────────────────────────────────────────
 # Who a notification goes to. A fixed person is one answer of five, and the
@@ -1006,8 +1049,8 @@ ACTIONS = {
     # action rather than three more placeholders on the old one — a rule
     # somebody already built is not re-asked a question it was never asked.
     "create_in_group_and_link":
-        "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, העתק {fields} "
-        "וקשר אותו לפריט המקור בעמודה {connect}",
+        "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, העתק {fields}, "
+        "מפה {map} וקשר אותו לפריט המקור בעמודה {connect}",
     # ── the rest of the MVP table ──
     "set_column":       "עדכן את העמודה {column} ל{text}",
     "clear_column":     "נקה את העמודה {column}",
@@ -1172,6 +1215,20 @@ PICKS = {"targets": (TARGETS, TARGETS_DEFAULT),
 # filled before the rule can be switched on.
 OPTIONAL_TYPES = ("pick", "connect_opt", "notice")
 
+
+def field_optional(f):
+    """Whether this blank may be left empty.
+
+    Three TYPES always may — silence is a real answer for them. Beyond those,
+    one FIELD may say so of itself, which is how a question is added to a
+    recipe people have already built rules on: an optional blank is additive,
+    so a rule written before it existed goes on meaning what it meant, and the
+    versioning rule this file keeps is satisfied by a version bump rather than
+    by a new id. A required blank added to a live recipe would instead make
+    every existing rule incomplete overnight.
+    """
+    return bool(f.get("optional")) or f["type"] in OPTIONAL_TYPES
+
 # ── נוסח ההתראה ─────────────────────────────────────────────────────────────
 # What a notification SAYS. Until now it said one thing: the rule's name, what
 # happened, the item, the board, the time and a link — six lines, right for
@@ -1319,7 +1376,15 @@ ACTION_FIELDS = {
                          _f("board", "board", "לוח היעד"),
                          _f("target_group", "target_group", "הקבוצה בלוח היעד"),
                          _f("text", "text", "שם הפריט החדש"),
-                         _f("fields", "fields", "השדות להעתקה")],
+                         _f("fields", "fields", "השדות להעתקה"),
+                         # …and the columns the catalog above cannot name. It
+                         # is optional, so every rule already built on this
+                         # action goes on meaning exactly what it meant, and
+                         # the person who needs «מספר הפנייה» carried across
+                         # reaches it on the rule they already have instead of
+                         # rebuilding it from a different template.
+                         _f("map", "map", "מיפוי עמודות (לא חובה)",
+                            optional=True)],
 }
 
 # Actions that write one field of the item, so two of them in one rule means the
@@ -1849,7 +1914,8 @@ RECIPES = [
                 _f("a_board", "board", "לוח היעד"),
                 _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
                 _f("a_text", "text", "שם הפריט החדש"),
-                _f("a_fields", "fields", "השדות להעתקה")]},
+                _f("a_fields", "fields", "השדות להעתקה"),
+                _f("a_map", "map", "מיפוי עמודות (לא חובה)", optional=True)]},
 
     # ── ואותו כלל, כשהשדות הם העמודות של שני הלוחות ──────────────────────
     # "השדות להעתקה" above is a catalog of five built-ins, and that is the
@@ -2135,7 +2201,12 @@ MVP_ORDER = {rid: i for i, (rid, _) in enumerate(LIBRARY_TEMPLATES)}
 # cosmetic change, and give a NEW id to anything that would change what an
 # existing rule does — which is why the fuller create-and-link is its own
 # action rather than three more placeholders on the old one.
-TEMPLATE_VERSIONS = {}
+TEMPLATE_VERSIONS = {
+    # Version 2 added the optional column pairing beside "השדות להעתקה". A
+    # rule built on version 1 holds no mapping and runs exactly as it did —
+    # which is what makes the addition a version rather than a new id.
+    "status_create_in_group_and_link": 2,
+}
 
 
 def template_version(recipe_id):
@@ -2490,12 +2561,12 @@ def missing_fields(recipe_id, config):
         return ["מתכון לא מוכר"]
     cfg = config or {}
     out = [f["label"] for f in r["fields"]
-           if f["type"] not in OPTIONAL_TYPES and cfg.get(f["key"]) in (None, "", [])]
+           if not field_optional(f) and cfg.get(f["key"]) in (None, "", [])]
     for i, extra in enumerate((cfg.get(ACTIONS_KEY) or []), start=2):
         key = str((extra or {}).get("key") or "")
         values = (extra or {}).get("values") or {}
         for f in action_fields(key):
-            if f["type"] in OPTIONAL_TYPES:
+            if field_optional(f):
                 continue                      # blank is a value, not a blank
             if values.get(f["key"]) in (None, "", []):
                 out.append(f"{f['label']} (פעולה {i})")
@@ -2552,6 +2623,8 @@ def validate(recipe_id, config):
             if terr:
                 return None, terr
         elif f["type"] == "map":
+            if field_optional(f) and v in (None, "", []):
+                continue                      # no pairing asked for, none stored
             v, merr = map_value(v)
             if merr:
                 return None, merr

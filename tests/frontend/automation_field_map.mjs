@@ -347,8 +347,8 @@ const last=()=>modals[modals.length-1]||'';
   A.pickCopyFields({},'a_fields');
   const p=pops[pops.length-1]||'';
   ck('the five are still what that rule offers', p.includes('toggleCopyField'), p);
-  ck('…and the blank names the template that can pair the two boards\' columns',
-     p.includes('ומפה עמודה לעמודה'), p);
+  ck('…and the blank names the pairing that sits in the same sentence',
+     p.includes('מיפוי עמודות'), p);
 }
 {
   // …and a copy that stays on one board has no second column list to point at
@@ -357,8 +357,8 @@ const last=()=>modals[modals.length-1]||'';
   A.building.recipe={id:'link_added_copy_to_linked',action:'copy_to_linked',fields:[]};
   A.pickCopyFields({},'a_fields');
   const p=pops[pops.length-1]||'';
-  ck('a same-board copy is not sent to a cross-board template',
-     !p.includes('ומפה עמודה לעמודה'), p);
+  ck('a same-board copy is not pointed at a pairing it does not have',
+     !p.includes('מיפוי עמודות'), p);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

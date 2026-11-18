@@ -20332,11 +20332,17 @@ def _note_conflict(event, task, a, one, told):
 def _resolve_tokens(db, text, task, board, event=None, actor=None, owner=None):
     """Fill the {{…}} in a text from the item the rule is acting on.
 
-    Every token is one the catalog names (see automations.TOKENS) — an unknown
-    one was refused when the rule was saved, so anything left here that does
-    not resolve is a value that is genuinely missing, and it becomes an empty
-    string. Not the word "None": a name is not improved by that in the middle
-    of it, and a person reading the result would not know where it came from.
+    A token is written as its code — {{item.name}} — or as the name the
+    builder shows for it — {{שם הפריט}}. The code is what is stored today;
+    the name is what rules written before the builder translated still hold,
+    and those rules are running, so both are read (recipes.token_code).
+
+    Something in braces that is NEITHER is left exactly as it was found. It is
+    not a token this engine knows, so it is not this engine's to delete.
+
+    A token that IS known but has no value becomes an empty string. Not the
+    word "None": a name is not improved by that in the middle of it, and a
+    person reading the result would not know where it came from.
 
     `linked.<col>.<field>` answers only where there is exactly ONE item at the
     other end. "The value from the linked item" is not a value at all when
@@ -20389,7 +20395,19 @@ def _resolve_tokens(db, text, task, board, event=None, actor=None, owner=None):
             return _linked_token(db, task, board, name[7:])
         return ""
 
-    return recipes.TOKEN_RE.sub(lambda m: one(m.group(1)), raw)
+    # ── and the name, not only the code ──
+    # A rule written through the builder before it translated holds
+    # {{שם הפריט}} rather than {{item.name}}. Those rules are in boards and
+    # running, so the engine reads the name as the code it stands for (see
+    # recipes.token_code). What is NOT a token is returned exactly as it was
+    # found: widening the match must not start eating text that merely has
+    # braces in it, which is a silent deletion in the middle of somebody's
+    # sentence and the hardest kind of change to notice.
+    def _sub(m):
+        code = recipes.token_code(m.group(1))
+        return one(code) if code else m.group(0)
+
+    return recipes.TOKEN_ANY_RE.sub(_sub, raw)
 
 
 def _shown_cell(db, board, v):
@@ -21156,12 +21174,35 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             raise _Skipped("הקבוצה שנבחרה אינה קיימת בלוח היעד")
         _creation_guard(db, rule, task)
         fields = [k for k in (cfg.get("fields") or []) if k in recipes.COPY_FIELDS]
+        # ── ולצד חמשת המובנים, זוגות עמודות אם נקבעו ──────────────────────
+        # "השדות להעתקה" is five built-ins and cannot be more: a column lives
+        # on one board under one id and on the target board under another, so
+        # carrying one across is a pairing and not a sixth checkbox. The
+        # pairing is an OPTIONAL blank on this same rule rather than a rule of
+        # its own, because the rules that need it are already written and
+        # already running — asking somebody to rebuild one to reach a column
+        # is asking them to throw away the rule to fix the rule.
+        #
+        # Checked before the item is made, so a mapping that cannot work stops
+        # the rule instead of leaving a half-filled item on another board.
+        mapping = cfg.get("map") or []
+        if mapping:
+            bad = _map_problems(db, task.board_id, cfg.get("board"), mapping)
+            if bad:
+                raise _Skipped("מיפוי שדות אינו תקין — " + " · ".join(bad[:2]))
         made = _create_linked_item(db, task, col, cfg.get("board"),
                                    text(cfg.get("text")), actor_id, group=grp)
         if made is None:
             raise _Skipped("לוח היעד אינו אחד הלוחות שעמודת הקישור מפנה אליהם")
         _copy_item_fields(db, task, made, fields, actor_id)
-        _note_creation(db, rule, task, made, records, group=grp, fields=fields)
+        if mapping:
+            # "יצירת הפריט והזנת השדות יבוצעו כפעולה אטומית" — a value the
+            # target column cannot hold raises here, and the rule's savepoint
+            # takes the item it just created back with it
+            _copy_mapped_fields(db, task, made, mapping, actor_id,
+                                board_id=cfg.get("board"))
+        _note_creation(db, rule, task, made, records, group=grp, fields=fields,
+                       mapping=mapping or None)
         out.append({"type": "link_added", "col": col["id"], "item_ids": [made.id]})
     return out
 
