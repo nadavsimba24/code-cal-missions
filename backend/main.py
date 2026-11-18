@@ -28539,16 +28539,32 @@ def update_task(task_id: int, data: dict, request: Request = None,
                                json.dumps(before), json.dumps(after), actor)
                     continue
                 old = cf.get(k)
-                if _c and _c.get("type") == "connect" and isinstance(v, list):
+                if _c and _c.get("type") == "connect" and (isinstance(v, list)
+                                                           or v is None):
                     # one-way links live in the cell itself rather than in
                     # item_links, so the two-way guard in _set_links does not
                     # cover them. Same rule, applied here.
+                    #
+                    # A null gets here as well as a list, because emptying a
+                    # cell is said with a null everywhere in the grid and the
+                    # last link coming off a connect cell is said the same way.
+                    # Read as "no value at all" it skipped this block entirely,
+                    # and skipped both of the things the block is for: the rule
+                    # watching for a link being removed never heard the one
+                    # removal that empties a cell, and the links the actor
+                    # cannot see — which a submitted list is careful to keep —
+                    # were dropped along with the visible ones. An empty
+                    # selection is a selection; it goes through the same rules.
                     _was = [i for i in (cf.get(k) or []) if isinstance(i, int)]
-                    v = _merge_link_ids(db, v, cf.get(k) or [], actor, _is_multi(_c),
-                                        _link_report)
+                    v = _merge_link_ids(db, v or [], cf.get(k) or [], actor,
+                                        _is_multi(_c), _link_report)
                     if sorted(_was) != sorted(v):
                         _link_delta[k] = ([i for i in v if i not in _was],
                                           [i for i in _was if i not in v])
+                    # and a cell left holding nothing is an absent key, the way
+                    # every other cleared column in this table is stored
+                    if not v:
+                        v = None
                 if v is None:
                     cf.pop(k, None)
                 else:

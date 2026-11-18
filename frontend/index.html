@@ -2744,6 +2744,9 @@ a[aria-disabled="true"]{opacity:.6;cursor:not-allowed}
 .bh-members .bh-mem-n{min-width:18px;padding:0 5px;border-radius:9px;background:var(--surface);border:1px solid var(--border);font-size:11px;font-weight:700;line-height:16px;text-align:center}
 .bh-members:hover .bh-mem-n{border-color:var(--primary)}
 .mem-row{display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--border)}
+/* The last row's rule used to sit right above the invitation's own rule, two
+   hairlines with a gap between them at the foot of every members dialog. */
+.mem-row:last-child{border-bottom:0}
 .mem-row .av{width:32px;height:32px;font-size:12px;margin:0;flex-shrink:0}
 .mem-row select{border:1px solid var(--border-strong);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12.5px}
 .mem-del{width:30px;height:30px;border-radius:6px;color:var(--text-light)}
@@ -2751,10 +2754,22 @@ a[aria-disabled="true"]{opacity:.6;cursor:not-allowed}
 .mem-add{display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
 .mem-add select{flex:1;border:1px solid var(--border-strong);border-radius:7px;padding:8px;font-family:inherit;font-size:13px}
 /* The invitation is folded away behind its own button, so the dialog opens on
-   the list it is named after rather than on a form. */
-.mem-invite-bar{margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+   the list it is named after rather than on a form.
+
+   It closes the list rather than opening it, under the names it adds to. What
+   it no longer carries is a rule of its own: it had a border-top with 14px of
+   padding above it and 14px of margin below that, which landed right under the
+   last row's own border as two hairlines with an empty band between them. The
+   last row's rule is gone and this one never comes back — one gap, and the
+   filled button is distinct enough from a list of rows to need no line. */
+.mem-invite-bar{margin-top:14px}
 .mem-invite[hidden]{display:none}
-.mem-invite .mem-add{margin-top:8px;padding-top:0;border-top:0}
+/* Open, the invitation is drawn as one panel rather than as three controls
+   floating over the list, so it reads as a thing that was unfolded and can be
+   folded back. */
+.mem-invite{margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg)}
+.mem-invite .mem-search{margin-top:0}
+.mem-invite .mem-add{margin-top:10px;padding-top:0;border-top:0}
 /* An environment with eighty colleagues turns the invitation picker into a
    scroll, so the names are ordered א׳–ת׳ and a search line sits above them.
    The line is drawn as a box around the input rather than as an input with a
@@ -14685,8 +14700,8 @@ const Members = {
     const avail=this.sortedAvail();
     showModal(`<h2><i class="fa-solid fa-user-group" style="color:var(--primary)"></i> משתתפי הלוח — ${esc(st.board.name)}<span class="perm-badge" style="margin-inline-start:8px">${this.data.members.length}</span></h2>
       <div class="mbody">
-        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i> רק משתתפי הלוח רואים אותו. מנהל לוח מנהל הזמנות והרשאות. גישת אדמין אינה גלובלית — לוחות שלא הוזמנת אליהם אינם נראים.</div>
-        ${can?`<div class="pf-row pf-toggle" style="border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
+        <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px"><i class="fa-solid fa-circle-info"></i> רק משתתפי הלוח רואים אותו. מנהל לוח מנהל הזמנות והרשאות. גישת אדמין אינה גלובלית — לוחות שלא הוזמנת אליהם אינם נראים.</div>
+        ${can?`<div class="pf-row pf-toggle" style="border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:12px">
           <span><i class="fa-regular fa-bell"></i> התראות ללוח זה</span>
           <label class="switch"><input type="checkbox" ${st.board.notifications_enabled!==false?'checked':''} onchange="Members.toggleNotif(this.checked)"><span class="slider"></span></label>
         </div>`:''}
@@ -14706,15 +14721,18 @@ const Members = {
           <div style="font-size:11.5px;color:var(--text-light);margin-top:7px"><i class="fa-solid fa-circle-info"></i> הרשימה היא חברי הסביבה שהלוח שייך אליה — רק אותם אפשר להזמין. צירוף אדם לסביבה נעשה ממסך הסביבות.</div>
         </div>`
         :`<div class="mem-ro" id="mem-readonly"><i class="fa-solid fa-eye"></i> תצוגה בלבד — רק מנהל לוח יכול לשנות הרשאות, להסיר משתתפים ולהזמין חדשים.</div>`}
-      </div>
-      <div class="mfoot">
-        <button class="btn btn-ghost" style="margin-inline-start:auto" onclick="closeModals()">סגור</button>
       </div>`);
   },
-  /* The footer deliberately offers nothing but "סגור". This dialog is about
-     WHO may use the board, and the most destructive action in the product has
-     no business at the bottom of a screen people open to change somebody's
-     role — one slip beside the close button and a board with its groups, its
+  /* There is no footer at all. It used to hold one "סגור" button and nothing
+     else, below a dialog that every modal in the product already closes three
+     other ways — the × in the corner, Escape, and the backdrop — so it spent a
+     band of height repeating what was already on screen, and pushed the
+     invitation that much further down.
+
+     What the footer must never grow back into is the reason it is named here:
+     this dialog is about WHO may use the board, and the most destructive
+     action in the product has no business at the bottom of a screen people
+     open to change somebody's role — one slip and a board with its groups, its
      items and its conversations is in the recycle bin. The deletion is still
      offered where it reads as a decision about the board itself: the header's
      board menu, and the board's own context menu in the sidebar.
@@ -17598,6 +17616,31 @@ function linkPendingHTML(text){
   return `<span class="link-cell"><span class="link-pend" title="לא הותאם — ממתין לטיפול">
     <i class="fa-solid fa-triangle-exclamation"></i><span class="lc-t">${esc(text)}</span></span></span>`;
 }
+/* What the server now holds for the columns this request just wrote.
+
+   A PATCH answers with the item's WHOLE custom_fields, so a column missing
+   from the answer is a column the server no longer holds. Merging the answer
+   over the cell with Object.assign could only ever add or overwrite, never
+   remove — which is why taking the LAST link off a cell looked like a dead
+   button: the write landed, the answer said nothing about that column, and the
+   merge put back the very array that had just been emptied, so renderView drew
+   the chip again. Removing one of several always worked, because then the
+   answer did carry the shorter list.
+
+   Only one-way columns are reconciled here. A two-way cell is stored in
+   item_links and never appears in custom_fields at all, so the answer cannot
+   speak for it; those paths take the board fresh instead. */
+function applyCellResponse(t,res,colIds){
+  if(!t)return;
+  const got=(res&&res.custom_fields)||{};
+  const cf=Object.assign({},t.custom_fields,got);
+  (colIds||[]).forEach(cid=>{
+    const col=customColumns().find(c=>c.id===cid);
+    if(col&&col.connect&&col.connect.two_way)return;
+    if(!Object.prototype.hasOwnProperty.call(got,cid))delete cf[cid];
+  });
+  t.custom_fields=cf;
+}
 /* Taking one link off should not mean opening the picker to untick it. */
 async function unlinkFromCell(e,taskId,colId,linkId){
   e.stopPropagation();
@@ -17606,7 +17649,7 @@ async function unlinkFromCell(e,taskId,colId,linkId){
   try{
     const res=await api('/api/tasks/'+taskId,{method:'PATCH',headers:{'Content-Type':'application/json'},
       body:withMe({custom_fields:{[colId]:cur.length?cur:null}})});
-    t.custom_fields=Object.assign({},t.custom_fields,res.custom_fields||{});
+    applyCellResponse(t,res,[colId]);
     if(res.link_message)toast(res.link_message);
   }catch(err){ toast('הסרת הקישור נכשלה — נסה שוב'); return; }
   const col=customColumns().find(c=>c.id===colId);
@@ -17946,7 +17989,7 @@ async function connectSave(){
   // pick simply vanished
   if(res&&res.link_message) toast(res.link_message);
   const t=findAnyTask(taskId);
-  if(t){ t.custom_fields=Object.assign({},t.custom_fields,res&&res.custom_fields||{}); }
+  applyCellResponse(t,res,[colId]);
   // a two-way link changes the OTHER board too, so take the board fresh
   if(col.connect&&col.connect.two_way){
     try{ st.board=await api('/api/boards/'+st.board.id); }catch(e){}
