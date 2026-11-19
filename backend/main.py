@@ -9924,6 +9924,21 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
 
 @app.get("/api/boards/{board_id}")
 def get_board(board_id: int, user_id: int = Depends(current_user_id)):
+    # "It still takes a long time" was reported on one production board (204)
+    # after a fix, and nothing on the server could say where the time went:
+    # App Service logging is off and this route timed nothing. So every phase
+    # below is clocked and sent back as a Server-Timing header, which the
+    # browser's own board-open line prints next to its request and render
+    # times. The next "it is slow" then arrives with the answer attached —
+    # the sweeps, the permission pass, the serialization — instead of a guess.
+    _clock = [time.perf_counter()]
+    _phases = []
+
+    def _lap(name):
+        now = time.perf_counter()
+        _phases.append((name, (now - _clock[0]) * 1000))
+        _clock[0] = now
+
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b:
@@ -9933,11 +9948,14 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # date-based automations have no scheduler — opening the board is when
         # "the due date arrived" is noticed (each rule fires once per item)
         _sweep_due_date_automations(db, board_id, user_id)
+        _lap("sweep_due")
         # and the same for the rules on a clock, which come round again rather
         # than firing once (see _sweep_recurring_automations)
         _sweep_recurring_automations(db, board_id, user_id)
+        _lap("sweep_recurring")
         # and the rules watching for an item nobody has written on
         _sweep_chat_idle_automations(db, board_id, user_id)
+        _lap("sweep_idle")
         my_role = _board_role(db, board_id, user_id)
         if user_id is not None and my_role is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
@@ -9957,16 +9975,21 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         columns = (b.settings or {}).get("columns", [])
         # a board carrying a "מזהה פריט" column shows an identifier for every
         # item — including ones that predate the column, or arrived from elsewhere
+        _lap("items_query")
         if _board_has_item_id_col(b):
             _backfill_item_uids(db, b.id)
+        _lap("item_uids")
         # hide items the user has no view permission on
         if user_id is not None:
             tasks = [t for t in tasks if _item_perm(t, user_id, my_role) != "none"]
         # one pass for everything an item is about to be asked — its sub-items,
         # assignees and counts (_prefetch_items), then its links (_prefetch_links)
         _subs = _prefetch_items(db, tasks)
+        _lap("prefetch_items")
         _prefetch_links(db, list(tasks) + _subs, columns, user_id)
+        _lap("prefetch_links")
         tasks_out = [_serialize_task(t, db, user_id=user_id, board_role=my_role, columns=columns) for t in tasks]
+        _lap("serialize")
 
         # board owners = members with the board-scoped admin role (creator + any
         # promoted admin). Exposed to every member so anyone can see who manages it.
@@ -9979,7 +10002,7 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
                                .order_by(User.id).all())]
 
         # built here rather than by FastAPI — see _json_default
-        return _json({
+        resp = _json({
             "id": b.id, "name": b.name, "description": b.description,
             "board_type": b.board_type.value if hasattr(b.board_type, 'value') else b.board_type,
             "icon": b.icon, "color": b.color,
@@ -10055,6 +10078,19 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
             "tasks": tasks_out,
         })
+        # everything after serialize — members, owners, link display, column
+        # conversions — and the JSON encoding itself, which on a big board is
+        # not free either
+        _lap("rest")
+        resp.headers["Server-Timing"] = ", ".join(
+            f"{name};dur={ms:.1f}" for name, ms in _phases)
+        total = sum(ms for _, ms in _phases)
+        # Printed only when it is worth reading, so a healthy board says
+        # nothing. stdout is what the container log keeps, once it is on.
+        if total >= 1500:
+            print(f"[slow board] {board_id}: {len(tasks_out)} items, {total:.0f}ms — "
+                  + ", ".join(f"{n} {ms:.0f}" for n, ms in _phases), flush=True)
+        return resp
 
 @app.post("/api/boards")
 def create_board(data: dict, actor_id: int = Depends(current_user_id)):

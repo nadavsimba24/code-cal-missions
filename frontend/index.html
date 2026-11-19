@@ -3861,7 +3861,7 @@ async function openDeepLink(boardId, itemId, viewId, opts){
      cache, and a record created after that cache was filled is exactly the
      record a link like this points at. Ask the server once before giving up. */
   if(!findAnyTask(itemId)){
-    await refreshBoardItems();
+    await refreshBoardItems(itemId);
     renderView();
   }
   if(findAnyTask(itemId)) Chat.open(itemId,{center:true});
@@ -4910,9 +4910,20 @@ function reportBoardOpen(id,fetchMs,renderMs,t0,how){
   const rows=(st.board.tasks||[]).length;
   const cols=(st.board.columns||[]).length;
   const subs=(st.board.tasks||[]).reduce((n,t)=>n+((t.subtasks||[]).length),0);
+  /* Where the SERVER spent its share, read off the Server-Timing header
+     /api/boards/{id} sends (see get_board). Without it "request 6000ms" could
+     be the automation sweeps, the permission pass or the network, and those
+     are three different fixes. Same-origin, so the browser exposes it. */
+  let server='';
+  try{
+    const e=performance.getEntriesByType('resource')
+      .filter(r=>/\/api\/boards\/\d+(\?|$)/.test(r.name) && r.name.includes('/api/boards/'+id)).pop();
+    if(e && e.serverTiming && e.serverTiming.length)
+      server='  ·  server: '+e.serverTiming.map(s=>s.name+' '+Math.round(s.duration)).join(', ');
+  }catch(_){}
   console.info(`[board ${id}] ${rows} items (+${subs} subs) × ${cols} columns  ·  ${how}  ·  `
     +`request ${Math.round(fetchMs)}ms  ·  render ${Math.round(renderMs)}ms  ·  `
-    +`on screen after ${Math.round(performance.now()-t0)}ms`);
+    +`on screen after ${Math.round(performance.now()-t0)}ms${server}`);
 }
 /* The automations face.
 
@@ -18471,8 +18482,21 @@ function findAnyTask(id){
 }
 /* pull the board's items again, keeping the open view — used when the server
    changed item data behind the client's back (e.g. issuing item identifiers) */
-async function refreshBoardItems(){
+async function refreshBoardItems(itemId){
   if(!st.board)return;
+  /* Given the item a link is about, ask the server about that ONE item before
+     fetching the whole board again. A full refetch used to be the only
+     check, so a link to an item that could never be on this board — archived,
+     moved to another board, or one this reader may not see — loaded the
+     entire board a second time just to say "not found". That doubled the
+     wait on exactly the boards where the wait is already longest. Only an
+     item that is live, on this board and visible to this reader is worth the
+     refetch: that one really was created after the copy on screen. */
+  if(itemId!=null){
+    let one=null;
+    try{ one=await api('/api/tasks/'+itemId); }catch(e){ one=null; }
+    if(!one || one.board_id!==st.board.id || one.is_archived) return;
+  }
   try{
     const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():''));
     st.board.tasks=fresh.tasks;
