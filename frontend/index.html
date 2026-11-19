@@ -13169,7 +13169,7 @@ const Automations = {
               : 'האוטומציה עודכנה');
         if(got&&got.id){ /* nothing to carry: the list is reloaded below */ }
       }else{
-        await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
+        const made=await api('/api/boards/'+st.board.id+'/automations'+(meId()?'?user_id='+meId():''),
                   {method:'POST',headers:{'Content-Type':'application/json'},
                    body:JSON.stringify({recipe_id:r.id,config,name:meta.name||'',
                                         description:meta.description||'',
@@ -13178,7 +13178,13 @@ const Automations = {
                                         // screen, and only on this screen: a
                                         // PATCH announces nothing
                                         notify_all_members:!!meta.notifyAll})});
-        toast(asDraft?'האוטומציה נשמרה כטיוטה':'האוטומציה נוצרה');
+        /* a rule that fills a people column from a mirror also fills the items
+           the board already had (see _backfill_from_mirror) — and how many it
+           filled, and how many names it could not place, is the one thing the
+           person who built it will want to know next */
+        toast(asDraft?'האוטומציה נשמרה כטיוטה'
+              :(made&&made.backfill&&made.backfill.said
+                 ? 'האוטומציה נוצרה · '+made.backfill.said : 'האוטומציה נוצרה'));
       }
       this.building=null;
     }catch(e){ toast((e&&e.detail&&typeof e.detail==='string'&&e.detail)

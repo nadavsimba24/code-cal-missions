@@ -160,6 +160,81 @@ def test_without_a_column_it_fills_the_boards_own_assignees(client, admin_id, me
     assert _cell(near, s["pm"]) is None
 
 
+# ── the items the board had before the rule ───────────────────────────────
+# Every trigger this action hangs on is a thing that HAPPENS, so a rule built
+# today would have filled only the rows something happened to after today and
+# left the ones already linked empty for ever. Building it fills them.
+
+def test_building_the_rule_fills_the_items_already_linked(client, admin_id, member_id):
+    s = _stage(client, admin_id, member_id, "bf1", [member_id])
+    before = _item(client, s["dst"], admin_id, "קושר לפני הכלל")
+    _link(client, before, s["conn"], [s["far"]], admin_id)
+    lonely = _item(client, s["dst"], admin_id, "בלי קישור")
+    r = _rule(client, s["dst"], admin_id, "link_added_assign_from_mirror",
+              {"a_mirror": s["mir"], "a_person_col": s["pm"]})
+    assert r.status_code == 200, r.text
+    assert _cell(before, s["pm"]) == [member_id], "the item linked before the rule stayed empty"
+    assert _cell(lonely, s["pm"]) is None
+    assert r.json()["backfill"]["filled"] == 1, r.json()["backfill"]
+    assert "מולאו 1" in r.json()["backfill"]["said"]
+
+
+def test_the_backfill_tells_nobody_they_were_assigned(client, admin_id, member_id):
+    """Three hundred "שויכת למשימה" about work that was theirs yesterday too is
+    not a notice anybody wants; the cell is written, the notice is held back."""
+    from models import Notification
+    s = _stage(client, admin_id, member_id, "bf2", [member_id])
+    near = _item(client, s["dst"], admin_id, "קושר לפני הכלל")
+    _link(client, near, s["conn"], [s["far"]], admin_id)
+    with Session(cityos_main.engine) as db:
+        was = db.query(Notification).filter(Notification.user_id == member_id,
+                                            Notification.task_id == near).count()
+    _rule(client, s["dst"], admin_id, "link_added_assign_from_mirror",
+          {"a_mirror": s["mir"], "a_person_col": s["pm"]})
+    assert _cell(near, s["pm"]) == [member_id]
+    with Session(cityos_main.engine) as db:
+        now = db.query(Notification).filter(Notification.user_id == member_id,
+                                            Notification.task_id == near).count()
+    assert now == was
+
+
+def test_a_name_the_board_does_not_have_is_counted_not_guessed(client, admin_id, member_id):
+    s = _stage(client, admin_id, member_id, "bf3", "מישהי שאינה בלוח", source_type="text")
+    near = _item(client, s["dst"], admin_id, "קושר לפני הכלל")
+    _link(client, near, s["conn"], [s["far"]], admin_id)
+    r = _rule(client, s["dst"], admin_id, "link_added_assign_from_mirror",
+              {"a_mirror": s["mir"], "a_person_col": s["pm"]})
+    assert _cell(near, s["pm"]) is None
+    assert r.json()["backfill"]["unmatched"] == 1, r.json()["backfill"]
+
+
+def test_a_draft_fills_nothing_until_it_is_switched_on(client, admin_id, member_id):
+    s = _stage(client, admin_id, member_id, "bf4", [member_id])
+    near = _item(client, s["dst"], admin_id, "קושר לפני הכלל")
+    _link(client, near, s["conn"], [s["far"]], admin_id)
+    r = client.post(f"/api/boards/{s['dst']}/automations?user_id={admin_id}",
+                    json={"recipe_id": "link_added_assign_from_mirror", "status": "draft",
+                          "config": {"a_mirror": s["mir"], "a_person_col": s["pm"]}})
+    assert r.status_code == 200, r.text
+    assert _cell(near, s["pm"]) is None, "a draft wrote on the board"
+    on = client.patch(f"/api/automations/{r.json()['id']}?user_id={admin_id}",
+                      json={"status": "active", "etag": r.json().get("etag")})
+    assert on.status_code == 200, on.text
+    assert _cell(near, s["pm"]) == [member_id], "publishing the draft did not fill the board"
+    assert on.json()["backfill"]["filled"] == 1
+
+
+def test_no_other_rule_runs_over_the_board_when_it_is_built(client, admin_id, member_id):
+    """Only this action: "run every rule over history" would be a flood for a
+    notification rule, and nobody asked for that."""
+    s = _stage(client, admin_id, member_id, "bf5", [member_id])
+    near = _item(client, s["dst"], admin_id, "פריט קיים")
+    r = _rule(client, s["dst"], admin_id, "created_assign_person", {"a_person": member_id})
+    assert r.status_code == 200, r.text
+    assert r.json()["backfill"] is None
+    assert _assignees(near) == []
+
+
 def test_a_mirror_of_any_text_is_read_the_same_way(client, admin_id, member_id):
     """A mirror is TEXT whatever the source column was. A board that keeps the
     responsible person's name in a plain text column is the case this feature

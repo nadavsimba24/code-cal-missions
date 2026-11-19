@@ -18914,12 +18914,13 @@ def _restore_choice(db, task, field, value):
 # run row (a rule is about an item, and "12 items updated" hides the two it
 # skipped), and the shared id is what puts them back together afterwards.
 AUTOMATION_SOURCES = ("item", "create", "bulk", "api", "automation", "import",
-                      "migration", "repair", "manual", "date", "link", "form")
+                      "migration", "repair", "manual", "date", "link", "form",
+                      "backfill")
 AUTOMATION_SOURCE_HE = {
     "item": "עריכה", "create": "יצירת פריט", "bulk": "עריכה מרובה", "api": "API",
     "automation": "אוטומציה אחרת", "import": "ייבוא", "migration": "מיגרציה",
     "repair": "תיקון מערכתי", "manual": "הפעלה ידנית", "date": "תאריך יעד",
-    "link": "קישור", "form": "טופס",
+    "link": "קישור", "form": "טופס", "backfill": "מילוי פריטים קיימים",
 }
 
 
@@ -21190,11 +21191,16 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                 out.append({"type": "person_assigned", "user_id": uid})
             if gone:
                 out.append({"type": "person_unassigned", "user_ids": gone})
-        for uid in added:
-            _notify(db, uid, "assign", "שויכת למשימה",
-                    _assigned_body(db, task, board, getattr(rule, "name", "") or "",
-                                   event, pcol),
-                    board_id=task.board_id, task_id=task.id)
+        # A backfill writes every item the board already had in one go, and a
+        # "שויכת למשימה" for each would be three hundred notices to the same
+        # project manager about work that was theirs yesterday too. The cell
+        # and its history are written the same; only the notice is held back.
+        if not (event or {}).get("backfill"):
+            for uid in added:
+                _notify(db, uid, "assign", "שויכת למשימה",
+                        _assigned_body(db, task, board, getattr(rule, "name", "") or "",
+                                       event, pcol),
+                        board_id=task.board_id, task_id=task.id)
     elif act == "set_status":
         # Which status the rule writes: the board's own, or one of its columns
         # of type status. The column branch is the same work _apply_status_key
@@ -23713,6 +23719,65 @@ def _run_one_automation(db, a, task, actor_id, trigger="due_date_arrives", days=
     _fire_rule(db, a, task, _event(trigger, "date", days=days), actor_id, 0)
 
 
+def _backfill_from_mirror(db, board, a, actor_id):
+    """Run a newly built «שייך מתוך עמודת המראה» rule over the items the board
+    already has.
+
+    Every trigger this action hangs on — a link made, an item created, a status
+    reached — is a thing that HAPPENS, so a rule built today would have filled
+    only the rows something happened to after today, and the hundreds already
+    on the board, whose mirrors were showing a name all along, would have stayed
+    empty for ever. Nobody building this rule means that: the point of it is
+    "the column beside the mirror holds the person", and that is a statement
+    about the board as it is.
+
+    So it runs once, here, item by item through the ordinary _fire_rule — the
+    rule's conditions decide, each item gets its own run row (one shared batch
+    id puts them back together), and what it writes sets off the person_assigned
+    rules the same as any other assignment. An item whose mirror is empty is not
+    walked at all: it has nothing to give, and a "skipped" row for every one of
+    them would bury the rows that say which names were not found.
+
+    Only for this action and only on the rule's MAIN action: this is about the
+    one rule whose whole job is a copy of what the board already shows, not a
+    general "run every rule over history", which for a notification rule would
+    be a flood.
+    """
+    if a.status != "active" or (recipes.recipe(a.recipe_id) or {}).get("action") \
+            != "assign_from_mirror":
+        return None
+    if _automation_freeze(db, board.id) is not None:
+        return None
+    col = _find_col(db, board.id, str((a.config or {}).get("a_mirror") or ""))
+    if not col or col.get("type") != "mirror":
+        return None
+    trig = (recipes.recipe(a.recipe_id) or {}).get("trigger") or ""
+    cols = _board_columns(db, board.id) or []
+    viewer = a.owner_id or actor_id
+    batch = uuid.uuid4().hex
+    filled = unmatched = 0
+    items = (db.query(Task).filter(Task.board_id == board.id,
+                                   Task.is_archived == False,              # noqa: E712
+                                   Task.deleted_at == None)                # noqa: E711
+               .order_by(Task.id).all())
+    for t in items:
+        if not any(str(c.get("text") or "").strip()
+                   for c in _mirror_cells(db, t, col, viewer, cols)):
+            continue
+        row = _fire_rule(db, a, t, {"type": trig, "source": "backfill",
+                                    "backfill": True, "batch": batch}, actor_id, 0)
+        if row is not None and row.outcome == "ran":
+            filled += 1
+        elif row is not None and "אין בלוח משתמש בשם" in (row.reason or ""):
+            unmatched += 1
+    said = (f"מולאו {filled} פריטים קיימים מתוך «{col.get('title') or col['id']}»"
+            if filled else "אין פריטים קיימים למילוי מתוך "
+                           f"«{col.get('title') or col['id']}»")
+    if unmatched:
+        said += f" · ב־{unmatched} פריטים השם במראה אינו של משתמש בלוח"
+    return {"filled": filled, "unmatched": unmatched, "said": said}
+
+
 # How many fired item ids a date rule remembers. Bounded so the marker cannot
 # grow without limit on a long-lived board; older entries fall off the front.
 _DUE_FIRED_MAX = 500
@@ -25764,9 +25829,14 @@ def create_automation(board_id: int, data: dict, request: Request = None,
         _automation_created_notice(db, b, a, user_id, request,
                                    all_members=_tell_all)
         db.commit()
+        # after the rule is committed, so the runs it writes point at a rule
+        # that exists — see _backfill_from_mirror
+        _backfill = _backfill_from_mirror(db, b, a, user_id)
+        if _backfill:
+            db.commit()
         db.refresh(a)
         # "הפעלה מוצלחת" is a moment, not a state — said here and nowhere else
-        return {**_automation_json(db, b, a), "said": _said}
+        return {**_automation_json(db, b, a), "said": _said, "backfill": _backfill}
 
 
 @app.post("/api/automations/{automation_id}/duplicate")
@@ -25967,8 +26037,19 @@ def update_automation(automation_id: int, data: dict, request: Request = None,
         a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         _record_automation_version(db, b, a, user_id, before=before)
         db.commit()
+        # A draft switched on for the first time is the rule being built, only
+        # in two steps — so it fills the board's existing items the way a rule
+        # created active does. A rule coming back from a pause is not: it was
+        # built already, and what it missed while paused is the pause's to own.
+        _backfill = None
+        if _was_status == "draft" and a.status == "active":
+            _backfill = _backfill_from_mirror(db, b, a, user_id)
+            if _backfill:
+                db.commit()
+                _said = (_said + ". " if _said else "") + _backfill["said"]
         db.refresh(a)
-        return {**_automation_json(db, b, a), "warnings": _warn, "said": _said}
+        return {**_automation_json(db, b, a), "warnings": _warn, "said": _said,
+                "backfill": _backfill}
 
 
 # Ten tables point at a rule by id. Deleting the rule without saying what
