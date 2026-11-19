@@ -10786,7 +10786,7 @@ IMPORT_MAX_MESSAGES = 10000
 #
 # Both ceilings are the WHOLE import's, not one file's — IMPORT_MAX_FILE_MB is
 # the megabytes an import may bring across in total, and the per-file limit is
-# MAX_UPLOAD_BYTES, which is a different thing entirely.
+# IMPORT_MAX_ONE_FILE_MB below, which is a different thing entirely.
 #
 # They were 600 files and 150MB, and that is small enough to cut a real board in
 # half without anyone noticing. "ניהול ביקורים" (1495412381) carries 972
