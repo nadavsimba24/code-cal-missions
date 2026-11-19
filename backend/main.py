@@ -19921,7 +19921,9 @@ def _map_read(db, task, name):
     if name == "status":
         return _task_status_key(task)
     if name == "priority":
-        return _task_priority_key(task)
+        # an unset priority is MEDIUM underneath; read as that, a mapping would
+        # carry a choice nobody made onto the other board
+        return _logged_priority(task)
     if name == "due":
         return task.due_date
     if name == "description":
@@ -21326,7 +21328,8 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
     elif act == "create_subitem":
         _sub = Task(board_id=task.board_id, group_id=task.group_id, parent_id=task.id,
                     title=text(cfg.get("text")) or "תת־פריט", status=TaskStatus.TODO,
-                    priority=Priority.MEDIUM, created_by=actor_id)
+                    priority=Priority.MEDIUM, created_by=actor_id,
+                    custom_fields=dict(_AUTO_MADE_CF))
         db.add(_sub)
         db.flush()
         # The sub-item's own log says where it came from. Without this it was
@@ -21455,7 +21458,8 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         made = Task(board_id=task.board_id, group_id=grp.id,
                     title=(text(cfg.get("text")) or "").strip()[:500] or "פריט חדש",
                     status=grp.task_status or TaskStatus.TODO,
-                    priority=Priority.MEDIUM, created_by=actor_id)
+                    priority=Priority.MEDIUM, created_by=actor_id,
+                    custom_fields=dict(_AUTO_MADE_CF))
         db.add(made)
         db.flush()
         _ensure_item_uid(db, made)
@@ -21761,7 +21765,11 @@ def _copy_item_fields(db, src, dst, fields, actor_id):
                 continue
             _audit(db, dst.id, "update", "status", was, _logged_status(dst), None)
         elif key == "priority":
-            if _task_priority_key(dst) == _task_priority_key(src):
+            # Compared as the cells READ, not as the stored enum: an unset
+            # priority is MEDIUM underneath, so a source that chose בינונית
+            # looked equal to a fresh target and was never copied, and a source
+            # nobody had set copied MEDIUM across as if someone had picked it.
+            if not _logged_priority(src) or _logged_priority(dst) == _logged_priority(src):
                 continue
             was = _logged_priority(dst)
             if not _apply_priority_key(db, dst, _task_priority_key(src)):
@@ -21899,6 +21907,16 @@ def _remember_creation(db, a, task, made, group_id=None):
     db.flush()
 
 
+# What an item a RULE creates carries from birth. task.priority has to hold an
+# enum value, so it is MEDIUM — and an item made by hand says beside it that
+# nobody chose that, which is what makes its cell read "טרם הוגדר". The items
+# the automations made said nothing, so every one of them arrived on the target
+# board as "בינונית": a priority somebody would read as a decision, which no
+# one ever made. A copied or mapped priority clears the flag the moment it is
+# written (_resolve_priority returns priority_unset: None).
+_AUTO_MADE_CF = {"priority_unset": True}
+
+
 def _create_board_item(db, task, board_id, title, actor_id, group=None):
     """Make an item on another board, with nothing pointing back at it.
 
@@ -21927,7 +21945,9 @@ def _create_board_item(db, task, board_id, title, actor_id, group=None):
     made = Task(board_id=board_id, group_id=grp.id if grp else None,
                 title=(title or "").strip() or "פריט חדש",
                 status=grp.task_status if grp else TaskStatus.TODO,
-                priority=Priority.MEDIUM, created_by=actor_id)
+                priority=Priority.MEDIUM, created_by=actor_id,
+                # nobody chose this priority — see _AUTO_MADE_CF
+                custom_fields=dict(_AUTO_MADE_CF))
     db.add(made)
     db.flush()
     _ensure_item_uid(db, made)
@@ -21961,7 +21981,9 @@ def _create_linked_item(db, task, col, board_id, title, actor_id, group=None):
     made = Task(board_id=board_id, group_id=grp.id if grp else None,
                 title=(title or "").strip() or "פריט חדש",
                 status=grp.task_status if grp else TaskStatus.TODO,
-                priority=Priority.MEDIUM, created_by=actor_id)
+                priority=Priority.MEDIUM, created_by=actor_id,
+                # nobody chose this priority — see _AUTO_MADE_CF
+                custom_fields=dict(_AUTO_MADE_CF))
     db.add(made)
     db.flush()
     _ensure_item_uid(db, made)

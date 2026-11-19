@@ -372,3 +372,51 @@ def test_a_status_stored_as_its_option_travels_by_its_label(client, admin_id):
     assert len(made) == 1, "the rule fired and the item it created was taken back"
     stored = (made[0].custom_fields or {}).get(dst_col)
     assert (stored.get("label") if isinstance(stored, dict) else stored) == "תנ/8/2026"
+
+
+# ── עדיפות שאף אחד לא בחר ───────────────────────────────────────────────────
+# An item a rule creates used to arrive with "בינונית" in its priority: the
+# enum has to hold something, and the flag that says nobody chose it — which an
+# item made by hand carries — was never set. It read as a decision nobody made.
+
+def _cells(bid, title):
+    t = _made(bid, title)[0]
+    return t, (t.custom_fields or {})
+
+
+def test_an_item_a_rule_creates_has_no_priority_until_someone_chooses_one(client, admin_id):
+    a, b, link, grp, _s, _d, _n = _setup(client, admin_id, "prio0")
+    cfg = {"t_status": "done", "a_connect": link["id"], "a_board": b,
+           "a_target_group": grp, "a_text": "מק״ל ללא עדיפות", "a_fields": ["due"]}
+    assert client.post(f"/api/boards/{a}/automations",
+                       json={"actor_id": admin_id, "recipe_id": OLD,
+                             "config": cfg}).status_code == 200
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מקור",
+                                          "user_id": admin_id,
+                                          "priority": "critical"}).json()["id"]
+    client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
+    t, cf = _cells(b, "מק״ל ללא עדיפות")
+    assert cf.get("priority_unset") is True, "the new item claims a priority nobody chose"
+    assert cityos_main._logged_priority(t) == ""
+
+
+def test_a_copied_medium_priority_is_copied_and_an_unset_one_is_not(client, admin_id):
+    a, b, link, grp, _s, _d, _n = _setup(client, admin_id, "prio1")
+    cfg = {"t_status": "done", "a_connect": link["id"], "a_board": b,
+           "a_target_group": grp, "a_text": "{{item.name}}", "a_fields": ["priority"]}
+    assert client.post(f"/api/boards/{a}/automations",
+                       json={"actor_id": admin_id, "recipe_id": OLD,
+                             "config": cfg}).status_code == 200
+    # chose בינונית on purpose: it must arrive as a choice
+    chosen = client.post("/api/tasks", json={"board_id": a, "title": "בחרו בינונית",
+                                             "user_id": admin_id,
+                                             "priority": "medium"}).json()["id"]
+    # never chose: the copy must not invent one
+    blank = client.post("/api/tasks", json={"board_id": a, "title": "לא בחרו",
+                                            "user_id": admin_id}).json()["id"]
+    for tid in (chosen, blank):
+        client.patch(f"/api/tasks/{tid}", json={"status": "done", "user_id": admin_id})
+    t, cf = _cells(b, "בחרו בינונית")
+    assert not cf.get("priority_unset") and cityos_main._logged_priority(t) == "medium"
+    t, cf = _cells(b, "לא בחרו")
+    assert cf.get("priority_unset") is True
