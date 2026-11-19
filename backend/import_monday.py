@@ -17,6 +17,7 @@ and losing it silently is the one outcome a migration cannot afford.
 """
 import html as _html
 import json
+import os
 import re
 
 # monday column type -> our column type, per the migration mapping sheet.
@@ -348,7 +349,18 @@ LOG_EVENTS = {
 # How many log entries one import will carry. monday itself pages them, and a
 # board of a few hundred items with sixty columns has tens of thousands: past
 # some point this stops being history and becomes a table nobody reads.
-MAX_LOG_ENTRIES = 20000
+#
+# It is a ceiling on taste, not on safety, which is why it moves. The board of
+# 21,187 meeting items has 147,254 log rows — pull them all and 20,000 is no
+# longer "most of the history, trimmed", it is the last twenty months of three
+# years. Whoever is migrating that board is the one who knows whether the rest
+# is worth the table, so the number is theirs to set. The default does not
+# change: an import nobody configured carries exactly what it carried before.
+#
+# Rows are taken in file order, and a merged export is written newest-first, so
+# the ones that survive a lowered ceiling are the most recent — the half of the
+# history anyone actually opens.
+MAX_LOG_ENTRIES = int(os.getenv("IMPORT_MAX_LOG_ENTRIES", "20000"))
 
 
 def _log_when(raw):
