@@ -11099,6 +11099,16 @@ const Automations = {
        a rule reopened for editing showed its own tokens as codes, and the box
        is what the next save stores: one edit could turn a working token into
        the literal word col_7a1. */
+    /* a date counted from the firing reads as the words the menu offered —
+       «היום», «בעוד 7 ימים» — when the column it is written into is a date
+       column; into a text column the same token writes "19/11/2026", which
+       is a date and not the word today */
+    if(f.type==='text'){
+      const _cid=(siblings||{}).a_column||(siblings||{}).column;
+      const _c=_cid&&(customColumns()||[]).find(x=>String(x.id)===String(_cid));
+      const _dl=(_c&&_c.type==='date')?this._dateLabel(v):'';
+      if(_dl) return mk(_dl);
+    }
     if(f.type==='text') return mk(this.tokensToNames(v));
     if(f.type==='days') return mk(v);
     if(f.type==='wait')   return mk(this.waitHe(+v||0));
@@ -11190,6 +11200,16 @@ const Automations = {
       const d=(f.default!==undefined)?f.default:spec.default;
       if(d!==undefined)
         picks[f.key]={v:d,label:(spec.labels||{})[d]||d};
+    });
+    /* …and any other blank a template starts filled: "כאשר הסטטוס משתנה,
+       עדכן עמודת תאריך להיום" starts on «כל ערך שהוא» and «היום», and each is
+       read the way the picker would have labelled it */
+    ((r&&r.fields)||[]).filter(f=>f.type!=='pick'&&f.default!==undefined).forEach(f=>{
+      const v=f.default;
+      const label=(f.type==='status'&&v===(this.caps||{}).any_status)
+        ? ((this.caps||{}).any_status_label||'כל ערך שהוא')
+        : (this._dateLabel(v)||this.tokensToNames(v));
+      picks[f.key]={v,label,color:''};
     });
     /* notifyAll starts false on purpose — the notification about a new rule
        goes to its author and the board's managers, and telling the whole board
@@ -11421,6 +11441,11 @@ const Automations = {
         const [items,body]=this._peopleMenu(_tc,j=>`Automations.setActPerson(${i},'${key}',${j})`);
         this._popItems=items;
         openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+        return;
+      }
+      if(_tc&&_tc.type==='date'){
+        this._dateAct={i,key};
+        openCellPop(anchor,this._dateMenu('Automations.setActDate'),'row-menu-pop');
         return;
       }
       const cur=(a.values||{})[key];
@@ -12066,6 +12091,11 @@ const Automations = {
         openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
         return;
       }
+      if(_tc&&_tc.type==='date'){
+        this._dateKey=key;
+        openCellPop(anchor,this._dateMenu('Automations.setFieldDate'),'row-menu-pop');
+        return;
+      }
       const cur=this.building.values[key];
       openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
         <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
@@ -12238,9 +12268,96 @@ const Automations = {
   _blankCols(fkey,write){
     const derived=['item_id','created_at','created_by'];
     const w=(write===undefined)?/^a_/.test(String(fkey||'')):!!write;
+    /* a template may narrow the list — "עמודת התאריך" offers date columns
+       and nothing else, which is the whole difference between it and the
+       general "עדכן את העמודה" */
+    const f=((((this.building||{}).recipe||{}).fields)||[]).find(x=>x.key===fkey);
+    const kinds=(f&&f.col_kinds)||null;
     return (customColumns()||[])
       .filter(c=>!['mirror','connect','formula'].includes(c.type)
-                 &&!(w&&derived.includes(c.type)));
+                 &&!(w&&derived.includes(c.type))
+                 &&(!kinds||kinds.includes(c.type)));
+  },
+  /* ---- the value of a DATE column ----
+     A date column is set to a day, and the day is nearly always counted from
+     the moment the rule fires: today, or N days from it. Those are tokens the
+     engine resolves on the board's calendar ({{now.date}}, {{now.date+7}}),
+     and they are offered here as words, the same words the saved sentence
+     reads them in — so the chip says «היום», not {{תאריך ההפעלה}}. A fixed
+     day and another date column of the item are the two other answers. */
+  _dateLabel(v){
+    const m=String(v==null?'':v).trim().match(/^\{\{\s*([^{}]+?)\s*\}\}$/);
+    if(!m) return '';
+    const code=m[1];
+    if(code==='now.date'||code==='now'||code==='תאריך ההפעלה'||code==='זמן ההפעלה') return 'היום';
+    const o=code.match(/^now\.date([+-])(\d{1,3})$/);
+    if(!o) return '';
+    const n=+o[2];
+    if(n===0) return 'היום';
+    if(n===1) return o[1]==='+'?'מחר':'אתמול';
+    return o[1]==='+'?('בעוד '+n+' ימים'):('לפני '+n+' ימים');
+  },
+  _dateMenu(into){
+    /* `into` is the call that takes (stored, label) — the sentence's blank or
+       an extra action's, the menu is the same */
+    const others=(customColumns()||[]).filter(c=>c.type==='date');
+    const q=v=>"'"+String(v).replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"'";
+    const pick=(v,l)=>`${into}(${q(v)},${q(l)})`;
+    return `<div class="row-menu au-days" onclick="event.stopPropagation()">
+      <div class="rm-note">התאריך שייכתב לעמודה</div>
+      <button class="rm-item" onclick="${esc(pick('{{now.date}}','היום'))}"><i class="fa-solid fa-calendar-day"></i> היום</button>
+      <button class="rm-item" onclick="${esc(pick('{{now.date+1}}','מחר'))}"><i class="fa-solid fa-calendar-plus"></i> מחר</button>
+      <div class="au-days-row">
+        <span class="au-days-unit">בעוד</span>
+        <input id="au-date-n" class="au-in" type="number" min="1" max="365" style="max-width:72px"
+               aria-label="בעוד כמה ימים"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setDateOffset('${into}',1);}">
+        <span class="au-days-unit">ימים</span>
+        <button class="rm-item au-days-ok" onclick="Automations.setDateOffset('${into}',1)"><i class="fa-solid fa-check"></i></button>
+        <button class="rm-item au-days-ok" title="לפני — מספר הימים נספר אחורה" onclick="Automations.setDateOffset('${into}',-1)">לפני</button>
+      </div>
+      <div class="au-days-row">
+        <span class="au-days-unit">תאריך קבוע</span>
+        <input id="au-date-fixed" class="au-in" type="date" style="max-width:150px" aria-label="תאריך קבוע">
+        <button class="rm-item au-days-ok" onclick="Automations.setDateFixed('${into}')"><i class="fa-solid fa-check"></i></button>
+      </div>
+      ${others.length?`<div class="rm-note">תאריך מעמודה אחרת בפריט</div>`
+        +others.map(c=>`<button class="rm-item" onclick="${esc(pick('{{field.'+c.id+'}}','ערך של «'+(c.title||c.id)+'»'))}">
+          <i class="fa-regular fa-calendar"></i> ${esc(c.title||c.id)}</button>`).join(''):''}
+    </div>`;
+  },
+  setDateOffset(into,sign){
+    const el=document.getElementById('au-date-n');
+    const n=Math.round(+((el&&el.value)||0));
+    if(!(n>=1&&n<=365)){ toast('יש להזין מספר ימים בין 1 ל־365'); if(el)el.focus(); return; }
+    const v='{{now.date'+(sign<0?'-':'+')+n+'}}';
+    this._dateInto(into,v,this._dateLabel(v));
+  },
+  setDateFixed(into){
+    const el=document.getElementById('au-date-fixed');
+    const iso=(el&&el.value)||'';
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)){ toast('יש לבחור תאריך'); if(el)el.focus(); return; }
+    const [y,m,d]=iso.split('-');
+    this._dateInto(into,d+'/'+m+'/'+y,d+'/'+m+'/'+y);
+  },
+  _dateInto(into,v,label){
+    /* `Automations` is a top-level const, which is not a property of window,
+       so the name is resolved on this object rather than looked up globally */
+    const fn=this[String(into).replace(/^Automations\./,'')];
+    if(typeof fn==='function') fn.call(this,v,label);
+  },
+  /* the two places a date lands — named functions, so the menu's buttons can
+     call them with nothing but the value */
+  _dateKey:null, _dateAct:null,
+  setFieldDate(v,label){
+    if(!this._dateKey) return;
+    this.building.values[this._dateKey]={v,label,color:''};
+    closeCellPops(); this.render();
+  },
+  setActDate(v,label){
+    const d=this._dateAct; const a=d&&(this.building.acts||[])[d.i]; if(!a) return;
+    (a.values=a.values||{})[d.key]={v,label,color:''};
+    closeCellPops(); this.render();
   },
   /* The connect column a link action is written against: the one it names
      itself, or the board's only one. An extra action carries its own, which is
@@ -12640,7 +12757,9 @@ const Automations = {
     const pre=all.filter(t=>t.takes_column).map(t=>t.token);
     const bad=[];
     String(stored||'').replace(/\{\{\s*([^{}]+?)\s*\}\}/g,(m,name)=>{
-      if(!known.has(name) && !pre.some(p=>name.startsWith(p)&&name.length>p.length))
+      // today moved by N days — see _dateLabel and recipes.DATE_OFFSET_RE
+      if(!known.has(name) && !pre.some(p=>name.startsWith(p)&&name.length>p.length)
+         && !/^now\.date[+-]\d{1,3}$/.test(name))
         bad.push(name);
       return m;
     });

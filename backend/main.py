@@ -20265,10 +20265,13 @@ def _date_stamp_shown(db, board, akey, values, pre=""):
     """
     if akey != "set_column" or not board:
         return ""
-    if not recipes.is_date_stamp((values or {}).get(pre + "text")):
+    # "היום", and the same reading for a day counted from it — "בעוד 7 ימים"
+    # rather than {{now.date+7}}
+    said = recipes.date_phrase((values or {}).get(pre + "text"))
+    if not said:
         return ""
     col = _find_col(db, board.id, str((values or {}).get(pre + "column") or ""))
-    return "היום" if col and recipes.column_kind(col.get("type")) == "date" else ""
+    return said if col and recipes.column_kind(col.get("type")) == "date" else ""
 
 
 def _action_phrases(db, board, extras, quote=True):
@@ -20679,6 +20682,10 @@ def _resolve_tokens(db, text, task, board, event=None, actor=None, owner=None):
             return now.strftime("%d/%m/%Y %H:%M")
         if name == "now.date":
             return now.strftime("%d/%m/%Y")
+        if recipes.date_offset(name) is not None:
+            # today moved by N days, on the board's own calendar — the same
+            # "now" as the stamp, so "בעוד 7 ימים" counts from the board's day
+            return (now + timedelta(days=recipes.date_offset(name))).strftime("%d/%m/%Y")
         if name == "now.time":
             return now.strftime("%H:%M")
         if name in ("event.old", "event.new"):
@@ -24629,6 +24636,11 @@ def _board_template_has(db, board):
                                and c.get("type") not in AUTOMATION_UNWATCHABLE_COLUMNS
                                and c.get("type") not in DERIVED_CELLS
                                for c in cols),
+        # a date column to stamp — what status_stamp_date asks for, where the
+        # general set_column template takes any writable column
+        # — a plain date column only: a timeline holds a range, and one day
+        # written into it is not what anybody stamping a date meant
+        "date_column": any(c.get("type") == "date" for c in cols),
         # a mirror to read a name out of. Checked as the board's structure
         # rather than asked for in the form, like the connect column above it:
         # a board with no mirror cannot build the rule at all.

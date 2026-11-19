@@ -285,7 +285,7 @@ TOKEN_PREFIXES = {
     "field.":  "ערך של עמודה בפריט",
     "linked.": "ערך חד־משמעי מפריט מקושר",
 }
-TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
+TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.+-]+)\s*\}\}")
 
 # ── והשם, לא רק הקוד ────────────────────────────────────────────────────────
 # What is STORED is the code — {{item.name}} — and that is deliberate: it
@@ -314,6 +314,44 @@ TOKEN_ALIASES = {he: code for code, he in TOKENS.items()
 TOKEN_ANY_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 
+# ── היום, ועוד כמה ימים ממנו ─────────────────────────────────────────────────
+# "{{now.date}}" is today. A date column is as often set to a deadline as to a
+# stamp — "כשהסטטוס משתנה, קבע תאריך בדיקה לעוד 14 יום" — so the same token
+# takes a signed number of days after it. It is a code and not a name: the
+# builder offers it from a menu and the sentence reads it in words (see
+# date_phrase), so nobody has to type the spelling.
+DATE_OFFSET_RE = re.compile(r"now\.date([+-])(\d{1,3})")
+
+
+def date_offset(code):
+    """The days a now.date±N code moves today by, or None if it is not one."""
+    m = DATE_OFFSET_RE.fullmatch(str(code or "").strip())
+    if not m:
+        return None
+    n = min(int(m.group(2)), MAX_TRIGGER_DAYS)
+    return n if m.group(1) == "+" else -n
+
+
+def date_phrase(text):
+    """A value that is a date relative to the firing, as words — else None.
+
+    "היום", "בעוד 7 ימים", "לפני 3 ימים". Only a value that is ENTIRELY such a
+    token: inside a longer text the braces are the information (see
+    token_phrase)."""
+    m = TOKEN_ANY_RE.fullmatch(str(text or "").strip())
+    code = token_code(m.group(1)) if m else None
+    if code in DATE_STAMP_CODES:
+        return "היום"
+    n = date_offset(code)
+    if n is None:
+        return None
+    if n == 0:
+        return "היום"
+    if abs(n) == 1:
+        return "מחר" if n > 0 else "אתמול"
+    return f"בעוד {n} ימים" if n > 0 else f"לפני {-n} ימים"
+
+
 def token_code(name):
     """The code this {{…}} means, or None if it means nothing to the engine.
 
@@ -322,6 +360,8 @@ def token_code(name):
     """
     n = str(name or "").strip()
     if n in TOKENS:
+        return n
+    if DATE_OFFSET_RE.fullmatch(n):
         return n
     if n in TOKEN_ALIASES:
         return TOKEN_ALIASES[n]
@@ -506,7 +546,7 @@ def unknown_tokens(text):
     """
     bad = []
     for name in token_names(text):
-        if name in TOKENS:
+        if name in TOKENS or DATE_OFFSET_RE.fullmatch(name):
             continue
         if any(name.startswith(p) and len(name) > len(p) for p in TOKEN_PREFIXES):
             continue
@@ -1795,6 +1835,17 @@ RECIPES = [
      "fields": [_f("t_status", "status", "סטטוס"),
                 _f("a_column", "column", "העמודה לעדכון"),
                 _f("a_text", "text", "הערך החדש")]},
+    # The same rule, started where it is nearly always wanted: on ANY status
+    # change, into a DATE column, stamping today. "מתי השתנה הסטטוס לאחרונה"
+    # is the question a board asks of it, and building it from the general
+    # template meant three blanks and a token to find in a menu. Every start
+    # here is only a start — the status can be one value, the date can be
+    # "בעוד 14 ימים" — and the column list offers date columns only.
+    {"id": "status_stamp_date", "trigger": "status_changes_to", "action": "set_column",
+     "needs": ("date_column",), "library_only": True,
+     "fields": [_f("t_status", "status", "סטטוס", default=ANY_STATUS),
+                _f("a_column", "column", "עמודת התאריך", col_kinds=["date"]),
+                _f("a_text", "text", "התאריך", default="{{now.date}}")]},
 
     # ── item created ──
     {"id": "created_assign_person", "trigger": "item_created", "action": "assign_person",
@@ -2243,6 +2294,7 @@ _COND_TAGS = {
 NEEDS_HE = {
     "column":           "עמודה מותאמת בלוח (לא מראה ולא קישור)",
     "writable_column":  "עמודה בלוח שאפשר לכתוב בה",
+    "date_column":      "עמודת תאריך בלוח",
     "connect":          "עמודת קישור בלוח",
     "connect_two_way":  "עמודת קישור דו־כיוונית בלוח",
     "group":            "לפחות קבוצה אחת בלוח",
@@ -2347,6 +2399,8 @@ EXTRA_TEMPLATES = [
      "כאשר נוצר קשר, הפוך את השם שבעמודת המראה לאחראי בעמודת אנשים בלוח"),
     ("mirror_changed_assign_from_mirror",
      "כאשר הערך בלוח המקור משתנה, עדכן גם את עמודת האנשים בלוח"),
+    ("status_stamp_date",
+     "כאשר הסטטוס משתנה, עדכן עמודת תאריך להיום"),
     ("every_days_assign_from_mirror",
      "כל כמה ימים, סנכרן עמודת אנשים בלוח מתוך עמודת מראה"),
 ]
@@ -2384,8 +2438,11 @@ def tags_of(recipe_id):
 
 def needs_of(recipe_id):
     r = recipe(recipe_id) or {}
+    # …and what one template asks beyond its pair, which is how
+    # status_stamp_date says "a date column" where set_column says any
     return sorted(set(_TRIGGER_NEEDS.get(r.get("trigger"), ()))
-                  | set(_ACTION_NEEDS.get(r.get("action"), ())))
+                  | set(_ACTION_NEEDS.get(r.get("action"), ()))
+                  | set(r.get("needs") or ()))
 
 
 def recipe(recipe_id):
@@ -2508,9 +2565,13 @@ def blueprint():
         # a conditioned template is NOT offered here: picking a trigger and an
         # action has to land on exactly one recipe, and the conditions in this
         # flow are step 2, chosen rather than inherited
+        # …and neither is a library-only variant (status_stamp_date): it is the
+        # same pair as a general recipe, started filled in, and the pair has
+        # to land on the general one
         acts = [{"action": r["action"], "label": plain(ACTIONS[r["action"]]),
                  "recipe_id": r["id"]}
-                for r in RECIPES if r["trigger"] == trig and not r.get("conds")]
+                for r in RECIPES if r["trigger"] == trig and not r.get("conds")
+                and not r.get("library_only")]
         if acts:
             out.append({"trigger": trig, "label": plain(text), "actions": acts})
     return out
