@@ -266,3 +266,18 @@ def test_linking_answers_with_the_mirror_already_filled(client, admin_id):
     res = _set(client, src, conn["id"], [x], admin_id).json()
     got = (res.get("custom_fields") or {}).get(mir["id"]) or []
     assert [c["text"] for c in got] == ["לקוח מקושר"]
+
+
+def test_a_new_mirror_fills_the_rows_already_on_screen():
+    """Driven harness: tests/frontend/a_new_mirror_fills_the_rows_on_screen.mjs."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    h = Path(__file__).resolve().parent / "frontend" / "a_new_mirror_fills_the_rows_on_screen.mjs"
+    r = subprocess.run([node, str(h)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, "\n" + r.stdout + r.stderr

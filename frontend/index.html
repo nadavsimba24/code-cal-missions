@@ -21139,6 +21139,15 @@ async function saveColumns(cols, confirm){
   try{
     const body={columns:cols};
     if(confirm&&confirm.length) body.confirm_columns=confirm;
+    /* A mirror's value is computed by the server when an item is read, so the
+       rows already loaded have none for a mirror that did not exist (or read a
+       different field) when they were fetched. Without a refresh every row that
+       was already linked showed "—" under a brand-new mirror until the page was
+       reloaded. Compared before and after so that renaming some other column
+       does not cost a reload of the whole board. */
+    const mirSig=cs=>JSON.stringify((cs||[]).filter(c=>c.type==='mirror')
+      .map(c=>[c.id,(c.mirror_of||{}).connect,(c.mirror_of||{}).field]));
+    const mirBefore=mirSig(st.board.columns);
     const r=await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe(body)});
     st.board.columns=r.columns;
     /* The server keeps an allow-list of column types and drops anything it does
@@ -21152,7 +21161,8 @@ async function saveColumns(cols, confirm){
     if(lost.length) toast('השרת לא מכיר את סוג העמודה: '+lost.join(', ')+' — ייתכן שהוא לא עודכן');
     // adding a "מזהה פריט" column issues an identifier to every item already on
     // the board, so the loaded items have to be refreshed to show them
-    if((r.columns||[]).some(c=>c.type==='item_id')) await refreshBoardItems();
+    if((r.columns||[]).some(c=>c.type==='item_id')
+       || mirSig(r.columns)!==mirBefore) await refreshBoardItems();
     renderView();
     return true;
   }catch(e){
