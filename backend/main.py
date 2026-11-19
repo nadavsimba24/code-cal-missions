@@ -10747,14 +10747,52 @@ IMPORT_MAX_MESSAGES = 10000
 #
 # Fetched under a budget, because a board's attachments can dwarf the board:
 # past either ceiling the rest keep their names and the report says how many.
-IMPORT_MAX_FILES = int(os.getenv("IMPORT_MAX_FILES", "600"))
-IMPORT_MAX_FILE_MB = int(os.getenv("IMPORT_MAX_FILE_MB", "150"))
+#
+# Both ceilings are the WHOLE import's, not one file's — IMPORT_MAX_FILE_MB is
+# the megabytes an import may bring across in total, and the per-file limit is
+# MAX_UPLOAD_BYTES, which is a different thing entirely.
+#
+# They were 600 files and 150MB, and that is small enough to cut a real board in
+# half without anyone noticing. "ניהול ביקורים" (1495412381) carries 972
+# attachments weighing 982MB — 918MB of it one column of site photographs — and
+# the budget ran out 86 files in, at item 112 of 592. Every attachment after
+# that point arrived as a name with nothing behind it, which on a board whose
+# groups run newest-first means every registration form and every schedule older
+# than June 2026 was missing. The board imported, reported, and looked finished.
+# A ceiling that low only ever gets found by someone opening an old row.
+#
+# They can be this high now because the bytes no longer pile up in memory: they
+# are fetched a window at a time (_ImportFileWindow) and written to the database
+# a window at a time (_import_attachments), so what an import holds at once is
+# IMPORT_FILE_WINDOW_MB and not everything it has brought so far.
+IMPORT_MAX_FILES = int(os.getenv("IMPORT_MAX_FILES", "2000"))
+IMPORT_MAX_FILE_MB = int(os.getenv("IMPORT_MAX_FILE_MB", "1200"))
 IMPORT_FILE_TIMEOUT = 20            # seconds per file
+# How many megabytes of attachments an import holds in memory at once — the
+# fetch runs this far ahead of the walk, and the rows written behind it are
+# flushed and let go at the same mark. It is a memory ceiling and nothing else:
+# raising it makes an import no more complete, only hungrier.
+IMPORT_FILE_WINDOW_MB = int(os.getenv("IMPORT_FILE_WINDOW_MB", "96"))
+# The biggest single attachment an import will bring across. It was
+# MAX_UPLOAD_BYTES — the ceiling on what a person may upload through the UI —
+# and an import is not a person uploading. It is a board that already exists
+# somewhere else, and a file that lives in monday today does not become smaller
+# because this app's own form would have refused it. On ניהול ביקורים that rule
+# dropped 22 attachments on the floor, one of them a registration form. Still a
+# limit, so a runaway link is not read without end; only one sized for a
+# migration rather than for a person picking a file.
+IMPORT_MAX_ONE_FILE_MB = int(os.getenv("IMPORT_MAX_ONE_FILE_MB", "50"))
 # How many attachments are fetched at once. The files are an import's only
 # outbound calls and they do not depend on each other, so the wait is the one
 # thing worth overlapping. Eight is modest on purpose: the other side is
 # monday's S3, and an import is not the only thing this server is doing.
-IMPORT_FILE_WORKERS = int(os.getenv("IMPORT_FILE_WORKERS", "8"))
+#
+# Eight was that, and eight is also three minutes of wall clock for a board
+# carrying a gigabyte — long enough that a gateway in front of this app gives up
+# on the request before the import is finished, which to the person waiting is
+# indistinguishable from a crash. Sixteen brings the same board in two. The
+# memory that number used to cost is now the window's, not the pool's.
+IMPORT_FILE_WORKERS = int(os.getenv("IMPORT_FILE_WORKERS", "16"))
 # The upload ceiling for an import. It was 8MB, and a 320-item board exported
 # from monday rejected at 11.7MB — of which 8MB was the indentation Postman adds
 # when a response is saved from its pretty view. The content was 3.66MB. A limit
@@ -10839,8 +10877,9 @@ def _fetch_import_file(url):
             # and it is not the file.
             if ctype == "text/html":
                 return None
-            data = resp.read(MAX_UPLOAD_BYTES + 1)
-            if not data or len(data) > MAX_UPLOAD_BYTES:
+            ceiling = IMPORT_MAX_ONE_FILE_MB * 1024 * 1024
+            data = resp.read(ceiling + 1)
+            if not data or len(data) > ceiling:
                 return None
             return data, ctype
     except Exception:                              # noqa: BLE001 — see the docstring
@@ -10862,56 +10901,118 @@ def _import_fetchable(url):
     return not _signed_url_expired(url)
 
 
-def _prefetch_import_files(urls, budget, workers=None):
-    """Fetch an import's attachments together rather than one after another.
+class _ImportFileWindow:
+    """An import's attachments, fetched ahead of the walk a window at a time.
 
-    They were fetched in the order the items are read, one at a time, inside the
-    request: a fresh monday export of 320 items carried 307 live S3 links, and
-    307 round trips end to end is minutes of a request that spends them waiting.
-    The bytes do not depend on each other. Fetched at once, the import then
-    walks the items exactly as before and finds each file already in hand.
+    One at a time, in the order the items are read, is a round trip per file
+    with nothing else happening: a fresh monday export of 320 items carried 307
+    live S3 links, and 307 round trips end to end is minutes of a request that
+    spends them waiting. The bytes do not depend on each other, so they are
+    fetched together and the walk finds each file already in hand.
 
-    What comes back is {url: (bytes, content_type) or None} — None meaning the
-    fetch failed, which is what the caller does with a failed fetch anyway. The
-    queue is the file's own order, deduplicated; the pool is bounded; and
-    submission stops once the import's byte ceiling is accounted for, because a
-    prefetch that pulled more than the import may keep would spend exactly the
-    time this exists to save.
+    All of them together is the other failure, and it is the one that set the
+    ceiling so low. A board of 972 attachments weighing 982MB would have held
+    those 982MB in memory before a single item was written — so the budget was
+    150MB, and the board came across with two thirds of its files reduced to
+    names. Neither the fetch nor the import needs everything at once: the walk
+    reads the attachments in exactly the order this queue holds them.
+
+    So the queue is drawn from in windows. Asking for a url fetches everything
+    up to it and a window's worth beyond, and a url handed over is let go — what
+    is in memory is the window, whatever the import's total comes to. It answers
+    `url in cache` and `cache[url]` so the caller cannot tell the difference
+    from the dict this used to be: a value of None still means the fetch failed,
+    which is what the caller does with a failed fetch anyway.
     """
-    seen, queue = set(), []
-    for u in urls:
-        if u and u not in seen and _import_fetchable(u):
-            seen.add(u)
-            queue.append(u)
-    queue = queue[:max(0, budget[0])]
-    if not queue:
-        return {}
-    left, lock, out, streak = [budget[1]], threading.Lock(), {}, [0]
 
-    def one(u):
-        with lock:
-            # the run-of-failures guard, honoured here too: if the first handful
-            # cannot be had the rest cannot either, and the point of that rule is
-            # not to spend a timeout per file proving it. Up to one pool's worth
-            # are already in flight when the run trips — but in flight together,
-            # so it costs one timeout rather than one each.
-            if left[0] <= 0 or streak[0] >= IMPORT_FILE_FAIL_STREAK:
-                return u, None
-        got = _fetch_import_file(u)
-        with lock:
-            if got:
-                streak[0] = 0
-                left[0] -= len(got[0])
-            else:
-                streak[0] += 1
-        return u, got
+    # Files asked for in one go — four times the pool's width, so every worker
+    # has something queued behind it and no window is one slow file long.
+    CHUNK = 32
 
-    n = max(1, min(workers or IMPORT_FILE_WORKERS, len(queue)))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=n,
-                                               thread_name_prefix="import-file") as pool:
-        for u, got in pool.map(one, queue):
-            out[u] = got
-    return out
+    def __init__(self, urls, budget, workers=None):
+        seen, self.queue = set(), []
+        for u in urls:
+            if u and u not in seen and _import_fetchable(u):
+                seen.add(u)
+                self.queue.append(u)
+        # Past the file ceiling nothing is fetched, so nothing is queued either:
+        # a prefetch that pulled more than the import may keep would spend
+        # exactly the time this exists to save.
+        self.queue = self.queue[:max(0, budget[0])]
+        self.at = {u: i for i, u in enumerate(self.queue)}
+        self.next = 0
+        self.have = {}
+        self.held = 0
+        self.window = IMPORT_FILE_WINDOW_MB * 1024 * 1024
+        self.workers = max(1, workers or IMPORT_FILE_WORKERS)
+        self.left = [budget[1]]
+        self.streak = [0]
+
+    def __contains__(self, url):
+        if url in self.have:
+            return True
+        i = self.at.get(url)
+        # Behind the queue means it was fetched and handed over already — the
+        # same file in a second cell. Rare, and one round trip of its own is a
+        # better answer than keeping every file to the end of the import.
+        if i is None or i < self.next:
+            return False
+        self._fill(i)
+        return url in self.have
+
+    def __getitem__(self, url):
+        got = self.have.pop(url)
+        if got:
+            self.held -= len(got[0])
+        return got
+
+    def _fill(self, target):
+        """Fetch up to the file asked for, and a window's worth past it."""
+        while self.next < len(self.queue) and self.left[0] > 0 and (
+                self.next <= target or self.held < self.window):
+            batch = self.queue[self.next:self.next + self.CHUNK]
+            self.next += len(batch)
+            self._fetch(batch)
+
+    def _fetch(self, batch):
+        lock = threading.Lock()
+
+        def one(u):
+            with lock:
+                # the run-of-failures guard, honoured here too: if the first
+                # handful cannot be had the rest cannot either, and the point of
+                # that rule is not to spend a timeout per file proving it. Up to
+                # one pool's worth are already in flight when the run trips —
+                # but in flight together, so it costs one timeout rather than
+                # one each.
+                if self.left[0] <= 0 or self.streak[0] >= IMPORT_FILE_FAIL_STREAK:
+                    return u, None
+            got = _fetch_import_file(u)
+            with lock:
+                if got:
+                    self.streak[0] = 0
+                    self.left[0] -= len(got[0])
+                else:
+                    self.streak[0] += 1
+            return u, got
+
+        n = max(1, min(self.workers, len(batch)))
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=n, thread_name_prefix="import-file") as pool:
+            for u, got in pool.map(one, batch):
+                self.have[u] = got
+                if got:
+                    self.held += len(got[0])
+
+
+def _prefetch_import_files(urls, budget, workers=None):
+    """The attachments of one import, ready to be read in the file's own order.
+
+    An empty dict when there is nothing to fetch, so a board with no files costs
+    no object and no pool.
+    """
+    win = _ImportFileWindow(urls, budget, workers)
+    return win if win.queue else {}
 
 
 def _attachment_urls(parsed, columns):
@@ -10996,8 +11097,16 @@ def _import_attachments(db, files, budget, stats, cache=None):
             keep("failed")
             continue
         if budget[0] <= 0 or budget[1] <= 0:
-            got = None
-        elif cache is not None and url in cache:
+            # The ceiling, and the ceiling is not a failure. Counted as one it
+            # read in the report as "קבצים לא נענו" — links that were blocked or
+            # files no longer there, nothing anybody here could do — when what
+            # actually happened was that the import stopped, on purpose, at a
+            # number in this file. On ניהול ביקורים that sentence stood over 878
+            # attachments that monday was serving perfectly well. The two call
+            # for opposite things, so they are counted apart.
+            keep("over_budget")
+            continue
+        if cache is not None and url in cache:
             got = cache[url]      # already in hand — see _prefetch_import_files
         else:
             got = _fetch_import_file(url)
@@ -11012,8 +11121,26 @@ def _import_attachments(db, files, budget, stats, cache=None):
             continue
         token = uuid.uuid4().hex
         media_type, _ = _safe_media_type(ctype)
-        db.add(UploadedFile(token=token, name=name[:255], content_type=media_type,
-                            data=data, size=len(data)))
+        row = UploadedFile(token=token, name=name[:255], content_type=media_type,
+                           data=data, size=len(data))
+        db.add(row)
+        # Written out once a window's worth has gathered, rather than at the
+        # end. A session holds what has been added to it until the commit, so an
+        # import carrying a gigabyte of attachments held that gigabyte twice —
+        # once as the bytes it fetched and once as the rows waiting to go out —
+        # and that, not the files themselves, is what the 150MB ceiling was
+        # really protecting. Flushed, the INSERT is inside this same transaction
+        # and a failure still rolls the whole import back; detached, the bytes
+        # can be let go.
+        pending = stats.setdefault("pending", [])
+        pending.append(row)
+        stats["pending_bytes"] = stats.get("pending_bytes", 0) + len(data)
+        if stats["pending_bytes"] >= IMPORT_FILE_WINDOW_MB * 1024 * 1024:
+            db.flush()
+            for done in pending:
+                db.expunge(done)
+            pending.clear()
+            stats["pending_bytes"] = 0
         budget[0] -= 1
         budget[1] -= len(data)
         stats["imported"] = stats.get("imported", 0) + 1

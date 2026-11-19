@@ -119,12 +119,23 @@ def test_the_import_stops_fetching_at_its_budget_and_says_so(client, admin_id, m
     d = _import(client, admin_id, _resp(items)).json()
     r = d["report"]
     assert r["files_imported"] == 2, r
-    assert r["files_unreachable"] == 3, "the ones past the budget were not accounted for"
+    assert r["files_over_budget"] == 3, "the ones past the budget were not accounted for"
+    # Counted as its own thing, because the report is read as a diagnosis: a
+    # ceiling is a number here that someone can raise, and "did not answer" is
+    # a file nobody here can do anything about.
+    assert r["files_unreachable"] == 0, "the ceiling was reported as a failure to fetch"
 
 
 def test_a_file_over_the_per_file_ceiling_is_not_stored(client, admin_id, monkeypatch):
-    """The real fetcher stops reading past MAX_UPLOAD_BYTES and reports nothing."""
-    big = b"x" * (cityos_main.MAX_UPLOAD_BYTES + 1)
+    """The real fetcher stops reading past the import's own per-file ceiling.
+
+    Its own, and not the UI's: a migration carries files somebody else's system
+    already holds, and the ceiling on what a person may upload here has nothing
+    to say about those. It is still a ceiling — the read stops rather than
+    following a link of unbounded length.
+    """
+    monkeypatch.setattr(cityos_main, "IMPORT_MAX_ONE_FILE_MB", 1)
+    big = b"x" * (1 * 1024 * 1024 + 1)
 
     class FakeResp:
         headers = {"Content-Type": "application/zip"}
@@ -561,3 +572,95 @@ def test_the_chip_does_not_link_a_file_that_never_arrived():
     assert "הקישור של מאנדיי פג" in src, "and says what would bring the file"
     assert "file-dead" in src and "att-dead" in src, "the cell chip and the message one"
 
+
+
+# ── the window: a board's files are fetched a stretch at a time ─────────────
+# The ceiling on what an import brings used to be a memory ceiling wearing
+# another name. Everything was fetched before the first item was written and
+# everything written stayed in the session until the commit, so a board's files
+# were held twice over and 150MB was as much as that could be allowed to reach.
+# On ניהול ביקורים — 592 items, 972 attachments, 982MB — the budget ran out 86
+# files in, at item 112, and every registration form and schedule below that
+# point arrived as a name with nothing behind it. The board imported, reported
+# and looked finished.
+#
+# What makes the ceiling raisable is that neither half piles up any more: the
+# fetch runs a window ahead of the walk and lets go of what it has handed over,
+# and the rows behind it go to the database a window at a time. These pin that,
+# because the symptom of losing it is not an error — it is a board that looks
+# complete and is two thirds files-by-name.
+
+def test_a_board_heavier_than_the_window_still_arrives_whole(client, admin_id, monkeypatch):
+    """Every file comes across, however many windows it takes to fetch them."""
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_WINDOW_MB", 1)
+    blob = b"x" * (300 * 1024)                 # three to a window, seventy in all
+    urls = {f"{MONDAY_HOST}/w{i}.pdf": (blob, "application/pdf") for i in range(70)}
+    _serve(monkeypatch, urls)
+    items = [_item(f"פריט {i}", cols=[_filecol("מסמך", f"w{i}.pdf")],
+                   assets=[{"id": str(i), "name": f"w{i}.pdf",
+                            "public_url": f"{MONDAY_HOST}/w{i}.pdf"}])
+             for i in range(70)]
+    r = _import(client, admin_id, _resp(items)).json()["report"]
+    assert r["files_imported"] == 70, r
+    assert r["files_over_budget"] == 0 and r["files_unreachable"] == 0, r
+
+
+def test_the_fetch_does_not_pull_the_whole_board_into_memory(monkeypatch):
+    """A window's worth is in hand at once, not the board's worth.
+
+    Asked for the first file, it fetches a stretch and stops; asked for a file
+    further along, it fetches up to there. What has been handed over is let go,
+    so what the import holds is the window whatever the board weighs.
+    """
+    blob = b"x" * (256 * 1024)
+    urls = [f"{MONDAY_HOST}/m{i}.bin" for i in range(400)]
+    asked = []
+
+    def fake(url):
+        asked.append(url)
+        return blob, "application/octet-stream"
+    monkeypatch.setattr(cityos_main, "_fetch_import_file", fake)
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_WINDOW_MB", 1)
+
+    win = cityos_main._prefetch_import_files(urls, [len(urls), 400 * 1024 * 1024])
+    assert urls[0] in win
+    first = len(asked)
+    assert first < len(urls), "the first file pulled the whole board"
+    peak = win.held
+    for u in urls:                              # the walk, in the file's order
+        assert u in win
+        win[u]
+        peak = max(peak, win.held)
+    assert len(asked) == len(urls), "some file was never fetched"
+    # Rounded up to whole chunks of the fetch, a window is still a window and
+    # not four hundred files' worth of bytes.
+    assert peak < 16 * 1024 * 1024, f"held {peak} bytes at once"
+
+
+def test_the_bytes_go_to_the_database_as_they_arrive(client, admin_id, monkeypatch):
+    """The rows written do not wait in the session for the commit.
+
+    Left there they are the other copy of the board — the one the fetch window
+    cannot do anything about — and the two together are what kept the ceiling
+    where it was.
+    """
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_WINDOW_MB", 1)
+    blob = b"y" * (400 * 1024)
+    urls = {f"{MONDAY_HOST}/d{i}.pdf": (blob, "application/pdf") for i in range(12)}
+    _serve(monkeypatch, urls)
+    held = []
+    real_flush = Session.flush
+
+    def watch(self, *a, **kw):
+        held.append(sum(len(o.data or b"") for o in self.new
+                        if isinstance(o, UploadedFile)))
+        return real_flush(self, *a, **kw)
+    monkeypatch.setattr(Session, "flush", watch)
+    items = [_item(f"פריט {i}", cols=[_filecol("מסמך", f"d{i}.pdf")],
+                   assets=[{"id": str(i), "name": f"d{i}.pdf",
+                            "public_url": f"{MONDAY_HOST}/d{i}.pdf"}])
+             for i in range(12)]
+    r = _import(client, admin_id, _resp(items)).json()["report"]
+    assert r["files_imported"] == 12, r
+    assert max(held) <= 3 * 1024 * 1024, \
+        f"{max(held)} bytes of attachments were waiting in the session at once"

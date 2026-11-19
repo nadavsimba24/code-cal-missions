@@ -6632,7 +6632,7 @@ function importReport(b){
         <div class="imp-cols">${(r.files_items_unmatched||[]).map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
       ${r.files_expired?`<div class="imp-why">${r.files_expired} קבצים נשארו כשם בלבד — <b>הקישורים בקובץ פגו</b>. מאנדיי חותם אותם לשעה אחת בלבד (הזמן כתוב בקישור עצמו, ולכן לא ניסינו להוריד אותם לחינם). כדי להביא גם את הקבצים: לייצא ולייבא ברצף, בתוך אותה שעה.</div>`:''}
       ${r.files_unreachable?`<div class="imp-why">${r.files_unreachable} קבצים לא נענו — קישור שנחסם, או קובץ שאינו זמין יותר. השם נשמר.</div>`:''}
-      ${r.files_over_budget?`<div class="imp-why">${r.files_over_budget} קבצים מעבר לתקציב הייבוא נשארו כשם בלבד.</div>`:''}
+      ${r.files_over_budget?`<div class="imp-why"><b>הייבוא עצר בתקרה שלו</b> ו-${r.files_over_budget} קבצים נשארו כשם בלבד. זו לא תקלה בקבצים — הם עדיין במאנדיי, פשוט נגמר מה שייבוא אחד מביא (IMPORT_MAX_FILES קבצים, IMPORT_MAX_FILE_MB מגה־בייט). הקבצים שלא הגיעו הם אלה שבסוף הקובץ, כלומר הקבוצות התחתונות בלוח. כדי להביא את כולם: להעלות את התקרה ולייבא שוב.</div>`:''}
     </div>`:'';
   /* The formulas.
      A formula column comes in as TEXT, holding the value monday worked out — a

@@ -166,6 +166,24 @@ counting the group in monday a day later. A board short by 3% looks finished, wh
 problem with trimming.
 
 
+**An import brings a bounded number of attachments, and says when it stopped.** `IMPORT_MAX_FILES`
+(2,000) and `IMPORT_MAX_FILE_MB` (1,200 — the whole import's megabytes, not one file's) are what one
+import may fetch; `IMPORT_MAX_ONE_FILE_MB` (50) is the largest single file. Past a ceiling the rest keep
+their names, and the report says *הייבוא עצר בתקרה שלו* with the count.
+
+They were 600 files and 150MB, which was not a policy about files — it was the memory an import held,
+because everything was fetched before the first item was written and every row waited in the session
+until the commit. **ניהול ביקורים** (`1495412381`) is what that cost: 592 items, 972 attachments, 982MB,
+and the budget ran out 86 files in, at item 112 of 592. Every attachment below that point — every
+*טופס הרשמה* and *לו"ז מעוצב לשליחה* older than June 2026 — arrived as a name with nothing behind it,
+and the report called them "קבצים לא נענו", which reads as monday's fault. The board imported, reported,
+and looked finished. The same board now comes across whole: 964 files, 1.03GB, in three minutes, with
+about half a gigabyte of memory in hand at the peak.
+
+The fetch runs a window ahead of the walk (`IMPORT_FILE_WINDOW_MB`, 96) and the rows go to the database
+at the same mark, so what an import holds at once is the window and not the board. Raising the window
+makes an import no more complete, only hungrier; raising the two ceilings is what brings more files.
+
 **History is a window, not the life of the board.** monday keeps `activity_logs` for a period that
 depends on the plan. The report says which date the log starts at; that is a fact about monday, not
 about the migration.
@@ -220,6 +238,7 @@ rather than dropping them silently.
 | formula / mirror / connect columns are empty on every item | the query did not ask for `display_value` — those three types do not answer in `text` at all |
 | a status column nobody has filled in yet did not come across | the query did not ask for `columns { … settings_str }` — an empty status column is built from the vocabulary its own definition states, and without it there is nothing to build |
 | everything imported, but there are fewer items than in monday | `cursor` was not `null` and pages were left behind. The report says so explicitly |
+| the newest rows have their files and the older ones have only names | the import hit `IMPORT_MAX_FILES` or `IMPORT_MAX_FILE_MB` partway down the file and kept names from there on. It is a cutoff by position, not by date — it only looks like a date because a monday board is usually ordered newest first. The report says so under *הייבוא עצר בתקרה שלו* |
 | everything imported, but a change you made to the code is not there | the server is running from before the change — restart it, and Cmd+Shift+R in the tab |
 
 ---
