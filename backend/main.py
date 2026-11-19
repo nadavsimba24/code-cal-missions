@@ -20117,6 +20117,15 @@ def _coerce_cell(db, board_id, col, value):
     column's business.
     """
     kind = recipes.column_kind(col.get("type"))
+    # A status cell is not always a bare word. The monday import, a form and the
+    # status picker store it as the option itself — {id, label, color} — and a
+    # mapped value is read straight off the source cell. str() of that dict is
+    # "{'id': 'o_1ed3af42', 'label': 'תנ/8/2026', …}", which no column's
+    # vocabulary contains, so every cross-board rule copying such a status was
+    # refused and took the item it had just created back with it: the rule
+    # fired, and nothing appeared on the target board. The label is the value.
+    if isinstance(value, dict) and "label" in value:
+        value = value.get("label")
     raw = "" if value is None else str(value).strip()
     if raw == "":
         return None, "אין ערך לכתוב"

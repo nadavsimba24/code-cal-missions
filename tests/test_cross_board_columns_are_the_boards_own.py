@@ -343,3 +343,32 @@ def test_a_pairing_the_engine_cannot_carry_stops_the_rule(client, admin_id):
     r = _old_rule(client, admin_id, a, b, link, grp,
                   mapping=[{"from": src_col, "to": num_col}])
     assert r.status_code == 400, r.text
+
+
+# ── ערך סטטוס שנשמר כאפשרות עצמה ────────────────────────────────────────────
+# A status cell written by the monday import, a form or the status picker is the
+# option itself — {id, label, color} — not a bare word. The mapping read it off
+# the source cell and str()'d it, so the target column was asked to hold
+# "{'id': 'o_…', 'label': 'תנ/8/2026', …}", refused, and the rule took back the
+# item it had just created. In production that was a rule that fired every time
+# and never put anything on the target board.
+
+def test_a_status_stored_as_its_option_travels_by_its_label(client, admin_id):
+    a, b, link, grp, _s, _d, _n = _setup(client, admin_id, "stobj")
+    opts = [{"label": "תנ/8/2026", "color": "#037f4c"}, {"label": "אחר", "color": "#e2445c"}]
+    src_col = _add_col(client, a, admin_id, {"id": "col_st_src", "type": "status",
+                                             "title": "מכרז", "options": opts})
+    dst_col = _add_col(client, b, admin_id, {"id": "col_st_dst", "type": "status",
+                                             "title": "מכרז", "options": opts})
+    r = _old_rule(client, admin_id, a, b, link, grp,
+                  mapping=[{"from": src_col, "to": dst_col}])
+    assert r.status_code == 200, r.text
+    cell = {"id": "o_1ed3af42", "label": "תנ/8/2026", "color": "#037f4c"}
+    src = client.post("/api/tasks", json={"board_id": a, "title": "מק״ל מקור",
+                                          "user_id": admin_id,
+                                          "custom_fields": {src_col: cell}}).json()["id"]
+    client.patch(f"/api/tasks/{src}", json={"status": "done", "user_id": admin_id})
+    made = _made(b, "מק״ל פריט יעד")
+    assert len(made) == 1, "the rule fired and the item it created was taken back"
+    stored = (made[0].custom_fields or {}).get(dst_col)
+    assert (stored.get("label") if isinstance(stored, dict) else stored) == "תנ/8/2026"
