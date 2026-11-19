@@ -135,6 +135,20 @@ def test_the_name_in_the_mirror_becomes_the_account_behind_it(client, admin_id, 
     assert _assignees(near) == [], "it also assigned the board's built-in אחראים"
 
 
+def test_a_saved_rule_names_its_mirror_and_column_by_title_not_id(client, admin_id, member_id):
+    """The rule list reads the sentence off the server, and the label lookup
+    there knew a column and a connect column but not a mirror — so a saved
+    rule read "שבעמודת המראה col_…" where the builder had shown the title."""
+    s = _stage(client, admin_id, member_id, "m-label", [member_id])
+    r = _rule(client, s["dst"], admin_id, "link_added_assign_from_mirror",
+              {"a_mirror": s["mir"], "a_person_col": s["pm"]})
+    assert r.status_code == 200, r.text
+    said = r.json()["sentence"]
+    assert "אחראי מהמקור" in said, said
+    assert "מנהל פרויקט" in said, said
+    assert s["mir"] not in said and s["pm"] not in said, said
+
+
 def test_without_a_column_it_fills_the_boards_own_assignees(client, admin_id, member_id):
     """Silence means the built-in, exactly as it does for «שייך את X»."""
     s = _stage(client, admin_id, member_id, "m2", [member_id])

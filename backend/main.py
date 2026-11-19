@@ -20188,7 +20188,10 @@ def _shown_value(db, board, ftype, v, col_id=""):
         return db.query(User.name).filter(User.id == v).scalar() or "—"
     if ftype == "group":
         return db.query(Group.name).filter(Group.id == v).scalar() or "—"
-    if ftype == "column":
+    # A mirror is stored the same way a column is — its id — and was missing
+    # here when "assign_from_mirror" arrived, so a saved rule read
+    # "שבעמודת המראה col_1a2b" until somebody opened it again.
+    if ftype in ("column", "mirror"):
         # "שינוי שם רכיב — המשך לפי מזהה קבוע והצגת השם החדש". The rule stores
         # the id and the sentence reads the title off the board every time, so
         # a column renamed this morning reads correctly this afternoon — and a
