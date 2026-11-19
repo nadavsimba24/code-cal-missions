@@ -10176,13 +10176,25 @@ def create_board(data: dict, actor_id: int = Depends(current_user_id)):
 # text). One item is created per data row. Reuses the same board scaffolding as
 # create_board (3 default groups, creator becomes admin).
 
+# A number column a sheet wrote for people to read, not for a parser: "₪1,200",
+# "1,200 ₪", "35%", a thousands separator that is a no-break space (what Excel
+# writes in a Hebrew locale), a minus that is U+2212. Any ONE such cell used to
+# make float() fail, and since a column is a number only if every cell is, the
+# whole column arrived as text — a budget column nobody could sum or sort.
+# The decoration is dropped and the digits kept; what is left must be a plain
+# decimal, so "inf", "nan" and "1e5" — all of which float() accepts — stay text.
+_IMP_NUM_DECOR = re.compile(r"[₪$€£%]")
+_IMP_NUM_PLAIN = re.compile(r"-?(?:\d+\.?\d*|\.\d+)")
+
+
 def _imp_to_number(v):
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
         return v
-    s = str(v).strip().replace(",", "")
-    if not s:
+    s = _IMP_NUM_DECOR.sub("", str(v)).strip()
+    s = s.replace(",", "").replace(" ", "").replace(" ", "").replace("−", "-")
+    if not s or not _IMP_NUM_PLAIN.fullmatch(s):
         return None
     try:
         f = float(s)
@@ -10200,6 +10212,12 @@ def _imp_to_date_iso(v):
     s = str(v).strip()
     if not s:
         return None
+    # The sheet's rows are read as text before they are typed, and a real date
+    # cell turns into "2024-01-24 00:00:00" on the way — the datetime's own
+    # str(). None of the formats below has a time in it, so every date column in
+    # a monday Excel export arrived as a text column of those strings. The time
+    # is dropped: this is a date column, and monday's date cells carry none.
+    s = re.sub(r"[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$", "", s)
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%Y/%m/%d", "%d-%m-%Y", "%m/%d/%Y"):
         try:
             return _dt.datetime.strptime(s, fmt).date().isoformat()
