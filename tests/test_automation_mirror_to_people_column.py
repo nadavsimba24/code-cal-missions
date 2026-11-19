@@ -96,7 +96,8 @@ def _link(client, tid, connect_id, ids, admin_id):
                         json={"custom_fields": {connect_id: ids}}, headers=AS(admin_id))
 
 
-def _stage(client, admin_id, who, name, source_cells=None, source_type="people"):
+def _stage(client, admin_id, who, name, source_cells=None, source_type="people",
+           two_way=False):
     """Two boards, a link between them and a mirror over it.
 
     `src` carries the column whose value the mirror shows; `dst` carries the
@@ -109,7 +110,7 @@ def _stage(client, admin_id, who, name, source_cells=None, source_type="people")
     (conn,) = _add_cols(client, dst, admin_id,
                         [{"type": "connect", "title": "המקור",
                           "connect": {"board_ids": [src], "multiple": True,
-                                      "two_way": False}}])
+                                      "two_way": two_way}}])
     mir, pm, rk = _add_cols(client, dst, admin_id, [
         {"type": "mirror", "title": "אחראי מהמקור",
          "mirror_of": {"connect": conn, "field": s_col}},
@@ -233,6 +234,80 @@ def test_no_other_rule_runs_over_the_board_when_it_is_built(client, admin_id, me
     assert r.status_code == 200, r.text
     assert r.json()["backfill"] is None
     assert _assignees(near) == []
+
+
+# ── the source changes, and the column here follows ────────────────────────
+# A mirror is computed, never stored, so a change on the source board changed
+# nothing on this one: the mirror read differently next time and no rule could
+# hear it. mirror_changed is that change carried across the link.
+
+def _invite(client, admin_id, bid, uid):
+    client.post(f"/api/boards/{bid}/members",
+                json={"actor_id": admin_id, "user_id": uid, "role": "editor"})
+
+
+def _follow(client, admin_id, member_id, guinea_id, name, two_way=False):
+    s = _stage(client, admin_id, member_id, name, [member_id], two_way=two_way)
+    for b in (s["src"], s["dst"]):
+        _invite(client, admin_id, b, guinea_id)
+    near = _item(client, s["dst"], admin_id, "פריט יעד")
+    _link(client, near, s["conn"], [s["far"]], admin_id)
+    return s, near
+
+
+def _change_source(client, admin_id, s, people):
+    r = client.patch(f"/api/tasks/{s['far']}?user_id={admin_id}",
+                     json={"custom_fields": {s["s_col"]: people}}, headers=AS(admin_id))
+    assert r.status_code == 200, r.text
+
+
+def test_a_change_on_the_source_board_reaches_the_column_here(client, admin_id,
+                                                               member_id, guinea_id):
+    s, near = _follow(client, admin_id, member_id, guinea_id, "fw1")
+    r = _rule(client, s["dst"], admin_id, "mirror_changed_assign_from_mirror",
+              {"a_mirror": s["mir"], "a_person_col": s["pm"], "a_write": "replace"})
+    assert r.status_code == 200, r.text
+    assert _cell(near, s["pm"]) == [member_id]          # filled when it was built
+    _change_source(client, admin_id, s, [guinea_id])
+    assert _cell(near, s["pm"]) == [guinea_id], "the local column did not follow the source"
+
+
+def test_it_follows_through_a_two_way_link_too(client, admin_id, member_id, guinea_id):
+    s, near = _follow(client, admin_id, member_id, guinea_id, "fw2", two_way=True)
+    _rule(client, s["dst"], admin_id, "mirror_changed_assign_from_mirror",
+          {"a_mirror": s["mir"], "a_person_col": s["pm"], "a_write": "replace"})
+    _change_source(client, admin_id, s, [guinea_id])
+    assert _cell(near, s["pm"]) == [guinea_id]
+
+
+def test_without_the_rule_a_source_change_writes_nothing_here(client, admin_id,
+                                                              member_id, guinea_id):
+    s, near = _follow(client, admin_id, member_id, guinea_id, "fw3")
+    _change_source(client, admin_id, s, [guinea_id])
+    assert _cell(near, s["pm"]) is None
+
+
+def test_a_change_to_a_field_the_mirror_does_not_show_is_not_heard(client, admin_id,
+                                                                   member_id, guinea_id):
+    s, near = _follow(client, admin_id, member_id, guinea_id, "fw4")
+    aid = _rule(client, s["dst"], admin_id, "mirror_changed_assign_from_mirror",
+                {"a_mirror": s["mir"], "a_person_col": s["pm"],
+                 "a_write": "replace"}).json()["id"]
+    runs = lambda: client.get(f"/api/boards/{s['dst']}/automations/runs"
+                              f"?automation_id={aid}&user_id={admin_id}").json()["runs"]
+    was = len(runs())
+    assert client.patch(f"/api/tasks/{s['far']}?user_id={admin_id}",
+                        json={"title": "שם אחר"}, headers=AS(admin_id)).status_code == 200
+    assert len(runs()) == was, "a title change set off a rule about a people mirror"
+
+
+def test_the_follow_template_starts_on_replace_and_is_recommended():
+    r = next(t for t in recipes.catalog() if t["id"] == "mirror_changed_assign_from_mirror")
+    w = next(f for f in r["fields"] if f["key"] == "a_write")
+    assert w.get("default") == "replace"
+    assert r["recommended"] and r["title"]
+    assert "mirror" in r["needs"]
+    assert "·" not in r["sentence"], r["sentence"]
 
 
 def test_a_mirror_of_any_text_is_read_the_same_way(client, admin_id, member_id):

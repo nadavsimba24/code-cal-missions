@@ -11183,8 +11183,13 @@ const Automations = {
     const picks={};
     ((r&&r.fields)||[]).filter(f=>f.type==='pick').forEach(f=>{
       const spec=(this.caps||{})[String(f.key).replace(/^[at]_/,'')]||{};
-      if(spec.default!==undefined)
-        picks[f.key]={v:spec.default,label:(spec.labels||{})[spec.default]||spec.default};
+      /* a template may start a choice somewhere other than the engine's
+         default — "כאשר הערך בלוח המקור משתנה" starts on "במקום", because a
+         column that follows the source and kept yesterday's person beside
+         today's would be following nothing. It is still only where it starts. */
+      const d=(f.default!==undefined)?f.default:spec.default;
+      if(d!==undefined)
+        picks[f.key]={v:d,label:(spec.labels||{})[d]||d};
     });
     /* notifyAll starts false on purpose — the notification about a new rule
        goes to its author and the board's managers, and telling the whole board

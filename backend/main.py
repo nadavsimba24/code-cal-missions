@@ -19064,6 +19064,12 @@ def _automation_matches(a, event):
         return str(cfg.get("t_group")) == str(event.get("group_id"))
     if event["type"] == "column_changed":
         return str(cfg.get("t_column")) == str(event.get("col"))
+    if event["type"] == "mirror_changed":
+        # which mirror: the one the trigger names if it names one, else the one
+        # the action reads — "the far value changed" is about the mirror this
+        # rule copies from, not about every mirror on the board
+        want = str(cfg.get("t_mirror") or cfg.get("a_mirror") or "")
+        return not want or want == str(event.get("col") or "")
     if event["type"] in ("person_assigned", "person_unassigned"):
         # which people COLUMN as well: a board with מנהל פרויקט and רכזת has
         # two rules that both fire on somebody being put on the job, and each
@@ -24156,6 +24162,84 @@ def _fan_out_linked_status(db, task, status_key, actor_id, depth=0, chain=""):
                                      "source_task_id": task.id}, actor_id, depth + 1)
 
 
+# ── the far value changed, so a mirror elsewhere shows something else ─────────
+# Which of the source item's fields an event says moved, in the spelling a
+# mirror's `field` uses. A people column and a status column also raise
+# column_changed for the same edit, so only the BUILT-IN spellings are read
+# off the person and status events — reading both would tell the far board
+# the same change twice, and the second would be cut as a repeat.
+def _mirror_fields_moved(event):
+    t, col = event.get("type"), str(event.get("col") or "")
+    if t == "column_changed":
+        return {col} if col else set()
+    if t == "status_changes_to" and not col:
+        return {"status"}
+    if t == "priority_changes_to":
+        return {"priority"}
+    if t in ("person_assigned", "person_unassigned") and not col:
+        return {"assignees"}
+    return set()
+
+
+def _fan_out_mirror_change(db, task, event, actor_id, depth=0):
+    """Tell the items whose mirror reads this one that what it shows changed.
+
+    A mirror is computed, never stored, so nothing on the far board changes
+    when the source does — the mirror simply reads differently next time. That
+    is fine for a cell somebody looks at and useless for a rule: "the PM on the
+    source board changed, so change it here" had no event to hang off.
+
+    Only boards with a LIVE mirror_changed rule are looked at at all, which is
+    what keeps an ordinary edit from scanning the organisation. On those, a
+    one-way link lives in the cell of the side that made it, so the items
+    pointing here are found by reading that board's connect cells — the price
+    of the lookup the two-way index would have made cheap, paid only by a board
+    that asked for this.
+    """
+    moved = _mirror_fields_moved(event or {})
+    if not moved or depth >= AUTOMATION_MAX_DEPTH:
+        return
+    ids = [r["id"] for r in recipes.RECIPES if r["trigger"] == "mirror_changed"]
+    boards = {bid for (bid,) in db.query(Automation.board_id).filter(
+                  Automation.recipe_id.in_(ids),
+                  Automation.is_active == True).distinct().all()}         # noqa: E712
+    for bid in sorted(boards):
+        cols = _board_columns(db, bid) or []
+        conns = {c["id"]: c for c in cols if c.get("type") == "connect"}
+        for mc in cols:
+            if mc.get("type") != "mirror":
+                continue
+            mcfg = _mirror_cfg(mc)
+            conn = conns.get(str(mcfg.get("connect") or ""))
+            if not conn or str(mcfg.get("field") or "") not in moved:
+                continue
+            if task.board_id not in [int(x) for x in (_connect_cfg(conn).get("board_ids") or [])
+                                     if str(x).lstrip("-").isdigit()]:
+                continue
+            if _is_two_way(conn):
+                # the shared row says which side's cell it is; the near item
+                # is the one whose side is this connect column
+                other = set()
+                for l in db.query(ItemLink).filter(
+                        or_((ItemLink.a_task_id == task.id) & (ItemLink.b_col == conn["id"]),
+                            (ItemLink.b_task_id == task.id) & (ItemLink.a_col == conn["id"]))):
+                    other.add(l.b_task_id if l.a_task_id == task.id else l.a_task_id)
+                near = (db.query(Task).filter(Task.board_id == bid,
+                                              Task.deleted_at == None,      # noqa: E711
+                                              Task.id.in_(other)).all() if other else [])
+            else:
+                near = [t for t in db.query(Task).filter(
+                            Task.board_id == bid, Task.deleted_at == None).all()  # noqa: E711
+                        if task.id in ((t.custom_fields or {}).get(conn["id"]) or [])]
+            for t in near:
+                _run_automations(db, t, {"source": "link", "type": "mirror_changed",
+                                         "col": mc["id"], "source_task_id": task.id,
+                                         "id": uuid.uuid4().hex[:24],
+                                         "chain": (event or {}).get("chain")
+                                                  or uuid.uuid4().hex[:24]},
+                                 actor_id, depth + 1)
+
+
 def _run_automations(db, task, event, actor_id, depth=0):
     """Fire every active rule on the item's board that matches this event."""
     if task is None:
@@ -24173,6 +24257,9 @@ def _run_automations(db, task, event, actor_id, depth=0):
         event = {**(event or {}),
                  "id": (event or {}).get("id") or uuid.uuid4().hex[:24],
                  "chain": (event or {}).get("chain") or uuid.uuid4().hex[:24]}
+    # Before this board's own freeze and quota are asked: the boards that
+    # mirror this item are other boards, and a stop held HERE is not theirs.
+    _fan_out_mirror_change(db, task, event, actor_id, depth)
     board = db.query(Board).filter(Board.id == task.board_id).first()
     if not board or board.deleted_at:
         return
@@ -26815,6 +26902,7 @@ AUTOMATION_TRIGGER_READS = {
     "moved_to_group":           ["קבוצה"],
     "subitem_created":          ["תתי־פריטים"],
     "column_changed":           ["עמודה מותאמת"],
+    "mirror_changed":           ["עמודת מראה"],
     "person_unassigned":        ["אחראים"],
     "due_date_near":            ["תאריך יעד"],
     "due_date_passed":          ["תאריך יעד"],
@@ -27330,7 +27418,8 @@ def _dry_run_automation(db, board, a, task, viewer=None):
     elif trig == "person_assigned":
         trigger["matches"] = bool(list(task.assignees))
         trigger["note"] = "לפריט משויכים" if list(task.assignees) else "לפריט אין משויכים"
-    elif trig in ("link_added", "link_removed", "linked_status_changes_to"):
+    elif trig in ("link_added", "link_removed", "linked_status_changes_to",
+                  "mirror_changed"):
         trigger["note"] = "נבדק מול האירוע בפועל; בבדיקה מונח שהאירוע התרחש"
 
     # ── each condition on its own ──

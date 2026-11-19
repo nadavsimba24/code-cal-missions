@@ -1034,9 +1034,11 @@ TRIGGERS = {
     "linked_status_changes_to": "כאשר הסטטוס של פריט מקושר משתנה ל{status}",
     # ── the rest of the sources a change can come from ──
     # Each of these already happened in the product; what they lacked was a way
-    # to be listened to. A mirror column is deliberately NOT among them: it
-    # shows a value that lives on another item, so "it changed" is that item's
-    # event and not this one's. It stays usable as a condition.
+    # to be listened to. A mirror column is deliberately NOT among them as an
+    # ordinary column: it shows a value that lives on another item, so "it
+    # changed" is that item's event and not this one's. It stays usable as a
+    # condition — and the one trigger that does hear it is mirror_changed
+    # below, which is that far item's event carried across the link.
     "moved_to_group":      "כאשר הפריט מועבר לקבוצה {group}",
     "subitem_created":     "כאשר נוצר תת־פריט",
     "column_changed":      "כאשר ערך העמודה {column} משתנה",
@@ -1055,6 +1057,14 @@ TRIGGERS = {
     # this product, so a recurring rule is swept when the board is read, and
     # "every 0 days" would be "on every read".
     "every_n_days":        "כל {days} ימים",
+    # ── the far item moved, so the mirror here shows something else ──
+    # Fired on THIS board when an item a mirror here reads from changes the
+    # field that mirror shows — see _fan_out_mirror_change in main.py. It names
+    # no column of its own: the one rule it exists for already names its
+    # mirror in the action, and asking for it twice would be a form where the
+    # two answers can disagree. A rule that does name one (t_mirror) hears only
+    # that one.
+    "mirror_changed":      "כאשר הערך בעמודת המראה משתנה בלוח המקור",
     # ── a conversation going quiet ──
     # Every other trigger here fires on something somebody DID. This one fires
     # on nobody having done anything: an item whose thread has had no update
@@ -1974,6 +1984,15 @@ RECIPES = [
      "action": "assign_from_mirror", "fields": []},
     {"id": "status_assign_from_mirror", "trigger": "status_changes_to",
      "action": "assign_from_mirror", "fields": [_f("t_status", "status", "סטטוס")]},
+    # The live half of the copy: the source board changes the person and the
+    # column here follows. "במקום" is where this one starts — a column that
+    # FOLLOWS the source and kept yesterday's person beside today's would be
+    # following nothing — and it is still the author's to change.
+    {"id": "mirror_changed_assign_from_mirror", "trigger": "mirror_changed",
+     "action": "assign_from_mirror",
+     "fields": [_f("a_mirror", "mirror", "עמודת המראה"),
+                _f("a_write", "pick", "מה לעשות עם מי שכבר בעמודה",
+                   default="replace")]},
     {"id": "every_days_assign_from_mirror", "trigger": "every_n_days",
      "action": "assign_from_mirror",
      "fields": [_f("t_days", "days", "כל כמה ימים", min=MIN_EVERY_DAYS)]},
@@ -2185,6 +2204,7 @@ _TRIGGER_TAGS = {
     "moved_to_group":           (),
     "subitem_created":          ("subitem",),
     "column_changed":           (),
+    "mirror_changed":           ("link",),
     "person_unassigned":        ("assign",),
     "due_date_near":            ("date",),
     "due_date_passed":          ("date",),
@@ -2231,6 +2251,7 @@ NEEDS_HE = {
 }
 _TRIGGER_NEEDS = {
     "column_changed":           ("column",),
+    "mirror_changed":           ("mirror",),
     "moved_to_group":           ("group",),
     "link_added":               ("connect",),
     "link_removed":             ("connect",),
@@ -2324,6 +2345,8 @@ EXTRA_TEMPLATES = [
     # אותו כאדם", and the word they will search for is "מראה".
     ("link_added_assign_from_mirror",
      "כאשר נוצר קשר, הפוך את השם שבעמודת המראה לאחראי בעמודת אנשים בלוח"),
+    ("mirror_changed_assign_from_mirror",
+     "כאשר הערך בלוח המקור משתנה, עדכן גם את עמודת האנשים בלוח"),
     ("every_days_assign_from_mirror",
      "כל כמה ימים, סנכרן עמודת אנשים בלוח מתוך עמודת מראה"),
 ]
