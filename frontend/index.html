@@ -637,6 +637,13 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   color:var(--text);font-family:inherit;font-size:13.5px;line-height:1.6}
 .au-notice:focus{outline:none;border-color:var(--primary)}
 .au-tok{margin:4px 0}
+/* A typed value and the button that keeps it, on one line. The button used to
+   be an rm-item under the token menu — the same row a menu OPTION is drawn
+   as — so "✓ אישור" read as one more thing to pick rather than as saving
+   what was typed. */
+.au-txt-row{display:flex;align-items:center;gap:6px}
+.au-txt-row .au-in{flex:1;min-width:0}
+.au-txt-ok{padding:6px 12px;font-size:12.5px;white-space:nowrap}
 .au-tok>summary{cursor:pointer;font-size:12px;color:var(--primary);padding:3px 6px}
 .au-tok .rm-item{font-size:12px}
 .au-tmiss{margin-top:7px;font-size:12px;color:var(--red)}
@@ -11450,10 +11457,13 @@ const Automations = {
       }
       const cur=(a.values||{})[key];
       openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
-        <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setActText(${i},'${key}');}">
+        ${this._valueNote(a.values,key)}
+        <div class="au-txt-row">
+          <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setActText(${i},'${key}');}">
+          <button class="btn btn-primary au-txt-ok" onclick="Automations.setActText(${i},'${key}')">שמירה</button>
+        </div>
         ${this.tokenMenuHTML()}
-        <button class="rm-item" onclick="Automations.setActText(${i},'${key}')"><i class="fa-solid fa-check"></i> אישור</button>
       </div>`,'row-menu-pop');
       setTimeout(()=>{const el=document.getElementById('au-txt'); if(el){el.focus();el.select();}},30);
       return;
@@ -11872,6 +11882,18 @@ const Automations = {
 
      Only set_column pairs a column blank with a text blank, which is why
      looking for a sibling is enough to recognise it. */
+  /* "עדכן את העמודה … ל…" with the column still blank: the value is asked
+     for before anybody knows what kind of cell it goes into, and a date
+     column would have offered a menu of days instead of this box. Said, not
+     enforced — a value typed first is still kept. */
+  _valueNote(values,key){
+    if(!/(^|_)text$/.test(String(key||''))) return '';
+    if(((values&&(values.a_column||values.column))||{}).v) return '';
+    const spec=((this.building||{}).recipe||{}).fields||[];
+    const acts=(this.building&&this.building.acts)||[];
+    const hasCol=spec.some(f=>f.key==='a_column')||acts.some(a=>a.values===values&&a.key==='set_column');
+    return hasCol?'<div class="rm-note">כדאי לבחור קודם את העמודה — בעמודת תאריך יוצע תפריט של תאריכים</div>':'';
+  },
   _targetCol(values,key){
     if(!/(^|_)text$/.test(String(key||''))) return null;
     const id=((values&&(values.a_column||values.column))||{}).v;
@@ -11955,7 +11977,7 @@ const Automations = {
                placeholder="${esc(kind==='number'?'ערך מספרי':'טקסט')}" value="${
                  esc(this.condRef(this._condSecond?c.v2:c.v)?'':(c.label||''))}"
                onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setColCondText(${i});}">
-        <button class="rm-item" onclick="Automations.setColCondText(${i})"><i class="fa-solid fa-check"></i> אישור</button>
+        <button class="btn btn-primary au-txt-ok" onclick="Automations.setColCondText(${i})">שמירה</button>
         ${this.condCmpLine(c,i)}
       </div>`,'row-menu-pop');
       setTimeout(()=>{const el=document.getElementById('au-cv'); if(el){el.focus();el.select();}},30);
@@ -12098,10 +12120,13 @@ const Automations = {
       }
       const cur=this.building.values[key];
       openCellPop(e.currentTarget,`<div class="row-menu" onclick="event.stopPropagation()">
-        <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setText('${key}');}">
+        ${this._valueNote(this.building.values,key)}
+        <div class="au-txt-row">
+          <input id="au-txt" class="au-in" style="max-width:210px" placeholder="${esc(f.label)}" value="${esc(cur?cur.label:'')}"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();Automations.setText('${key}');}">
+          <button class="btn btn-primary au-txt-ok" onclick="Automations.setText('${key}')">שמירה</button>
+        </div>
         ${this.tokenMenuHTML()}
-        <button class="rm-item" onclick="Automations.setText('${key}')"><i class="fa-solid fa-check"></i> אישור</button>
       </div>`,'row-menu-pop');
       setTimeout(()=>{const i=document.getElementById('au-txt'); if(i){i.focus();i.select();}},30);
       return;
@@ -24086,7 +24111,11 @@ function GIS_args(tool){
 async function openNewItem(group,atTop){
   if(!st.board||window._creatingItem)return;            // guard against double-submit
   window._creatingItem=true;
-  const gid=(group==null)?defaultGroupId():group;
+  /* Only the top button asks for "the first group". The "+ הוסף פריט" line
+     under the ungrouped rows also sends null, and that null means THOSE rows.
+     It used to fall through to defaultGroupId too, so the item it added
+     appeared at the far end of the board, in a group nobody clicked. */
+  const gid=(group==null&&atTop)?defaultGroupId():group;
   const g=((st.board.groups)||[]).find(x=>x.id===gid);
   const status=(g&&g.task_status)||undefined;           // new item's status matches its group
   try{

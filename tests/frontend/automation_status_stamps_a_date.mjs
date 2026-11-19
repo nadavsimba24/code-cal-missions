@@ -128,6 +128,21 @@ const last=()=>pops[pops.length-1]||'';
   ck('a text column keeps the ordinary box', last().includes('id="au-txt"'), last().slice(0,300));
 }
 
+// ── a typed value is saved by a button, not by one more menu row ─────────
+{
+  const A=build(STAMP);
+  A.pickField(EV,'a_text');
+  const m=last();
+  ck('with no column yet, the box says to choose the column first',
+     m.includes('כדאי לבחור קודם את העמודה'), m.slice(0,300));
+  ck('…and is saved with a real button beside it',
+     m.includes('btn btn-primary au-txt-ok') && m.includes('>שמירה</button>'), m.slice(0,600));
+  ck('…not with a "✓ אישור" drawn as a menu option', !m.includes('אישור</button>'));
+  A.building.values.a_column={v:'col_t',label:'הערה',color:''};
+  A.pickField(EV,'a_text');
+  ck('once a column is named the note is gone', !last().includes('כדאי לבחור קודם'));
+}
+
 // ── the words ─────────────────────────────────────────────────────────────
 {
   const A=build(STAMP);
