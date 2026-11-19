@@ -11327,7 +11327,8 @@ const Automations = {
          start wherever the board HAS people columns, standing at אחראים until
          somebody says otherwise — see the sentence's own half for why a
          people blank cannot wait to be pressed into existence. */
-      const pIsCol=!!spec.text_col&&['assign_person','unassign_person'].includes(a.key)
+      const pIsCol=!!spec.text_col
+                   &&['assign_person','unassign_person','assign_from_mirror'].includes(a.key)
                    &&this._peopleCols().length>0;
       const pcol=(a.values||{}).person_col;
       const blank=(key,label,cur)=>{
@@ -12186,6 +12187,13 @@ const Automations = {
     if(type==='group')    return (st.board.groups||[]).map(g=>({v:g.id,label:g.name,color:g.color||''}));
     if(type==='person')   return this.members.map(m=>({v:m.user_id,label:m.name,person:m}));
     if(type==='connect')  return customColumns().filter(c=>c.type==='connect')
+                                 .map(c=>({v:c.id,label:c.title||c.id,color:''}));
+    /* עמודת מראה — the one column type a rule READS without being able to
+       listen to it or to write it, which is why it is absent from _blankCols
+       and offered here instead. A blank of this type names the mirror an
+       action takes its value FROM; _blankCols answers the other question,
+       which column a rule listens to or writes. */
+    if(type==='mirror')   return customColumns().filter(c=>c.type==='mirror')
                                  .map(c=>({v:c.id,label:c.title||c.id,color:''}));
     if(type==='column')
       return this._blankCols(fkey).map(c=>({v:c.id,label:c.title||c.id,color:''}));

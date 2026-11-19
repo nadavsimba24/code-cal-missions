@@ -18,8 +18,9 @@ import filter_ast          # pure, like this module: no app imports, no database
 # group → a group on the board; text → free text.
 # connect → a connect column on this board; item → a specific item to link to;
 # board → one of the boards that connect column points at.
+# mirror → a עמודת מראה on this board, which a rule READS (never writes).
 FIELD_TYPES = ("status", "priority", "person", "recipient", "group", "text",
-               "connect", "item", "board")
+               "connect", "item", "board", "mirror")
 
 # ── conditions ("רק אם") ────────────────────────────────────────────
 # A recipe pairs one trigger with one action, and for a long time that pair was
@@ -972,6 +973,7 @@ PEOPLE_COL_TEXT = {
     "person_assigned":   "כאשר משויך אדם ל{col}",
     "person_unassigned": "כאשר מוסר אדם מ{col}",
     "assign_person":     "שייך את {person} ל{col}",
+    "assign_from_mirror": "שייך ל{col} את האנשים שבעמודת המראה {mirror}, {write}",
     "unassign_person":   "הסר את {person} מ{col}",
 }
 
@@ -1083,6 +1085,26 @@ ACTIONS = {
     "notify_person":    "שלח {notice} ל{person}",
     "notify_assignees": "שלח {notice} למשויכים לפריט",
     "assign_person":    "שייך את {person}",
+    # ── עמודת מראה → עמודת אנשים ───────────────────────────────────────────
+    # A mirror shows a field of a LINKED item, and what it shows is TEXT:
+    # whatever the source cell displays. Where the source is a people column
+    # that text is a person's NAME, which is readable and nothing else — it
+    # cannot be filtered on as a person, it does not put a face on the row,
+    # and no rule on this board can act on it, because the board has no idea
+    # there is an account behind it.
+    #
+    # This is the action that closes that gap: read the mirror, match each
+    # name back to an account ON THIS BOARD, and put it in one of the board's
+    # own people columns (or its built-in אחראים). The result is a real
+    # assignment — the same cell "שייך את" writes, raising the same
+    # person_assigned event, visible to the same filters.
+    #
+    # Matching by name is only safe because it is scoped to one board: two
+    # people called the same thing in the organisation is an ordinary day, the
+    # two of them invited to one board is not. A name that matches two
+    # accounts on the board is reported as unmatched rather than guessed at —
+    # see _board_people_by_name in main.py.
+    "assign_from_mirror": "שייך לאחראים את האנשים שבעמודת המראה {mirror}, {write}",
     "set_status":       "שנה את הסטטוס ל{status}",
     "set_priority":     "שנה את העדיפות ל{priority}",
     "move_to_group":    "העבר את הפריט לקבוצה {group}",
@@ -1266,12 +1288,24 @@ ON_TARGETS = ("parent", "subitem")
 ON_TARGETS_DEFAULT = "parent"
 ON_TARGETS_HE = {"parent": "על פריט האב", "subitem": "על תת־הפריט"}
 
+# ── מראה → אנשים: בנוסף, או במקום ──────────────────────────────────────────
+# A rule that fills a people column from somewhere else has to answer what to
+# do with whoever is already in the cell. Adding is the default, for the same
+# reason "לפריט מקושר אחד" is: a rule written when the mirror showed one name
+# must not quietly have become a rule that CLEARS a column the day the mirror
+# comes back empty. Replacing is the other real intention — "the local column
+# is a copy of the source" — and it is said out loud rather than guessed.
+PEOPLE_WRITE = ("add", "replace")
+PEOPLE_WRITE_DEFAULT = "add"
+PEOPLE_WRITE_HE = {"add": "בנוסף למי שכבר שם", "replace": "במקום מי שכבר שם"}
+
 # key → (allowed values, default). A "pick" field is never missing: silence is
 # the default, which is what lets a rule written before the choice existed go on
 # running with the reading the spec gives it.
 PICKS = {"targets": (TARGETS, TARGETS_DEFAULT),
          "on_missing": (ON_MISSING, ON_MISSING_DEFAULT),
-         "on": (ON_TARGETS, ON_TARGETS_DEFAULT)}
+         "on": (ON_TARGETS, ON_TARGETS_DEFAULT),
+         "write": (PEOPLE_WRITE, PEOPLE_WRITE_DEFAULT)}
 
 # The field types that may be blank. Everything else a recipe declares has to be
 # filled before the rule can be switched on.
@@ -1345,7 +1379,8 @@ def pick_key(f):
     return k[2:] if k.startswith(("a_", "t_")) else k
 
 
-PICK_HE = {"targets": TARGETS_HE, "on_missing": ON_MISSING_HE, "on": ON_TARGETS_HE}
+PICK_HE = {"targets": TARGETS_HE, "on_missing": ON_MISSING_HE, "on": ON_TARGETS_HE,
+           "write": PEOPLE_WRITE_HE}
 
 
 def pick_label(f, v):
@@ -1394,6 +1429,8 @@ ACTION_FIELDS = {
                          _f("notice", "notice", "התראה")],
     "notify_assignees": [_f("notice", "notice", "התראה")],
     "assign_person":    [_f("person", "person", "אחראי")],
+    "assign_from_mirror": [_f("mirror", "mirror", "עמודת המראה"),
+                           _f("write", "pick", "מה לעשות עם מי שכבר בעמודה")],
     "set_status":       [_f("status", "status", "סטטוס")],
     "set_priority":     [_f("priority", "priority", "עדיפות")],
     "move_to_group":    [_f("group", "group", "קבוצה")],
@@ -1581,7 +1618,7 @@ def _coerce_field(f, v, require):
         picked = [k for k in COPY_FIELDS if k in set(v or [])]
         return (picked, None) if picked else (
             None, (f"חסר ערך בשדה '{f['label']}'" if require else None))
-    elif f["type"] == "column":
+    elif f["type"] in ("column", "mirror"):
         v = str(v or "").strip()          # a column id, like connect
     elif f["type"] == "days":
         try:
@@ -1916,6 +1953,30 @@ RECIPES = [
     {"id": "column_changed_clear_column", "trigger": "column_changed", "action": "clear_column",
      "fields": [_f("t_column", "column", "עמודה"),
                 _f("a_column", "column", "העמודה לניקוי")]},
+    # ── עמודת מראה → עמודת אנשים ───────────────────────────────────────────
+    # A mirror is never a trigger — it shows a value that lives on another
+    # item, so "it changed" is that item's event and not this one's (see
+    # TRIGGERS). So the rules that fill a people column from one hang off the
+    # four moments at which the mirror's own contents can have moved HERE: the
+    # link being made, the connect column being rewritten, the item arriving,
+    # and a status step somebody takes once the source board has answered.
+    #
+    # …and one that hangs off nothing at all. "כל כמה ימים" is the catch-up:
+    # the source board can change the person on its side at any time, and
+    # nothing on this board hears it. A recurring rule in "replace" mode is
+    # how a local people column is kept as a copy of the far one rather than
+    # as a snapshot of the day the link was made.
+    {"id": "link_added_assign_from_mirror", "trigger": "link_added",
+     "action": "assign_from_mirror", "fields": []},
+    {"id": "column_changed_assign_from_mirror", "trigger": "column_changed",
+     "action": "assign_from_mirror", "fields": [_f("t_column", "column", "עמודה")]},
+    {"id": "created_assign_from_mirror", "trigger": "item_created",
+     "action": "assign_from_mirror", "fields": []},
+    {"id": "status_assign_from_mirror", "trigger": "status_changes_to",
+     "action": "assign_from_mirror", "fields": [_f("t_status", "status", "סטטוס")]},
+    {"id": "every_days_assign_from_mirror", "trigger": "every_n_days",
+     "action": "assign_from_mirror",
+     "fields": [_f("t_days", "days", "כל כמה ימים", min=MIN_EVERY_DAYS)]},
     {"id": "unassigned_notify_person", "trigger": "person_unassigned",
      "action": "notify_person", "fields": [_f("a_person", "recipient", "נמען")]},
     {"id": "unassigned_set_status", "trigger": "person_unassigned", "action": "set_status",
@@ -2135,6 +2196,7 @@ _ACTION_TAGS = {
     "notify_person":    ("notify",),
     "notify_assignees": ("notify", "assign"),
     "assign_person":    ("assign",),
+    "assign_from_mirror": ("assign", "link"),
     "set_status":       ("status",),
     "set_priority":     (),
     "move_to_group":    (),
@@ -2165,6 +2227,7 @@ NEEDS_HE = {
     "connect_two_way":  "עמודת קישור דו־כיוונית בלוח",
     "group":            "לפחות קבוצה אחת בלוח",
     "people":           "לפחות משתמש אחד מוזמן ללוח",
+    "mirror":           "עמודת מראה בלוח",
 }
 _TRIGGER_NEEDS = {
     "column_changed":           ("column",),
@@ -2191,6 +2254,12 @@ _ACTION_NEEDS = {
     "duplicate_item":           ("group",),
     "assign_person":            ("people",),
     "notify_person":            ("people",),
+    # a mirror to read from, and somebody on the board for a name to match.
+    # Both are the board's structure rather than values somebody fills in,
+    # which is what puts them here. A people COLUMN is deliberately not
+    # required: the rule writes the board's built-in אחראים when it names
+    # none, so a board that runs its work through those can still use it.
+    "assign_from_mirror":       ("mirror", "people"),
 }
 
 # The nine the specification recommends for the MVP, in its order, under the
@@ -2250,6 +2319,13 @@ EXTRA_TEMPLATES = [
     # find the catalog that cannot say it.
     ("status_create_mapped_and_link",
      "כאשר סטטוס משתנה, צור פריט בלוח היעד ומפה עמודה לעמודה בין שני הלוחות"),
+    # Named, because the bare sentence is the one thing it must not be found
+    # by: somebody looking for this is looking for "המראה מציגה שם ואני רוצה
+    # אותו כאדם", and the word they will search for is "מראה".
+    ("link_added_assign_from_mirror",
+     "כאשר נוצר קשר, הפוך את השם שבעמודת המראה לאחראי בעמודת אנשים בלוח"),
+    ("every_days_assign_from_mirror",
+     "כל כמה ימים, סנכרן עמודת אנשים בלוח מתוך עמודת מראה"),
 ]
 
 LIBRARY_TEMPLATES = MVP_TEMPLATES + EXTRA_TEMPLATES
@@ -2322,7 +2398,7 @@ def _sentence_halves(r, config=None, on_trigger=None, on_action=None):
         act = COL_TEXT[r["action"]].replace("{col}", "{" + col_key_of(r, "a") + "}")
     for k in ("person", "status", "priority", "group", "text", "connect", "item", "board",
               "fields", "target_group", "column", "days", "map", "targets", "on_missing",
-              "notice"):
+              "notice", "mirror", "write"):
         act = act.replace("{" + k + "}", "{a_" + k + "}")
     return trig, act
 
@@ -2370,7 +2446,7 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and",
 # ל…" has to read "שלח התראה ל…" in the picker, because the picker is a list of
 # what each action does and "שלח … ל…" says nothing about this one. Every other
 # blank is a value somebody has yet to choose, and "…" is exactly right for it.
-PLAIN_WORDS = {"notice": "התראה"}
+PLAIN_WORDS = {"notice": "התראה", "write": PEOPLE_WRITE_HE[PEOPLE_WRITE_DEFAULT]}
 
 
 def plain(text):
@@ -2546,7 +2622,7 @@ def validate_partial(recipe_id, config):
             v = (str(v)).strip()[:200]
             if unknown_tokens(v):
                 continue              # a half-typed token is simply not kept
-        elif f["type"] in ("connect", "column", "connect_opt"):
+        elif f["type"] in ("connect", "column", "connect_opt", "mirror"):
             v = (str(v)).strip()
         elif f["type"] == "pick":
             clean[f["key"]] = pick_value(pick_key(f), v)
@@ -2707,7 +2783,7 @@ def validate(recipe_id, config):
             v = [k for k in COPY_FIELDS if k in set(v or [])]
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"
-        elif f["type"] == "column":
+        elif f["type"] in ("column", "mirror"):
             v = (str(v or "")).strip()
             if not v:
                 return None, f"חסר ערך בשדה '{f['label']}'"

@@ -199,3 +199,70 @@ def test_the_sources_endpoint_does_not_offer_links_or_other_mirrors(client, admi
                                        headers=AS(admin_id)).json()["sources"]
                  if s["connect_id"] == conn["id"])
     assert all(f.get("type") not in ("connect", "mirror") for f in entry["fields"])
+
+
+# ── a people column a monday import left as text ────────────────────────────
+#
+# An import keeps everyone it could not match to an account as the text monday
+# showed: an e-mail when the export had one, a display name otherwise. On the
+# real לקוחות board that was every filled cell of מנהל פרויקט שמירה, and the
+# mirror read only account ids, so a mirror of it was blank on every row while
+# the cell beside it named a person. The mirror shows what the cell shows.
+
+def test_it_mirrors_a_people_column_holding_imported_names_and_emails(client, admin_id):
+    import main as cityos_main
+    from sqlalchemy.orm import Session
+    from models import Task, User
+
+    a, b, conn, mir = _setup(client, admin_id, "m-imp", "__later__",
+                             extra=[{"type": "people", "title": "מנהל פרויקט"}])
+    pm = next(c for c in _cols(client, b) if c["title"] == "מנהל פרויקט")
+    cols = [dict(c, mirror_of={"connect": conn["id"], "field": pm["id"]})
+            if c["id"] == mir["id"] else c for c in _cols(client, a)]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": cols})
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "לקוח")
+    _set(client, src, conn["id"], [x], admin_id)
+
+    with Session(cityos_main.engine) as db:
+        admin = db.get(User, admin_id)
+        t = db.get(Task, x)
+        before = t.custom_fields
+        # The address in a different case than the account has: monday's export
+        # and the directory do not agree on case, and the person is the same.
+        t.custom_fields = dict(before or {}, **{pm["id"]: [
+            admin.email.upper(), "nobody-here@example.org", "דנה כהן"]})
+        db.commit()
+        try:
+            assert _texts(client, src, mir["id"], admin_id) == [
+                admin.name, "nobody-here@example.org", "דנה כהן"]
+        finally:
+            t = db.get(Task, x)
+            t.custom_fields = before
+            db.commit()
+
+
+def test_it_still_mirrors_a_people_column_of_account_ids(client, admin_id):
+    a, b, conn, mir = _setup(client, admin_id, "m-ids", "__later__",
+                             extra=[{"type": "people", "title": "מנהל פרויקט"}])
+    pm = next(c for c in _cols(client, b) if c["title"] == "מנהל פרויקט")
+    cols = [dict(c, mirror_of={"connect": conn["id"], "field": pm["id"]})
+            if c["id"] == mir["id"] else c for c in _cols(client, a)]
+    client.patch(f"/api/boards/{a}", json={"actor_id": admin_id, "columns": cols})
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "לקוח")
+    client.patch(f"/api/tasks/{x}?user_id={admin_id}",
+                 json={"custom_fields": {pm["id"]: [admin_id]}}, headers=AS(admin_id))
+    _set(client, src, conn["id"], [x], admin_id)
+    me = client.get("/api/auth/me", headers=AS(admin_id)).json()
+    name = (me.get("user") or me).get("name")
+    assert _texts(client, src, mir["id"], admin_id) == [name]
+
+
+def test_linking_answers_with_the_mirror_already_filled(client, admin_id):
+    """The grid does not re-read the row after a link: it applies the PATCH
+    answer to it. A mirror missing from that answer stays "—" on screen until
+    a reload, which looks exactly like a mirror that does not work."""
+    a, b, conn, mir = _setup(client, admin_id, "m-patch", "title", two_way=False)
+    src, x = _item(client, a, admin_id, "מקור"), _item(client, b, admin_id, "לקוח מקושר")
+    res = _set(client, src, conn["id"], [x], admin_id).json()
+    got = (res.get("custom_fields") or {}).get(mir["id"]) or []
+    assert [c["text"] for c in got] == ["לקוח מקושר"]

@@ -15226,9 +15226,37 @@ def _mirror_one(db, t, field):
         return e(v.get("label") if isinstance(v, dict) else v,
                  v.get("color") if isinstance(v, dict) else None)
     if ctype == "people":
-        names = {u.id: u.name for u in db.query(User).filter(
-            User.id.in_([i for i in v if isinstance(i, int)])).all()} if isinstance(v, list) else {}
-        return [{"item_id": t.id, "text": names[i], "color": None} for i in (v or []) if i in names]
+        # A people cell is not only account ids. A board imported from monday
+        # keeps everyone the import could not match to an account as the text
+        # monday showed — an e-mail where the export carried one, a display
+        # name otherwise — and on a real imported board that is EVERY value:
+        # לקוחות.מנהל פרויקט שמירה held 307 filled cells and not one id. Reading
+        # only the ints made a mirror of it blank on every row, while the cell
+        # it mirrors showed a person. So the mirror shows what the cell shows:
+        # an id as its owner's name, an e-mail as the name of the account that
+        # has it if there is one, and anything else as written.
+        if not isinstance(v, list):
+            return []
+        ids = [x for x in v if isinstance(x, int)]
+        mails = [x.strip().lower() for x in v if isinstance(x, str) and "@" in x]
+        by_id, by_mail = {}, {}
+        if ids or mails:
+            for u in db.query(User).filter(or_(User.id.in_(ids or [0]),
+                                               func.lower(User.email).in_(mails or [""]))).all():
+                by_id[u.id] = u.name
+                if u.email:
+                    by_mail[u.email.strip().lower()] = u.name
+        out = []
+        for x in v:
+            if isinstance(x, int):
+                text = by_id.get(x)
+            elif isinstance(x, str):
+                text = by_mail.get(x.strip().lower()) or x.strip()
+            else:
+                text = None
+            if text:
+                out.append({"item_id": t.id, "text": text, "color": None})
+        return out
     if ctype == "timeline" and isinstance(v, dict):
         a, b = v.get("from") or v.get("start"), v.get("to") or v.get("end")
         return e(f"{a} – {b}" if a and b else (a or b))
@@ -18672,7 +18700,7 @@ AUTOMATION_GRANTED_ACTIONS = frozenset({
     "create_and_link", "post_update", "copy_to_linked",
     "create_in_group_and_link", "set_column", "clear_column",
     "unassign_person", "create_item", "wait", "create_mapped_and_link",
-    "create_in_board", "duplicate_item",
+    "create_in_board", "duplicate_item", "assign_from_mirror",
 })
 # The item fields automation may write. The recipes only ever touch these, and
 # an action that reached past them would be doing something nobody approved.
@@ -18698,6 +18726,10 @@ AUTOMATION_ACTION_FIELDS = {
     "notify_person":    (),
     "notify_assignees": (),
     "assign_person":    ("assignees",),
+    # the board's own אחראים, or — when the rule names one — a people COLUMN's
+    # cell, which is an ordinary column write. Both are declared for the same
+    # reason set_status declares two: a grant is what an action MAY reach.
+    "assign_from_mirror": ("assignees", "custom_fields_value"),
     # the board's own status, or — when the rule names one — a status COLUMN's
     # cell, which is an ordinary column write like set_column's. Both are
     # declared because a grant is what an action MAY reach, and this table is
@@ -19958,6 +19990,41 @@ def _people_col_or_skip(db, task, cfg):
     return col
 
 
+def _fold_name(s):
+    """A name as it is COMPARED: trimmed, inner runs of space collapsed, case
+    folded. A mirror's text comes from however the far board renders a cell,
+    and "דנה  כהן " and "דנה כהן" are the same person in every reading but a
+    byte comparison."""
+    return " ".join(str(s or "").split()).casefold()
+
+
+def _board_people_by_name(db, board_id):
+    """folded name or email → the one account on this board that answers to it.
+
+    A mirror holds TEXT. It shows whatever the source cell displays, and what
+    a people cell displays is a person's NAME — so turning a mirror back into
+    an assignment is a lookup by name, which is only defensible inside one
+    board: two people called "דנה כהן" in the organisation is an ordinary day,
+    the two of them invited to the same board is not.
+
+    The email is accepted beside the name because a board imported from monday
+    shows one wherever the export carried no matched account, and that is
+    exactly the case this feature exists for.
+
+    A key two accounts share maps to None rather than to either of them.
+    Putting the wrong דנה on an item is worse than putting nobody on it, and
+    the rule's history says which name it could not resolve.
+    """
+    out = {}
+    for u in (db.query(User).join(BoardMember, BoardMember.user_id == User.id)
+                .filter(BoardMember.board_id == board_id).all()):
+        for key in (_fold_name(u.name), _fold_name(u.email)):
+            if not key:
+                continue
+            out[key] = None if (key in out and out[key] != u.id) else u.id
+    return out
+
+
 def _people_cell(task, col):
     """Who is in this people cell, as a list of ids. A cell may also hold a
     bare name, imported from a board that had no account for that person —
@@ -21051,6 +21118,80 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                                    event),
                     board_id=task.board_id, task_id=task.id)
             out.append({"type": "person_assigned", "user_id": u.id})
+    elif act == "assign_from_mirror":
+        # ── עמודת מראה → עמודת אנשים ───────────────────────────────────────
+        # The mirror shows a name; this puts the ACCOUNT behind that name into
+        # one of the board's own people columns. Everything after the lookup
+        # is the work "שייך את" already does — refuse somebody not on the
+        # board, refuse a second copy, write, log, announce — so a cell filled
+        # this way is indistinguishable from one filled by hand, and the
+        # filters, the avatars and the person_assigned rules all see it.
+        col = _find_col(db, task.board_id, str(cfg.get("mirror") or ""))
+        if not col or col.get("type") != "mirror":
+            raise _Skipped("עמודת המראה שהכלל קורא ממנה אינה קיימת בלוח")
+        pcol = _people_col_or_skip(db, task, cfg)
+        # Read through the OWNER's eyes and never the actor's. A mirror
+        # withholds linked items the viewer may not see (see _mirror_cells),
+        # so reading it as whoever happened to trip the rule would put a
+        # different set of people on the item depending on who pressed what.
+        # The owner is who a rule answers for everywhere else in this engine.
+        viewer = owner or actor_id
+        cells = _mirror_cells(db, task, col, viewer,
+                              _board_columns(db, task.board_id) or [])
+        names = list(dict.fromkeys([str(c.get("text") or "").strip()
+                                    for c in cells if str(c.get("text") or "").strip()]))
+        if not names:
+            raise _Skipped(f"אין ערך ב«{col.get('title') or col['id']}»")
+        by_name = _board_people_by_name(db, task.board_id)
+        picked, missed = [], []
+        for n in names:
+            uid = by_name.get(_fold_name(n))
+            if uid and _can_be_assigned(db, task.board_id, uid):
+                if uid not in picked:
+                    picked.append(uid)
+            elif n not in missed:
+                missed.append(n)
+        if not picked:
+            # the names themselves and not "לא נמצא משתמש": the whole point of
+            # this rule is that somebody has to go and invite that person, or
+            # fix a name that does not match, and neither is findable from a
+            # history entry that does not say which name it was
+            raise _Skipped("אין בלוח משתמש בשם " + ", ".join(missed[:3])
+                           + ("…" if len(missed) > 3 else ""))
+        mode = recipes.pick_value("write", cfg.get("write"))
+        # "replace" never empties a cell: an empty mirror returned above, so
+        # the only thing it can replace a name with is another name. A rule
+        # that quietly cleared a column the day a link was removed is the one
+        # outcome nobody asks for — see PEOPLE_WRITE in automations.py.
+        if pcol is not None:
+            was = _people_cell(task, pcol)
+            now_v = (was + [i for i in picked if i not in was]
+                     if mode == "add" else list(picked))
+            if now_v == was:
+                raise _Skipped(f"ל«{pcol.get('title') or pcol['id']}» כבר יש "
+                               "את האנשים שבעמודת המראה")
+            _write_people_cell(db, board, task, pcol, was, now_v)
+            out.extend(_people_cell_events(pcol, was, now_v))
+            added = [i for i in now_v if i not in was]
+        else:
+            was = [u.id for u in list(task.assignees)]
+            now_v = (was + [i for i in picked if i not in was]
+                     if mode == "add" else list(picked))
+            if now_v == was:
+                raise _Skipped("הפריט משויך כבר לאנשים שבעמודת המראה")
+            rows = {u.id: u for u in db.query(User).filter(User.id.in_(now_v)).all()}
+            task.assignees = [rows[i] for i in now_v if i in rows]
+            added = [i for i in now_v if i not in was]
+            gone = [i for i in was if i not in now_v]
+            for uid in added:
+                out.append({"type": "person_assigned", "user_id": uid})
+            if gone:
+                out.append({"type": "person_unassigned", "user_ids": gone})
+        for uid in added:
+            _notify(db, uid, "assign", "שויכת למשימה",
+                    _assigned_body(db, task, board, getattr(rule, "name", "") or "",
+                                   event, pcol),
+                    board_id=task.board_id, task_id=task.id)
     elif act == "set_status":
         # Which status the rule writes: the board's own, or one of its columns
         # of type status. The column branch is the same work _apply_status_key
@@ -22762,6 +22903,24 @@ def _automation_blockers(db, board, a):
                 col = _find_col(db, a.board_id, str(v))
                 if not col or col.get("type") != "connect":
                     out.append({"kind": "dependency", "text": "עמודת הקישור אינה קיימת בלוח"})
+            elif f["type"] == "mirror":
+                # A mirror can be deleted, and it can also be turned into an
+                # ordinary column — and either way the rule goes on looking
+                # active while reading a cell that is not there. The connect
+                # column UNDERNEATH it is checked too: a mirror whose link is
+                # gone resolves to nothing for ever, which is a rule that
+                # silently skips every time rather than one that is broken.
+                col = _find_col(db, a.board_id, str(v))
+                if not col or col.get("type") != "mirror":
+                    out.append({"kind": "dependency",
+                                "text": "עמודת המראה שהכלל קורא ממנה אינה קיימת בלוח"})
+                else:
+                    src = _find_col(db, a.board_id,
+                                    str(_mirror_cfg(col).get("connect") or ""))
+                    if not src or src.get("type") != "connect":
+                        out.append({"kind": "dependency",
+                                    "text": f"עמודת הקישור שמאחורי «{col.get('title') or v}» "
+                                            "אינה קיימת בלוח"})
             elif f["type"] == "connect_opt":
                 # blank is a value — "the column the link was made in" — and a
                 # rule that leaves it blank cannot have lost it. One that PINNED
@@ -22884,7 +23043,9 @@ def _rule_uses(db, a, kind, ref):
         vals = one["values"]
         for f in recipes.action_fields(one["key"]):
             v = vals.get(f["key"])
-            if kind == "column" and f["type"] in ("column", "connect", "connect_opt") and same(v):
+            if (kind == "column"
+                    and f["type"] in ("column", "connect", "connect_opt", "mirror")
+                    and same(v)):
                 used.append("פעולה")
             elif (kind == "column" and f["type"] == "status"
                     and same(recipes.status_col_of(vals, f["key"]))):
@@ -24295,6 +24456,10 @@ def _board_template_has(db, board):
                                and c.get("type") not in AUTOMATION_UNWATCHABLE_COLUMNS
                                and c.get("type") not in DERIVED_CELLS
                                for c in cols),
+        # a mirror to read a name out of. Checked as the board's structure
+        # rather than asked for in the form, like the connect column above it:
+        # a board with no mirror cannot build the rule at all.
+        "mirror": any(c.get("type") == "mirror" for c in cols),
         "group": db.query(Group).filter(Group.board_id == board.id).count() > 0,
         "people": any(_can_be_assigned(db, board.id, u) for u in people),
     }
@@ -24847,6 +25012,11 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
            "on_missing": {"options": list(recipes.ON_MISSING),
                           "default": recipes.ON_MISSING_DEFAULT,
                           "labels": recipes.ON_MISSING_HE},
+           # filling a people column from a mirror: beside whoever is already
+           # in the cell, or instead of them
+           "write": {"options": list(recipes.PEOPLE_WRITE),
+                     "default": recipes.PEOPLE_WRITE_DEFAULT,
+                     "labels": recipes.PEOPLE_WRITE_HE},
            # a sub-item rule writes on the parent or on the sub-item — the
            # nearest thing this model has to "שדות פריט ושדות תת־פריט בנפרד",
            # since a sub-item is an item on the same board with the same columns
@@ -26538,6 +26708,9 @@ AUTOMATION_ACTION_WRITES = {
     "set_column":       ["עמודה בלוח"],
     "clear_column":     ["עמודה בלוח"],
     "unassign_person":  ["אחראים"],
+    "assign_from_mirror": ["אחראים"],
+    # the same action said about a people COLUMN — see _action_writes
+    "assign_from_mirror@col": ["עמודת אנשים בלוח"],
     "create_item":      ["פריט חדש"],
     "duplicate_item":   ["פריט חדש"],
     "wait":             [],
@@ -26588,6 +26761,14 @@ def _action_writes(one):
         on_col = recipes.status_col_of((one or {}).get("values"), "status")
         return (({"custom_fields_value"}, AUTOMATION_ACTION_WRITES["set_status@col"])
                 if on_col else ({"status"}, AUTOMATION_ACTION_WRITES["set_status"]))
+    if key == "assign_from_mirror":
+        # one or the other for the same reason, and said here rather than read
+        # off the ceiling: a rule filling «מנהל פרויקט» from a mirror is not
+        # fighting over the board's אחראים with every rule that assigns
+        on_col = str(((one or {}).get("values") or {}).get("person_col") or "")
+        return (({"custom_fields_value"},
+                 AUTOMATION_ACTION_WRITES["assign_from_mirror@col"]) if on_col
+                else ({"assignees"}, AUTOMATION_ACTION_WRITES["assign_from_mirror"]))
     return (set(AUTOMATION_ACTION_FIELDS.get(key, ())),
             AUTOMATION_ACTION_WRITES.get(key, []))
 
@@ -26784,6 +26965,9 @@ def _automation_impact(db, board, a, viewer=None):
 AUTOMATION_PRODUCES = {
     "set_status": "status_changes_to", "set_priority": "priority_changes_to",
     "assign_person": "person_assigned", "unassign_person": "person_unassigned",
+    # it writes אחראים or a people column, and either is an assignment —
+    # which a rule listening for one may well be waiting on
+    "assign_from_mirror": "person_assigned",
     "move_to_group": "moved_to_group", "set_column": "column_changed",
     "clear_column": "column_changed", "create_subitem": "subitem_created",
     "link_to_item": "link_added", "create_and_link": "link_added",
@@ -27096,7 +27280,7 @@ def _dry_run_automation(db, board, a, task, viewer=None):
     actions = []
     for one in recipes.action_list(a.recipe_id, cfg):
         row = _test_action_row(db, board, task, one["key"], one["values"],
-                               cur_status, cur_prio)
+                               cur_status, cur_prio, viewer=viewer)
         if row:
             actions.append(dict(row, order=one["index"] + 1))
 
@@ -27132,9 +27316,15 @@ def _dry_run_automation(db, board, a, task, viewer=None):
             "notified": [x for x in impact["recipients"]]}
 
 
-def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
+def _test_action_row(db, board, task, key, values, cur_status, cur_prio, viewer=None):
     """One action as the test screen shows it: what it would write, what is
     there now, and whether it would do nothing.
+
+    `viewer` is who the preview is read AS, and it matters for exactly one
+    action: a mirror withholds linked items the reader may not see, so "what
+    would this rule assign" has a different answer for a person who cannot see
+    the source item. The test says what THIS reader would get, which is the
+    only honest answer a preview can give.
 
     Per action rather than per rule, because a rule carries up to
     recipes.MAX_ACTIONS of them and a test that described only the first would
@@ -27227,6 +27417,30 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio):
         to = "" if key == "clear_column" else str(values.get("text") or "")
         return {"what": f"עדכון עמודה «{name}»", "to": to or "(ריק)", "from": was,
                 "no_op": not col, "note": "" if col else "העמודה אינה קיימת בלוח"}
+    if key == "assign_from_mirror":
+        col = db and _find_col(db, task.board_id, str(values.get("mirror") or ""))
+        name = (col or {}).get("title") or values.get("mirror") or "—"
+        mode = recipes.pick_value("write", values.get("write"))
+        pid = str(values.get("person_col") or "")
+        pcol = _find_col(db, task.board_id, pid) if (db and pid) else None
+        into = (pcol or {}).get("title") or pid if pid else "אחראים"
+        if not col or col.get("type") != "mirror":
+            return {"what": f"שיוך מעמודת מראה «{name}»", "to": "—", "from": "",
+                    "no_op": True, "note": "עמודת המראה אינה קיימת בלוח"}
+        shown_names = [str(c.get("text") or "").strip()
+                       for c in _mirror_cells(db, task, col, viewer,
+                                              _board_columns(db, task.board_id) or [])]
+        shown_names = list(dict.fromkeys([n for n in shown_names if n]))
+        by_name = _board_people_by_name(db, task.board_id)
+        hit = [n for n in shown_names if by_name.get(_fold_name(n))]
+        miss = [n for n in shown_names if not by_name.get(_fold_name(n))]
+        note = f"אל «{into}» · {recipes.PEOPLE_WRITE_HE[mode]}"
+        if miss:
+            note += " · אין בלוח משתמש בשם " + ", ".join(miss[:3])
+        return {"what": f"שיוך מעמודת מראה «{name}»",
+                "to": ", ".join(hit) or "—", "from": "",
+                "no_op": not hit,
+                "note": note if shown_names else "עמודת המראה ריקה בפריט הזה"}
     if key == "unassign_person":
         u = db.query(User).filter(User.id == values.get("person")).first()
         on = bool(u and u in list(task.assignees))
@@ -28987,8 +29201,24 @@ def update_task(task_id: int, data: dict, request: Request = None,
         # person who made the change is the one client the live stream does not
         # tell (it would echo their own edit back at them), so the answer to
         # "where is it now" has to come back with the write itself.
+        # A mirror is not stored, so the stored cells alone never carried it —
+        # and the grid does not re-read the row after a write, it applies this
+        # answer to it. Linking a record therefore left its mirror at "—" until
+        # a full reload, which is indistinguishable from a mirror that does not
+        # work. The values are read here exactly as the board read gives them,
+        # through the same viewer filter, and a mirror column this person may
+        # not see is left out rather than handed back.
+        _cf_out = dict(task.custom_fields or {})
+        _bcols = _board_columns(db, task.board_id) or []
+        for _mc in _bcols:
+            if _mc.get("type") != "mirror":
+                continue
+            if _col_perm(_mc, actor, actor_role) == "none":
+                _cf_out.pop(_mc["id"], None)
+                continue
+            _cf_out[_mc["id"]] = _mirror_cells(db, task, _mc, actor, _bcols)
         out = {"id": task.id, "group_id": task.group_id,
-               "custom_fields": task.custom_fields or {},
+               "custom_fields": _cf_out,
                # what this call raised — one edit can be several events (a
                # status AND a column AND a link), so this is a list
                "event_ids": _events}
