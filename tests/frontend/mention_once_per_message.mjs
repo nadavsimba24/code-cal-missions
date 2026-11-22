@@ -143,5 +143,35 @@ const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)):(fail++,console.log('
      c._floated.includes('אי אפשר לתייג את עצמך'), c._floated);
 }
 
+// ── a message holding the same tag twice is not sent ───────────────────────
+/* The menu cannot see a name typed out in full or pasted in, so the whole
+   message is counted before it leaves (taggedTwice). Each "@" counts once,
+   for the longest name after it, the server's rule (_tagged_twice). */
+{
+  const c = chat('');
+  ck('one tag each is fine', c.taggedTwice('@דנה לוי ו@יוסי מזרחי').length===0);
+  ck('the same person twice is caught, by name',
+     c.taggedTwice('@דנה לוי שלום, @דנה לוי שוב').join()==='דנה לוי',
+     c.taggedTwice('@דנה לוי שלום, @דנה לוי שוב'));
+  ck('...named once however many times it repeats',
+     c.taggedTwice('@דנה לוי @דנה לוי @דנה לוי').length===1);
+  ck('an @ that names nobody is not a tag', c.taggedTwice('mail@x @ @').length===0);
+}
+{
+  PEOPLE.push({id:10, name:'שלי'}, {id:11, name:'שלי פיינברג'});
+  const c = chat('');
+  ck('a name that starts a longer one is not counted inside it',
+     c.taggedTwice('@שלי פיינברג ו@שלי').length===0, c.taggedTwice('@שלי פיינברג ו@שלי'));
+  ck('...but the longer name twice is still twice',
+     c.taggedTwice('@שלי פיינברג @שלי פיינברג').join()==='שלי פיינברג');
+  PEOPLE.splice(-2, 2);
+}
+{
+  ck('post refuses before it sends',
+     /async post\(\)\{[\s\S]{0,900}refuseTaggedTwice\(content\)\)return;[\s\S]{0,400}api\('\/api\/tasks\/'/.test(chatSrc));
+  ck('saveEdit refuses before it sends',
+     /async saveEdit\(cid\)\{[\s\S]{0,900}refuseTaggedTwice\(content\)\)return;[\s\S]{0,300}api\('\/api\/comments\/'/.test(chatSrc));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

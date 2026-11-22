@@ -1667,6 +1667,70 @@ def _status_in_use_409(entries):
         "statuses": entries})
 
 
+# ── the same agreement, for a dropdown ("רשימה") column ──
+# A dropdown option is a bare word — no id, no colour — and a cell holds the
+# LIST of words ticked in it. So usage is counted by text, once per item even
+# if a cell somehow carries a word twice: the number in a refusal is "how many
+# items do I have to go and fix", not how many times the word was written.
+
+def _dropdown_cell_words(v):
+    """The option words one dropdown cell carries, whatever shape it was
+    written in. The grid writes a list of strings; an older cell or an import
+    may hold a lone string, and a list entry may be an {label} dict — read the
+    same way filter_ast._cell reads them, so the count and the filter agree
+    about what a cell says."""
+    if v in (None, "", []):
+        return []
+    arr = v if isinstance(v, list) else [v]
+    out = []
+    for x in arr:
+        x = x.get("label") if isinstance(x, dict) else x
+        if x is None or str(x) == "":
+            continue
+        if str(x) not in out:
+            out.append(str(x))
+    return out
+
+
+def _dropdown_col_usage(cid, rows):
+    """{option word: how many items carry it} for one dropdown column, over
+    the rows _status_usage_rows hands back — live, unarchived, sub-items
+    included."""
+    out = {}
+    cid = str(cid or "")
+    if not cid:
+        return out
+    for t in rows:
+        for w in _dropdown_cell_words((t.custom_fields or {}).get(cid)):
+            out[w] = out.get(w, 0) + 1
+    return out
+
+
+def _dropdown_inactive(options, raw):
+    """The column's inactive options, cut down to words it actually offers —
+    deduplicated, in the order they were sent.
+
+    Matched against the options AS STORED and kept in their stored form. An
+    imported column can hold a number as an option (3, not "3"), and the
+    browser sends back whatever it rendered; keeping only `str` entries here
+    meant such an option could never be retired — the request "succeeded" and
+    the entry was silently dropped. A sent value names an option when it is
+    equal to it or prints the same, and what is kept is the option itself, so
+    the `o not in off` checks elsewhere (the form's offered list) compare like
+    with like."""
+    opts = list(options or [])
+    out = []
+    for x in (raw if isinstance(raw, list) else []):
+        if x is None or isinstance(x, (dict, list)):
+            continue
+        hit = next((o for o in opts if o == x), None)
+        if hit is None:
+            hit = next((o for o in opts if str(o) == str(x)), None)
+        if hit is not None and hit not in out:
+            out.append(hit)
+    return out
+
+
 # ── Priority is a status column too ──────────────────────────────────────
 # "עדיפות" is the same kind of thing as "סטטוס": one value out of a named,
 # coloured vocabulary. So it gets the same treatment — a board admin renames,
@@ -2008,6 +2072,42 @@ def _item_perm(task, user_id, board_role):
         return ov
     caps = _board_caps(board_role)
     return "delete" if "delete" in caps else ("edit" if "edit" in caps else ("view" if "view" in caps else "none"))
+
+def _board_item_count(db, board_id, user_id):
+    """How many rows this reader's board has — counted in the database, with
+    not one item loaded.
+
+    It has to agree to the item with the `total` that /items/query answers for
+    an unfiltered query, because both numbers land on the same screen: the
+    board says how many items it holds, and the paged fetch says how many it
+    is paging through, and two counts that disagree read as a bug in whichever
+    one the person happens to distrust. So this counts the same set that route
+    counts — the board's top-level items, not archived and not in the bin —
+    and then takes out the same ones it takes out.
+
+    The permission pass is the only part that is not a plain COUNT, and it is
+    much closer to one than it looks: every board role grants "view", and this
+    is only ever reached by somebody who has a role on the board, so the
+    default is never "none". An item is invisible here exactly when it carries
+    a per-user override that says so, which is a key in its `permissions` JSON
+    and something SQL can read — the same expression the link picker already
+    uses to keep closed items out of its own total.
+
+    `deleted_at` is spelled out rather than left to the global soft-delete
+    criteria. That hook is applied to entity queries, and this is an aggregate
+    over a column; relying on it here would be relying on the ORM to notice a
+    mapper it was never handed.
+    """
+    q = (db.query(func.count(Task.id))
+           .filter(Task.board_id == board_id, Task.parent_id.is_(None),
+                   Task.is_archived == False, Task.deleted_at.is_(None)))   # noqa: E712
+    if user_id is not None:
+        closed = Task.permissions[str(user_id)].as_string()
+        # an item with no override at all extracts as NULL, and NULL != 'none'
+        # is NULL rather than true — left as a bare inequality this counted
+        # nothing on a board where nobody had an override, which is every board
+        q = q.filter(or_(closed.is_(None), closed != "none"))
+    return q.scalar() or 0
 
 def _link_states(db, ids, user_id):
     """What each linked id is, from `user_id`'s point of view:
@@ -2381,6 +2481,24 @@ def _board_has_item_id_col(board):
 def _backfill_item_uids(db, board_id):
     """Every item and sub-item on the board gets an identifier — used when the
     column is added to a board that already holds items."""
+    # Having nothing to do is the normal case, and it was costing a full board
+    # read to discover: every open of a board carrying the column loaded every
+    # one of its items only to find each already had an identifier — 545ms on
+    # the imported board of 21,187, every time, forever. Asking first whether
+    # any row is still missing one is a single look-up. The condition mirrors
+    # _ensure_item_uid's own, which is the point: no identifier at all, or one
+    # minted while the item lived on a different board. The bin is excluded
+    # because the loop below never sees binned rows either (the soft-delete
+    # criteria), so a deleted item without an identifier would otherwise make
+    # this answer "there is work" on every single open and never finish it.
+    todo = (db.query(Task.id)
+              .filter(Task.board_id == board_id, Task.deleted_at.is_(None),
+                      or_(Task.item_uid.is_(None), Task.item_uid == "",
+                          Task.item_uid_board.is_(None),
+                          Task.item_uid_board != board_id))
+              .limit(1).first())
+    if not todo:
+        return
     rows = db.query(Task).filter(Task.board_id == board_id).all()
     changed = False
     for t in rows:
@@ -4904,7 +5022,11 @@ def _form_question_shape(db, b, key, people_options=None):
         return t, [{"value": o["id"] or o["label"], "label": o["label"]}
                    for o in _status_col_vocab(col)]
     if t == "dropdown":
-        return t, [{"value": o, "label": o} for o in (col.get("options") or [])]
+        # An inactive option stays on the cells that already carry it and is
+        # offered to nobody new — a stranger filling in a form included.
+        off = set(col.get("inactive_options") or [])
+        return t, [{"value": o, "label": o} for o in (col.get("options") or [])
+                   if o not in off]
     if t == "people":
         return t, (people_options or [])
     return t, []
@@ -5277,12 +5399,19 @@ def _form_value(db, b, c, ctype, val, label):
     if ctype == "dropdown":
         col = _form_col(b, c.field_key)
         allowed = [str(o) for o in ((col or {}).get("options") or [])]
+        # Refused separately from "does not exist": the form stopped offering
+        # it, so an answer carrying it is a page opened before the option was
+        # retired (or a hand-made request), and the respondent deserves to be
+        # told which of the two it is.
+        off = {str(o) for o in ((col or {}).get("inactive_options") or [])}
         vals = val if isinstance(val, list) else [val]
         out = []
         for v in vals:
             v = str(v)
             if v not in allowed:
                 _form_bad(label, "אחת האפשרויות שנבחרו אינה קיימת")
+            if v in off:
+                _form_bad(label, "האפשרות שנבחרה אינה פעילה")
             if v not in out:
                 out.append(v)
         return out
@@ -9914,6 +10043,23 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
                         context_only=(t.id in context_only), restricted=False)
 
         out["items"] = [_row_json(t) for t in page]
+        # The same override map the board payload carries, for the rows on THIS
+        # page — {col_id: {item_id: text}} for a connect column told to show a
+        # field of the linked record instead of its title.
+        #
+        # It has to be here because of where the board payload stopped sending
+        # it: above FILTER_CLIENT_MAX the board answers with no tasks, so
+        # _board_link_display over an empty list correctly returns {}, and the
+        # browser then had nothing to override titles with. A connect column
+        # configured to show, say, the linked record's status quietly showed
+        # titles instead — the wrong text, with nothing to tell anyone. The
+        # browser merges each page's map into what it already holds, so a row
+        # is covered from the moment its page arrives.
+        #
+        # Free, for the same reason it is free on the board: _prefetch_links
+        # ran over this page a few lines up and warmed _task_by/_board_by, the
+        # two caches _link_display_map reads. It is not an N+1 over the page.
+        out["link_display"] = _board_link_display(db, out["items"], cols, user_id)
         out["item_ids"] = [t.id for t in page]
         out["offset"] = offset
         out["limit"] = limit
@@ -9960,6 +10106,26 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         if user_id is not None and my_role is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
         groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
+        # ── how many items, and therefore whether any of them travel ─────
+        # Above FILTER_CLIENT_MAX the browser does not filter locally: it
+        # fetches its rows fifty at a time from /items/query and never looks
+        # at `tasks` at all. It was still being sent every one of them —
+        # 28.7MB and five seconds on the imported board of 21,187 items,
+        # built at full cost and then thrown away on arrival, which is also
+        # the freeze somebody sees while a large board "opens".
+        #
+        # So the count is taken first and decides. It is the number the
+        # browser reads to pick its mode (`boardRowCount`), so it has to be
+        # the true total and not len(tasks) — a board that answered with no
+        # rows and no count would read as empty, and one that counted only
+        # what it sent would flip itself back into local filtering over
+        # nothing. Counted in SQL: loading the board to measure it is the
+        # cost being removed.
+        item_count = _board_item_count(db, board_id, user_id)
+        # strictly greater, the same comparison filterMode() makes — a board
+        # sitting exactly on the threshold filters locally and needs its rows
+        paged = item_count > FILTER_CLIENT_MAX
+        _lap("item_count")
         # only top-level items as rows; sub-items are nested under their parent
         # position, and then id — because "position" is not unique and never was.
         # Two items can claim one slot (every board that predates the fix in
@@ -9969,8 +10135,9 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # asked for anything by. The id is arbitrary as a rule and that is the
         # point: it is the same arbitrary answer every time, and it puts the
         # newer of two tied items below the older, which is where it was added.
-        tasks = db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False,
-                                      Task.parent_id == None).order_by(Task.position, Task.id).all()
+        tasks = [] if paged else (
+            db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False,
+                                  Task.parent_id == None).order_by(Task.position, Task.id).all())
         dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
         columns = (b.settings or {}).get("columns", [])
         # a board carrying a "מזהה פריט" column shows an identifier for every
@@ -10072,10 +10239,19 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             # to ask at all — so it travels with the board rather than with
             # the first answer.
             "filter_client_max": FILTER_CLIENT_MAX,
+            # How many items this board holds for this reader — the same number
+            # /items/query answers as `total` for a query with nothing filtered.
+            # It is what decides where the filtering runs, and past the
+            # threshold it is also the ONLY thing that says the board is not
+            # empty: `tasks` is [] up there on purpose, and len(tasks) is no
+            # longer an answer to "how big is this board".
+            "item_count": item_count,
             "filter_column_policy": FILTER_COLUMN_POLICY,
             "statuses": _board_statuses(b),
             "priorities": _board_priorities(b),
             "groups": [{"id": g.id, "name": g.name, "position": g.position, "color": g.color, "task_status": g.task_status.value if hasattr(g.task_status, 'value') else g.task_status} for g in groups],
+            # Empty above the threshold, where the browser pages the rows in
+            # from /items/query and never reads this list — see item_count.
             "tasks": tasks_out,
         })
         # everything after serialize — members, owners, link display, column
@@ -10088,7 +10264,11 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # Printed only when it is worth reading, so a healthy board says
         # nothing. stdout is what the container log keeps, once it is on.
         if total >= 1500:
-            print(f"[slow board] {board_id}: {len(tasks_out)} items, {total:.0f}ms — "
+            # item_count, not len(tasks_out): past the threshold no rows are
+            # serialized, and a slow line reading "0 items" would send the next
+            # reader of this log looking in the wrong place entirely.
+            print(f"[slow board] {board_id}: {item_count} items"
+                  f"{' (rows not sent)' if paged else ''}, {total:.0f}ms — "
                   + ", ".join(f"{n} {ms:.0f}" for n, ms in _phases), flush=True)
         return resp
 
@@ -12711,6 +12891,14 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     # "מספר": the unit shown beside the figure and whether the
                     # thousands are grouped — how it is read, not what is stored
                     "number": _number_col_cfg(c.get("number")) if c["type"] == "number" else None,
+                    # "רשימה": the options retired from new selection — still
+                    # real words on the cells that carry them, just no longer
+                    # offered. Kept only where they still name an option of
+                    # THIS column, because a stale entry here would be a word
+                    # the column neither offers nor has, and nothing could
+                    # ever clear it from the editor.
+                    "inactive_options": _dropdown_inactive(opts, c.get("inactive_options"))
+                                        if c["type"] == "dropdown" else None,
                     "perms": c.get("perms") or {},
                 })
             _conn_n = sum(1 for c in cols if c.get("type") == "connect")
@@ -12769,6 +12957,41 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                                       "items": used[str(o["id"])]})
             if _busy_opts:
                 _status_in_use_409(_busy_opts)
+            # ── nor a dropdown option an item still has ticked ──
+            # The same disagreement in a list: a cell holding a word its
+            # column no longer offers is drawn from the cache, absent from the
+            # picker and unaskable in the filter. A dropdown option has no id
+            # — the word IS the option — so it is matched by text, and an
+            # option the admin no longer wants offered has a way out that
+            # costs nobody their data: inactive_options. Same scope as the
+            # status rule above: only columns that survive the save, and the
+            # whole column going away is its own act.
+            _busy_dd = []
+            for cid, prev in old_cols.items():
+                nxt = now_by_id.get(cid)
+                if (not nxt or prev.get("type") != "dropdown"
+                        or nxt.get("type") != "dropdown"):
+                    continue
+                kept = {str(o) for o in (nxt.get("options") or [])}
+                dropped = []
+                for o in (prev.get("options") or []):
+                    if str(o) not in kept and str(o) not in dropped:
+                        dropped.append(str(o))
+                if not dropped:
+                    continue
+                if _rows is None:
+                    _rows = _status_usage_rows(db, b)
+                used = _dropdown_col_usage(cid, _rows)
+                for o in dropped:
+                    if used.get(o):
+                        _busy_dd.append({"col_id": cid,
+                                         "column": prev.get("title") or cid,
+                                         "label": o, "items": used[o]})
+            if _busy_dd:
+                raise HTTPException(409, {
+                    "message": "לא ניתן למחוק אפשרות שיש בה שימוש — הסר אותה תחילה "
+                               "מהפריטים או העבר אותה למצב לא פעיל",
+                    "options": _busy_dd})
             # ── what this change does to the board's forms ──
             # Gone, or changed into a type the old questions cannot mean.
             # Both are a change to a form somebody published, so both need
@@ -13108,6 +13331,472 @@ def board_status_usage(board_id: int, actor_id: int = Depends(current_user_id)):
         return {"statuses": _board_status_usage(db, b, rows),
                 "columns": {str(c["id"]): _status_col_usage(db, b, c, rows)
                             for c in cols}}
+
+
+# ── a renamed status option, carried into the cells that already wear it ──
+#
+# Renaming an option in the column editor rewrites the VOCABULARY, and the
+# cells go on holding the word they were written with: the grid stores the
+# label (and a form answer or a monday import stores the whole option), so an
+# option renamed from "אושר" to "אושר סופית" leaves every item that already
+# carried it reading the old word. The browser used to fix that itself —
+# _csMigrate, one PATCH per cell over the rows it holds.
+#
+# Which is fine until the board is big. Above FILTER_CLIENT_MAX the browser
+# holds a page of fifty rows out of tens of thousands, so that loop renamed
+# whatever happened to be on screen and left everything else carrying the old
+# label — a migration that looks like it ran. The frontend now refuses rather
+# than do a fraction of the job quietly, and this is where the job actually
+# gets done: one pass over the column for the whole board, whatever its size.
+#
+# Nothing about a RULE is touched, and that is on purpose. An automation
+# stores the option's id, the id survives a rename, and _status_cell_key reads
+# a cell back to its id — so the rules were never the thing that broke. Only
+# the text a person reads was.
+@app.post("/api/boards/{board_id}/columns/{col_id}/status-rename")
+def column_status_rename(board_id: int, col_id: str, data: dict,
+                         actor_id: int = Depends(current_user_id)):
+    """Carry a status option's new name into every cell on the board wearing it.
+
+    Called right after the column itself has been saved, so the column already
+    offers the NEW words — each rename names the option by its new label and
+    says which old word it used to be. The colour is read off the column and
+    not off the request: the column is the one authority on what an option
+    looks like, and a colour sent alongside is one more thing that can
+    disagree with it.
+
+    Permission is the rule the column editor already answers to — a board
+    admin, the same gate PATCH /api/boards/{id} puts in front of `columns`.
+    Editing the words and carrying them into the cells are one act; they must
+    not be able to come apart because one of them asked for less.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+        col = _find_col(db, board_id, col_id)
+        if not col:
+            raise HTTPException(404, "column not found")
+        if (col.get("type") or "") != "status":
+            raise HTTPException(400, "העמודה אינה עמודת סטטוס")
+        opts = _status_col_options(col.get("options")) or []
+        by_label = {o["label"]: o for o in opts}
+
+        # ── what was asked, checked whole before a single cell is written ──
+        # A rename half-applied is worse than one refused: the board would
+        # then hold two spellings of the same option with no screen able to
+        # say which items got which.
+        wanted, seen_old = [], set()
+        for r in (data.get("renames") or []):
+            if not isinstance(r, dict):
+                continue
+            old = str(r.get("from") or "").strip()
+            new = str(r.get("to") or "").strip()
+            if not old or not new or old == new or old in seen_old:
+                continue
+            o = by_label.get(new)
+            if not o:
+                # The column does not offer that word. Almost always the save
+                # of the column itself did not land, and renaming cells to a
+                # label no option carries would put the board in exactly the
+                # state this endpoint exists to prevent.
+                raise HTTPException(
+                    400, f"הסטטוס \"{new}\" אינו קיים בעמודה — שמור את העמודה תחילה")
+            # The old word still belonging to a DIFFERENT option is the one
+            # case where a cell holding only a label cannot be resolved: it is
+            # unknowable whether it means the option that was renamed away
+            # from the word or the one that now answers to it. Said out loud
+            # rather than guessed, because guessing moves items between
+            # statuses and nobody would ever see it happen.
+            clash = by_label.get(old)
+            if clash is not None and clash["id"] != o["id"]:
+                raise HTTPException(
+                    400, f"\"{old}\" הוא כעת שמו של סטטוס אחר בעמודה — "
+                         f"לא ניתן לדעת לאיזה מהם שייכים התאים")
+            seen_old.add(old)
+            wanted.append((old, o))
+        if not wanted:
+            raise HTTPException(400, "לא נמסרו שינויי שם")
+
+        by_old = {old: o for old, o in wanted}
+        by_id = {o["id"]: o for _old, o in wanted}
+
+        # ── the cells ──
+        # Read and rewritten in Python rather than as one SQL UPDATE over the
+        # JSON blob, because a cell is written two ways in this product and
+        # both are in the data: the grid stores the label, a form answer and
+        # the monday import store the whole option. A text substitution inside
+        # the blob would have to know the difference, and would happily rewrite
+        # a word that belonged to some other column of the same item.
+        #
+        # Archived items and the ones in the recycle bin are included. They
+        # come back — an unarchive, a board restored from the bin — and they
+        # must not come back wearing a word the column has not offered for
+        # months, which is the same unreadable disagreement that makes
+        # dropping a status-in-use a 409.
+        cid = str(col_id)
+        rows = (db.query(Task)
+                  .options(load_only(Task.custom_fields))
+                  .filter(Task.board_id == b.id)
+                  .execution_options(include_deleted=True)
+                  .all())
+        hit = {o["id"]: 0 for _old, o in wanted}
+        for t in rows:
+            cf = t.custom_fields or {}
+            v = cf.get(cid)
+            if v in (None, "", []):
+                continue
+            # By id first and by the old label only then: the id is the stable
+            # name of the option and the label is what the rename is changing.
+            if isinstance(v, dict):
+                o = by_id.get(str(v.get("id") or "")) or by_old.get(str(v.get("label") or ""))
+            else:
+                o = by_old.get(str(v))
+            if o is None:
+                continue
+            want = {"id": o["id"], "label": o["label"], "color": o.get("color")}
+            if v == want:
+                continue                 # already carries it — nothing to write
+            # The whole option and not just the new label, which is what
+            # _apply_status_col writes: a cell that carries its id is matched
+            # by id the NEXT time somebody renames it, and never by text.
+            nf = dict(cf)
+            nf[cid] = want
+            # JSON columns are replaced, never mutated in place — SQLAlchemy
+            # does not watch inside one and an in-place edit commits nothing.
+            t.custom_fields = nf
+            hit[o["id"]] += 1
+
+        total = sum(hit.values())
+        title = col.get("title") or cid
+        # One line for the whole rename and not one per item: the board log is
+        # read as a history of decisions, and twenty thousand rows saying the
+        # same thing would bury every other decision made that day.
+        if total:
+            _log_board(db, board_id, "update", field="column", old=title,
+                       new=f"{title} — " + ", ".join(
+                           f"\"{old}\" שונה ל\"{o['label']}\"" for old, o in wanted)
+                           + f" ({total} תאים)",
+                       actor=actor_id)
+        db.commit()
+        return {"col_id": cid, "title": title,
+                "items": total, "scanned": len(rows),
+                "renamed": [{"from": old, "to": o["label"], "id": o["id"],
+                             "items": hit[o["id"]]} for old, o in wanted]}
+
+
+# ── a dropdown ("רשימה") column: what each option is worn by, and a rename ──
+#
+# A dropdown option is a bare word with no id behind it, so every place that
+# remembers one remembers the TEXT: the cells, a rule's "העמודה היא X", a saved
+# view's filter. That is why the rename below is one endpoint that edits the
+# column itself as well as the cells, where status splits the two: a status
+# option keeps its id across a rename and the column PATCH can go first, while
+# a dropdown option renamed in the PATCH alone would look, to the delete-guard
+# there, exactly like an option in use being deleted — and would be refused.
+
+@app.get("/api/boards/{board_id}/columns/{col_id}/dropdown-usage")
+def column_dropdown_usage(board_id: int, col_id: str,
+                          actor_id: int = Depends(current_user_id)):
+    """How many items carry each option of one dropdown column.
+
+    What the editor needs to put a delete out of reach BEFORE anybody presses
+    it and to offer "העבר למצב לא פעיל" instead — the 409 on save stays the
+    authority. Open to anyone on the board, like status-usage: the counts are
+    the board reading back rows every member can already see.
+    """
+    with Session(engine) as db:
+        b, role = _board_role_or_403(db, board_id, actor_id)
+        col = _find_col(db, board_id, col_id)
+        # A column this reader's override hides ("none") is one the grid,
+        # the filter and the export never show them — see _unseen_col_ids.
+        # Its words and their counts are the column's content, so the answer
+        # is the same 404 as a column that does not exist: a 403 would tell
+        # them it is there. No actor (auth off) sees every column, as in
+        # _unseen_col_ids.
+        if not col or (actor_id is not None
+                       and _col_perm(col, actor_id, role) == "none"):
+            raise HTTPException(404, "column not found")
+        if (col.get("type") or "") != "dropdown":
+            raise HTTPException(400, "העמודה אינה עמודת רשימה")
+        return {"col_id": str(col_id),
+                "usage": _dropdown_col_usage(col_id, _status_usage_rows(db, b))}
+
+
+def _dropdown_swap(v, old, new):
+    """A cell value (or a filter/condition value) with `old` replaced by `new`
+    — deduplicated, order kept — and whether anything changed. Always a NEW
+    object: these live in JSON columns, and SQLAlchemy does not see an edit
+    made inside one."""
+    if isinstance(v, list):
+        hit, out = False, []
+        for x in v:
+            lbl = x.get("label") if isinstance(x, dict) else x
+            if lbl is not None and str(lbl) == old:
+                hit, x = True, new
+            key = x.get("label") if isinstance(x, dict) else x
+            if any((y.get("label") if isinstance(y, dict) else y) == key for y in out):
+                continue
+            out.append(x)
+        return (out, True) if hit else (v, False)
+    # A lone value is compared as text, as list members are above: an imported
+    # cell can hold the number 3 for the option "3", and leaving it behind
+    # would keep a word the column no longer offers. bool is an int to Python
+    # and is never an option, so it is kept out on purpose.
+    if (isinstance(v, (str, int, float)) and not isinstance(v, bool)
+            and str(v) == old):
+        return new, True
+    return v, False
+
+
+def _dropdown_rename_tree(node, cid, old, new, depth=0):
+    """A saved filter tree with every rule on this column that names `old`
+    asking for `new` instead. (tree, changed) — the tree rebuilt, never
+    mutated, and only the rules on THIS column touched: the same word may be
+    an option of another column on the board, and that one was not renamed."""
+    if not isinstance(node, dict) or depth > filter_ast.MAX_DEPTH:
+        return node, False
+    if node.get("type") == "group" or "rules" in node:
+        hit, kids = False, []
+        for kid in (node.get("rules") or []):
+            k, h = _dropdown_rename_tree(kid, cid, old, new, depth + 1)
+            kids.append(k)
+            hit = hit or h
+        return ({**node, "rules": kids}, True) if hit else (node, False)
+    if str(node.get("field") or "") != cid:
+        return node, False
+    # Two spellings of the same rule reach here: filter_ast's own wire shape
+    # holds the word under `value`, but the tab strip saves what newRule()
+    # builds — {field, op, v, v2} — and parse() reads either. Reading only
+    # `value` left every view saved from the real browser untouched by a
+    # rename. Written back under the key it came from, so the view keeps the
+    # shape its own client expects.
+    key = "value" if "value" in node else "v"
+    val, hit = _dropdown_swap(node.get(key), old, new)
+    return ({**node, key: val}, True) if hit else (node, False)
+
+
+def _dropdown_rename_conds(conds, cid, old, new):
+    """A rule's conditions with "העמודה היא/אינה «old»" on this column now
+    naming `new`. A side that is a column REFERENCE (a dict) is left alone —
+    it names a column, not a word."""
+    hit, out = False, []
+    for c in (conds if isinstance(conds, list) else []):
+        spec = c.get("value") if isinstance(c, dict) else None
+        if (isinstance(c, dict) and c.get("kind") in recipes.COLUMN_CONDITIONS
+                and isinstance(spec, dict) and str(spec.get("col") or "") == cid):
+            val, h = _dropdown_swap(spec.get("value"), old, new)
+            if h:
+                c = {**c, "value": {**spec, "value": val}}
+                hit = True
+        out.append(c)
+    return out, hit
+
+
+def _dropdown_rename_text(v, old, new):
+    """A set_column value naming `old`, now naming `new`. Only a value that IS
+    the word: _coerce_cell strips the text and then demands it be one of the
+    column's options, so anything else — a token, a sentence — either is not
+    this word or resolves at run time and is not ours to rewrite."""
+    if isinstance(v, str) and v.strip() == old:
+        return new, True
+    return v, False
+
+
+def _dropdown_rename_cfg(recipe_id, cfg, cid, old, new):
+    """A rule's config with every mention of `old` on this column moved to
+    `new`: its conditions, and its set_column actions that write into it.
+
+    The actions as well as the conditions, because set_column will write into
+    a dropdown — FIELD_MATRIX marks the type as no action target, but nothing
+    enforces that: the column is not in AUTOMATION_UNWATCHABLE_COLUMNS or
+    DERIVED_CELLS, and _coerce_cell reads it as a status-kind column and
+    accepts any of its options. Left alone, "כאשר …, עדכן את «סוג» ל«old»"
+    would be refused on every firing from the rename on ("אינו ערך מוכר
+    בעמודה"), which is the rule going quietly dead the conditions part of
+    this exists to prevent. The rule's own action keeps its blanks as
+    a_column/a_text (only the set_column recipes declare a_column with a
+    text); an added one as {"key": "set_column", "values": {column, text}}.
+    (cfg, changed) — a new dict, never the stored one edited in place."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    out, hit = dict(cfg), False
+    conds, h = _dropdown_rename_conds(cfg.get(recipes.CONDITION_KEY), cid, old, new)
+    if h:
+        out[recipes.CONDITION_KEY], hit = conds, True
+    if ((recipes.recipe(recipe_id) or {}).get("action") == "set_column"
+            and str(cfg.get("a_column") or "") == cid):
+        val, h = _dropdown_rename_text(cfg.get("a_text"), old, new)
+        if h:
+            out["a_text"], hit = val, True
+    extras = cfg.get(recipes.ACTIONS_KEY)
+    if isinstance(extras, list):
+        acts, ahit = [], False
+        for x in extras:
+            vals = x.get("values") if isinstance(x, dict) else None
+            if (isinstance(vals, dict) and x.get("key") == "set_column"
+                    and str(vals.get("column") or "") == cid):
+                val, h = _dropdown_rename_text(vals.get("text"), old, new)
+                if h:
+                    x = {**x, "values": {**vals, "text": val}}
+                    ahit = True
+            acts.append(x)
+        if ahit:
+            out[recipes.ACTIONS_KEY], hit = acts, True
+    return (out, True) if hit else (cfg, False)
+
+
+@app.post("/api/boards/{board_id}/columns/{col_id}/dropdown-rename")
+def column_dropdown_rename(board_id: int, col_id: str, data: dict,
+                           actor_id: int = Depends(current_user_id)):
+    """Rename one option of a dropdown column, and carry the new word into
+    everything that remembers the old one — in a single transaction.
+
+    Everything is: the column's options (in place, same position) and its
+    inactive list; every cell of the column on the board, archived and binned
+    items included, because they come back and must not come back wearing a
+    word the column stopped offering; the board's automations whose
+    conditions ask "העמודה היא «old»" on this column, which would otherwise
+    go quietly false for ever; and the board's saved views whose filter asks
+    for the old word, which would otherwise go quietly empty.
+
+    Same gate as the column PATCH — a board admin. Editing the word and
+    carrying it must not be able to come apart because one asked for less.
+    """
+    with Session(engine) as db:
+        b = db.query(Board).filter(Board.id == board_id).first()
+        if not b or b.deleted_at:
+            raise HTTPException(404, "board not found")
+        if _board_role(db, board_id, actor_id) != "admin":
+            raise HTTPException(403, "רק מנהל הלוח יכול לערוך עמודות")
+        cols = list((b.settings or {}).get("columns") or [])
+        at = next((i for i, c in enumerate(cols)
+                   if isinstance(c, dict) and str(c.get("id")) == str(col_id)), None)
+        if at is None:
+            raise HTTPException(404, "column not found")
+        col = cols[at]
+        if (col.get("type") or "") != "dropdown":
+            raise HTTPException(400, "העמודה אינה עמודת רשימה")
+
+        # ── what was asked, checked whole before anything is written ──
+        old_in = str(data.get("from") or "").strip()
+        new = str(data.get("to") or "").strip()
+        if not old_in or not new:
+            raise HTTPException(400, "חובה שם קודם ושם חדש")
+        # Refused rather than cut: a truncated word is a rename to something
+        # the admin never typed, and they would find out from the grid.
+        if len(new) > 200:
+            raise HTTPException(400, "שם האפשרות ארוך מדי — עד 200 תווים")
+        opts = list(col.get("options") or [])
+        # Matched exactly first, then ignoring the edges — an option saved
+        # with a stray space is still the option the admin is pointing at.
+        # The cells are rewritten by the word AS STORED, which is what they hold.
+        idx = next((i for i, o in enumerate(opts) if str(o) == old_in), None)
+        if idx is None:
+            idx = next((i for i, o in enumerate(opts) if str(o).strip() == old_in), None)
+        if idx is None:
+            raise HTTPException(400, f"האפשרות \"{old_in}\" אינה קיימת בעמודה")
+        old = str(opts[idx])
+        if new == old:
+            raise HTTPException(400, "השם החדש זהה לשם הקודם")
+        # Case-insensitively, because "Urgent" and "urgent" side by side are
+        # one option spelt twice to the person reading them. A rename that
+        # only changes the case of the option itself is not a clash.
+        fold = new.casefold()
+        if any(i != idx and str(o).strip().casefold() == fold
+               for i, o in enumerate(opts)):
+            raise HTTPException(400, f"האפשרות \"{new}\" כבר קיימת בעמודה")
+
+        # ── the column ──
+        opts[idx] = new
+        inactive = col.get("inactive_options")
+        if isinstance(inactive, list):
+            inactive = _dropdown_inactive(
+                opts, [new if str(x) == old else x for x in inactive])
+        new_col = {**col, "options": opts, "inactive_options": inactive}
+        cols[at] = new_col
+        s = dict(b.settings or {})
+        s["columns"] = cols
+        b.settings = s
+
+        # ── the cells ──
+        cid = str(col_id)
+        rows = (db.query(Task)
+                  .options(load_only(Task.custom_fields))
+                  .filter(Task.board_id == b.id)
+                  .execution_options(include_deleted=True)
+                  .all())
+        total = 0
+        for t in rows:
+            cf = t.custom_fields or {}
+            if cf.get(cid) in (None, "", []):
+                continue
+            val, hit = _dropdown_swap(cf.get(cid), old, new)
+            if not hit:
+                continue
+            nf = dict(cf)
+            nf[cid] = val
+            t.custom_fields = nf
+            total += 1
+
+        # ── the rules that ask about the word ──
+        # Rewritten in the live configuration and not parked as a draft the
+        # way an edit to an active rule is: the rule means exactly what it
+        # meant a moment ago, and a draft would leave the running version
+        # asking for a word no cell can hold any more. A version is recorded
+        # so "who changed this rule" still has an answer. A pending draft is
+        # carried too, or publishing it later would bring the old word back.
+        for a in db.query(Automation).filter(Automation.board_id == b.id).all():
+            cfg = a.config or {}
+            new_cfg, hit = _dropdown_rename_cfg(a.recipe_id, cfg, cid, old, new)
+            if a.draft_version:
+                dv = (db.query(AutomationVersion)
+                        .filter(AutomationVersion.automation_id == a.id,
+                                AutomationVersion.version == a.draft_version).first())
+                snap = (dv.snapshot or {}) if dv is not None else {}
+                dcfg = snap.get("config") if isinstance(snap.get("config"), dict) else None
+                if dcfg is not None:
+                    # the draft's own recipe: a draft can change what the
+                    # rule does, and its a_text is only a set_column value
+                    # if the draft is still a set_column rule
+                    ndcfg, dhit = _dropdown_rename_cfg(
+                        snap.get("recipe_id") or a.recipe_id, dcfg, cid, old, new)
+                    if dhit:
+                        dv.snapshot = {**snap, "config": ndcfg}
+            if not hit:
+                continue
+            before = _snapshot_automation(a)
+            a.config = new_cfg
+            a.updated_by = actor_id
+            a.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            _record_automation_version(
+                db, b, a, actor_id, before=before,
+                note=f"האפשרות \"{old}\" בעמודה \"{col.get('title') or cid}\" שונתה ל\"{new}\"")
+
+        # ── the saved views that filter on the word ──
+        # Binned views too, for the reason binned items are: they come back.
+        for v in db.query(SavedView).filter(SavedView.board_id == b.id).all():
+            f = v.filters or {}
+            if not isinstance(f, dict) or not f.get("adv"):
+                continue
+            tree, hit = _dropdown_rename_tree(f.get("adv"), cid, old, new)
+            if not hit:
+                continue
+            v.filters = {**f, "adv": tree}
+            # the shared configuration moved, and a client holding the view
+            # must be able to tell — see SavedView.config_version
+            v.config_version = (v.config_version or 1) + 1
+
+        title = col.get("title") or cid
+        # One line for the whole rename, as with status: the log is a history
+        # of decisions, not of the rows a decision touched.
+        _log_board(db, board_id, "update", field="column", old=title,
+                   new=f"{title} — \"{old}\" שונה ל\"{new}\" ({total} תאים)",
+                   actor=actor_id)
+        db.commit()
+        return {"col_id": cid, "column": new_col, "items": total,
+                "from": old, "to": new}
 
 
 @app.delete("/api/boards/{board_id}")
@@ -29872,6 +30561,44 @@ def list_comments(task_id: int, actor_id: int = Depends(current_user_id)):
         last = max((c.created_at for c in cs if c.created_at), default=None)
         return {"comments": roots, "count": len(items), "last_comment_at": last}
 
+def _tagged_twice(db, content):
+    """The names tagged more than once in one message, in the order first seen.
+
+    One tag per person per message. A second "@שלי פיינברג" notifies nobody
+    a second time, because the tags become a set either way. All it adds is
+    the name again in the text, and the reader takes each tag as someone new
+    being called in. The composer's menu stops offering a name once it is
+    tagged, but typing the name out or pasting text never goes through the
+    menu, so the rule is checked here as well.
+
+    Each "@" counts once, for the LONGEST name that follows it. With both
+    "שלי" and "שלי פיינברג" on the system, "@שלי פיינברג" is one tag of the
+    longer name, not also a tag of the shorter one. Counting "@שלי" as a
+    substring would refuse a message that tags each of them once.
+    """
+    if not content or "@" not in content:
+        return []
+    names = sorted({(u.name or "").strip() for u in db.query(User).all()} - {""},
+                   key=len, reverse=True)
+    counts, order = {}, []
+    i = content.find("@")
+    while i >= 0:
+        hit = next((n for n in names if content.startswith(n, i + 1)), None)
+        if hit:
+            counts[hit] = counts.get(hit, 0) + 1
+            if counts[hit] == 2:
+                order.append(hit)
+        i = content.find("@", i + 1)
+    return order
+
+
+def _refuse_tagged_twice(db, content):
+    twice = _tagged_twice(db, content)
+    if twice:
+        raise HTTPException(400, "אפשר לתייג כל אדם פעם אחת בהודעה — "
+                                 + ", ".join(twice) + " מתויג/ת יותר מפעם אחת")
+
+
 @app.post("/api/tasks/{task_id}/comments")
 def add_comment(task_id: int, data: dict, request: Request = None,
                 background: BackgroundTasks = None,
@@ -29888,6 +30615,7 @@ def add_comment(task_id: int, data: dict, request: Request = None,
         atts = data.get("attachments") or []
         if not content and not atts:
             raise HTTPException(400, "תגובה ריקה")
+        _refuse_tagged_twice(db, content)
         # Who is being tagged: explicit @-picks plus any @Name typed into the text.
         mentioned = set()
         for x in (data.get("mentions") or []):
@@ -30041,6 +30769,9 @@ def update_comment(cid: int, data: dict, request: Request = None,
         # must not be re-notified just because they are not a member today
         before = _mentioned(c.content, c.mentions, members_only=False)
         if "content" in data:
+            # checked before anything on the comment is changed: a refused edit
+            # leaves the message exactly as it was
+            _refuse_tagged_twice(db, data["content"])
             c.content = data["content"]
         if "attachments" in data:
             c.attachments = data.get("attachments") or []

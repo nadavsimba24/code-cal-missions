@@ -8,8 +8,11 @@ text reading as a fresh call on somebody's attention that nobody would ever
 receive.
 
 Both halves are pinned. The menu no longer offers a name already in the box,
-and the server still notifies once however many times the text says it — the
-typed form is the one a client-side change cannot cover.
+and since 2026-11-19 a message that tags the same person twice is REFUSED,
+by the composer before it sends and by the server for any client. A name
+typed out in full or pasted in never goes through the menu, so the menu
+alone could not keep the rule. A single tag still notifies once, however
+many times the explicit `mentions` array repeats the id.
 """
 import pathlib
 import shutil
@@ -78,28 +81,74 @@ def _colleague(client, admin_id):
     return uid
 
 
-def test_a_name_repeated_in_the_text_notifies_once(client, admin_id, monkeypatch):
-    """The menu is not the rule. Somebody can still type the same name twice,
-    or paste it, and the server must count them as the one tag they are."""
-    sent = _no_mail(monkeypatch)
-    oid = _colleague(client, admin_id)
-    bid = client.post("/api/boards", json={"name": "לוח תיוג כפול",
+def _board_with(client, admin_id, oid, name):
+    bid = client.post("/api/boards", json={"name": name,
                                            "user_id": admin_id}).json()["id"]
-    try:
-        tid = client.post("/api/tasks", json={"board_id": bid, "title": "פריט",
-                                              "user_id": admin_id}).json()["id"]
-        r = client.post(f"/api/boards/{bid}/members",
-                        json={"user_id": oid, "role": "editor", "actor_id": admin_id})
-        assert r.status_code == 200, r.text
+    tid = client.post("/api/tasks", json={"board_id": bid, "title": "פריט",
+                                          "user_id": admin_id}).json()["id"]
+    r = client.post(f"/api/boards/{bid}/members",
+                    json={"user_id": oid, "role": "editor", "actor_id": admin_id})
+    assert r.status_code == 200, r.text
+    return bid, tid
 
-        sent.clear()
+
+def test_a_message_that_tags_the_same_person_twice_is_refused(client, admin_id, monkeypatch):
+    """The menu is not the rule. Somebody can still type the same name twice,
+    or paste it, and the server must refuse the message and say who."""
+    _no_mail(monkeypatch)
+    oid = _colleague(client, admin_id)
+    bid, tid = _board_with(client, admin_id, oid, "לוח תיוג כפול")
+    try:
         name = _name(oid)
         r = client.post(f"/api/tasks/{tid}/comments",
                         json={"actor_id": admin_id,
-                              "content": f"@{name} תראי, @{name} שוב, ושוב @{name}",
+                              "content": f"@{name} תראי, @{name} שוב"})
+        assert r.status_code == 400, r.text
+        assert name in r.json()["detail"], r.json()
+        with Session(cityos_main.engine) as db:
+            assert db.query(Comment).filter(Comment.task_id == tid).count() == 0, \
+                "the refused message was saved anyway"
+            assert (db.query(Notification)
+                      .filter(Notification.user_id == oid, Notification.task_id == tid)
+                      .count()) == 0, "the refused message still notified"
+    finally:
+        client.delete(f"/api/boards/{bid}?actor_id={admin_id}")
+
+
+def test_an_edit_that_adds_a_second_tag_is_refused_and_changes_nothing(client, admin_id, monkeypatch):
+    _no_mail(monkeypatch)
+    oid = _colleague(client, admin_id)
+    bid, tid = _board_with(client, admin_id, oid, "לוח עריכת תיוג כפול")
+    try:
+        name = _name(oid)
+        r = client.post(f"/api/tasks/{tid}/comments",
+                        json={"actor_id": admin_id, "content": f"@{name} שלום"})
+        assert r.status_code == 200, r.text
+        cid = r.json()["id"]
+        r = client.patch(f"/api/comments/{cid}",
+                         json={"actor_id": admin_id,
+                               "content": f"@{name} שלום, ושוב @{name}"})
+        assert r.status_code == 400, r.text
+        with Session(cityos_main.engine) as db:
+            assert db.query(Comment).filter(Comment.id == cid).first().content \
+                == f"@{name} שלום", "a refused edit still rewrote the message"
+    finally:
+        client.delete(f"/api/boards/{bid}?actor_id={admin_id}")
+
+
+def test_one_tag_notifies_once_even_when_the_id_is_repeated(client, admin_id, monkeypatch):
+    """The explicit array is not text anybody reads, so a repeated id there is
+    not refused. It is folded into the one tag it is."""
+    sent = _no_mail(monkeypatch)
+    oid = _colleague(client, admin_id)
+    bid, tid = _board_with(client, admin_id, oid, "לוח תיוג יחיד")
+    try:
+        sent.clear()
+        name = _name(oid)
+        r = client.post(f"/api/tasks/{tid}/comments",
+                        json={"actor_id": admin_id, "content": f"@{name} תראי",
                               "mentions": [oid, oid]})
         assert r.status_code == 200, r.text
-
         with Session(cityos_main.engine) as db:
             c = db.query(Comment).filter(Comment.id == r.json()["id"]).first()
             assert c.mentions == [oid], f"the tag was stored {len(c.mentions)} times"
@@ -107,8 +156,28 @@ def test_a_name_repeated_in_the_text_notifies_once(client, admin_id, monkeypatch
                        .filter(Notification.user_id == oid,
                                Notification.task_id == tid,
                                Notification.type == "mention").all())
-            assert len(notes) == 1, \
-                f"three tags in one message sent {len(notes)} notifications"
+            assert len(notes) == 1, f"one tag sent {len(notes)} notifications"
         assert len(sent) <= 1, f"one message mailed the same person {len(sent)} times"
     finally:
         client.delete(f"/api/boards/{bid}?actor_id={admin_id}")
+
+
+def test_two_people_whose_names_share_a_start_can_each_be_tagged_once(client, admin_id):
+    """"@שלי פיינברג" is one tag of the longer name, not also a tag of "שלי".
+    Counting substrings would refuse a perfectly ordinary message."""
+    ids = []
+    for nm, em in (("בודקת קידומת", "prefix.short@cityos.test"),
+                   ("בודקת קידומת ארוכה", "prefix.long@cityos.test")):
+        hit = [u for u in client.get("/api/users").json() if u.get("email") == em]
+        if hit:
+            ids.append(hit[0]["id"])
+        else:
+            r = client.post("/api/users", json={"name": nm, "email": em,
+                                                "actor_id": admin_id})
+            assert r.status_code == 200, r.text
+            ids.append(r.json()["id"])
+    with Session(cityos_main.engine) as db:
+        assert cityos_main._tagged_twice(
+            db, "@בודקת קידומת ארוכה ו@בודקת קידומת שלום") == []
+        assert cityos_main._tagged_twice(
+            db, "@בודקת קידומת ארוכה ו@בודקת קידומת ארוכה") == ["בודקת קידומת ארוכה"]

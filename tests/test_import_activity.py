@@ -44,6 +44,20 @@ def _cv(cid, title, ctype, text=""):
     return {"id": cid, "type": ctype, "column": {"title": title}, "text": text}
 
 
+def _val(v):
+    """A log row's value as the reader shows it. The audit stores values as
+    JSON — that is how "ריק" stays empty rather than arriving as the word null
+    — and Chat.transVal decodes them on the way to the screen, so a test that
+    compared the raw text would be asserting about the encoding instead of
+    about what anybody reads."""
+    if isinstance(v, str) and v[:1] in '"[{':
+        try:
+            return json.loads(v)
+        except ValueError:
+            return v
+    return v
+
+
 def _upload(client, raw, name="היסטוריה"):
     r = client.post("/api/boards/import?actor_id=1", headers=H,
                     files={"file": ("response.json", raw, "application/json")},
@@ -172,11 +186,25 @@ def test_the_report_and_the_log_say_where_a_row_came_from():
 
 
 def test_the_query_asks_for_the_history_and_for_who_did_it():
+    """…and asks for ALL of the users, which is not the same request.
+
+    `users` asked bare answers with monday's default page of 200 and says
+    nothing about the rest; this account has 318. The 118 it left out are
+    ordinary named people, and they came back from an import as "could not be
+    matched" — which reads like they are not in the system rather than like the
+    export never asked about them. Both files that ask for users ask with a
+    limit, because the half that is missing is the half nobody can see."""
     import pathlib
-    q = (pathlib.Path(__file__).resolve().parent.parent
-         / "backend" / "monday_export.graphql").read_text(encoding="utf-8")
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for rel in ("backend/monday_export.graphql", "scripts/monday_history.py"):
+        q = (root / rel).read_text(encoding="utf-8")
+        asks = re.findall(r"users\(limit:\s*(\d+)\)", q)
+        assert asks, f"{rel} asks for users without a limit — 200 of them"
+        assert all(int(n) > 200 for n in asks), (rel, asks)
+    q = (root / "backend" / "monday_export.graphql").read_text(encoding="utf-8")
     assert "activity_logs(" in q
-    assert "users {" in q, "without it every row reads מערכת"
+    assert "users(limit:" in q, "without it every row reads מערכת"
 
 
 # ── the history of an item that is gone ─────────────────────────────────────
@@ -325,20 +353,235 @@ def test_a_batch_column_change_lands_on_every_item_it_names(client, admin_id):
     assert d["report"]["activity"] == 2, "one entry, two items, two rows"
 
 
+# ── the twenty-seven kinds that used to go unmapped ─────────────────────────
+# LOG_EVENTS mapped nine of the thirty-six kinds monday sends. It now also
+# carries both halves of a group move, a batch move, a move between boards, an
+# owner added or removed, and a sub-item that changed parents — measured on the
+# two real exports, board 1495412381 went from 15,916 rows carried to 17,460
+# (unmapped 3,020 → 1,407) and board 5738954426 from 151,797 to 154,752
+# (unmapped 13,027 → 1,542).
+#
+# Two of the three rules below are about what is NOT carried, which is the half
+# that gets lost: the second record of a move that only happened once, and an
+# owner row whose entire content is a person the file cannot name. Both are
+# counted and reported rather than dropped in silence — the standing rule of
+# this importer.
+def _move(pulse, uuid, when, into=True, src=("g1", "פתוח"), dst=("g2", "סגור")):
+    """One half of a group move, as monday writes it: the two groups by name
+    and `action_record_uuid` tying the halves together."""
+    extra = {"action_record_uuid": uuid} if uuid else {}   # the 2021 rows carry none
+    return _log("move_pulse_into_group" if into else "move_pulse_from_group",
+                pulse, when=when,
+                source_group={"id": src[0], "title": src[1]},
+                dest_group={"id": dst[0], "title": dst[1]}, **extra)
+
+
+def test_a_move_between_groups_comes_in_once_and_only_once(client, admin_id):
+    """monday records a move twice — once from the group the item left and once
+    from the group it joined, milliseconds apart, sharing an
+    `action_record_uuid`. On her visits board 479 of the 565
+    `move_pulse_from_group` entries are the second half of a move already
+    carried.
+
+    Both halves have to be read, because 432 older entries carry only one of
+    them; and only one row may come out, because two rows say the item was
+    moved and then moved back. So the count alone is not the assertion: a
+    parser that dropped both halves and one that carried both would each be
+    wrong in a way `activity == 1` cannot see. `activity_paired` is what tells
+    the three apart — one row carried, one half recognised as its twin."""
+    logs = [_move(111, "a-1", WHEN), _move(111, "a-1", WHEN + 30_000, into=False)]
+    d, board = _imported_board(client, logs)
+    rep = d["report"]
+    assert rep["activity"] == 1, "one move, and the log says it happened twice"
+    assert rep["activity_paired"] == 1, (
+        "nothing was recognised as the other half of a move — either both "
+        "halves came in, or both were dropped")
+    assert dict(rep["activity_unmapped"]) == {}, rep["activity_unmapped"]
+
+    # and the row that did come in is the move, with both groups named
+    task = next(t for t in board["tasks"] if t["title"] == "פריט א")
+    rows = client.get(f"/api/tasks/{task['id']}/activity", headers=H).json()["activity"]
+    mine = [r for r in rows if r.get("origin") == "monday"]
+    assert len(mine) == 1 and mine[0]["field"] == "group"
+    assert "פתוח" in json.dumps(mine[0], ensure_ascii=False)
+    assert "סגור" in json.dumps(mine[0], ensure_ascii=False)
+
+
+def test_two_different_moves_of_one_item_are_two_rows(client, admin_id):
+    """The other side of the pairing, and the one that would be silently wrong:
+    an item moved twice really was moved twice. Keyed on monday's own id for
+    the action — plus the two groups — so two moves are never folded into one
+    however close together they happened."""
+    logs = [_move(111, "a-1", WHEN), _move(111, "a-1", WHEN + 30_000, into=False),
+            _move(111, "b-2", WHEN + 10_000_000, src=("g2", "סגור"),
+                  dst=("g1", "פתוח")),
+            _move(111, "b-2", WHEN + 10_030_000, into=False, src=("g2", "סגור"),
+                  dst=("g1", "פתוח"))]
+    d, _ = _imported_board(client, logs)
+    assert d["report"]["activity"] == 2, "two moves became one"
+    assert d["report"]["activity_paired"] == 2
+
+
+def test_an_old_move_that_carries_no_action_id_is_paired_by_what_it_says(
+        client, admin_id):
+    """monday only started writing `action_record_uuid` partway through; the
+    older entries have nothing tying the two halves together but the moment and
+    the two groups. Both are needed. Paired on the moment alone, two different
+    moves made in the same tenth of a second — a drag through three groups, a
+    rule moving an item on twice — would fold into one row and the board would
+    be shown as having stopped somewhere it only passed through."""
+    # a few milliseconds into a second, the way a real entry falls: the two
+    # halves of one move land in the same tenth of it
+    logs = [_move(111, None, WHEN + 1_000),
+            _move(111, None, WHEN + 31_000, into=False),
+            _move(111, None, WHEN + 11_000, src=("g2", "סגור"), dst=("g3", "ארכיון")),
+            _move(111, None, WHEN + 41_000, into=False, src=("g2", "סגור"),
+                  dst=("g3", "ארכיון"))]
+    d, _ = _imported_board(client, logs)
+    rep = d["report"]
+    assert rep["activity"] == 2, "two moves in one instant became one"
+    assert rep["activity_paired"] == 2, "the halves stopped pairing without an id"
+
+
+def test_a_batch_move_pairs_the_same_way_and_lands_on_every_item(client, admin_id):
+    """A batch move states its items and not the groups — `pulse_ids` and
+    nothing else — and monday writes it in both halves exactly as it writes a
+    single move. One row per item, and the second half paired away for each of
+    them."""
+    both = [_log("batch_move_pulses_into_group", None, action_record_uuid="c-3",
+                 pulse_ids=[111, 222]),
+            _log("batch_move_pulses_from_group", None, when=WHEN + 30_000,
+                 action_record_uuid="c-3", pulse_ids=[111, 222])]
+    d, _ = _imported_board(client, both)
+    rep = d["report"]
+    assert rep["activity"] == 2, "one move of two items, one row each"
+    assert rep["activity_paired"] == 2, "the second half was carried as well"
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    mine = [r for r in rows if r.get("origin") == "monday"]
+    assert {r["task_title"] for r in mine} == {"פריט א", "פריט ב"}
+
+
+def test_an_owner_the_file_can_name_comes_in_on_the_item(client, admin_id):
+    """Who was put on an item, and who was taken off it. The payload is the
+    subscription shape — `pulse_id` is the item, `subscribed_id` is the person
+    — and the account's user list is the only thing that turns that id into a
+    name. The direction is the whole meaning of the row, so it is read off the
+    event: added reads "— ← דנה", removed reads "דנה ← —"."""
+    users = [{"id": "777", "name": "רעות אורן", "email": "r@example.com"},
+             {"id": "42", "name": "דנה כהן", "email": "d@example.com"}]
+    logs = [_log("add_owner", 111, subscribed_id="42"),
+            _log("remove_owner", 222, when=WHEN + 60_000_000, subscribed_id="42")]
+    d, board = _imported_board(client, logs, users)
+    assert d["report"]["activity"] == 2, d["report"]
+    assert d["report"]["activity_owner_nameless"] == 0
+
+    rows = {r["task_title"]: r for r in
+            client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+            if r.get("origin") == "monday"}
+    added, removed = rows["פריט א"], rows["פריט ב"]
+    assert _val(added["new"]) == "דנה כהן" and not added["old"], added
+    assert _val(removed["old"]) == "דנה כהן" and not removed["new"], removed
+
+
+def test_an_owner_the_file_cannot_name_is_counted_instead_of_carried(
+        client, admin_id):
+    """Not hypothetical: 8,505 of her meetings board's 8,585 `add_owner` rows
+    name monday user 71490011, which the account's user list does not contain —
+    a deleted integration account that returns nothing even asked for by id.
+    The entire content of the row is who was put on the item, so one that
+    cannot name them says "אחראי: — ← —" under a label promising a person.
+    Carried, that is 8,505 identical empty lines across the board; counted, it
+    is one number in the report that says exactly which history did not come
+    and why.
+
+    It is counted on its own and NOT named in activity_unmapped: the event is
+    mapped and understood, and the gap has one identifiable fix — the export's
+    `users` list did not carry that person."""
+    users = [{"id": "777", "name": "רעות אורן", "email": "r@example.com"}]
+    logs = [_log("add_owner", 111, subscribed_id="71490011"),
+            _log("add_owner", 222, subscribed_id="71490011"),
+            _log("update_name", 111, when=WHEN + 60_000_000, name="ב",
+                 previous_value="א")]
+    d, _ = _imported_board(client, logs, users)
+    rep = d["report"]
+    assert rep["activity"] == 1, "a nameless owner row was carried anyway"
+    assert rep["activity_owner_nameless"] == 2, rep
+    assert "add_owner" not in dict(rep["activity_unmapped"]), \
+        "a mapped event was reported as one nobody understood"
+    rows = client.get(f"/api/boards/{d['id']}/activity", headers=H).json()["activity"]
+    assert not [r for r in rows if r.get("field") == "אחראי"], \
+        "an empty אחראי row reached the log"
+
+
+def test_the_rows_that_have_no_field_of_their_own_are_named_in_hebrew(
+        client, admin_id):
+    """Three of the things monday records have no field in this system: who was
+    put on the item, which board it came from, and a sub-item that changed
+    parents. A log row's field name is also what the log PRINTS when it has no
+    translation for it — Chat.fieldHe knows title, status, priority, due_date,
+    group and col:<id>, and returns the name itself for anything else — so a
+    machine key would have put the English word "owner" into a Hebrew log 8,585
+    times on rows nobody can correct from here. They are written as the Hebrew
+    word they mean, and that is behaviour, not decoration."""
+    users = [{"id": "777", "name": "רעות אורן", "email": "r@example.com"},
+             {"id": "42", "name": "דנה כהן", "email": "d@example.com"}]
+    logs = [_log("add_owner", 111, subscribed_id="42"),
+            _log("move_pulse_into_board", 111, when=WHEN + 1_000_000,
+                 source_board={"id": "9", "name": "פגישות 2024"},
+                 dest_board={"id": "1", "name": "לוח"}),
+            _log("move_subitem", None, when=WHEN + 2_000_000,
+                 source_pulse_id=222, dest_pulse_id=111)]
+    d, board = _imported_board(client, logs, users)
+    assert d["report"]["activity"] == 3, d["report"]
+
+    task = next(t for t in board["tasks"] if t["title"] == "פריט א")
+    rows = client.get(f"/api/tasks/{task['id']}/activity", headers=H).json()["activity"]
+    by_field = {r["field"]: r for r in rows if r.get("origin") == "monday"}
+    assert set(by_field) == {"אחראי", "לוח", "תת-פריט"}, sorted(by_field)
+    assert _val(by_field["אחראי"]["new"]) == "דנה כהן"
+    # the other board, by name — the one thing no column on this board can say
+    assert _val(by_field["לוח"]["old"]) == "פגישות 2024"
+    # and the sub-item that moved, by the names of the two items, not their ids
+    assert _val(by_field["תת-פריט"]["old"]) == "פריט ב"
+    assert _val(by_field["תת-פריט"]["new"]) == "פריט א"
+
+
+def test_the_log_reader_prints_a_field_name_it_does_not_know(client, admin_id):
+    """The reason the three above are Hebrew, read off the reader itself. If
+    fieldHe ever stopped falling through to the name, those rows would print as
+    nothing at all — and nobody would go looking for the cause in a dictionary
+    they never had to edit."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "frontend" / "index.html").read_text(encoding="utf-8")
+    i = src.index("fieldHe(f){")
+    body = src[i:src.index("\n", i)]
+    assert body.rstrip().endswith("return f; },"), body
+    assert "owner" not in body, "the field now has a translation and a key would do"
+
+
 def test_the_events_that_are_not_an_item_s_history_stay_out(client, admin_id):
-    """Her board's log is half board housekeeping — subscriptions, owners,
-    column settings, view changes. None of it is a change to an item, so none of
-    it belongs in an item's log; it is counted and named instead."""
-    logs = [_log("unsubscribe", 111), _log("change_column_settings", 111),
-            _log("add_owner", 111), _log("board_view_changed", 111),
-            _log("move_pulse_from_group", 111),          # the other half of a move
-            _log("update_name", 111, name="ב", previous_value="א")]
+    """Her board's log is half board housekeeping — subscriptions, column
+    settings, view changes — and a quarter of the subscribes sit a second away
+    from an add_owner that already says the same thing better. None of it is a
+    change to an item, so none of it belongs in an item's log.
+
+    What is pinned is that they are counted and NAMED. Nothing is dropped in
+    silence here: a kind nobody mapped has to be visible in the report, because
+    that report is the only place anyone would ever learn the history was
+    incomplete."""
+    logs = [_log("subscribe", 111), _log("unsubscribe", 111),
+            _log("change_column_settings", 111), _log("board_view_changed", 111),
+            _log("delete_pulse", 111),
+            _log("update_name", 111, when=WHEN + 60_000_000, name="ב",
+                 previous_value="א")]
     d, _ = _imported_board(client, logs)
     rep = d["report"]
     assert rep["activity"] == 1
     assert dict(rep["activity_unmapped"]) == {
-        "unsubscribe": 1, "change_column_settings": 1, "add_owner": 1,
-        "board_view_changed": 1, "move_pulse_from_group": 1}
+        "subscribe": 1, "unsubscribe": 1, "change_column_settings": 1,
+        "board_view_changed": 1, "delete_pulse": 1}
+    assert rep["activity_paired"] == 0 and rep["activity_owner_nameless"] == 0
 
 
 # ── a history request that came back with the whole account ─────────────────

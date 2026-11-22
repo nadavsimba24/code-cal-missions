@@ -363,6 +363,21 @@ def _subitem_names(it, sub_col_ids):
 # An entry's details live in `data`, which is a JSON *string* — monday does not
 # nest it — and `created_at` is microseconds since the epoch, as a string of 17
 # digits. Both are the kind of thing that looks like a bug the first time.
+#
+# Three of the things monday records about an item have no field of their own
+# here: who was put on it, which board it arrived from, and a sub-item that
+# moved to another parent. A log row's field name is also what the log's reader
+# prints when it has no translation for it — Chat.fieldHe knows title, status,
+# priority, due_date, group and col:<id>, and falls through to the name itself
+# — so these are written as the Hebrew word they mean and read as their own
+# label. The alternative was a machine key, and "owner" would have arrived as
+# that English word in a Hebrew log 8,585 times on her meetings board, on rows
+# nobody can correct from here. The automation audit already does this with
+# "תלות — …", for the same reason: the field has no code behind it, only a name.
+LOG_FIELD_OWNER = "אחראי"
+LOG_FIELD_BOARD = "לוח"
+LOG_FIELD_SUBITEM = "תת-פריט"
+
 LOG_EVENTS = {
     "create_pulse":          ("create", None),
     "pulse_create":          ("create", None),
@@ -374,7 +389,68 @@ LOG_EVENTS = {
     # set across them, which is who-and-when even without the what
     "batch_change_pulses_column_value": ("update", "column"),
     "move_pulse_into_group": ("update", "group"),
+    # The same move, seen from the group the item left. monday writes both
+    # halves — see LOG_MOVE_PAIRED below, which is why carrying this one does
+    # not double every move the board ever had. On a board with 69 groups,
+    # moving an item between them IS the history: her visits board has 565 of
+    # these beside its 14,902 column changes, where her meetings board — thirty
+    # times as many items, all of them in a single group — has three in total.
+    "move_pulse_from_group": ("update", "group"),
+    # A batch move states its items and not the groups: `pulse_ids`,
+    # `source_board`, and nothing about where they came from or went. Carried
+    # on the same terms as a batch column change above — who moved these items
+    # and when is history even without the two names — and in both halves,
+    # which pair with each other exactly as the single moves do.
+    "batch_move_pulses_into_group": ("update", "group"),
+    "batch_move_pulses_from_group": ("update", "group"),
+    # An item that came from, or left for, another board. The payload names the
+    # other board (`dest_board`/`source_board`), and that name is the whole
+    # point of the row: "this item came here from «פגישות מק\"לים 2024»" is
+    # something no column on the board can say.
+    "move_pulse_into_board":  ("update", LOG_FIELD_BOARD),
+    "move_pulse_from_board":  ("update", LOG_FIELD_BOARD),
+    # Who was put on the item, and who was taken off it. The payload is the
+    # subscription shape — `pulse_id` is the item, `subscribed_id` is the
+    # person — and it is the same event monday writes when somebody is added to
+    # the BOARD, which is handled where the item is read.
+    "add_owner":              ("update", LOG_FIELD_OWNER),
+    "remove_owner":           ("update", LOG_FIELD_OWNER),
+    # A sub-item that changed parents. Rare — one row across her two boards —
+    # and written on the item that received it.
+    "move_subitem":           ("update", LOG_FIELD_SUBITEM),
 }
+
+# Deliberately not carried, and still counted and named in the report:
+#
+#   subscribe / unsubscribe — following, not ownership, and monday writes a
+#     subscribe alongside a quarter of the add_owners (247 of her visits
+#     board's 801 share a second with one), so carrying both would print the
+#     same act twice on top of a line that already says it better. The rest are
+#     somebody turning notifications on for themselves, which is not the item's
+#     history. And 37 of those 801, with 17 of the 58 unsubscribes, are not
+#     about an item at all — item_type "Board", pulse_id null — so they could
+#     never have landed anywhere even if they were worth carrying.
+#   delete_pulse / archive_pulse / restore_pulse / batch_delete_pulses — the
+#     item is not in the import, so there is nothing for the row to hang on.
+#   create_column / delete_column / update_column_name / change_column_settings
+#     / create_group / delete_group / update_group_name / update_group_color /
+#     board_view_* / update_board_permissions / set_entity_board_role — these
+#     happened to the board, not to an item, and the item log is where they
+#     would have to go.
+
+# The events monday writes twice. A move between groups is recorded once from
+# the group the item left and once from the group it joined — microseconds
+# apart, same `pulse_id`, same `action_record_uuid`, same two group names — and
+# 479 of the 565 `move_pulse_from_group` entries on her visits board are the
+# other half of a `move_pulse_into_group` that is already being carried.
+# Mapping both without pairing them would have the log say every move happened
+# twice, which is worse than the move not being there: the second line looks
+# like somebody moved it back and forth.
+LOG_MOVE_PAIRED = {"move_pulse_into_group", "move_pulse_from_group",
+                   "batch_move_pulses_into_group", "batch_move_pulses_from_group"}
+
+# The subscription-shaped events, where only `pulse_id` names an item.
+LOG_OWNER_EVENTS = {"add_owner", "remove_owner"}
 
 # How many log entries one import will carry. monday itself pages them, and a
 # board of a few hundred items with sixty columns has tens of thousands: past
@@ -452,17 +528,29 @@ def _log_value(v):
     return str(v)
 
 
-def _activity_of(board, people):
+def _activity_of(board, people, names=None):
     """The board's log, as rows the importer can write, plus what was left out.
 
     Each row names the monday item it belongs to; matching that to a task is the
     importer's job, and the only moment it can be done — the mapping exists
     while the import runs and nowhere after it.
+
+    `names` is the file's own items by monday id, which only one event needs: a
+    sub-item that moved names its two parents by id and by nothing else, and a
+    log row that says "6474107198 ← 1497014108" is a row nobody can read.
     """
     raw = board.get("activity_logs")
     if not isinstance(raw, list):
         return [], {}
-    rows, dropped, unmapped = [], 0, {}
+    names = names or {}
+    rows, dropped, unmapped, paired, owner_nameless = [], 0, {}, 0, 0
+    # One key per move already carried — see LOG_MOVE_PAIRED. The pair shares
+    # monday's own id for the action, which is what makes this exact rather
+    # than a guess about timestamps; the ones old enough to predate it (2021,
+    # `action_record_id`) are keyed on that instead, and an entry with neither
+    # falls back to the tenth-of-a-second it happened in, where the two halves
+    # of one move always land together.
+    moved = set()
     # Rows whose author the file cannot name. monday's own actors have negative
     # ids (-4 is its automations), and "מערכת" is the truth about those. A
     # positive id with no name is a person: on her board 1,311 rows by someone
@@ -492,11 +580,41 @@ def _activity_of(board, people):
         ids = data.get("pulse_ids") if isinstance(data.get("pulse_ids"), list) else None
         items_here = [str(i) for i in ids] if ids else None
         if items_here is None:
-            one = data.get("pulse_id") or data.get("item_id")
+            if ev in LOG_OWNER_EVENTS:
+                # The same event says "somebody was added to this BOARD": same
+                # shape, item_type "Board", pulse_id null — and `item_id`
+                # holding the board's own id. Falling through to item_id would
+                # hang the row on whatever item happens to carry that number,
+                # so here the item is pulse_id or nothing.
+                one = data.get("pulse_id")
+            elif ev == "move_subitem":
+                # Written on the item the sub-item moved TO: that is the one
+                # this import is bringing, and "a sub-item arrived here from X"
+                # is the half of the event an item's own log can state.
+                one = data.get("dest_pulse_id")
+            else:
+                # `pulse` is the third place monday names the item, and the only
+                # one a move between boards uses at all. A move between GROUPS
+                # carries both — except in the 432 older entries on her visits
+                # board that carry only this one, which were read as rows about
+                # no item and dropped: nine moves in ten, on a board where the
+                # groups are the history.
+                one = (data.get("pulse_id") or data.get("item_id")
+                       or (data.get("pulse") or {}).get("id"))
             items_here = [str(one)] if one is not None else []
         if not items_here:
             dropped += 1
             continue
+        if ev in LOG_MOVE_PAIRED:
+            key = (items_here[0] if len(items_here) == 1 else tuple(items_here),
+                   str(data.get("action_record_uuid") or data.get("action_record_id")
+                       or _log_when(e.get("created_at"))[:21]),
+                   str((data.get("source_group") or {}).get("id") or ""),
+                   str((data.get("dest_group") or {}).get("id") or ""))
+            if key in moved:
+                paired += len(items_here)
+                continue
+            moved.add(key)
         if len(rows) + len(items_here) > MAX_LOG_ENTRIES:
             dropped += len(items_here)
             continue
@@ -510,6 +628,38 @@ def _activity_of(board, people):
         if field == "group":
             old = _log_value((data.get("source_group") or {}).get("title"))
             new = _log_value((data.get("dest_group") or {}).get("title"))
+        elif field == LOG_FIELD_BOARD:
+            # The other board, by name. Which of the two is the board being
+            # imported depends on the direction, and the row does not have to
+            # choose: both are named, so it reads as the move it was.
+            old = _log_value((data.get("source_board") or {}).get("name"))
+            new = _log_value((data.get("dest_board") or {}).get("name"))
+        elif field == LOG_FIELD_OWNER:
+            # The person, as a name — the same thing a people cell becomes when
+            # the account cannot match it (see the people branch in the
+            # importer's `cells`). `subscribed_id` is monday's id for them, and
+            # the users list plus the board's own people cells is everything
+            # there is to turn it into a person.
+            on = people.get(str(data.get("subscribed_id") or "")) or {}
+            person = (on.get("name") or on.get("email") or "").strip()
+            if not person:
+                # The whole content of this row is who was put on the item, so
+                # one it cannot name says nothing at all: "אחראי: — ← —", once
+                # per item, under a label that promises a person.
+                #
+                # It is not a rare case either. Her meetings board has 8,585 of
+                # these and 8,505 of them name the same monday id, 71490011,
+                # which the file's own 200-strong user list does not contain —
+                # an integration account putting an owner on everything it
+                # creates. Carried, that is 8,505 identical empty lines across
+                # 21,187 items; left out, it is a number in the report that
+                # says exactly which history did not come and why.
+                owner_nameless += len(items_here)
+                continue
+            old, new = (person, "") if ev == "remove_owner" else ("", person)
+        elif field == LOG_FIELD_SUBITEM:
+            old = names.get(str(data.get("source_pulse_id") or ""), "")
+            new = names.get(str(data.get("dest_pulse_id") or ""), "")
         else:
             old = _log_value(data.get("previous_value"))
             new = _log_value(data.get("value") if "value" in data else data.get("name"))
@@ -530,7 +680,8 @@ def _activity_of(board, people):
                 "event": ev,
             })
     rows.sort(key=lambda r: r.get("at") or "")
-    return rows, {"dropped": dropped, "unmapped": unmapped, "nameless": nameless}
+    return rows, {"dropped": dropped, "unmapped": unmapped, "nameless": nameless,
+                  "paired": paired, "owner_nameless": owner_nameless}
 
 
 class NotMondayJson(Exception):
@@ -1159,7 +1310,11 @@ def parse(raw, max_cols):
     # for everyone the list no longer carries — see _people_in_cells
     people_by_id = _people_in_cells(items)
     people_by_id.update(_users_in(doc))
-    activity, activity_left = _activity_of(board, people_by_id)
+    # The items by monday's id, for the one event that names an item inside its
+    # own payload rather than being about it — see `names` in _activity_of.
+    item_names = {str(it["id"]): (it.get("name") or "").strip()
+                  for it in items if isinstance(it, dict) and it.get("id") is not None}
+    activity, activity_left = _activity_of(board, people_by_id, item_names)
 
     # The board's own column definitions, read here rather than further down
     # because the blank-column rule below needs them: a status column nobody
@@ -1648,6 +1803,16 @@ def parse(raw, max_cols):
             "activity_from": (activity[0]["at"][:10] if activity else ""),
             "activity_to": (activity[-1]["at"][:10] if activity else ""),
             "activity_dropped": (activity_left or {}).get("dropped", 0),
+            # Entries that are the second half of a move already carried, so
+            # "565 move_pulse_from_group in the file, 103 rows on the board" is
+            # a number somebody can account for rather than a loss to chase —
+            # see LOG_MOVE_PAIRED.
+            "activity_paired": (activity_left or {}).get("paired", 0),
+            # Owners added or removed by somebody the file never names — see
+            # the LOG_FIELD_OWNER branch. Said on its own and not folded into
+            # activity_dropped, because it is one identifiable gap with one
+            # fix: the export's `users` list did not carry that person.
+            "activity_owner_nameless": (activity_left or {}).get("owner_nameless", 0),
             "activity_unmapped": sorted(((activity_left or {}).get("unmapped") or {}).items(),
                                         key=lambda kv: -kv[1])[:12],
             # rows by a person the file never names — see `nameless` above

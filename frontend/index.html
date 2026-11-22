@@ -1079,6 +1079,10 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group.drag-chosen{box-shadow:var(--shadow);border-radius:8px}
 .group.sortable-drag .group-head .g-name{color:var(--text)!important}
 .group-head .g-count{color:var(--text-light);font-weight:400;font-size:13px}
+/* the "+" that marks a count as a floor, on a board whose rows are still
+   arriving — see groupHTML. Beside the number, not inside it, and quiet
+   enough that it reads as a qualifier rather than as part of the figure */
+.group-head .g-more{color:var(--text-light);font-weight:400;font-size:13px;margin-inline-start:1px;cursor:help}
 /* What a collapsed group says about itself. Closed, the rows and the progress
    bar are both gone, so the header is the only thing left — and a bare "12" is
    not what someone folding a group away wants to still know.
@@ -1092,6 +1096,7 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group-head .g-sum{display:none;color:var(--text-light);font-weight:400;font-size:13px;
                    letter-spacing:.1px;white-space:nowrap}
 .group-head.collapsed .g-count{display:none}
+.group-head.collapsed .g-more{display:none}
 .group-head.collapsed .g-sum{display:block}
 /* the line is a second row inside the header, so the header stops being a
    single line of text and the rows under it must not be pulled up against it */
@@ -1688,6 +1693,45 @@ body.coldragging .col-grip{opacity:1}
 .pl-opt:hover,.dd-opt:hover{background:var(--row-hover)}
 .pl-opt.sel,.dd-opt.sel{background:var(--primary-soft);color:var(--primary-hover);font-weight:600}
 .dd-opt{justify-content:space-between}
+/* the search row stays put at the top while the list scrolls under it, and a
+   list popover gets the room the extra row takes rather than squeezing the
+   options into less of it */
+.list-pop.dd-pop{max-height:min(75vh,360px)}
+.dd-search{position:sticky;inset-block-start:0;z-index:1;background:var(--surface);display:flex;align-items:center;gap:6px;padding:2px 2px 6px;border-block-end:1px solid var(--border);color:var(--text-light)}
+.dd-search-inp{flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;font-size:13px;color:var(--text);background:var(--surface)}
+.dd-search-inp:focus{outline:none;border-color:var(--primary)}
+.dd-list{display:flex;flex-direction:column;gap:5px;overflow-y:auto;max-height:200px}
+.dd-empty{padding:6px;color:var(--text-light);font-size:12px}
+.dd-pending{color:var(--text-light);cursor:default}
+.dd-foot{position:sticky;inset-block-end:0;background:var(--surface);margin-block-start:4px;border-block-start:1px solid var(--border);display:flex;flex-direction:column;gap:4px;padding-block:4px 2px}
+.dd-add{display:flex;align-items:center;gap:6px;padding:4px 8px;color:var(--text-light)}
+.dd-add-inp{flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;font-size:13px;color:var(--text);background:var(--surface)}
+.dd-add-inp:focus{outline:none;border-color:var(--primary)}
+/* "edit options" mode of the list popover — see buildDropdownPop */
+.dd-edit-btn,.dd-done{display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 9px;border-radius:6px;font:inherit;font-size:13px;cursor:pointer}
+.dd-edit-btn{background:none;border:none;color:var(--text-muted)}
+.dd-edit-btn:hover,.dd-edit-btn:focus-visible{background:var(--row-hover);color:var(--primary)}
+.dd-done{background:var(--primary);border:none;color:#fff;font-weight:600}
+.dd-done:hover{background:var(--primary-hover)}
+.list-pop.dd-editing{min-width:min(280px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:min(75vh,440px)}
+.dd-ehead{font-weight:700;font-size:13px;color:var(--text);padding:2px 6px 4px;display:flex;align-items:center;gap:6px}
+.dd-elist{display:flex;flex-direction:column;gap:4px;overflow-y:auto;max-height:260px}
+.dd-erow{display:flex;align-items:center;gap:6px;min-width:0}
+.dd-ename{flex:1;min-width:0;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font:inherit;font-size:13px;color:var(--text);background:var(--surface)}
+.dd-ename:focus{outline:none;border-color:var(--primary)}
+.dd-erow.dd-off .dd-ename{color:var(--text-muted);background:var(--bg)}
+.dd-off-tag{flex-shrink:0;white-space:nowrap}
+.dd-more{flex-shrink:0;width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid transparent;border-radius:6px;background:none;color:var(--text-muted);cursor:pointer}
+.dd-more:hover,.dd-more:focus-visible{background:var(--row-hover);color:var(--text)}
+/* the ⋯ of the option whose menu is open stays visibly pressed */
+.dd-more.on{background:var(--primary-soft);border-color:var(--primary);color:var(--primary)}
+.dd-menu{display:flex;flex-direction:column;gap:2px;margin-inline-start:12px;padding:4px;border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:var(--shadow)}
+.dd-menu button{display:flex;align-items:center;gap:8px;padding:7px 9px;border:none;border-radius:6px;background:none;font:inherit;font-size:13px;color:var(--text);text-align:start;cursor:pointer}
+.dd-menu button:hover:not(:disabled),.dd-menu button:focus-visible{background:var(--row-hover)}
+.dd-menu .dd-danger{color:var(--red)}
+.dd-menu button:disabled{opacity:.45;cursor:not-allowed}
+.dd-menu-note{font-size:11.5px;color:var(--text-muted);padding:0 9px 4px;line-height:1.4}
+.dd-opt.dd-inactive{color:var(--text-muted)}
 .pl-opt .fa-check,.dd-opt .fa-check{color:var(--green)}
 /* files */
 .cell-custom .file-chip{display:inline-flex;align-items:center;gap:3px;background:var(--bg);border:1px solid var(--border-strong);border-radius:6px;padding:2px 6px;font-size:11px;margin:1px}
@@ -1865,6 +1909,7 @@ body.coldragging .col-grip{opacity:1}
   white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none}
 .cell-tip .cell-tip-h{display:block;margin-top:5px;font-size:11px;color:var(--text-light)}
 .tag{display:inline-block;background:var(--bg);border:1px solid var(--border-strong);border-radius:11px;padding:1px 9px;font-size:11px;color:var(--text-muted);margin:1px}
+.tag.tag-more{background:var(--text-muted);border-color:var(--text-muted);color:var(--surface);font-weight:600;padding-inline:7px}
 
 /* ===== Kanban ===== */
 .kanban{display:flex;gap:14px;align-items:flex-start;height:100%}
@@ -1961,7 +2006,11 @@ body.coldragging .col-grip{opacity:1}
    because it covers the dialog the file was chosen from, and cursor:progress
    over the whole page because the whole page is what is unavailable. */
 .imp-busy{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:400;display:flex;align-items:center;justify-content:center;cursor:progress}
-.imp-busy-box{display:flex;align-items:center;gap:11px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:11px;padding:15px 22px;font-size:14px;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+.imp-busy-box{display:flex;align-items:center;gap:11px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:11px;padding:15px 22px;font-size:14px;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.18);max-width:min(420px,calc(100vw - 32px))}
+/* the second line of the cover — what the machine is doing now that the file
+   is up. Quieter than the headline and allowed to wrap, since it is a sentence */
+.imp-busy-txt{display:flex;flex-direction:column;gap:3px;min-width:0}
+.imp-busy-txt small{font-size:12px;font-weight:500;color:var(--text-muted);line-height:1.5}
 .imp-busy-box i{color:var(--primary);font-size:17px}
 /* overlay/modal/toast */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:150;display:none}
@@ -2251,6 +2300,32 @@ img.pf-av{object-fit:cover;background:#fff}
 .errpage .err-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .spin{width:34px;height:34px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:sp 1.4s linear infinite;margin:50px auto}
 @keyframes sp{to{transform:rotate(360deg)}}
+/* "this view is drawing part of the board" — the strip a non-table view wears
+   when the rows are still arriving. It sits above the view rather than inside
+   it, so a kanban, a calendar and a map all say it in the same place and in
+   the same words, and none of them can draw a board of twenty thousand as if
+   the missing rows were not there. Logical properties throughout: the board is
+   RTL and this strip is read from the same side as everything above it. */
+.partial-note{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:0 0 12px;
+  padding:9px 13px;border:1px solid var(--border);border-inline-start:3px solid var(--orange);
+  border-radius:var(--radius);background:var(--surface);color:var(--text-muted);
+  font-size:12.5px;line-height:1.6}
+.partial-note i{color:var(--orange);font-size:13px;flex:none}
+.partial-note .pn-more{flex:none;background:none;border:1px solid var(--border);border-radius:6px;
+  padding:4px 10px;font:inherit;font-weight:600;color:var(--primary);cursor:pointer}
+.partial-note .pn-more:hover{background:var(--row-hover)}
+.partial-note .pn-more:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+/* the kanban asks for the full height of the view; with a strip above it that
+   is the view's height plus the strip, and the board hangs off the bottom */
+.partial-note+.kanban{height:auto}
+/* …and the floating form of it, for the map — #map is positioned and fills the
+   view, so a strip in the flow above it would be painted over. Anchored to the
+   bottom of the reading side (inset-inline-start is the LEFT edge in RTL, away
+   from the style buttons in the top corner) and never wider than the view. */
+.partial-note.pn-float{position:absolute;inset-block-end:28px;inset-inline-start:32px;z-index:10;
+  max-width:min(430px,calc(100% - 64px));margin:0;box-shadow:var(--shadow)}
+@media(max-width:640px){.partial-note{font-size:12px;padding:8px 10px}
+  .partial-note.pn-float{inset-inline:14px;inset-block-end:16px;max-width:none}}
 
 /* ── GIS Analysis ── */
 #gis-container{display:flex;height:100%;gap:0;overflow:hidden}
@@ -4753,8 +4828,15 @@ function boardStamp(b){
     if(x.updated_at&&x.updated_at>last)last=x.updated_at;
     for(const sub of (x.subtasks||[])) if(sub.updated_at&&sub.updated_at>last)last=sub.updated_at;
   }
+  /* item_count travels in the stamp because past the client threshold it is
+     the ONLY thing in the payload that says anything about the items: the
+     board comes back with `tasks: []` by design, so every row above counts
+     nothing and a board that gained or lost three thousand items would stamp
+     the same as it did before. It is `''` on a board below the threshold,
+     where t.length already says it. */
   return [t.length,JSON.stringify(b.groups||[]),JSON.stringify(b.columns||[]),
           t.reduce((n,x)=>n+((x.subtasks||[]).length),0),last,
+          (typeof b.item_count==='number'?b.item_count:''),
           b.name,b.icon||'',b.my_role].join('|');
 }
 async function openBoard(id){
@@ -4933,7 +5015,15 @@ function reportBoardOpen(id,fetchMs,renderMs,t0,how){
     if(e && e.serverTiming && e.serverTiming.length)
       server='  ·  server: '+e.serverTiming.map(s=>s.name+' '+Math.round(s.duration)).join(', ');
   }catch(_){}
-  console.info(`[board ${id}] ${rows} items (+${subs} subs) × ${cols} columns  ·  ${how}  ·  `
+  /* "0 items" would be the line a large board now prints, and it is the line
+     somebody would be reading while trying to work out why the board is slow.
+     The board's own count leads; what actually came down in the payload is
+     named beside it, because the gap between the two is the whole point of
+     paging and the number this log exists to make visible. */
+  const all=boardRowCount();
+  const what=(all!==rows)?`${all} items (${rows} in the payload, +${subs} subs)`
+                        :`${rows} items (+${subs} subs)`;
+  console.info(`[board ${id}] ${what} × ${cols} columns  ·  ${how}  ·  `
     +`request ${Math.round(fetchMs)}ms  ·  render ${Math.round(renderMs)}ms  ·  `
     +`on screen after ${Math.round(performance.now()-t0)}ms${server}`);
 }
@@ -5507,6 +5597,64 @@ function boardRowCount(){
   return (typeof b.item_count==='number')?b.item_count:((b.tasks||[]).length);
 }
 function filterMode(){ return boardRowCount()>filterClientMax()?'server':'client'; }
+/* The rows this browser is actually holding.
+
+   Below the threshold that is the whole board and `st.board.tasks` is the
+   answer, as it always was. Above it the board now arrives with no rows in it
+   at all: the server sends `item_count` and an empty `tasks`, because the
+   28.7MB it used to send for a 21,187-item board were parsed, kept in memory
+   and then never read — the screen was drawn from Paged all along. So the only
+   rows here are the page Paged has fetched.
+
+   Everything that walks the items for something OTHER than drawing the table
+   — an item looked up by id, the people a column carries, the links to resolve
+   — goes through this. Reading `st.board.tasks` directly on a large board now
+   means reading an empty array and concluding the board is empty, which is the
+   one thing none of those callers may do.
+
+   The array it hands back is always the real one and never a throwaway copy,
+   because a few callers append to it — a duplicated item, a new row — and a
+   push into a copy is a row that is never drawn. */
+function loadedRows(){
+  const b=st.board; if(!b)return [];
+  if(!Array.isArray(b.tasks))b.tasks=[];
+  if(b.tasks.length)return b.tasks;
+  return (typeof Paged!=='undefined'&&Paged.on)?Paged.rows:b.tasks;
+}
+/* Is what is on screen only part of the board?
+
+   True past the threshold until everything the current cut matches has
+   arrived — so a filtered board that has pulled down all 131 of its matches
+   says no, and the counts drawn over it are the cut's real numbers. Every
+   number counted off the rows asks this before it claims to be the board's:
+   "0 פריטים" over a group holding three thousand is the same lie as an empty
+   board, only quieter. */
+function boardRowsPartial(){
+  if(!st.board || filterMode()!=='server')return false;
+  if(typeof Paged==='undefined' || !Paged.on)return true;   // nothing has arrived yet
+  return !!Paged.more || Paged.rows.length<Paged.matched;
+}
+/* Past the threshold the board is handed over without its rows, so SOMETHING
+   has to ask for the first page. Asked from the render rather than from
+   openBoard on purpose: there are several ways a board reaches the screen —
+   fetched, restored from the cache, replaced under an open view by a
+   revalidate, switched to from a dashboard — and a hook in openBoard would
+   cover the first and be forgotten by the next one added. Paged.load guards
+   against a second request while one is in flight, so running this on every
+   render costs a comparison.
+
+   A load that FAILED is not retried from here. The render that follows the
+   failure would ask again, fail again and render again: a board nobody can
+   fetch would sit there hammering the server. The failure is shown instead,
+   with something to press — see pagedFailedHTML. */
+function ensurePagedRows(){
+  if(!st.board)return false;
+  if(filterMode()!=='server')return false;
+  if(typeof Paged==='undefined')return false;
+  if(Paged.on||Paged.loading||Paged.failed)return false;
+  Paged.load(true);
+  return true;
+}
 
 /* The server-side page. Holds the rows that arrived, where the next page
    starts, and whether there is one — and nothing else: it is a cache of one
@@ -5530,9 +5678,16 @@ const Paged = {
      only thing left to filter was the one page of rows this browser happens
      to hold. A search that is still running has to say so. */
   pending:false,
+  /* The last request came back as an error. Kept because the board itself now
+     arrives empty past the threshold: when the page cannot be fetched there is
+     nothing on screen at all, and the render has to be able to tell "no rows
+     yet" from "the rows are not coming" — the first is a spinner, the second
+     is a sentence and a button. It is also what stops ensurePagedRows from
+     re-asking on every render of a board the server keeps refusing. */
+  failed:false,
   reset(){ this.on=false; this.rows=[]; this.offset=0; this.more=false;
            this.matched=0; this.total=0; this.loading=false; this.pending=false;
-           this._filled=0; this.question=null;
+           this.failed=false; this._filled=0; this.question=null;
            this.seq++; clearTimeout(_pagedTimer); },
   query(){
     const f=st.filters||{};
@@ -5569,7 +5724,7 @@ const Paged = {
     if(fresh){ this.rows=[]; this.offset=0; this.more=false; this._filled=0;
                this.question=JSON.stringify(this.query()); clearTimeout(_pagedTimer); }
     else if(!this.more) return;
-    this.loading=true; this.pending=true;
+    this.loading=true; this.pending=true; this.failed=false;
     const mine=++this.seq;                 // a slower answer must not overwrite a newer one
     try{
       const r=await api('/api/boards/'+st.board.id+'/items/query',
@@ -5578,15 +5733,46 @@ const Paged = {
       if(mine!==this.seq)return;           // the question changed while this was in flight
       this.on=true;
       this.rows=this.rows.concat(r.items||[]);
+      this.mergeLinkDisplay(r.link_display);
       this.offset=r.next_offset||this.rows.length;
       this.more=!!r.has_more;
       this.matched=r.matched||0; this.total=r.total||0;
       this.pending=false;
       renderView(); refreshToolbar();
     }catch(e){
-      if(mine===this.seq){ this.on=false; this.pending=false;
-                           toast((e&&e.detail)||'הסינון בשרת נכשל'); }
+      /* …and the board is redrawn on the way out. Past the threshold a failed
+         first page leaves the screen with nothing on it — the board carries no
+         rows of its own any more — so without this the toast was the only sign
+         anything had happened, over a board that looked empty. */
+      if(mine===this.seq){ this.on=false; this.pending=false; this.failed=true;
+                           toast((e&&e.detail)||'הסינון בשרת נכשל');
+                           try{ renderView(); }catch(_){} }
     }finally{ if(mine===this.seq){ this.loading=false; this.fill(); } }
+  },
+  /* Fold one page's connect-column display text into the board's map.
+
+     A connect column can be told to show a FIELD of the linked record instead
+     of its name, and the override map that says so — {col_id:{item_id:text}},
+     read by linkText — used to come down with the board. Past the threshold
+     the board arrives with no rows, so it arrives with an empty map too, and
+     every connect cell on a paged board quietly fell back to showing titles:
+     the wrong words, with nothing on screen to say they were wrong. Each page
+     now carries the overrides for its own rows, which is why this exists.
+
+     Merged PER COLUMN and never by replacing the outer object: the inner maps
+     are keyed by item id and page two only knows about page two's items, so
+     assigning the arriving map over st.board.link_display would erase the text
+     for every row already on screen. */
+  mergeLinkDisplay(map){
+    if(!map||typeof map!=='object'||!st.board)return;
+    if(!st.board.link_display||typeof st.board.link_display!=='object')st.board.link_display={};
+    const into=st.board.link_display;
+    for(const colId of Object.keys(map)){
+      const page=map[colId];
+      if(!page||typeof page!=='object')continue;
+      if(!into[colId]||typeof into[colId]!=='object')into[colId]={};
+      Object.assign(into[colId],page);
+    }
   },
   /* A page that does not reach the bottom of the screen asks for the next one
      itself.
@@ -6427,14 +6613,25 @@ async function newBoardQuick(){
    clicking Open and the first thing changing on screen there is real work —
    the browser materialising the file, the upload, the server reading it — and
    with nothing painted in that gap it reads as a freeze rather than as a wait. */
-function busyCover(text){
+/* The second argument is the quieter line under the first, and it exists for
+   the one wait nobody can measure: once the file is up, the server is reading
+   it and writing rows, and the only honest thing to say is what it is doing
+   and that it takes a while. Optional, so the three one-line callers are
+   unchanged. */
+function busyCover(text,sub){
   let el=document.getElementById('imp-busy');
   if(!el){
     el=document.createElement('div'); el.id='imp-busy'; el.className='imp-busy';
-    el.innerHTML='<div class="imp-busy-box"><i class="fa-solid fa-spinner fa-spin"></i><span id="imp-busy-t"></span></div>';
+    el.innerHTML='<div class="imp-busy-box"><i class="fa-solid fa-spinner fa-spin"></i>'
+                +'<span class="imp-busy-txt"><span id="imp-busy-t"></span>'
+                +'<small id="imp-busy-s"></small></span></div>';
     document.body.appendChild(el);
   }
   document.getElementById('imp-busy-t').textContent=text;
+  // the second line is optional and so is its node — a cover built before this
+  // existed is still a cover, and a missing element must not throw over it
+  const s=document.getElementById('imp-busy-s');
+  if(s){ s.textContent=sub||''; s.hidden=!sub; }
   return el;
 }
 function busyCoverDone(){ const el=document.getElementById('imp-busy'); if(el)el.remove(); }
@@ -6460,13 +6657,46 @@ async function importBoardFile(){
     importBusy('מעלה את הקובץ…');
     await paintFirst();
     try{
-      const r=await fetch('/api/boards/import',{method:'POST',headers:{...authHeaders()},body:fd});
-      if(!r.ok){ let d=''; try{ d=(await r.json()).detail||''; }catch(_){}
-        throw new Error(d || (r.status===413?'הקובץ גדול מדי':'שגיאה בייבוא הקובץ')); }
-      const b=await r.json();
+      /* The cover used to say "מעלה את הקובץ…" for the whole request, and most
+         of that request is not the upload. Measured on a 12MB gzip of a
+         21,187-item board: 0.04s to decompress it, 1.6s to parse the JSON, and
+         some thirteen seconds writing the rows — all of it under a cover that
+         said the file was still on its way up. It was reported as "the upload
+         is slow", which is the sentence the screen had taught.
+
+         So the request goes through XMLHttpRequest instead of fetch, for the
+         one thing fetch cannot report: when the last byte left. Up to that
+         moment there is a real number and the cover shows it. After it there
+         is none — the server does not report its progress — so the cover names
+         what is happening and stops counting, rather than animating a bar that
+         creeps towards a finish it cannot see. */
+      const b=await new Promise((resolve,reject)=>{
+        const x=new XMLHttpRequest();
+        x.open('POST','/api/boards/import');
+        const hs=authHeaders(); Object.keys(hs).forEach(k=>x.setRequestHeader(k,hs[k]));
+        x.upload.onprogress=e=>{
+          if(!e.lengthComputable)return;
+          const pct=Math.min(99,Math.floor(e.loaded/e.total*100));
+          importBusy('מעלה את הקובץ… '+pct+'%');
+        };
+        // the last byte is up; from here the wait belongs entirely to the server
+        x.upload.onload=()=>importBusy('הקובץ הועלה — השרת בונה את הלוח…',
+          'קורא את הקובץ וכותב את הפריטים. בקובץ גדול זה יכול לקחת עשרות שניות.');
+        x.onerror=()=>reject(new Error('שגיאה בייבוא הקובץ'));
+        x.onabort=()=>reject(new Error('הייבוא בוטל'));
+        x.onload=()=>{
+          let d=null; try{ d=JSON.parse(x.responseText); }catch(_){}
+          if(x.status>=200&&x.status<300) return resolve(d||{});
+          // the same three messages the fetch version gave, from the same places
+          reject(new Error((d&&d.detail)
+            || (x.status===413?'הקובץ גדול מדי':'שגיאה בייבוא הקובץ')));
+        };
+        x.send(fd);
+      });
       closeModals();
-      // the board is built now — the part that actually holds the screen up
-      importBusy('בונה את הלוח — '+(b.items||0)+' פריטים…');
+      // the board came back built; this last wait is the browser's own — see
+      // the three waits described above busyCover
+      importBusy('מצייר את הלוח — '+(b.items||0)+' פריטים…');
       await paintFirst();
       st.boards=await api('/api/boards'+(meId()?'?user_id='+meId():''));
       renderSidebar();
@@ -7071,6 +7301,18 @@ function renderView(){
     Dash.paint(el);
     return;
   }
+  /* The rows, if this board does not carry its own. Past the client threshold
+     it does not: it arrives with an item_count and an empty list — the 28.7MB
+     a 21,187-item board used to send were parsed and then never read — so the
+     first page has to be asked for. Here rather than in openBoard because
+     every path that puts a board on screen ends in a render: the fetch, the
+     cache, a revalidate that replaced the board underneath, a view applied
+     over it. Only one of those goes through openBoard, and the next one added
+     would not. Below the threshold, or once a page is held, it is a
+     comparison and a return. Through a typeof, the way everything else in this
+     function reaches for an optional neighbour: renderView is run on its own
+     by a couple of harnesses. */
+  if(typeof ensurePagedRows==='function') ensurePagedRows();
   // whatever the last render measured off the screen comes into force here,
   // at the start of a render, and not part-way through one — see _estNext
   useLatestMeasurements();
@@ -7206,7 +7448,10 @@ function avatars(arr){if(!arr||!arr.length)return '<span class="avatars"><span c
   // clicking an assignee avatar opens the assignee editor (click bubbles to the
   // cell's openPeople) rather than the person's profile
   return '<span class="avatars">'+arr.slice(0,3).map(a=>`<span class="av av-click" title="${esc(a.name)} — לחץ לשינוי אחראים">${avatarInner(a)}</span>`).join('')+(arr.length>3?`<span class="av av-more">+${arr.length-3}</span>`:'')+'</span>';}
-function findTask(id){return ((st.board&&st.board.tasks)||[]).find(t=>t.id==id);}
+// loadedRows, not st.board.tasks: past the client threshold the board carries
+// no rows of its own and the ones on screen are the page Paged fetched, so a
+// lookup against the board's array would miss every row the user can see
+function findTask(id){return loadedRows().find(t=>t.id==id);}
 /* Turn a picked photo into a crisp square avatar. The circle shows a
    center-cropped square via object-fit:cover, so we crop to that same square
    and rescale to a fixed high resolution (good on any display and DPI) with
@@ -8228,7 +8473,13 @@ function colFilterChips(f){
    panel has. */
 function colAssigned(f){
   const out=new Set();
-  ((st.board&&st.board.tasks)||[]).forEach(t=>
+  /* The rows in hand, which past the threshold is the page Paged holds — the
+     board itself arrives carrying none. Reached through a typeof, the way
+     searchPending reaches for filterMode: several of these functions are run
+     on their own by a harness that hands in the globals they name, and the
+     fallback is the line this replaced. */
+  const rows=(typeof loadedRows==='function')?loadedRows():((st.board&&st.board.tasks)||[]);
+  rows.forEach(t=>
     (advCell(t,f)||[]).forEach(id=>{const n=Number(id); if(!isNaN(n))out.add(n);}));
   return [...out];
 }
@@ -8678,11 +8929,19 @@ function clearCutAction(cls){
    hangs from the toolbar, up to 74vh of it, so somebody who filters down to
    nothing while it is open never sees "אין תוצאות לסינון הנוכחי" at all. */
 function cutMatchesNothing(){
-  const all=((st.board&&st.board.tasks)||[]).length;
-  if(!all) return false;                       // an empty board is not a failed filter
+  /* The board's own count, not the length of the array it handed over: past
+     the threshold that array is empty by design, and a board of 21,187 items
+     would have answered here as an empty one. Through a typeof for the same
+     reason searchPending asks for filterMode that way — this is read on its
+     own by a harness, and the fallback is the line it replaces. */
+  const held=(typeof loadedRows==='function')?loadedRows():((st.board&&st.board.tasks)||[]);
+  const total=(typeof boardRowCount==='function')?boardRowCount():held.length;
+  if(!total) return false;                     // an empty board is not a failed filter
   if(searchPending()) return false;            // …and neither is a search still running
   if(typeof Paged!=='undefined'&&Paged.on) return Paged.matched===0;
-  return applyFilters((st.board&&st.board.tasks)||[]).length===0;
+  // …and neither is a board whose first page has not landed yet
+  if(!held.length) return false;
+  return applyFilters(held).length===0;
 }
 /* Is the board waiting for the server to answer the cut that is on screen?
 
@@ -8697,8 +8956,19 @@ function cutMatchesNothing(){
    page of rows this browser was handed — and then, seconds later, filled with
    the rows the server found. */
 function searchPending(){
+  /* …and only while something is actually being filtered. The board now asks
+     the server for its rows whether or not a filter is on — past the
+     threshold it arrives with none — so a plain board waiting for its first
+     page would otherwise announce "מסנן את כל הלוח…" over a filter nobody
+     set. That wait has its own words: see loadingRowsHTML.
+
+     Phrased as "unless we can ask and the answer is no", so that where
+     filtersActive is not in reach — this function is read on its own by
+     tests/frontend/filter_panel_says_no_results.mjs — the answer is the one
+     it has always given. */
   return !!(typeof Paged!=='undefined' && Paged.pending
-            && typeof filterMode==='function' && filterMode()==='server');
+            && typeof filterMode==='function' && filterMode()==='server'
+            && !(typeof filtersActive==='function' && !filtersActive()));
 }
 /* …and what it says while it waits. Deliberately not a bare spinner: on a
    board this size the wait is seconds, and a spinner over an empty board says
@@ -8723,6 +8993,51 @@ function noMatchHTML(){
     inView ? 'הסינון שבתצוגה הזאת, יחד עם השינויים שביצעת, אינו מתאים לאף פריט.'
            : 'נסו לשנות את מילות החיפוש, או לנקות את הסינון כדי לראות את כל הפריטים.',
     act, 'fa-magnifying-glass');
+}
+/* A board whose rows have not arrived yet is not an empty board — and from
+   `st.board.tasks` the two are the same empty array. Past the threshold the
+   board is handed over with no rows in it at all and the first page is being
+   fetched, so the screen says what it is waiting for and how big the thing is
+   that is on its way. Without this a 21,187-item board announced "אין עדיין
+   פריטים בלוח" for as long as the request took. */
+function loadingRowsHTML(){
+  const n=boardRowCount();
+  return stateHTML('', 'טוען את הפריטים…',
+    `בלוח ${n.toLocaleString('he-IL')} פריטים — הם נטענים מהשרת במנות, והראשונה כבר בדרך. `
+    +'שאר הפריטים ייטענו תוך כדי גלילה.',
+    '', 'fa-spinner fa-spin');
+}
+/* …and when the page cannot be fetched at all. Its own state, not the empty
+   board's: the board HAS items, nothing about it has been seen, and the one
+   useful thing on screen is a way to ask again. Automatic retries are
+   deliberately not it — see ensurePagedRows. */
+function pagedFailedHTML(){
+  return stateHTML('', 'לא הצלחנו לטעון את הפריטים',
+    'הלוח גדול והפריטים שלו נטענים מהשרת. הבקשה נכשלה — ייתכן שזו תקלת רשת זמנית.',
+    `<button class="btn btn-primary" onclick="Paged.failed=false;Paged.load(true)">
+       <i class="fa-solid fa-rotate-right"></i> נסה שוב</button>`,
+    'fa-triangle-exclamation');
+}
+/* What a view that is not the table says over itself while the board is only
+   partly here.
+
+   The table can get away without it: it pages as you scroll, so the rows
+   arrive where you are looking and the group headers carry their own "נטענו
+   עד כה". A kanban, a calendar and a map cannot — they lay the whole list out
+   at once, and laying out fifty rows of 21,187 produces a picture of a board
+   that does not exist. Drawing that picture with no caption is exactly the
+   silent truncation the import ceilings are written against, so the caption is
+   not optional: how many are drawn, how many there are, and a way to pull down
+   the next page where there is one. */
+function partialRowsNoticeHTML(cls){
+  if(!boardRowsPartial())return '';
+  const have=applyFilters(loadedRows()).length;
+  const all=(typeof Paged!=='undefined'&&Paged.on&&Paged.matched)?Paged.matched:boardRowCount();
+  const more=(typeof Paged!=='undefined'&&Paged.on&&Paged.more)
+    ? `<button class="pn-more" onclick="Paged.load(false)">טען עוד</button>` : '';
+  return `<div class="partial-note${cls?' '+cls:''}" role="status"><i class="fa-solid fa-circle-info"></i>
+    <span>התצוגה מציירת ${have.toLocaleString('he-IL')} פריטים מתוך ${all.toLocaleString('he-IL')} — `
+    +`הלוח גדול והפריטים נטענים מהשרת במנות. הטבלה הראשית טוענת את ההמשך תוך כדי גלילה.</span>${more}</div>`;
 }
 /* An empty board is not a failed filter, and saying "לא נמצאו תוצאות" over
    one sends somebody looking for a filter to clear that was never on. */
@@ -8784,7 +9099,9 @@ function setSearch(v){
   // answers with a row that does not carry the number that was searched for,
   // and the one that does is behind a closed panel.
   const q=(v||'').trim();
-  if(IS_ITEM_ID.test(q)) ((st.board&&st.board.tasks)||[]).forEach(t=>{
+  // the rows in hand — see colAssigned for why this is reached through a typeof
+  const held=(typeof loadedRows==='function')?loadedRows():((st.board&&st.board.tasks)||[]);
+  if(IS_ITEM_ID.test(q)) held.forEach(t=>{
     if((t.subtasks||[]).some(s=>String(s.item_uid||'').includes(q))) st.openSubs.add(t.id);
   });
   refreshToolbar(); renderView();
@@ -9134,8 +9451,13 @@ const Live = {
     if(changed) Chat.markOpenRow();     // the replaced row lost the marker
   },
 
+  /* The row this event is about, as it is held right now — and on a board the
+     server is paging that is a row in Paged, because the board itself arrives
+     without any. Reading st.board.tasks here meant every live update on a
+     large board found nothing and fell through to a full board refetch, which
+     on that board is the one thing worth avoiding. */
   find(id){
-    for(const t of ((st.board&&st.board.tasks)||[])){
+    for(const t of loadedRows()){
       if(t.id==id)return t;
       const s=(t.subtasks||[]).find(x=>x.id==id); if(s)return s;
     }
@@ -9184,7 +9506,8 @@ const Live = {
   /* swap one item in place, top-level or sub-item. Returns false when it isn't
      on this board at all, which means the board itself has to be refetched. */
   replace(fresh){
-    const list=(st.board&&st.board.tasks)||[];
+    // the list that is actually on screen — see find
+    const list=loadedRows();
     for(let i=0;i<list.length;i++){
       if(list[i].id==fresh.id){ list[i]=fresh; return true; }
       const subs=list[i].subtasks||[];
@@ -11906,7 +12229,10 @@ const Automations = {
   },
   _peopleIn(col){
     const f={id:col.id,kind:'people',col:col}, n=new Map();
-    ((st.board&&st.board.tasks)||[]).forEach(t=>
+    // the rows this browser holds — a page of them on a large board; see
+    // colAssigned for why this is reached through a typeof
+    const rows=(typeof loadedRows==='function')?loadedRows():((st.board&&st.board.tasks)||[]);
+    rows.forEach(t=>
       (advCell(t,f)||[]).forEach(x=>{
         const id=Number((x&&typeof x==='object')?x.id:x);
         if(!isNaN(id)) n.set(id,(n.get(id)||0)+1);
@@ -15424,7 +15750,14 @@ function qfShowing(){
     ? (Paged.matched>=Paged.total ? `מציג את כל ${Paged.total} הפריטים`
                                   : `מציג ${Paged.matched} מתוך ${Paged.total} פריטים`)
     : '';
-  const now=applyFilters(st.board&&st.board.tasks||[]).length;
+  /* Past the threshold and before the first page has landed there is nothing
+     to count and nothing worth saying: Paged is not on yet, the board carries
+     no rows of its own, and the sentence this would otherwise print is
+     "מציג 0 מתוך 0 פריטים" over a board of twenty thousand. Read off the
+     payload — the board says it holds more than it sent. */
+  if(st.board && typeof st.board.item_count==='number'
+     && st.board.item_count>all)return '';
+  const now=applyFilters((st.board&&st.board.tasks)||[]).length;
   if(!all)return '';
   return now>=all?`מציג את כל ${all} הפריטים`:`מציג ${now} מתוך ${all} פריטים`;
 }
@@ -15457,7 +15790,14 @@ function qfSaveView(){
 const QF_COUNT_MAX=4000;
 function qfCounts(){
   const rows=(st.board&&st.board.tasks)||[];
-  if(Paged.on||rows.length>QF_COUNT_MAX)return null;
+  /* Not only while Paged is on. Past the threshold the board arrives with no
+     rows at all, so between opening it and the first page landing this counted
+     an empty array and printed a 0 beside every value the board has. The board
+     saying it holds more than it handed over is the same fact Paged.on stands
+     for, one moment earlier. */
+  const short=!!(st.board && typeof st.board.item_count==='number'
+                 && st.board.item_count>rows.length);
+  if(Paged.on||short||rows.length>QF_COUNT_MAX)return null;
   const out={};
   advFields().forEach(x=>{
     const n={}, bump=k=>{n[k]=(n[k]||0)+1;};
@@ -15558,7 +15898,7 @@ function linkFilterHTML(){
   const colOpts=`<option value="">כל עמודות הקישור</option>`+cols.map(c=>
     `<option value="${esc(c.id)}" ${lf.col===c.id?'selected':''}>${esc(c.title||c.id)}</option>`).join('');
   const seen=new Map();
-  ((st.board&&st.board.tasks)||[]).forEach(t=>linkIdsOf(t,lf.col).forEach(id=>{
+  loadedRows().forEach(t=>linkIdsOf(t,lf.col).forEach(id=>{
     const it=(st.linkCache||{})[id]; if(it&&it.title&&!seen.has(id))seen.set(id,it.title);
   }));
   const items=[...seen.entries()].sort((a,b)=>String(a[1]).localeCompare(String(b[1]),'he'));
@@ -15859,6 +16199,12 @@ const Adv = {
       ? (Paged.matched>=Paged.total ? `מציג את כל ${Paged.total} הפריטים`
                                     : `מציג <b>${Paged.matched}</b> מתוך <b>${Paged.total}</b> פריטים`)
       : '';
+    /* …and past the threshold with no page yet there is no number to show,
+       rather than a 0 taken off a board that was handed over without its rows.
+       Read off the payload — the board says it holds more than it sent — so
+       this stays answerable when the dialog is exercised on its own. */
+    if(st.board && typeof st.board.item_count==='number'
+       && st.board.item_count>all.length)return '';
     if(!all.length)return '';
     // counted against the tree as it will be ASKED — an unfinished condition is
     // dropped on the way out, so counting it would predict the wrong board
@@ -16014,18 +16360,27 @@ function refreshToolbar(){
        Comparing the question is the whole of the fix: a keystroke in the
        search box, a chip, a condition — each changes it and still re-asks,
        debounced exactly as before. A page arriving does not. */
-    if(filtersActive()){
-      const asking=JSON.stringify(Paged.query());
-      if(asking!==Paged.question){
-        /* Marked as asked HERE rather than when the request goes out, so the
-           render that happens on this very keystroke already knows an answer
-           is coming and does not report the board as empty while it waits. */
-        Paged.pending=true;
-        clearTimeout(_pagedTimer);
-        _pagedTimer=setTimeout(()=>Paged.load(true),250);
-      }
-    } else if(Paged.on||Paged.pending){
-      Paged.reset(); renderView();
+    /* The paging is no longer something only a FILTER turns on. Past the
+       threshold the board is handed over with no rows in it at all, so the
+       unfiltered board is a question for the server too — "the first fifty,
+       in order" — and clearing a filter is a change to that question rather
+       than a reason to stop asking it.
+
+       The branch below used to read `if(filtersActive())`, with an else that
+       threw the page away and went back to the board's own rows. There are no
+       own rows now. That else would have reset the paging the instant the
+       unfiltered first page arrived, which re-renders, which asks for it
+       again: a board nobody had filtered would have sat there fetching the
+       same fifty rows for as long as it was left open. The question
+       comparison is what keeps it to one request either way. */
+    const asking=JSON.stringify(Paged.query());
+    if(asking!==Paged.question){
+      /* Marked as asked HERE rather than when the request goes out, so the
+         render that happens on this very keystroke already knows an answer
+         is coming and does not report the board as empty while it waits. */
+      Paged.pending=true;
+      clearTimeout(_pagedTimer);
+      _pagedTimer=setTimeout(()=>Paged.load(true),250);
     }
   }
   /* The tab strip answers to the filters too: a saved view that has been
@@ -16098,8 +16453,16 @@ function groupSummaryHTML(tasks){
   // column, and a line that drops a number when it is 0 makes the reader check
   // which number each row is showing. The number always leads, so the lines stay
   // a column — but one is "1 פריט", not "1 פריטים".
+  /* …and on a board the server is paging, both halves are counts of the rows
+     that have ARRIVED, not of the group. Said in the line rather than left to
+     be assumed: a group reading "0 פריטים" over a board of 21,187 is the same
+     untruth as an empty board, only small enough to be believed. The suffix
+     goes at the end so the numbers still lead and the lines still stack into a
+     column. */
+  const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
   return `<span class="g-sum">${n} ${n===1?'פריט':'פריטים'}`
-       + ` / ${subs} ${subs===1?'תת־פריט':'תתי־פריטים'}</span>`;
+       + ` / ${subs} ${subs===1?'תת־פריט':'תתי־פריטים'}`
+       + (part?' · נטענו עד כה':'')+'</span>';
 }
 function groupsOf(){
   const gs = (st.board.groups||[]).slice();
@@ -16329,18 +16692,30 @@ function groupHTML(g){
        — the other thing on this screen that is not an orderable group — has
        never had one. Clearing the filter gives it back. */
     const mayDrag=!boardIsNarrowed();
+    /* The chip beside the name counts the rows this group is DRAWING, which
+       past the threshold is the rows that have arrived so far and not the
+       group's own number — the board sends none of them and there is no
+       per-group count in what it does send. A bare "48" there would be read as
+       the group's size, so a "+" is set beside it and the tooltip says what it
+       is: the only honest thing this screen knows is "at least this many". A
+       separate element rather than a character inside the count, so the count
+       itself is still the plain number an open group has always shown. */
+    const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
+    const more=part
+      ? `<span class="g-more" title="זהו מספר הפריטים שנטענו עד כה בקבוצה. הלוח גדול ונטען מהשרת תוך כדי גלילה.">+</span>`
+      : '';
     const head=real
       ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}"><span class="gh-in">
           ${mayDrag?'<i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>':''}
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-nm"><span class="g-name${mayDrag?' g-handle':''}" style="color:${col}" ${mayDrag?'title="גרור לשינוי סדר"':''}>${esc(g.name)}</span>${sum}</span>
-          <span class="g-count">${g.tasks.length}</span>
+          <span class="g-count">${g.tasks.length}</span>${more}
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
         </span></div>`
       : `<div class="group-head${shut?' collapsed':''}" data-gid=""><span class="gh-in">
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-nm"><span class="g-name" style="color:${col}">${esc(g.name)}</span>${sum}</span>
-          <span class="g-count">${g.tasks.length}</span>
+          <span class="g-count">${g.tasks.length}</span>${more}
         </span></div>`;
     /* The height this group will turn out to be, so the scrollbar is honest
        before the browser has laid it out (see .group in the CSS). A collapsed
@@ -16417,7 +16792,20 @@ function vTable(el){
   const openV=(typeof Views!=='undefined')?Views.openView():null;
   if(openV&&openV.blocked){ el.innerHTML=restrictedViewHTML(); return; }
   if(openV&&(openV.needs_fix||[]).length){ el.innerHTML=brokenViewHTML(openV); return; }
-  if(!(st.board.tasks||[]).length){ el.innerHTML=emptyBoardHTML(); return; }
+  /* "The board has no items" and "the board's items have not arrived yet" are
+     the same empty array from here, and this line used to read the array. Past
+     the client threshold the board is handed over with `tasks: []` on purpose
+     — the rows come fifty at a time through Paged — so the count it used to
+     take told a 21,187-item board it was empty and offered to add its first
+     item. boardRowCount() is the board's own answer about itself and it is the
+     one that decides; the array only says what has arrived so far.
+
+     Asked through a typeof, the way searchPending asks for filterMode: the
+     harnesses run this function on its own with the globals it needs handed
+     in, and the fallback is exactly what this line used to be. */
+  const held=(typeof loadedRows==='function')?loadedRows():(st.board.tasks||[]);
+  const total=(typeof boardRowCount==='function')?boardRowCount():held.length;
+  if(!total){ el.innerHTML=emptyBoardHTML(); return; }
   /* A search still running on the server is a fifth state, and it is the one
      that looked most like "no results". Before any answer has arrived there
      is nothing on screen but the local engine's pass over one page of rows,
@@ -16427,6 +16815,13 @@ function vTable(el){
      search should not blank the board on every keystroke. */
   const pending=searchPending();
   if(pending && !Paged.on){ el.innerHTML=searchingHTML(); return; }
+  /* And a sixth: the board HAS items, nothing is being searched for, and the
+     first page is simply still on its way. It is the state every large board
+     now opens in, and it must not be told as "the board is empty" — see
+     loadingRowsHTML. The failure of that fetch is told apart from it, because
+     a board that will never fill needs a button and not a spinner. */
+  if(!held.length && !Paged.on && typeof loadingRowsHTML==='function'){
+    el.innerHTML=Paged.failed?pagedFailedHTML():loadingRowsHTML(); return; }
   if(!groups.reduce((n,g)=>n+g.tasks.length,0)){
     el.innerHTML=pending?searchingHTML():noMatchHTML(); return; }
   /* Only the first group is on screen when a board opens, and the expensive
@@ -16581,7 +16976,10 @@ function battTip(e){
   let segs; try{ segs=JSON.parse(decodeURIComponent(raw)); }catch(_){ return; }
   battTipHide();
   const box=document.createElement('div'); box.className='batt-tip'; box.id='batt-tip';
-  box.innerHTML=`<div class="batt-tip-h">התפלגות סטטוסים</div>`+segs.map(s=>
+  // the bar is built from the rows the group is drawing, so on a board that is
+  // still arriving the percentages are the page's and the heading says so
+  const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
+  box.innerHTML=`<div class="batt-tip-h">התפלגות סטטוסים${part?' (בפריטים שנטענו)':''}</div>`+segs.map(s=>
     `<div class="batt-tip-row"><span class="batt-dot" style="background:${s.c}"></span><span class="batt-lbl">${esc(s.he)}</span><span class="batt-pct">${s.pct}%</span><span class="batt-n">(${s.n})</span></div>`).join('');
   document.body.appendChild(box);
   const r=el.getBoundingClientRect();
@@ -16753,13 +17151,19 @@ function subHeadHTML(parentId,cols,admin){
   return `<tr class="sub-h">${name}${rest}${add}</tr>`;
 }
 function subItemRowHTML(s,cols,admin,parentId){
+  // The two ids land in attributes and inside onclick="…(event,ID)", a JS
+  // context esc() does not cover. patchRow passes parentId straight back out of
+  // getAttribute('data-parent'), which is the DOM-XSS path a scanner flagged
+  // (CWE-79). Item ids are integer primary keys, so pin both to an integer here
+  // at the sink: anything else becomes 0 and can never break out of the markup.
+  const sid=parseInt(s.id,10)||0, pid=parseInt(parentId,10)||0;
   const rest=cols.filter(c=>c.id!=='item')
     .map(c=>c.kind==='builtin'?builtinCellHTML(c.key,s):customCellHTML(c.col,s)).join('');
-  return `<tr class="sub-item-row" data-sid="${s.id}" data-parent="${parentId}">
+  return `<tr class="sub-item-row" data-sid="${sid}" data-parent="${pid}">
       <td class="sub-name-cell" data-tipf="${esc(s.title)}"><div class="ci-flex">
-        <span class="item-title editable" data-tipf="${esc(s.title)}" data-tiph="לחץ לעריכת השם" onclick="titleEdit(event,${s.id})">${esc(s.title)}</span>
+        <span class="item-title editable" data-tipf="${esc(s.title)}" data-tiph="לחץ לעריכת השם" onclick="titleEdit(event,${sid})">${esc(s.title)}</span>
         ${chatBtnHTML(s)}
-        <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${s.id})"><i class="fa-solid fa-trash"></i></button>
+        <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${sid})"><i class="fa-solid fa-trash"></i></button>
       </div></td>
       ${rest}
       ${admin?'<td class="sub-endcell"></td>':''}
@@ -17570,10 +17974,16 @@ function groupSums(tasks){
 function groupSumRowHTML(tasks){
   const sums=groupSums(tasks);
   if(!Object.keys(sums).length) return '';
+  /* The tooltip names the number of CELLS the sum was made of, which is what
+     keeps it honest on a board the server is paging: there the rows in hand
+     are a page, so "סכום 50 תאים" over a group of three thousand is a true
+     sentence about a partial sum — but "בקבוצה זו" would not be, so that half
+     goes while the rows are still arriving. */
+  const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
   const cells=orderedColumns().filter(c=>c.id!=='item').map(c=>{
     const got=(c.kind==='custom')?sums[c.col.id]:null;
     if(!got) return '<td class="cell gs-cell"></td>';
-    return `<td class="cell gs-cell gs-has" title="סכום ${got.cells} תאים בקבוצה זו">`
+    return `<td class="cell gs-cell gs-has" title="סכום ${got.cells} תאים ${part?'מבין הפריטים שנטענו עד כה':'בקבוצה זו'}">`
          + `<span class="gs-num">${esc(fnum(got.sum,c.col))}</span></td>`;
   }).join('');
   return `<tfoot><tr class="group-sum">
@@ -17700,6 +18110,25 @@ async function exportBoardExcel(){
   const btn=document.getElementById('bh-menu');   // export is reached from the board menu
   const grid=exportGrid();
   if(!grid.rows.length){toast('אין פריטים לייצוא');return;}
+  /* The sheet is built out of what is on screen, which past the client
+     threshold is a page of the board. A file is kept and re-read later, long
+     after anyone remembers that the board was still loading when it was made —
+     so a short export is the one thing here that must never happen quietly.
+     The number that will go in and the number the board holds are both named,
+     and the choice is the person's. Scrolling the table to the end is what
+     makes the file whole; the server has no "export the whole board" route to
+     hand this off to. */
+  if(boardRowsPartial()){
+    const have=applyFilters(loadedRows()).length;   // top-level items, as the board counts them
+    const ok=await new Promise(res=>askConfirm(
+      'לייצא רק את הפריטים שנטענו עד כה?',()=>res(true),
+      {title:'ייצוא חלקי',confirmText:'ייצא בכל זאת',danger:false,icon:'fa-file-excel',
+       onCancel:()=>res(false),
+       note:`הלוח מכיל ${boardRowCount().toLocaleString('he-IL')} פריטים, `
+            +`ובדפדפן נטענו עד כה ${have.toLocaleString('he-IL')}. `
+            +'הקובץ יכלול רק אותם. גלילה עד סוף הטבלה תטען את השאר, ואז הייצוא יהיה מלא.'}));
+    if(!ok)return;
+  }
   if(btn){btn.disabled=true;btn.classList.add('busy');}
   try{
     const r=await fetch('/api/boards/'+st.board.id+'/export/xlsx',{
@@ -17764,37 +18193,607 @@ function togglePeopleCell(e,taskId,colId,uid){
   buildPeoplePop(pop,taskId,colId);
 }
 /* dropdown column */
+/* A list cell shows at most three of its words. Four or more were squeezed
+   side by side until each one was cut down to a few letters ("…אסט"), which is
+   every word present and none of them readable; now the first three are shown
+   whole and the rest are counted in a "+N" chip, the way the people column
+   counts faces. The words behind the count are in its tooltip, and a click on
+   the cell opens the list with all of them ticked. */
+const DROPDOWN_CELL_MAX=3;
 function dropdownDisp(vals){
   vals=Array.isArray(vals)?vals:[];
-  return vals.length?vals.map(x=>`<span class="tag">${esc(x)}</span>`).join(''):'<span style="color:var(--text-light)">—</span>';
+  if(!vals.length)return '<span style="color:var(--text-light)">—</span>';
+  const shown=vals.length>DROPDOWN_CELL_MAX?vals.slice(0,DROPDOWN_CELL_MAX):vals;
+  const rest=vals.slice(shown.length);
+  return shown.map(x=>`<span class="tag">${esc(x)}</span>`).join('')
+    +(rest.length?`<span class="tag tag-more" title="${esc(rest.join(', '))}" aria-label="ועוד ${rest.length}: ${esc(rest.join(', '))}">+${rest.length}</span>`:'');
+}
+/* Options typed into the add field but not yet confirmed by the server, per
+   column. Adding used to be a browser prompt() per option: one window, one
+   word, and the list closed behind it, so a column of ten options was ten
+   round trips through a modal. Now the field stays open and Enter moves
+   straight on to the next word — which means a second Enter can arrive while
+   the first save is still in flight. Each save sends the whole column list,
+   so two overlapping saves would let the slower one erase the other's option;
+   the words wait here and are flushed one save at a time.
+   _ddSaving[colId] is the per-column turn: false when free, otherwise a
+   promise that resolves (never rejects) when the save holding it lets go, so
+   a rename or a deactivate can wait behind it instead of being refused — see
+   ddTakeTurn. */
+const _ddPending={}, _ddSaving={};
+/* Renames this session has made, per column: {from: to}. A deactivate or a
+   delete chosen from the ⋯ menu names its word when it is clicked, but now
+   waits its turn behind a rename that may change that very word; this is how
+   it finds the option again once it gets to go. */
+const _ddRenamed={};
+/* Set while the edit rows are being replaced. Chromium fires blur on a
+   focused input as it is removed, and the rename input's onblur used to
+   commit whatever was half-typed in it — renaming the option on every cell,
+   rule and view because a usage count happened to arrive mid-word. */
+let _ddRedrawing=0;
+function dropdownOpts(colId){
+  const col=customColumns().find(c=>c.id===colId);
+  const opts=((col&&col.options)||[]).slice();
+  (_ddPending[colId]||[]).forEach(o=>{ if(!opts.includes(o)) opts.push(o); });
+  return opts;
+}
+/* The order a list column's options are SHOWN in: alphabetical, Hebrew and
+   Latin alike, with numbers compared as numbers so "2" comes before "10" —
+   the same collation the board list uses. Only the display is sorted; the
+   column keeps the order it was saved in, and every button still carries the
+   option's index in col.options, which is what toggleDropdown and the edit
+   menu look the word up by. Sorting the stored list instead would have meant
+   a column save on every add, and would have reshuffled the order a monday
+   import brought with it for no one's benefit. */
+function dropdownSortedIdx(opts){
+  return (opts||[]).map((_,i)=>i).sort((a,b)=>
+    String(opts[a]).localeCompare(String(opts[b]),'he',{numeric:true,sensitivity:'base'}) || a-b);
+}
+/* Whether an option answers what was typed into the popover's search field.
+   A substring, not a prefix — "שמירה" has to find "א. שמש חברה שמירה ואבטחה",
+   which is how a list of contractors' names is actually searched — and
+   without regard to case or the spaces around it. */
+function dropdownMatch(o,q){
+  q=String(q||'').trim().toLowerCase();
+  return !q || String(o).toLowerCase().includes(q);
+}
+function dropdownListHTML(taskId,colId,q){
+  const col=customColumns().find(c=>c.id===colId);const saved=(col&&col.options)||[];
+  const opts=dropdownOpts(colId);
+  const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];
+  const off=new Set(dropdownInactive(colId));
+  if(!opts.length)return '<div class="dd-empty">'+(isBoardAdmin()?'אין אפשרויות עדיין':'אין אפשרויות — פנה למנהל הלוח')+'</div>';
+  /* A word still on its way to the server is shown, but cannot be picked yet:
+     toggleDropdown looks the option up by its index in the saved list.
+     An inactive option is not offered at all — that is what inactive means —
+     unless this very cell already holds it: then it is shown greyed, so it
+     can still be taken off. Skipping a button does not shift the others,
+     because each keeps the index it has in col.options, not its position on
+     screen. */
+  const html=[...dropdownSortedIdx(saved), ...opts.map((_,i)=>i).slice(saved.length)].map(i=>{
+    const o=opts[i];
+    if(i>=saved.length) return `<div class="dd-opt dd-pending" title="נשמר…">${esc(o)} <i class="fa-solid fa-spinner fa-spin"></i></div>`;
+    if(!dropdownMatch(o,q)) return '';
+    const on=vals.includes(o), dead=off.has(o);
+    if(dead&&!on) return '';
+    return `<button class="dd-opt ${on?'sel':''} ${dead?'dd-inactive':''}" onclick="toggleDropdown(event,${taskId},'${colId}',${i})">${esc(o)}${
+      dead?' <span class="ah-tag">לא פעיל</span>':''}${on?' <i class="fa-solid fa-check"></i>':''}</button>`;
+  }).join('');
+  if(!html&&String(q||'').trim()) return '<div class="dd-empty">לא נמצאו אפשרויות תואמות</div>';
+  return html||'<div class="dd-empty">'+(isBoardAdmin()?'כל האפשרויות במצב לא פעיל':'אין אפשרויות פעילות — פנה למנהל הלוח')+'</div>';
+}
+/* The column's inactive words, kept to the ones it still has — a stale entry
+   for a word that was since renamed or deleted must not hide anything. */
+function dropdownInactive(colId){
+  const col=customColumns().find(c=>c.id===colId); if(!col)return [];
+  const have=new Set(col.options||[]);
+  return (col.inactive_options||[]).filter(o=>have.has(o));
 }
 function buildDropdownPop(pop,taskId,colId){
-  const col=customColumns().find(c=>c.id===colId);const opts=(col&&col.options)||[];
-  const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];
+  pop._ddTask=taskId; pop._ddCol=colId;
+  // edit mode is the admin's only; a role that changed under an open popover
+  // falls back to plain picking
+  const mode=(pop._ddEdit&&isBoardAdmin())?'edit':'pick';
+  // a rebuild after picking an option must not wipe what is half-typed in the
+  // add field, nor take the caret out of it — only the list is redrawn
+  if(pop._ddMode===mode){
+    if(mode==='pick'){ const list=pop.querySelector('.dd-list');
+      if(list){ list.innerHTML=dropdownListHTML(taskId,colId,pop._ddQ); return; } }
+    else{ const list=pop.querySelector('.dd-elist');
+      if(list){ ddRedrawEdit(pop,list); return; } }
+  }
+  pop._ddMode=mode;
+  pop.classList.add('dd-pop');
+  pop.classList.toggle('dd-editing',mode==='edit');
+  // Escape and the board's own shortcuts are answered at the popover — see
+  // ddPopKey. A property, not a listener: one element, one handler.
+  pop.onkeydown=ddPopKey;
   // only the board admin may add new options; everyone else just selects
-  const addBtn=isBoardAdmin()?`<button class="cell-pop-opt2" onclick="addDropdownOption(event,'${colId}')"><i class="fa-solid fa-plus"></i> אפשרות חדשה</button>`:'';
-  pop.innerHTML=(opts.length?opts.map((o,i)=>`<button class="dd-opt ${vals.includes(o)?'sel':''}" onclick="toggleDropdown(event,${taskId},'${colId}',${i})">${esc(o)}${vals.includes(o)?' <i class="fa-solid fa-check"></i>':''}</button>`).join(''):'<div style="padding:6px;color:var(--text-light);font-size:12px">'+(isBoardAdmin()?'אין אפשרויות עדיין':'אין אפשרויות — פנה למנהל הלוח')+'</div>')+addBtn;
+  const add=isBoardAdmin()?`<div class="dd-add">
+      <i class="fa-solid fa-plus"></i>
+      <input class="dd-add-inp" type="text" maxlength="200" placeholder="אפשרות חדשה"
+        aria-label="הוספת אפשרות לרשימה" onkeydown="ddAddKey(event,'${colId}')">
+    </div>`:'';
+  // A full rebuild drops any rename input that has focus, and its removal
+  // blur must not commit (see _ddRedrawing): leaving edit mode by keyboard has
+  // already put the word back, and by mouse the blur came earlier, on mousedown.
+  // The search row is the same in both modes and keeps what was typed across a
+  // switch between them: finding the option is usually why edit mode is open.
+  const search=`<div class="dd-search" onclick="event.stopPropagation()">
+      <i class="fa-solid fa-magnifying-glass"></i>
+      <input class="dd-search-inp" type="search" placeholder="חיפוש" aria-label="חיפוש אפשרות ברשימה"
+        value="${esc(pop._ddQ||'')}" oninput="ddSearch(this)" onkeydown="ddSearchKey(event)">
+    </div>`;
+  _ddRedrawing++;
+  try{
+  if(mode==='edit'){
+    pop.innerHTML=`<div class="dd-ehead" onclick="event.stopPropagation()"><i class="fa-solid fa-pen"></i> עריכת אפשרויות</div>
+      ${search}<div class="dd-elist" onclick="event.stopPropagation()">${dropdownEditHTML(pop,colId)}</div>
+      <div class="dd-foot" onclick="event.stopPropagation()">${add}
+        <button type="button" class="dd-done" onclick="ddExitEdit(event)">סיום</button></div>`;
+  }else{
+    const foot=isBoardAdmin()?`<div class="dd-foot" onclick="event.stopPropagation()">${add}
+        <button type="button" class="dd-edit-btn" onclick="ddEnterEdit(event)"><i class="fa-solid fa-pen"></i> עריכת אפשרויות</button></div>`:'';
+    pop.innerHTML=`${search}<div class="dd-list">${dropdownListHTML(taskId,colId,pop._ddQ)}</div>${foot}`;
+  }
+  }finally{ _ddRedrawing--; }
+}
+/* ----- edit mode: rename, deactivate and delete options in place -----
+   The popover itself turns into the editor — no second window and no browser
+   prompt, the same reasoning that took the add field out of prompt(). State
+   lives on the popover element, so closing it forgets everything:
+     pop._ddEdit   in edit mode
+     pop._ddUsage  {word: items} from the server, or null when unknown
+     pop._ddMenu   the word whose ⋯ menu is open, or null
+   The menu is keyed by the word rather than its index because a save can land
+   between opening the menu and choosing from it, and an index would then
+   point at a different option. */
+function dropdownEditHTML(pop,colId){
+  const col=customColumns().find(c=>c.id===colId);const saved=(col&&col.options)||[];
+  const off=new Set(dropdownInactive(colId)), use=pop._ddUsage;
+  const rows=dropdownSortedIdx(saved).filter(i=>dropdownMatch(saved[i],pop._ddQ)).map(i=>{
+    const o=saved[i];
+    const dead=off.has(o), open=pop._ddMenu===o, n=(use&&use[o])||0;
+    const menu=open?`<div class="dd-menu" role="menu" aria-label="פעולות על ${esc(o)}">
+        <button type="button" role="menuitem" data-dd-focus="a${i}" onclick="ddToggleActive(event,'${colId}')">
+          <i class="fa-solid ${dead?'fa-rotate-left':'fa-ban'}"></i> ${dead?'החזר למצב פעיל':'העבר למצב לא פעיל'}</button>
+        <button type="button" role="menuitem" class="dd-danger" data-dd-focus="d${i}" ${n?'disabled':''}
+          ${n?`title="${esc(ddUsedMsg(n))}"`:''} onclick="ddDelete(event,'${colId}')">
+          <i class="fa-solid fa-trash"></i> מחק אפשרות</button>
+        ${n?`<div class="dd-menu-note">${esc(ddUsedMsg(n))}</div>`:''}
+      </div>`:'';
+    return `<div class="dd-erow ${dead?'dd-off':''}">
+        <input class="dd-ename" type="text" maxlength="200" value="${esc(o)}" data-dd-focus="n${i}"
+          aria-label="שם האפשרות ${esc(o)}" onkeydown="ddRenameKey(event,'${colId}')" onblur="ddRenameCommit(this,'${colId}',false)">
+        ${dead?'<span class="ah-tag dd-off-tag">לא פעיל</span>':''}
+        <button type="button" class="dd-more ${open?'on':''}" data-dd-focus="m${i}" aria-haspopup="menu" aria-expanded="${open?'true':'false'}"
+          title="פעולות" aria-label="פעולות על ${esc(o)}" onclick="ddMenuToggle(event,'${colId}',${i})"><i class="fa-solid fa-ellipsis"></i></button>
+      </div>${menu}`;
+  });
+  // words typed into the add field and still being saved
+  dropdownOpts(colId).slice(saved.length).forEach(o=>rows.push(
+    `<div class="dd-opt dd-pending" title="נשמר…">${esc(o)} <i class="fa-solid fa-spinner fa-spin"></i></div>`));
+  return rows.join('')||'<div class="dd-empty">'+(saved.length?'לא נמצאו אפשרויות תואמות':'אין אפשרויות עדיין')+'</div>';
+}
+function ddUsedMsg(n){ return `בשימוש ב-${n} פריטים — לא ניתן למחוק. אפשר להעביר למצב לא פעיל`; }
+/* Redraw the edit rows without losing the person's place: whatever control
+   had focus (by its data-dd-focus key) gets it back. Without this, tabbing
+   from a renamed option to its ⋯ dropped focus to the page the moment the
+   rename came back and the rows were redrawn.
+   Focus alone was not enough for a rename being typed: the new input came
+   back with the saved word, so a usage count or another save landing
+   mid-word wiped what had been typed so far — and the removed input's blur
+   committed the half-word as a rename. Now the typed value, the selection
+   and the busy state of a rename already sent travel to the input that names
+   the same word. That is looked up by the word (its defaultValue) first, the
+   index key second, because a delete landing ahead of it shifts the indexes. */
+function ddRedrawEdit(pop,list){
+  const a=document.activeElement, key=(a&&pop.contains(a)&&a.dataset)?a.dataset.ddFocus:null;
+  const typing=(key&&a.classList.contains('dd-ename'))?{word:a.defaultValue,value:a.value,
+    start:a.selectionStart,end:a.selectionEnd,dir:a.selectionDirection,busy:!!a._ddBusy}:null;
+  const top=list.scrollTop;
+  _ddRedrawing++;
+  try{ list.innerHTML=dropdownEditHTML(pop,pop._ddCol); }finally{ _ddRedrawing--; }
+  list.scrollTop=top;
+  if(!key)return;
+  const same=typing&&[...list.querySelectorAll('.dd-ename')].find(x=>x.defaultValue===typing.word);
+  const el=same||list.querySelector(`[data-dd-focus="${key}"]`); if(!el)return;
+  el.focus();
+  if(same){
+    el.value=typing.value;
+    if(typing.busy){ el._ddBusy=true; el.readOnly=true; }
+    try{ el.setSelectionRange(typing.start,typing.end,typing.dir||'none'); }catch(_){}
+  }
+}
+/* The popover was placed for its picking size; the editor is wider and
+   taller. Keep it on screen rather than let it hang off an edge — on a phone
+   that edge is where the ⋯ buttons are. */
+function ddFitPop(pop){
+  const r=pop.getBoundingClientRect();
+  if(r.right>window.innerWidth-8) pop.style.left=Math.max(8,window.innerWidth-8-r.width)+'px';
+  else if(r.left<8) pop.style.left='8px';
+  if(r.bottom>window.innerHeight-8) pop.style.top=Math.max(8,window.innerHeight-8-r.height)+'px';
+}
+async function ddEnterEdit(e){
+  e.stopPropagation();
+  const pop=e.target.closest('.cell-pop'); if(!pop)return;
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך אפשרויות');return;}
+  pop._ddEdit=true; pop._ddMenu=null; pop._ddUsage=null;
+  buildDropdownPop(pop,pop._ddTask,pop._ddCol); ddFitPop(pop);
+  const first=pop.querySelector('.dd-ename'); if(first)first.focus();
+  await ddLoadUsage(pop);
+}
+/* Which options are worn, so delete can be disabled up front with the reason
+   beside it. Best effort only: an older server has no such route, and then
+   delete stays enabled and the 409 from saveColumns is the authority. */
+async function ddLoadUsage(pop){
+  const colId=pop._ddCol;
+  try{
+    const r=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/dropdown-usage`);
+    if(!pop.isConnected||pop._ddCol!==colId)return;
+    pop._ddUsage=(r&&r.usage)||{};
+  }catch(err){ if(pop.isConnected) pop._ddUsage=null; return; }
+  if(pop._ddEdit) buildDropdownPop(pop,pop._ddTask,colId);
+}
+function ddExitEdit(e){
+  e.stopPropagation();
+  const pop=e.target.closest('.cell-pop'); if(!pop)return;
+  pop._ddEdit=false; pop._ddMenu=null;
+  buildDropdownPop(pop,pop._ddTask,pop._ddCol);
+  const btn=pop.querySelector('.dd-edit-btn'); if(btn)btn.focus();
+}
+function ddMenuToggle(e,colId,i){
+  e.stopPropagation();
+  const pop=e.target.closest('.cell-pop'); if(!pop)return;
+  const col=customColumns().find(c=>c.id===colId); const o=((col&&col.options)||[])[i]; if(o==null)return;
+  pop._ddMenu=pop._ddMenu===o?null:o;
+  buildDropdownPop(pop,pop._ddTask,colId);
+  // opening moves focus into the menu so a keyboard can choose from it;
+  // closing hands it back to the ⋯ that opened it
+  const go=pop.querySelector(pop._ddMenu!=null?'.dd-menu button:not(:disabled)':`[data-dd-focus="m${i}"]`)
+        ||pop.querySelector(`[data-dd-focus="m${i}"]`);
+  if(go)go.focus();
+  const m=pop.querySelector('.dd-menu'); if(m&&m.scrollIntoView)m.scrollIntoView({block:'nearest'});
+}
+/* Escape closes the innermost thing open: the ⋯ menu, then edit mode, then
+   the popover. Every key is kept from the board's own shortcuts, as ddAddKey
+   already did for its field. An inner handler that answered Escape itself
+   (a rename being reverted) marks it handled with preventDefault. */
+function ddPopKey(e){
+  e.stopPropagation();
+  if(e.key!=='Escape'||e.defaultPrevented)return;
+  const pop=e.currentTarget; e.preventDefault();
+  if(pop._ddMenu!=null){
+    const col=customColumns().find(c=>c.id===pop._ddCol);
+    const i=((col&&col.options)||[]).indexOf(pop._ddMenu);
+    pop._ddMenu=null; buildDropdownPop(pop,pop._ddTask,pop._ddCol);
+    const b=pop.querySelector(`[data-dd-focus="m${i}"]`); if(b)b.focus();
+    return;
+  }
+  if(pop._ddEdit){ ddExitEdit({stopPropagation(){},target:pop}); return; }
+  closeCellPops();
+}
+function ddRenameKey(e,colId){
+  const inp=e.target;
+  if(e.key==='Escape'){
+    // the first Escape puts the word back; one more leaves edit mode
+    if(inp.value!==inp.defaultValue){ e.preventDefault(); inp.value=inp.defaultValue; inp.select(); }
+    return;
+  }
+  if(e.key!=='Enter'||e.isComposing)return;
+  e.preventDefault(); ddRenameCommit(inp,colId,true);
+}
+/* A rename goes through its own route, not a column save: the server rewrites
+   the word on every item that carries it, which a column list alone cannot
+   say. The input's defaultValue is the word as it was drawn, so it names the
+   option even if the rows shifted under it.
+   It still takes the column's save turn, though. ddFlush and ddSaveCol send
+   the whole options list as they last saw it, so a rename landing while one
+   of them was in flight either drew a 409 for "deleting" the new word or was
+   silently undone by the older list, while the cells kept the new word. */
+async function ddRenameCommit(inp,colId,viaEnter){
+  // A blur fired because the input is being taken out of the page — a redraw
+  // of the rows, or the popover closing — is not someone leaving the field
+  // with a finished word. The flag catches our own redraws synchronously; the
+  // microtask lets any other removal finish, after which the input is gone.
+  if(_ddRedrawing)return;
+  await null;
+  if(!inp.isConnected||inp._ddBusy)return;
+  const from=inp.defaultValue, to=inp.value.trim();
+  if(!to){ inp.value=from; return; }
+  if(to===from){ inp.value=from; return; }
+  if(!isBoardAdmin()){ inp.value=from; toast('רק מנהל הלוח יכול לערוך אפשרויות'); return; }
+  const col=customColumns().find(c=>c.id===colId);
+  // An option is not always a string: a monday import keeps a number as the
+  // number 3, while the input can only ever hold the text "3". So options are
+  // compared as text everywhere here — a bare o.trim() on a number threw, and
+  // took add and rename down for the whole column, not just for that option.
+  if(!col||!(col.options||[]).some(x=>String(x)===from)){ inp.value=from; return; }
+  // two options with one name would be two buttons toggling the same word
+  if(dropdownOpts(colId).some(o=>String(o)!==from&&String(o).trim().toLowerCase()===to.toLowerCase())){
+    toast('האפשרות כבר קיימת ברשימה');
+    if(viaEnter) inp.select(); else inp.value=from;
+    return;
+  }
+  inp._ddBusy=true; inp.readOnly=true;
+  // Rows redrawn while this waits or flies give the person a fresh input for
+  // the same word (ddRedrawEdit carries the value and busy state to it), so
+  // putting the word back or freeing the field has to reach that one too.
+  const live=()=>{ const pop=document.querySelector('.cell-pop');
+    const twin=pop&&pop._ddCol===colId&&[...pop.querySelectorAll('.dd-ename')].find(x=>x.defaultValue===from);
+    return [...new Set([inp,twin].filter(Boolean))]; };
+  const putBack=()=>live().forEach(x=>{ x.value=from; });
+  const release=await ddTakeTurn(colId);
+  try{
+    // the save ahead of this one may have deleted the word, or a rename ahead
+    // of it taken the new name — check again against what is saved now
+    const now=customColumns().find(c=>c.id===colId);
+    if(!now||!(now.options||[]).some(x=>String(x)===from)){ putBack(); return; }
+    if(dropdownOpts(colId).some(o=>String(o)!==from&&String(o).trim().toLowerCase()===to.toLowerCase())){
+      toast('האפשרות כבר קיימת ברשימה'); putBack(); return; }
+    const r=await api(`/api/boards/${st.board.id}/columns/${encodeURIComponent(colId)}/dropdown-rename`,
+      {method:'POST',headers:{'Content-Type':'application/json'},body:withMe({from,to})});
+    if(r&&r.column) st.board.columns=customColumns().map(c=>c.id===colId?r.column:c);
+    (_ddRenamed[colId]=_ddRenamed[colId]||{})[from]=to;
+    ddAdoptRename(colId,from,to);
+    const pop=document.querySelector('.cell-pop');
+    if(pop&&pop._ddCol===colId){
+      if(pop._ddUsage&&pop._ddUsage[from]!=null){
+        pop._ddUsage[to]=(pop._ddUsage[to]||0)+pop._ddUsage[from]; delete pop._ddUsage[from]; }
+      if(pop._ddMenu===from) pop._ddMenu=to;
+    }
+    renderView();
+    if(pop&&pop.isConnected&&pop._ddCol===colId) buildDropdownPop(pop,pop._ddTask,colId);
+    toast(`השם שונה ל"${to}" · עודכנו ${(r&&r.items)||0} פריטים`);
+  }catch(err){
+    putBack();
+    toast(typeof (err&&err.detail)==='string'&&err.detail?err.detail:'שגיאה בשינוי שם האפשרות');
+  }finally{
+    live().forEach(x=>{ x._ddBusy=false; x.readOnly=false; });
+    release();
+  }
+}
+/* The server has rewritten the word on every item; the rows already on screen
+   were fetched before that, so they are rewritten here the same way —
+   top-level rows and their sub-items, as _csAdoptRenames walks them. An item
+   that held both words keeps one.
+   A cell is not always a plain list of words: an import or an older client
+   can leave a lone string, or {label} objects in the list. The server
+   rewrites those shapes too, so they are rewritten here as well — the shape
+   is kept, only the word changes. */
+function ddAdoptRename(colId,from,to){
+  const rows=[];
+  loadedRows().forEach(t=>{rows.push(t);(t.subtasks||[]).forEach(s=>rows.push(s));});
+  const word=x=>(x&&typeof x==='object')?x.label:x;
+  for(const t of rows){
+    const cf=t.custom_fields; if(!cf)continue;
+    const v=cf[colId];
+    // compared as text: an imported cell can hold the number 3 for option "3"
+    if(v!=null&&typeof v!=='object'){ if(String(v)===from) cf[colId]=to; continue; }
+    if(!Array.isArray(v)||!v.some(x=>String(word(x))===from))continue;
+    const seen=new Set(), out=[];
+    for(const x of v){
+      const y=String(word(x))===from?((x&&typeof x==='object')?{...x,label:to}:to):x;
+      const k=word(y);
+      if(typeof k==='string'){ if(seen.has(k))continue; seen.add(k); }
+      out.push(y);
+    }
+    cf[colId]=out;
+  }
+}
+/* Wait for the column's save turn and take it; resolves to the function that
+   hands it back. Releasing also flushes any word typed into the add field
+   meanwhile — ddFlush returned at once while the turn was held, trusting
+   whoever held it to pick those words up. ddFlush takes the turn inline
+   rather than through here, so the typed-in-a-row harness can lift it alone;
+   it stores the same kind of promise, so a waiter here wakes for it too. */
+async function ddTakeTurn(colId){
+  while(_ddSaving[colId]) await _ddSaving[colId];
+  let done; _ddSaving[colId]=new Promise(r=>done=r);
+  return ()=>{
+    _ddSaving[colId]=false; done();
+    if((_ddPending[colId]||[]).length) ddFlush(colId);
+  };
+}
+/* The word a ⋯ menu action was chosen for, as the column calls it now: a
+   rename that held the turn ahead of it may have changed it. */
+function ddCurrentWord(colId,o){
+  const col=customColumns().find(c=>c.id===colId), have=new Set((col&&col.options)||[]);
+  const trail=_ddRenamed[colId]||{};
+  for(let hops=0;!have.has(o)&&trail[o]!=null&&hops<50;hops++) o=trail[o];
+  return o;
+}
+/* Deactivate, activate and delete all send the whole column list, exactly as
+   ddFlush does — so they take the same per-column turn. While one of these is
+   in flight a word typed into the add field just waits in _ddPending, and is
+   flushed when the turn is handed back.
+   A save that finds the turn taken used to be refused with a toast; it now
+   waits for it, because a rename may hold the turn and the person has every
+   right to deactivate the word they just renamed. mutate runs only once the
+   turn is ours, against the column as it is then; returning null from it
+   means there is nothing left to do, and nothing is sent. */
+async function ddSaveCol(colId,mutate){
+  const release=await ddTakeTurn(colId);
+  let ok=false;
+  try{
+    const col=customColumns().find(c=>c.id===colId);
+    const next=col?mutate({...col}):null;
+    if(next) ok=await saveColumns(customColumns().map(c=>c.id===colId?next:c));
+  }finally{ release(); }
+  return ok;
+}
+async function ddToggleActive(e,colId){
+  e.stopPropagation();
+  const pop=e.target.closest('.cell-pop'); if(!pop)return;
+  const o=pop._ddMenu; if(o==null)return;
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך אפשרויות');return;}
+  // which way to flip is decided when the turn comes, not when the button was
+  // clicked: a save ahead of this one may have renamed or deleted the word
+  let w=o, dead=false;
+  const ok=await ddSaveCol(colId,c=>{
+    w=ddCurrentWord(colId,o);
+    if(!(c.options||[]).includes(w)) return null;
+    dead=dropdownInactive(colId).includes(w);
+    const off=(c.inactive_options||[]).filter(x=>x!==w);
+    if(!dead) off.push(w);
+    c.inactive_options=off; return c;
+  });
+  if(!ok)return;
+  if(pop.isConnected){ pop._ddMenu=null; buildDropdownPop(pop,pop._ddTask,colId);
+    const col=customColumns().find(c=>c.id===colId);
+    const b=pop.querySelector(`[data-dd-focus="m${((col&&col.options)||[]).indexOf(w)}"]`); if(b)b.focus(); }
+  toast(dead?`"${w}" פעילה שוב`
+    :`"${w}" הועברה למצב לא פעיל — היא נשארת בפריטים שכבר מסומנים בה ולא תוצע לבחירה`);
+}
+function ddDelete(e,colId){
+  e.stopPropagation();
+  const pop=e.target.closest('.cell-pop'); if(!pop)return;
+  const o=pop._ddMenu; if(o==null)return;
+  if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך אפשרויות');return;}
+  const n=(pop._ddUsage&&pop._ddUsage[o])||0;
+  if(n){ toast(ddUsedMsg(n)); return; }
+  // The dialog's own buttons are clicks on the document, and openCellPop armed
+  // a one-shot document click that closes every popover — so answering the
+  // question used to throw the editor away behind it. Disarmed while the
+  // dialog is up, and armed again once it has been answered either way.
+  document.removeEventListener('click',closeCellPops);
+  // Re-armed when the dialog closes, whichever way it does: its buttons, the
+  // backdrop and Escape take three different paths and only the buttons call
+  // back, so a backdrop dismissal used to leave a popover nothing outside it
+  // could close. The dialog's own "open" class is the one thing all three
+  // change.
+  const modal=document.getElementById('modal');
+  let armed=false;
+  const rearm=()=>{ if(armed)return; armed=true; if(watch)watch.disconnect();
+    setTimeout(()=>{ if(pop.isConnected)
+      document.addEventListener('click',closeCellPops,{once:true}); },0); };
+  const watch=(modal&&window.MutationObserver)?new MutationObserver(()=>{
+    if(!modal.classList.contains('open')) rearm(); }):null;
+  askConfirm(`למחוק את האפשרות "${o}"?`,async()=>{
+    rearm();
+    // a rename still in flight is waited for, and the delete follows the
+    // option to its new name rather than missing it under the old one
+    let w=o;
+    const ok=await ddSaveCol(colId,c=>{
+      w=ddCurrentWord(colId,o);
+      if(!(c.options||[]).includes(w)) return null;
+      c.options=(c.options||[]).filter(x=>x!==w);
+      c.inactive_options=(c.inactive_options||[]).filter(x=>x!==w);
+      return c;
+    });
+    // the popover may have closed behind the dialog; if it is still open,
+    // a refusal means the counts it holds are out of date
+    if(pop.isConnected){ pop._ddMenu=null;
+      if(!ok) await ddLoadUsage(pop); else buildDropdownPop(pop,pop._ddTask,colId); }
+    if(ok) toast(`האפשרות "${w}" נמחקה`);
+  },{title:'מחיקת אפשרות',confirmText:'מחק',note:'האפשרות תוסר מהרשימה של העמודה.',onCancel:rearm});
+  // observed only after askConfirm has opened it, or the opening itself
+  // would read as nothing open yet
+  if(watch) watch.observe(modal,{attributes:true,attributeFilter:['class']});
 }
 function dropdownCellMenu(e,taskId,colId){
   e.stopPropagation();
   const pop=openCellPop(e.currentTarget,'','list-pop'); buildDropdownPop(pop,taskId,colId);
+  // Straight into the search field, so a long list is found by typing — but
+  // not on a touch screen, where focusing it throws up a keyboard that covers
+  // the very list the person meant to tap in.
+  if(window.matchMedia&&matchMedia('(pointer:fine)').matches){
+    const s=pop.querySelector('.dd-search-inp'); if(s)s.focus();
+  }
+}
+function ddSearch(inp){
+  const pop=inp.closest('.cell-pop'); if(!pop)return;
+  pop._ddQ=inp.value;
+  buildDropdownPop(pop,pop._ddTask,pop._ddCol);   // same mode: redraws the list only
+}
+/* Enter takes the first option the search left standing — the fastest way
+   from typing a name to having it in the cell. ArrowDown walks into the list
+   for anyone who wants the second one. Escape empties the search first, and
+   only an empty search lets it through to close things (ddPopKey). */
+function ddSearchKey(e){
+  const inp=e.target, pop=inp.closest('.cell-pop'); if(!pop)return;
+  if(e.key==='Escape'&&inp.value){
+    e.preventDefault(); inp.value=''; ddSearch(inp); return;
+  }
+  if(e.key==='ArrowDown'){
+    const first=pop.querySelector('.dd-list button.dd-opt, .dd-elist .dd-ename');
+    if(first){ e.preventDefault(); first.focus(); }
+    return;
+  }
+  if(e.key==='Enter'&&!e.isComposing&&pop._ddMode==='pick'){
+    e.preventDefault();
+    // the first option not already in the cell: Enter means "put this in",
+    // and a match that happens to be ticked (or a greyed inactive one the
+    // cell holds) would otherwise be taken OFF by the same key
+    const first=pop.querySelector('.dd-list button.dd-opt:not(.sel):not(.dd-inactive)'); if(first)first.click();
+  }
 }
 function toggleDropdown(e,taskId,colId,optIdx){
   e.stopPropagation();
   const col=customColumns().find(c=>c.id===colId);const o=(col.options||[])[optIdx];if(o==null)return;
   const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();
-  const i=arr.indexOf(o);if(i>=0)arr.splice(i,1);else arr.push(o);
+  const i=arr.indexOf(o);
+  // an inactive option can still be taken off a cell, never put on one — the
+  // list does not offer it, and a list redrawn late must not either
+  if(i<0&&dropdownInactive(colId).includes(o))return;
+  if(i>=0)arr.splice(i,1);else arr.push(o);
   setCell(taskId,colId,arr.length?arr:null);
   const pop=e.target&&e.target.closest('.cell-pop'); if(!pop||!pop._anchor)return;
   const disp=pop._anchor.querySelector('.cell-disp'); if(disp)disp.innerHTML=dropdownDisp(arr);
   buildDropdownPop(pop,taskId,colId);
 }
-async function addDropdownOption(e,colId){
-  e.stopPropagation();
+function ddAddKey(e,colId){
+  e.stopPropagation();   // the board's own shortcuts must not see these keys
+  if(e.key==='Escape'){ e.preventDefault(); closeCellPops(); return; }
+  if(e.key!=='Enter'||e.isComposing) return;
+  e.preventDefault();
+  const inp=e.target, name=inp.value.trim();
+  if(!name) return;
   if(!isBoardAdmin()){toast('רק מנהל הלוח יכול לערוך אפשרויות');return;}
-  const name=prompt('אפשרות חדשה:');if(!name||!name.trim())return;
-  const cols=customColumns().map(c=>c.id===colId?{...c,options:[...(c.options||[]),name.trim()]}:c);
-  closeCellPops();await saveColumns(cols);
+  // the same word twice would be two buttons that both toggle the first one
+  if(dropdownOpts(colId).some(o=>String(o).trim().toLowerCase()===name.toLowerCase())){
+    toast('האפשרות כבר קיימת ברשימה'); inp.select(); return;
+  }
+  (_ddPending[colId]=_ddPending[colId]||[]).push(name);
+  inp.value='';
+  ddRefreshPop(colId);
+  ddFlush(colId);
+}
+function ddRefreshPop(colId){
+  const pop=document.querySelector('.cell-pop');
+  if(!pop||pop._ddCol!==colId)return;
+  buildDropdownPop(pop,pop._ddTask,colId);
+  // scrolled to the bottom so the word just added shows — unless someone is
+  // renaming another option meanwhile; ddRedrawEdit kept them in place and
+  // jumping the list away would take the row they are typing in off screen
+  const a=document.activeElement;
+  if(a&&a.classList&&a.classList.contains('dd-ename')&&pop.contains(a))return;
+  const list=pop.querySelector('.dd-list,.dd-elist'); if(list) list.scrollTop=list.scrollHeight;
+}
+async function ddFlush(colId){
+  if(_ddSaving[colId]) return;            // the running save picks the rest up
+  // the turn is a promise, not just true, so a rename or a deactivate queued
+  // in ddTakeTurn wakes the moment these words are in
+  let done; _ddSaving[colId]=new Promise(r=>done=r);
+  try{
+    while((_ddPending[colId]||[]).length){
+      const batch=_ddPending[colId].slice();
+      const cols=customColumns().map(c=>{
+        if(c.id!==colId) return c;
+        const opts=(c.options||[]).slice();
+        batch.forEach(o=>{ if(!opts.includes(o)) opts.push(o); });
+        return {...c,options:opts};
+      });
+      const ok=await saveColumns(cols);
+      // Sent words leave the queue either way; on a refusal saveColumns has
+      // already said why, and retrying the same body would only fail again.
+      // The loop goes on rather than breaking: words typed while the refused
+      // save was in flight are a different body, and breaking left them on
+      // screen with a spinner that nothing was ever going to stop.
+      _ddPending[colId]=(_ddPending[colId]||[]).filter(o=>!batch.includes(o));
+      ddRefreshPop(colId);
+    }
+  }finally{ _ddSaving[colId]=false; done(); }
 }
 /* ===== connect column (קישור בין לוחות) ===== */
 st.linkCache=st.linkCache||{};
@@ -17984,7 +18983,9 @@ function collectLinks(t,set){
 }
 async function resolveLinks(){
   if(!customColumns().some(c=>c.type==='connect'))return;
-  const need=new Set(); ((st.board&&st.board.tasks)||[]).forEach(t=>collectLinks(t,need));
+  // the rows on screen, which past the threshold is the page Paged holds —
+  // titles are resolved for what is being drawn, not for a board-sized list
+  const need=new Set(); loadedRows().forEach(t=>collectLinks(t,need));
   const missing=[...need].filter(id=>!st.linkCache[id]);
   if(!missing.length)return;
   try{
@@ -18665,7 +19666,8 @@ function evalFormula(col,t){
 }
 
 function findAnyTask(id){
-  for(const t of (st.board.tasks||[])){ if(t.id==id)return t; for(const s of (t.subtasks||[])) if(s.id==id)return s; }
+  // see findTask — on a paged board the rows live in Paged, not on the board
+  for(const t of loadedRows()){ if(t.id==id)return t; for(const s of (t.subtasks||[])) if(s.id==id)return s; }
   return null;
 }
 /* pull the board's items again, keeping the open view — used when the server
@@ -18685,6 +19687,12 @@ async function refreshBoardItems(itemId){
     try{ one=await api('/api/tasks/'+itemId); }catch(e){ one=null; }
     if(!one || one.board_id!==st.board.id || one.is_archived) return;
   }
+  /* Past the client threshold the board answers with no rows at all, so
+     re-fetching it would replace one empty list with another and the item that
+     was just given its identifier would never be redrawn. There the rows are
+     the server's answer to a query, and asking that query again from the top
+     is how they are pulled down fresh. */
+  if(filterMode()==='server'){ Paged.load(true); return; }
   try{
     const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():''));
     st.board.tasks=fresh.tasks;
@@ -18693,11 +19701,16 @@ async function refreshBoardItems(itemId){
 // remove a task from local board state (top-level item or subtask) without a
 // server round-trip, so deletion re-renders in place instead of reloading.
 function removeTaskLocal(id){
-  if(!st.board||!st.board.tasks)return false;
-  const before=st.board.tasks.length;
-  st.board.tasks=st.board.tasks.filter(t=>t.id!=id);
-  if(st.board.tasks.length!==before)return true;
-  for(const t of st.board.tasks){ if((t.subtasks||[]).some(s=>s.id==id)){ t.subtasks=t.subtasks.filter(s=>s.id!=id); return true; } }
+  if(!st.board)return false;
+  /* The list the row is actually in — on a paged board that is Paged.rows,
+     and st.board.tasks is the empty array the board arrived with. Removing
+     from the wrong one left the deleted row on screen until the next fetch.
+     Counts drawn from this list (Paged.matched/total) are the server's and
+     are not adjusted here: the next page that arrives carries them. */
+  const list=loadedRows();
+  const at=list.findIndex(t=>t.id==id);
+  if(at>=0){ list.splice(at,1); return true; }
+  for(const t of list){ if((t.subtasks||[]).some(s=>s.id==id)){ t.subtasks=t.subtasks.filter(s=>s.id!=id); return true; } }
   return false;
 }
 /* Drop a deleted item's rows straight out of the table instead of re-rendering
@@ -19213,17 +20226,78 @@ async function _csSave(){
   // about a list nobody can see any more.
   if(!await saveColumns(cols))return;
   closeModals();
-  if(ren.size)await _csMigrate(colId,ren);
-  toast('הסטטוסים של העמודה עודכנו ✓');renderView();
+  /* The column now offers the new words; the cells that already wear the old
+     ones are a second act, and it belongs to the server — see _csMigrate. A
+     refusal there has already said why, in the server's own Hebrew, so the
+     cheerful line is not added on top of it. */
+  const moved=ren.size?await _csMigrate(colId,ren):0;
+  if(moved!==null)toast(moved>0?`הסטטוסים של העמודה עודכנו ✓ · ${moved} פריטים עודכנו`
+                               :'הסטטוסים של העמודה עודכנו ✓');
+  renderView();
 }
-/* a renamed status follows through to every cell that already carries it */
+/* Carry a renamed status into every cell on the board that still wears the old
+   word — one call, done server-side.
+
+   This used to be a loop of one PATCH per cell over the rows this browser
+   happens to hold, which is a fiftieth of the job on a board the server is
+   paging: fifty rows renamed on screen and twenty-one thousand left carrying
+   the old label, a migration that looks like it ran. It refused past the
+   threshold rather than do that, and the person was told the cells had not
+   followed. POST .../status-rename replaced both halves — it rewrites the
+   whole board, archived rows and recycle bin included, so there is nothing
+   left for the size of the board to change and the refusal is gone.
+
+   It must run AFTER saveColumns: each rename names its option by the NEW
+   label, which the server resolves against the live column. No colour travels
+   either — the server reads it off the column's own option, deliberately, so
+   that a colour in the body can never disagree with the column.
+
+   Returns how many cells were actually rewritten (0 is a legitimate answer —
+   nothing carried the old word, and a second identical call says 0 too), or
+   null when the server refused, having already toasted its reason. */
 async function _csMigrate(colId,ren){
+  const renames=[];
+  ren.forEach((o,from)=>renames.push({from,to:o.label}));
+  try{
+    const r=await api('/api/boards/'+st.board.id+'/columns/'+encodeURIComponent(colId)+'/status-rename',
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:withMe({renames})});
+    _csAdoptRenames(colId,ren);
+    return r.items||0;
+  }catch(e){
+    // The 400s here are written for the person — a label the column does not
+    // offer, an old word that is now some other status's name — so the
+    // server's own sentence is what gets shown.
+    toast((e&&e.detail)||'שמות הסטטוסים עודכנו, אך הערכים בפריטים לא שונו');
+    return null;
+  }
+}
+/* The rows this browser is holding, brought into line with what the server has
+   just written to the whole board.
+
+   The old per-cell loop got this for free — it wrote each cell locally on its
+   way to the PATCH. One call over the board does not come back with the rows,
+   and without this the grid went on printing the OLD word on every row already
+   on screen until something re-fetched the board. Re-fetching is not an option
+   on a board of twenty-one thousand items, and it is not needed: the rewrite
+   is a pure relabelling and its result is known here exactly.
+
+   Matched by option id first and by the old label only then — the same order
+   the server uses, because the id is the option's stable name and the label is
+   the thing being changed. The whole option is written back, which is the
+   shape the server stores. */
+function _csAdoptRenames(colId,ren){
+  const byId=new Map(), byLabel=new Map();
+  ren.forEach((o,from)=>{ byLabel.set(from,o); if(o.id)byId.set(String(o.id),o); });
   const rows=[];
-  (st.board.tasks||[]).forEach(t=>{rows.push(t);(t.subtasks||[]).forEach(s=>rows.push(s));});
+  loadedRows().forEach(t=>{rows.push(t);(t.subtasks||[]).forEach(s=>rows.push(s));});
   for(const t of rows){
-    const v=(t.custom_fields||{})[colId];
-    const o=v&&v.label?ren.get(v.label):null;
-    if(o)await setCell(t.id,colId,{label:o.label,color:o.color});
+    const cf=t.custom_fields; if(!cf)continue;
+    const v=cf[colId]; if(v==null||v==='')continue;
+    const o=(v&&typeof v==='object')
+      ? (byId.get(String(v.id||''))||byLabel.get(String(v.label||'')))
+      : byLabel.get(String(v));
+    if(o)cf[colId]={id:o.id,label:o.label,color:o.color};
   }
 }
 /* ===== board-admin editor for the built-in status vocabulary ===== */
@@ -21180,7 +22254,7 @@ async function duplicateColumn(e,colId){
   e.stopPropagation(); closeCellPops();
   const c=customColumns().find(x=>x.id===colId); if(!c)return;
   const cols=customColumns().slice();
-  cols.push({type:c.type,title:(c.title||'')+' (עותק)',options:c.options,formula:c.formula,copy_mode:c.copy_mode,number:c.number});
+  cols.push({type:c.type,title:(c.title||'')+' (עותק)',options:c.options,inactive_options:c.inactive_options,formula:c.formula,copy_mode:c.copy_mode,number:c.number});
   await saveColumns(cols); toast('העמודה שוכפלה');
 }
 /* Turn an imported text column that carries a formula into a live formula
@@ -21353,6 +22427,14 @@ async function saveColumns(cols, confirm){
       toast(statusUseMsg(e.detail));
       return false;
     }
+    /* The same refusal for a list column: an option this change deletes is
+       still marked on live items. Deleting it would leave those cells holding
+       a word the column no longer offers, so the server says no and names the
+       items; the way out it suggests is "inactive", not a confirmation. */
+    if(e&&e.status===409&&e.detail&&Array.isArray(e.detail.options)){
+      toast(e.detail.message||'האפשרות נמצאת בשימוש בפריטים ולא ניתן למחוק אותה');
+      return false;
+    }
     /* The server refused because a form asks about a column this change
        removes or retypes, and nobody has said so out loud. The refusal
        carries the impact, so the question can be asked here — once, in one
@@ -21405,7 +22487,8 @@ function toggleSubs(e,id){
   wrap.style.display=open?'table-row':'none';
 }
 function findSub(id){
-  for(const t of (st.board.tasks||[])) for(const s of (t.subtasks||[])) if(s.id===id) return {sub:s,parent:t};
+  // see findTask — on a paged board the rows live in Paged, not on the board
+  for(const t of loadedRows()) for(const s of (t.subtasks||[])) if(s.id===id) return {sub:s,parent:t};
   return null;
 }
 async function cycleStatus(e,id){
@@ -21613,7 +22696,10 @@ async function bulkDuplicate(){
     const body={board_id:st.board.id,group_id:t.group_id,title:(t.title||'')+' (עותק)',
                 status:t.status,priority:t.priority,
                 custom_fields:{...(t.custom_fields||{})}};
-    try{ const nt=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)}); (st.board.tasks=st.board.tasks||[]).push(nt); ok++; }catch(e){}
+    // the copy is put straight into the list that is on screen, which past the
+    // threshold is Paged's and not the board's — appended there, it was pushed
+    // into an array nothing draws from and the copies never appeared
+    try{ const nt=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)}); loadedRows().push(nt); ok++; }catch(e){}
   }
   clearSelection(); renderView(); toast(`${ok} פריטים שוכפלו`);
 }
@@ -21709,11 +22795,21 @@ function moveItemToBoard(e,id,boardId){
    turned off. */
 async function moveItemToGroup(e,id,gid){
   e.stopPropagation(); closeCellPops();
-  const pos=(st.board.tasks||[]).filter(x=>x.group_id===gid && !x.parent_id).length; // append at end
-  const body={group_id:gid,position:pos};
+  /* No position at all, and the server appends — see _place_item, where a
+     missing position means "after the last sibling". It used to be counted
+     here, off the rows the browser holds, and past the client threshold it
+     holds a page: on a large board the count came out 0 and an item "moved to
+     the end of the group" arrived at the top of it. The one side that can
+     count the group is the one that stores it. */
+  const body={group_id:gid};
   try{
     await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,actor_id:meId()})});
     const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
+    /* …and a board that arrives without its rows has to pull them again, or
+       the moved item stays drawn under the group it left: the refetch above
+       replaced an empty list with an empty list and Paged still holds the
+       rows as they were before the move. */
+    if(filterMode()==='server'){ Paged.load(true); toast('הפריט הועבר לקבוצה'); return; }
     toast('הפריט הועבר לקבוצה'); renderView();
   }catch(err){ toast('שגיאה בהעברת הפריט'); }
 }
@@ -21735,12 +22831,22 @@ async function deleteItem(e,id){
 
 function vKanban(el){
   const cols=boardStatusList();
-  const tasks=applyFilters(st.board.tasks||[]);
+  const tasks=applyFilters(loadedRows());
   const pending=searchPending();            // see vTable — a running search is not "no results"
   if(pending && !Paged.on){ el.innerHTML=searchingHTML(); return; }
-  if((st.board.tasks||[]).length && !tasks.length){
+  // the board's own count, for the same reason vTable asks it: past the
+  // threshold the board hands over no rows and an empty array here would turn
+  // "nothing has arrived yet" into "nothing matches"
+  if(!boardRowCount()){ el.innerHTML=emptyBoardHTML(); return; }
+  if(!tasks.length && !loadedRows().length){
+    el.innerHTML=Paged.failed?pagedFailedHTML():loadingRowsHTML(); return; }
+  if(loadedRows().length && !tasks.length){
     el.innerHTML=pending?searchingHTML():noMatchHTML(); return;}
-  el.innerHTML='<div class="kanban">'+cols.map(sv=>{const s=sv.key;
+  /* A kanban lays out every card it holds, so on a paged board it is drawing a
+     slice and has to say so — see partialRowsNoticeHTML. The counts in the
+     column heads below are counts of what is drawn, and the strip above them
+     is what keeps them from being read as the board's. */
+  el.innerHTML=partialRowsNoticeHTML()+'<div class="kanban">'+cols.map(sv=>{const s=sv.key;
     const ts=tasks.filter(t=>t.status===s);
     return `<div class="kcol"><div class="kcol-head" style="--kc:${sv.c}">${esc(sv.he)}<span class="cnt">${ts.length}</span></div>
       <div class="kcol-body" data-status="${s}">${ts.map(kcard).join('')}</div></div>`;
@@ -23912,7 +25018,10 @@ function vCalendar(el){
   if(!st.cal)st.cal={y:today.getFullYear(),m:today.getMonth()};
   const {y,m}=st.cal;
   const first=new Date(y,m,1).getDay(),days=new Date(y,m+1,0).getDate();
-  const tasks=(st.board.tasks||[]).filter(t=>t.due_date);
+  // the rows this browser holds — a page of them on a board the server pages,
+  // which is why the month is captioned below rather than drawn as if it were
+  // the whole of it
+  const tasks=loadedRows().filter(t=>t.due_date);
   const dow=['א','ב','ג','ד','ה','ו','ש'];
   const isToday=d=>d===today.getDate()&&m===today.getMonth()&&y===today.getFullYear();
   let cells='',shown=0;
@@ -23926,7 +25035,7 @@ function vCalendar(el){
   }
   const label=new Date(y,m,1).toLocaleDateString('he-IL',{month:'long',year:'numeric'});
   const isCur=m===today.getMonth()&&y===today.getFullYear();
-  el.innerHTML=`<div class="cal">
+  el.innerHTML=partialRowsNoticeHTML()+`<div class="cal">
     <div class="cal-head">
       <div class="cal-nav">
         <button class="cal-navbtn" onclick="calMove(-1)" title="חודש קודם"><i class="fa-solid fa-chevron-right"></i></button>
@@ -23986,14 +25095,17 @@ const MAP_STYLES = {
 
 async function vMap(el){
   const curStyle = st.mapStyle || 'liberty';
-  el.innerHTML=`<div id="map"></div><div style="position:absolute;top:22px;right:22px;z-index:10;display:flex;gap:6px;flex-wrap:wrap" id="map-style-bar">
+  // the markers below are the rows this browser holds, so on a paged board the
+  // map is a map of a slice — see partialRowsNoticeHTML. Floated over the map
+  // rather than stacked above it, because #map is positioned and fills the view
+  el.innerHTML=partialRowsNoticeHTML('pn-float')+`<div id="map"></div><div style="position:absolute;top:22px;right:22px;z-index:10;display:flex;gap:6px;flex-wrap:wrap" id="map-style-bar">
     ${Object.entries(MAP_STYLES).map(([k,v]) => `<button class="tb-btn map-style-btn${k===curStyle?' active':''}" data-style="${k}" style="background:${k===curStyle?'var(--primary-soft)':'var(--surface)'};border:1px solid var(--border-strong);border-radius:6px;padding:5px 10px;font-size:12px;font-weight:600;color:${k===curStyle?'var(--primary-hover)':'var(--text)'}" onclick="switchMapStyle('${k}')">${v.name}</button>`).join('')}
   </div>`;
   await needMap();
   const map=new maplibregl.Map({container:'map',style:MAP_STYLES[curStyle].url,center:[34.89,32.15],zoom:12,attributionControl:true});
   map.addControl(new maplibregl.NavigationControl());
   const add=(t,lng,lat,c)=>{const e=document.createElement('div');e.style.cssText=`width:16px;height:16px;border-radius:50%;background:${c};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)`;new maplibregl.Marker({element:e}).setLngLat([lng,lat]).setPopup(new maplibregl.Popup().setText(t)).addTo(map);};
-  (st.board.tasks||[]).forEach(t=>{if(t.location_lat&&t.location_lng)add(t.title,t.location_lng,t.location_lat,STATUS[t.status]?STATUS[t.status].c:'#0073ea');});
+  loadedRows().forEach(t=>{if(t.location_lat&&t.location_lng)add(t.title,t.location_lng,t.location_lat,STATUS[t.status]?STATUS[t.status].c:'#0073ea');});
   try{const s=await api('/api/transport/stops');s.features.forEach(f=>add(f.properties.name,f.geometry.coordinates[0],f.geometry.coordinates[1],'#00c875'));}catch(e){}
   try{const a=await api('/api/infrastructure/assets');a.features.forEach(f=>add(f.properties.name,f.geometry.coordinates[0],f.geometry.coordinates[1],'#fdab3d'));}catch(e){}
   window._map=map;
@@ -24160,15 +25272,24 @@ async function openNewItem(group,atTop){
     const t=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
       body:withMe(body)});
     if(t&&t.id){
-      // insert the new row in place — no full-board refetch/refresh
-      (st.board.tasks=st.board.tasks||[]).push(t);
+      /* Insert the new row in place — no full-board refetch/refresh. Into the
+         list that is on screen, which past the client threshold is the page
+         Paged holds and not st.board.tasks: the board arrives with no rows of
+         its own, so a push into its array was a new item nothing would draw.
+         Spelled out here rather than taken from loadedRows() because this
+         function is exercised in isolation by
+         tests/frontend/new_item_visible.mjs, which hands it the handful of
+         globals it uses — Paged among them. */
+      const rows=(typeof Paged!=='undefined'&&Paged.on)?Paged.rows
+                                                       :(st.board.tasks=st.board.tasks||[]);
+      rows.push(t);
       /* …and the group it went to the top of moved down a row, every item of
          it, which is what the server just did to them (see _place_item). The
          board is ordered by position, so leaving the siblings on the numbers
          they had would leave the new item tied with the one that was first and
          the tie broken by id — the new row second, under the button that
          promised the top, until the next full refetch said otherwise. */
-      if(atTop)(st.board.tasks||[]).forEach(x=>{
+      if(atTop)rows.forEach(x=>{
         if(x!==t && x.group_id===gid && !x.parent_id && typeof x.position==='number')x.position++;
       });
       /* A new item has nobody assigned, no priority, no link, no status anyone
@@ -24389,15 +25510,28 @@ async function deleteGroup(gid){
   const g=(st.board.groups||[]).find(x=>x.id===gid);
   const n=(st.board.tasks||[]).filter(t=>t.group_id===gid).length;
   const dep=await dependentsHTML('group',gid);
+  /* What the note may claim, and what it must not.
+
+     The count is taken off the rows this browser holds, and past the client
+     threshold that is a page: nothing it says about a group is the group's own
+     number, and there is no per-group count in what the board sends. "הקבוצה
+     ריקה" is then the dangerous sentence — it is the reassurance somebody
+     reads before pressing מחק, and it would be printed over a group holding
+     three thousand items whose rows have simply not arrived. So on a partly
+     loaded board the number goes and what is left is the part that is true of
+     every group whatever its size: the items move, they are not deleted. */
+  const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
+  const line=part ? 'הפריטים שבקבוצה יעברו ל״ללא קבוצה״ — הם לא נמחקים. הלוח גדול ונטען בהדרגה, '
+                    +'ולכן לא ניתן להציג כאן את מספרם המדויק.'
+                  : (n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`:'הקבוצה ריקה.');
   askConfirm('למחוק את הקבוצה'+(g?` "${g.name}"`:'')+'?',async()=>{
     try{
       await api('/api/groups/'+gid+'?actor_id='+meId(),{method:'DELETE'});
       toast('הקבוצה נמחקה');await openBoard(st.board.id);
     }catch(e){ toast((e&&e.detail)||'שגיאה במחיקה'); }
   },{title:'מחיקת קבוצה',confirmText:'מחק',
-     note:dep?null:(n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`:'הקבוצה ריקה.'),
-     noteHTML:dep?`<div class="ci-row">${n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`
-                                          :'הקבוצה ריקה.'}</div>`+dep:null});
+     note:dep?null:line,
+     noteHTML:dep?`<div class="ci-row">${esc(line)}</div>`+dep:null});
 }
 
 /* FormPaper lives in frontend/form-paper.js — loaded above, and loaded by
@@ -25480,7 +26614,10 @@ const FormEditor={
       .map(s=>({value:s.key,label:s.he||s.label||s.key}));
     const col=(customColumns()||[]).find(c=>c.id===key);
     if(!col) return [];
-    if(col.type==='dropdown') return (col.options||[]).map(o=>({value:o,label:o}));
+    // an option the admin moved to "inactive" is no longer offered for new
+    // answers — it stays only on the items that already carry it
+    if(col.type==='dropdown'){ const off=new Set(col.inactive_options||[]);
+      return (col.options||[]).filter(o=>!off.has(o)).map(o=>({value:o,label:o})); }
     if(col.type==='status') return (typeof statusColOpts==='function'?statusColOpts(col):[])
       .map(o=>({value:o.id||o.label,label:o.label}));
     return [];
@@ -26125,7 +27262,10 @@ const Chat = {
     const id=this.taskId;
     if(id==null||!st.board){ this.markOpenRow(); return; }
     let target=null, parent=null;
-    for(const t of (st.board.tasks||[])){
+    // the rows on screen — on a paged board they are Paged's, not the board's.
+    // Through a typeof: this method is run on its own by a harness
+    const held=(typeof loadedRows==='function')?loadedRows():(st.board.tasks||[]);
+    for(const t of held){
       if(t.id==id){ target=t; break; }
       const sub=(t.subtasks||[]).find(x=>x.id==id);
       if(sub){ target=sub; parent=t; break; }
@@ -26349,13 +27489,14 @@ const Chat = {
     }).filter(Boolean);
     if(checkLines.length) content=checkLines.join('\n')+(content?'\n'+content:'');
     if(!content&&!this.atts.length){ toast('ההודעה ריקה'); return; }
+    if(this.refuseTaggedTwice(content))return;
     this._posting=true;
     try{
       await api('/api/comments/'+cid,{method:'PATCH',headers:{'Content-Type':'application/json'},
         body:withMe({content,mentions:this.mentions,attachments:this.atts})});
       this.editing=null; this.atts=[]; this.mentions=[];
       this.renderChat(document.getElementById('chat-body'));
-    }catch(e){ toast('אין הרשאה לערוך הודעה זו'); }
+    }catch(e){ toast(e.status===400&&e.detail?e.detail:'אין הרשאה לערוך הודעה זו'); }
     finally{ this._posting=false; }
   },
   renderContent(text,cid){
@@ -26948,6 +28089,31 @@ const Chat = {
      composer can be in except the last few pixels of the screen, and
      openCellPop puts the list on <body> so nothing can clip it either way. */
   _float(anchor,html){ return openCellPop(anchor,html,'chat-float'); },
+  /* One tag per person per message. The tag menu stops offering a name once
+     it is in the box, but a name typed out in full or pasted in never goes
+     through the menu, so the message is checked as a whole before it leaves.
+     The server refuses it either way. This only says why, before a round trip.
+
+     Each "@" counts once, for the LONGEST name that follows it: the server's
+     rule (_tagged_twice). With "שלי" and "שלי פיינברג" both on the system, a
+     message tagging each of them once must not read as "@שלי" twice. */
+  taggedTwice(content){
+    if(!content||content.indexOf('@')<0)return [];
+    const names=[...new Set((st.users||[]).concat(this.mentionPeople())
+      .map(u=>(u.name||'').trim()).filter(Boolean))].sort((a,b)=>b.length-a.length);
+    const counts={}, twice=[];
+    for(let i=content.indexOf('@');i>=0;i=content.indexOf('@',i+1)){
+      const hit=names.find(n=>content.startsWith(n,i+1));
+      if(hit && (counts[hit]=(counts[hit]||0)+1)===2) twice.push(hit);
+    }
+    return twice;
+  },
+  refuseTaggedTwice(content){
+    const twice=this.taggedTwice(content);
+    if(!twice.length)return false;
+    toast('אפשר לתייג כל אדם פעם אחת בהודעה — '+twice.join(', ')+' מתויג/ת יותר מפעם אחת');
+    return true;
+  },
   async post(){
     if(this._posting)return;                 // guard: ignore rapid repeat clicks / Enter while sending
     const ta=document.getElementById('comp-text'); let content=(ta?ta.value:'').trim();
@@ -26958,13 +28124,14 @@ const Chat = {
     }).filter(Boolean);
     if(checkLines.length) content=checkLines.join('\n')+(content?'\n'+content:'');
     if(!content&&!this.atts.length){toast('הודעה ריקה');return;}
+    if(this.refuseTaggedTwice(content))return;
     this._posting=true;
     const btn=document.querySelector('.composer .comp-foot .btn-primary'); if(btn)btn.disabled=true;
     try{
       await api('/api/tasks/'+this.taskId+'/comments',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({content,parent_id:this.replyTo,mentions:this.mentions,attachments:this.atts})});
       this.clearDraft();
       this.atts=[]; this.mentions=[]; this.replyTo=null; this.renderChat(document.getElementById('chat-body'));
-    }catch(e){ toast(String(e.message||'').includes('403')?'אין הרשאת תגובה':'שגיאה בשליחה'); if(btn)btn.disabled=false; }
+    }catch(e){ toast(e.status===400&&e.detail?e.detail:String(e.message||'').includes('403')?'אין הרשאת תגובה':'שגיאה בשליחה'); if(btn)btn.disabled=false; }
     finally{ this._posting=false; }
   },
   async like(id){ try{ await api('/api/comments/'+id+'/like',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); this.renderChat(document.getElementById('chat-body')); }catch(e){toast('שגיאה');} },
@@ -27130,7 +28297,13 @@ const AI = {
     }catch(e){b.innerHTML='<div class="empty">סוכנים לא זמינים</div>';}
   },
   async runAgent(id){this.tab('chat');this.add('user','הפעלת סוכן: '+id);this.add('bot','חושב...');const r=await this.callSwarm(id,'נתח את הלוח הנוכחי ותן המלצות');this.history.pop();this.add('bot',r);},
-  ctx(){if(!st.board)return '';const t=st.board.tasks||[];const g=(st.board.groups||[]).map(x=>`${x.id}:${x.name}`).join(', ');return `מזהה הלוח הפעיל: ${st.board.id}. שם: ${st.board.name}. קבוצות (id:שם): [${g}]. ${t.length} משימות. סטטוסים: ${t.map(x=>STATUS[x.status]?STATUS[x.status].he:x.status).join(', ').slice(0,300)}`;},
+  /* What the assistant is told about the open board. The item count is the
+     BOARD's (boardRowCount), not the length of the list this browser holds —
+     past the client threshold the board arrives with no rows and the model
+     would have been told a board of 21,187 items had none. The statuses are
+     read off the rows that did arrive and are described as such, because
+     that is all there is to read. */
+  ctx(){if(!st.board)return '';const t=loadedRows();const g=(st.board.groups||[]).map(x=>`${x.id}:${x.name}`).join(', ');const n=boardRowCount();return `מזהה הלוח הפעיל: ${st.board.id}. שם: ${st.board.name}. קבוצות (id:שם): [${g}]. ${n} משימות${t.length<n?` (${t.length} נטענו עד כה)`:''}. סטטוסים${t.length<n?' של הפריטים שנטענו':''}: ${t.map(x=>STATUS[x.status]?STATUS[x.status].he:x.status).join(', ').slice(0,300)}`;},
   add(role,text){this.history.push({role,text});if(this.tabName!=='chat')this.tab('chat');else this.render();},
   async send(){const i=document.getElementById('ai-input');const q=i.value.trim();if(!q)return;i.value='';this.add('user',q);this.add('bot','חושב...');const r=await this.callAI(q);this.history.pop();this.add('bot',r);},
   async quick(kind){
@@ -27318,8 +28491,12 @@ const Term = {
   cmd_clear(){document.getElementById('term-out').innerHTML='';},
   cmd_gui(){this.close();},
   async cmd_boards(){(await api('/api/boards')).forEach(b=>this.print(`  [${b.id}] ${b.icon||''} ${b.name}  (${b.task_count})`));},
-  async cmd_open(a){if(!a)return this.print('שימוש: open <id>','warn');await openBoard(+a);this.print(`✓ ${st.board.name} — ${(st.board.tasks||[]).length} משימות`,'ok');},
-  cmd_tasks(a){if(!st.board)return this.print('פתח לוח: open <id>','warn');let t=st.board.tasks||[];if(a)t=t.filter(x=>x.status===a);if(!t.length)return this.print('אין משימות','mut');t.forEach(x=>{const lbl=(x.custom_fields&&x.custom_fields.status_label)||(STATUS[x.status]&&STATUS[x.status].he)||x.status;this.print(`  #${x.id}  [${lbl}]  ${x.title}`);});},
+  // the board's own count — past the client threshold the payload carries no
+  // rows at all, and "0 משימות" is not what opening a board of 21,187 did
+  async cmd_open(a){if(!a)return this.print('שימוש: open <id>','warn');await openBoard(+a);this.print(`✓ ${st.board.name} — ${boardRowCount()} משימות`,'ok');},
+  // …and this lists what the browser is holding, which on a large board is a
+  // page of it. Said at the end rather than printed as if it were the board.
+  cmd_tasks(a){if(!st.board)return this.print('פתח לוח: open <id>','warn');let t=loadedRows();if(a)t=t.filter(x=>x.status===a);if(!t.length)return this.print('אין משימות','mut');t.forEach(x=>{const lbl=(x.custom_fields&&x.custom_fields.status_label)||(STATUS[x.status]&&STATUS[x.status].he)||x.status;this.print(`  #${x.id}  [${lbl}]  ${x.title}`);});if(boardRowsPartial())this.print(`  — ${t.length} מתוך ${boardRowCount()} (הלוח נטען מהשרת במנות)`,'mut');},
   async cmd_add(a){if(!st.board)return this.print('פתח לוח קודם','warn');const title=a.replace(/^["']|["']$/g,'');if(!title)return this.print('שימוש: add "כותרת"','warn');await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({board_id:st.board.id,title})});this.print('✓ נוצרה: '+title,'ok');await openBoard(st.board.id);},
   async cmd_move(a,rest){const id=rest[0],status=rest[1];if(!id||!status)return this.print('שימוש: move <id> <status>','warn');await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status,actor_id:meId()})});this.print(`✓ #${id} → ${status}`,'ok');},
   async cmd_dashboard(){const d=await api('/api/dashboard');this.print(`  משימות:${d.total_tasks}  באיחור:${d.overdue_tasks}  פניות:${d.citizen_requests_open}  היתרים:${d.permits_pending}`);this.print('  '+JSON.stringify(d.tasks_by_status),'mut');},

@@ -19,9 +19,15 @@ the row sitting exactly on it comes back in both windows.
     python3 scripts/monday_history.py <boardId>            # write the files
     python3 scripts/monday_history.py <boardId> --count     # just measure
 
-The files land in ~/Downloads as response<last3>h1.json … hN.json, newest
+The files land in ~/Downloads as response<last3>h-1.json … h-N.json, newest
 first, which is the order merge_monday_export.py and the importer both want:
 if a ceiling does trim the history later, what survives is the recent half.
+
+The dash in the name is not cosmetic. These were h1, h2, … and the older
+single-page exporter writes h and h2 — so running the two over one board had
+the exporter's empty "page 2" land on top of this one's second window and take
+7.6MB of real history with it. The file was still there, still named what it
+should be, and nine thousand rows shorter.
 """
 import datetime as dt
 import json
@@ -58,9 +64,12 @@ LIGHT = """query ($b: [ID!], $t: ISO8601DateTime) {
 }"""
 
 # `users` rides along on every window because the importer reads the account's
-# user list out of the same response to put names to the log's user_ids.
+# user list out of the same response to put names to the log's user_ids. The
+# limit is load-bearing: asked bare, `users` answers with monday's default page
+# of 200 and says nothing about the rest, and the people it silently leaves out
+# come back from an import as "could not be matched".
 FULL = """query ($b: [ID!], $t: ISO8601DateTime) {
-  users { id name email }
+  users(limit: 1000) { id name email }
   boards(ids: $b) {
     id
     activity_logs(limit: 10000, page: 1, to: $t) { id event data user_id created_at }
@@ -135,7 +144,7 @@ def main():
         return
     tail = board[-3:]
     for i, answer in enumerate(pages, 1):
-        path = os.path.join(OUT, f"response{tail}h{i}.json")
+        path = os.path.join(OUT, f"response{tail}h-{i}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(answer, f, ensure_ascii=False, separators=(",", ":"))
         print(f"   ✓ {path}  {os.path.getsize(path) / 1048576:.1f}MB")

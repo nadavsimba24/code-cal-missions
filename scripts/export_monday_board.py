@@ -103,8 +103,40 @@ class Refused(Exception):
     """monday answered, and the answer was a refusal naming its reason."""
 
 
+# A long export is a long time to be lucky. Walking a 21,187-item board is 43
+# requests over about eleven minutes, and monday drops one of them often enough
+# that it is the normal case rather than the interesting one: the run that
+# prompted this died on page 18 with "HTTP 503 upstream connect error or
+# disconnect/reset before headers", which is a load balancer hanging up, not an
+# answer about the board. Eighteen pages of work went in the bin for it.
+#
+# So the ones that are weather get another go. 429 is monday's rate limit, 5xx
+# is its infrastructure, and a URLError is the network — none of them say
+# anything about the request, and asking again is the whole fix. A refusal that
+# IS about the request (a bad query, a board that is not there, a complexity
+# ceiling) is raised on the first try, because asking it again would only be
+# slower at being wrong.
+RETRY_ON = (429, 500, 502, 503, 504)
+RETRY_TRIES = 4
+RETRY_WAIT = 10          # seconds, doubled each time: 10, 20, 40
+
+
 def ask(query, variables, token, label):
     body = json.dumps({"query": query, "variables": variables}).encode()
+    for attempt in range(RETRY_TRIES):
+        try:
+            return _ask_once(body, token, label)
+        except Refused as err:
+            retryable = getattr(err, "retryable", False)
+            if not retryable or attempt == RETRY_TRIES - 1:
+                raise
+            wait = RETRY_WAIT * (2 ** attempt)
+            print(c(f"      ⚠ {label}: {err} — שוב בעוד {wait} שניות "
+                    f"(ניסיון {attempt + 2} מתוך {RETRY_TRIES})", YEL))
+            time.sleep(wait)
+
+
+def _ask_once(body, token, label):
     req = urllib.request.Request(API, data=body, headers={
         "Content-Type": "application/json",
         "Authorization": token,
@@ -123,9 +155,19 @@ def ask(query, variables, token, label):
             print(c("✗ מאנדיי דחה את הטוקן (401/403). צרי טוקן חדש ב-Developers → My access tokens.",
                     RED))
             sys.exit(2)
-        raise Refused(f"HTTP {e.code} {detail}")
+        refused = Refused(f"HTTP {e.code} {detail}")
+        refused.retryable = e.code in RETRY_ON
+        raise refused
     except urllib.error.URLError as e:
-        raise Refused(f"אין תשובה ממאנדיי: {e.reason}")
+        refused = Refused(f"אין תשובה ממאנדיי: {e.reason}")
+        refused.retryable = True
+        raise refused
+    except (json.JSONDecodeError, OSError) as e:
+        # a body that stopped mid-JSON is a dropped connection wearing a
+        # different coat; it says nothing about the request either
+        refused = Refused(f"תשובה קטועה ממאנדיי: {e}")
+        refused.retryable = True
+        raise refused
     # An error from monday arrives as HTTP 200 with an `errors` array. A
     # response read for `data` alone looks like an empty board.
     errs = [str(e.get("message", "")) for e in (doc.get("errors") or [])]

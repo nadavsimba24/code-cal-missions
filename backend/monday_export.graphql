@@ -57,7 +57,14 @@ query ($boardId: [ID!]) {
   # activity log carries only a user id — neither is a name, and this is the one
   # thing that turns either into one. Without it a people column can only be
   # matched by display name, and every log row reads "מערכת".
-  users {
+  #
+  # The limit is not decoration. Asked bare, `users` answers with monday's
+  # default page of 200 and says nothing about the rest — on this account that
+  # is 200 of 318, and the 118 it leaves out are ordinary named people with
+  # ordinary company addresses. They came back from an import as "could not be
+  # matched", which reads like they are not in the system rather than like the
+  # export never asked about them.
+  users(limit: 1000) {
     id
     name
     email
@@ -197,7 +204,8 @@ query ($boardId: [ID!]) {
 # the variable is still the point — the log that was asked for is this board's.
 # variables: { "boardId": [6204255781], "page": 1 }
 query ($boardId: [ID!], $page: Int!) {
-  users {
+  # limit: see the first query — bare, this answers with 200 of 318
+  users(limit: 1000) {
     id
     name
     email

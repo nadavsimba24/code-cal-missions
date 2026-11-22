@@ -83,7 +83,17 @@ def test_the_query_asks_for_everything_a_board_is():
     assert "items_count" in page1
     # the history: the log itself, and the one thing that turns a monday user id
     # into a person — without it every imported row would read "מערכת"
-    assert "activity_logs(" in history and "users {" in history
+    #
+    # Asked WITH a limit, in both queries that ask at all. `users` asked bare
+    # answers with monday's default page of 200 and says nothing about the
+    # rest; this account has 318, and the 118 it left out came back from an
+    # import as "could not be matched" — which reads like those people are not
+    # in the system rather than like the export never asked about them.
+    assert "activity_logs(" in history
+    for q in (page1, history):
+        asks = re.findall(r"users\(limit:\s*(\d+)\)", q)
+        assert asks, "users asked for bare — 200 of them, and no sign of the rest"
+        assert all(int(n) > 200 for n in asks), asks
     assert "items_page(" not in history, "it is split off precisely to stay cheap"
     assert "activity_logs(" not in page1, \
         "asking for the log beside 500 items exceeds monday's complexity ceiling"

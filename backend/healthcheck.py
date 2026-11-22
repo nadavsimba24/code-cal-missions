@@ -37,9 +37,24 @@ print("    " + (recent.replace(APP+"/","").replace("\n","\n    ") if recent else
 
 # 4) my-changes survived? (detect OpenClaw clobber)
 print("\n[4] השינויים שלי שרדו בדיסק:")
+def _inside_app(path):
+    # Every path checked below is hardcoded, but has() takes a parameter and the
+    # SAST scan (CWE-22) rightly flags an open() on a joined path: an absolute
+    # path or "../" would escape APP. Resolve symlinks and dot-segments first,
+    # then refuse anything that does not land under APP.
+    root = os.path.realpath(APP)
+    full = os.path.realpath(os.path.join(root, path))
+    return full if os.path.commonpath([root, full]) == root else None
+
 def has(path, needle):
-    try: return needle in open(os.path.join(APP,path),encoding='utf-8').read()
-    except: return False
+    full = _inside_app(path)
+    if full is None or not os.path.isfile(full):
+        return False
+    try:
+        with open(full, encoding='utf-8') as fh:
+            return needle in fh.read()
+    except (OSError, UnicodeDecodeError):
+        return False
 checks = [
     ("backend/main.py","CODE-CAL MISSIONS"), ("backend/main.py","/api/ai/models"),
     ("backend/main.py","/api/ai/train"), ("backend/main.py","deepseek"),
