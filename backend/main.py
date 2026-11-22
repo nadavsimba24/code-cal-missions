@@ -59,7 +59,19 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="CODE-CAL MISSIONS", version="0.1.0")
+# The generated API documentation (/docs, /redoc, /openapi.json) is off unless
+# CITYOS_API_DOCS asks for it. FastAPI serves all three by default and without
+# a sign-in, which on QA handed anyone a ~190KB map of every route — the admin
+# and automation endpoints, the dev-mode identity mechanism, the name of the
+# LLM key variable — found by the penetration test of 2026-11. Nothing in the
+# app, the tests or the scripts reads it; a developer who wants it locally sets
+# CITYOS_API_DOCS=1 in their own .env, which the Azure image does not carry
+# (.dockerignore excludes it, and the Dockerfile copies backend/ and frontend/).
+_API_DOCS = (os.environ.get("CITYOS_API_DOCS") or "").strip().lower() in ("1", "true", "yes")
+app = FastAPI(title="CODE-CAL MISSIONS", version="0.1.0",
+              docs_url="/docs" if _API_DOCS else None,
+              redoc_url="/redoc" if _API_DOCS else None,
+              openapi_url="/openapi.json" if _API_DOCS else None)
 # The SPA is served from the same origin as the API, so it needs no CORS grant at
 # all. Extra origins (a staging frontend, a local vite server) go in
 # CITYOS_CORS_ORIGINS as a comma-separated list. This was allow_origins=["*"].
@@ -130,6 +142,140 @@ async def require_authentication(request, call_next):
         except HTTPException as exc:
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     return await call_next(request)
+
+
+# ── rate limiting on the doors a stranger can knock on ──────────────────────
+# The penetration test of 2026-11 sent runs of bad requests at the sign-in
+# endpoints and guessed public-form tokens, and nothing ever slowed it down: no
+# 429, no Retry-After. Nothing was broken into, but nothing would have noticed
+# either. This middleware is the application's half of the fix — the other half
+# is a WAF / Front Door rule in Azure, which sees every instance at once.
+#
+# Three budgets, all per client address and all sliding windows:
+#   "auth"   — /auth/login and /auth/callback, the two doors of signing in. A
+#              person signs in a few times a day; a whole office behind one
+#              address signing in at nine is the case the default is sized
+#              for. Not /api/auth/*: /api/auth/me is asked on every page load
+#              of every signed-in user, and refusing that is refusing work.
+#              Unauthenticated noise sent there is the "unauth" budget's.
+#   "form"   — /api/public/forms/*, whatever it answers. Generous, because a
+#              whole office can fill a form in from behind one address.
+#   "miss"   — a public-form lookup that found nothing (404). This is what
+#              token-guessing looks like, so it is the tight one, and once it
+#              is spent the address gets no form answers at all until it
+#              refills.
+#   "unauth" — /api/ requests refused as unauthenticated (401) that carried
+#              no credentials at all. Counted after the fact and only ever
+#              turned into a 429 when the answer was going to be a 401 anyway,
+#              so a signed-in user is never refused by it. And not for a
+#              request that came WITH a session that has expired: the SPA
+#              sends a 401 to the sign-in page and does nothing of the kind
+#              with a 429, so an office whose tabs all expired overnight would
+#              otherwise sit in front of a broken app for a minute.
+#
+# The counters live in this process. On a multi-instance deployment each
+# instance holds its own, which makes the limit per instance — still a limit,
+# and the WAF is where the global one belongs; a shared store (Redis) is the
+# step after that, not a prerequisite for this one.
+_RL_LIMITS = {
+    "auth":   (int(os.getenv("RL_AUTH_MAX", "120")), int(os.getenv("RL_AUTH_WINDOW_SEC", "60"))),
+    "form":   (int(os.getenv("RL_FORM_MAX", "120")), int(os.getenv("RL_FORM_WINDOW_SEC", "60"))),
+    "miss":   (int(os.getenv("RL_FORM_MISS_MAX", "30")), int(os.getenv("RL_FORM_MISS_WINDOW_SEC", "600"))),
+    "unauth": (int(os.getenv("RL_UNAUTH_MAX", "120")), int(os.getenv("RL_UNAUTH_WINDOW_SEC", "60"))),
+}
+_rl_hits = {}
+# How many proxies stand between the internet and this process and APPEND to
+# X-Forwarded-For. One on App Service (its front end). A Front Door or an
+# Application Gateway in front of the custom domain adds one more — and then
+# the last entry is the gateway's own address, every caller on the internet
+# shares one bucket, and one guessing script locks every public form. Set this
+# to match the deployment, not left to be found out.
+RL_TRUSTED_HOPS = max(1, int(os.getenv("RL_TRUSTED_HOPS", "1")))
+
+
+def _rl_client(request):
+    """The address a limit is counted against.
+
+    Not _client_ip: that one takes the FIRST X-Forwarded-For entry, which is
+    whatever the client wrote there — a limiter keyed on it is a limiter the
+    caller picks a new key for on every request. Azure's front end APPENDS the
+    address it saw, so the last entry is the one nobody outside chose. An IPv4
+    there carries its port ("1.2.3.4:56789"), which would make every
+    connection a new caller, so it is dropped."""
+    fwd = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",") if p.strip()]
+    if fwd:
+        ip = fwd[-RL_TRUSTED_HOPS] if len(fwd) >= RL_TRUSTED_HOPS else fwd[0]
+    else:
+        ip = getattr(getattr(request, "client", None), "host", "") or ""
+    if ip.startswith("["):                      # [IPv6]:port
+        ip = ip[1:].split("]", 1)[0]
+    elif ip.count(":") == 1:                    # IPv4:port — bare IPv6 has several colons
+        ip = ip.split(":", 1)[0]
+    return ip[:45]
+
+
+def _rl_retry_after(bucket, key):
+    """Seconds until this key has room again, or 0 if it has room now."""
+    limit, window = _RL_LIMITS[bucket]
+    if limit <= 0:
+        return 0
+    now = time.time()
+    hits = [t for t in _rl_hits.get((bucket, key), ()) if now - t < window]
+    _rl_hits[(bucket, key)] = hits
+    if len(hits) < limit:
+        return 0
+    return max(1, int(window - (now - hits[0])) + 1)
+
+
+def _rl_record(bucket, key):
+    if _RL_LIMITS[bucket][0] <= 0:
+        return
+    _rl_hits.setdefault((bucket, key), []).append(time.time())
+    # bounded by callers, not traffic: a key whose window is empty is dropped
+    if len(_rl_hits) > 20000:
+        now = time.time()
+        for k, v in list(_rl_hits.items()):
+            if not any(now - t < _RL_LIMITS[k[0]][1] for t in v):
+                _rl_hits.pop(k, None)
+
+
+def _rl_refuse(retry_after):
+    return JSONResponse({"detail": "יותר מדי בקשות — נסו שוב בעוד מעט"}, status_code=429,
+                        headers={"Retry-After": str(retry_after)})
+
+
+@app.middleware("http")
+async def rate_limit(request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if path in ("/auth/login", "/auth/callback"):
+        bucket = "auth"
+    elif path.startswith(PUBLIC_API_PREFIXES):
+        bucket = "form"
+    else:
+        bucket = None
+    key = _rl_client(request)
+    if bucket:
+        wait = _rl_retry_after(bucket, key)
+        if bucket == "form":
+            wait = max(wait, _rl_retry_after("miss", key))
+        if wait:
+            return _rl_refuse(wait)
+        _rl_record(bucket, key)
+    resp = await call_next(request)
+    if bucket == "form" and resp.status_code == 404:
+        _rl_record("miss", key)
+    if (resp.status_code == 401 and path.startswith("/api/")
+            and not request.cookies
+            and not request.headers.get("x-ms-client-principal")
+            and not request.headers.get("x-cityos-user")
+            and not request.headers.get("authorization")):
+        wait = _rl_retry_after("unauth", key)
+        _rl_record("unauth", key)
+        if wait:
+            return _rl_refuse(wait)
+    return resp
 
 
 # Third-party and generated blobs we ship but never hand-edit: the GeoLibre WASM
@@ -443,7 +589,8 @@ def _migrate():
         # An upload made for a form, before the form was sent — see the two
         # columns on UploadedFile for what they stop.
         ufcols = {r[1] for r in conn.execute(text("PRAGMA table_info(uploaded_files)"))}
-        for name, ddl in [("form_view_id", "INTEGER"), ("claimed_at", "DATETIME")]:
+        for name, ddl in [("form_view_id", "INTEGER"), ("claimed_at", "DATETIME"),
+                          ("uploaded_by", "INTEGER")]:
             if ufcols and name not in ufcols:
                 conn.execute(text(f"ALTER TABLE uploaded_files ADD COLUMN {name} {ddl}"))
         # Which form an item arrived through. NULL on every item made the
@@ -621,6 +768,8 @@ else:
         "ALTER TABLE form_views ALTER COLUMN public_token DROP NOT NULL",
         "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS form_view_id INTEGER",
         "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP",
+        # who uploaded it — the one reader of a file nothing points at yet
+        "ALTER TABLE uploaded_files ADD COLUMN IF NOT EXISTS uploaded_by INTEGER",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_form_component_field "
         "ON form_components (form_id, field_key) WHERE field_key IS NOT NULL",
         # see the SQLite side for why this is an index and not only a check
@@ -4516,6 +4665,10 @@ def update_form_view(form_id: int, data: dict, user_id: int = Depends(current_us
         f, v, b, role = _form_or_404(db, form_id, user_id)
         if v.locked and not _may_write_locked(role):
             raise HTTPException(403, "הטופס נעול — רק בעל הלוח יכול לשנות אותו")
+        # the logo and the cover are shown to every stranger who opens the
+        # form, so they may only be files the editor could already read
+        _refuse_foreign_files(db, user_id, tokens=[str(data[k]).strip() for k in
+                                                   ("logo_token", "cover_token") if data.get(k)])
 
         # ── שם תצוגה — the view's, under the view's rule ──
         if data.get("name") is not None:
@@ -5251,7 +5404,9 @@ def _form_rate_ok(token, request):
         return True
     import hashlib
     key = hashlib.sha256(
-        f"{token}|{_client_ip(request)}".encode("utf-8")).hexdigest()[:32]
+        # _rl_client, not _client_ip: the first X-Forwarded-For entry is the
+        # caller's to write, and a limit keyed on it is a limit they reset at will
+        f"{token}|{_rl_client(request)}".encode("utf-8")).hexdigest()[:32]
     now = time.time()
     hits = [t for t in _form_hits.get(key, []) if now - t < FORM_SUBMIT_WINDOW]
     if len(hits) >= FORM_SUBMIT_MAX:
@@ -6004,11 +6159,11 @@ def public_form_upload(token: str, file: UploadFile = File(...), request: Reques
         # "אימות בצד השרת שהקובץ שהוגש שייך להקשר ההעלאה המותר": a submission
         # can only claim files carrying its own form's id, so a token lifted
         # off a board — or out of another form — names nothing it can use.
-        db.add(UploadedFile(token=tok, name=(file.filename or "file")[:255],
+        db.add(UploadedFile(token=tok, name=_safe_filename(file.filename),
                             content_type=ctype, data=content, size=len(content),
                             form_view_id=f.id))
         db.commit()
-        return {"token": tok, "name": file.filename or "file",
+        return {"token": tok, "name": _safe_filename(file.filename),
                 "size": len(content), "type": ctype}
 
 
@@ -11339,7 +11494,7 @@ def _import_attachments(db, files, budget, stats, cache=None):
     """
     out = []
     for f in files or []:
-        name = (f.get("name") or "").strip() or "קובץ"
+        name = _safe_filename(f.get("name"), "קובץ")
         url = f.get("url") or ""
         # An attachment that could not be fetched keeps its name and the address
         # it had, and now says why. The two kinds of leftover are not the same
@@ -12644,8 +12799,15 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
 def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
-        if not b:
+        if not b or b.deleted_at:
             raise HTTPException(404, "board not found")
+        # Every key below used to be checked on its own, and the ones that are
+        # not admin-only — the name, icon, colour, views, view_only — were not
+        # checked at all: a user who was never invited to the board, refused a
+        # GET on it with 403, could still rename it with a PATCH (found by the
+        # penetration test of 2026-11). Changing a board starts with being
+        # someone who may change it; the admin-only keys then narrow further.
+        _require_board_edit(db, board_id, actor_id)
         if data.get("name") is not None:
             b.name = data["name"]
         if data.get("icon") is not None:
@@ -15089,8 +15251,20 @@ def set_col_permissions(board_id: int, col_id: str, data: dict, actor_id: int = 
 WS_ROLES = ("admin", "member", "viewer")
 
 @app.get("/api/workspace/members")
-def workspace_members():
+def workspace_members(user_id: int = Depends(current_user_id)):
+    """The workspace's members and who could be added — the administrator's
+    screen. Anybody else gets their own row only: the client reads it to know
+    whether it is talking to a system administrator (isSysAdmin), and that is
+    all it needs. The full list, with every address and role, was served to
+    any member until the penetration test of 2026-11."""
     with Session(engine) as db:
+        if user_id is not None and not _cap(db, user_id, "manage_system"):
+            m = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user_id).first()
+            u = db.query(User).filter(User.id == user_id).first()
+            mine = ([{"user_id": user_id, "name": u.name if u else "—",
+                      "email": u.email if u else "", "role": m.role,
+                      "is_active": (u.is_active is not False) if u else True}] if m else [])
+            return {"members": mine, "available": []}
         ms = db.query(WorkspaceMember).all()
         member_ids = {m.user_id for m in ms}
         out = []
@@ -15217,6 +15391,7 @@ def create_environment(data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if not _cap(db, actor_id, "create_environment"):
             raise HTTPException(403, "אין לך הרשאה ליצור סביבה")
+        _refuse_foreign_files(db, actor_id, data.get("icon"))    # see update_user
         name = (data.get("name") or "").strip()
         if not name:
             raise HTTPException(400, "נדרש שם לסביבה")
@@ -15250,6 +15425,8 @@ def update_environment(env_id: int, data: dict, actor_id: int = Depends(current_
         actor = actor_id
         if not _can_manage_env(db, env_id, actor):
             raise HTTPException(403, "רק מנהל מערכת או מנהל הסביבה יכול לערוך אותה")
+        # an environment's icon is an interface picture — see update_user
+        _refuse_foreign_files(db, actor, data.get("icon"))
         e = db.query(Environment).filter(Environment.id == env_id).first()
         if not e:
             raise HTTPException(404, "סביבה לא נמצאה")
@@ -15488,14 +15665,41 @@ def reorder_environment(env_id: int, data: dict, actor_id: int = Depends(current
         return {"status": "ok"}
 
 @app.get("/api/tasks")
-def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None):
+def list_tasks(board_id: Optional[int] = None, status: Optional[str] = None,
+               user_id: int = Depends(current_user_id)):
+    """Items, optionally of one board — only the ones the caller may open.
+
+    This took no identity at all, so it answered for every board: the
+    penetration test of 2026-11 read whole boards it was not invited to here
+    (descriptions, priorities, locations) while GET /api/tasks/{id} refused
+    the same items with 403. It now asks what that route asks — the board
+    role, then the item's own permission — so the list never shows what the
+    direct read would refuse. A board named outright that the caller may not
+    see is a 403, not an empty list, so the answer is the same on both doors.
+    """
     with Session(engine) as db:
-        q = db.query(Task).filter(Task.is_archived == False)
         if board_id:
-            q = q.filter(Task.board_id == board_id)
+            _board_role_or_403(db, board_id, user_id)
+            boards = {board_id}
+        else:
+            boards = _visible_board_ids(db, user_id) if user_id is not None else None
+            if boards is not None and not boards:
+                return []
+        q = db.query(Task).filter(Task.is_archived == False)
+        if boards is not None:
+            q = q.filter(Task.board_id.in_(boards))
         if status:
             q = q.filter(Task.status == status)
         tasks = q.order_by(Task.position).limit(100).all()
+        if user_id is not None:
+            roles = {}
+            def _role(bid):
+                if bid not in roles:
+                    roles[bid] = _board_role(db, bid, user_id)
+                return roles[bid]
+            tasks = [t for t in tasks
+                     if _role(t.board_id) is not None
+                     and _item_perm(t, user_id, _role(t.board_id)) != "none"]
         result = []
         for t in tasks:
             assignees = [{"id": u.id, "name": u.name} for u in (t.assignees or [])]
@@ -15547,6 +15751,9 @@ def create_task(data: dict, request: Request = None,
                 background: BackgroundTasks = None,
                 actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
+        # a file is attached only by someone who may already read it — see
+        # _refuse_foreign_files for what attaching an arbitrary token used to do
+        _refuse_foreign_files(db, actor_id, data.get("custom_fields"))
         parent_id = data.get("parent_id")
         board_id = data.get("board_id")
         group_id = data.get("group_id")
@@ -29861,17 +30068,38 @@ async def events_stream(request: Request, user_id: int = Depends(current_user_id
     })
 
 
+_TASK_SERVER_OWNED = frozenset({
+    "id", "board_id", "group_id", "parent_id", "position", "is_archived",
+    "permissions", "created_by", "created_at", "deleted_at", "form_view_id",
+})
+
+
 @app.patch("/api/tasks/{task_id}")
 def update_task(task_id: int, data: dict, request: Request = None,
                 background: BackgroundTasks = None,
                 actor_id: int = Depends(current_user_id)):
     """Generic item update — title, priority, status, due_date, and custom column
     values (merged into custom_fields). Used by the editable board columns."""
+    # Fields the server owns, refused by name rather than ignored. This route
+    # never applied them — where an item lives is changed by /move, which
+    # asks for edit rights on BOTH boards; who sees it, by /permissions; the
+    # archive and the bin, by their own routes — but a PATCH carrying
+    # {"board_id": 2} was answered 200, and the penetration test of 2026-11
+    # read that as the item having moved. A 400 that names the field says
+    # what actually happened, and keeps it true if this route ever grows a
+    # generic field loop.
+    _owned = sorted(k for k in data if k in _TASK_SERVER_OWNED)
+    if _owned:
+        raise HTTPException(400, "שדות שלא ניתן לשנות בעדכון פריט: " + ", ".join(_owned)
+                                 + " — העברה ללוח אחר נעשית דרך /move")
     with Session(engine) as db:
         task = db.query(Task).filter(Task.id == task_id).first()
         if not task:
             raise HTTPException(404, "task not found")
         actor = actor_id
+        # a file is attached only by someone who may already read it — see
+        # _refuse_foreign_files for what attaching an arbitrary token used to do
+        _refuse_foreign_files(db, actor, data.get("custom_fields"))
         # mail built as the edit goes, sent once the edit is committed
         _mail = []
         # ── permission enforcement (item level, and column level for custom_fields) ──
@@ -30286,6 +30514,38 @@ INLINE_SAFE_TYPES = {
 }
 
 
+def _safe_filename(raw, fallback="file") -> str:
+    """The name an upload is shown under, cleaned of everything a name is not.
+
+    A file is STORED under a random token — the name never reaches a path on
+    this server, so there was no traversal to have. But the name a client sent
+    was kept and handed back verbatim: in the upload's JSON, on the item, and
+    in the Content-Disposition of the download. The penetration test of
+    2026-11 uploaded "../../../etc/shadow" and got exactly that back on every
+    one of them. A name is a label, so it is cut down to what a label is:
+
+      - the last path segment, splitting on BOTH separators — not
+        os.path.basename, which on this Linux host does not know that "\\" is
+        one, so "..\\..\\boot.ini" would pass whole;
+      - no control characters and no format characters (Cc, Cf). The second
+        group is where U+202E lives, the override that makes "photo<U+202E>gpj.exe"
+        display as "photoexe.jpg";
+      - no leading dots or spaces, so neither "..", "." nor a hidden ".env" is
+        what the name becomes; trailing dots and spaces go too (Windows drops
+        them silently, which changes the extension under the user);
+      - at most 255 characters, and `fallback` if nothing is left.
+
+    Applied when a name is stored and again when one is served, because rows
+    written before this function existed carry the old names.
+    """
+    import unicodedata
+    name = str(raw or "")
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(ch for ch in name if unicodedata.category(ch) not in ("Cc", "Cf"))
+    name = name.strip().lstrip(". ").rstrip(". ")
+    return name[:255] or fallback
+
+
 def _safe_media_type(declared: str) -> tuple[str, bool]:
     """Normalise a client-declared content type into (media_type, may_inline)."""
     ct = (declared or "application/octet-stream").split(";")[0].strip().lower()
@@ -30313,11 +30573,13 @@ def upload_file(file: UploadFile = File(...), actor_id: int = Depends(current_us
     media_type, _ = _safe_media_type(file.content_type)
     token = uuid.uuid4().hex
     with Session(engine) as db:
-        db.add(UploadedFile(token=token, name=file.filename or "file",
+        db.add(UploadedFile(token=token, name=_safe_filename(file.filename),
                             content_type=media_type,
-                            data=content, size=len(content)))
+                            data=content, size=len(content),
+                            uploaded_by=actor_id))
         db.commit()
-    return {"name": file.filename, "url": f"/api/files/{token}", "type": media_type}
+    return {"name": _safe_filename(file.filename), "url": f"/api/files/{token}",
+            "type": media_type}
 
 def _file_is_interface_picture(db, token: str) -> bool:
     """Whether this upload is a picture the INTERFACE is made of, rather than
@@ -30344,6 +30606,119 @@ def _file_is_interface_picture(db, token: str) -> bool:
             .first()):
         return True
     return False
+
+
+def _may_read_file(db, f, user_id) -> bool:
+    """Whether `user_id` may have this upload's bytes.
+
+    A token used to be a key on its own: any signed-in user holding one got
+    the file, whichever board it was attached to. The penetration test of
+    2026-11 downloaded an attachment off a board the tester was never invited
+    to that way, while GET /api/tasks/{id}/files — the same file through its
+    item — answered 403. The two doors now answer the same question: a file
+    is readable by whoever may see something it is attached to.
+
+    What it can be attached to is every place an upload's address is kept:
+      - a picture the interface is made of (_file_is_interface_picture) —
+        an avatar, an environment icon, a form's logo or cover. Everybody
+        sees those wherever they appear, so everybody may read them;
+      - a comment's attachments — readable by whoever may see its item;
+      - a files cell on an item (attached by hand, by an import or by a form
+        submission) — readable by whoever may see the item AND the column;
+      - nothing yet — between the upload and the save that attaches it. Only
+        the person who uploaded it, so their own preview still works.
+    Anything else is refused. That is the default, not a gap: a new place
+    that keeps upload addresses must be added here, and the symptom of
+    forgetting is a broken image for the people who should see it, not a
+    leak to the people who should not.
+
+    The search is over boards the reader can see only, so its cost is bounded
+    by their boards rather than by the whole system, and a system
+    administrator — who sees every board — is answered before any of it.
+    """
+    if user_id is None:          # auth off (dev); the transport decides there
+        return True
+    if _ws_role(db, user_id) == "admin":
+        return True
+    if f.uploaded_by is not None and f.uploaded_by == user_id:
+        return True
+    tok = f.token or ""
+    if not tok:
+        return False
+    if _file_is_interface_picture(db, tok):
+        return True
+    visible = _visible_board_ids(db, user_id)
+    if not visible:
+        return False
+    from sqlalchemy import String, cast
+    # What is searched for is the LINK — "/api/files/<token>" — and not the
+    # bare token: a token typed into a text cell or a comment's name field is
+    # not an attachment, and counting it as one let anybody who knew a token
+    # make it readable by writing it somewhere they could write (code review,
+    # 2026-11). Escaped for LIKE: a `%` or `_` would match other files.
+    link = "/api/files/" + tok
+    pat = "%" + link.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    seen = set()
+    # a comment on an item
+    for (tid,) in (db.query(Comment.task_id)
+                     .join(Task, Task.id == Comment.task_id)
+                     .filter(Task.board_id.in_(visible),
+                             cast(Comment.attachments, String).like(pat, escape="\\"))
+                     .distinct().limit(50).all()):
+        if tid in seen:
+            continue
+        seen.add(tid)
+        t = db.query(Task).filter(Task.id == tid).first()
+        if t is not None and _can_see_item(db, t, user_id):
+            return True
+    # a files cell on an item — the item, and the column it sits in
+    for t in (db.query(Task)
+                .filter(Task.board_id.in_(visible),
+                        cast(Task.custom_fields, String).like(pat, escape="\\"))
+                .limit(50).all()):
+        if not _can_see_item(db, t, user_id):
+            continue
+        board = db.query(Board).filter(Board.id == t.board_id).first()
+        role = _board_role(db, t.board_id, user_id)
+        cf = t.custom_fields or {}
+        for col in ((board.settings or {}).get("columns", []) if board else []):
+            if (col.get("type") == "files"
+                    and link in json.dumps(cf.get(col.get("id")) or "", ensure_ascii=False)
+                    and _col_perm(col, user_id, role) != "none"):
+                return True
+    return False
+
+
+_FILE_LINK_RE = re.compile(r"/api/files/([A-Za-z0-9_-]{8,64})")
+
+
+def _refuse_foreign_files(db, writer, *values, tokens=()):
+    """403 if this write would attach a file its writer may not read.
+
+    _may_read_file opens a file to whoever may see what it is attached to,
+    which is only sound if attaching it was itself checked: otherwise anybody
+    who learns a token puts it in their own comment, their own files cell or
+    their own avatar, and the file is theirs — and, through the avatar,
+    everybody's (code review, 2026-11). So every route that stores a file
+    link asks this first, with the values it is about to store. A link to a
+    file that does not exist is let through: it serves nothing to anyone.
+
+    `values` are searched for "/api/files/<token>" wherever they nest;
+    `tokens` are bare tokens, for the form's logo and cover, which store
+    the token alone.
+    """
+    found = set(tokens or ())
+    for v in values:
+        if v is None:
+            continue
+        found.update(_FILE_LINK_RE.findall(
+            v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)))
+    for tok in found:
+        if not tok:
+            continue
+        f = db.query(UploadedFile).filter(UploadedFile.token == tok).first()
+        if f is not None and not _may_read_file(db, f, writer):
+            raise HTTPException(403, "אי אפשר לצרף קובץ שאין לך גישה אליו")
 
 
 @app.get("/api/files/{token}")
@@ -30378,10 +30753,17 @@ def serve_file(token: str, dl: int = 0, actor_id: int = Depends(current_user_id)
                 and not _cap(db, actor_id, "download_files")
                 and not _file_is_interface_picture(db, token)):
             raise HTTPException(403, "אין לך הרשאה להוריד קבצים")
+        # Holding the token is not access to the file — what it is attached
+        # to decides, the same as through the item. See _may_read_file. After
+        # the guest block, so a guest is told the rule that applies to them.
+        if not _may_read_file(db, f, actor_id):
+            raise HTTPException(403, "אין לך גישה לקובץ זה")
         from urllib.parse import quote
         media_type, may_inline = _safe_media_type(f.content_type)
         how = "inline" if (may_inline and not dl) else "attachment"
-        disp = f"{how}; filename*=UTF-8''{quote(f.name or 'file')}"
+        # cleaned again on the way out: names stored before _safe_filename
+        # existed are still in the table as they arrived
+        disp = f"{how}; filename*=UTF-8''{quote(_safe_filename(f.name), safe='')}"
         return Response(content=f.data, media_type=media_type,
                         headers={"Content-Disposition": disp,
                                  # stop the browser sniffing a download back into HTML
@@ -30615,6 +30997,9 @@ def add_comment(task_id: int, data: dict, request: Request = None,
         atts = data.get("attachments") or []
         if not content and not atts:
             raise HTTPException(400, "תגובה ריקה")
+        # a file is attached only by someone who may already read it — see
+        # _refuse_foreign_files for what attaching an arbitrary token used to do
+        _refuse_foreign_files(db, actor_id, atts)
         _refuse_tagged_twice(db, content)
         # Who is being tagged: explicit @-picks plus any @Name typed into the text.
         mentioned = set()
@@ -30737,6 +31122,9 @@ def update_comment(cid: int, data: dict, request: Request = None,
         user = _acting_user(db, actor_id)
         if not user or (c.user_id != user.id and user.role not in ("admin", "manager")):
             raise HTTPException(403, "אין הרשאה לערוך תגובה")
+        # a file is attached only by someone who may already read it — see
+        # _refuse_foreign_files for what attaching an arbitrary token used to do
+        _refuse_foreign_files(db, actor_id, data.get("attachments"))
 
         _c_board_id = None
         _t = db.query(Task).filter(Task.id == c.task_id).first()
@@ -31898,11 +32286,35 @@ def _utc_iso(dt):
 
 # ── Users ────────────────────────────────────────────────────────────
 
+# What every signed-in person may know about a colleague: enough to draw them
+# in a people column, an avatar, a mention or a profile card. The rest of the
+# row — address, phone, last sign-in, when the account was opened, how they
+# want to be notified — is the directory's, and the directory is the system
+# administrator's (GET /api/users served all of it to every member until the
+# penetration test of 2026-11 read 35 people's details with a member session).
+# The caller's own row is always whole: it is theirs.
+
+
 @app.get("/api/users")
-def list_users():
+def list_users(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         users = db.query(User).all()
         dept_names = {d.id: d.name for d in db.query(Department).all()}
+        if user_id is not None and not _cap(db, user_id, "manage_system"):
+            out = []
+            for u in users:
+                row = {"id": u.id, "name": u.name, "role": u.role, "avatar_url": u.avatar_url,
+                       "department_id": u.department_id,
+                       "department_name": dept_names.get(u.department_id),
+                       "is_active": bool(u.is_active) if u.is_active is not None else True,
+                       "title": u.title}
+                if u.id == user_id:
+                    row.update({"email": u.email, "phone": u.phone,
+                                "email_notifications": bool(u.email_notifications)
+                                if u.email_notifications is not None else True,
+                                "notif_prefs": u.notif_prefs or {}})
+                out.append(row)
+            return out
         # most-recent login per user (for the admin directory "last login" column)
         from sqlalchemy import func as _func
         last_logins = dict(
@@ -32022,6 +32434,13 @@ def create_user(data: dict, actor_id: int = Depends(current_user_id)):
     """Create a new user in the workspace directory. System (workspace) admin only."""
     with Session(engine) as db:
         actor = actor_id
+        # resolve_user already refuses a deactivated account on every request.
+        # Asked again here because these two routes are the way back in — a
+        # deactivated admin who reached them could mint a new admin or undo
+        # their own deactivation — so they do not lean on one check made far
+        # away (penetration test, 2026-11).
+        if _account_blocked(db, actor):
+            raise HTTPException(403, "החשבון אינו פעיל")
         if not _cap(db, actor, "manage_system"):
             raise HTTPException(403, "רק מנהל מערכת יכול להוסיף משתמש")
         name = (data.get("name") or "").strip()
@@ -32056,37 +32475,107 @@ def update_user(uid: int, data: dict, actor_id: int = Depends(current_user_id)):
     (workspace) admin may edit anyone's."""
     with Session(engine) as db:
         actor = actor_id
+        # see create_user: the routes that manage accounts check the caller's
+        # own account themselves
+        if _account_blocked(db, actor):
+            raise HTTPException(403, "החשבון אינו פעיל")
         if actor != uid and not _cap(db, actor, "manage_system"):
             raise HTTPException(403, "אפשר לעדכן רק את הפרופיל שלך")
         u = db.query(User).filter(User.id == uid).first()
         if not u:
             raise HTTPException(404, "user not found")
+        is_sys_admin = _cap(db, actor, "manage_system")
+
+        # ── first decide, then write ──
+        # This route used to apply each field as it reached it, and to check
+        # the sensitive ones only on some paths: a member could change their
+        # own email, and the penetration test of 2026-11 recorded a member
+        # deactivating their own account and locking themselves out. Now the
+        # whole request is judged before anything is applied, so a request
+        # that mixes allowed fields with one it may not change is refused as a
+        # whole (403) and changes nothing.
+        #
+        # A sensitive field counts only when it would CHANGE the value. The
+        # users screen saves the whole row and sends role and department as
+        # they are; that is not a request to change them.
+        new_email = None
+        if "email" in data:
+            ne = (data["email"] or "").strip().lower()
+            if ne and ne != (u.email or "").lower():
+                new_email = ne
+        new_role = None
+        if "role" in data and data["role"] in ("admin", "manager", "member", "viewer", "guest") \
+                and data["role"] != u.role:
+            new_role = data["role"]
+        # compared as numbers: a form posts "3" for the department that is 3,
+        # and that is not a change a member should be refused for
+        def _as_id(x):
+            try:
+                return int(x) if x not in (None, "") else None
+            except (TypeError, ValueError):
+                return x
+        new_dept = "department_id" in data and _as_id(data["department_id"]) != u.department_id
+        new_active = None
+        if "is_active" in data and bool(data["is_active"]) != (u.is_active is not False):
+            new_active = bool(data["is_active"])
+
+        if (new_role is not None or new_dept or new_active is not None) and not is_sys_admin:
+            raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד, מחלקה או סטטוס")
+        if new_email is not None:
+            # The address IS the identity: every request is resolved to a user
+            # by the email the sign-in carries (auth.resolve_user). Changed on
+            # one's own row, the session still carries the old address and the
+            # account locks itself out ("המשתמש אינו רשום"); pointed at an
+            # address somebody else will sign in with later, it is a claim on
+            # their account before they arrive. So only a system administrator
+            # changes it, and never on their own row — a second administrator
+            # is the check.
+            if not is_sys_admin:
+                raise HTTPException(403, "רק מנהל מערכת יכול לשנות כתובת מייל")
+            if uid == actor:
+                raise HTTPException(403, "אי אפשר לשנות את כתובת המייל של המשתמש שלך — "
+                                         "מנהל מערכת אחר יכול לעשות זאת")
+            if not _EMAIL_RE.match(new_email):
+                raise HTTPException(400, "כתובת מייל לא תקינה")
+            if db.query(User).filter(User.email == new_email, User.id != uid).first():
+                raise HTTPException(409, "כתובת המייל כבר קיימת במערכת")
+        if new_active is False and uid == actor:
+            raise HTTPException(400, "אי אפשר להשבית את המשתמש שלך")
+        # The last active system administrator is not demoted or deactivated:
+        # after that nobody could reactivate or promote anyone, and the only
+        # way back is the database.
+        if (new_active is False or (new_role is not None and new_role != "admin")) \
+                and _ws_role(db, uid) == "admin" and u.is_active is not False:
+            ws_admins = {m.user_id for m in db.query(WorkspaceMember.user_id)
+                                              .filter(WorkspaceMember.role == "admin").all()}
+            others = (db.query(User.id)
+                        .filter(User.id != uid, User.is_active.isnot(False),
+                                or_(User.role == "admin", User.id.in_(ws_admins or {-1})))
+                        .first())
+            if not others:
+                raise HTTPException(400, "זהו מנהל המערכת הפעיל האחרון — "
+                                         "יש למנות מנהל נוסף לפני הסרתו")
+
+        # An avatar is an interface picture, and those are readable by every
+        # signed-in user (_file_is_interface_picture) — so pointing your own
+        # at somebody else's file published it to the whole organisation.
+        _refuse_foreign_files(db, actor, data.get("avatar_url"))
+
+        # ── apply ──
         for f in ("avatar_url", "phone", "title", "name", "email_notifications"):
             if f in data:
                 setattr(u, f, data[f])
-        if "email" in data:
-            new_email = (data["email"] or "").strip().lower()
-            if new_email and new_email != u.email:
-                if db.query(User).filter(User.email == new_email, User.id != uid).first():
-                    raise HTTPException(409, "כתובת המייל כבר קיימת במערכת")
-                u.email = new_email
+        if new_email is not None:
+            u.email = new_email
         if "notif_prefs" in data and isinstance(data["notif_prefs"], dict):
             u.notif_prefs = {**(u.notif_prefs or {}), **data["notif_prefs"]}
-        # sensitive fields (role / department / active status) — system admin only,
-        # never editable on one's own profile via this path
-        admin_fields = {"role", "department_id", "is_active"}
-        if admin_fields & set(data):
-            if not _cap(db, actor, "manage_system"):
-                raise HTTPException(403, "רק מנהל מערכת יכול לשנות תפקיד, מחלקה או סטטוס")
-            if "role" in data and data["role"] in ("admin", "manager", "member", "viewer", "guest"):
-                u.role = data["role"]
-                _sync_ws_role(db, u)   # the row the rest of the system reads
-            if "department_id" in data:
-                u.department_id = data["department_id"]
-            if "is_active" in data:
-                if u.id == actor and not data["is_active"]:
-                    raise HTTPException(400, "אי אפשר להשבית את המשתמש שלך")
-                u.is_active = bool(data["is_active"])
+        if new_role is not None:
+            u.role = new_role
+            _sync_ws_role(db, u)   # the row the rest of the system reads
+        if new_dept:
+            u.department_id = _as_id(data["department_id"])
+        if new_active is not None:
+            u.is_active = new_active
         db.commit()
         dept_name = None
         if u.department_id:
@@ -32396,9 +32885,16 @@ def _purge_rows(db, sql, uid):
 
 
 @app.get("/api/departments")
-def list_departments():
+def list_departments(user_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         depts = db.query(Department).order_by(Department.name).all()
+        # Everybody needs a unit's name and colour — a profile card shows it,
+        # a new board picks one. How many people and boards each holds, and
+        # how many of them signed in this month, is the organisation's shape,
+        # and that is the administrator's screen (penetration test, 2026-11).
+        if user_id is not None and not _cap(db, user_id, "manage_system"):
+            return [{"id": d.id, "name": d.name, "code": d.code, "color": d.color}
+                    for d in depts]
         from sqlalchemy import func as _func
         ucount = dict(db.query(User.department_id, _func.count(User.id))
                       .filter(User.department_id != None).group_by(User.department_id).all())
@@ -32504,11 +33000,20 @@ def delete_department(dept_id: int, actor_id: int = Depends(current_user_id)):
 # ── Role permissions (capability matrix) ─────────────────────────────
 
 @app.get("/api/role-permissions")
-def get_role_permissions():
-    """The capability matrix. Readable by anyone so the client can gate features.
-    'admin' is returned as an always-on, locked row."""
+def get_role_permissions(user_id: int = Depends(current_user_id)):
+    """The capability matrix. 'admin' is returned as an always-on, locked row.
+
+    The client gates its features on it (hasCap), and for that it needs one
+    row: its own role's. The whole matrix — what every role may and may not
+    do — is the administrator's screen, and was readable by any member until
+    the penetration test of 2026-11. Anybody else gets their role's row and
+    the admin row the client treats as "everything"."""
     with Session(engine) as db:
         matrix = _role_perms(db)
+        if user_id is not None and not _cap(db, user_id, "manage_system"):
+            me = db.query(User).filter(User.id == user_id).first()
+            mine = (me.role if me else None) or "guest"
+            matrix = {r: v for r, v in matrix.items() if r == mine}
     roles = [{"key": "admin", "he": ROLE_HE_BE["admin"], "locked": True}] + \
             [{"key": r, "he": ROLE_HE_BE.get(r, r), "locked": False} for r in EDITABLE_ROLES]
     matrix_out = {"admin": {cap: True for cap in CAPABILITIES}, **matrix}

@@ -50,11 +50,38 @@ def guest_id(client):
     return uid
 
 
+_MADE_TASKS = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _drop_the_items_made_here(client):
+    yield
+    for tid in _MADE_TASKS:
+        client.delete(f"/api/tasks/{tid}", headers={"X-CityOS-User": str(ADMIN_ID)})
+
+
 def _upload(client, actor, name="סודי.xlsx", ctype="application/vnd.ms-excel"):
+    """Upload a file and attach it to an item on board 1.
+
+    Attached, because a file is served to whoever may see what it is attached
+    to (_may_read_file — the BOLA fix of 2026-11), and every reader below is a
+    member of board 1. Left unattached, a refusal here would be about the
+    file belonging to nothing rather than about the capability this module
+    is testing."""
+    hdr = {"X-CityOS-User": str(actor)}
     r = client.post("/api/upload", files={"file": (name, io.BytesIO(b"bytes"), ctype)},
-                    headers={"X-CityOS-User": str(actor)})
+                    headers=hdr)
     assert r.status_code == 200, r.text
-    return r.json()["url"].rsplit("/", 1)[-1]
+    up = r.json()
+    admin = {"X-CityOS-User": str(ADMIN_ID)}
+    gid = client.get("/api/boards/1", headers=admin).json()["groups"][0]["id"]
+    t = client.post("/api/tasks", json={"board_id": 1, "group_id": gid, "title": "קובץ לבדיקה"},
+                    headers=admin).json()
+    _MADE_TASKS.append(t["id"])
+    r = client.post(f"/api/tasks/{t['id']}/comments",
+                    json={"content": "מצורף", "attachments": [up]}, headers=admin)
+    assert r.status_code == 200, r.text
+    return up["url"].rsplit("/", 1)[-1]
 
 
 def _export(client, actor, board_id=1):

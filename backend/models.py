@@ -1853,6 +1853,14 @@ class UploadedFile(Base):
     # NULL and old is what the sweeper collects — a form somebody abandoned.
     form_view_id = Column(Integer, ForeignKey("form_views.id"), nullable=True, index=True)
     claimed_at = Column(DateTime, nullable=True, index=True)
+    # ── who uploaded it ──
+    # A file is readable by whoever may see the item (or comment) it is
+    # attached to — see _may_read_file. Between the upload and the save that
+    # attaches it there is no such item yet, and the person composing still
+    # has to see their own preview. This is that person. Not a foreign key:
+    # removing a user must not be held up by every file they ever attached.
+    # NULL on rows from before the column, and on public-form uploads.
+    uploaded_by = Column(Integer, nullable=True)
 
 
 class Notification(Base):

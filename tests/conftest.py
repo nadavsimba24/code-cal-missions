@@ -142,6 +142,21 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Every test starts with empty rate-limit counters.
+
+    The whole suite is one client address ("testclient"), so the limiter's
+    budgets — sized for one person or one office — were spent by the tests
+    BEFORE the one that ran out: test_form_submission.py met 429s nine tests
+    in, on sends that were each perfectly ordinary. The limiter is tested on
+    its own, deliberately, in test_a_stranger_is_slowed_down.py; everywhere
+    else a 429 would be a test reading its neighbours' traffic."""
+    cityos_main._rl_hits.clear()
+    cityos_main._form_hits.clear()
+    yield
+
+
 @pytest.fixture
 def admin_id():
     return ADMIN_ID
