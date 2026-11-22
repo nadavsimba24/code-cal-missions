@@ -4,8 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Missions</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/><path d='M32 38 L39 49 L30 45 Z' fill='%23d6ecff'/></svg>">
-<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/></svg>">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/icon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/brand/icon-192.png">
+<link rel="shortcut icon" href="/brand/favicon.ico">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
 <script src="sortable.min.js"></script>
 <!-- The form renderer, and this shell, are ONE program split across two
      files: the code below calls FormPaper.html(doc, {live:true, ...}) and a
@@ -317,7 +319,7 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 body.sb-resizing{cursor:col-resize;user-select:none}
 body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .sb-logo{height:var(--header-h);display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border);font-weight:800;font-size:17px}
-.sb-logo .dot{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff;font-size:13px}
+.sb-logo .brand-icon{width:28px;height:28px;object-fit:contain;flex:none}
 .sb-search{padding:10px 12px}
 .sb-search input{width:100%;border:1px solid var(--border-strong);border-radius:6px;padding:7px 10px;font-size:13px;background:var(--bg)}
 .sb-search input:disabled{opacity:.55;cursor:not-allowed}
@@ -2183,7 +2185,10 @@ img.pf-av{object-fit:cover;background:#fff}
 #login.open{display:flex}
 .login-box{background:var(--surface);border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.32);width:390px;max-width:94vw;padding:28px;max-height:90vh;overflow:auto}
 .login-logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;justify-content:center}
-.login-logo .dot{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff;font-size:15px}
+.login-logo .brand-logo{width:240px;max-width:80%;height:auto;display:block}
+/* The logo's lettering is dark on a transparent ground; on the dark theme's
+   surface it would vanish, so it sits on the white plate it was drawn for. */
+:root[data-theme="dark"] .login-logo .brand-logo{background:#fff;border-radius:10px;padding:8px 12px}
 .login-sub{text-align:center;color:var(--text-muted);font-size:13px;margin:9px 0 20px}
 .login-users{display:flex;flex-direction:column;gap:8px}
 .login-user{display:flex;align-items:center;gap:12px;padding:11px 14px;border:1px solid var(--border);border-radius:11px;background:var(--surface);text-align:start;transition:.12s}
@@ -3386,7 +3391,7 @@ body, body *{ font-weight:400!important; }
   <!-- Sidebar -->
   <aside id="sidebar">
     <div id="sb-resizer" title="גרור לשינוי רוחב התפריט" aria-hidden="true"></div>
-    <div class="sb-logo" style="font-size:15px"><span class="dot"><i class="fa-solid fa-rocket"></i></span> Missions</div>
+    <div class="sb-logo" style="font-size:15px"><img class="brand-icon" src="/brand/icon-64.png" alt=""> Missions</div>
     <div class="sb-search"><input id="sb-search" placeholder="חיפוש… (בקרוב)" disabled title="בקרוב — לא פעיל"></div>
     <div class="sb-section">סביבת עבודה <span class="sb-sec-acts"><i id="env-trash-btn" class="fa-solid fa-trash-can" title="לוחות שנמחקו — ניתנים לשחזור" style="display:none" onclick="Trash.open()"></i> <i id="env-manage-btn" class="fa-solid fa-user-gear" title="ניהול משתמשים והרשאות בסביבה" style="display:none" onclick="Env.manageActive()"></i></span></div>
     <div id="ws-switch"></div>
@@ -3546,7 +3551,7 @@ body, body *{ font-weight:400!important; }
      before the request reaches the app, and this screen is never shown. -->
 <div id="login">
   <div class="login-box">
-    <div class="login-logo"><span class="dot"><i class="fa-solid fa-rocket"></i></span> CODE-CAL MISSIONS</div>
+    <div class="login-logo"><img class="brand-logo" src="/brand/logo.png" alt="CODE-CAL MISSIONS"></div>
     <div class="login-sub">בחר משתמש להתחברות</div>
     <div id="login-users" class="login-users"></div>
   </div>

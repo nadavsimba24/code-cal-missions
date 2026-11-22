@@ -4,7 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>404 | Missions</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%230073ea'/><stop offset='1' stop-color='%2300c875'/></linearGradient></defs><rect width='64' height='64' rx='14' fill='url(%23g)'/><path d='M15 33 L49 16 L39 49 L32 38 Z' fill='white'/><path d='M32 38 L39 49 L30 45 Z' fill='%23d6ecff'/></svg>">
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/icon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/brand/icon-192.png">
+<link rel="shortcut icon" href="/brand/favicon.ico">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Rubik:wght@400;500;600;700;800&family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -33,7 +36,7 @@ button,a{font-family:inherit}
 .app{display:flex;height:100vh;min-height:100vh}
 .sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column}
 .logo{height:var(--header-h);display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border);font-weight:800;font-size:17px}
-.logo-dot{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#0073ea,#00c875);display:grid;place-items:center;color:#fff;font-size:13px}
+.logo-icon{width:28px;height:28px;object-fit:contain;flex:none}
 .sb-list{padding:0 8px;display:flex;flex-direction:column;gap:2px}
 .sb-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;color:var(--text);text-decoration:none;white-space:nowrap;overflow:hidden}
 .sb-item:hover{background:var(--row-hover)}
@@ -83,7 +86,7 @@ h1{font-size:34px;line-height:1.15;margin:0 0 10px;font-weight:800;letter-spacin
 <body>
 <div class="app">
   <aside class="sidebar" aria-hidden="true">
-    <div class="logo"><span class="logo-dot"><i class="fa-solid fa-location-arrow"></i></span><span>Missions</span></div>
+    <div class="logo"><img class="logo-icon" src="/brand/icon-64.png" alt=""><span>Missions</span></div>
   </aside>
   <main class="main">
     <header class="appbar">
