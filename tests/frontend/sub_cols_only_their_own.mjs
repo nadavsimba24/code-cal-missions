@@ -63,5 +63,17 @@ ck('...and so does a subset whose ids were all since removed',
    run({sub_cols:['item','gone']}).join('|')==='פריט|אחראי|תקציב',
    run({sub_cols:['item','gone']}).join('|'));
 
+// sub_cols naming a sub-item-only column places it there — an import writes
+// the sub-item board's own order this way, its own columns between the shared
+const mixed = run({sub_cols:['item','stage','owner','hours'], sub_only:['stage','hours']});
+ck('a sub-item-only column named in sub_cols stands where it is named',
+   mixed.join('|')==='פריט|שלב|אחראי|שעות', mixed.join('|'));
+const partly = run({sub_cols:['item','owner','stage'], sub_only:['stage','hours']});
+ck('...and one sub_cols does not name is still appended, so nothing vanishes',
+   partly.join('|')==='פריט|אחראי|שלב|שעות', partly.join('|'));
+const ownOnly = run({sub_cols:['item','hours','stage'], sub_only:['stage','hours']});
+ck('...and sub-items that share nothing keep their own order, not the board\'s',
+   ownOnly.join('|')==='פריט|שעות|שלב', ownOnly.join('|'));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

@@ -86,9 +86,9 @@ def test_those_columns_belong_to_the_sub_items_and_not_to_the_items(client):
     board = _board(client, d["id"])
     titles = {c["id"]: c["title"] for c in board["columns"]}
     assert sorted(titles[i] for i in (board.get("sub_only") or [])) == ["שלב", "שעות"]
-    # the shared one is the subset the sub-items show; the sub-item-only ones are
-    # appended by the board itself, so they are not in this list
-    assert [titles[i] for i in (board.get("sub_cols") or [])[1:]] == ["אחראי"]
+    # sub_cols is every column the sub-items show, the sub-item-only ones
+    # included, in the sub-item board's own order
+    assert [titles[i] for i in (board.get("sub_cols") or [])[1:]] == ["אחראי", "שלב", "שעות"]
 
 
 def test_a_sub_item_column_id_that_repeats_the_parents_is_still_its_own_column(client):
@@ -182,7 +182,8 @@ def test_sub_items_with_no_shared_column_do_not_inherit_the_items(client):
     d = _upload(client, raw, name="אין משותף").json()
     board = _board(client, d["id"])
     titles = {c["id"]: c["title"] for c in board["columns"]}
-    assert board["sub_cols"] == ["item"], board["sub_cols"]
+    # nothing shared: sub_cols names only the sub-items' own column
+    assert [titles.get(i, i) for i in board["sub_cols"]] == ["item", "שלב"], board["sub_cols"]
     assert [titles[i] for i in board["sub_only"]] == ["שלב"]
     # the frontend half of the same answer
     html = (pathlib.Path(__file__).resolve().parent.parent

@@ -10234,14 +10234,20 @@ def _imp_to_date_iso(v):
 # The path is anything but a comma, because monday writes the file's real name
 # into the address without escaping it: ".../resources/1476615869/הפרויקטים שלנו .docx"
 # has a space in it, and requiring "no whitespace" matched none of her files.
+# A comma is allowed in it for the same reason — see _imp_asset_urls, which
+# splits a cell only where the next address starts.
 _MONDAY_ASSET = re.compile(
-    r"^https://[^/\s]+\.monday\.com/(?:protected_static|resources)/[^,]+$|"
-    r"^https://files-monday-com\.s3[^/\s]*\.amazonaws\.com/[^,]+$")
+    r"^https://[^/\s]+\.monday\.com/(?:protected_static|resources)/.+$|"
+    r"^https://files-monday-com\.s3[^/\s]*\.amazonaws\.com/.+$")
 
 
 def _imp_asset_urls(v):
     """The monday file addresses in one cell, or None if that is not what it is."""
-    parts = [p.strip() for p in str(v or "").split(",")]
+    # Split only where the next address begins. A file's name rides unescaped
+    # inside its address — ".../אספקה, התקנה, שיפוץ ואחזקה.docx" — and a split on
+    # every comma cut it into pieces that are not addresses, so the whole column
+    # read as text and its files never came across.
+    parts = [p.strip() for p in re.split(r",\s*(?=https://)", str(v or ""))]
     parts = [p for p in parts if p]
     if not parts or not all(_MONDAY_ASSET.match(p) for p in parts):
         return None
@@ -10255,6 +10261,55 @@ def _imp_file_name(url):
     return name[:255] or "קובץ"
 
 
+# A number with a word after it — "3 ימים", "12 מ\"ר", "40 שעות". A monday
+# numbers column states its unit, and a sheet that writes the unit into every
+# cell turned the whole column into text: one figure nobody could sum, sort or
+# filter by range. The word is only read as a unit when it trails the digits,
+# is short, holds no digit of its own, and is the SAME word down the whole
+# column — "שלב 3" leads with its word and "3 א" / "3 ב" disagree, and both
+# stay text. Currency signs are not units here; _imp_to_number already drops
+# them.
+# The unit has to start with a letter (or the quote of מ"ר / ש"ח): "18+" and
+# "7 ?" are a figure with a remark, and read as a unit the remark was painted on
+# every row of the column.
+_IMP_NUM_UNIT = re.compile(r"(-?[\d.,  ]*\d)\s*((?:[^\W\d_]|[\"'׳״])[^\d/:]{0,5})")
+
+
+def _imp_number_and_unit(v):
+    """(number, unit) for one cell — unit "" when there is none — or None."""
+    n = _imp_to_number(v)
+    if n is not None:
+        return n, ""
+    if v is None or isinstance(v, bool):
+        return None
+    m = _IMP_NUM_UNIT.fullmatch(str(v).strip())
+    if not m:
+        return None
+    n = _imp_to_number(m.group(1))
+    return (n, m.group(2).strip()) if n is not None else None
+
+
+def _imp_number_unit(values):
+    """The one unit a column of numbers writes beside its figures, or None.
+
+    None when any cell is not a number, or when the cells disagree about the
+    unit — a column that says "ימים" in one row and "שעות" in the next is not
+    a quantity of one thing, and is left as the text it is. And None when the
+    unit is in fewer than half the cells: one "3 ימים" among plain figures is a
+    remark on one row, not the unit of every row.
+    """
+    units, with_unit, n = set(), 0, 0
+    for v in values:
+        got = _imp_number_and_unit(v)
+        if got is None:
+            return None
+        n += 1
+        if got[1]:
+            units.add(got[1])
+            with_unit += 1
+    return units.pop() if len(units) == 1 and with_unit * 2 >= n else None
+
+
 def _imp_infer_type(values):
     non_empty = [v for v in values if v is not None and str(v).strip() != ""]
     if not non_empty:
@@ -10265,6 +10320,9 @@ def _imp_infer_type(values):
         return "number"
     if all(_imp_to_date_iso(v) is not None for v in non_empty):
         return "date"
+    # after the dates, so a day written in words is not a number with a unit
+    if _imp_number_unit(non_empty):
+        return "number"
     return "text"
 
 
@@ -10367,7 +10425,9 @@ def _imp_coerce(v, ctype):
     if v is None:
         return None
     if ctype == "number":
-        return _imp_to_number(v)
+        # the unit, where the cell wrote one, is the column's — see _imp_number_unit
+        got = _imp_number_and_unit(v)
+        return got[0] if got else None
     if ctype == "date":
         return _imp_to_date_iso(v)
     if ctype == "files":
@@ -11509,6 +11569,9 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                 status_opts[c["key"]] = {o["label"]: o for o in (col["options"] or [])}
             elif c["type"] == "dropdown":
                 col["options"] = [str(o)[:40] for o in (c.get("options") or [])]
+            elif c["type"] == "number" and c.get("unit"):
+                # the unit monday shows beside the figures — see import_monday.number_unit
+                col["number"] = _number_col_cfg({"unit": c["unit"]})
             custom_cols.append(col)
         # Columns that exist on monday's sub-item board and nowhere on the parent
         # one. They are board columns here, shown on the sub-item rows and never
@@ -11731,14 +11794,21 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
             logged += 1
 
         if sub_used or sub_only_ids:
-            # Sub-items show only the columns they actually carry, in board
-            # order. The sub-item-only ones are left out on purpose: the board
-            # appends those on its own (settings["sub_only"]), which is the same
-            # shape the column picker saves — see removeSubCol in the frontend.
+            # Sub-items show only the columns they actually carry, in the order
+            # monday's sub-item board puts them — the sub-item-only ones
+            # included, at their own place. They used to be left out of this
+            # list and appended by the board after the shared ones, which
+            # reshuffled any sub-item board that interleaves the two; the board
+            # now places a sub-item-only column wherever sub_cols names it.
+            # A column the sub-item order does not mention (a file whose
+            # sub-items were never surveyed) keeps board order, behind them.
             s2 = dict(b.settings)
-            only = set(sub_only_ids)
-            s2["sub_cols"] = ["item"] + [c["id"] for c in custom_cols
-                                         if c["id"] in sub_used and c["id"] not in only]
+            wanted = set(sub_used) | set(sub_only_ids)
+            ordered = [col_ids[k] for k in (parsed.get("sub_order") or [])
+                       if col_ids.get(k) in wanted]
+            ordered += [c["id"] for c in custom_cols
+                        if c["id"] in wanted and c["id"] not in ordered]
+            s2["sub_cols"] = ["item"] + ordered
             b.settings = s2
         db.add(BoardMember(board_id=b.id, user_id=actor_id, role="admin"))
         db.commit()
@@ -11966,7 +12036,13 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
     # the words the picker offers and the colour each one is read by, which on a
     # board exported from here is the whole of what its status columns were.
     def _typed(i, body_rows, body_paints):
-        ctype = _imp_infer_type([(r[i] if i < len(r) else None) for r in body_rows])
+        cells = [(r[i] if i < len(r) else None) for r in body_rows]
+        ctype = _imp_infer_type(cells)
+        if ctype == "number":
+            # a number column that wrote its unit into every cell keeps the unit
+            # as the column's own, the way one made here shows it
+            return ctype, _imp_number_unit(
+                [v for v in cells if v is not None and str(v).strip() != ""])
         if ctype != "text":
             return ctype, None
         vocab = _imp_status_vocab([_cell(r, i) for r in body_rows],
@@ -11990,15 +12066,22 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         status_opts[cid] = {o["label"]: o for o in (opts or [])}
         return opts
 
-    custom_cols = [{"id": cid, "type": ctype, "title": labels[i],
-                    "options": _status_col(cid, vocab) if ctype == "status" else None,
-                    "formula": None, "connect": None, "copy_mode": None, "perms": {}}
-                   for cid, (ctype, vocab), i in zip(col_ids, col_typed, data_at)]
+    def _new_col(cid, ctype, extra, title):
+        col = {"id": cid, "type": ctype, "title": title,
+               "options": _status_col(cid, extra) if ctype == "status" else None,
+               "formula": None, "connect": None, "copy_mode": None, "perms": {}}
+        if ctype == "number" and extra:
+            col["number"] = _number_col_cfg({"unit": extra})
+        return col
+
+    custom_cols = [_new_col(cid, ctype, extra, labels[i])
+                   for cid, (ctype, extra), i in zip(col_ids, col_typed, data_at)]
     # how much of the statuses' colour came out of the sheet rather than out of
     # the palette — the same question the report already answers for the groups
     status_options = sum(len(c["options"] or []) for c in custom_cols if c["type"] == "status")
     status_colored = sum(1 for ctype, vocab in col_typed if ctype == "status"
                          for o in vocab if o["color"])
+    type_of = {c["id"]: c["type"] for c in custom_cols}
     # a sub-item column maps to the board column of the same name, or becomes one
     sub_map = []          # (index in the sub row, column id)
     sub_col_ids = []
@@ -12013,26 +12096,51 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
         # arrives as an "עמודה 21" the sub-items show and nobody can fill
         if not _cell(band_vals or [], i):
             continue
-        if len(custom_cols) >= IMPORT_MAX_COLS - 1 and sub_labels[i] not in by_label:
+        room = len(custom_cols) < IMPORT_MAX_COLS - 1
+        if not room and sub_labels[i] not in by_label:
             continue
         hit = by_label.get(sub_labels[i])
+        ctype, extra = _typed(i, sub_rows, sub_paints)
+        # A title is what joins a sub-item column to an item column, and a title
+        # is not a type. monday's sub-item board is a board of its own: its
+        # "כמות" can be a numbers column while the parent's "כמות" is text.
+        # Joined anyway, the sub-items' figures were written into the item's
+        # text column — a number column that "arrived as text" — or, the other
+        # way round, the sub-items' words were coerced into a number column and
+        # dropped. So the join holds only when the sub-items' own cells read as
+        # the same type; otherwise they get a column of their own, as the monday
+        # JSON import already does (it matches on title AND type). A status
+        # column the sub-items left unpainted still joins: the word is the same
+        # word, and _imp_status_cell writes it either way.
+        # Two number columns with different units are not one column either:
+        # joined, the sub-items' "4 שעות" was shown as "4 ימים".
+        def _unit_of(cid):
+            c = next((c for c in custom_cols if c["id"] == cid), None) or {}
+            return (c.get("number") or {}).get("unit") or ""
+        if (hit and room and any(_cell(r, i) for r in sub_rows)
+                and (ctype != type_of.get(hit[0])
+                     or (ctype == "number" and (extra or "") != _unit_of(hit[0])))
+                and not (type_of.get(hit[0]) == "status" and ctype == "text")):
+            hit = None
         if hit:
             cid = hit[0]
         else:
             cid = "col_" + uuid.uuid4().hex[:8]
-            ctype, vocab = _typed(i, sub_rows, sub_paints)
-            custom_cols.append({"id": cid, "type": ctype, "title": sub_labels[i],
-                                "options": _status_col(cid, vocab) if ctype == "status" else None,
-                                "formula": None, "connect": None, "copy_mode": None, "perms": {}})
+            custom_cols.append(_new_col(cid, ctype, extra, sub_labels[i]))
+            type_of[cid] = ctype
             if ctype == "status":
                 status_options += len(custom_cols[-1]["options"] or [])
-                status_colored += sum(1 for o in vocab if o["color"])
-            by_label[sub_labels[i]] = (cid, None)
+                status_colored += sum(1 for o in extra if o["color"])
+            by_label.setdefault(sub_labels[i], (cid, None))
             sub_only_ids.append(cid)
         sub_map.append((i, cid))
-        # the sub-item-only ones are appended by the board itself (sub_only), so
-        # they are deliberately not part of the shared subset
-        if cid not in sub_col_ids and cid not in sub_only_ids:
+        # Every sub-item column, shared or not, in the order the band lists
+        # them. The sub-item-only ones used to be left out of this list and
+        # appended by the board after the shared ones, so a sub-item board whose
+        # columns interleave the two came back reshuffled: "Owner, Status,
+        # תאריך" in monday read "Status, תאריך, Owner" here. The board now
+        # places a sub-item-only column wherever sub_cols names it.
+        if cid not in sub_col_ids:
             sub_col_ids.append(cid)
     # A column named in the header, empty on every item and filled by the
     # sub-items is now a column of this board — so it is no longer one of the
@@ -12077,7 +12185,8 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
             "col_hidden": ["assignees", "status", "priority", "due"],
         }
         if sub_col_ids or sub_only_ids:
-            # sub-items show the columns the file gave them, in board order
+            # sub-items show the columns the file gave them, in the band's own
+            # order — sub-item-only ones included, see sub_col_ids above
             settings["sub_cols"] = ["item"] + sub_col_ids
             settings["sub_only"] = sub_only_ids
         b = Board(name=board_name, description="", department_id=dept_id, environment_id=env_id,

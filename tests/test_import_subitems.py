@@ -118,10 +118,11 @@ def test_sub_items_show_the_columns_the_file_gave_them(client, admin_id):
         sub_cols, sub_only = s.get("sub_cols"), s.get("sub_only")
     titles = {c["id"]: c["title"] for c in _cols(d["id"])}
     assert sub_cols and sub_cols[0] == "item"
-    # it is the sub-items' own column, so it rides in sub_only rather than in
-    # the shared subset — the board appends it to the sub-item header itself
+    # it is the sub-items' own column, so it rides in sub_only — and sub_cols
+    # names it too, because sub_cols is also where it stands among the
+    # sub-item columns
     assert [titles[c] for c in (sub_only or [])] == ["קבלן"]
-    assert [titles[c] for c in sub_cols[1:]] == []
+    assert [titles[c] for c in sub_cols[1:]] == ["קבלן"]
     # and the value is on the sub-item
     kid = _kids(d["id"], "תיקון מדרכה")[0]
     assert (kid.custom_fields or {}).get(sub_only[0]) == "כהן"
@@ -144,7 +145,8 @@ def test_a_column_only_the_sub_items_have_is_not_put_on_the_items(client, admin_
     titles = {c["id"]: c["title"] for c in s.get("columns", [])}
     # "אחראי" is on both, so it is one shared column; "שלב" is the sub-items' own
     assert [titles[c] for c in (s.get("sub_only") or [])] == ["שלב"]
-    assert [titles[c] for c in (s.get("sub_cols") or [])[1:]] == ["אחראי"]
+    # both, in the band's own order
+    assert [titles[c] for c in (s.get("sub_cols") or [])[1:]] == ["אחראי", "שלב"]
 
 
 def test_a_column_the_items_and_the_sub_items_share_is_one_column(client, admin_id):

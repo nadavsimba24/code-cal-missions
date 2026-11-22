@@ -265,6 +265,36 @@ def status_labels(settings):
     return out
 
 
+def number_unit(settings):
+    """The unit a monday numbers column shows beside its figures, or "".
+
+    monday keeps it on the column, not in the cell —
+    `{"unit": {"symbol": "custom", "custom_unit": "ימים", "direction": "right"}}`
+    or a currency `symbol` — so it is only here when the query asked for the
+    column definitions. Carried, a migrated "עלות" reads "₪1200" the way it did
+    in monday instead of a bare 1200. Capped at the six characters a number
+    column's unit holds here (see main._number_col_cfg).
+    """
+    if not isinstance(settings, dict):
+        return ""
+    u = settings.get("unit")
+    if not isinstance(u, dict):
+        return ""
+    sym = str(u.get("symbol") or "").strip()
+    if sym.lower() == "custom":
+        sym = str(u.get("custom_unit") or "").strip()
+    elif sym.lower() in ("", "none", "null"):
+        return ""
+    # the currencies by name as well as by sign, whichever spelling the file uses
+    sym = NUMBER_SYMBOLS.get(sym.lower(), sym)
+    return sym[:6]
+
+
+NUMBER_SYMBOLS = {"dollar": "$", "usd": "$", "euro": "€", "eur": "€", "pound": "£",
+                  "gbp": "£", "yen": "¥", "jpy": "¥", "ils": "₪", "nis": "₪",
+                  "shekel": "₪", "percent": "%", "percentage": "%"}
+
+
 def cell_label_color(cv):
     """The colour a single status CELL states, when the query asked for it.
 
@@ -901,11 +931,26 @@ def _cell_value(cv, ctype, assets_by_name, assets_by_id=None, people_by_id=None)
         return True if text else None
 
     if ctype == "number":
-        try:
-            n = float(str(text).replace(",", ""))
-        except (TypeError, ValueError):
-            return None
-        return int(n) if n == int(n) else n
+        # `value` first: it is the bare figure ('"27"'), while `text` is the
+        # rendering and can carry the column's unit ("27 ימים", "$27") — read
+        # as text alone, a cell like that came across as no number at all.
+        raw = cv.get("value")
+        if isinstance(raw, str) and raw:
+            try:
+                raw = json.loads(raw)
+            except Exception:                       # noqa: BLE001
+                pass
+        for cand in (raw, text, re.sub(r"[^\d.\-]", "", text)):
+            if isinstance(cand, bool) or cand in (None, ""):
+                continue
+            try:
+                n = float(str(cand).replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+            if n != n or n in (float("inf"), float("-inf")):
+                continue
+            return int(n) if n == int(n) else n
+        return None
 
     if ctype == "rating":
         r = (val or {}).get("rating") if isinstance(val, dict) else None
@@ -1281,6 +1326,10 @@ def parse(raw, max_cols):
     for c in columns:
         if c["monday_type"] in RETYPED:
             c["note"] = RETYPED[c["monday_type"]]
+        if c["type"] == "number":
+            unit = number_unit((defs.get(c["key"]) or {}).get("settings"))
+            if unit:
+                c["unit"] = unit
     # ── the formulas, now that every column has a title here ────────────
     titles_by_id = {c["key"]: c["title"] for c in columns}
     formulas = []
@@ -1376,6 +1425,16 @@ def parse(raw, max_cols):
             col["note"] = RETYPED[m["type"]]
         columns.append(col)
         sub_only_titles.append(col["title"])
+
+    # The sub-item board's own column order, over the columns built here: a
+    # shared column under the parent's key, a sub-item-only one under its own.
+    # The board used to list the shared ones first, in the PARENT's order, and
+    # the sub-item-only ones after them — so a sub-item board whose columns
+    # interleave the two came across reshuffled. `sorder` is the order the
+    # cells arrive in, which is monday's board order for the sub-item board.
+    built = {c["key"] for c in columns}
+    sub_order = list(dict.fromkeys(sub_key[cid] for cid in sorder
+                                   if sub_key.get(cid) in built))
 
     by_key = {c["key"]: c["type"] for c in columns}
     # column key → {label: #rrggbb}, filled from the cells themselves. The
@@ -1516,6 +1575,8 @@ def parse(raw, max_cols):
         # the board's own history, when the query asked for it
         "activity": activity,
         "columns": columns,
+        # the sub-item rows' columns, in the sub-item board's own order
+        "sub_order": sub_order,
         "items": rows,
         "report": {
             "items": len(rows),
