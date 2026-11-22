@@ -57,15 +57,24 @@ stages:
     steps:
     - checkout: self
 
-    - task: Docker@2
+    # The registry login goes through the ARM connection, not a Docker
+    # registry service connection. The Docker connection held a client
+    # secret, and on 2026-11-22 that secret stopped working ("Invalid clientid
+    # or client secret"), failing every QA run at this step. Missions-QA-ARM
+    # uses workload identity federation, so it has no secret to expire, and
+    # the Deploy stage already reaches this registry through it.
+    - task: AzureCLI@2
       displayName: 'Build and push image to ACR'
       inputs:
-        command: buildAndPush
-        repository: $(imageRepository)
-        dockerfile: $(dockerfilePath)
-        containerRegistry: $(dockerRegistryServiceConnection)
-        tags: |
-          $(tag)
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az acr login -n "$(registryName)"
+          IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
+          docker build -f "$(dockerfilePath)" -t "$IMAGE" "$(Build.SourcesDirectory)"
+          docker push "$IMAGE"
 
 # ============================================================
 # STAGE 2: SECURITY
