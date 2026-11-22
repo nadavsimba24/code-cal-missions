@@ -21568,7 +21568,8 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                     title=(text(cfg.get("text")) or "").strip()[:500] or "פריט חדש",
                     status=grp.task_status or TaskStatus.TODO,
                     priority=Priority.MEDIUM, created_by=actor_id,
-                    custom_fields=dict(_AUTO_MADE_CF))
+                    custom_fields=dict(_AUTO_MADE_CF),
+                    position=_bottom_position(db, task.board_id, grp.id))
         db.add(made)
         db.flush()
         _ensure_item_uid(db, made)
@@ -21597,7 +21598,8 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
                     start_date=task.start_date,
                     estimated_hours=task.estimated_hours,
                     location_lat=task.location_lat, location_lng=task.location_lng,
-                    address=task.address, created_by=actor_id)
+                    address=task.address, created_by=actor_id,
+                    position=_bottom_position(db, task.board_id, grp.id))
         db.add(made)
         db.flush()
         _ensure_item_uid(db, made)
@@ -22056,7 +22058,8 @@ def _create_board_item(db, task, board_id, title, actor_id, group=None):
                 status=grp.task_status if grp else TaskStatus.TODO,
                 priority=Priority.MEDIUM, created_by=actor_id,
                 # nobody chose this priority — see _AUTO_MADE_CF
-                custom_fields=dict(_AUTO_MADE_CF))
+                custom_fields=dict(_AUTO_MADE_CF),
+                position=_bottom_position(db, board_id, grp.id if grp else None))
     db.add(made)
     db.flush()
     _ensure_item_uid(db, made)
@@ -22092,7 +22095,8 @@ def _create_linked_item(db, task, col, board_id, title, actor_id, group=None):
                 status=grp.task_status if grp else TaskStatus.TODO,
                 priority=Priority.MEDIUM, created_by=actor_id,
                 # nobody chose this priority — see _AUTO_MADE_CF
-                custom_fields=dict(_AUTO_MADE_CF))
+                custom_fields=dict(_AUTO_MADE_CF),
+                position=_bottom_position(db, board_id, grp.id if grp else None))
     db.add(made)
     db.flush()
     _ensure_item_uid(db, made)
@@ -30704,6 +30708,24 @@ def _group_items(db, board_id, group_id, exclude_id=None):
 def _renumber_group(db, board_id, group_id):
     for i, t in enumerate(_group_items(db, board_id, group_id)):
         t.position = i
+
+
+def _bottom_position(db, board_id, group_id):
+    """The number that puts a new top-level item last in its group.
+
+    The items an automation makes used to take the column default, 0. That
+    tied them with the group's first row, and the tie went by id, so a rule's
+    item turned up as the SECOND row: not at the bottom where a new item goes,
+    and not at the top either. Every item added after it then had a group whose
+    numbers did not match the order on screen. This is the same rule
+    create_task uses for "+ הוסף פריט", counting the recycle bin too, because
+    a number there can come back.
+    """
+    q = (db.query(func.max(Task.position)).execution_options(include_deleted=True)
+         .filter(Task.board_id == board_id, Task.parent_id == None))   # noqa: E711
+    q = q.filter(Task.group_id == group_id) if group_id is not None else q.filter(Task.group_id == None)  # noqa: E711
+    m = q.scalar()
+    return (m + 1) if m is not None else 0
 
 
 def _place_item(db, task, position=None, after_id=_NO_ANCHOR):
