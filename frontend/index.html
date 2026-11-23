@@ -18183,7 +18183,11 @@ function customCellHTML(c,t){
     return `<td class="cell cell-custom" style="cursor:pointer" onclick="openConnectPicker(event,${id},'${c.id}')">${connectDisp(v,id,c.id)}</td>`;
   }
   if(c.type==='mirror')return `<td class="cell cell-custom" title="${esc(mirrorTip(c))}">${mirrorDisp(v)}</td>`;
-  if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(r)}</span></td>`;}
+  /* A formula whose answer is a number is shown the way a number column is —
+     the unit and the thousands separator its column was given (numberSettings).
+     Only the drawing: evalFormula still answers a number, so sorting, the
+     group sums and the export read the figure and not "₪1,234". */
+  if(c.type==='formula'){const r=evalFormula(c,t);return `<td class="cell cell-custom"><span class="formula-val" title="${esc(c.formula||'')}">${r==null?'<span style=\"color:var(--text-light)\">—</span>':esc(typeof r==='number'?fnum(r,c):r)}</span></td>`;}
   if(c.type==='item_id'){
     // automatic technical identifier — 11 digits, shown as-is (no prefix), never
     // editable. Only a real identifier is ever displayed: falling back to the
@@ -21360,7 +21364,7 @@ function colMenu(e,colId){
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
     +idSettings
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
-    +(c&&c.type==='number'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();numberSettings('${colId}')"><i class="fa-solid fa-sliders"></i> הגדרות עמודת מספר</button>`:'')
+    +(c&&(c.type==='number'||(c.type==='formula'&&formulaIsNumeric(c)))?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();numberSettings('${colId}')"><i class="fa-solid fa-sliders"></i> ${c.type==='formula'?'הגדרות תצוגת מספר':'הגדרות עמודת מספר'}</button>`:'')
     /* "שינוי סוג עמודה". Offered only on a column that holds a value of its
        own — see RETYPE_TYPES — and only to the board admin, who is the only
        one the server will let change a column at all. */
@@ -22454,20 +22458,33 @@ async function saveItemIdSettings(colId){
    The four choices are the ones a municipal board actually needs — nothing,
    shekels, dollars, and whatever else someone is counting (מ"ר, טון, %). */
 const NUM_PRESETS=[['','ללא','1234.5'],['₪','ש"ח','₪1,234.5'],['$','דולר','$1,234.5']];
+/* Does this formula answer with a number? Then it is offered the same screen
+   as a number column — a unit and a thousands separator. Asked of the rows on
+   the board: a formula is an expression over other columns, and what it gives
+   back (a number, a word, a date) is only known by evaluating it. A column
+   that already carries the setting keeps the entry whatever its rows say
+   today, so a setting can always be taken off again. */
+function formulaIsNumeric(c){
+  if(!c||c.type!=='formula'||!c.formula)return false;
+  if(c.number)return true;
+  const rows=(typeof loadedRows==='function'?loadedRows():(st.board&&st.board.tasks))||[];
+  return rows.some(t=>typeof evalFormula(c,t)==='number');
+}
 function numberSettings(colId){
   const c=customColumns().find(x=>x.id===colId); if(!c)return;
   if(!isBoardAdmin()){toast('רק מנהל הלוח');return;}
-  const cfg=numCfg(c);
+  const cfg=numCfg(c), isF=c.type==='formula';
   const preset=NUM_PRESETS.some(p=>p[0]===cfg.unit)?cfg.unit:'custom';
   const opt=(v,t,ex)=>`<label class="subc-opt" style="align-items:center">
       <input type="radio" name="num-unit" class="num-unit" value="${v}" ${preset===v?'checked':''} onchange="numPrevUpd()">
       <span style="display:flex;align-items:center;gap:8px;flex:1"><b style="font-weight:600">${t}</b>
         <small style="color:var(--text-light);font-size:11.5px;direction:ltr">${ex}</small></span>
     </label>`;
-  showModal(`<h2><i class="fa-solid fa-hashtag" style="color:var(--primary)"></i> הגדרות עמודת מספר</h2>
+  showModal(`<h2><i class="fa-solid fa-hashtag" style="color:var(--primary)"></i> ${isF?'הגדרות תצוגת מספר':'הגדרות עמודת מספר'}</h2>
     <div class="mbody">
       <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:12px"><i class="fa-solid fa-circle-info"></i>
-        הסימון והמפריד הם תצוגה בלבד. בתא נשמר המספר עצמו, ולכן המיון, הנוסחאות והייצוא לאקסל ממשיכים לקרוא מספר — אפשר לשנות כאן בכל שלב בלי לגעת בנתונים.</div>
+        ${isF?'הסימון והמפריד הם תצוגה בלבד, והם חלים על תוצאות הנוסחה שהן מספר. הנוסחה ממשיכה לחשב מספר, ולכן המיון והייצוא לאקסל לא משתנים.'
+             :'הסימון והמפריד הם תצוגה בלבד. בתא נשמר המספר עצמו, ולכן המיון, הנוסחאות והייצוא לאקסל ממשיכים לקרוא מספר — אפשר לשנות כאן בכל שלב בלי לגעת בנתונים.'}</div>
       <div class="subc-list">
         ${NUM_PRESETS.map(p=>opt(p[0],p[1],p[2])).join('')}
         <label class="subc-opt" style="align-items:center">

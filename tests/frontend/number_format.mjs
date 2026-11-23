@@ -125,8 +125,10 @@ ck('clicking into a cell shows the figure, which is what can be typed over',
    e2.value==='1234', e2.value);
 
 // ── the screen that sets it ────────────────────────────────────────────────
-ck('the column menu offers the settings on a number column, and only there',
-   /c\.type==='number'\?`<button[^`]*numberSettings/.test(src));
+/* …and on a formula whose answer is a number (asked for 2026-11-23), which is
+   drawn through the same fnum — see test_a_numeric_formula_is_shown_like_a_number. */
+ck('the column menu offers the settings on a number column, and on a numeric formula only',
+   /\(c\.type==='number'\|\|\(c\.type==='formula'&&formulaIsNumeric\(c\)\)\)\?`<button[^`]*numberSettings/.test(src));
 const dlg = grab('numberSettings');
 for(const [name,re] of [['ללא',/'',\s*'ללא'/],['ש"ח',/'₪',\s*'ש"ח'/],
                         ['דולר',/'\$',\s*'דולר'/]])

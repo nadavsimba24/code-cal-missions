@@ -66,6 +66,9 @@ function menuFor(colId, role){
     esc:s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])),
     Views:{active:null},
     isSysAdmin:()=>false,
+    // does a formula answer with a number — pinned by
+    // tests/test_a_numeric_formula_is_shown_like_a_number.py, not here
+    formulaIsNumeric:()=>false,
   };
   const body = [grab('colMenu'), grab('customColumns'), grab('isBoardAdmin'),
                 konst('RETYPE_TYPES')].join('\n');

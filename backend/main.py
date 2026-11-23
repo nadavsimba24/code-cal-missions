@@ -13442,8 +13442,12 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     "copy_mode": (c.get("copy_mode") if c.get("copy_mode") in ("id", "url") else "id")
                                  if c["type"] == "item_id" else None,
                     # "מספר": the unit shown beside the figure and whether the
-                    # thousands are grouped — how it is read, not what is stored
-                    "number": _number_col_cfg(c.get("number")) if c["type"] == "number" else None,
+                    # thousands are grouped — how it is read, not what is stored.
+                    # A formula carries the same, for the results that are
+                    # numbers; it was dropped here, so a formula column could
+                    # never keep a ₪ or a separator however often it was saved.
+                    "number": _number_col_cfg(c.get("number"))
+                              if c["type"] in ("number", "formula") else None,
                     # "רשימה": the options retired from new selection — still
                     # real words on the cells that carry them, just no longer
                     # offered. Kept only where they still name an option of

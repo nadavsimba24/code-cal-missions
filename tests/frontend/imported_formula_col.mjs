@@ -28,11 +28,14 @@ let cols=[], shown='';
    tests/frontend/column_retype_menu.mjs. */
 const RETYPE_TYPES = new Function(
   /^const RETYPE_TYPES=[\s\S]*?;$/m.exec(src)[0]+'\nreturn RETYPE_TYPES;')();
+/* …and formulaIsNumeric, which asks whether a formula answers with a number
+   (the "הגדרות תצוגת מספר" entry). Stubbed: what it decides is pinned by
+   tests/test_a_numeric_formula_is_shown_like_a_number.py. */
 const colMenu = new Function('customColumns','st','isBoardAdmin','esc','openCellPop','ColPerms',
-  'RETYPE_TYPES',
+  'RETYPE_TYPES','formulaIsNumeric',
   grab('colMenu')+'\nreturn colMenu;')(
   ()=>cols, {board:{my_role:'admin'}}, ()=>true, x=>String(x==null?'':x),
-  (el,html)=>{shown=html;}, {open(){}}, RETYPE_TYPES);
+  (el,html)=>{shown=html;}, {open(){}}, RETYPE_TYPES, ()=>false);
 
 let pass=0, fail=0;
 const ck=(n,c,x='')=>{ c?(pass++,console.log('  OK   '+n)) : (fail++,console.log('  FAIL '+n+(x?'  → '+x.slice(0,300):''))); };
