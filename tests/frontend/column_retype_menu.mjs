@@ -70,7 +70,7 @@ function menuFor(colId, role){
     // tests/test_a_numeric_formula_is_shown_like_a_number.py, not here
     formulaIsNumeric:()=>false,
   };
-  const body = [grab('colMenu'), grab('customColumns'), grab('isBoardAdmin'),
+  const body = [grab('colTypeOptsHTML'), grab('colMenu'), grab('customColumns'), grab('isBoardAdmin'),
                 konst('RETYPE_TYPES')].join('\n');
   const run = new Function('sandbox', `with(sandbox){ ${body}
     colMenu({stopPropagation(){}, currentTarget:null}, ${JSON.stringify(colId)}); }`);

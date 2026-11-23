@@ -154,7 +154,7 @@ function makeSandbox(opts){
   const body = [
     konst('esc'), grab('customColumns'), grab('isBoardAdmin'), grab('meId'),
     grab('withMe'), grab('colTypeHe'), grab('linkPendingHTML'),
-    grab('customCellHTML'), grab('colMenu'), grab('retypeColumn'),
+    grab('customCellHTML'), grab('colTypeOptsHTML'), grab('colMenu'), grab('retypeColumn'),
     konst('COLUMN_TYPES'), konst('RETYPE_TYPES'), konst('RETYPE_RULE'),
     konst('LINK_MATCH_STEPS'), konst('LINK_MATCH_REASONS'),
     konst('LINK_MATCH_WHY_SHORT'), konst('LINK_MATCH_WHY'),

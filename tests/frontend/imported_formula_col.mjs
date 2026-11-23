@@ -33,7 +33,7 @@ const RETYPE_TYPES = new Function(
    tests/test_a_numeric_formula_is_shown_like_a_number.py. */
 const colMenu = new Function('customColumns','st','isBoardAdmin','esc','openCellPop','ColPerms',
   'RETYPE_TYPES','formulaIsNumeric',
-  grab('colMenu')+'\nreturn colMenu;')(
+  grab('colTypeOptsHTML')+grab('colMenu')+'\nreturn colMenu;')(
   ()=>cols, {board:{my_role:'admin'}}, ()=>true, x=>String(x==null?'':x),
   (el,html)=>{shown=html;}, {open(){}}, RETYPE_TYPES, ()=>false);
 

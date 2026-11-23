@@ -1168,6 +1168,9 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    say so even when the pointer is somewhere else. */
 .grp-check{flex-shrink:0;width:15px;height:15px;margin:0;cursor:pointer;accent-color:var(--primary);opacity:.3;transition:opacity .12s}
 .col-head-row:hover .grp-check,.grp-check:checked,.grp-check:indeterminate,.grp-check:focus-visible{opacity:1}
+/* the sub-item table's "all of this parent's sub-items" box — the group box's look */
+.sub-grp-check{flex-shrink:0;width:15px;height:15px;margin:0;cursor:pointer;accent-color:var(--primary);opacity:.3;transition:opacity .12s}
+.sub-h:hover .sub-grp-check,.sub-grp-check:checked,.sub-grp-check:indeterminate,.sub-grp-check:focus-visible{opacity:1}
 /* The header centres its label, so the box cannot ride in the same flow and
    still line up with the column of item checkboxes under it. 12px is the item
    cell's own inline padding — the two are in one column, exactly. */
@@ -1282,6 +1285,12 @@ tr:hover .row-grip{opacity:.55}
 .subtbl .sub-item-row.sortable-drag .sub-name-cell,.subtbl .sub-item-row:active .sub-name-cell{cursor:grabbing}
 .subtbl .sub-name-cell .ci-flex{display:flex;align-items:center;gap:6px;min-height:26px}
 .subtbl .sub-h-add,.subtbl .sub-endcell{border-inline-start:none;background:var(--bg)}
+/* the sub-item header's resize handle — same look as the item table's
+   .col-resizer; the header cell anchors it (sub headers are otherwise static) */
+.subtbl thead th{position:relative}
+.sub-col-resizer{position:absolute;top:0;inset-inline-end:0;width:10px;height:100%;cursor:col-resize;z-index:6;touch-action:none}
+.sub-col-resizer::after{content:"";position:absolute;top:6px;bottom:6px;inset-inline-end:1px;width:2px;border-radius:2px;background:transparent;transition:background .12s}
+.sub-col-resizer:hover::after,.sub-col-resizer.dragging::after{background:var(--primary)}
 .sub-add-cell{padding:9px 18px;color:var(--text-muted);font-size:13px;text-align:start}
 .sub-del{margin-inline-start:auto;color:var(--text-light);opacity:0;transition:.12s;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;font-size:12px}
 .sub-item-row:hover .sub-del{opacity:1}
@@ -3089,6 +3098,7 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
      is still tappable where it sits, but it is not visible. */
   .item-check{display:none}
   .grp-check{display:none}
+  .sub-grp-check{display:none}
   #sel-bar{display:none}
   /* sidebar becomes an off-canvas drawer sliding in from the right (RTL) */
   #sidebar{position:fixed;top:0;bottom:0;right:0;left:auto;width:82vw;max-width:320px;min-width:0;
@@ -4146,6 +4156,7 @@ async function boot(){
   revealWhenFontsReady();
   try{ if(localStorage.getItem('cc_sb_collapsed')==='1') document.body.classList.add('sb-collapsed'); }catch(e){}
   initSidebarResize();
+  initSubColResizers();   // one delegated listener serves every sub-item panel ever drawn
   initPinShadow();
   try{
     // Who are we? The server decides, from the Entra identity on the request.
@@ -17395,24 +17406,73 @@ function subPanelHTML(t,subs,col){
       <tbody class="sub-body" data-parent="${t.id}">${rows}${addRow}</tbody>
     </table></div>`;
 }
+/* A sub-item column's width. The sub-table has widths of its own
+   (board.sub_col_widths, set by a board admin dragging a sub-item header);
+   a column nobody has resized there yet keeps what it always had — the
+   item table's width for that column, and 260px for the name. */
+function subColWidth(c){
+  const own=((st.board&&st.board.sub_col_widths)||{})[String(c.id)];
+  if(own) return own;
+  return c.id==='item' ? 260 : (colWidthMap()[String(c.id)]||140);
+}
 function subColgroupHTML(cols,admin){
-  const m=colWidthMap();
-  const w=c=> c.id==='item' ? 260 : (m[String(c.id)]||140);
-  let cg=cols.map(c=>`<col style="width:${w(c)}px">`).join('');
+  let cg=cols.map(c=>`<col data-subkey="${esc(String(c.id))}" style="width:${subColWidth(c)}px">`).join('');
   if(admin)cg+=`<col style="width:44px">`;
   return `<colgroup>${cg}</colgroup>`;
+}
+/* The sub-item header's drag handle. Its own class, not .col-resizer: the item
+   table's resizers are bound per group by initColResizers, which would find
+   these inside the open panels too and resize the ITEM column of the same key. */
+function subResizerHTML(id){
+  return isBoardAdmin()?`<span class="sub-col-resizer" data-subkey="${esc(String(id))}" title="גרור לשינוי רוחב העמודה"></span>`:'';
+}
+/* One delegated listener for every sub-item panel, present and future: a panel
+   is drawn when its parent opens and redrawn on every patch, so binding each
+   handle as it is drawn would miss the ones toggleSubs and patchRow create.
+   Dragging moves the column in every open panel at once — the widths are the
+   board's, the same under every parent — and the drop saves them. */
+function initSubColResizers(){
+  if(initSubColResizers._on) return; initSubColResizers._on=true;
+  document.addEventListener('mousedown',e=>{
+    const rz=e.target.closest&&e.target.closest('.sub-col-resizer'); if(!rz||!st.board)return;
+    e.preventDefault(); e.stopPropagation();
+    const key=rz.dataset.subkey;
+    const rtl=(document.documentElement.getAttribute('dir')||document.dir||'rtl')==='rtl';
+    const cols=()=>[...document.querySelectorAll('.subtbl col[data-subkey="'+CSS.escape(key)+'"]')];
+    const startX=e.clientX;
+    const own=rz.closest('table').querySelector('col[data-subkey="'+CSS.escape(key)+'"]');
+    const startW=parseFloat(own&&own.style.width)||140;
+    let w=startW;
+    rz.classList.add('dragging'); document.body.style.cursor='col-resize'; document.body.style.userSelect='none';
+    const move=ev=>{
+      const delta=rtl?(startX-ev.clientX):(ev.clientX-startX);
+      w=Math.max(60,Math.min(600,Math.round(startW+delta)));
+      cols().forEach(c=>c.style.width=w+'px');
+      if(typeof fitLinkChipsSoon==='function') fitLinkChipsSoon();
+    };
+    const up=async()=>{
+      document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up);
+      rz.classList.remove('dragging'); document.body.style.cursor=''; document.body.style.userSelect='';
+      if(w===startW)return;
+      const board=st.board;
+      board.sub_col_widths=Object.assign({},board.sub_col_widths||{},{[key]:w});
+      try{await api('/api/boards/'+board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({sub_col_widths:board.sub_col_widths})});}
+      catch(err){toast('שגיאה בשמירת רוחב העמודה');}
+    };
+    document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+  },true);
 }
 /* the sub-table's own header row — its columns behave like the main header
    (rename in place, "..." menu, sort), but they are the sub-item column set */
 function subHeadHTML(parentId,cols,admin){
   const gear=admin?`<button class="th-menu" title="הגדרת עמודות תת-פריט" onclick="event.stopPropagation();subColsConfig()"><i class="fa-solid fa-gear"></i></button>`:'';
-  const name=`<th class="sub-h-name" data-subcol="item"><span class="th-in"><span class="th-lbl">תת-פריט</span>${gear}${subSortBtn('item')}</span></th>`;
+  const name=`<th class="sub-h-name" data-subcol="item"><span class="th-in">${subGroupCheckHTML(parentId)}<span class="th-lbl">תת-פריט</span>${gear}${subSortBtn('item')}</span>${subResizerHTML('item')}</th>`;
   const rest=cols.filter(c=>c.id!=='item').map(c=>{
     const menu=admin?`<button class="th-menu" title="עמודת תת-פריט" onclick="subColMenu(event,'${c.id}',${parentId})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
     const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startSubColRename('${c.kind}','${c.id}',${parentId})"`:' class="th-lbl"';
     // the same grip the item header has; startColDrag knows this row too
     const grip=admin?`<i class="fa-solid fa-grip-vertical col-grip" title="גרור לשינוי מיקום העמודה"></i>`:'';
-    return `<th class="sub-h-cell" data-subcol="${esc(String(c.id))}"><span class="th-in">${grip}<span${dbl}>${esc(subColLabel(c))}</span>${menu}${subSortBtn(c.id)}</span></th>`;
+    return `<th class="sub-h-cell" data-subcol="${esc(String(c.id))}"><span class="th-in">${grip}<span${dbl}>${esc(subColLabel(c))}</span>${menu}${subSortBtn(c.id)}</span>${subResizerHTML(c.id)}</th>`;
   }).join('');
   const add=admin?`<th class="sub-h-add"><button class="th-add-btn" title="הוסף עמודה — קיימת רק בתת-הפריט" onclick="event.stopPropagation();addColMenu(event,true)"><i class="fa-solid fa-plus"></i></button></th>`:'';
   return `<tr class="sub-h">${name}${rest}${add}</tr>`;
@@ -17426,8 +17486,13 @@ function subItemRowHTML(s,cols,admin,parentId){
   const sid=parseInt(s.id,10)||0, pid=parseInt(parentId,10)||0;
   const rest=cols.filter(c=>c.id!=='item')
     .map(c=>c.kind==='builtin'?builtinCellHTML(c.key,s):customCellHTML(c.col,s)).join('');
-  return `<tr class="sub-item-row" data-sid="${sid}" data-parent="${pid}">
+  // The same selection box an item row has, feeding the same bulk bar — a
+  // sub-item is a row somebody may want to tick, delete or copy with others.
+  // Offered only where this person may edit the sub-item, as on items.
+  const box=canEditItem(s)?`<input type="checkbox" class="item-check" title="סימון תת-פריט" ${st.selected.has(sid)?'checked':''} onclick="toggleItemSelect(event,${sid})">`:'';
+  return `<tr class="sub-item-row${st.selected.has(sid)?' row-sel':''}" data-sid="${sid}" data-parent="${pid}">
       <td class="sub-name-cell" data-tipf="${esc(s.title)}"><div class="ci-flex">
+        ${box}
         <span class="item-title editable" data-tipf="${esc(s.title)}" data-tiph="לחץ לעריכת השם" onclick="titleEdit(event,${sid})">${esc(s.title)}</span>
         ${chatBtnHTML(s)}
         <button class="sub-del" title="מחק תת-פריט" onclick="deleteSubItem(event,${sid})"><i class="fa-solid fa-trash"></i></button>
@@ -17472,8 +17537,23 @@ function subColMenu(e,id,parentId){
   const del=onlyHere
     ? `<button class="cell-pop-opt2" style="color:var(--red)" onclick="deleteColumn(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`
     : `<button class="cell-pop-opt2" style="color:var(--red)" onclick="removeSubCol(event,'${c.id}')"><i class="fa-solid fa-trash"></i> מחק עמודה</button>`;
+  /* What the item header offers for the same column, through the same
+     function (colTypeOptsHTML) — status labels, number display, change of
+     type, formula, mirror, link. A column that is not sub-item-only IS the
+     item's column, shown in a second place: retyping it or changing how its
+     numbers read changes it under the items too, and the menu says so before
+     anyone finds out from the board.
+     "בחר עמודות תת-פריט" used to sit here, in every column's menu. It is not
+     about the column it was opened from — it picks which columns sub-items
+     show at all — so it lives once, on the gear in the "תת-פריט" header. */
+  const typeOpts=c.kind==='custom'
+    ? colTypeOptsHTML(c.col,String(c.col.id),isBoardAdmin())
+    : (c.key==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageStatuses()"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`
+      :c.key==='priority'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();managePriorities()"><i class="fa-solid fa-sliders"></i> ניהול עדיפויות</button>`:'');
+  const shared=typeOpts&&!onlyHere
+    ? `<div class="rm-note" style="max-width:260px">העמודה משותפת לפריטים ולתתי-הפריטים — הגדרה שתשני כאן תחול על שניהם</div>`:'';
   const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startSubColRename('${c.kind}','${c.id}',${parentId})"><i class="fa-solid fa-pen"></i> שנה שם</button>`
-    +`<button class="cell-pop-opt2" onclick="closeCellPops();subColsConfig()"><i class="fa-solid fa-diagram-next"></i> בחר עמודות תת-פריט</button>`
+    +shared+typeOpts
     +del;
   openCellPop(e.currentTarget,html);
 }
@@ -21364,18 +21444,14 @@ async function saveConnectCol(existingColId){
   else{cols=customColumns().slice();cols.push({type:'connect',title,connect});}
   closeModals(); await saveColumns(cols); toast('עמודת הקישור נשמרה');
 }
-function colMenu(e,colId){
-  e.stopPropagation();
-  const c=customColumns().find(x=>x.id===colId);
-  const isAdmin=st.board&&st.board.my_role==='admin';
-  // "מזהה פריט": הגדרות ← התאמות עמודת מזהה פריט (copy behaviour only)
-  const idSettings=(c&&c.type==='item_id')?`<div class="pop-sub">
-      <button class="cell-pop-opt2" onclick="togglePopSub(event)"><i class="fa-solid fa-sliders"></i> הגדרות<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
-      <div class="pop-subm"><button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();itemIdSettings('${colId}')"><i class="fa-solid fa-hashtag"></i> התאמות עמודת מזהה פריט</button></div>
-    </div>
-    <button class="cell-pop-opt2" onclick="duplicateColumn(event,'${colId}')"><i class="fa-regular fa-clone"></i> שכפל עמודה</button>`:'';
-  const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
-    +idSettings
+/* What a column offers because of its TYPE — status labels, number display,
+   change of type, formula, mirror, link, an open conversion. One list for
+   both menus: the item header's (colMenu) and the sub-item header's
+   (subColMenu). The sub-item menu used to be written separately and had none
+   of these, so a number column under an item could not be set up from where
+   it is shown, and nobody could change a sub-item column's type at all. */
+function colTypeOptsHTML(c,colId,isAdmin){
+  return ''
     +(c&&c.type==='status'?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();manageColStatuses('${colId}')"><i class="fa-solid fa-sliders"></i> ניהול סטטוסים</button>`:'')
     +(c&&(c.type==='number'||(c.type==='formula'&&formulaIsNumeric(c)))?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();numberSettings('${colId}')"><i class="fa-solid fa-sliders"></i> ${c.type==='formula'?'הגדרות תצוגת מספר':'הגדרות עמודת מספר'}</button>`:'')
     /* "שינוי סוג עמודה". Offered only on a column that holds a value of its
@@ -21413,7 +21489,21 @@ function colMenu(e,colId){
     +(c&&c.type==='connect'&&c.conversion&&isBoardAdmin()
       ?(c.conversion.open
         ?`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();LinkMatch.openExceptions('${colId}')"><i class="fa-solid fa-triangle-exclamation" style="color:var(--orange)"></i> טיפול בחריגות (${c.conversion.open})</button>`
-        :`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();LinkMatch.openExceptions('${colId}')"><i class="fa-solid fa-rotate-left"></i> ההמרה לקישור — ביטול</button>`):'')
+        :`<button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();LinkMatch.openExceptions('${colId}')"><i class="fa-solid fa-rotate-left"></i> ההמרה לקישור — ביטול</button>`):'');
+}
+function colMenu(e,colId){
+  e.stopPropagation();
+  const c=customColumns().find(x=>x.id===colId);
+  const isAdmin=st.board&&st.board.my_role==='admin';
+  // "מזהה פריט": הגדרות ← התאמות עמודת מזהה פריט (copy behaviour only)
+  const idSettings=(c&&c.type==='item_id')?`<div class="pop-sub">
+      <button class="cell-pop-opt2" onclick="togglePopSub(event)"><i class="fa-solid fa-sliders"></i> הגדרות<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
+      <div class="pop-subm"><button class="cell-pop-opt2" onclick="event.stopPropagation();closeCellPops();itemIdSettings('${colId}')"><i class="fa-solid fa-hashtag"></i> התאמות עמודת מזהה פריט</button></div>
+    </div>
+    <button class="cell-pop-opt2" onclick="duplicateColumn(event,'${colId}')"><i class="fa-regular fa-clone"></i> שכפל עמודה</button>`:'';
+  const html=`<button class="cell-pop-opt2" onclick="closeCellPops();startColRename('custom','${colId}')"><i class="fa-solid fa-pen"></i> שנה שם</button>`
+    +idSettings
+    +colTypeOptsHTML(c,colId,isAdmin)
     /* Column permissions are offered inside a saved טבלה view and nowhere
        else. The feature itself is old — it predates this work by months, and
        the server has enforced it all along — but setting them is part of what
@@ -22764,6 +22854,14 @@ function toggleSubs(e,id){
   const src=e.currentTarget, row=src&&src.closest?src.closest('tr'):null;
   const open=!st.openSubs.has(id);
   if(open)st.openSubs.add(id); else st.openSubs.delete(id);
+  /* Folding the panel hides its ticked sub-items, and the bulk bar must never
+     act on rows nobody can see (the rule the group box keeps). They leave the
+     selection as they go out of sight. */
+  if(!open){
+    const p=findAnyTask(id); let drop=false;
+    ((p&&p.subtasks)||[]).forEach(s=>{ if(st.selected.delete(s.id)) drop=true; });
+    if(drop){ renderSelBar(); syncGroupChecks(); }
+  }
   const caret=row?row.querySelector('.sub-toggle'):null;
   if(caret)caret.classList.toggle('open',open);
   const badge=row?row.querySelector('.sub-badge'):null;
@@ -22782,6 +22880,16 @@ function toggleSubs(e,id){
       if(sb&&window.Sortable)subSortableOn(sb);
       try{ fitLinkChips(cell); }catch(e){}
     }
+  }
+  if(open){
+    // a panel drawn earlier and folded keeps the boxes it had; they are
+    // re-read off the selection, which folding emptied of these sub-items
+    wrap.querySelectorAll('tr[data-sid]').forEach(r=>{
+      const on=st.selected.has(+r.dataset.sid);
+      r.classList.toggle('row-sel',on);
+      const box=r.querySelector('.item-check'); if(box)box.checked=on;
+    });
+    syncSubGroupChecks();
   }
   wrap.style.display=open?'table-row':'none';
 }
@@ -22932,6 +23040,44 @@ function syncGroupChecks(){
     box.checked=on>0&&on===sel.length;
     box.indeterminate=on>0&&on<sel.length;
   });
+  // the sub-item tables' parent boxes are read off the same selection
+  if(typeof syncSubGroupChecks==='function') syncSubGroupChecks();
+}
+/* ===== סימון תתי-פריטים =====
+   The group box one level down: the box in a sub-item table's header marks
+   every sub-item of that one parent. Same three states, same rule — it covers
+   the sub-items this person may edit, which are the ones with a box of their
+   own. A parent with none of those draws no box. */
+function subSelectable(parentId){
+  const p=findAnyTask(parentId);
+  return ((p&&p.subtasks)||[]).filter(s=>canEditItem(s));
+}
+function subGroupCheckHTML(parentId){
+  const pid=parseInt(parentId,10)||0;
+  const sel=subSelectable(pid); if(!sel.length) return '';
+  const on=sel.filter(s=>st.selected.has(s.id)).length;
+  return `<input type="checkbox" class="sub-grp-check" title="סימון כל תתי-הפריטים" data-parent="${pid}" ${on===sel.length?'checked':''} onclick="toggleSubGroupSelect(event,${pid})">`;
+}
+function toggleSubGroupSelect(e,parentId){
+  e.stopPropagation();
+  const on=!!e.currentTarget.checked;
+  const ids=new Set(subSelectable(parentId).map(s=>s.id));
+  ids.forEach(id=>{ on?st.selected.add(id):st.selected.delete(id); });
+  // painted in place, like the group box — a re-render would fold the panel
+  const panel=e.currentTarget.closest('.sub-panel');
+  if(panel) panel.querySelectorAll('tr[data-sid]').forEach(r=>{
+    if(!ids.has(+r.dataset.sid))return;
+    r.classList.toggle('row-sel',on);
+    const box=r.querySelector('.item-check'); if(box)box.checked=on;
+  });
+  renderSelBar(); syncGroupChecks();
+}
+function syncSubGroupChecks(){
+  document.querySelectorAll('.sub-grp-check').forEach(box=>{
+    const sel=subSelectable(+box.dataset.parent), on=sel.filter(s=>st.selected.has(s.id)).length;
+    box.checked=on>0&&on===sel.length;
+    box.indeterminate=on>0&&on<sel.length;
+  });
 }
 /* ===== bulk-selection action bar ===== */
 function renderSelBar(){
@@ -22959,11 +23105,19 @@ function clearSelection(){
   // the group boxes are read off the selection, so they empty with it — the
   // indeterminate one included, which no :checked selector would have reached
   document.querySelectorAll('.grp-check').forEach(c=>{c.checked=false;c.indeterminate=false;});
+  document.querySelectorAll('.sub-grp-check').forEach(c=>{c.checked=false;c.indeterminate=false;});
   closeCellPops(); renderSelBar();
 }
 function _selectedTopItems(){ return [...st.selected].map(id=>findAnyTask(id)).filter(t=>t&&!t.parent_id); }
+/* Sub-items in the selection, minus those whose parent is selected as well:
+   deleting the parent takes its sub-items with it, and a second DELETE for
+   each would only come back 404 and be counted as a failure. */
+function _selectedSubItems(){
+  return [...st.selected].map(id=>findAnyTask(id))
+    .filter(s=>s&&s.parent_id&&!st.selected.has(s.parent_id));
+}
 async function bulkDelete(){
-  const items=_selectedTopItems(); if(!items.length)return;
+  const items=_selectedTopItems().concat(_selectedSubItems()); if(!items.length)return;
   // A selection can be mixed. Refusing the whole thing would be wrong, and so
   // would deleting part of it in silence — the dialog counts what will really
   // go, and says what is being left behind and why.
@@ -22993,7 +23147,7 @@ async function bulkDelete(){
   },{title:'מחיקת פריטים',confirmText:'מחק',note});
 }
 async function bulkDuplicate(){
-  const items=_selectedTopItems(); if(!items.length)return;
+  const items=_selectedTopItems(); if(!st.selected.size)return;
   let ok=0;
   for(const t of items){
     const body={board_id:st.board.id,group_id:t.group_id,title:(t.title||'')+' (עותק)',
@@ -23004,11 +23158,31 @@ async function bulkDuplicate(){
     // into an array nothing draws from and the copies never appeared
     try{ const nt=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)}); loadedRows().push(nt); ok++; }catch(e){}
   }
+  // A ticked sub-item is copied under its own parent, beside the original.
+  // The server takes the board and the group from the parent.
+  for(const s of [...st.selected].map(id=>findAnyTask(id)).filter(x=>x&&x.parent_id)){
+    const body={parent_id:s.parent_id,title:(s.title||'')+' (עותק)',
+                status:s.status,priority:s.priority,
+                custom_fields:{...(s.custom_fields||{})}};
+    try{
+      const ns=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)});
+      const p=findAnyTask(s.parent_id);
+      if(p&&ns&&ns.id){ p.subtasks=(p.subtasks||[]).concat(ns); p.subtask_count=(p.subtask_count||0)+1; }
+      ok++;
+    }catch(e){}
+  }
   clearSelection(); renderView(); toast(`${ok} פריטים שוכפלו`);
 }
 function bulkMoveMenu(e){
   e.stopPropagation();
   if(!st.selected.size)return;
+  // A sub-item has no group or board of its own to be moved to — it travels
+  // with its parent. A selection of sub-items alone says so instead of opening
+  // a menu whose every choice would do nothing; a mixed one moves the items
+  // and the menu says the ticked sub-items stay where they are.
+  const nTop=_selectedTopItems().length, nSub=st.selected.size-nTop;
+  if(!nTop){ toast('תת-פריט עובר יחד עם הפריט שלו — סמן את הפריט כדי להעביר'); return; }
+  const subNote=nSub?`<div class="rm-note">${nSub} תתי-פריטים שסומנו יישארו אצל הפריט שלהם</div>`:'';
   const groups=(st.board&&st.board.groups)||[];
   const groupList=groups.length
     ? groups.map(g=>`<button class="rm-item" onclick="bulkMoveToGroup(event,${g.id})"><span class="rm-dot" style="background:${g.color||'#0073ea'}"></span> ${esc(g.name)}</button>`).join('')
@@ -23022,7 +23196,7 @@ function bulkMoveMenu(e){
       <button class="rm-item" onclick="togglePopSub(event)"><i class="fa-solid ${icon}"></i> ${label}<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
       <div class="pop-subm">${inner}</div>
     </div>`;
-  const html=`<div class="row-menu" onclick="event.stopPropagation()">`
+  const html=`<div class="row-menu" onclick="event.stopPropagation()">`+subNote
     +sub('fa-layer-group','קבוצה',groupList)
     +sub('fa-table-columns','לוח',boardList)
     +`</div>`;

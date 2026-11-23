@@ -10753,6 +10753,9 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             "col_perms": ({c["id"]: _col_perm(c, user_id, my_role) for c in columns}
                           if user_id is not None else {}),
             "col_widths": (b.settings or {}).get("col_widths", {}),
+            # the sub-item table's own widths; a column not named here falls
+            # back to its item-table width (see subColgroupHTML)
+            "sub_col_widths": (b.settings or {}).get("sub_col_widths", {}),
             "col_labels": (b.settings or {}).get("col_labels", {}),
             "col_hidden": (b.settings or {}).get("col_hidden", []),
             "col_order": (b.settings or {}).get("col_order", []),
@@ -13257,6 +13260,24 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
                     continue
             s = dict(b.settings or {})
             s["col_widths"] = widths
+            b.settings = s
+        if data.get("sub_col_widths") is not None:
+            # The sub-item table is its own, narrower table, set in from the
+            # parent row. It used to borrow the item table's widths, so a
+            # status column widened for the items widened every sub-item panel
+            # with it, and the sub-item name was fixed at 260px for everybody.
+            # Its widths are kept apart, under the same rule and the same
+            # clamp: a board admin drags them, everybody sees them.
+            if _board_role(db, board_id, actor_id) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לשנות רוחב עמודות")
+            sub_widths = {}
+            for k, v in (data["sub_col_widths"] or {}).items():
+                try:
+                    sub_widths[str(k)] = max(60, min(600, int(v)))
+                except (TypeError, ValueError):
+                    continue
+            s = dict(b.settings or {})
+            s["sub_col_widths"] = sub_widths
             b.settings = s
         if data.get("col_labels") is not None:
             # rename a built-in column header (e.g. "פריט") — board admin
