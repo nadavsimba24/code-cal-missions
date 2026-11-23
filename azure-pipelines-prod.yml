@@ -85,15 +85,26 @@ stages:
         MEND_URL: $(MENDURL)
 
     # Docker build/push only starts if the preceding Mend tasks succeed.
-    - task: Docker@2
+    #
+    # The registry login goes through the ARM connection, not the Docker
+    # registry service connection. That connection held a client secret, and
+    # on 2026-11-23 it failed release run 51601 at this step with "Invalid
+    # clientid or client secret" — the same expiry that stopped QA on
+    # 2026-11-22 (fixed there in 31092d7). Missions-PROD-ARM uses workload
+    # identity federation, so it has no secret to expire, and the Deploy stage
+    # already reaches this registry through it.
+    - task: AzureCLI@2
       displayName: Build and push an image to container registry
       inputs:
-        command: buildAndPush
-        repository: $(imageRepository)
-        dockerfile: $(dockerfilePath)
-        containerRegistry: $(dockerRegistryServiceConnection)
-        tags: |
-          $(tag)
+        azureSubscription: $(azureServiceConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az acr login -n "$(registryName)"
+          IMAGE="$(containerRegistry)/$(imageRepository):$(tag)"
+          docker build -f "$(dockerfilePath)" -t "$IMAGE" "$(Build.SourcesDirectory)"
+          docker push "$IMAGE"
 
 - stage: Deploy
   displayName: Deploy to the production Web App
