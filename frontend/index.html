@@ -9726,8 +9726,18 @@ const Automations = {
       }catch(e){ this.recipes=[]; this.blueprint=[]; }
     }
     // what the engine can actually be asked — the operators each column type
-    // offers, and the types it has nothing to say about
-    if(!this.caps){
+    // offers, and the types it has nothing to say about.
+    /* Asked again whenever the board is not the one it was asked about. It
+       was asked once per page load, so after the automations of one board had
+       been opened, every other board's rule-builder offered THAT board's
+       columns: the field mapping of a cross-board rule listed a brand-new
+       board's default fields as "השדה בפריט המקור", and none of the source
+       board's own. The answer names its board (board_id), which is what this
+       compares against. */
+    // the target boards' columns are read for the same reason — a column
+    // added there since the last opening has to be on offer
+    this._mapCols={};
+    if(!this.caps||this.caps.board_id!==bid){
       try{ this.caps=await api('/api/automation-capabilities?board_id='+bid
                                +(meId()?'&user_id='+meId():'')); }
       catch(e){ this.caps=null; }
