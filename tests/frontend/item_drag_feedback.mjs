@@ -7,13 +7,17 @@
    holds for all three things a board can drag — an item, a sub-item, a whole
    group — since it is the same false success in each.
 
-   And a drag reorders a group; it does not re-file the item. Which group an
-   item belongs to is a decision about the work, made in the item's menu or the
-   bulk bar, so each group's tbody is a Sortable of its own with no shared group
-   name: a row dragged at another group is refused and springs back. Nothing is
-   folded away for the length of the gesture any more, because there is nothing
-   further down the board to reach, and nothing is painted on the row once it
-   lands — it is under the cursor that just let go of it.
+   A drag can now take an item into another group as well — every group's
+   tbody joins one Sortable group, 'items'. It used to be refused, when which
+   group an item belongs to was left to the item menu and the bulk bar alone;
+   it was asked for, on the condition that the person can always tell exactly
+   where the item will land and that the gesture selects no text on the way.
+   So the landing place is shown while the row is in the air (ItemDrag reads
+   it through itemSpot, the same answer the drop sends), the ללא קבוצה bucket
+   still takes nothing from a real group, and the status is still not sent.
+   Nothing is folded away for the length of the gesture, no group is opened
+   under the pointer, and nothing is painted on the row once it lands — it is
+   under the cursor that just let go of it.
    Driven by tests/test_item_drag_feedback.py. */
 import fs from 'fs';
 import path from 'path';
@@ -92,8 +96,32 @@ const body=(anchor,head)=>{ const i=src.indexOf(anchor); const j=src.indexOf(hea
   for(let k=src.indexOf('{',j);k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)return src.slice(j,k+1);} } };
 const itemList = body("el.querySelectorAll('.tbl tbody[data-gid]')",'sortableOn(tb,{');
 const onEnd = body("el.querySelectorAll('.tbl tbody[data-gid]')",'onEnd:async(evt)=>{');
-ck('each group is a list of its own — no shared group name to cross',
-   !/group:/.test(itemList), itemList.slice(0,120));
+ck('every group\'s list joins one shared group, so a row can cross between them',
+   /group:'items'/.test(itemList), itemList.slice(0,120));
+ck('the ללא קבוצה bucket still takes nothing from a real group',
+   /!\(evt\.to!==evt\.from&&!evt\.to\.dataset\.gid\)/.test(itemList));
+ck('a drag selects no text, from its start to the release',
+   /ItemDrag\.start\(evt\.item,_itemDragFrom\)/.test(itemList) && /start\(row,from\)\{[\s\S]*?this\.noSelect\(true\)/.test(src)
+   && /removeAllRanges/.test(src) && /onUnchoose:\(\)=>ItemDrag\.noSelect\(false\)/.test(itemList)
+   && /body\.drag-noselect \*\{[^}]*user-select:none/.test(src));
+ck('but a press that never becomes a drag still lets a double-click select',
+   !/onChoose:\(\)=>ItemDrag\.noSelect/.test(itemList));
+ck('on a board loaded in pages, the rows are pulled again after a drop, as the item menu does',
+   /if\(filterMode\(\)==='server'\)\{ Paged\.load\(true\); toast\(msg\); return; \}/.test(onEnd)
+   && onEnd.indexOf('Paged.load(true)') < onEnd.lastIndexOf('renderView()'));
+ck('a live update waits for a drag to land before redrawing the board',
+   /busy\(\)\{[\s\S]{0,400}drag-noselect/.test(src));
+const ID=src.slice(src.indexOf('const ItemDrag={'), src.indexOf('\n};', src.indexOf('const ItemDrag={')));
+ck('where it will land is read off the placeholder through itemSpot, as the drop is',
+   /onChange:evt=>ItemDrag\.moved\(evt\.item\)/.test(itemList) && /const spot=itemSpot\(tb,row\)/.test(ID));
+ck('the label names the group and the item it will follow, escaped',
+   /esc\(gname\)/.test(ID) && /esc\(where\)/.test(ID) && /בראש הקבוצה/.test(ID));
+ck('the add-item line is kept at the foot of the group the row is over',
+   /tr\.add-row/.test(ID) && /tb\.appendChild\(add\)/.test(ID));
+ck('the drag ends its own chrome before anything else on the drop',
+   onEnd.indexOf('ItemDrag.stop()')>0 && onEnd.indexOf('ItemDrag.stop()')<onEnd.indexOf('sameSpot(from,spot)'));
+ck('a move into another group names the group it went to',
+   /הפריט הועבר לקבוצה/.test(onEnd));
 ck('a row is still picked up by the row itself, with the interactive cells filtered',
    /draggable:'tr\[data-tid\]'/.test(itemList) && /filter:'input,textarea/.test(itemList));
 ck('the drag records where the row started',
@@ -105,12 +133,13 @@ ck('nothing moved → no request and no message',
    && onEnd.indexOf('sameSpot(from,spot)') < onEnd.indexOf("api('/api/tasks/'"),
    'guard at '+onEnd.indexOf('sameSpot(from,spot)'));
 ck('a real reorder still says so',
-   /toast\(wasSorted\?'סדר הפריטים עודכן — המיון לפי עמודה בוטל':'סדר הפריטים עודכן'\)/.test(onEnd));
+   /\(wasSorted\?'סדר הפריטים עודכן — המיון לפי עמודה בוטל':'סדר הפריטים עודכן'\)/.test(onEnd)
+   && /toast\(msg\);\s*renderView\(\)/.test(onEnd));
 ck('and the view is never scrolled anywhere on its own',
    !/scrollIntoView/.test(onEnd));
 ck('the move is still sent as a neighbour, not as a row number',
    /group_id:spot\.gid,after_id:spot\.after/.test(onEnd));
-/* the group cannot change, so neither can the status: an item is not restated
+/* the status is never sent with a drag, into another group or within one: an item is not restated
    as its group's status for being dragged past its neighbours */
 ck('a reorder never rewrites the item\'s status',
    /JSON\.stringify\(\{group_id:spot\.gid,after_id:spot\.after,actor_id:meId\(\)\}\)/.test(onEnd)

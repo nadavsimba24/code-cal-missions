@@ -116,10 +116,11 @@ let pass=0,fail=0; const ck=(n,c,x='')=>{c?(pass++,console.log('  OK   '+n)):(fa
 
 /* 7 — the wiring */
 ck('the fold happens on choose, before the clone is cut',
-   /onChoose:\(\)=>\{ foldGroupsForDrag\(el\); \}/.test(src),
+   // the drag also switches text selection off on the same press (ItemDrag)
+   /onChoose:\(\)=>\{ (?:ItemDrag\.noSelect\(true\); )?foldGroupsForDrag\(el\); \}/.test(src),
    'onStart would drag a full open table around the screen');
 ck('the restore happens on unchoose as well as on the drop',
-   /onUnchoose:\(\)=>\{ unfoldGroupsAfterDrag\(\); \}/.test(src));
+   /onUnchoose:\(\)=>\{ (?:ItemDrag\.noSelect\(false\); )?unfoldGroupsAfterDrag\(\); \}/.test(src));
 ck('onEnd restores before anything re-renders from the state',
    /unfoldGroupsAfterDrag\(\);\s*\/\/ before any renderView/.test(src));
 ck('the caret goes through the same one place',

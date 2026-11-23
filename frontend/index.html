@@ -1935,6 +1935,22 @@ body.coldragging .col-grip{opacity:1}
 .kcard .kmeta{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .kcard .sm-pill{font-size:11px;height:22px;min-width:auto;width:auto;padding:0 8px}
 .sortable-ghost{opacity:.4}
+/* a dragged item's landing place: its own placeholder, drawn as a slot with a
+   line across its top, so the gap reads as "here" and not as a faded row */
+.tbl tbody tr[data-tid].sortable-ghost{opacity:1}
+.tbl tbody tr[data-tid].sortable-ghost>td{background:var(--primary-soft)!important;box-shadow:inset 0 2px 0 var(--primary)}
+.tbl tbody tr[data-tid].sortable-ghost>td>*{opacity:.35}
+/* the group it will land in, when that is not the one it came from */
+.group.drop-into>.grp-stick{outline:2px dashed var(--primary);outline-offset:3px;border-radius:8px}
+/* the label that follows the pointer for the length of a row drag */
+.item-drag-hint{position:fixed;z-index:3000;pointer-events:none;display:flex;align-items:center;gap:6px;max-width:min(360px,calc(100vw - 16px));
+  padding:5px 10px;border-radius:8px;background:var(--surface);border:1px solid var(--border-strong);box-shadow:var(--shadow);font-size:12.5px;color:var(--text)}
+.item-drag-hint.to-other{border-color:var(--primary)}
+.item-drag-hint>i{color:var(--primary)}
+.item-drag-hint .idh-g{font-weight:700;color:var(--gcolor,var(--primary));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.item-drag-hint .idh-w{color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* no text is selected while anything is being dragged — see ItemDrag */
+body.drag-noselect,body.drag-noselect *{-webkit-user-select:none!important;user-select:none!important}
 
 /* ===== KPIs + dashboard ===== */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:18px}
@@ -9678,6 +9694,10 @@ const Live = {
 
   busy(){
     if(document.querySelector('.cell-pop'))return true;             // a picker is open
+    // A row or a group in the air. A redraw replaces every tbody under it: the
+    // landing slot and the group outline vanish and the label at the pointer
+    // freezes, for the rest of a gesture that can now cross the whole board.
+    if(document.body.classList.contains('drag-noselect')||document.querySelector('.sortable-drag'))return true;
     const ae=document.activeElement;
     if(ae&&/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))return true; // mid-edit
     if(ae&&ae.isContentEditable)return true;
@@ -16765,11 +16785,13 @@ function groupsOf(){
 }
 
 /* ===== dragging an item =====
-   A row is dragged inside its own group, to sit above or below its neighbours.
-   It cannot leave that group: a group is a decision about the work, not a
-   position on the page, so it is made deliberately — "העבר לקבוצה" in the
-   item's menu, or the bulk bar — and never as a side effect of aiming a row
-   that is following the cursor.
+   A row is dragged to sit above or below its neighbours — in its own group,
+   or in another one. It used to be held inside its group, on the view that a
+   group is a decision about the work and should not change as a side effect
+   of aiming a row; dragging across was asked for, and the answer to that
+   concern is that the landing place is said out loud for the whole gesture —
+   the slot, the group outlined, a label at the pointer (ItemDrag). The item
+   menu's "העבר לקבוצה" and the bulk bar are still there for a group far away.
 
    A drag that puts the row back where it started is not a move, so it neither
    goes to the server nor claims one happened. itemSpot answers "where is this
@@ -16789,6 +16811,73 @@ function itemSpot(tbody,row){
   return {gid:tbody.dataset.gid?+tbody.dataset.gid:null, after:i>0?+rows[i-1].dataset.tid:null};
 }
 function sameSpot(a,b){ return !!a && !!b && a.gid===b.gid && a.after===b.after; }
+/* What a row drag says while it is in the air.
+
+   An item can be dragged into another group now, and a group on a long board
+   looks much like the next one — the same columns, the same rows, a name far
+   above the pointer. So the place it will land is shown three ways at once:
+   the gap itself (the row's own placeholder, drawn as a blue slot — see
+   .sortable-ghost in the CSS), the group that gap is in (outlined, but only
+   when it is not the group the row came from), and a label at the pointer
+   that names the group and the item it will follow. All three are read off
+   the placeholder's position through itemSpot, the same answer the drop
+   sends to the server, so what is shown cannot disagree with what is done.
+
+   And the drag must not select text. Sortable's fallback drag is a plain
+   mouse move, and a mouse moving with the button down across a table is a
+   text selection to the browser — the whole stretch of rows between the
+   pickup and the pointer turned blue. Selection is switched off from the
+   press (onChoose) to the release, and anything already selected is dropped
+   when the drag begins. */
+const ItemDrag={
+  _hint:null, _from:null, _move:null,
+  noSelect(on){
+    document.body.classList.toggle('drag-noselect',!!on);
+    if(on){ try{ window.getSelection().removeAllRanges(); }catch(_){} }
+  },
+  start(row,from){
+    this._from=from;
+    this.noSelect(true);
+    const h=document.createElement('div');
+    h.className='item-drag-hint'; h.setAttribute('role','status'); h.setAttribute('aria-live','polite');
+    document.body.appendChild(h); this._hint=h;
+    this._move=e=>{ const p=e.touches?e.touches[0]:e; if(!p||!this._hint)return;
+      // beside the pointer on the reading side, kept on screen
+      const w=this._hint.offsetWidth, x=Math.max(8,Math.min(p.clientX-w-14,innerWidth-w-8));
+      this._hint.style.left=x+'px'; this._hint.style.top=Math.min(p.clientY+16,innerHeight-40)+'px'; };
+    document.addEventListener('pointermove',this._move,true);
+    document.addEventListener('mousemove',this._move,true);
+    this.moved(row);
+  },
+  moved(row){
+    const tb=row&&row.parentNode; if(!tb||!this._hint)return;
+    // the add-item line belongs at the foot of its group; a row dropped into a
+    // group whose only line is that one is placed after it by Sortable, and
+    // the slot would point below "+ הוסף פריט" instead of at the top
+    const add=tb.querySelector(':scope > tr.add-row');
+    if(add&&add.nextElementSibling) tb.appendChild(add);
+    const spot=itemSpot(tb,row);
+    const g=(st.board&&st.board.groups||[]).find(x=>x.id===spot.gid);
+    const gname=g?g.name:'ללא קבוצה';
+    const prev=spot.after!=null?findAnyTask(spot.after):null;
+    const where=spot.after==null?'בראש הקבוצה':`אחרי "${(prev&&prev.title)||''}"`;
+    const crossed=!!this._from&&this._from.gid!==spot.gid;
+    this._hint.classList.toggle('to-other',crossed);
+    this._hint.innerHTML=`<i class="fa-solid ${crossed?'fa-arrow-right-to-bracket':'fa-arrows-up-down'}"></i>
+      <span class="idh-g" style="--gcolor:${esc(tb.style.getPropertyValue('--gcolor')||'var(--primary)')}">${esc(gname)}</span>
+      <span class="idh-w">${esc(where)}</span>`;
+    document.querySelectorAll('.group.drop-into').forEach(x=>x.classList.remove('drop-into'));
+    if(crossed){ const grp=tb.closest('.group'); if(grp)grp.classList.add('drop-into'); }
+  },
+  stop(){
+    if(this._move){ document.removeEventListener('pointermove',this._move,true);
+      document.removeEventListener('mousemove',this._move,true); }
+    if(this._hint)this._hint.remove();
+    this._hint=null; this._move=null; this._from=null;
+    document.querySelectorAll('.group.drop-into').forEach(x=>x.classList.remove('drop-into'));
+    this.noSelect(false);
+  }
+};
 function subOrder(tbody){ return [...tbody.querySelectorAll('tr[data-sid]:not(.sortable-drag)')].map(r=>+r.dataset.sid); }
 /* the same for whole groups. Sortable parks its flying copy of the group in
    the view too, head and id and all, so it has to be left out here as well. */
@@ -17161,10 +17250,10 @@ function wireTable(el){
       // onChoose, not onStart: the fallback clone that follows the cursor is cut
       // from the element as it stands when the drag begins, so a group folded
       // one event later would still be dragged around as a full open table
-      onChoose:()=>{ foldGroupsForDrag(el); },
+      onChoose:()=>{ ItemDrag.noSelect(true); foldGroupsForDrag(el); },
       // fires on a drop and on a press that never became a drag alike, so a
       // click on the group's name does not leave the board folded
-      onUnchoose:()=>{ unfoldGroupsAfterDrag(); },
+      onUnchoose:()=>{ ItemDrag.noSelect(false); unfoldGroupsAfterDrag(); },
       onStart:()=>{ _groupDragFrom=groupOrder(el).join(','); },
       onEnd:async()=>{
         const ids=groupOrder(el), was=_groupDragFrom; _groupDragFrom=null;
@@ -17178,17 +17267,32 @@ function wireTable(el){
           (st.board.groups||[]).forEach(gr=>{const i=ids.indexOf(gr.id);if(i>=0)gr.position=i;});
         }catch(e){toast('שגיאה בשמירת המיקום');renderView();}
       }});
-    // reorder items inside a group — grab an item by its name and take it up or
-    // down its own group. Each group's tbody is its own list with no shared
-    // group name, so Sortable will not accept a row from another one: a row
-    // dragged out is refused and springs back where it came from.
+    // Move an item — grab it by its name and take it up or down its group, or
+    // into another one. Every group's tbody joins the one Sortable group
+    // 'items', so a row can cross between them; it used to be refused there,
+    // when which group an item belongs to was a decision left to the item menu
+    // and the bulk bar alone. Being able to drag it there does not make the
+    // decision any less deliberate, so where it is about to land is said out
+    // loud for the whole gesture — the gap it will drop into, the group around
+    // that gap, and a label at the pointer naming both (see ItemDrag).
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      sortableOn(tb,{draggable:'tr[data-tid]',disabled:isTouch()||!mayMove,filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
+      sortableOn(tb,{group:'items',draggable:'tr[data-tid]',disabled:isTouch()||!mayMove,filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
-        onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item); },
-        // a top-level item never lands inside a sub-item panel row
-        onMove:evt=>!(evt.related&&evt.related.classList.contains('sub-wrap')),
+        // Selection is switched off when the drag starts, not on the press: a
+        // press that never becomes a drag is a click or a double-click, and
+        // double-clicking the text of a read-only cell to select it is a thing
+        // people do. Whatever the first few pixels selected is dropped in
+        // ItemDrag.start. The release is a safety net — stop() also clears it.
+        onUnchoose:()=>ItemDrag.noSelect(false),
+        onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item); ItemDrag.start(evt.item,_itemDragFrom); },
+        // a top-level item never lands inside a sub-item panel, and never in
+        // the ללא קבוצה bucket from a real group: that bucket is where items
+        // with no group are shown, not a group anyone files into
+        onMove:evt=>!(evt.related&&evt.related.classList.contains('sub-wrap'))
+          && !(evt.to!==evt.from&&!evt.to.dataset.gid),
+        onChange:evt=>ItemDrag.moved(evt.item),
         onEnd:async(evt)=>{
+          ItemDrag.stop();
           const it=evt.item, tid=+it.dataset.tid; const from=_itemDragFrom; _itemDragFrom=null;
           if(!tid)return;
           const spot=itemSpot(evt.to,it);
@@ -17196,20 +17300,32 @@ function wireTable(el){
           // where it belongs again, then stop: nothing was moved, so nothing is
           // sent and nothing is announced.
           if(sameSpot(from,spot)){ renderView(); return; }
-          // the group is the one it was already in, and its status is its own:
-          // an item that stays put in a group is not restated by being moved
-          // past its neighbours
+          const crossed=!!from&&from.gid!==spot.gid;
           const wasSorted=!!(st.colSort&&st.colSort.key);
           try{
+            // Only the group and the neighbour are sent. The status is not:
+            // an item that changes group keeps what was said about it, as it
+            // does when moved from the menu — a board that wants the two tied
+            // together says so in its automations.
             await api('/api/tasks/'+tid+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:spot.gid,after_id:spot.after,actor_id:meId()})});
             // A column sort would re-sort the drop away the instant the board
             // came back, and the item would appear to snap home — so a manual
             // order wins over one, exactly as it already does for sub-items.
             st.colSort=null;
             const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
-            toast(wasSorted?'סדר הפריטים עודכן — המיון לפי עמודה בוטל':'סדר הפריטים עודכן');
+            const g=crossed&&(st.board.groups||[]).find(x=>x.id===spot.gid);
+            const msg=crossed
+              ? `הפריט הועבר לקבוצה "${(g&&g.name)||''}"`+(wasSorted?' — המיון לפי עמודה בוטל':'')
+              : (wasSorted?'סדר הפריטים עודכן — המיון לפי עמודה בוטל':'סדר הפריטים עודכן');
+            /* A board past the client threshold comes back without its rows,
+               and the ones on screen are Paged's, still filed under the group
+               the item left — so a plain re-render drew it straight back where
+               it came from, under a toast saying it had moved. They are pulled
+               again instead, as moveItemToGroup already does. */
+            if(filterMode()==='server'){ Paged.load(true); toast(msg); return; }
+            toast(msg);
             renderView();
-          }catch(e){ toast('שגיאה בעדכון סדר הפריטים'); renderView(); }
+          }catch(e){ toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בעדכון סדר הפריטים'); renderView(); }
         }});
     });
     // reorder sub-items — each parent's panel is its own table, so the drag is
@@ -17225,10 +17341,13 @@ function wireTable(el){
 function subSortableOn(sb){
   sortableOn(sb,{draggable:'tr[data-sid]',disabled:isTouch()||(typeof boardMayEdit==='function'&&!!st.board&&!!st.board.my_role&&!boardMayEdit()),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
     forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
+    // a drag is not a text selection — switched off when it starts, not on the
+    // press, so a double-click still selects (see the item list)
+    onUnchoose:()=>ItemDrag.noSelect(false),
     // the copy of the row that follows the cursor lives in this table too,
     // and carries the same id — counting it would post a duplicate and make
     // every drag look like a reorder
-    onStart:evt=>{ _subDragFrom=subOrder(evt.from).join(','); },
+    onStart:evt=>{ ItemDrag.noSelect(true); _subDragFrom=subOrder(evt.from).join(','); },
     onEnd:async(evt)=>{
       const pid=+evt.to.dataset.parent; const was=_subDragFrom; _subDragFrom=null;
       if(!pid)return;

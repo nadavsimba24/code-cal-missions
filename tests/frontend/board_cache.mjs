@@ -125,8 +125,16 @@ ck('an unchanged board is not redrawn', /if\(!changed\)\{[^}]*return;/.test(src)
    this board came out of memory without it. */
 ck('an unchanged board keeps the copy she is looking at, not the one just fetched',
    /cacheBoard\(changed\?fresh:st\.board\);/.test(src));
-ck('a changed one is, and keeps her scroll (renderView does)',
-   /st\.board=fresh;[\s\S]{0,120}renderView\(\);/.test(src));
+/* Anchored to the reopen path itself. It used to look for "st.board=fresh;"
+   followed by renderView() anywhere in the file within 120 characters — and
+   the only place that ever matched was the item drag's drop handler, so this
+   check was passing on code that has nothing to do with the cache, and went
+   red the day that handler grew a comment. */
+{ const at=src.indexOf('cacheBoard(changed?fresh:st.board);');
+  const tail=at<0?'':src.slice(at, at+3000);
+  ck('a changed one is, and keeps her scroll (renderView does)',
+     /^cacheBoard\(changed\?fresh:st\.board\);\s*if\(!changed\)\{[^}]*return;\s*\}\s*st\.board=fresh;[\s\S]*?renderView\(\);/.test(tail),
+     tail.slice(0,160)); }
 ck('a board that is gone, or no longer hers, is forgotten rather than shown',
    /catch\(e\)\{ dropCachedBoard\(id\); return; \}/.test(src));
 ck('a switch that happens mid-check does not redraw the board she moved to',

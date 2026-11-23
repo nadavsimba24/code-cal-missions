@@ -32610,7 +32610,22 @@ def move_task(task_id: int, data: dict, actor_id: int = Depends(current_user_id)
             return {"status": "moved", "board_id": target, "item_uid": task.item_uid}
         src_group = task.group_id
         if "group_id" in data:
-            task.group_id = data["group_id"]
+            # Items are dragged between groups now, so a group id arrives from
+            # the board on every cross-group drop — and it was written as sent,
+            # unchecked. Any number filed the item into whatever group carried
+            # it, another board's included, where it would sit invisible to
+            # this board and wrongly counted on that one. None stays allowed:
+            # it is the "no group" bucket an item can already be in.
+            gid = data["group_id"]
+            if gid is not None:
+                try:
+                    gid = int(gid)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "מזהה קבוצה לא תקין")
+                if not db.query(Group.id).filter(Group.id == gid,
+                                                 Group.board_id == task.board_id).first():
+                    raise HTTPException(404, "קבוצת היעד לא נמצאה בלוח")
+            task.group_id = gid
         if "after_id" in data:
             _place_item(db, task, after_id=data.get("after_id"))
         elif "position" in data:
