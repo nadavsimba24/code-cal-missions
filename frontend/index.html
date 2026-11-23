@@ -2873,6 +2873,41 @@ a[aria-disabled="true"]{opacity:.6;cursor:not-allowed}
 .mem-ro i{color:var(--text-light)}
 .mem-role-ro{font-size:12px;font-weight:600;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:4px 11px;flex-shrink:0}
 .perm-badge{font-size:12px;font-weight:600;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:3px 11px}
+/* חברים והרשאות — the line under the dialog's title, and the heading over the
+   list of people that the count now belongs to */
+.mem-h-sub{display:block;margin-top:3px;font-size:12.5px;font-weight:400;color:var(--text-muted)}
+.mem-sec-h{display:flex;align-items:center;gap:8px;margin:4px 0 2px;font-size:13px;font-weight:700;color:var(--text)}
+/* עמודת שיוך להרשאות: one panel, drawn like the notifications switch above it */
+.mem-perm{border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:12px}
+.mem-perm-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mem-perm-h{flex:1 1 auto;font-size:13.5px;font-weight:600}
+.mem-perm select{border:1px solid var(--border-strong);border-radius:6px;padding:5px 8px;font-family:inherit;font-size:12.5px;background:var(--surface);color:var(--text);max-width:100%}
+.mem-perm-help{margin-top:5px;font-size:11.5px;color:var(--text-light)}
+/* The role picker's button stands where the native <select> stood and is
+   drawn like one, so the row reads the same; the list it opens is the part
+   that changed — each role is its name over what it permits. */
+.brole-btn{display:inline-flex;align-items:center;gap:7px;flex-shrink:0;max-width:230px;border:1px solid var(--border-strong);border-radius:6px;padding:5px 9px;background:var(--surface);color:var(--text);font-family:inherit;font-size:12.5px;cursor:pointer;text-align:start}
+.brole-btn .brole-btn-l{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brole-btn i{font-size:10px;color:var(--text-light)}
+.brole-btn:hover{border-color:var(--primary)}
+.brole-btn:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
+.mem-add .brole-btn{border-radius:7px;padding:8px 10px;font-size:13px}
+.cell-pop.brole-pop{min-width:min(300px,90vw);max-width:94vw;padding:6px}
+.brole-list{display:flex;flex-direction:column;gap:2px}
+.brole-opt{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:6px;cursor:pointer;text-align:start}
+.brole-opt:hover,.brole-opt:focus{background:var(--row-hover);outline:none}
+.brole-opt:focus-visible{box-shadow:inset 0 0 0 2px var(--primary)}
+.brole-opt-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.brole-opt-l{font-size:13px;font-weight:700;color:var(--text)}
+.brole-opt-d{font-size:12px;color:var(--text-muted)}
+.brole-opt .fa-check{margin-top:3px;color:var(--primary)}
+/* What a board-level viewer may not do is not drawn for them: a new item,
+   a new sub-item. That is the viewer and both assigned roles (boardMayEdit),
+   whose own rows may still be edited one by one — the class is set by
+   renderBoardHead on every board paint. */
+body.brole-limited #ctl-new,
+body.brole-limited .add-row,
+body.brole-limited .sub-add-row{display:none}
 .modal .mbody{max-height:60vh;overflow-y:auto}
 /* form builder */
 .fb-row{display:flex;align-items:center;gap:10px;padding:9px 8px;border:1px solid var(--border);border-radius:8px;margin-bottom:7px;background:var(--surface)}
@@ -3194,6 +3229,10 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
      invitation, whose two pickers and button were a single flex line. */
   .mem-row{flex-wrap:wrap;padding:10px 2px}
   .mem-row select{flex:1 1 auto;min-height:38px}
+  .mem-row .brole-btn{flex:1 1 auto;max-width:none;min-height:38px}
+  .mem-add .brole-btn{min-height:40px;max-width:none}
+  .mem-perm select{flex:1 1 100%;min-height:38px}
+  .brole-opt{padding:11px 10px}
   .mem-row .mem-del{width:38px;height:38px}
   .mem-role-ro{margin-inline-start:auto}
   .mem-add{flex-direction:column}
@@ -5070,6 +5109,11 @@ function robotIcon(cls){
 function renderBoardHead(){
   if(!st.board)return;
   const canEdit=st.board.my_role==='admin'||st.board.my_role==='editor';
+  /* Board-level read-only, as one class the CSS answers (body.brole-limited):
+     the "+ הוסף פריט" lines, "+ הוסף תת-פריט" and the toolbar's פריט חדש are
+     drawn in a dozen templates, and the role is the same for all of them. */
+  if(typeof boardMayEdit==='function')
+    document.body.classList.toggle('brole-limited',!!st.board.my_role&&!boardMayEdit());
   document.getElementById('bh-title').innerHTML =
     `<span class="bt-icon${canEdit?' editable':''}" ${canEdit?'onclick="editBoardIcon(event)" title="שנה אייקון"':''}>${st.board.icon||'📋'}</span> `+
     `<span class="board-name${canEdit?' editable':''}" ${canEdit?'onclick="startBoardRename()" title="לחץ לשינוי שם"':''}>${esc(st.board.name)}</span> `+
@@ -7603,11 +7647,41 @@ const Profile = {
    are not in the circles, the people cells or the @-menu. Anyone already tagged
    is appended even if they are not a member (or no longer active), so a tag
    made before this rule can still be found and removed — the server allows
-   removal for the same reason. */
-function boardPeople(alsoInclude){
+   removal for the same reason.
+
+   `ctx` is {item, col} when the list is for one item: its @-menu (no col) or
+   one of its people columns. Then an assigned_only member who is not
+   assigned to that item is left out — they cannot see it, so a tag would hand
+   them a notification about a record they cannot open, and the server drops
+   it. Not in the board's perm column, though: putting somebody THERE is how
+   they are given the item, so that is exactly where they must be offered.
+   Without ctx (filters, forms) nothing changes. The already-tagged are added
+   back below the narrowing, so a stored tag can still be taken off.
+
+   A per-user override on the item (t.permissions, keyed by user id) is asked
+   first, in the same order the server's _item_visible_to asks it: "none"
+   hides the item from that person whatever their role — and in every column,
+   the perm column too, since being assigned does not outrank an explicit
+   block — while view/edit/delete opens it even to an unassigned
+   assigned_only member. Offering either the other way round is a tag the
+   server silently drops. */
+function boardPeople(alsoInclude,ctx){
   const mem=(st.board&&st.board.members)||[];
-  const out=mem.map(m=>(st.users||[]).find(u=>u.id===m.id)||m)
+  let out=mem.map(m=>(st.users||[]).find(u=>u.id===m.id)||m)
                .filter(u=>u.is_active!==false);
+  if(ctx&&ctx.item){
+    const role=new Map(mem.map(m=>[m.id,m.role]));
+    const ovs=ctx.item.permissions||{}, inPerm=ctx.col===boardPermColumn();
+    let holders=null;   // read once, and only if somebody needs it
+    out=out.filter(u=>{
+      const ov=ovs[String(u.id)];
+      if(ov==='none')return false;
+      if(ov==='view'||ov==='edit'||ov==='delete')return true;
+      if(inPerm||role.get(u.id)!=='assigned_only')return true;
+      if(!holders)holders=itemPermHolders(ctx.item);
+      return holders.has(u.id);
+    });
+  }
   const have=new Set(out.map(u=>u.id));
   (alsoInclude||[]).forEach(id=>{
     if(have.has(id))return;
@@ -7625,7 +7699,7 @@ function openPeople(e,id){
 }
 function assigneePopHTML(id){
   const t=findAnyTask(id); const cur=new Set(((t&&t.assignees)||[]).map(a=>a.id));
-  return boardPeople([...cur]).map(u=>`<button class="pl-opt ${cur.has(u.id)?'sel':''}" onclick="togglePersonPop(event,${id},${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${cur.has(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||NO_BOARD_PEOPLE;
+  return boardPeople([...cur],{item:t,col:'assignees'}).map(u=>`<button class="pl-opt ${cur.has(u.id)?'sel':''}" onclick="togglePersonPop(event,${id},${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${cur.has(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||NO_BOARD_PEOPLE;
 }
 async function togglePersonPop(e,taskId,uid){
   e.stopPropagation();
@@ -9241,21 +9315,78 @@ function meId(){return st.me&&st.me.id;}
    user from the request. user_id is still sent so an older backend keeps
    working during a rolling deploy; it has no effect on a current one. */
 function withMe(body){return JSON.stringify({...(body||{}),user_id:meId()});}
-function canComment(){
+/* The two board roles that are about SOME of the board's records rather than
+   all of them. assigned_editor sees every item and edits the ones assigned to
+   it; assigned_only is not even sent the rest. Which column "assigned" is read
+   from is the board's perm column (boardPermColumn). At board level both are
+   a viewer — no new items, groups, columns, views or moves — and what they
+   may do to one item is that item's my_perm, which the server works out. */
+const BOARD_ASSIGNED_ROLES=new Set(['assigned_editor','assigned_only']);
+/* The roles that may NOT change the board itself. One list, so "behaves like
+   a viewer at board level" is a single answer and not a string comparison
+   repeated at every button — the two new roles were exactly the case that
+   showed how many of those there were. */
+const BOARD_LIMITED_ROLES=new Set(['viewer',...BOARD_ASSIGNED_ROLES]);
+function boardRoleAssigned(r){
+  if(r===undefined) r=st.board&&st.board.my_role;
+  return BOARD_ASSIGNED_ROLES.has(r);
+}
+/* May I add items, sub-items and groups, and move items around? Not the same
+   question as canEditItem: an assigned_editor edits its own rows and still may
+   not add a row. A board with no role at all answers no, as canComment does. */
+function boardMayEdit(){
+  const r=st.board&&st.board.my_role;
+  return !!r&&!BOARD_LIMITED_ROLES.has(r);
+}
+/* `t` is the item whose conversation is asked about; left out, it is the item
+   open in the conversation panel, which is where every caller asks from. The
+   assigned roles comment where they may edit, and that is an item at a time —
+   so with no item at all (null) the answer for them is no. */
+function canComment(t){
+  if(t===undefined&&typeof Chat!=='undefined')t=Chat.task;
   const r=st.board&&st.board.my_role;
   if(!r)return false;              // not a member of this board
   if(r==='viewer')return false;    // view-only at board level
+  if(BOARD_ASSIGNED_ROLES.has(r))
+    return !st.board.view_only && !!t && canEditItem(t);
   if(st.board.view_only)return r==='admin';
   return true;
 }
+/* The column that decides who an item is "assigned" to for the assigned
+   roles: the built-in אחראים circles, or one of the board's own people
+   columns. The server sends the one in force (it falls back to "assignees"
+   when the column it named is gone), so this never has to guess. */
+function boardPermColumn(){
+  return ((st.board&&st.board.settings)||{}).perm_column||'assignees';
+}
+/* Everybody the perm column puts on this item — and on its parent, because a
+   sub-item belongs to whoever its item belongs to, exactly as the server
+   reads it. Ghost names from a monday import are strings and are nobody. */
+function itemPermHolders(t){
+  const col=boardPermColumn(), ids=new Set();
+  const take=x=>{
+    if(!x)return;
+    const v=col==='assignees'?(x.assignees||[]).map(a=>a&&a.id):((x.custom_fields||{})[col]);
+    (Array.isArray(v)?v:[]).forEach(id=>{ if(typeof id==='number')ids.add(id); });
+  };
+  take(t);
+  if(t&&t.parent_id&&typeof findAnyTask==='function')take(findAnyTask(t.parent_id));
+  return ids;
+}
 /* ===== board members & permissions (ניהול הרשאות ברמת הלוח) ===== */
-const BROLE_HE={admin:'ניהול',editor:'עריכה',viewer:'צפייה בלבד'};
+const BROLE_HE={admin:'מנהל לוח',editor:'עריכה',viewer:'צפייה',
+                assigned_editor:'עריכת רשומות משויכות',
+                assigned_only:'גישה לרשומות משויכות בלבד'};
 /* What a board role actually permits, in one line. The members dialog shows
-   this under every name: "ניהול" names the role and says nothing about what it
-   covers, and the dialog is the one place somebody goes to find out. */
-const BROLE_WHAT={admin:'מנהל לוח — תוכן, הרשאות והזמנת משתתפים',
-                  editor:'עריכה — הוספה ועריכה של פריטים',
-                  viewer:'צפייה בלבד — ללא עריכה'};
+   this under every name and under every choice in the role picker: a role's
+   name says what it is called and not what it covers, and with two roles
+   that differ only in what happens to the records NOT assigned to somebody,
+   the dialog is the one place somebody goes to find out. */
+const BROLE_WHAT={admin:'ניהול הלוח וכל הרשומות',
+                  editor:'צפייה ועריכה בכל הרשומות',
+                  viewer:'צפייה בכל הרשומות, ללא עריכה',
+                  assigned_editor:'צפייה בהכל, עריכה רק במשויכות',
+                  assigned_only:'צפייה ועריכה רק במשויכות'};
 const WSROLE_HE={admin:'מנהל סביבה',member:'חבר',viewer:'צפייה בלבד'};
 const IPERM_HE={'':'ברירת מחדל (לפי לוח)',view:'צפייה בלבד',edit:'עריכה',delete:'עריכה + מחיקה',none:'חסום (מוסתר)'};
 const CPERM_HE={'':'ברירת מחדל (לפי לוח)',view:'צפייה בלבד',edit:'עריכה',none:'מוסתר'};
@@ -15222,13 +15353,18 @@ const Members = {
     // the last time, so the first thing the invitation offers is everybody
     this.q='';
     const avail=this.sortedAvail();
-    showModal(`<h2><i class="fa-solid fa-user-group" style="color:var(--primary)"></i> משתתפי הלוח — ${esc(st.board.name)}<span class="perm-badge" style="margin-inline-start:8px">${this.data.members.length}</span></h2>
+    /* The dialog is about two things now — who is on the board, and what each
+       of them may reach inside it — so it is named for both. The count stays
+       with the list it counts, under the section's own heading. */
+    showModal(`<h2><i class="fa-solid fa-user-group" style="color:var(--primary)"></i> חברים והרשאות — ${esc(st.board.name)}<span class="mem-h-sub">ניהול הגישה ללוח ולרשומות</span></h2>
       <div class="mbody">
         <div style="font-size:12.5px;color:var(--text-muted);margin-bottom:10px"><i class="fa-solid fa-circle-info"></i> רק משתתפי הלוח רואים אותו. מנהל לוח מנהל הזמנות והרשאות. גישת אדמין אינה גלובלית — לוחות שלא הוזמנת אליהם אינם נראים.</div>
         ${can?`<div class="pf-row pf-toggle" style="border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:12px">
           <span><i class="fa-regular fa-bell"></i> התראות ללוח זה</span>
           <label class="switch"><input type="checkbox" ${st.board.notifications_enabled!==false?'checked':''} onchange="Members.toggleNotif(this.checked)"><span class="slider"></span></label>
         </div>`:''}
+        ${this.permColHTML(can)}
+        <div class="mem-sec-h">משתתפי הלוח<span class="perm-badge">${this.data.members.length}</span></div>
         <div id="mem-list">${this.listHTML()}</div>
         ${can?`<div class="mem-invite-bar">
           <button class="btn btn-primary" id="mem-invite-btn" aria-expanded="false" aria-controls="mem-invite" onclick="Members.toggleInvite()"><i class="fa-solid fa-user-plus"></i> הזמנת משתתפים</button>
@@ -15239,7 +15375,8 @@ const Members = {
               oninput="Members.searchAvail(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();Members.add();}"></div>
           <div class="mem-add">
             <select id="mem-user" aria-label="משתתף להזמנה">${this.availOptionsHTML('')}</select>
-            <select id="mem-role" aria-label="תפקיד"><option value="editor">עריכה</option><option value="viewer">צפייה בלבד</option><option value="admin">מנהל לוח</option></select>
+            <input type="hidden" id="mem-role" value="editor">
+            ${this.roleBtnHTML('mem-role-btn','editor','תפקיד','r=>Members.pickInviteRole(r)')}
             <button class="btn btn-primary" id="mem-add-btn" onclick="Members.add()" ${avail.length?'':'disabled'}><i class="fa-solid fa-plus"></i> הזמן</button>
           </div>
           <div style="font-size:11.5px;color:var(--text-light);margin-top:7px"><i class="fa-solid fa-circle-info"></i> הרשימה היא חברי הסביבה שהלוח שייך אליה — רק אותם אפשר להזמין. צירוף אדם לסביבה נעשה ממסך הסביבות.</div>
@@ -15333,7 +15470,10 @@ const Members = {
 
      The avatar comes down with the list; `was` is only for a server that has
      not been restarted into the version that sends it, so a stale process
-     loses nobody's face. */
+     loses nobody's face. The role comes along too — boardPeople reads it to
+     keep an assigned_only member off the items they cannot see, and a role
+     changed in this dialog has to reach the pickers the same way a new name
+     does. */
   _syncBoardPeople(){
     if(!st.board)return;
     /* A board you can see always has at least one member — you. So a list
@@ -15347,7 +15487,7 @@ const Members = {
     const was=new Map(((st.board.members)||[]).map(m=>[m.id,m]));
     st.board.members=(got
       .filter(m=>m.is_active!==false)
-      .map(m=>({id:m.user_id, name:m.name,
+      .map(m=>({id:m.user_id, name:m.name, role:m.role,
                 avatar_url:(m.avatar_url!==undefined&&m.avatar_url!==null)
                   ? m.avatar_url : ((was.get(m.user_id)||{}).avatar_url||null)}))
       .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'he')));
@@ -15371,10 +15511,117 @@ const Members = {
       <div style="font-size:11px;color:var(--text-light)">${esc(m.email||'')}</div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(BROLE_WHAT[m.role]||BROLE_HE[m.role]||m.role)}</div></div>
       ${can
-        ? `<select aria-label="הרשאת ${esc(m.name)}" onchange="Members.setRole(${m.user_id},this.value)">${['admin','editor','viewer'].map(r=>`<option value="${r}" ${m.role===r?'selected':''}>${BROLE_HE[r]}</option>`).join('')}</select>
+        ? `${this.roleBtnHTML('mem-role-'+m.user_id,m.role,'הרשאת '+(m.name||''),'r=>Members.setRole('+m.user_id+',r)')}
            <button class="mem-del" title="הסר מהלוח" aria-label="הסר את ${esc(m.name)} מהלוח" onclick="Members.remove(${m.user_id})"><i class="fa-solid fa-user-minus"></i></button>`
         : `<span class="mem-role-ro">${esc(BROLE_HE[m.role]||m.role)}</span>`}
     </div>`).join('');
+  },
+  /* The role picker. Not a native <select>: five roles now, and two of them
+     differ only in what happens to the records that are NOT assigned to the
+     person — a name alone cannot say that, and a native option is one line.
+     So each choice is drawn as its name over what it permits (BROLE_WHAT),
+     with a tick on the one in force, in the same fixed popover every other
+     picker on the board opens in (openCellPop).
+
+     A listbox to assistive tech, and driven like one: ↑/↓ (and Home/End) move,
+     Enter or Space picks, Escape and Tab close and hand focus back to the
+     button. The keys are answered on the list itself, never on the document —
+     the app keeps a single document keydown listener on purpose — and Escape
+     is marked handled there so that listener does not also close the dialog.
+
+     `onpick` is the source of a function taking the chosen role, written into
+     the button's onclick: a member's row passes Members.setRole for that
+     member, the invitation passes pickInviteRole. */
+  ROLES:['admin','editor','viewer','assigned_editor','assigned_only'],
+  roleBtnHTML(id,cur,label,onpick){
+    const name=BROLE_HE[cur]||cur||'';
+    return `<button type="button" class="brole-btn" id="${esc(id)}" data-role="${esc(cur)}"
+      aria-haspopup="listbox" aria-expanded="false" aria-label="${esc(label+': '+name)}" data-label="${esc(label)}"
+      onclick="Members.roleMenu(this,${onpick})"
+      onkeydown="if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();this.click();}"><span class="brole-btn-l">${esc(name)}</span><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>`;
+  },
+  roleMenu(btn,onpick){
+    if(!btn)return;
+    const cur=btn.dataset.role;
+    this._roleBtn=btn; this._rolePick=onpick;
+    const html=`<div class="brole-list" id="brole-list" role="listbox" aria-label="${esc(btn.dataset.label||'תפקיד')}" onkeydown="Members.roleMenuKey(event)">${
+      this.ROLES.map(r=>{ const sel=r===cur;
+        return `<div class="brole-opt${sel?' sel':''}" role="option" tabindex="-1" aria-selected="${sel?'true':'false'}" data-role="${r}" onclick="Members.roleChoose('${r}')">
+          <span class="brole-opt-t"><span class="brole-opt-l">${esc(BROLE_HE[r]||r)}</span><span class="brole-opt-d">${esc(BROLE_WHAT[r]||'')}</span></span>
+          ${sel?'<i class="fa-solid fa-check" aria-hidden="true"></i>':''}</div>`; }).join('')
+    }</div>`;
+    const pop=openCellPop(btn,html,'brole-pop');
+    btn.setAttribute('aria-expanded','true'); btn.setAttribute('aria-controls','brole-list');
+    const first=pop&&(pop.querySelector('.brole-opt[aria-selected="true"]')||pop.querySelector('.brole-opt'));
+    if(first)first.focus();
+  },
+  _roleClose(){
+    closeCellPops();
+    const btn=this._roleBtn;   // aria-expanded is reset by closeCellPops itself
+    if(btn&&document.body.contains(btn))btn.focus();
+  },
+  roleMenuKey(e){
+    const opts=[...document.querySelectorAll('#brole-list .brole-opt')];
+    const i=opts.indexOf(document.activeElement);
+    const go=n=>{ e.preventDefault(); const o=opts[(n+opts.length)%opts.length]; if(o)o.focus(); };
+    if(e.key==='ArrowDown') return go(i+1);
+    if(e.key==='ArrowUp')   return go(i<0?opts.length-1:i-1);
+    if(e.key==='Home')      return go(0);
+    if(e.key==='End')       return go(opts.length-1);
+    if(e.key==='Enter'||e.key===' '){
+      e.preventDefault(); const o=opts[i]; if(o)this.roleChoose(o.dataset.role); return;
+    }
+    if(e.key==='Escape'||e.key==='Tab'){ e.preventDefault(); e.stopPropagation(); this._roleClose(); }
+  },
+  roleChoose(r){
+    const btn=this._roleBtn, pick=this._rolePick;
+    this._roleClose();
+    if(!btn||!this.ROLES.includes(r)||r===btn.dataset.role)return;
+    if(typeof pick==='function')pick(r);
+  },
+  pickInviteRole(r){
+    const h=document.getElementById('mem-role'); if(h)h.value=r;
+    const b=document.getElementById('mem-role-btn'); if(!b)return;
+    b.dataset.role=r;
+    b.setAttribute('aria-label',(b.dataset.label||'')+': '+(BROLE_HE[r]||r));
+    const l=b.querySelector('.brole-btn-l'); if(l)l.textContent=BROLE_HE[r]||r;
+  },
+  /* Which column decides "assigned" for the two assigned roles. A board
+     admin picks it here, beside the people it governs; anyone else is told
+     which one it is, as text — the same rule as a member's role.
+     Read off st.board straight rather than through boardPermColumn(): this
+     dialog is drawn by tests that hand it only what it is documented to use. */
+  permColHTML(can){
+    const b=st.board||{};
+    const cur=((b.settings)||{}).perm_column||'assignees';
+    const cols=[{id:'assignees',label:((b.col_labels)||{}).assignees||'אחראים'}]
+      .concat((b.columns||[]).filter(c=>c&&c.type==='people')
+        .map(c=>({id:c.id,label:c.title||c.name||c.id})));
+    const now=cols.find(c=>String(c.id)===String(cur))||cols[0];
+    return `<div class="mem-perm">
+      <div class="mem-perm-row">
+        <span class="mem-perm-h" id="mem-perm-h"><i class="fa-solid fa-user-lock" aria-hidden="true"></i> עמודת שיוך להרשאות</span>
+        ${can
+          ? `<select id="mem-perm-col" aria-labelledby="mem-perm-h" aria-describedby="mem-perm-help" onchange="Members.setPermColumn(this.value)">${
+              cols.map(c=>`<option value="${esc(c.id)}" ${String(c.id)===String(now.id)?'selected':''}>${esc(c.label)}</option>`).join('')}</select>`
+          : `<span class="mem-role-ro">${esc(now.label)}</span>`}
+      </div>
+      <div class="mem-perm-help" id="mem-perm-help">השיוך בעמודה זו קובע לאילו רשומות המשתמש מורשה לגשת</div>
+    </div>`;
+  },
+  /* Saved at once, like a role: there is no "שמור" in this dialog. A refusal
+     puts the picker back on the column still in force, so what is on screen
+     never claims a setting the server did not take. */
+  async setPermColumn(col){
+    const was=((st.board&&st.board.settings)||{}).perm_column||'assignees';
+    try{
+      await api('/api/boards/'+st.board.id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({perm_column:col})});
+      st.board.settings={...(st.board.settings||{}),perm_column:col};
+      toast('עמודת השיוך להרשאות עודכנה');
+    }catch(e){
+      const s=document.getElementById('mem-perm-col'); if(s)s.value=was;
+      toast((e&&e.status===400&&typeof e.detail==='string'&&e.detail)||'רק מנהל לוח יכול לקבוע את עמודת השיוך');
+    }
   },
   async refresh(){ let d=null; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
     // a failed fetch leaves the list that is on screen alone — see open()
@@ -15406,7 +15653,10 @@ const Members = {
     catch(e){ toast(e&&e.status===400&&e.detail?e.detail:'רק מנהל לוח יכול להזמין'); }
   },
   async setRole(uid,role){
-    try{ await api('/api/boards/'+st.board.id+'/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('ההרשאה עודכנה'); this.refresh(); }
+    try{ await api('/api/boards/'+st.board.id+'/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('ההרשאה עודכנה');
+      // the row is redrawn under the keyboard, so the caret is put back on
+      // the picker it was on rather than dropped onto the page behind
+      await this.refresh(); const b=document.getElementById('mem-role-'+uid); if(b)b.focus(); }
     catch(e){ toast(String(e.message||'').includes('400')?'חייב להישאר מנהל אחד':'רק מנהל לוח יכול לשנות'); this.refresh(); }
   },
   remove(uid){
@@ -16868,8 +17118,13 @@ function wireTable(el){
     foldGroup(h,!h.classList.contains('collapsed'));   // remembered across re-renders
   });
   if(window.Sortable){
+    /* Moving a group or an item is a board-level change — its group, its
+       place among the others — so a board-level viewer (the assigned roles
+       included, who may edit their own rows) is not handed a drag the server
+       will refuse. */
+    const mayMove=typeof boardMayEdit!=='function'||!st.board||!st.board.my_role||boardMayEdit();
     // drag by the grip OR the group name to reorder groups
-    sortableOn(el,{handle:'.g-handle',draggable:'.group',filter:'[data-orphan]',
+    sortableOn(el,{handle:'.g-handle',draggable:'.group',filter:'[data-orphan]',disabled:!mayMove,
       forceFallback:true,fallbackTolerance:3,animation:150,
       chosenClass:'drag-chosen',ghostClass:'sortable-ghost',dragClass:'sortable-drag',
       onMove:evt=>!evt.related.hasAttribute('data-orphan'),
@@ -16898,7 +17153,7 @@ function wireTable(el){
     // group name, so Sortable will not accept a row from another one: a row
     // dragged out is refused and springs back where it came from.
     el.querySelectorAll('.tbl tbody[data-gid]').forEach(tb=>{
-      sortableOn(tb,{draggable:'tr[data-tid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
+      sortableOn(tb,{draggable:'tr[data-tid]',disabled:isTouch()||!mayMove,filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.item-check,.item-menu,.sub-toggle,.chat-btn,.sub-badge,.col-resizer',preventOnFilter:false,
         forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
         onStart:evt=>{ _itemDragFrom=itemSpot(evt.from,evt.item); },
         // a top-level item never lands inside a sub-item panel row
@@ -16938,7 +17193,7 @@ function wireTable(el){
    panel is now built either by the render or by toggleSubs opening it for the
    first time, and both have to end up with the same behaviour. */
 function subSortableOn(sb){
-  sortableOn(sb,{draggable:'tr[data-sid]',disabled:isTouch(),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
+  sortableOn(sb,{draggable:'tr[data-sid]',disabled:isTouch()||(typeof boardMayEdit==='function'&&!!st.board&&!!st.board.my_role&&!boardMayEdit()),filter:'input,textarea,select,button,a,[contenteditable],.cc-inp,.status-clik,.avatars,.people-disp,.chat-btn,.sub-del,.col-resizer',preventOnFilter:false,
     forceFallback:true,fallbackTolerance:4,animation:150,ghostClass:'sortable-ghost',dragClass:'sortable-drag',
     // the copy of the row that follows the cursor lives in this table too,
     // and carries the same id — counting it would post a duplicate and make
@@ -18176,8 +18431,8 @@ function peopleDisp(ids){
   return '<div class="avatars">'+chips.slice(0,3).join('')+(chips.length>3?`<span class="av" style="background:var(--text-light)">+${chips.length-3}</span>`:'')+'</div>';
 }
 function buildPeoplePop(pop,taskId,colId){
-  const vals=(findAnyTask(taskId).custom_fields||{})[colId]||[];
-  pop.innerHTML=boardPeople(vals).map(u=>`<button class="pl-opt ${vals.includes(u.id)?'sel':''}" onclick="togglePeopleCell(event,${taskId},'${colId}',${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${vals.includes(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||NO_BOARD_PEOPLE;
+  const t=findAnyTask(taskId), vals=(t.custom_fields||{})[colId]||[];
+  pop.innerHTML=boardPeople(vals,{item:t,col:colId}).map(u=>`<button class="pl-opt ${vals.includes(u.id)?'sel':''}" onclick="togglePeopleCell(event,${taskId},'${colId}',${u.id})"><span class="av" style="background:var(--primary);margin:0">${avatarInner(u)}</span><span style="flex:1;text-align:start">${esc(u.name)}</span>${vals.includes(u.id)?'<i class="fa-solid fa-check"></i>':''}</button>`).join('')||NO_BOARD_PEOPLE;
 }
 function peopleCellMenu(e,taskId,colId){
   e.stopPropagation();
@@ -19799,7 +20054,7 @@ async function setNumCell(taskId,colId,el){
 }
 
 /* ===== inline editing of built-in columns (סטטוס/עדיפות/תאריך/תגיות/כותרת) ===== */
-function canEdit(){ return canComment(); }  // board members who aren't view-only
+function canEdit(){ return canComment(null); }  // board members who aren't view-only — never "this item" (see canComment)
 function itemPerm(t){ return (t&&t.my_perm)||'edit'; }
 function canEditItem(t){ const p=itemPerm(t); return p==='edit'||p==='delete'; }
 function canDeleteItem(t){ return itemPerm(t)==='delete'; }
@@ -20443,7 +20698,11 @@ function togglePopSub(e){
   if(parent) parent.querySelectorAll(':scope > .pop-sub').forEach(s=>{ if(s!==sub)s.classList.remove('open'); });
   sub.classList.toggle('open');
 }
-function closeCellPops(){document.querySelectorAll('.cell-pop').forEach(p=>p.remove());}
+/* Every way a popover closes comes through here — an outside click, a pick,
+   Escape — so a button that announced its list as open (the role picker's
+   aria-expanded) is told here that it no longer is. */
+function closeCellPops(){document.querySelectorAll('.cell-pop').forEach(p=>p.remove());
+  document.querySelectorAll('.brole-btn[aria-expanded="true"]').forEach(b=>b.setAttribute('aria-expanded','false'));}
 /* Fixed-positioned cell popover appended to <body> so it never gets clipped by
    the table's overflow:hidden. Returns the pop element (pop._anchor = cell). */
 function openCellPop(anchor,html,extraClass,above){
@@ -22507,6 +22766,7 @@ async function cycleStatus(e,id){
    created immediately and its name opens for inline editing. */
 async function addSubItem(parentId){
   if(!st.board||window._creatingItem)return;            // guard against double-submit
+  if(typeof boardMayEdit==='function'&&st.board.my_role&&!boardMayEdit()){ toast('אין לך הרשאה להוסיף תתי-פריטים בלוח זה'); return; }
   window._creatingItem=true;
   try{
     const s=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -22561,9 +22821,12 @@ function itemRowMenu(e,id){
       <button class="rm-item" onclick="togglePopSub(event)"><i class="fa-solid ${icon}"></i> ${label}<i class="fa-solid fa-chevron-left pop-sub-caret"></i></button>
       <div class="pop-subm">${inner}</div>
     </div>`;
+  // moving is a board-level change: an assigned_editor edits this row and
+  // still may not take it to another group (see boardMayEdit)
+  const mayMove=typeof boardMayEdit!=='function'||!st.board.my_role||boardMayEdit();
   const html=`<div class="row-menu">
-    ${sub('fa-arrow-right-arrow-left','העבר',
-        sub('fa-layer-group','קבוצה',groupList)+sub('fa-table-columns','לוח',boardList))}
+    ${mayMove?sub('fa-arrow-right-arrow-left','העבר',
+        sub('fa-layer-group','קבוצה',groupList)+sub('fa-table-columns','לוח',boardList)):''}
     <button class="rm-item danger" onclick="deleteItem(event,${id})"><i class="fa-regular fa-trash-can"></i> מחק פריט</button>
   </div>`;
   openCellPop(e.currentTarget,html,'row-menu-pop');
@@ -22853,7 +23116,7 @@ function vKanban(el){
   }).join('')+'</div>';
   if(!window.Sortable){toast('גרירה לא זמינה (Sortable לא נטען) — לחץ על אווטאר לשיוך');return;}
   el.querySelectorAll('.kcol-body').forEach(body=>{
-    sortableOn(body,{group:'kanban',disabled:isTouch(),animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
+    sortableOn(body,{group:'kanban',disabled:isTouch()||(typeof boardMayEdit==='function'&&!!st.board&&!!st.board.my_role&&!boardMayEdit()),animation:150,ghostClass:'sortable-ghost',onEnd:async ev=>{
       const id=ev.item.dataset.id, status=ev.to.dataset.status;
       try{await api('/api/tasks/'+id+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status,actor_id:meId()})});
         const t=tasks.find(x=>x.id==id);if(t)t.status=status;toast('עודכן ל'+bStat(status).he);
@@ -25247,6 +25510,9 @@ function GIS_args(tool){
 // clicked on sits at. See the body.
 async function openNewItem(group,atTop){
   if(!st.board||window._creatingItem)return;            // guard against double-submit
+  // the doors to this are hidden for a board-level viewer (body.brole-limited);
+  // this is for the ones that are not — a shortcut, another view's "+"
+  if(typeof boardMayEdit==='function'&&st.board.my_role&&!boardMayEdit()){ toast('אין לך הרשאה להוסיף פריטים בלוח זה'); return; }
   window._creatingItem=true;
   /* Only the top button asks for "the first group". The "+ הוסף פריט" line
      under the ungrouped rows also sends null, and that null means THOSE rows.
@@ -27381,7 +27647,11 @@ const Chat = {
     // while editing a comment, the rich composer moves inline into that comment;
     // the bottom composer is hidden so there's a single active editor (#comp-text)
     const bottom = this.editing!=null ? ''
-      : (canComment()?this.composerHTML('new'):`<div class="chat-noperm"><i class="fa-solid fa-lock"></i> ${st.me&&st.me.role==='viewer'?'למשתמש הרשאת צפייה בלבד':'הלוח מוגדר לצפייה בלבד'} — אין אפשרות להגיב</div>`);
+      : (canComment()?this.composerHTML('new'):`<div class="chat-noperm"><i class="fa-solid fa-lock"></i> ${
+          // an assigned role is not read-only everywhere — only here, on a
+          // record that is not theirs — and saying "צפייה בלבד" would be wrong
+          (typeof boardRoleAssigned==='function'&&boardRoleAssigned())?'הרשומה אינה משויכת אליך'
+          :st.me&&st.me.role==='viewer'?'למשתמש הרשאת צפייה בלבד':'הלוח מוגדר לצפייה בלבד'} — אין אפשרות להגיב</div>`);
     setHTML(body, `<div class="chat-list">${list}</div>${bottom}`);
     this.renderAtts();
     if(this.editing!=null){ const ec=this._commentsById[this.editing]; const ta=document.getElementById('comp-text'); if(ta){ if(ec&&ta.value==='')ta.value=ec.content||''; this.syncHL(); } }
@@ -27766,7 +28036,8 @@ const Chat = {
      do. */
   mentionPeople(){
     const me=meId();
-    return boardPeople(this.mentions).filter(u=>u.id!==me);
+    // for THIS item: somebody who may not see it is not offered (boardPeople)
+    return boardPeople(this.mentions,this.task?{item:this.task}:undefined).filter(u=>u.id!==me);
   },
   mentionSettled(q){
     const low=q.toLowerCase(), people=this.mentionPeople();

@@ -102,9 +102,14 @@ const names = w => w.boardPeople().map(u=>u.name);
   ck('the list is by name, as the board payload orders it',
      JSON.stringify(names(w))===JSON.stringify(['אבי כהן','דנה שפירא']),
      JSON.stringify(names(w)));
-  ck('…and the shape is the board\'s own {id,name,avatar_url}',
+  /* The board payload's members[] carries each member's role since the
+     assigned_editor / assigned_only roles: a picker narrowing to the people
+     who can see one item has to know who is assigned_only. So the rebuilt
+     list carries it too — a list without it would make a just-invited
+     assigned_only member taggable on every item until the next reload. */
+  ck('…and the shape is the board\'s own {id,name,avatar_url,role}',
      w.st.board.members.every(m=>'id' in m && 'name' in m && 'avatar_url' in m
-                                && !('user_id' in m) && !('role' in m)),
+                                && !('user_id' in m) && 'role' in m),
      JSON.stringify(w.st.board.members));
 }
 

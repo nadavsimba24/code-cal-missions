@@ -1522,6 +1522,12 @@ def dashboard(user_id: int = Depends(current_user_id)):
         tasks = db.query(Task).filter(
             Task.is_archived == False, Task.board_id.in_(visible)
         ).all() if visible else []
+        # on a board where this person is assigned_only, only their own items
+        # count — the same cut their board shows them (see _assigned_only_ids)
+        _vis = {bid: _assigned_only_ids(db, bid, user_id)
+                for bid in _assigned_only_boards(db, user_id) if bid in visible}
+        if _vis:
+            tasks = [t for t in tasks if t.board_id not in _vis or t.id in _vis[t.board_id]]
         total = len(tasks)
         by_status = {}
         by_priority = {}
@@ -2071,27 +2077,100 @@ def _can_be_assigned(db, board_id, user_id):
         return True
     return _ws_role(db, user_id) == "admin"
 
-def _not_taggable_reason(db, board_id, user_id):
+def _item_visible_to(db, task, user_id, board=None, cf=None, assignee_ids=None):
+    """May `user_id` see this item — judged against the values it is ABOUT to
+    hold, not only the ones it holds now?
+
+    The tagging rule needs this and _item_perm cannot give it: when a single
+    save both puts an assigned_only member into the perm column and into some
+    other people column, the second is legitimate only because of the first,
+    and the item as stored does not show the first yet. `cf` and
+    `assignee_ids` are the after-state; left None, the item's own are read. A
+    brand-new item that is not in the session yet works the same way.
+
+    Same order of answers as _item_perm: an override first, then the role, and
+    only assigned_only is ever closed by default."""
+    if user_id is None or task is None:
+        return False
+    role = _board_role(db, task.board_id, user_id)
+    if role is None:
+        return False
+    ov = (task.permissions or {}).get(str(user_id))
+    if ov in ("view", "edit", "delete"):
+        return True
+    if ov == "none":
+        return False
+    if role != "assigned_only":
+        return True
+    if board is None:
+        board = db.query(Board).filter(Board.id == task.board_id).first()
+    col = _board_perm_col(board)
+    if col == "assignees":
+        ids = (set(assignee_ids) if assignee_ids is not None
+               else {u.id for u in (task.assignees or [])})
+        if user_id in ids:
+            return True
+    else:
+        vals = (cf if cf is not None else (task.custom_fields or {})).get(col)
+        if isinstance(vals, list) and user_id in vals:
+            return True
+    if task.parent_id:
+        parent = db.query(Task).filter(Task.id == task.parent_id).first()
+        return parent is not None and _assigned_in(parent, user_id, col)
+    return False
+
+def _not_taggable_reason(db, board_id, user_id, task=None):
     """Why this person may not be named on this board, in words — "" if they may.
 
     Two different refusals used to read as one: a deactivated member was told
     they were "not a member of the board", which they are, which sent whoever
     read it looking at the board's invitations for a problem that is on the
     user's account.
+
+    With `task`, also: a member who cannot see THAT item — an assigned_only
+    member who is not assigned to it, or anyone it is closed to by an
+    override. Naming them on it would send a notification for an item they
+    cannot open, the same reason a non-member is refused.
     """
     if _account_blocked(db, user_id):
         return "חשבונו מושבת"
     if not _can_be_assigned(db, board_id, user_id):
         return "אינו חבר בלוח"
+    if task is not None and not _item_visible_to(db, task, user_id):
+        return "אין לו גישה לפריט זה"
     return ""
 
-def _filter_people_values(db, board_id, cf, before):
+def _may_name_on(db, task, user_id, col_id, board=None, cf=None):
+    """May this member be written into people column `col_id` ("assignees" for
+    the circles) of this item — the tagging rule's item half, for the writers
+    that are not a person at a cell: automations, mappings, mirrors.
+
+    Always into the board's perm column: that is how an assigned member is
+    given an item. Into any other only if they can see the item, judged with
+    `cf` as the cells will be. Board membership is the caller's own check
+    (_can_be_assigned) and is not repeated here."""
+    if board is None:
+        board = db.query(Board).filter(Board.id == task.board_id).first()
+    if col_id == _board_perm_col(board):
+        return True
+    return _item_visible_to(db, task, user_id, board, cf=cf)
+
+def _filter_people_values(db, board_id, cf, before, task=None):
     """Drop non-members from people-column values in `cf` (in place).
     Only *newly added* ids are rejected: ids already stored on the item survive so
     that items tagged before this rule stay editable and can be cleaned up by
-    hand, instead of a legacy value making the whole cell impossible to save."""
+    hand, instead of a legacy value making the whole cell impossible to save.
+
+    With `task` (the item being written, new or existing), a newly added id
+    must also be somebody who can see the item — except in the board's perm
+    column, because putting a person THERE is exactly how an assigned_only
+    member is given the item. Visibility is judged on the item as it will be
+    after this save (`before` merged with `cf`), so naming someone in the perm
+    column and in another column at once is accepted."""
     board = db.query(Board).filter(Board.id == board_id).first()
     cols = {c["id"]: c for c in ((board.settings or {}).get("columns", []) if board else [])}
+    perm_col = _board_perm_col(board) if task is not None else None
+    after = {**(before or {}), **cf} if task is not None else None
     for key, val in list(cf.items()):
         if not isinstance(val, list):
             continue
@@ -2106,9 +2185,17 @@ def _filter_people_values(db, board_id, cf, before):
         # Postgres refuses outright.
         cf[key] = [uid for uid in val
                    if not isinstance(uid, int) or uid in kept
-                   or _can_be_assigned(db, board_id, uid)]
+                   or (_can_be_assigned(db, board_id, uid)
+                       and (task is None or key == perm_col
+                            or _item_visible_to(db, task, uid, board, cf=after)))]
 
-_BROLE_ORDER = {"viewer": 0, "editor": 1, "admin": 2}
+# The two "assigned" roles rank with the viewer for everything decided at board
+# level — creating items, groups, columns, views, moving, automations. What they
+# may do beyond reading is decided item by item, in _item_perm, and must never
+# leak upward into a board-wide grant. An unknown role ranks below everything
+# (the .get(role, -1) at every reader), which is the safe direction.
+_BROLE_ORDER = {"viewer": 0, "assigned_editor": 0, "assigned_only": 0,
+                "editor": 1, "admin": 2}
 def _require_board_edit(db, board_id, actor, need="editor", msg=None):
     """Enforce board-level write permission (closes IDOR on board mutations).
     The actor must be a board member whose role meets `need` (editor|admin).
@@ -2206,21 +2293,218 @@ def _ws_role(db, user_id):
 
 # ── Multi-level permission model (סביבה → לוח → פריט → עמודה) ────────
 def _board_caps(role):
-    """Capabilities implied by a board role."""
+    """Capabilities implied by a board role.
+
+    The two assigned roles are "view" here on purpose — this is the BOARD-level
+    answer, and at board level they are viewers. Their right to edit an item
+    they are assigned to is granted per item by _item_perm, and their being
+    unable to see the rest (assigned_only) is taken away there too."""
     return {
         "admin":  {"view", "edit", "delete", "manage"},
         "editor": {"view", "edit"},
         "viewer": {"view"},
+        "assigned_editor": {"view"},
+        "assigned_only": {"view"},
     }.get(role, set())
 
-def _item_perm(task, user_id, board_role):
+ASSIGNED_ROLES = ("assigned_editor", "assigned_only")
+
+def _board_perm_col(board):
+    """Which column says who an item is "assigned to", for the assigned roles.
+
+    "assignees" — the built-in circles every board has — unless the board admin
+    named one of the board's own people columns in settings.perm_column. A
+    name that no longer points at a people column (the column was deleted, or
+    retyped) falls back to the circles rather than to nothing: nothing would
+    silently turn every assigned_only member's board empty, which reads as
+    data loss to the person looking at it."""
+    if board is None:
+        return "assignees"
+    pc = (board.settings or {}).get("perm_column")
+    if not pc or pc == "assignees":
+        return "assignees"
+    for c in (board.settings or {}).get("columns", []) or []:
+        if c.get("id") == pc:
+            return pc if c.get("type") == "people" else "assignees"
+    return "assignees"
+
+def _assigned_in(task, user_id, col):
+    """Is `user_id` named in this one item's perm column? (Not its parent's.)"""
+    if task is None or user_id is None:
+        return False
+    if col == "assignees":
+        return any(u.id == user_id for u in (task.assignees or []))
+    vals = (task.custom_fields or {}).get(col)
+    return isinstance(vals, list) and user_id in vals
+
+def _is_assigned(task, user_id, col=None):
+    """Assigned to this item — directly, or through its parent.
+
+    A sub-item follows its parent: whoever owns the item owns the steps under
+    it, and an assigned_only member who could open an item but not the
+    sub-items it is made of would be looking at half of their own work. The
+    perm column is read off the item's board unless the caller already has it.
+
+    The parent is looked up through the session's identity map, so where it is
+    already loaded it costs no query. A loop over a whole board should not
+    come here at all — see _assign_scope."""
+    if task is None or user_id is None:
+        return False
+    if col is None:
+        try:
+            col = _board_perm_col(task.board)
+        except Exception:
+            # Detached object: nothing to resolve the board with. Closed, not
+            # a guess — guessing "assignees" on a board whose perm column is
+            # another one would hand an item to whoever is in the circles.
+            return False
+    if _assigned_in(task, user_id, col):
+        return True
+    if task.parent_id:
+        from sqlalchemy.orm import object_session
+        sess = object_session(task)
+        parent = sess.get(Task, task.parent_id) if sess is not None else None
+        if parent is not None and _assigned_in(parent, user_id, col):
+            return True
+    return False
+
+def _assign_scope(db, board, user_id, include_bin=False):
+    """The ids of this board's items `user_id` is named on in its perm column —
+    computed once, for a loop that is about to ask _item_perm of every item.
+
+    Asked one item at a time, "is this person in the assignees" is a lazy load
+    per row, and the board payload deliberately does not load the relationship
+    (see _prefetch_items) — so an assigned member opening a board of fifteen
+    thousand items paid fifteen thousand queries for the one question. Here it
+    is one query: the join table for the built-in column, and for a custom
+    people column only that one cell of each row, extracted in SQL — not the
+    whole custom_fields JSON of every item on the board. A sub-item is covered
+    by checking its parent_id against the same set (see _item_perm).
+
+    Live, unarchived items only, which is what every board read shows;
+    `include_bin` widens it to the recycle bin and the archive for the readers
+    that show those too (the bin, the board log — see _assigned_only_ids).
+
+    Kept on the session and reused, because one board read asks twice (the
+    count, then the rows) and _serialize_task asks per row. It is therefore a
+    snapshot: right for a read, not to be trusted across a write that
+    changes who is assigned."""
+    from models import task_assignees as assignee_rows
+    if board is None or user_id is None:
+        return frozenset()
+    key = ("_assign_scope_bin" if include_bin else "_assign_scope", board.id, user_id)
+    hit = db.info.get(key)
+    if hit is not None:
+        return hit
+    col = _board_perm_col(board)
+    if col == "assignees":
+        q = (db.query(assignee_rows.c.task_id)
+               .join(Task, Task.id == assignee_rows.c.task_id)
+               .filter(Task.board_id == board.id, assignee_rows.c.user_id == user_id))
+        if include_bin:
+            q = q.execution_options(include_deleted=True)
+        else:
+            q = q.filter(Task.is_archived == False, Task.deleted_at.is_(None))   # noqa: E712
+        scope = frozenset(r[0] for r in q.all())
+    else:
+        q = (db.query(Task.id, Task.custom_fields[col])
+               .filter(Task.board_id == board.id))
+        if include_bin:
+            q = q.execution_options(include_deleted=True)
+        else:
+            q = q.filter(Task.is_archived == False, Task.deleted_at.is_(None))   # noqa: E712
+        scope = frozenset(tid for tid, v in q.all()
+                          if isinstance(v, list) and user_id in v)
+    db.info[key] = scope
+    return scope
+
+def _item_perm(task, user_id, board_role, scope=None):
     """Effective permission on a specific item: none|view|edit|delete.
-    A per-user item override wins over the board role."""
+    A per-user item override wins over the board role.
+
+    For the two assigned roles the board role alone does not answer: assigned
+    to the item (or to its parent) means "edit"; not assigned means "view"
+    for assigned_editor and "none" for assigned_only. Every other role never
+    reaches that branch, so the hot loops over big boards pay nothing for it.
+    `scope` is _assign_scope's answer for the item's board, for a caller
+    looping over many items; without it the item is asked directly."""
     ov = (task.permissions or {}).get(str(user_id))
     if ov in ("none", "view", "edit", "delete"):
         return ov
+    if board_role in ASSIGNED_ROLES:
+        if scope is not None:
+            mine = task.id in scope or (task.parent_id is not None
+                                        and task.parent_id in scope)
+        else:
+            mine = _is_assigned(task, user_id)
+        if mine:
+            return "edit"
+        return "view" if board_role == "assigned_editor" else "none"
     caps = _board_caps(board_role)
     return "delete" if "delete" in caps else ("edit" if "edit" in caps else ("view" if "view" in caps else "none"))
+
+def _assigned_only_sql(db, board, user_id):
+    """The SQL condition an assigned_only reader's item counts are cut by — the
+    same set _item_perm lets them see, so a count and the list it heads agree.
+
+    Assigned (the item or its parent is in the perm column) and not closed by
+    an override, or opened by one. The built-in column is a subquery; a custom
+    people column lives in JSON, whose SQL differs between SQLite and
+    Postgres, so its ids are gathered in Python by _assign_scope instead."""
+    from models import task_assignees as assignee_rows
+    from sqlalchemy import select
+    ov = Task.permissions[str(user_id)].as_string()
+    if _board_perm_col(board) == "assignees":
+        mine = select(assignee_rows.c.task_id).where(assignee_rows.c.user_id == user_id)
+    else:
+        mine = list(_assign_scope(db, board, user_id))
+    assigned = or_(Task.id.in_(mine), Task.parent_id.in_(mine))
+    return or_(ov.in_(("view", "edit", "delete")),
+               and_(assigned, or_(ov.is_(None), ov != "none")))
+
+def _assigned_only_ids(db, board_id, user_id):
+    """For an assigned_only reader: the ids of this board's items they may see,
+    bin included. For anybody else: None — no narrowing to apply here.
+
+    Board-wide readers that never asked an item anything — the board log, the
+    export's conversation and files sheets, the aggregates — were written when
+    every board role could see every item short of an override. For this one
+    role the default is closed, and a log line, a comment row or a count is
+    an item's content as much as its row is. They filter by this set.
+
+    One query over (id, parent, permissions) and one for the perm column,
+    whatever the size of the board."""
+    if user_id is None or _board_role(db, board_id, user_id) != "assigned_only":
+        return None
+    board = db.query(Board).filter(Board.id == board_id).first()
+    scope = _assign_scope(db, board, user_id, include_bin=True)
+    key = str(user_id)
+    out = set()
+    for tid, pid, perms in (db.query(Task.id, Task.parent_id, Task.permissions)
+                              .execution_options(include_deleted=True)
+                              .filter(Task.board_id == board_id).all()):
+        ov = (perms or {}).get(key)
+        if ov in ("view", "edit", "delete"):
+            out.add(tid)
+        elif ov != "none" and (tid in scope or (pid is not None and pid in scope)):
+            out.add(tid)
+    return out
+
+def _assigned_only_boards(db, user_id):
+    """The boards on which this person is assigned_only — one query, for the
+    readers that span every board they can see and must not ask _board_role
+    once per board to find the few where the answer matters. A system admin
+    is admin everywhere (see _board_role), so their rows say nothing."""
+    if user_id is None:
+        return set()
+    # the membership rows first: nearly everybody has none, and for them this
+    # is the one query the function costs
+    ids = {bid for (bid,) in db.query(BoardMember.board_id)
+                               .filter(BoardMember.user_id == user_id,
+                                       BoardMember.role == "assigned_only").all()}
+    if ids and _ws_role(db, user_id) == "admin":
+        return set()
+    return ids
 
 def _board_item_count(db, board_id, user_id):
     """How many rows this reader's board has — counted in the database, with
@@ -2251,6 +2535,12 @@ def _board_item_count(db, board_id, user_id):
            .filter(Task.board_id == board_id, Task.parent_id.is_(None),
                    Task.is_archived == False, Task.deleted_at.is_(None)))   # noqa: E712
     if user_id is not None:
+        # The one role whose default IS "none": an assigned_only member sees
+        # only what they are assigned to, so the count is cut the same way
+        # the list is — see _assigned_only_sql.
+        if _board_role(db, board_id, user_id) == "assigned_only":
+            board = db.query(Board).filter(Board.id == board_id).first()
+            return q.filter(_assigned_only_sql(db, board, user_id)).scalar() or 0
         closed = Task.permissions[str(user_id)].as_string()
         # an item with no override at all extracts as NULL, and NULL != 'none'
         # is NULL rather than true — left as a bare inequality this counted
@@ -2344,6 +2634,25 @@ def _require_task_view(db, task_id, actor):
         if _item_perm(t, actor, role) == "none":
             raise HTTPException(403, "אין לך גישה לפריט זה")
     return t
+
+
+def _require_item_edit(db, task, actor):
+    """403 unless `actor` may change this item.
+
+    For an assigned member that is the item's own answer — assigned to it, or
+    given it by an override — because at board level they are viewers and
+    _require_board_edit would refuse them their own work. For everybody else
+    it is the board-level gate it always was, and then the item: an override
+    closing an item to an editor closes it to every write, not only to the
+    PATCH that already asked."""
+    if actor is None:
+        raise HTTPException(401, "נדרשת התחברות")
+    role = _board_role(db, task.board_id, actor)
+    if role not in ASSIGNED_ROLES:
+        _require_board_edit(db, task.board_id, actor)
+    if _item_perm(task, actor, role) not in ("edit", "delete"):
+        raise HTTPException(403, "אין לך הרשאת עריכה לפריט זה")
+    return role
 
 
 def _visible_link_ids(db, ids, user_id):
@@ -2486,6 +2795,13 @@ def _col_perm(col, user_id, board_role):
     ov = (col.get("perms") or {}).get(str(user_id))
     if ov in ("none", "view", "edit"):
         return ov
+    # The assigned roles edit cells on the items they are assigned to, so the
+    # column must not refuse first: a column answering "view" here would have
+    # update_task drop every cell they typed, silently, on their own item. The
+    # item is what limits them (_item_perm), and a column override above still
+    # narrows them like anyone else.
+    if board_role in ASSIGNED_ROLES:
+        return "edit"
     caps = _board_caps(board_role)
     return "edit" if "edit" in caps else ("view" if "view" in caps else "none")
 
@@ -2537,8 +2853,12 @@ def list_boards(user_id: int = Depends(current_user_id)):
             visible = _visible_board_ids(db, user_id)   # membership + public boards
             boards = [b for b in boards if b.id in visible]
         result = []
+        _ao_boards = _assigned_only_boards(db, user_id)
         for b in boards:
-            task_count = db.query(Task).filter(Task.board_id == b.id, Task.parent_id == None).count()
+            # an assigned_only member's board holds their own items, and its
+            # count in the sidebar says so — counted the way the board does
+            task_count = (_board_item_count(db, b.id, user_id) if b.id in _ao_boards else
+                          db.query(Task).filter(Task.board_id == b.id, Task.parent_id == None).count())
             dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
             groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
             result.append({
@@ -2821,7 +3141,9 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
     last_comment_at = (_lc[t.id] if _lc is not None and t.id in _lc
                        else db.query(func.max(Comment.created_at))
                               .filter(Comment.task_id == t.id).scalar())
-    my_perm = _item_perm(t, user_id, board_role) if user_id is not None else "delete"
+    _scope = (_pre.get(("_assign_scope", t.board_id, user_id))
+              if board_role in ASSIGNED_ROLES else None)
+    my_perm = _item_perm(t, user_id, board_role, _scope) if user_id is not None else "delete"
     cf = dict(t.custom_fields or {})
     # Which columns need anything doing to them is a property of the board and
     # the viewer, not of the item — so it is worked out once (_col_plan) rather
@@ -2897,7 +3219,7 @@ def _serialize_task(t, db, with_subs=True, user_id=None, board_role=None, column
         subs = (_kids[t.id] if _kids is not None and t.id in _kids
                 else db.query(Task).filter(Task.parent_id == t.id, Task.is_archived == False)
                         .order_by(Task.position, Task.id).all())
-        subs = [s for s in subs if user_id is None or _item_perm(s, user_id, board_role) != "none"]
+        subs = [s for s in subs if user_id is None or _item_perm(s, user_id, board_role, _scope) != "none"]
         d["subtasks"] = [_serialize_task(s, db, with_subs=False, user_id=user_id, board_role=board_role, columns=columns) for s in subs]
     return d
 
@@ -5926,7 +6248,7 @@ def _form_submit(db, f, b, answers, user, request, submission_id=None):
     ids = list(payload.get("assignee_ids") or [])
     if ids:
         task.assignees = db.query(User).filter(User.id.in_(ids)).all()
-    _filter_people_values(db, b.id, cf, None)       # invited members only
+    _filter_people_values(db, b.id, cf, None, task)  # invited members only
     for col in ((b.settings or {}).get("columns") or []):
         if col.get("type") in ("mirror", "connect"):
             cf.pop(col["id"], None)     # not a cell a form writes
@@ -7080,10 +7402,14 @@ def _dash_population(db, d, w, user_id):
             q = q.filter(Task.parent_id.isnot(None))
         if s["groups"] is not None:
             q = q.filter(Task.group_id.in_(s["groups"]))
+        # an assigned member's own items, asked once per board rather than
+        # through a lazy assignees load per record (see _assign_scope)
+        _sc = (_assign_scope(db, db.query(Board).filter(Board.id == bid).first(), user_id)
+               if role in ASSIGNED_ROLES else None)
         for t in q.order_by(Task.id).all():
             if t.id in seen:
                 continue
-            if _item_perm(t, user_id, role) == "none":
+            if _item_perm(t, user_id, role, _sc) == "none":
                 continue
             seen.add(t.id)
             out.append(t)
@@ -9825,8 +10151,12 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
                   .order_by(Task.position, Task.id)
                   .all())
         # and an item this person may not see is not an item this answers for
+        #
+        # An assigned member's "is this mine" is answered for the whole board
+        # in one go (_assign_scope) — per row it is a lazy load each.
+        _pc = _assign_scope(db, b, user_id) if my_role in ASSIGNED_ROLES else None
         if user_id is not None:
-            rows = [t for t in rows if _item_perm(t, user_id, my_role) != "none"]
+            rows = [t for t in rows if _item_perm(t, user_id, my_role, _pc) != "none"]
 
         # "אם עדכון גורם לפריט להפסיק להתאים למסנן, הוא יוסתר לאחר השמירה
         # ותוצג הודעה עם קישור לפריט."
@@ -9978,7 +10308,7 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         if user_id is not None:
             # the same gate the parents went through — a sub-item somebody may
             # not see cannot pull its parent into the answer either
-            subs_all = [t for t in subs_all if _item_perm(t, user_id, my_role) != "none"]
+            subs_all = [t for t in subs_all if _item_perm(t, user_id, my_role, _pc) != "none"]
         if isinstance(only, list):
             subs_all = []          # a question about named rows is about those rows
 
@@ -10301,9 +10631,16 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         if _board_has_item_id_col(b):
             _backfill_item_uids(db, b.id)
         _lap("item_uids")
-        # hide items the user has no view permission on
+        # hide items the user has no view permission on — an assigned member's
+        # "is it mine" asked once for the board, not lazily per row
+        _scope = _assign_scope(db, b, user_id) if my_role in ASSIGNED_ROLES else None
+        _hidden = []
         if user_id is not None:
-            tasks = [t for t in tasks if _item_perm(t, user_id, my_role) != "none"]
+            _kept = [t for t in tasks if _item_perm(t, user_id, my_role, _scope) != "none"]
+            if my_role == "assigned_only":
+                _ok = {t.id for t in _kept}
+                _hidden = [t for t in tasks if t.id not in _ok]
+            tasks = _kept
         # one pass for everything an item is about to be asked — its sub-items,
         # assignees and counts (_prefetch_items), then its links (_prefetch_links)
         _subs = _prefetch_items(db, tasks)
@@ -10311,6 +10648,29 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         _prefetch_links(db, list(tasks) + _subs, columns, user_id)
         _lap("prefetch_links")
         tasks_out = [_serialize_task(t, db, user_id=user_id, board_role=my_role, columns=columns) for t in tasks]
+        # An assigned_only member named on a SUB-item of an item that is not
+        # theirs would otherwise see nothing at all here: the board's rows are
+        # its top-level items, and the parent is not theirs to see. The paged
+        # fetch already answers this with a context shell (see _context_shell
+        # in /items/query) — an empty wrapper holding the sub-items they may
+        # read — and the board does the same, at the end like there.
+        if _hidden:
+            # Only the sub-items this member may see are loaded at all — cut in
+            # SQL by the same condition the count uses — and of those, the
+            # ones under a parent that was hidden. A visible parent's own
+            # sub-items already travel inside it.
+            _kids, _hid = {}, {t.id for t in _hidden}
+            for sub in (db.query(Task)
+                          .filter(Task.board_id == b.id, Task.parent_id.isnot(None),
+                                  Task.is_archived == False,                 # noqa: E712
+                                  _assigned_only_sql(db, b, user_id))
+                          .order_by(Task.position, Task.id).all()):
+                if (sub.parent_id in _hid
+                        and _item_perm(sub, user_id, my_role, _scope) != "none"):
+                    _kids.setdefault(sub.parent_id, []).append(sub)
+            tasks_out += [_context_shell(t, _kids[t.id], db, user_id=user_id,
+                                         board_role=my_role, columns=columns)
+                          for t in _hidden if t.id in _kids]
         _lap("serialize")
 
         # board owners = members with the board-scoped admin role (creator + any
@@ -10351,12 +10711,26 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             # so it holds exactly who _can_be_assigned would accept: a member
             # whose account was deactivated is not offered. Anyone already
             # tagged is re-added client-side, so an old tag stays removable.
-            "members": [{"id": mu.id, "name": mu.name, "avatar_url": mu.avatar_url}
-                        for mu in (db.query(User)
+            #
+            # Each carries its board role, because tagging is no longer a yes/no
+            # per member: an assigned_only member may be put in the perm column
+            # of any item (that is how they are given it) but in no other people
+            # column of an item they cannot see. The picker needs the role to
+            # say so before the server refuses.
+            "members": [{"id": mu.id, "name": mu.name, "avatar_url": mu.avatar_url,
+                         "role": mrole}
+                        for mu, mrole in (db.query(User, BoardMember.role)
                                      .join(BoardMember, BoardMember.user_id == User.id)
                                      .filter(BoardMember.board_id == b.id,
                                              User.is_active.isnot(False))
                                      .order_by(User.name).all())],
+            # Board settings the browser needs to reason with. Only what it
+            # asks for — the stored settings JSON also holds the column
+            # definitions, which travel above under their own keys. perm_column
+            # is the column that decides "assigned" for the assigned roles, as
+            # in force: "assignees" when unset or when the column it named is
+            # gone (see _board_perm_col).
+            "settings": {"perm_column": _board_perm_col(b)},
             # A connect column mid-conversion carries the state of it, so the
             # header can offer "טיפול בחריגות" and say how many are left. Added
             # to a COPY of the definition — b.settings is the stored JSON, and
@@ -12849,6 +13223,23 @@ def update_board(board_id: int, data: dict, actor_id: int = Depends(current_user
             s = dict(b.settings or {})
             s["visibility"] = v
             b.settings = s
+        if "perm_column" in data:
+            # Which column says who an item is assigned to, for the
+            # assigned_editor / assigned_only members. Board admins only: moving
+            # it re-decides, at once, which items every such member may see and
+            # edit. Only the built-in circles or one of this board's own people
+            # columns — anything else would be a perm column nobody can ever
+            # be put in, and is refused rather than stored and ignored.
+            if _board_role(db, board_id, actor_id) != "admin":
+                raise HTTPException(403, "רק מנהל הלוח יכול לקבוע את עמודת ההרשאות")
+            pc = data["perm_column"]
+            if not isinstance(pc, str) or (pc != "assignees" and not any(
+                    c.get("id") == pc and c.get("type") == "people"
+                    for c in (b.settings or {}).get("columns", []) or [])):
+                raise HTTPException(400, "עמודת ההרשאות חייבת להיות עמודת אנשים בלוח")
+            s = dict(b.settings or {})
+            s["perm_column"] = pc
+            b.settings = s
         # `form` used to be a key in here — one form per board, four flags
         # per field, rebuilt from the live columns on every open. A form is a
         # view of the board now, with a row of its own and endpoints of its
@@ -14056,6 +14447,11 @@ def board_trash(board_id: int, actor_id: int = Depends(current_user_id)):
                 .filter(Task.board_id == board_id, Task.deleted_at != None,  # noqa: E711
                         Task.parent_id == None)                              # noqa: E711
                 .order_by(Task.deleted_at.desc()).all())
+        # filtered, not refused: an assigned_only member's bin is their own
+        # items in it, the same cut their board is
+        _vis = _assigned_only_ids(db, board_id, actor_id)
+        if _vis is not None:
+            rows = [t for t in rows if t.id in _vis]
         return {"items": [_trash_task_json(db, t, users) for t in rows],
                 "retention_days": RECYCLE_BIN_DAYS}
 
@@ -14107,6 +14503,9 @@ def view_trashed_task(board_id: int, task_id: int, actor_id: int = Depends(curre
         t = _deleted_tasks_q(db).filter(Task.id == task_id, Task.board_id == board_id).first()
         if not t or not t.deleted_at:
             raise HTTPException(404, "item not in the recycle bin")
+        _vis = _assigned_only_ids(db, board_id, actor_id)
+        if _vis is not None and t.id not in _vis:
+            raise HTTPException(403, "אין לך גישה לפריט זה")
         users = {u.id: u.name for u in db.query(User).all()}
         subs = _deleted_tasks_q(db).filter(Task.parent_id == task_id).order_by(Task.position).all()
         comments = db.query(Comment).filter(Comment.task_id == task_id).count()
@@ -14178,8 +14577,15 @@ def purge_board(board_id: int, user_id: int = Depends(current_user_id)):
         return {"status": "purged", "id": board_id}
 
 # ── Board membership & per-board permissions ────────────────────────
-BOARD_ROLES = ("admin", "editor", "viewer")
-BROLE_HE = {"admin": "מנהל לוח", "editor": "עורך", "viewer": "צופה"}
+# The two "assigned" roles sit beside the classic three rather than between
+# them: at board level both act as a viewer (see _BROLE_ORDER and _board_caps),
+# and what they add is per item — edit what you are assigned to, and for
+# assigned_only, see nothing else. Which column decides "assigned" is the
+# board's perm column; see _board_perm_col.
+BOARD_ROLES = ("admin", "editor", "viewer", "assigned_editor", "assigned_only")
+BROLE_HE = {"admin": "מנהל לוח", "editor": "עורך", "viewer": "צופה",
+            "assigned_editor": "עריכת רשומות משויכות",
+            "assigned_only": "גישה לרשומות משויכות בלבד"}
 
 
 def _notify(db, user_id, type, title, body="", board_id=None, task_id=None):
@@ -14634,8 +15040,12 @@ def add_board_member(board_id: int, data: dict, request: Request = None,
         if _why:
             raise HTTPException(400, _why)
         role = data.get("role", "editor")
+        # An unknown role used to be quietly turned into "editor" — which, now
+        # that there are roles narrower than viewer, meant a typo or a client
+        # older than the server handed out MORE access than was asked for. A
+        # role this server does not know is refused, not guessed at.
         if role not in BOARD_ROLES:
-            role = "editor"
+            raise HTTPException(400, "תפקיד לא מוכר בלוח")
         m = db.query(BoardMember).filter(BoardMember.board_id == board_id, BoardMember.user_id == uid).first()
         is_new = m is None
         if m:
@@ -14686,6 +15096,11 @@ def update_board_member(board_id: int, uid: int, data: dict, actor_id: int = Dep
         if not m:
             raise HTTPException(404, "member not found")
         role = data.get("role")
+        # Silently ignoring an unknown role answered "ok" to a change that never
+        # happened, and the dialog showed the new role until the next reload.
+        # A body with no role at all is still the no-op it always was.
+        if role is not None and role not in BOARD_ROLES:
+            raise HTTPException(400, "תפקיד לא מוכר בלוח")
         if role in BOARD_ROLES:
             # don't allow demoting the last admin
             if m.role == "admin" and role != "admin":
@@ -14846,8 +15261,75 @@ def list_notifications(user_id: int = Depends(current_user_id), limit: int = 30)
         raise HTTPException(400, "user_id required")
     with Session(engine) as db:
         q = db.query(Notification).filter(Notification.user_id == user_id)
-        unread = q.filter(Notification.is_read == False).count()
-        items = q.order_by(Notification.created_at.desc()).limit(max(1, min(100, limit))).all()
+        # A notification's body quotes the item's title as it was, so hiding
+        # only the LIVE title (below) is not enough for an assigned_only
+        # member who has since been taken off the item: the frozen sentence
+        # still names something they may no longer see. On those boards a
+        # notification about an item closed to them leaves the bell, and the
+        # unread count follows the same filter so the badge agrees.
+        #
+        # Deliberately only there. For every other role an item closed by an
+        # override, or a board they have left, keeps its row and loses only
+        # the live name (see _live_item_titles and
+        # test_notification_names_the_item_now) — the row is a thing that
+        # happened to them, on an item they could see when it was written.
+        # An assigned_only member's access IS the assignment, so losing it
+        # is losing the item outright.
+        #
+        # Judged only for what is returned: the rows on this page and the
+        # unread ones the badge counts — never the whole history. Somebody
+        # who is assigned_only nowhere pays the one membership query.
+        lim = max(1, min(100, limit))
+        _ao = _assigned_only_boards(db, user_id)
+        if not _ao:
+            unread = q.filter(Notification.is_read == False).count()   # noqa: E712
+            items = q.order_by(Notification.created_at.desc()).limit(lim).all()
+        else:
+            _boards = {x.id: x for x in db.query(Board).filter(Board.id.in_(_ao)).all()}
+            _key = str(user_id)
+            _hidden = {}              # task id -> closed to them now
+
+            def _judge(tids):
+                new = [t for t in tids if t is not None and t not in _hidden]
+                if not new:
+                    return
+                for t in new:
+                    _hidden[t] = False
+                # columns, not Task objects: the perm column comes from the
+                # per-board scope, so nothing here lazy-loads per item. The
+                # bin is not judged — a restorable item is not a lost one.
+                for tid, bid, pid, perms in (
+                        db.query(Task.id, Task.board_id, Task.parent_id, Task.permissions)
+                          .filter(Task.id.in_(new), Task.board_id.in_(_ao),
+                                  Task.deleted_at.is_(None)).all()):
+                    ov = (perms or {}).get(_key)
+                    if ov in ("view", "edit", "delete"):
+                        continue
+                    if ov == "none":
+                        _hidden[tid] = True
+                        continue
+                    sc = _assign_scope(db, _boards.get(bid), user_id, include_bin=True)
+                    _hidden[tid] = not (tid in sc or (pid is not None and pid in sc))
+
+            uq = q.filter(Notification.is_read == False)                # noqa: E712
+            _judge({tid for (tid,) in uq.with_entities(Notification.task_id)
+                                         .filter(Notification.task_id.isnot(None))
+                                         .distinct().all()})
+            gone = [t for t, h in _hidden.items() if h]
+            unread = (uq.filter(or_(Notification.task_id.is_(None),
+                                    ~Notification.task_id.in_(gone))).count()
+                      if gone else uq.count())
+            # the page, filled past any rows that drop out
+            items, off = [], 0
+            ordered = q.order_by(Notification.created_at.desc(), Notification.id.desc())
+            while len(items) < lim:
+                chunk = ordered.offset(off).limit(lim).all()
+                if not chunk:
+                    break
+                off += len(chunk)
+                _judge({n.task_id for n in chunk})
+                items += [n for n in chunk if not (n.task_id and _hidden.get(n.task_id))]
+            items = items[:lim]
         live = _live_item_titles(db, items, user_id)
         return {"notifications": [_serialize_notif(n, live.get(n.task_id))
                                   for n in items],
@@ -15000,13 +15482,17 @@ TALK_HEADERS = ["מספר מזהה", "פריט", "סוג", "מאת", "נכתב",
 FILE_HEADERS = ["מספר מזהה", "פריט", "עמודה", "שם הקובץ", "כתובת"]
 
 
-def _export_files(db, board_id):
+def _export_files(db, board_id, viewer=None):
     """Every file attached to a cell of this board: one row per file.
 
     Read from the board rather than from the grid the browser sent, because the
     grid holds the rendered cell — the names — and the address of each file is
     exactly the half it drops.
+
+    `viewer` narrows it for an assigned_only reader to the items they may see
+    — read from the board, this never passed through the grid's own filter.
     """
+    _vis = _assigned_only_ids(db, board_id, viewer) if viewer else None
     b = db.query(Board).filter(Board.id == board_id).first()
     cols = [c for c in ((b.settings or {}).get("columns") or [])
             if c.get("type") == "files"] if b else []
@@ -15016,6 +15502,8 @@ def _export_files(db, board_id):
     rows = []
     for t in (db.query(Task).filter(Task.board_id == board_id)
               .order_by(Task.id).limit(XLSX_MAX_ROWS).all()):
+        if _vis is not None and t.id not in _vis:
+            continue
         for cid, title in titles.items():
             for f in (t.custom_fields or {}).get(cid) or []:
                 if not isinstance(f, dict) or not (f.get("name") or f.get("url")):
@@ -15027,7 +15515,7 @@ def _export_files(db, board_id):
     return rows
 
 
-def _export_conversation(db, board_id):
+def _export_conversation(db, board_id, viewer=None):
     """Every comment on the board's items, threaded, oldest first.
 
     One row per message. A reply is a row of its own, marked as one and carrying
@@ -15035,8 +15523,12 @@ def _export_conversation(db, board_id):
     without the reader having to guess from indentation or order. Sub-items are
     items here too: their conversations are on the board and would otherwise be
     the one part of it the export loses.
+
+    `viewer` narrows it for an assigned_only reader, as in _export_files.
     """
-    tasks = {t.id: t for t in db.query(Task).filter(Task.board_id == board_id).all()}
+    _vis = _assigned_only_ids(db, board_id, viewer) if viewer else None
+    tasks = {t.id: t for t in db.query(Task).filter(Task.board_id == board_id).all()
+             if _vis is None or t.id in _vis}
     if not tasks:
         return []
     names = {u.id: u.name for u in db.query(User).all()}
@@ -15090,8 +15582,8 @@ def export_board_xlsx(board_id: int, data: dict, actor_id: int = Depends(current
         if not _cap(db, actor_id, "export_excel"):
             raise HTTPException(403, "אין לך הרשאה לייצא לוח לאקסל")
         board_color = b.color if _valid_hex(b.color) else "#0073ea"
-        talk = _export_conversation(db, board_id)
-        attached = _export_files(db, board_id)
+        talk = _export_conversation(db, board_id, actor_id)
+        attached = _export_files(db, board_id, actor_id)
 
     headers = [str(h)[:XLSX_MAX_TEXT] for h in (data.get("columns") or [])][:XLSX_MAX_COLS]
     rows = (data.get("rows") or [])[:XLSX_MAX_ROWS]
@@ -15815,7 +16307,14 @@ def create_task(data: dict, request: Request = None,
         # derived `created_by` column needs nothing — it reads task.created_by.
         creator = actor_id
         cf = dict(data.get("custom_fields") or {})
-        _filter_people_values(db, board_id, cf, None)   # invited members only
+        _filter_people_values(db, board_id, cf, None, task)   # invited members only
+        # …and the circles, when they are NOT the perm column: on such a board
+        # being in them gives no access, so an assigned_only member placed
+        # there on an item they cannot see is dropped like a non-member. Judged
+        # with the cells this item is being created with.
+        if task.assignees and _board_perm_col(board) != "assignees":
+            task.assignees = [u for u in task.assignees
+                              if _item_visible_to(db, task, u.id, board, cf=cf)]
         # Connect columns on creation. This path never had the rules the edit
         # path has, so an item could be CREATED holding links to items the
         # creator cannot see — the same hole update_task closed, one endpoint
@@ -16516,6 +17015,14 @@ def items_search(board_ids: str = "", q: str = "", exclude_task: Optional[int] =
             Task.permissions[str(actor_id)].as_string() == "none").all()]
         if denied:
             query = query.filter(~Task.id.in_(denied))
+        # …and on a board where the caller is assigned_only, the default is
+        # closed rather than open: only their own items, cut in the query for
+        # the same reason as above.
+        for _bid in ids:
+            if _board_role(db, _bid, actor_id) == "assigned_only":
+                _bb = db.query(Board).filter(Board.id == _bid).first()
+                query = query.filter(or_(Task.board_id != _bid,
+                                         _assigned_only_sql(db, _bb, actor_id)))
         if q.strip():
             query = query.filter(Task.title.ilike(f"%{q.strip()}%"))
         if exclude_task:
@@ -16758,13 +17265,21 @@ def board_links_report(board_id: int, actor_id: int = Depends(current_user_id)):
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b or b.deleted_at:
             raise HTTPException(404, "board not found")
-        if _board_role(db, board_id, actor_id) is None:
+        _role = _board_role(db, board_id, actor_id)
+        if _role is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
         cols = [c for c in _board_columns(db, board_id) if c.get("type") == "connect"]
         tasks = db.query(Task).filter(Task.board_id == board_id,
                                       Task.parent_id == None,      # noqa: E711
                                       Task.is_archived == False).order_by(  # noqa: E712
                                           Task.position, Task.id).all()
+        # The far side was filtered per reader and the near side was not: the
+        # report listed every row of this board by title. Filtered here by the
+        # rule the board itself uses — for an assigned_only member that is
+        # their own items, and for anyone an override has closed an item to,
+        # that item.
+        _sc = _assign_scope(db, b, actor_id) if _role in ASSIGNED_ROLES else None
+        tasks = [t for t in tasks if _item_perm(t, actor_id, _role, _sc) != "none"]
         rows, every = [], set()
         for t in tasks:
             m = _item_link_map(db, t, cols, actor_id)
@@ -18161,6 +18676,12 @@ def _link_match_records(db, target_board_id, actor_id):
         Task.permissions[str(actor_id)].as_string() == "none").all()]
     if denied:
         q = q.filter(~Task.id.in_(denied))
+    # …and where the actor is assigned_only on the target, only their own
+    # records: a candidate's title in the exception list is as much a read of
+    # the record as the picker's row is (the same cut as /api/items/search).
+    if _board_role(db, target_board_id, actor_id) == "assigned_only":
+        tb = db.query(Board).filter(Board.id == target_board_id).first()
+        q = q.filter(_assigned_only_sql(db, tb, actor_id))
     return q.order_by(Task.position, Task.id).all()
 
 
@@ -20964,6 +21485,9 @@ def _map_write(db, task, name, value, actor_id, board_id=None):
         for uid in (value if isinstance(value, list) else [value]):
             if uid in have or not _can_be_assigned(db, task.board_id, uid):
                 continue
+            # …and the item half of the tagging rule (see _may_name_on)
+            if not _may_name_on(db, task, uid, "assignees"):
+                continue
             u = db.query(User).filter(User.id == uid).first()
             if u is not None:
                 task.assignees.append(u)
@@ -20977,6 +21501,19 @@ def _map_write(db, task, name, value, actor_id, board_id=None):
         if err:
             return False, err
         cf = dict(task.custom_fields or {})
+        if col.get("type") == "people" and isinstance(stored, list):
+            # _coerce_cell held the name to board membership; the item half of
+            # the tagging rule needs the item, which only this caller has
+            # (see _may_name_on). Judged with this write in place.
+            _after = {**cf, str(name): stored}
+            kept = [u for u in stored if not isinstance(u, int)
+                    or _may_name_on(db, task, u, str(name), cf=_after)]
+            # Dropped, not refused: a refusal here undoes the whole created
+            # item (see _copy_mapped_fields), and a person who may not be
+            # named on it is a reason to leave them off, not to lose the item.
+            if not kept:
+                return False, ""
+            stored = kept
         cf[str(name)] = stored
         task.custom_fields = cf
     return True, ""
@@ -22149,6 +22686,13 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         # somebody who is not on the board, refuse a second copy, write, log,
         # announce — against a cell instead of against the relationship.
         pcol = _people_col_or_skip(db, task, cfg)
+        # The tagging rule a person is held to, held to a rule as well: the
+        # board's perm column may name anyone on the board — that is how an
+        # assigned member is given an item — but any other people column may
+        # not name someone who cannot see this item.
+        if not _may_name_on(db, task, u.id,
+                            pcol["id"] if pcol is not None else "assignees", board):
+            raise _Skipped("לאדם שהכלל משייך אין גישה לפריט זה")
         if pcol is not None:
             was = _people_cell(task, pcol)
             if u.id in was:
@@ -22194,14 +22738,24 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         if not names:
             raise _Skipped(f"אין ערך ב«{col.get('title') or col['id']}»")
         by_name = _board_people_by_name(db, task.board_id)
-        picked, missed = [], []
+        picked, missed, blind = [], [], []
+        _target = pcol["id"] if pcol is not None else "assignees"
         for n in names:
             uid = by_name.get(_fold_name(n))
             if uid and _can_be_assigned(db, task.board_id, uid):
-                if uid not in picked:
+                # the same item half of the tagging rule assign_person keeps
+                # (see _may_name_on): a name found is still not someone this
+                # item may be put in front of, outside the perm column
+                if not _may_name_on(db, task, uid, _target, board):
+                    if n not in blind:
+                        blind.append(n)
+                elif uid not in picked:
                     picked.append(uid)
             elif n not in missed:
                 missed.append(n)
+        if not picked and blind and not missed:
+            raise _Skipped("לאנשים שבעמודת המראה אין גישה לפריט זה: "
+                           + ", ".join(blind[:3]) + ("…" if len(blind) > 3 else ""))
         if not picked:
             # the names themselves and not "לא נמצא משתמש": the whole point of
             # this rule is that somebody has to go and invite that person, or
@@ -25431,7 +25985,10 @@ def _can_view_automations(db, board, user_id):
     if _can_manage_automations(db, board, user_id):
         return True
     role = _board_role(db, board.id, user_id)
-    if role is None or role == "viewer":
+    # Named by what may, not by what may not: this read `role == "viewer"`,
+    # and the assigned roles — viewers at board level — walked past it to the
+    # editor's capability check.
+    if role not in ("admin", "editor"):
         return False
     return _cap(db, user_id, "view_automations")
 
@@ -30039,6 +30596,27 @@ async def events_stream(request: Request, user_id: int = Depends(current_user_id
     # starts streaming on the next reconnect.
     with Session(engine) as db:
         visible = _visible_board_ids(db, user_id)
+        # The boards where this person is assigned_only, and the items on each
+        # they can see right now. The doorbell carries only ids — but an id
+        # and a type ("comment.added" on item 812) still says something
+        # happened on an item they are not to know exists, and the refetch it
+        # triggers would only come back 403. So on those boards an item event
+        # is checked against the item before it goes down the wire.
+        #
+        # Seeded with what is visible at connect so that an item they LOSE
+        # (unassigned while watching) still rings once: that event is how the
+        # open board learns to drop the row, and the id was already theirs.
+        ao_seen = {bid: _assigned_only_ids(db, bid, user_id)
+                   for bid in _assigned_only_boards(db, user_id) if bid in visible}
+
+    def _ao_may_hear(bid, tid):
+        with Session(engine) as db:
+            t = (db.query(Task).execution_options(include_deleted=True)
+                   .filter(Task.id == tid).first())
+            if t is None:
+                return True        # purged: there is nothing left to disclose
+            role = _board_role(db, t.board_id, user_id)
+            return role is not None and _item_perm(t, user_id, role) != "none"
 
     q = bus.subscribe()
 
@@ -30057,6 +30635,17 @@ async def events_stream(request: Request, user_id: int = Depends(current_user_id
                 bid = ev.get("board_id")
                 if ev.get("type") != "resync" and bid is not None and bid not in visible:
                     continue
+                tid = ev.get("task_id")
+                if bid in ao_seen and tid is not None:
+                    # off the loop: it is a database read, and this coroutine
+                    # must not hold the event loop while it waits on one
+                    now = await asyncio.to_thread(_ao_may_hear, bid, tid)
+                    if now:
+                        ao_seen[bid].add(tid)
+                    elif tid in ao_seen[bid]:
+                        ao_seen[bid].discard(tid)      # rings once, then silent
+                    else:
+                        continue
                 yield _sse_frame(ev)
         finally:
             bus.unsubscribe(q)
@@ -30145,8 +30734,10 @@ def update_task(task_id: int, data: dict, request: Request = None,
                     del data["custom_fields"][k]      # silently drop cols the user can't edit
             if iperm not in ("edit", "delete"):
                 data["custom_fields"] = {}
-            # people columns may only name board members (see _can_be_assigned)
-            _filter_people_values(db, task.board_id, data["custom_fields"], task.custom_fields or {})
+            # people columns may only name board members (see _can_be_assigned),
+            # and outside the perm column only members who can see this item
+            _filter_people_values(db, task.board_id, data["custom_fields"],
+                                  task.custom_fields or {}, task)
         # what the item shows now — compared after the edit so automations fire on
         # the real change, whichever route set it (built-in or board-defined value)
         _before_status = _task_status_key(task)
@@ -30850,7 +31441,30 @@ def _can_comment(db, board, user):
         return False
     if (board.settings or {}).get("view_only"):
         return role == "admin"
+    # The assigned roles comment where they edit — on their own items — and
+    # nowhere else. The board alone cannot say which items those are, so the
+    # board-level answer for them is "not without an item": see
+    # _can_comment_on, which every item conversation asks instead.
+    if role not in ("admin", "editor"):
+        return False
     return True
+
+def _can_comment_on(db, task, user):
+    """_can_comment, answered for one item — which is the only way it can be
+    answered for an assigned_editor or assigned_only member: they may write in
+    the conversation of an item they may edit, and in no other. Everybody
+    else's answer is the board-level one, unchanged."""
+    if not user or task is None:
+        return False
+    board = db.query(Board).filter(Board.id == task.board_id).first()
+    if not board:
+        return False
+    role = _board_role(db, board.id, user.id)
+    if role in ASSIGNED_ROLES:
+        if (board.settings or {}).get("view_only"):
+            return False
+        return _item_perm(task, user.id, role) in ("edit", "delete")
+    return _can_comment(db, board, user)
 
 def _audit(db, entity_id, action, field=None, old=None, new=None, user_id=None):
     # "לוג הפריט מציג שהשינוי בוצע על ידי האוטומציה ואת שמה" — its NAME. One
@@ -30991,7 +31605,9 @@ def add_comment(task_id: int, data: dict, request: Request = None,
             raise HTTPException(404, "task not found")
         board = db.query(Board).filter(Board.id == task.board_id).first()
         user = _acting_user(db, actor_id)
-        if not _can_comment(db, board, user):
+        # per item, not per board: an assigned member writes in the
+        # conversation of their own items only (see _can_comment_on)
+        if not _can_comment_on(db, task, user):
             raise HTTPException(403, "אין הרשאת תגובה (צפייה בלבד)")
         content = (data.get("content") or "").strip()
         atts = data.get("attachments") or []
@@ -31017,7 +31633,13 @@ def add_comment(task_id: int, data: dict, request: Request = None,
         # name on an item whose owner had no way to reach them. Filtering here
         # rather than in the picker is the point: the client cannot be trusted
         # to have filtered, and typing "@Name" bypasses the picker entirely.
-        mentioned = {uid for uid in mentioned if _can_be_assigned(db, task.board_id, uid)}
+        #
+        # …and only people who can see THIS item. An assigned_only member is on
+        # the board but blind to everything they are not assigned to; a tag
+        # would hand them the item's title in a notification and a link that
+        # opens onto a 403.
+        mentioned = {uid for uid in mentioned if _can_be_assigned(db, task.board_id, uid)
+                     and _item_visible_to(db, task, uid, board)}
         mentioned.discard(user.id)
         c = Comment(task_id=task_id, user_id=user.id, parent_id=data.get("parent_id"),
                     content=content, attachments=atts,
@@ -31150,7 +31772,10 @@ def update_comment(cid: int, data: dict, request: Request = None,
                     if u.name and ("@" + u.name) in content:
                         s.add(u.id)
             if members_only and _c_board_id is not None:
-                s = {uid for uid in s if _can_be_assigned(db, _c_board_id, uid)}
+                # members of the board who can also see this item — the same two
+                # gates add_comment holds a new message to
+                s = {uid for uid in s if _can_be_assigned(db, _c_board_id, uid)
+                     and _item_visible_to(db, _t, uid)}
             return s
 
         # pre-existing tags are read unfiltered: someone tagged before this rule
@@ -31167,7 +31792,8 @@ def update_comment(cid: int, data: dict, request: Request = None,
             kept = [uid for uid in (c.mentions or []) if uid in (data.get("mentions") or [])]
             c.mentions = sorted({uid for uid in (data.get("mentions") or [])
                                  if uid in kept or (_c_board_id is not None
-                                                    and _can_be_assigned(db, _c_board_id, uid))})
+                                                    and _can_be_assigned(db, _c_board_id, uid)
+                                                    and _item_visible_to(db, _t, uid))})
         # notify anyone newly tagged in this edit (not the editor, honoring the switch)
         newly = _mentioned(c.content, c.mentions) - before
         newly.discard(user.id)
@@ -31237,6 +31863,12 @@ def delete_task_file(task_id: int, data: dict, actor_id: int = Depends(current_u
             raise HTTPException(400, "חסר קובץ למחיקה")
         role = _board_role(db, task.board_id, user.id)
         is_priv = role == "admin" or user.role in ("admin", "manager")
+        # An assigned member deletes a file only where they may edit — on
+        # their own items; an item they cannot even see is not one whose
+        # files they get to reach into by url.
+        _iperm = _item_perm(task, user.id, role) if role is not None else "none"
+        if role in ASSIGNED_ROLES and _iperm == "none":
+            raise HTTPException(403, "אין לך גישה לפריט זה")
         removed = False
         # 1) chat attachment: find the owning comment (uploader or admin may delete)
         for c in db.query(Comment).filter(Comment.task_id == task_id).all():
@@ -31253,7 +31885,8 @@ def delete_task_file(task_id: int, data: dict, actor_id: int = Depends(current_u
         for col in [c for c in cols if c.get("type") == "files"]:
             arr = cf.get(col["id"]) or []
             if any((a or {}).get("url") == url for a in arr):
-                if not (is_priv or role in ("editor",)):
+                if not (is_priv or role in ("editor",)
+                        or (role in ASSIGNED_ROLES and _iperm in ("edit", "delete"))):
                     raise HTTPException(403, "אין לך הרשאה למחוק קובץ זה")
                 cf[col["id"]] = [a for a in arr if (a or {}).get("url") != url] or None
                 task.custom_fields = cf
@@ -31410,6 +32043,11 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
     the rows and not on the item list.
     """
     ids = _board_task_ids(db, board_id)
+    # an assigned_only reader's log is the history of their own items: a line
+    # about any other names it and says what was done to it
+    _vis = _assigned_only_ids(db, board_id, viewer) if viewer else None
+    if _vis is not None:
+        ids = [i for i in ids if i in _vis]
     scopes = [and_(AuditLog.entity_type == "board", AuditLog.entity_id == board_id)]
     if ids:
         scopes.append(and_(AuditLog.entity_type == "task", AuditLog.entity_id.in_(ids)))
@@ -31772,7 +32410,9 @@ def task_assignees(task_id: int, data: dict, request: Request = None,
         if not user:
             raise HTTPException(404, "user not found")
         actor = actor_id
-        _require_board_edit(db, task.board_id, actor)   # only board editors may (un)assign
+        # (Un)assigning is an edit of the item: a board editor, or an assigned
+        # member on an item that is theirs (see _require_item_edit).
+        _require_item_edit(db, task, actor)
         was = user in task.assignees
         _mail = []
         # removal stays open regardless, so an assignment made before this rule
@@ -31780,6 +32420,15 @@ def task_assignees(task_id: int, data: dict, request: Request = None,
         if data.get("action") != "remove" and not was and not _can_be_assigned(db, task.board_id, user.id):
             raise HTTPException(403, "לא ניתן לשייך משתמש מושבת" if user.is_active is False
                                 else "אפשר לשייך רק משתמשים שהוזמנו ללוח")
+        # Where the circles are the perm column, being put in them IS being
+        # given the item, so anyone on the board may be. Where another column
+        # is, the circles grant nothing — and a member who cannot see this item
+        # would be assigned to something they can never open.
+        if (data.get("action") != "remove" and not was
+                and _board_perm_col(task.board) != "assignees"
+                and not _item_visible_to(db, task, user.id)):
+            raise HTTPException(403, "אפשר לשייך רק משתמשים שיש להם גישה לפריט — "
+                                     "אין לו גישה לפריט זה")
         if data.get("action") == "remove":
             if was:
                 task.assignees.remove(user)
@@ -33090,8 +33739,15 @@ def board_insights(user_id: int = Depends(current_user_id)):
             Board.is_archived == False, Board.deleted_at == None, Board.id.in_(visible)
         ).all() if visible else []
         insights = []
+        _ao_boards = _assigned_only_boards(db, user_id)
         for b in boards:
             tasks = db.query(Task).filter(Task.board_id == b.id).all()
+            # Filtered, not refused: on a board where this person is
+            # assigned_only, the insight is about their own items — a status
+            # breakdown of the rest is a description of items they cannot see
+            if b.id in _ao_boards:
+                _vis = _assigned_only_ids(db, b.id, user_id)
+                tasks = [t for t in tasks if t.id in _vis]
             if not tasks:
                 continue
             
@@ -33128,14 +33784,24 @@ def board_insights(user_id: int = Depends(current_user_id)):
         return {"boards": insights, "total": len(insights)}
 
 @app.get("/api/viz/timeline")
-def viz_timeline(days: int = 30):
-    """Task timeline data for Gantt-like visualization."""
+def viz_timeline(days: int = 30, user_id: int = Depends(current_user_id)):
+    """Task timeline data for Gantt-like visualization.
+
+    Counted over the boards the caller may see, and on a board where they are
+    assigned_only over their own items there. It counted every item in the
+    system for anyone who asked — a daily count is a small disclosure, but it
+    is one, and it was the only reader here that did not ask who was reading."""
     with Session(engine) as db:
         from datetime import timedelta
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+        visible = _visible_board_ids(db, user_id)
         tasks = db.query(Task).filter(
-            Task.created_at >= cutoff
+            Task.created_at >= cutoff, Task.board_id.in_(visible or [0])
         ).order_by(Task.created_at).all()
+        _vis = {bid: _assigned_only_ids(db, bid, user_id)
+                for bid in _assigned_only_boards(db, user_id) if bid in visible}
+        if _vis:
+            tasks = [t for t in tasks if t.board_id not in _vis or t.id in _vis[t.board_id]]
         
         # Group by day
         daily = {}
@@ -33407,9 +34073,13 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             if not boards:
                 return "❌ לא נמצאו לוחות במערכת."
             lines = []
+            _ao_boards = _assigned_only_boards(db, actor)
             for b in boards:
                 dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
-                task_count = db.query(Task).filter(Task.board_id == b.id).count()
+                # counted as the sidebar counts it for an assigned_only member:
+                # their own items, not the board's (see list_boards)
+                task_count = (_board_item_count(db, b.id, actor) if b.id in _ao_boards
+                              else db.query(Task).filter(Task.board_id == b.id).count())
                 lines.append(f"  🆔 {b.id} | {b.icon or '📋'} **{b.name}** | אגף: {dept_name} | {task_count} משימות")
             return "📋 **כל הלוחות במערכת:**\n" + "\n".join(lines)
 
@@ -33419,11 +34089,17 @@ def execute_ai_tool(name: str, args: dict, actor: Optional[int] = None) -> str:
             b = db.query(Board).filter(Board.id == board_id).first()
             if not b:
                 return f"❌ לוח {board_id} לא נמצא."
-            if _board_role(db, board_id, actor) is None:
+            _ai_role = _board_role(db, board_id, actor)
+            if _ai_role is None:
                 return "❌ אין לך גישה ללוח זה."
             dept_name = db.query(Department.name).filter(Department.id == b.department_id).scalar() or ""
             groups = db.query(Group).filter(Group.board_id == b.id).order_by(Group.position).all()
             tasks = db.query(Task).filter(Task.board_id == b.id, Task.is_archived == False).all()
+            # counted as the board shows them to this person — an assigned_only
+            # member's board is their own items, and a count is an answer too
+            if _ai_role in ASSIGNED_ROLES:
+                _sc = _assign_scope(db, b, actor)
+                tasks = [t for t in tasks if _item_perm(t, actor, _ai_role, _sc) != "none"]
             lines = [
                 f"📋 **{b.name}**",
                 f"   תיאור: {b.description or 'אין תיאור'}",
@@ -34176,6 +34852,14 @@ def ceo_dashboard(user_id: int = Depends(current_user_id)):
         all_tasks = db.query(Task).filter(
             Task.is_archived == False, Task.board_id.in_(visible)
         ).all() if visible else []
+        # Filtered, not refused, on a board where this person is
+        # assigned_only: the board-level numbers are about their own items
+        # there — the same cut their board shows them.
+        _vis = {bid: _assigned_only_ids(db, bid, user_id)
+                for bid in _assigned_only_boards(db, user_id) if bid in visible}
+        if _vis:
+            all_tasks = [t for t in all_tasks
+                         if t.board_id not in _vis or t.id in _vis[t.board_id]]
 
         board_breakdown = []
         total_tasks = 0

@@ -10,6 +10,7 @@ refuses it however the request was made. The typed form — "@my own name",
 which never went through the menu at all — is the one a client-side change
 cannot cover.
 """
+import re
 import pathlib
 import shutil
 import subprocess
@@ -50,8 +51,12 @@ def test_the_assignee_picker_is_untouched():
     """boardPeople feeds the אחראי picker and the people columns too, and
     putting yourself on a record is an ordinary thing to do. The filter belongs
     to the tag menu alone."""
-    assert "function boardPeople(alsoInclude){" in SRC
-    body = SRC.split("function boardPeople(alsoInclude){", 1)[1].split("\n}", 1)[0]
+    # The signature grew a second parameter (the item a picker is for, which
+    # leaves out assigned_only members who cannot see it); the point here is
+    # only that the current user is never filtered out of it.
+    m = re.search(r"^function boardPeople\([^)]*\)\{", SRC, re.M)
+    assert m, "boardPeople is gone"
+    body = SRC[m.end():].split("\n}", 1)[0]
     assert "meId()" not in body, "boardPeople now hides the current user from every picker"
 
 
