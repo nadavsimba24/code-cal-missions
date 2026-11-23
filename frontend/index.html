@@ -17410,7 +17410,9 @@ function subHeadHTML(parentId,cols,admin){
   const rest=cols.filter(c=>c.id!=='item').map(c=>{
     const menu=admin?`<button class="th-menu" title="עמודת תת-פריט" onclick="subColMenu(event,'${c.id}',${parentId})"><i class="fa-solid fa-ellipsis-vertical"></i></button>`:'';
     const dbl=admin?` class="th-lbl th-edit-dbl" title="לחיצה כפולה לשינוי שם" ondblclick="startSubColRename('${c.kind}','${c.id}',${parentId})"`:' class="th-lbl"';
-    return `<th class="sub-h-cell" data-subcol="${esc(String(c.id))}"><span class="th-in"><span${dbl}>${esc(subColLabel(c))}</span>${menu}${subSortBtn(c.id)}</span></th>`;
+    // the same grip the item header has; startColDrag knows this row too
+    const grip=admin?`<i class="fa-solid fa-grip-vertical col-grip" title="גרור לשינוי מיקום העמודה"></i>`:'';
+    return `<th class="sub-h-cell" data-subcol="${esc(String(c.id))}"><span class="th-in">${grip}<span${dbl}>${esc(subColLabel(c))}</span>${menu}${subSortBtn(c.id)}</span></th>`;
   }).join('');
   const add=admin?`<th class="sub-h-add"><button class="th-add-btn" title="הוסף עמודה — קיימת רק בתת-הפריט" onclick="event.stopPropagation();addColMenu(event,true)"><i class="fa-solid fa-plus"></i></button></th>`:'';
   return `<tr class="sub-h">${name}${rest}${add}</tr>`;
@@ -17855,17 +17857,28 @@ async function saveColOrder(order){
    sub-item header row alike. */
 function initColReorder(root){
   if(!isBoardAdmin())return;
-  root.querySelectorAll('.col-grip').forEach(g=>{ g.onpointerdown=ev=>startColDrag(ev,g); });
+  // the item header only — the sub-item headers are answered below
+  root.querySelectorAll('th[data-colkey] .col-grip').forEach(g=>{ g.onpointerdown=ev=>startColDrag(ev,g); });
 }
+/* Sub-item columns are dragged by the same grip, answered once for the whole
+   page rather than bound per panel. A panel is built when its parent is first
+   opened (toggleSubs), and again by every patch of the row, so a binding made
+   at render time missed exactly the panels people open — which is how the
+   sub-item header lost its drag when it moved from the old row (tr.subhead)
+   to its own <thead>, and nobody could move a sub-item column any more. */
+document.addEventListener('pointerdown',ev=>{
+  const g=ev.target&&ev.target.closest&&ev.target.closest('tr.sub-h .col-grip');
+  if(g&&isBoardAdmin())startColDrag(ev,g);
+});
 const COLDRAG_FIXED=new Set(['item','__add','__spacer']);
 function startColDrag(ev,grip){
   if(ev.button!==undefined&&ev.button!==0)return;
-  const cell=grip.closest('th[data-colkey],td[data-subcol]'); if(!cell)return;
-  const row=cell.parentElement, isSub=row.classList.contains('subhead');
+  const cell=grip.closest('th[data-colkey],[data-subcol]'); if(!cell)return;
+  const row=cell.parentElement, isSub=row.classList.contains('subhead')||row.classList.contains('sub-h');
   const keyOf=c=>isSub?c.dataset.subcol:c.dataset.colkey;
   const key=keyOf(cell); if(!key||COLDRAG_FIXED.has(key))return;
   ev.preventDefault(); ev.stopPropagation();
-  const cells=[...row.querySelectorAll(isSub?'td[data-subcol]':'th[data-colkey]')]
+  const cells=[...row.querySelectorAll(isSub?'[data-subcol]':'th[data-colkey]')]
     .filter(c=>{const k=keyOf(c); return k&&!COLDRAG_FIXED.has(k);});
   const from=cells.indexOf(cell); if(from<0)return;
   const rtl=(getComputedStyle(row).direction||'rtl')==='rtl';
