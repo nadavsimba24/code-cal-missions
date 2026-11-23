@@ -3111,6 +3111,15 @@ body.sb-collapsed .sb-toggle i{transform:rotate(180deg)}   /* flip arrow when th
   #appbar .ab-title{font-size:0}                 /* hide the label, keep the icon */
   #appbar .ab-title i{font-size:17px}
   #appbar .me-name{display:none}                 /* avatar only */
+  /* The bell's panel hangs off the bell with a 330px minimum width, and the
+     bell is not at the screen's edge — the avatar sits beyond it — so on a
+     phone the panel ran past the right edge and the start of every Hebrew
+     line, the icons and the header were cut off. Here it is pinned to the
+     viewport instead, just under the app bar, with a gutter on both sides.
+     !important because the element carries its anchoring as inline style. */
+  .notif-pop{position:fixed;top:calc(var(--header-h) + 6px);
+             inset-inline:8px!important;min-width:0;max-width:none;z-index:190}
+  .notif-pop .notif-list{max-height:calc(100dvh - var(--header-h) - 70px)}
   .btn-ai{padding:6px 10px}
   /* board header + toolbar: tighter, allow horizontal scroll for tabs/actions */
   #boardhead{padding:10px 12px 0}
