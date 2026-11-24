@@ -12,3 +12,4 @@ cryptography==43.0.3  # RS256 verification of the Entra id_token (backend/entra.
 bcrypt==4.2.0
 psycopg2-binary==2.9.9
 openpyxl==3.1.5
+urllib3==2.7.0  # pooled TLS connections for an import's attachment fetch (backend/main.py)
