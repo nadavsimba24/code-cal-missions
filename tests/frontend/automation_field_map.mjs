@@ -101,7 +101,9 @@ function build(){
     {getElementById:id=>(id==='au-map-rows'?host
                         :(id==='au-txt'?txt
                         :(id==='modal'?modalEl:(id==='overlay'?overlayEl:null)))),
-     querySelector:sel=>(sel==='#modal .modal-x'?xBtn:null), querySelectorAll:()=>[]},
+     // the copy-fields menu counts as still open, so its columns land in it
+     querySelector:sel=>(sel==='#modal .modal-x'?xBtn:(sel==='.au-copy-menu'?{}:null)),
+     querySelectorAll:()=>[]},
     ()=>{}, {getItem:()=>null,setItem(){}},
     t=>t, (t,f)=>null,
     (el,h)=>{htmlSet=h;});
@@ -359,6 +361,35 @@ const last=()=>modals[modals.length-1]||'';
   const p=pops[pops.length-1]||'';
   ck('a same-board copy is not pointed at a pairing it does not have',
      !p.includes('מיפוי עמודות'), p);
+}
+
+/* ── «השדות להעתקה» offers the board's own columns that pair by name ──────
+   "עולות רק אפשרויות של לוח ברירת מחדל" — on QA board 174 the blank showed
+   the five built-ins and nothing of שם נוהל / מס' מכרז, which exist on both
+   boards under the same title. Those are offered in the same menu now, and
+   ticking one writes the PAIR into the rule's mapping (a_map), so the engine
+   carries it exactly as a pair chosen in «מיפוי עמודות». */
+{
+  const A=build();
+  A.copyFields=[{key:'status',label:'סטטוס'}];
+  A.building.recipe={id:'status_create_in_group_and_link',
+                     action:'create_in_group_and_link',fields:[]};
+  DST_COLS.push({id:'col_ref_t',type:'text',title:'מספר הפנייה',kind:'text'});
+  try{
+    await A.pickCopyFields({},'a_fields');
+    const p=pops[pops.length-1]||'';
+    ck('a column of the same name and kind on the target board is offered',
+       p.includes('toggleCopyCol(0)')&&p.includes('מספר הפנייה'), p);
+    ck('…and a column whose name the target board lacks is not',
+       !p.includes('תאריך פתיחה'), p);
+    A.toggleCopyCol(0);
+    const m=(A.building.values.a_map||{}).v||[];
+    ck('ticking it writes the pair into the mapping',
+       m.length===1&&m[0].from==='col_ref'&&m[0].to==='col_ref_t', JSON.stringify(m));
+    A.toggleCopyCol(0);
+    ck('…and unticking takes it out again', !A.building.values.a_map,
+       JSON.stringify(A.building.values.a_map));
+  }finally{ DST_COLS.pop(); }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

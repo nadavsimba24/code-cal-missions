@@ -22027,6 +22027,47 @@ def _copy_mapped_fields(db, src, dst, mapping, actor_id, board_id=None):
     return moved
 
 
+def _people_for_board(db, board_id, value):
+    """A people cell's entries as the target board can hold them.
+
+    An id stays when that person may be named on the target board, and is
+    dropped when not — the same leave-them-off-rather-than-lose-the-item rule
+    _map_write applies to the tagging check. A name or an email is matched to
+    the one member of the target board who answers to it (_board_people_by_name);
+    one that matches nobody is carried as the text it was, which is exactly
+    how the source board holds an imported person with no account.
+    """
+    entries = value if isinstance(value, list) else [value]
+    names = None
+    out = []
+    for x in entries:
+        if isinstance(x, dict):
+            x = x.get("id") if x.get("id") is not None else (x.get("name") or x.get("label"))
+        if isinstance(x, str) and x.strip().isdigit():
+            x = int(x.strip())
+        if isinstance(x, int):
+            if _can_be_assigned(db, board_id, x) and x not in out:
+                out.append(x)
+            continue
+        s = str(x or "").strip()
+        if not s:
+            continue
+        if names is None:
+            names = _board_people_by_name(db, board_id)
+        uid = names.get(_fold_name(s))
+        if uid:
+            # the same gate the id path goes through: a member whose account
+            # was deactivated still answers to their name here, and must not
+            # be written onto the item by it (see _account_blocked)
+            if _can_be_assigned(db, board_id, uid):
+                if uid not in out:
+                    out.append(uid)
+            continue
+        if s not in out:
+            out.append(s)
+    return out
+
+
 def _map_read(db, task, name):
     if name == "title":
         return task.title
@@ -22083,9 +22124,21 @@ def _map_write(db, task, name, value, actor_id, board_id=None):
         col = _find_col(db, bid, str(name))
         if not col:
             return False, "העמודה אינה קיימת בלוח היעד"
-        stored, err = _coerce_cell(db, bid, col, value)
-        if err:
-            return False, err
+        if col.get("type") == "people":
+            # A people cell is read off the source as a LIST — ids, and on a
+            # board imported from monday also bare names and emails. It used
+            # to go through _coerce_cell, which str()s the value and looks for
+            # a user NAMED "[9]": every list was refused, even one holding a
+            # member of the target board, and the refusal took the created item
+            # back with it. On QA board 174 every firing of the rule failed
+            # this way. Each entry is resolved on its own instead.
+            stored = _people_for_board(db, bid, value)
+            if not stored:
+                return False, ""
+        else:
+            stored, err = _coerce_cell(db, bid, col, value)
+            if err:
+                return False, err
         cf = dict(task.custom_fields or {})
         if col.get("type") == "people" and isinstance(stored, list):
             # _coerce_cell held the name to board membership; the item half of
@@ -22315,7 +22368,7 @@ def _recipient_label(db, board, v):
     return recipes.RECIPIENTS.get(kind, kind)
 
 
-def _shown_value(db, board, ftype, v, col_id=""):
+def _shown_value(db, board, ftype, v, col_id="", target=None):
     """One value as the board shows it — a status's label, a person's name.
 
     Pulled out of _automation_label because an extra action's value has to be
@@ -22340,10 +22393,23 @@ def _shown_value(db, board, ftype, v, col_id=""):
     if ftype == "wait":
         return _duration_he(v)
     if ftype == "map":
+        # The target side is a column of the TARGET board, so it is titled
+        # from there — `target` is that board's id. Without it the history read
+        # "מנה"פ מקומי → col_b8b27622", which nobody can check against anything.
+        def _to(name):
+            if name in MAP_BUILTIN_HE:
+                return MAP_BUILTIN_HE[name]
+            col = _find_col(db, int(target), str(name)) \
+                if str(target or "").isdigit() else None
+            return (col or {}).get("title") or str(name)
         pairs = v if isinstance(v, list) else []
         return (", ".join(f"{_map_side(db, board.id if board else 0, p.get('from'))[1]}"
-                          f" → {p.get('to')}" for p in pairs[:4])
+                          f" → {_to(p.get('to'))}" for p in pairs[:4])
                 + (" ועוד" if len(pairs) > 4 else "")) or "—"
+    if ftype == "fields":
+        # the five built-ins by their Hebrew names, not the list's repr
+        # ("העתק «['description']»" is what the history said until now)
+        return recipes.copy_fields_label(v)
     if ftype == "target_group":
         return db.query(Group.name).filter(Group.id == v).scalar() or "—"
     if ftype == "recipient":
@@ -22439,7 +22505,8 @@ def _action_phrases(db, board, extras, quote=True):
                 shown["status_col"] = f"«{name}»" if quote else name
             if v in (None, ""):
                 continue
-            text = _shown_value(db, board, f["type"], v, col_id)
+            text = _shown_value(db, board, f["type"], v, col_id,
+                                target=values.get("board"))
             shown[f["key"]] = f"«{text}»" if quote else text
         phrase = recipes.action_text(key, shown)
         if phrase:
@@ -22480,7 +22547,8 @@ def _automation_label(db, board, a):
                                 "התראה מותאמת" if cfg.get(f["key"]) else "התראה")
             continue
         col_id = recipes.status_col_of(cfg, f["key"]) if f["type"] == "status" else ""
-        shown = _shown_value(db, board, f["type"], cfg.get(f["key"]), col_id)
+        shown = _shown_value(db, board, f["type"], cfg.get(f["key"]), col_id,
+                             target=cfg.get("a_board"))
         text = text.replace("{" + f["key"] + "}", f"«{shown}»")
         if col_id:
             # the column's own blank, read off the board every time so a
@@ -25164,7 +25232,11 @@ def _automation_blockers(db, board, a):
                 if not db.query(Group).filter(Group.id == v).first():
                     out.append({"kind": "dependency", "text": "הקבוצה בלוח היעד נמחקה"})
             elif f["type"] == "fields":
-                if not [k for k in (v or []) if k in recipes.COPY_FIELDS]:
+                # a rule that copies only board columns holds them in its
+                # mapping and leaves this empty — see recipes.mapped_instead
+                if not [k for k in (v or []) if k in recipes.COPY_FIELDS] \
+                        and not recipes.mapped_instead(recipes.action_fields(one["key"]),
+                                                       one["values"]):
                     out.append({"kind": "dependency", "text": "לא נבחרו שדות להעתקה"})
             elif f["type"] == "board":
                 tb = db.query(Board).filter(Board.id == v, Board.deleted_at == None).first()  # noqa: E711

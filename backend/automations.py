@@ -1362,6 +1362,19 @@ PICKS = {"targets": (TARGETS, TARGETS_DEFAULT),
 OPTIONAL_TYPES = ("pick", "connect_opt", "notice")
 
 
+def mapped_instead(fields, values):
+    """True when this action's column mapping holds pairs, which is a copy
+    request of its own: "השדות להעתקה" then has nothing it must hold.
+
+    Ticking «שם נוהל» in that blank writes a PAIR into the mapping, not a key
+    into `fields` — and a rule that copies only board columns was refused on
+    save with "חסר ערך בשדה 'השדות להעתקה'" until somebody also ticked one of
+    the five built-ins they never wanted.
+    """
+    return any(f["type"] == "map" and isinstance((values or {}).get(f["key"]), list)
+               and (values or {}).get(f["key"]) for f in fields or [])
+
+
 def field_optional(f):
     """Whether this blank may be left empty.
 
@@ -1734,7 +1747,9 @@ def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
                 sc = status_col_of(given, f["key"])
                 if sc:
                     values[status_col_key(f["key"])] = sc
-            v, err = _coerce_field(f, (given or {}).get(f["key"]), require_values)
+            v, err = _coerce_field(f, (given or {}).get(f["key"]), require_values
+                                   and not (f["type"] == "fields"
+                                            and mapped_instead(action_fields(key), given)))
             if err:
                 return None, f"{err} בפעולה «{plain(ACTIONS[key])}»"
             # the recipient/trigger pairing, asked of an extra action exactly
@@ -2811,13 +2826,16 @@ def missing_fields(recipe_id, config):
         return ["מתכון לא מוכר"]
     cfg = config or {}
     out = [f["label"] for f in r["fields"]
-           if not field_optional(f) and cfg.get(f["key"]) in (None, "", [])]
+           if not field_optional(f) and cfg.get(f["key"]) in (None, "", [])
+           and not (f["type"] == "fields" and mapped_instead(r["fields"], cfg))]
     for i, extra in enumerate((cfg.get(ACTIONS_KEY) or []), start=2):
         key = str((extra or {}).get("key") or "")
         values = (extra or {}).get("values") or {}
         for f in action_fields(key):
             if field_optional(f):
                 continue                      # blank is a value, not a blank
+            if f["type"] == "fields" and mapped_instead(action_fields(key), values):
+                continue
             if values.get(f["key"]) in (None, "", []):
                 out.append(f"{f['label']} (פעולה {i})")
     return out
@@ -2894,6 +2912,8 @@ def validate(recipe_id, config):
         elif f["type"] == "fields":
             v = [k for k in COPY_FIELDS if k in set(v or [])]
             if not v:
+                if mapped_instead(r["fields"], config):
+                    continue                  # the mapping is the copy request
                 return None, f"חסר ערך בשדה '{f['label']}'"
         elif f["type"] in ("column", "mirror"):
             v = (str(v or "")).strip()

@@ -11582,6 +11582,14 @@ const Automations = {
      version of the template rather than a new template. See
      recipes.field_optional, which the server holds the same line with. */
   _needs(f){ return !(f.optional || this.OPTIONAL_FIELDS.includes(f.type)); },
+  /* "השדות להעתקה" is answered by the mapping too: a board column ticked
+     there is written as a pair into the mapping, so a rule that copies only
+     columns has an empty `fields` and is still complete — the server agrees
+     (automations.mapped_instead). */
+  _mappedInstead(f,vals,fields){
+    return f.type==='fields'&&!!vals&&(fields||[]).some(m=>m.type==='map'
+      &&Array.isArray((vals[m.key]||{}).v)&&(vals[m.key]||{}).v.length>0);
+  },
 
   /* ---- editing a rule that already exists ----
      "ערוך" opened the name, the description, the owner and the running order
@@ -11851,8 +11859,10 @@ const Automations = {
     // an extra action with an empty blank is as unfinished as the sentence's own
     const actsReady=(this.building.acts||[]).every(a=>
       (this._actSpec(a.key)||{fields:[]}).fields.every(f=>
-        !this._needs(f)||(a.values||{})[f.key]!==undefined));
-    const ready=r.fields.every(f=>!this._needs(f)||this.building.values[f.key]!==undefined)
+        !this._needs(f)||(a.values||{})[f.key]!==undefined
+        ||this._mappedInstead(f,a.values,(this._actSpec(a.key)||{fields:[]}).fields)));
+    const ready=r.fields.every(f=>!this._needs(f)||this.building.values[f.key]!==undefined
+                                   ||this._mappedInstead(f,this.building.values,r.fields))
       &&condsReady&&actsReady;
     const meta=this.building.meta||(this.building.meta={name:'',description:'',notifyAll:false});
     const ed=this.building.edit;
@@ -13574,10 +13584,79 @@ const Automations = {
   },
 
   /* ---- the fields a copy carries ---- */
-  pickCopyFields(anchor,key,into){
+  async pickCopyFields(anchor,key,into){
     const all=this.copyFields||[];
     if(!all.length){ toast('קטלוג השדות לא נטען'); return; }
     this._copyInto={key:key,into:into||null,anchor:anchor};
+    this._copyCols=[];
+    /* "עולות רק אפשרויות של לוח ברירת מחדל" — the five built-ins were the
+       whole list, and the board's own columns (שם נוהל, מס' מכרז, רשות…) sat
+       behind a second blank that nobody connected with this one. On a
+       cross-board rule the columns are offered right here: every column of
+       this board that has a column of the SAME NAME and a compatible kind on
+       the target board. Ticking one writes that pair into the rule's
+       mapping — the very list «מיפוי עמודות» edits — so there is one place
+       the pairs live and the engine reads them exactly as before. A column
+       whose name differs on the target board still goes through «מיפוי
+       עמודות», where the two sides are chosen by hand. */
+    this._copyNoBoard=false; this._copyLoading=false; this._copyErr=false;
+    if(this._copyAction()==='create_in_group_and_link'){
+      const vals=this._copyVals();
+      const bid=((into?vals.board:vals.a_board)||{}).v;
+      this._copyNoBoard=!bid;
+      if(bid){
+        // the menu opens at once on the five; the columns join it when the
+        // target board's list arrives, unless the menu was reopened meanwhile
+        const mine=this._copyInto;
+        this._copyLoading=true;
+        this.renderCopyFields();
+        try{
+          const norm=s=>String(s||'').trim().toLowerCase();
+          const from=this._mapSides((this.caps||{}).columns)
+                       .filter(x=>/^col_/.test(x.key));
+          const to=this._mapSides(await this._mapTargetCols(bid))
+                     .filter(x=>/^col_/.test(x.key));
+          this._copyCols=from.map(a=>{
+            const b=to.find(t=>norm(t.label)===norm(a.label)&&t.kind===a.kind);
+            return b?{from:a.key,to:b.key,label:a.label}:null;
+          }).filter(Boolean);
+        }catch(e){ this._copyCols=[]; this._copyErr=true; }
+        // reopened meanwhile, or closed (an outside click, Escape) — a menu
+        // that comes back by itself after it was dismissed is worse than one
+        // that is a moment late
+        if(this._copyInto!==mine||!document.querySelector('.au-copy-menu')) return;
+        this._copyLoading=false;
+      }
+    }
+    this.renderCopyFields();
+  },
+  _copyVals(){
+    const c=this._copyInto; if(!c) return {};
+    return (c.into?(((this.building.acts||[])[c.into.actIdx]||{}).values)
+                  :this.building.values)||{};
+  },
+  // the sentence names its mapping a_map; an extra action carries it as map
+  _copyMapKey(){ const c=this._copyInto; return c&&c.into?'map':'a_map'; },
+  _copyPairs(){
+    const cur=(this._copyVals()[this._copyMapKey()]||{}).v;
+    return Array.isArray(cur)?cur.map(p=>({from:String(p.from),to:String(p.to)})):[];
+  },
+  toggleCopyCol(i){
+    const col=(this._copyCols||[])[i], c=this._copyInto; if(!col||!c)return;
+    let pairs=this._copyPairs();
+    const had=pairs.some(p=>p.from===col.from&&p.to===col.to);
+    if(had) pairs=pairs.filter(p=>!(p.from===col.from&&p.to===col.to));
+    else{
+      if(pairs.some(p=>p.to===col.to)){
+        toast('לעמודה «'+col.label+'» בלוח היעד כבר ממופה שדה אחר'); return;
+      }
+      const max=((((this.caps||{}).map)||{}).max_pairs)||20;
+      if(pairs.length>=max){ toast('אפשר למפות עד '+max+' שדות'); return; }
+      pairs.push({from:col.from,to:col.to});
+    }
+    this._putBlank({key:this._copyMapKey(),into:c.into},
+                   pairs.length?{v:pairs,label:this.mapLabel(pairs),color:''}:undefined);
+    this.render();
     this.renderCopyFields();
   },
   _copyCur(){
@@ -13617,23 +13696,36 @@ const Automations = {
   renderCopyFields(){
     const c=this._copyInto; if(!c)return;
     const picked=this._copyCur();
-    /* These five are the item's own built-ins, which every board has, and the
-       list cannot grow: a column lives on this board under one id and on the
-       target board under another, so carrying one across is a PAIR of columns
-       and not a sixth checkbox.
-
-       Somebody who came here looking for «מספר הפנייה» finds five fields that
-       are not it and nothing saying why. The pairing is a blank in the very
-       same sentence, so the way on is named here, where the wall is, rather
-       than left to be worked out. */
+    /* The five built-ins are the item's own, which every board has. A board
+       column is a PAIR — one id here, another on the target board — so the
+       columns below are only those that pair by name (see pickCopyFields),
+       and ticking one writes the pair, not a sixth key into `fields`. A column
+       named differently on the target board is still reached through
+       «מיפוי עמודות», and the way there is named here, where the list ends. */
     const cross=this._copyAction()==='create_in_group_and_link';
-    const head=cross?`<div class="rm-note" style="max-width:238px;line-height:1.55">
-        אלה חמשת השדות שיש בכל לוח. כדי להעתיק עמודה של הלוח הזה לעמודה
-        של לוח היעד — <b>«מיפוי עמודות»</b>, באותו משפט.</div>`:'';
-    const body=head+(this.copyFields||[]).map(f=>`<button class="rm-item" onclick="event.stopPropagation();Automations.toggleCopyField('${f.key}')">
-        <i class="fa-solid ${picked.includes(f.key)?'fa-square-check':'fa-square'}" style="color:var(--primary)"></i> ${esc(f.label)}</button>`).join('')
+    const cols=cross?(this._copyCols||[]):[];
+    const pairs=cross?this._copyPairs():[];
+    const note=s=>`<div class="rm-note" style="max-width:238px;line-height:1.55">${s}</div>`;
+    const sec=s=>`<div class="rm-note" style="font-weight:600;color:var(--text)">${s}</div>`;
+    const box=on=>`<i class="fa-solid ${on?'fa-square-check':'fa-square'}" style="color:var(--primary)"></i>`;
+    let colsHTML='';
+    if(cross){
+      colsHTML=sec('עמודות הלוח')+(this._copyNoBoard
+        ? note('בחרו תחילה את לוח היעד כדי לראות את העמודות שאפשר להעתיק.')
+        : this._copyLoading ? note('טוען את העמודות…')
+        : this._copyErr ? note('לא ניתן לקרוא את העמודות בלוח היעד.')
+        : cols.length
+          ? cols.map((x,i)=>`<button class="rm-item" onclick="event.stopPropagation();Automations.toggleCopyCol(${i})">
+              ${box(pairs.some(p=>p.from===x.from&&p.to===x.to))} ${esc(x.label)}</button>`).join('')
+          : note('אין בלוח היעד עמודות באותו שם ומאותו סוג.'))
+        +note('עמודה ששמה שונה בלוח היעד — דרך <b>«מיפוי עמודות»</b>, באותו משפט.');
+    }
+    const body=(cross?sec('שדות קבועים'):'')
+      +(this.copyFields||[]).map(f=>`<button class="rm-item" onclick="event.stopPropagation();Automations.toggleCopyField('${f.key}')">
+        ${box(picked.includes(f.key))} ${esc(f.label)}</button>`).join('')
+      +colsHTML
       +`<button class="rm-item" onclick="closeCellPops()"><i class="fa-solid fa-check"></i> סיום</button>`;
-    openCellPop(c.anchor,`<div class="row-menu" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
+    openCellPop(c.anchor,`<div class="row-menu au-copy-menu" style="max-height:60vh;overflow-y:auto" onclick="event.stopPropagation()">${body}</div>`,'row-menu-pop');
   },
 
   /* ---- מה שנכתב בתיבה, במילים שהמנוע מבין ----
