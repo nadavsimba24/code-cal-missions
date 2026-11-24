@@ -65,8 +65,16 @@ const rowTpl = src.slice(src.indexOf('${a.can_restore_column'), src.indexOf('${a
 ck('the button is drawn from the server\'s flag, not guessed from the action',
    /a\.can_restore_column&&isMgr/.test(rowTpl));
 ck('and only for a manager', rowTpl.indexOf('isMgr') > -1);
+// undo is gated by the server's flag alone, which it sets only for the board's
+// admin — the same person undo_activity lets through
 ck('an ordinary undoable row still gets its undo button',
-   /a\.can_undo&&isMgr/.test(rowTpl) && /BoardLog\.undo\(/.test(rowTpl));
+   /a\.can_undo\b/.test(rowTpl) && /BoardLog\.undo\(/.test(rowTpl));
+// "a manager" is the BOARD's admin, not the account's system role: st.me.role
+// showed both buttons to a manager on boards they did not run, and hid them
+// from the admin of this one
+const lineFn = src.slice(src.indexOf('  lineHTML(a){'), src.indexOf('${a.can_restore_column'));
+ck('...and the manager gate is the board admin, not the system role',
+   /const isMgr=isBoardAdmin\(\)/.test(lineFn) && !/st\.me\.role/.test(lineFn), lineFn.slice(0, 200));
 
 const fn = src.slice(src.indexOf('async restoreColumn(logId){'),
                      src.indexOf('async restoreColumn(logId){') + 1400);

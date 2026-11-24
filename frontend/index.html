@@ -5278,7 +5278,9 @@ const BoardLog = {
     if(next)next.focus();
   },
   lineHTML(a){
-    const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
+    // the BOARD's admin, not the account's system role — see undo_activity;
+    // undo itself needs no gate here, can_undo is set only for that admin
+    const isMgr=isBoardAdmin();
     return `<div class="lg-row">
         <span class="lg-when" title="${esc(fdatetime(a.created_at))}"><i class="fa-regular fa-clock"></i> ${esc(this.ago(a.created_at))}</span>
         <span class="av lg-av" title="${esc(a.user_name||'')}">${avatarInner(a)}</span>
@@ -5301,7 +5303,7 @@ const BoardLog = {
             /* No isMgr here: restoring an item is a board edit, and the
                server already answered whether THIS viewer may do it. */
             ? `<button class="lg-undo" onclick="BoardLog.restoreItem(${a.task_id})"><i class="fa-solid fa-rotate-left"></i> שחזר</button>`
-            : a.can_undo&&isMgr
+            : a.can_undo
             ? `<button class="lg-undo" onclick="BoardLog.undo(${a.id})">בטל</button>`
             : `<span class="lg-undo-gap"></span>`}
         </span>
@@ -5434,7 +5436,7 @@ const BoardLog = {
       toast('השינוי בוטל');
       const b=await api('/api/boards/'+st.board.id); st.board=b;
       renderView(); this.render();
-    }catch(e){ toast('רק מנהל יכול לבטל'); }
+    }catch(e){ toast((e&&typeof e.detail==='string'&&e.detail)||'רק מנהל הלוח יכול לבטל פעולות'); }
   },
   /* Putting a deleted column back. The values were never deleted — removing a
      column only takes it out of the board's settings, and every item's entry
@@ -28883,12 +28885,15 @@ const Chat = {
   async renderLogs(body){
     const qs=[]; if(this.logUser)qs.push('user_id='+this.logUser); if(this.logDate)qs.push('date='+this.logDate);
     let d={activity:[]}; try{ d=await api('/api/tasks/'+this.taskId+'/activity'+(qs.length?'?'+qs.join('&'):'')); }catch(e){}
-    const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
+    /* Undo is the item's BOARD admin's, and this panel can be open on an item
+       from a board other than the one on screen — so the answer is the
+       server's (can_undo is set only for that board's admin), not a guess
+       from st.board or from the account's system role. */
     const rows=d.activity.map(a=>`<div class="log-row">
       <div class="log-ic ${a.action}"><i class="fa-solid ${a.action==='comment'?'fa-comment':a.action==='undo'?'fa-rotate-left':a.action==='create'?'fa-plus':'fa-pen'}"></i></div>
       <div style="flex:1;min-width:0"><div class="log-txt"><b>${esc(a.user_name)}</b> ${this.logText(a)}${
         a.origin==='monday'?' <span class="log-src" title="היסטוריה שיובאה ממאנדיי — אירעה שם, ולכן אין מה לבטל כאן">monday</span>':''}</div><div class="log-time">${fdatetimeY(a.created_at)}</div></div>
-      ${a.can_undo&&isMgr?`<button class="log-undo" onclick="Chat.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
+      ${a.can_undo?`<button class="log-undo" onclick="Chat.undo(${a.id})"><i class="fa-solid fa-rotate-left"></i> בטל</button>`:''}
     </div>`).join('')||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות</div></div>';
     body.innerHTML=`<div class="log-filters">
         <select onchange="Chat.logUser=this.value;Chat.render()"><option value="">כל המשתמשים</option>${(st.users||[]).map(u=>`<option value="${u.id}" ${this.logUser==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
@@ -28950,7 +28955,7 @@ const Chat = {
   },
   short(v){ if(v==null||v==='')return '—'; v=String(v).replace(/^"|"$/g,''); return v.length>26?v.slice(0,25)+'…':v; },
   exportLogs(){ window.open('/api/tasks/'+this.taskId+'/activity/export','_blank'); },
-  async undo(logId){ try{ await api('/api/activity/'+logId+'/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); toast('השינוי בוטל'); if(st.board){const b=await api('/api/boards/'+st.board.id);st.board=b;} this.render(); if(st.view==='table')renderView(); }catch(e){toast('רק מנהל יכול לבטל'); } },
+  async undo(logId){ try{ await api('/api/activity/'+logId+'/undo',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe({})}); toast('השינוי בוטל'); if(st.board){const b=await api('/api/boards/'+st.board.id);st.board=b;} this.render(); if(st.view==='table')renderView(); }catch(e){toast((e&&typeof e.detail==='string'&&e.detail)||'רק מנהל הלוח יכול לבטל פעולות'); } },
 };
 
 /* ============ AI (monday-AI style) ============ */

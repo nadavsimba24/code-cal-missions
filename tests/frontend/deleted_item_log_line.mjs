@@ -43,11 +43,11 @@ ck('it calls restore with the item, not with the log row',
 /* isMgr gates undo because undo is a manager's power. Restoring an item is a
    board edit, and the server already decided whether this viewer has it —
    re-gating on isMgr here would hide the button from an editor who may. */
-const seg = tpl.slice(tpl.indexOf('a.can_restore_item'), tpl.indexOf('a.can_undo&&isMgr'))
+const seg = tpl.slice(tpl.indexOf('a.can_restore_item'), tpl.indexOf('a.can_undo'))
   .replace(/\/\*[\s\S]*?\*\//g, '');   // the comment beside it says the word too
 ck('an editor is not locked out by the manager gate', !/isMgr/.test(seg), seg.trim().slice(0, 120));
 ck('a column line still gets its own restore button', /BoardLog\.restoreColumn\(/.test(tpl));
-ck('an ordinary undoable row still gets undo', /a\.can_undo&&isMgr/.test(tpl));
+ck('an ordinary undoable row still gets undo', /a\.can_undo\b/.test(tpl) && /BoardLog\.undo\(/.test(tpl));
 
 // ── the action ────────────────────────────────────────────────────────────
 const fn = src.slice(src.indexOf('async restoreItem(taskId){'),

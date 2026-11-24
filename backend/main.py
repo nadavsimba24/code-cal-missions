@@ -31937,6 +31937,8 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
     with Session(engine) as db:
         task = _require_task_view(db, task_id, actor_id)
         cols = {c.get("id"): c for c in _board_columns(db, task.board_id)}
+        # undo is the board admin's (see undo_activity) — offered only to them
+        _may_undo = _is_board_admin(db, task.board_id, actor_id)
         q = db.query(AuditLog).filter(AuditLog.entity_type == "task", AuditLog.entity_id == task_id)
         if user_id:
             q = q.filter(AuditLog.changed_by == user_id)
@@ -31967,7 +31969,7 @@ def task_activity(task_id: int, actor_id: int = Depends(current_user_id),
                         # onto the item now. An AUTOMATION's change is the
                         # opposite case — the person looking at what a rule did
                         # to their item is exactly who wants it back.
-                        "can_undo": (l.action == "update"
+                        "can_undo": (_may_undo and l.action == "update"
                                      and (og or {}).get("source") in (None, "", "automation")),
                         "created_at": l.created_at})
         return {"activity": out}
@@ -32143,6 +32145,9 @@ def _board_activity_page(db, board_id, user_id=None, date=None, limit=400, viewe
     # enforces. Offering the button to somebody it would refuse is worse than
     # not offering it.
     _may_restore = _board_role(db, board_id, viewer) in ("admin", "editor") if viewer else False
+    # Undoing a change is narrower than restoring an item: the board admin's
+    # alone, which is what undo_activity enforces. Offered to nobody else.
+    _may_undo = _is_board_admin(db, board_id, viewer) if viewer else False
     users = {u.id: u.name for u in db.query(User).all()}
     cols = {c.get("id"): c for c in _board_columns(db, board_id)}
     # Which deletion lines can still be undone. A column's definition is kept
@@ -32218,7 +32223,7 @@ def _board_activity_page(db, board_id, user_id=None, date=None, limit=400, viewe
                         # that value onto the item now — from a button that looks
                         # exactly like every other undo on the page.
                         "origin": (og or {}).get("source") or "",
-                        "can_undo": (not on_board and l.action == "update"
+                        "can_undo": (_may_undo and not on_board and l.action == "update"
                                      and (og or {}).get("source") in (None, "", "automation")),
                         "created_at": l.created_at})
         if len(chunk) < batch:
@@ -32481,11 +32486,22 @@ def restore_column(board_id: int, data: dict, actor_id: int = Depends(current_us
 def undo_activity(log_id: int, data: dict, actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         user = _acting_user(db, actor_id)
-        if not user or user.role not in ("admin", "manager"):
-            raise HTTPException(403, "רק מנהל יכול לבצע ביטול")
+        if not user:
+            raise HTTPException(403, "רק מנהל הלוח יכול לבטל פעולות")
         log = db.query(AuditLog).filter(AuditLog.id == log_id).first()
         if not log or log.entity_type != "task" or log.action != "update":
             raise HTTPException(400, "לא ניתן לבטל פעולה זו")
+        # Undo is the BOARD admin's, decided per board. It used to be the
+        # system role — anyone whose account said admin or manager — which got
+        # it wrong both ways: a manager could undo changes on a board they had
+        # never been invited to, and the admin of the board itself could not
+        # undo anything on it unless their account happened to say manager.
+        # A system administrator is still let through, because _board_role
+        # makes them admin of every board.
+        _owner = db.query(Task.board_id).execution_options(include_deleted=True) \
+                   .filter(Task.id == log.entity_id).first()
+        if not _owner or not _is_board_admin(db, _owner[0], user.id):
+            raise HTTPException(403, "רק מנהל הלוח יכול לבטל פעולות")
         # The gate, not the hint. The row's button is hidden, and a request that
         # arrives anyway — an old page, a script, a guessed id — is refused
         # here: undoing a change that happened in monday would write a value
