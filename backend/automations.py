@@ -1531,7 +1531,10 @@ ACTION_FIELDS = {
                          _f("text", "text", "שם הפריט החדש")],
     "create_in_board":  [_f("board", "board", "לוח היעד"),
                          _f("target_group", "target_group", "הקבוצה בלוח היעד"),
-                         _f("text", "text", "שם הפריט החדש")],
+                         _f("text", "text", "שם הפריט החדש"),
+                         # which of this item's columns fill which columns of
+                         # the new one — see CREATE_IN_BOARD_MAP below
+                         _f("map", "map", "מיפוי עמודות (לא חובה)", optional=True)],
     "post_update":      [_f("text", "text", "תוכן העדכון")],
     "set_column":       [_f("column", "column", "עמודה"),
                          _f("text", "text", "הערך החדש")],
@@ -1622,6 +1625,17 @@ def action_text(key, shown=None):
     col = (shown or {}).get("status_col") or (shown or {}).get("person_col")
     text = (COL_TEXT[key] if col not in (None, "") and key in COL_TEXT
             else ACTIONS.get(key, ""))
+    # A column pairing the wording does not mention (create_in_board's) reads
+    # on at the end — the same " · " slot sentence() gives the rule's own
+    # action — but only once it holds something, so the phrase every older
+    # rule reads as is left alone. Pairings only: copy_to_linked also keeps
+    # fields out of its wording (connect, on_missing), and those have always
+    # been silent in its sentence on purpose.
+    tail = [((shown or {}).get(f["key"])) for f in action_fields(key)
+            if f["type"] == "map" and "{" + f["key"] + "}" not in text]
+    tail = [v for v in tail if v not in (None, "")]
+    if tail:
+        text = text + " · " + " · ".join(str(v) for v in tail)
     for f in action_fields(key):
         v = (shown or {}).get(f["key"])
         # an unset blank reads as "…" — except the one whose own name is the
@@ -1828,6 +1842,20 @@ def _primary_values(recipe_id, config):
     return out
 
 
+# ── מיפוי עמודות ליצירת פריט בלוח אחר ─────────────────────────────────────
+# "צור פריט בלוח אחר" made an item with a name and nothing else, so a hand-off
+# from «H2 נהלים» to «H3 חוזים» arrived with «מספר נוהל» and «מכרז» empty and
+# somebody copying them across by hand — the very work the rule was there to
+# take away. The engine has paired two boards' columns since
+# create_mapped_and_link; that pairing was only reachable through a rule that
+# also LINKS the two items, and a hand-off has no link column to give it.
+#
+# Optional, so every rule already built on create_in_board — and there are
+# some in production — holds no mapping and runs exactly as it did; the three
+# templates that start from it go up a version rather than to a new id, the
+# same move status_create_in_group_and_link made.
+CREATE_IN_BOARD_MAP = _f("a_map", "map", "מיפוי עמודות (לא חובה)", optional=True)
+
 # Placeholder keys are namespaced by side (t_ = trigger, a_ = action) so a recipe
 # whose trigger and action both take a status keeps them apart.
 RECIPES = [
@@ -1863,7 +1891,8 @@ RECIPES = [
      "fields": [_f("t_status", "status", "סטטוס"),
                 _f("a_board", "board", "לוח היעד"),
                 _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
-                _f("a_text", "text", "שם הפריט החדש")]},
+                _f("a_text", "text", "שם הפריט החדש"),
+                CREATE_IN_BOARD_MAP]},
     # The same hand-off with the step that nearly always follows it: "כאשר
     # «סטטוס נוהל» משתנה ל«ועדת שלושה חתומה», צור פריט ב«H3 חוזים» והעבר את
     # הפריט ל«נחתמה ועדת שלושה»". Both halves could already be built — the
@@ -1881,7 +1910,8 @@ RECIPES = [
      "fields": [_f("t_status", "status", "סטטוס"),
                 _f("a_board", "board", "לוח היעד"),
                 _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
-                _f("a_text", "text", "שם הפריט החדש")]},
+                _f("a_text", "text", "שם הפריט החדש"),
+                CREATE_IN_BOARD_MAP]},
     # The rule the hand-off is actually written as: "כאשר הסטטוס משתנה ל«מוכן
     # לבדיקות», שכפל את הפריט לקבוצה «QA»". Its priority twin is derived rather
     # than written out, like every other status pairing here.
@@ -2038,7 +2068,8 @@ RECIPES = [
      "fields": [_f("t_group", "group", "קבוצה"),
                 _f("a_board", "board", "לוח היעד"),
                 _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
-                _f("a_text", "text", "שם הפריט החדש")]},
+                _f("a_text", "text", "שם הפריט החדש"),
+                CREATE_IN_BOARD_MAP]},
     {"id": "moved_group_set_status", "trigger": "moved_to_group", "action": "set_status",
      "fields": [_f("t_group", "group", "קבוצה"), _f("a_status", "status", "סטטוס")]},
     {"id": "moved_group_notify_person", "trigger": "moved_to_group",
@@ -2482,6 +2513,14 @@ TEMPLATE_VERSIONS = {
     # rule built on version 1 holds no mapping and runs exactly as it did —
     # which is what makes the addition a version rather than a new id.
     "status_create_in_group_and_link": 2,
+    # …and version 2 of these three is the same optional pairing, on the rule
+    # that creates an item on another board without linking it
+    "status_create_in_board": 2,
+    "status_create_in_board_and_move": 2,
+    "moved_group_create_in_board": 2,
+    # the priority twin is derived from status_create_in_board and gained the
+    # same blank with it, so it says so in the same way
+    "priority_create_in_board": 2,
 }
 
 

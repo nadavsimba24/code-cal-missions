@@ -12098,7 +12098,13 @@ const Automations = {
   },
   setActValue(i,key,idx){
     const it=(this._popItems||[])[idx], a=(this.building.acts||[])[i]; if(!it||!a)return;
-    (a.values=a.values||{})[key]={v:it.v,label:it.label,color:it.color||''};
+    const vals=(a.values=a.values||{}), was=(vals[key]||{}).v;
+    vals[key]={v:it.v,label:it.label,color:it.color||''};
+    // an extra action's group and pairing are about ITS target board, for
+    // the reason setField gives for the sentence's own
+    if(key==='board'&&String(was)!==String(it.v)){
+      delete vals['target_group']; delete vals['map'];
+    }
     closeCellPops(); this.render();
   },
   setActFieldCol(i,key,col){
@@ -13560,7 +13566,15 @@ const Automations = {
   },
   setField(key,idx){
     const it=(this._popItems||[])[idx]; if(!it)return;
-    this.building.values[key]={v:it.v,label:it.label,color:it.color||''};
+    const vals=this.building.values, was=(vals[key]||{}).v;
+    vals[key]={v:it.v,label:it.label,color:it.color||''};
+    /* The group and the column pairing are answers about the TARGET board.
+       Pointed at another board they name a group and columns that are not
+       there, and the save would refuse the rule over blanks the screen shows
+       as filled — so they are asked again instead. */
+    if(key==='a_board'&&String(was)!==String(it.v)){
+      delete vals['a_target_group']; delete vals['a_map'];
+    }
     closeCellPops(); this.render();
   },
   setFieldCol(key,col){

@@ -21982,19 +21982,21 @@ def _map_problems(db, src_board_id, dst_board_id, mapping):
 def _check_automation_map(db, board_id, recipe_id, cfg):
     """Refuse a mapping that cannot work, where it is written."""
     r = recipes.recipe(recipe_id) or {}
-    pairs = [(f, (cfg or {}).get(f["key"])) for f in r.get("fields", [])
+    # Each mapping is held against the board ITS action writes into — the
+    # rule's own against a_board, an extra action's against that action's own
+    # `board`, the same pairing the engine checks before every firing. There
+    # used to be one target for the whole rule, the last board any action
+    # named, so a rule that creates on B and also on C had its B mapping
+    # checked against C's columns: refused when right, accepted when wrong.
+    own = (cfg or {}).get("a_board")
+    pairs = [(own, (cfg or {}).get(f["key"])) for f in r.get("fields", [])
              if f["type"] == "map"]
     for extra in (cfg or {}).get(recipes.ACTIONS_KEY) or []:
         vals = (extra or {}).get("values") or {}
-        pairs += [(f, vals.get(f["key"]))
+        pairs += [(vals.get("board") or own, vals.get(f["key"]))
                   for f in recipes.action_fields(str((extra or {}).get("key") or ""))
                   if f["type"] == "map"]
-    if not pairs:
-        return
-    target = (cfg or {}).get("a_board")
-    for extra in (cfg or {}).get(recipes.ACTIONS_KEY) or []:
-        target = ((extra or {}).get("values") or {}).get("board") or target
-    for _f, mapping in pairs:
+    for target, mapping in pairs:
         bad = _map_problems(db, board_id, target or board_id, mapping)
         if bad:
             raise HTTPException(400, "מיפוי שדות אינו תקין — " + " · ".join(bad[:3]))
@@ -22537,6 +22539,16 @@ def _automation_label(db, board, a):
             continue
         if f["key"] == "a_text" and stamp:
             text = text.replace("{" + f["key"] + "}", f"«{stamp}»")
+            continue
+        if (f["type"] == "map" and recipes.field_optional(f)
+                and not cfg.get(f["key"])
+                and " · {" + f["key"] + "}" in text):
+            # An optional pairing nobody set, on a recipe whose wording does
+            # not mention it (create_in_board), reads as nothing at all rather
+            # than as "· «—»": the rules built before the blank existed must go
+            # on reading exactly as they did. A recipe that says "מפה {map}"
+            # in its own words keeps reading it as it always has.
+            text = text.replace(" · {" + f["key"] + "}", "")
             continue
         if f["type"] == "notice":
             # The word itself, and not a blank in quotation marks: "שלח התראה
@@ -23777,11 +23789,28 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
         if not grp:
             raise _Skipped("הקבוצה שנבחרה אינה קיימת בלוח היעד")
         _creation_guard(db, rule, task)
+        # The optional column pairing (recipes.CREATE_IN_BOARD_MAP), checked
+        # before the item is made, so a pairing that a deleted or re-typed
+        # column has broken stops the rule instead of leaving a half-filled
+        # item on the other board. After the creation guard, as
+        # create_in_group_and_link has it: an item that already has its copy
+        # is reported as that, not as a pairing problem it never reached.
+        mapping = cfg.get("map") or []
+        if mapping:
+            bad = _map_problems(db, task.board_id, cfg.get("board"), mapping)
+            if bad:
+                raise _Skipped("מיפוי שדות אינו תקין — " + " · ".join(bad[:2]))
         made, why = _create_board_item(db, task, cfg.get("board"),
                                        text(cfg.get("text")), actor_id, group=grp)
         if made is None:
             raise _Skipped(why or "לא ניתן ליצור פריט בלוח היעד")
-        _note_creation(db, rule, task, made, records, group=grp)
+        if mapping:
+            # a value the target column cannot hold raises, and the rule's
+            # savepoint takes the item it has just created back with it
+            _copy_mapped_fields(db, task, made, mapping, actor_id,
+                                board_id=cfg.get("board"))
+        _note_creation(db, rule, task, made, records, group=grp,
+                       mapping=mapping or None)
         # nothing is appended to `out`: the new item is on ANOTHER board, and
         # its creation is that board's event rather than a step in this item's
         # chain. The same silence create_and_link keeps, for the same reason.
@@ -29923,10 +29952,15 @@ def _test_action_row(db, board, task, key, values, cur_status, cur_prio, viewer=
     if key == "create_in_board":
         tb = db.query(Board).filter(Board.id == values.get("board")).first()
         g = db.query(Group).filter(Group.id == values.get("target_group")).first()
+        note = (f"בלוח «{tb.name}», בקבוצה «{g.name}»" if tb and g
+                else "לוח היעד או הקבוצה אינם קיימים")
+        # the pairing, read the way the rule list reads it, so a dry run says
+        # which columns the new item will arrive with
+        if values.get("map") and tb:
+            note += " · ממלא: " + _shown_value(db, board, "map", values.get("map"),
+                                               target=tb.id)
         return {"what": "יצירת פריט בלוח אחר", "to": values.get("text") or "", "from": "",
-                "no_op": not (tb and g),
-                "note": (f"בלוח «{tb.name}», בקבוצה «{g.name}»" if tb and g
-                         else "לוח היעד או הקבוצה אינם קיימים")}
+                "no_op": not (tb and g), "note": note}
     if key in ("link_to_item", "create_and_link", "create_in_group_and_link"):
         note = f"בעמודה {shown('connect', values.get('connect'))}"
         if key == "create_in_group_and_link":

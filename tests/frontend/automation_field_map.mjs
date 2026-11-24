@@ -392,5 +392,24 @@ const last=()=>modals[modals.length-1]||'';
   }finally{ DST_COLS.pop(); }
 }
 
+// ── another target board, and the answers about the old one go ────────────
+// The group and the pairing name a group and columns of the TARGET board.
+// Pointed somewhere else they would show as filled and be refused at the save.
+{
+  const A=build();
+  A.building.values.a_target_group={v:31,label:'קבוצה בלוח הקודם',color:''};
+  A.building.values.a_map={v:[{from:'col_ref',to:'col_ack'}],label:'שדה אחד',color:''};
+  A._popItems=[{v:9,label:'לוח היעד'}];
+  A.setField('a_board',0);
+  ck('choosing the same target board again keeps the group and the pairing',
+     !!A.building.values.a_target_group && !!A.building.values.a_map);
+  A._popItems=[{v:12,label:'לוח אחר'}];
+  A.setField('a_board',0);
+  ck('choosing another target board clears the group and the pairing',
+     !A.building.values.a_target_group && !A.building.values.a_map,
+     JSON.stringify(A.building.values));
+  ck('…and the board itself is the new one', A.building.values.a_board.v===12);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
