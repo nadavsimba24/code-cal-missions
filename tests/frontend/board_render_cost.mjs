@@ -170,5 +170,40 @@ ck('a single-group board defers nothing', deferred===null, 'something was queued
 ck('...and leaves no spacer behind', !painted.includes('grp-reserve'), painted);
 ck('...and still offers "add group"', painted.includes('add-group-btn'));
 
+// ── 4. a REDRAW of the board on screen is built whole ──
+// Deferring the rest is for the moment a board opens. On a redraw she is
+// somewhere in the board, often in a later group, and the spacer stood exactly
+// where she was looking for the frame the rest took to build — on 68 columns
+// and 600 rows a long frame — and then the real groups replaced their height
+// estimates and moved the board under her. renderView says which it is.
+env3.groupsOf=()=>GROUPS;
+const vTableR=new Function(...names3,'let _colsMemo=null, _vtToken=0, _vtRedraw=true;\n'
+                           +grab('vTable')+'; return [vTable, ()=>_vtRedraw];')
+                .apply(null,names3.map(n=>env3[n]));
+deferred=null; painted=''; wired=0;
+vTableR[0](view);
+const drawnR=(painted.match(/data-g="(\d+)"/g)||[]).map(x=>x.replace(/\D/g,''));
+ck('a redraw draws every group in one go', drawnR.join(',')==='1,2,3', 'drew groups: '+drawnR.join(','));
+ck('...queues nothing for a later frame', deferred===null, 'something was queued');
+ck('...leaves no spacer where a group should be', !painted.includes('grp-reserve'), painted.slice(0,200));
+ck('...still offers "add group"', painted.includes('add-group-btn'));
+ck('...is wired once', wired===1, 'wired '+wired+' times');
+ck('...and spends the flag, so the next opening is split again', vTableR[1]()===false);
+
+// renderView is what tells the two apart: a redraw of the same board and view
+// is `same`, and the flag is set from it on the way into the view
+const rv=grab('renderView');
+ck('renderView marks a redraw of the same board as one', /_vtRedraw=same;/.test(rv));
+
+// ── 5. one changed cell redraws one row, not the board ──
+// Each of these rebuilt every group for one cell. On a heavy board that is the
+// same flash, from a click on a face or a star.
+for (const name of ['togglePersonPop','setRating','removeFile','saveAccount']) {
+  const body = grab(name);
+  ck(name+' updates its own row', /refreshRow\(taskId,false,/.test(body) && !/renderView\(\)/.test(body), body.slice(0,240));
+}
+const up = grab('uploadFileCell');
+ck('uploadFileCell updates its own row', /refreshRow\(taskId,false,colId\)/.test(up) && !/renderView\(\)/.test(up));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

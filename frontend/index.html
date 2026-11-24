@@ -7469,6 +7469,7 @@ function renderView(){
   });
   el.innerHTML='';
   _colsMemo={};            // one column model for this whole render
+  _vtRedraw=same;          // see vTable: a redraw is built whole, an opening in halves
   try{
   ({table:vTable,kanban:vKanban,dash:vDash,dashboard:vDashboard,ceo:vCeo,calendar:vCalendar,map:vMap,gis:vGis,workplan:vWorkPlan,budget:vBudget,approvals:vApprovals,gantt:vGantt,links:vLinks,'ceo-enhanced':vCeoEnhanced}[st.view]||vTable)(el);
   } finally { _colsMemo=null; }
@@ -7794,7 +7795,10 @@ async function togglePersonPop(e,taskId,uid){
   const t=findAnyTask(taskId); const has=((t&&t.assignees)||[]).some(a=>a.id===uid);
   await togglePerson(taskId,uid,!has);
   closeCellPops();   // close the popover after a selection
-  renderView();      // reflect the change in the cell avatars
+  // Only this row's avatars changed. A full renderView here rebuilt every
+  // group of the board for one face — on a heavy board that was the flash and
+  // the jump back to the start after each assignment.
+  refreshRow(taskId,false,'assignees');
 }
 async function togglePerson(taskId,userId,add){
   try{const r=await api('/api/tasks/'+taskId+'/assignees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,action:add?'add':'remove',actor_id:meId()})});
@@ -17201,6 +17205,7 @@ function addGroupBtnHTML(){
 /* Which render is current. A board switched again while the deferred half was
    still queued must not have the old board's groups appended into it. */
 let _vtToken=0;
+let _vtRedraw=false;   // set by renderView for the one vTable call it makes
 function vTable(el){
   const groups=groupsOf();
   // filters are active but nothing matches → show the "no match" hint. An empty
@@ -17256,6 +17261,25 @@ function vTable(el){
      selector that expects a full board still find what they look for. The
      deferred groups' height is held by a spacer, so the scrollbar is the right
      length from the first frame and does not grow under her hand. */
+  /* …but only when the board is OPENING. A redraw of the board already on
+     screen is a different moment: she is somewhere in it, often in a later
+     group, and splitting the build put a blank spacer exactly where she was
+     looking for the frame it took to build the rest — on a board of 68 columns
+     and 600 rows that frame is a long one. Then the real groups replaced their
+     height estimates, the content moved under the restored scroll offset, and
+     she was left somewhere else on the board. That is the flash and the jump
+     seen after an update on a heavy board. The work is the same either way;
+     done in one piece there is no frame in which the board is missing. */
+  // through a typeof, like the rest of this function's neighbours: the
+  // harnesses run vTable on its own, and there it is always an opening
+  const _whole=(typeof _vtRedraw!=='undefined')&&_vtRedraw;
+  if(_whole) _vtRedraw=false;
+  _vtToken++;                                       // retires a half-board still pending
+  if(_whole || groups.length<2){
+    el.innerHTML=groups.map(groupHTML).join('')+addGroupBtnHTML();
+    wireTable(el);
+    return;
+  }
   const rest=groups.slice(1);
   const reserve=rest.reduce((n,g)=>n+groupSlot(g),0);
   el.innerHTML = groups.slice(0,1).map(groupHTML).join('')
@@ -19952,7 +19976,7 @@ function uploadFileCell(taskId,colId){
     const fd=new FormData();fd.append('file',f);
     try{const r=await fetch('/api/upload',{method:'POST',body:fd,headers:authHeaders()});if(!r.ok)throw 0;const data=await r.json();
       const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();arr.push(data);
-      await setCell(taskId,colId,arr);renderView();toast('הקובץ הועלה');
+      await setCell(taskId,colId,arr);refreshRow(taskId,false,colId);toast('הקובץ הועלה');
     }catch(e){toast('שגיאה בהעלאת הקובץ');}
     finally{ busyCoverDone(); }              // a failed upload must not leave the page covered
   };
@@ -19961,7 +19985,7 @@ function uploadFileCell(taskId,colId){
 async function removeFile(e,taskId,colId,idx){
   e.preventDefault();e.stopPropagation();
   const t=findAnyTask(taskId);const arr=((t.custom_fields||{})[colId]||[]).slice();arr.splice(idx,1);
-  await setCell(taskId,colId,arr.length?arr:null);renderView();
+  await setCell(taskId,colId,arr.length?arr:null);refreshRow(taskId,false,colId);
 }
 /* accounts column */
 function accountCell(taskId,colId){
@@ -19976,7 +20000,7 @@ function accountCell(taskId,colId){
 async function saveAccount(taskId,colId,clear){
   let val=null;
   if(!clear){const l=(document.getElementById('ac-label').value||'').trim();const u=(document.getElementById('ac-url').value||'').trim();if(l)val={label:l,url:u||undefined};}
-  await setCell(taskId,colId,val);closeModals();renderView();
+  await setCell(taskId,colId,val);closeModals();refreshRow(taskId,false,colId);
 }
 /* ===== formula column =====
    A formula reads "{Column Title}" references and works out one value per item.
@@ -20005,6 +20029,11 @@ const FORMULA_FUNCS = {
   MAX:        (...a) => { const v = _fflat(a).map(_fnum); return v.length ? Math.max(...v) : null; },
   ADD:        (a, b) => _fnum(a) + _fnum(b),
   SUBTRACT:   (a, b) => _fnum(a) - _fnum(b),
+  /* monday's other name for SUBTRACT. A board imported from there writes
+     MINUS, and a formula the server can work out but the browser cannot is
+     the worst of the two: the cell shows a number until someone edits the
+     row, and then it quietly empties. Same implementation, both names. */
+  MINUS:      (a, b) => _fnum(a) - _fnum(b),
   MULTIPLY:   (a, b) => _fnum(a) * _fnum(b),
   DIVIDE:     (a, b) => _fnum(b) === 0 ? null : _fnum(a) / _fnum(b),
   /* ── logic ── */
@@ -20554,7 +20583,7 @@ function ratingStars(taskId,colId,val){
 }
 function setRating(taskId,colId,n){
   const t=findAnyTask(taskId);const cur=(t&&t.custom_fields&&+t.custom_fields[colId])||0;
-  setCell(taskId,colId,n===cur?null:n);renderView();
+  setCell(taskId,colId,n===cur?null:n);refreshRow(taskId,false,colId);   // one row's stars, not the board
 }
 /* status cell — every status column carries its own label/color vocabulary
    (col.options=[{label,color}]); STATUS_OPTS is only the starting point for a

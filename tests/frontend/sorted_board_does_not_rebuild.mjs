@@ -83,8 +83,11 @@ const callLines = src.split('\n')
    new caller that forgets its third argument silently rebuilds the whole board
    on every edit, which is the flicker this file exists to keep out. The fourth
    is the conversion resolver — it answers one exception at a time, and without
-   it every press repainted the board behind the dialog and lost its scroll. */
-ck('there are four callers and no more', callLines.length === 4, JSON.stringify(callLines));
+   it every press repainted the board behind the dialog and lost its scroll.
+   Five more came from cells that used to rebuild the board for one value — an
+   assignee, a star rating, a file added or removed, a link — which on a heavy
+   board was a flash and a jump back to the start after each of them. */
+ck('there are nine callers and no more', callLines.length === 9, JSON.stringify(callLines));
 ck('every one of them names the field or column that changed',
    callLines.every(l => /refreshRow\([^;]*,[^;]*,[^;]*\)/.test(l)),
    JSON.stringify(callLines));
