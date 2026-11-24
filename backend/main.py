@@ -10510,6 +10510,26 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             "title": lambda t: (t.title or ""),
         }
         want_sort = str(data.get("sort") or "")
+        # ── the board's own order is group by group, sorted or not ───────
+        # An item's position is counted inside its group — every group starts
+        # again at 0 (see _bottom_position) — so "ORDER BY position" over the
+        # whole board interleaves the groups: position 0 of every group, then
+        # position 1 of every group. Past the threshold that is what was cut
+        # into pages, so page one held a row or two of EACH group, and every
+        # header printed its true count (group_counts) over a handful of rows.
+        # "חסרים פריטים" — they were further down the stream, arriving into
+        # groups the person had already scrolled past. While the header showed
+        # the rows in hand with a "+" the gap was disguised; the true count
+        # made it visible. Groups first, in the board's order, then position:
+        # a page now fills one group before it starts the next.
+        gpos = {g.id: (g.position or 0, g.id) for g in
+                db.query(Group).filter(Group.board_id == board_id).all()}
+        if want_sort not in _SORTS:
+            # a row with no group sorts after the groups, not before them
+            hits.sort(key=lambda t: (gpos.get(t.group_id, (10 ** 9, 0)),
+                                     t.position or 0, t.id))
+            shells.sort(key=lambda t: (gpos.get(t.group_id, (10 ** 9, 0)),
+                                       t.position or 0, t.id))
         if want_sort in _SORTS:
             # ── inside the groups, never across them ─────────────────────
             # "סדר הקבוצות נשאר לפי מבנה הלוח. המיון חל בתוך קבוצות ... ואינו
@@ -10520,8 +10540,6 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             # stops being the thing it was arranged into. Groups are
             # structure, not a result — they keep the order the board gives
             # them, and the sort decides who sits where INSIDE each one.
-            gpos = {g.id: (g.position or 0, g.id) for g in
-                    db.query(Group).filter(Group.board_id == board_id).all()}
             inner = _SORTS[want_sort]
             # a row with no group sorts after the groups, not before them
             hits.sort(key=lambda t: (gpos.get(t.group_id, (10 ** 9, 0)), inner(t),

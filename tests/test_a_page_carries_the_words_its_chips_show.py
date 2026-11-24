@@ -229,10 +229,13 @@ def test_a_page_of_a_board_with_no_display_field_carries_an_empty_map(
     assert rows, "no rows came back at all"
     assert merged == {}, merged
     # the cells really are linked — the empty map is a decision about what the
-    # column was told to show, not a board with nothing on it
+    # column was told to show, not a board with nothing on it. One page wide
+    # enough for the whole board: rows come group by group in position order,
+    # so the board's three starter items fill a two-row first page on their own
+    # and the linked ones are on the next.
     page = client.post(f"/api/boards/{src}/items/query", headers=AS(admin_id),
                        json={"filter": {"operator": "and", "rules": []},
-                             "limit": 2, "offset": 0}).json()
+                             "limit": 50, "offset": 0}).json()
     assert any((t.get("custom_fields") or {}).get(cid) for t in page["items"])
 
 
