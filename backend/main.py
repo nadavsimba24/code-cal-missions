@@ -3,6 +3,10 @@ CityOS — FastAPI Backend Server
 """
 import os, sys, json, uuid, csv, io, gzip, re, secrets, threading, time, urllib.parse, urllib.request
 import concurrent.futures
+# Pooled, reusable TLS connections, for the one thing this server does that is
+# hundreds of outbound requests to a single host: fetching an import's
+# attachments (_fetch_import_file). urllib opens a fresh connection per file.
+import urllib3
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from datetime import tzinfo as tzinfo_cls
@@ -2441,6 +2445,17 @@ def _item_perm(task, user_id, board_role, scope=None):
             return "edit"
         return "view" if board_role == "assigned_editor" else "none"
     caps = _board_caps(board_role)
+    # An editor may take back what they themselves put on the board. Without
+    # this, a row an editor added by mistake — a duplicate, a test, the wrong
+    # board — stayed until a board admin was found to delete it, for a thing
+    # nobody else had touched. Only their OWN items: created_by is stamped from
+    # the authenticated caller when the item is made (create_task), never from
+    # a request field, so it cannot be claimed. It goes to the recycle bin like
+    # any delete, so an admin can bring it back. An item override still wins —
+    # it was checked above — so an admin who set "edit" on it meant it.
+    if (board_role == "editor" and user_id is not None
+            and getattr(task, "created_by", None) == user_id):
+        return "delete"
     return "delete" if "delete" in caps else ("edit" if "edit" in caps else ("view" if "view" in caps else "none"))
 
 def _assigned_only_sql(db, board, user_id):
@@ -2506,7 +2521,90 @@ def _assigned_only_boards(db, user_id):
         return set()
     return ids
 
-def _board_item_count(db, board_id, user_id):
+def _visible_item_criteria(db, board_id, user_id, role=None):
+    """What counts as one of this reader's rows on this board, as a list of
+    SQL criteria: the board's top-level items, not archived, not in the bin,
+    minus the ones this person is shut out of.
+
+    It lives on its own because there is now more than one count over exactly
+    this set — the board's total below, and the per-group breakdown after it —
+    and two copies of the filter is the failure mode here, not the duplication
+    itself. A header saying 1,976 above groups that add up to 1,974 is worse
+    than a header with no number: the person has no way to tell which of the
+    two lied, and whoever goes looking has to read both filters and spot the
+    one that forgot `is_archived`. There is one filter.
+
+    `role` is the caller's already-resolved board role, where it holds one.
+    get_board asks for both counts and would otherwise pay for _board_role
+    twice over to be told what it just worked out.
+    """
+    crit = [Task.board_id == board_id, Task.parent_id.is_(None),
+            Task.is_archived == False, Task.deleted_at.is_(None)]   # noqa: E712
+    if user_id is not None:
+        if role is None:
+            role = _board_role(db, board_id, user_id)
+        # The one role whose default IS "none": an assigned_only member sees
+        # only what they are assigned to, so a count is cut the same way the
+        # list is — see _assigned_only_sql.
+        if role == "assigned_only":
+            board = db.query(Board).filter(Board.id == board_id).first()
+            crit.append(_assigned_only_sql(db, board, user_id))
+        else:
+            closed = Task.permissions[str(user_id)].as_string()
+            # an item with no override at all extracts as NULL, and NULL != 'none'
+            # is NULL rather than true — left as a bare inequality this counted
+            # nothing on a board where nobody had an override, which is every board
+            crit.append(or_(closed.is_(None), closed != "none"))
+    return crit
+
+def _board_group_counts(db, board_id, user_id, group_ids=None, role=None):
+    """How many of this reader's rows each group on the board holds, as
+    {"<group_id>": n} — one GROUP BY for the whole board, never one query
+    per group (a board here has fifty-seven of them).
+
+    Past FILTER_CLIENT_MAX the board answers with no rows at all and the
+    browser pages them in as it scrolls, so a group header had nothing to
+    count but whatever had arrived: a number that climbed while the person
+    scrolled, printed with a "+" beside it and a tooltip admitting it was
+    only a lower bound. "מה זה? אני לא רוצה את זה ככה" — and she is right,
+    the answer is not to hide the plus but to know the number. It costs one
+    cheap aggregate, so it is sent on every board open whether the rows
+    travel or not: the paged and the unpaged board then look identical to
+    the browser, and the delete-group dialog can finally say how many items
+    it is about to take with it.
+
+    Every group of the board is in the map, the empty ones with 0, so that an
+    absent key never has to be read as either "none" or "the server did not
+    say". The counts come from the same criteria as _board_item_count, which
+    is why they sum to it — an item somebody may not see is not countable in
+    a header either.
+
+    The one key that is not a group is "null", and it is there only when it
+    has something in it. An item can hold no group at all (a public form
+    submits one, see the form intake) or a group that went away under it, and
+    the board draws those under a heading of their own — "ללא קבוצה", id
+    null, which is the key a browser lookup on that id produces. Counting
+    them anywhere else, or not counting them, would be the one case where the
+    headers stop adding up to the board's own total.
+    """
+    if group_ids is None:
+        group_ids = [gid for (gid,) in db.query(Group.id)
+                                         .filter(Group.board_id == board_id).all()]
+    counts = {str(gid): 0 for gid in group_ids}
+    known = set(group_ids)
+    orphans = 0
+    for gid, n in (db.query(Task.group_id, func.count(Task.id))
+                     .filter(*_visible_item_criteria(db, board_id, user_id, role))
+                     .group_by(Task.group_id).all()):
+        if gid in known:
+            counts[str(gid)] = n
+        else:
+            orphans += n
+    if orphans:
+        counts["null"] = orphans
+    return counts
+
+def _board_item_count(db, board_id, user_id, role=None):
     """How many rows this reader's board has — counted in the database, with
     not one item loaded.
 
@@ -2530,23 +2628,13 @@ def _board_item_count(db, board_id, user_id):
     criteria. That hook is applied to entity queries, and this is an aggregate
     over a column; relying on it here would be relying on the ORM to notice a
     mapper it was never handed.
+
+    The set itself is _visible_item_criteria, shared with the per-group count
+    so that the two can never answer differently.
     """
-    q = (db.query(func.count(Task.id))
-           .filter(Task.board_id == board_id, Task.parent_id.is_(None),
-                   Task.is_archived == False, Task.deleted_at.is_(None)))   # noqa: E712
-    if user_id is not None:
-        # The one role whose default IS "none": an assigned_only member sees
-        # only what they are assigned to, so the count is cut the same way
-        # the list is — see _assigned_only_sql.
-        if _board_role(db, board_id, user_id) == "assigned_only":
-            board = db.query(Board).filter(Board.id == board_id).first()
-            return q.filter(_assigned_only_sql(db, board, user_id)).scalar() or 0
-        closed = Task.permissions[str(user_id)].as_string()
-        # an item with no override at all extracts as NULL, and NULL != 'none'
-        # is NULL rather than true — left as a bare inequality this counted
-        # nothing on a board where nobody had an override, which is every board
-        q = q.filter(or_(closed.is_(None), closed != "none"))
-    return q.scalar() or 0
+    return (db.query(func.count(Task.id))
+              .filter(*_visible_item_criteria(db, board_id, user_id, role))
+              .scalar() or 0)
 
 def _link_states(db, ids, user_id):
     """What each linked id is, from `user_id`'s point of view:
@@ -10606,11 +10694,20 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
         # what it sent would flip itself back into local filtering over
         # nothing. Counted in SQL: loading the board to measure it is the
         # cost being removed.
-        item_count = _board_item_count(db, board_id, user_id)
+        item_count = _board_item_count(db, board_id, user_id, role=my_role)
         # strictly greater, the same comparison filterMode() makes — a board
         # sitting exactly on the threshold filters locally and needs its rows
         paged = item_count > FILTER_CLIENT_MAX
         _lap("item_count")
+        # The same count broken out per group, in one GROUP BY over the board.
+        # Sent always, not only when the rows stay home: above the threshold
+        # the header has nothing else to count, and below it the browser would
+        # otherwise have two ways of arriving at the same number. The groups
+        # are already loaded, so no second query goes looking for their ids.
+        group_counts = _board_group_counts(db, board_id, user_id,
+                                           group_ids=[g.id for g in groups],
+                                           role=my_role)
+        _lap("group_counts")
         # only top-level items as rows; sub-items are nested under their parent
         # position, and then id — because "position" is not unique and never was.
         # Two items can claim one slot (every board that predates the fix in
@@ -10778,6 +10875,19 @@ def get_board(board_id: int, user_id: int = Depends(current_user_id)):
             # empty: `tasks` is [] up there on purpose, and len(tasks) is no
             # longer an answer to "how big is this board".
             "item_count": item_count,
+            # How many of those items each group holds, {"<group_id>": n},
+            # with every group of the board present and the empty ones at 0 —
+            # an absent key would leave the header guessing between "none" and
+            # "not sent". Counted over exactly the set item_count counts, so
+            # the values sum to it, and an item closed to this reader is no
+            # more countable here than it is visible there. Items belonging to
+            # no group arrive under the key "null", the id the board's "ללא
+            # קבוצה" heading carries — see _board_group_counts.
+            #
+            # This is what lets a group header state its size on a board past
+            # filter_client_max, where no rows travel and the old header could
+            # only count the ones the scroll had fetched so far.
+            "group_counts": group_counts,
             "filter_column_policy": FILTER_COLUMN_POLICY,
             "statuses": _board_statuses(b),
             "priorities": _board_priorities(b),
@@ -11553,7 +11663,13 @@ def _imp_attach_conversation(db, rows, tasks, actor_id, budget):
 # upload ceiling (IMPORT_MAX_UPLOAD_MB) is the real guard on how big a file can
 # be, and it refuses rather than trims. So this is set where no board anyone
 # migrates here will reach it, and is tunable for the one that does.
-IMPORT_MAX_ROWS = int(os.getenv("IMPORT_MAX_ROWS", "20000"))
+#
+# The board that does arrived: "פגישות החל מתחילת 2024" carries 21,187 items,
+# 6% past a 20,000 that was itself only ever "high enough". It refuses cleanly
+# and names the environment variable, so nothing was lost — but a ceiling a
+# real board walks into twice is a number, not a guard, and the actual guard is
+# still the upload size. 50,000 is where the next one is unlikely to reach.
+IMPORT_MAX_ROWS = int(os.getenv("IMPORT_MAX_ROWS", "50000"))
 # How many columns a board may be imported with. 40 was below what a real
 # monday board carries — a 64-column board lost five columns that had data in
 # them purely to the ceiling, which is the one kind of loss a migration cannot
@@ -11591,8 +11707,27 @@ IMPORT_MAX_MESSAGES = 10000
 # are fetched a window at a time (_ImportFileWindow) and written to the database
 # a window at a time (_import_attachments), so what an import holds at once is
 # IMPORT_FILE_WINDOW_MB and not everything it has brought so far.
-IMPORT_MAX_FILES = int(os.getenv("IMPORT_MAX_FILES", "2000"))
-IMPORT_MAX_FILE_MB = int(os.getenv("IMPORT_MAX_FILE_MB", "1200"))
+#
+# 2,000 files and 1,200MB were the next pair of numbers a real board walked
+# into, and both were found the same way — by counting afterwards, not by the
+# report. "H2 נהלים" (3849766494) carries 2,025 attachments, so 25 of them
+# arrived as names; twenty-five is too few to notice in a report and exactly
+# enough to be the procedure somebody goes looking for. "Stories" came across
+# with files_bytes of 1,258,290,874 against a ceiling of 1,258,291,200 — 326
+# bytes short of the whole budget — and 281 of its 1,122 attachments were never
+# attempted at all.
+#
+# The file count is 20,000 rather than the 6,000 those two asked for, because
+# "H4 הגדלות ושינויים" (2002628922) carries 13,499 attachments over its 2,400
+# items — mostly tiny ones, a median of 2KB against a mean of 92KB — and a
+# count that stops at a board already measured is a count that will be raised
+# again by the next board. The same board's files weigh about 1.24GB together,
+# which is what says 4,000MB is the right order for the byte ceiling and not
+# 1,200. What that one costs when it is raised is database size and nothing
+# else: what an import HOLDS at once is IMPORT_FILE_WINDOW_MB, which is a
+# separate number and is not being raised.
+IMPORT_MAX_FILES = int(os.getenv("IMPORT_MAX_FILES", "20000"))
+IMPORT_MAX_FILE_MB = int(os.getenv("IMPORT_MAX_FILE_MB", "4000"))
 IMPORT_FILE_TIMEOUT = 20            # seconds per file
 # How many megabytes of attachments an import holds in memory at once — the
 # fetch runs this far ahead of the walk, and the rows written behind it are
@@ -11618,6 +11753,12 @@ IMPORT_MAX_ONE_FILE_MB = int(os.getenv("IMPORT_MAX_ONE_FILE_MB", "50"))
 # on the request before the import is finished, which to the person waiting is
 # indistinguishable from a crash. Sixteen brings the same board in two. The
 # memory that number used to cost is now the window's, not the pool's.
+#
+# Sixteen is also where this number stops being the lever. Measured over 300
+# real monday links, 24 workers took 10.9s against 16's 12.6s and 32 took 11.2s
+# — noise, next to the 25.8s the same 300 files cost before the connections
+# were pooled. What was being paid per file was a TLS handshake, not bandwidth,
+# and more workers buy more handshakes. See _IMPORT_POOL.
 IMPORT_FILE_WORKERS = int(os.getenv("IMPORT_FILE_WORKERS", "16"))
 # The upload ceiling for an import. It was 8MB, and a 320-item board exported
 # from monday rejected at 11.7MB — of which 8MB was the indentation Postman adds
@@ -11625,7 +11766,31 @@ IMPORT_FILE_WORKERS = int(os.getenv("IMPORT_FILE_WORKERS", "16"))
 # that turns on how a file was saved rather than on what is in it is a limit that
 # rejects the right board for the wrong reason, so there is room for a board
 # several times that size, pretty-printed.
-IMPORT_MAX_UPLOAD_MB = int(os.getenv("IMPORT_MAX_UPLOAD_MB", "32"))
+#
+# 32MB was still that limit wearing a larger number. Two real exports measured
+# since: "H4 הגדלות ושינויים" is 82.6MB once decompressed and "H3 חוזים" is
+# 46.1MB, and neither of them is padding — they are 2,400 and 1,976 items with
+# 64,002 and 55,307 history rows behind them. Both were refused outright, which
+# is the worst of the possible answers: not a board missing its tail, but an
+# error in place of an import. Both ceilings here are the same number on
+# purpose — what is read is what is limited, compressed or not — so this is
+# what a gzipped export may unpack to as well.
+#
+# And 128 was that limit wearing a larger number again: "פגישות החל מתחילת
+# 2024" unpacks to 166.1MB — 21,187 items and 147,254 history rows, carrying
+# all of eight attachments. It is the board the person had failed to upload for
+# weeks, and the reason was always this line and never anything in the file.
+# The pattern is plain by now: every time a real migration arrives it is larger
+# than the last guess, and the answer each time is that the number was the only
+# thing in the way. 256 is set against a measured 166, not against a feeling.
+#
+# What this actually costs is memory, and that is worth stating because it is
+# not obvious: the body is read whole and `json.loads` builds the lot, so a
+# 166MB file wants roughly 1.5–2GB while it parses. Prod (4GB) carries that.
+# QA, on a 1.75GB plan, does not — a board this size is a local or prod import
+# until the parse is made to stream, and raising this number does not change
+# that.
+IMPORT_MAX_UPLOAD_MB = int(os.getenv("IMPORT_MAX_UPLOAD_MB", "256"))
 
 # Only monday's own asset hosts. The URLs come out of a file the user supplied,
 # and fetching whatever it names would let an import point this server at an
@@ -11637,21 +11802,109 @@ def _import_host_allowed(host):
             or host == "files-monday-com.s3.amazonaws.com")
 
 
-class _NoRedirects(urllib.request.HTTPRedirectHandler):
-    """A pre-signed asset link does not redirect. Refusing to follow one closes
-    the hole where an allowed host bounces the fetch somewhere it should not go."""
+# One pool of connections for every attachment of every import, rather than a
+# fresh TLS handshake per file. An import's files all come from the same two or
+# three monday hosts, one after another, and the handshake was most of what each
+# one cost: 300 real links took 25.8s a connection apiece and 12.6s over a kept
+# pool, with the median file dropping from 0.70s to 0.18s. The pool is module
+# level because that is the only scope where a connection outlives the file that
+# opened it — per import, or per window, is the same handshake again.
+#
+# maxsize is the pool's width per host and has to reach IMPORT_FILE_WORKERS, or
+# workers past that number find no connection waiting and open their own.
+# block=False lets them do exactly that rather than wait: an extra connection is
+# cheaper than an idle worker, and urllib3 discards the overflow afterwards.
+# redirect=False and retries=False are set per request, not here, so that what
+# this does and does not follow is read where the fetch is.
+_IMPORT_POOL = urllib3.PoolManager(
+    num_pools=4, maxsize=max(4, IMPORT_FILE_WORKERS), block=False,
+    headers={"User-Agent": "CODE-CAL-MISSIONS/import"})
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+
+# Consecutive DEAD-LINK failures after which the import stops trying. When a
+# file's links have expired, every link in that file has expired — and
+# discovering that 300 times over cost three minutes of an import that had
+# nothing else to do.
+#
+# "Dead" is the whole of the rule, and it used to be missing. The run counted
+# every failure alike, and a failure on its own is evidence of nothing: H3
+# חוזים (884 attachments, 46MB) came across with 509 of them, and the report
+# called the missing 375 "לא נגישים" — which reads as "monday no longer has
+# these" — while 400 of those very links fetched 400-for-400 from this machine
+# twice, minutes either side of the import. Five misses in a row is a plausible
+# thing for a loaded machine to produce on its own, with big files, sixteen
+# workers and a long write transaction holding SQLite; and the 367 attachments
+# after them were then abandoned without a single request being made for them.
+# The same file, imported again with the run raised to 100,000, brought 876 of
+# the 884 and left 8 genuinely unreachable.
+#
+# So only an answer that says THIS LINK WILL NEVER SERVE counts towards it:
+# 401, 403, 404, 410, or monday's sign-in page handed over as a 200. A timeout,
+# a reset connection, a 5xx or a file over the per-file ceiling is this import
+# having a bad minute, not the export being stale, and it leaves the run where
+# it was. The behaviour being protected is untouched by that: a wholly expired
+# export answers 403 to everything and still stops after five, and most of its
+# links never cost a round trip at all because their own signature says they
+# lapsed — see _signed_url_expired.
+IMPORT_FILE_FAIL_STREAK = int(os.getenv("IMPORT_FILE_FAIL_STREAK", "5"))
+# And the backstop in the other direction: a run this long of failures of ANY
+# kind is no longer a bad minute, it is the network gone, and an export of 900
+# attachments at a twenty-second timeout apiece is eighteen minutes of a request
+# somebody is sitting in front of. Deliberately an order of magnitude above
+# anything measured — the H3 import that worked saw 8 failures across 884 files
+# and never two of them in a row — so what trips it is an outage and not a slow
+# patch. Its worst case is about two minutes: a hundred timeouts, sixteen at a
+# time.
+IMPORT_FILE_GIVE_UP_STREAK = int(os.getenv("IMPORT_FILE_GIVE_UP_STREAK", "100"))
+
+# Why the fetch that just ran ON THIS THREAD came back empty, for the guard
+# above to read. Thread-local because sixteen files are fetched at once, so a
+# module global would be whichever worker wrote last; and not a second return
+# value because _fetch_import_file's contract — bytes, or None, and never a
+# raise — is what the whole of tests/test_import_files.py stands in for, and a
+# stand-in that answers `fake(url)` must keep working.
+#
+# Absent, a failure counts as dead. That is the old rule, kept for exactly the
+# caller that records nothing: a stand-in fetch says only None, and a fetch
+# that cannot say why should not be able to switch the guard off.
+_IMPORT_FETCH = threading.local()
 
 
-_IMPORT_OPENER = urllib.request.build_opener(_NoRedirects)
+def _import_fetch_was_dead():
+    """Did the last fetch on this thread fail in a way that condemns the export?"""
+    return getattr(_IMPORT_FETCH, "why", "dead") == "dead"
 
 
-# Consecutive failures after which the import stops trying. When a file's links
-# have expired, every link in that file has expired — and discovering that 300
-# times over cost three minutes of an import that had nothing else to do.
-IMPORT_FILE_FAIL_STREAK = 5
+def _import_files_given_up(stats):
+    """Has this import given up on fetching attachments altogether?
+
+    One pair of runs, read by both of the places that fetch: the window running
+    ahead of the walk (_ImportFileWindow._one) and the walk itself
+    (_import_attachments). They used to keep a run each, which is a cascade
+    waiting to happen — a window that had given up handed the walk a stretch of
+    Nones, the walk counted every one of them as a failure of its own, and the
+    same handful of misses condemned the rest of the board a second time, from
+    the other side.
+    """
+    return (stats.get("streak", 0) >= IMPORT_FILE_FAIL_STREAK
+            or stats.get("any_streak", 0) >= IMPORT_FILE_GIVE_UP_STREAK)
+
+
+def _import_file_outcome(stats, ok):
+    """Fold one FINISHED fetch into the two runs the guard reads.
+
+    Only the thread that did the fetching calls this, and only for a fetch it
+    made itself: the verdict lives on that thread, and a file the walk takes
+    out of the window was already counted when the window fetched it. Counting
+    it again is the cascade _import_files_given_up describes.
+    """
+    if ok:
+        stats["streak"] = 0
+        stats["any_streak"] = 0
+        return
+    stats["any_streak"] = stats.get("any_streak", 0) + 1
+    if _import_fetch_was_dead():
+        stats["streak"] = stats.get("streak", 0) + 1
 
 
 def _stored_file_token(url):
@@ -11688,26 +11941,120 @@ def _fetch_import_file(url):
 
     Never raises: an expired link, a redirect, a host we do not fetch from and a
     file over the per-file ceiling all mean the same thing to the caller — this
-    one keeps its name only.
+    one keeps its name only. urllib3 raises its own family (HTTPError and its
+    children: ReadTimeoutError, ProtocolError, SSLError, MaxRetryError) rather
+    than urllib's URLError, which is why what is caught here is Exception and
+    not a list of names that would quietly stop covering the new ones.
+
+    They are the same thing to the caller and not to the GUARD, which has to
+    tell an export whose every link has expired from an import having a bad
+    minute, so the reason is left on this thread for _import_fetch_was_dead to
+    pick up. Beside the return value rather than inside it: a function that
+    answers bytes-or-None is what the suite stands in for.
     """
+    # Every way out of here leaves a verdict on this thread for the
+    # run-of-failures guard to read, and it starts as the transient one so that
+    # a path which never reaches a verdict of its own — a malformed url, a
+    # timeout, a reset connection, a file over the per-file ceiling — is the
+    # passing trouble it is rather than evidence about the export.
+    _IMPORT_FETCH.why = "transient"
     try:
         parts = urllib.parse.urlparse(url or "")
         if parts.scheme != "https" or not _import_host_allowed(parts.hostname):
             return None
-        req = urllib.request.Request(url, headers={"User-Agent": "CODE-CAL-MISSIONS/import"})
-        with _IMPORT_OPENER.open(req, timeout=IMPORT_FILE_TIMEOUT) as resp:
+        ceiling = IMPORT_MAX_ONE_FILE_MB * 1024 * 1024
+        # preload_content=False is what keeps the ceiling a ceiling: the body is
+        # read up to it and the connection dropped, instead of the whole file
+        # arriving first and being measured afterwards. retries=False so a dead
+        # link costs one timeout and not three.
+        resp = _IMPORT_POOL.request(
+            "GET", url, preload_content=False, redirect=False, retries=False,
+            timeout=urllib3.Timeout(connect=IMPORT_FILE_TIMEOUT,
+                                    read=IMPORT_FILE_TIMEOUT))
+        try:
+            # A pre-signed asset link does not redirect, and following one would
+            # be the hole where an allowed host bounces the fetch somewhere else.
+            # urllib3 does not refuse a redirect the way the opener's handler
+            # did — with redirect=False it hands back the 3xx as an ordinary
+            # answer — so a 3xx is a failure here, and so is anything else that
+            # is not a 200: an expired signature answers 403 with S3's complaint
+            # in the body, which is not the file either.
+            if resp.status != 200:
+                # 401, 403, 404 and 410 are what an expired signature or a
+                # deleted asset answers, and what every other link in that same
+                # export will answer too — the one shape of failure that is
+                # worth stopping on. Anything else that is not a 200 is refused
+                # just as firmly and says nothing about the rest of the board;
+                # it is also cheap to find out, being a prompt answer and not a
+                # timeout, so there is nothing to save by giving up on it.
+                if resp.status in (401, 403, 404, 410):
+                    _IMPORT_FETCH.why = "dead"
+                # Nothing above read this body, and an unread body is not this
+                # file's problem — it is the NEXT file's. The finally below
+                # hands the connection back to the pool, and whichever worker
+                # takes it out reads the leftovers as its own status line:
+                #
+                #   ProtocolError('Connection aborted.',
+                #                 BadStatusLine('<Error/>HTTP/1.1 200 OK\r\n'))
+                #
+                # `<Error/>` is this response's body; `HTTP/1.1 200 OK` is the
+                # real answer for a file that was there the whole time, now
+                # unparseable. With retries=False nothing absorbs it, so that
+                # file comes back None and — correctly, which is what makes it
+                # so quiet — counts as transient, so the import carries on and
+                # simply loses it. A real export whose signatures have lapsed
+                # answers 401/403/404/410 by the hundred, and every one of them
+                # used to poison one live attachment behind it: the H3 חוזים
+                # symptom, 367 files reported missing while sitting in monday,
+                # wearing a second face. Drained and not closed because the
+                # body here is a small error document — S3's complaint runs to
+                # a few hundred bytes — so reading it out is far cheaper than
+                # the handshake that replacing the connection costs, which is
+                # the whole reason there is a pool.
+                resp.drain_conn()
+                return None
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             # A monday link that needs a session does not answer 401 — it answers
             # 200 with the login page. Stored, that is a docx-shaped file holding
             # monday's HTML, which is worse than the name on its own: it opens,
             # and it is not the file.
             if ctype == "text/html":
+                # Dead, and dead for the whole export: a link that needs a
+                # session is an export written for a browser, not a run of bad
+                # luck, and the next thousand will answer the same page.
+                _IMPORT_FETCH.why = "dead"
+                # This body is unread too, and leaves the same poisoned
+                # connection behind as the non-200 above — the BadStatusLine
+                # described there is what it looks like from the next file.
+                # Closed rather than drained, though, and that difference is
+                # deliberate: a sign-in page is a rendered document with
+                # nothing bounding its size, where S3's error is a known few
+                # hundred bytes. Draining would be paid on every link of an
+                # export that answers this to all of them, for a connection
+                # this fetch has just declared the export dead on anyway.
+                # One dropped connection is the predictable price.
+                resp.close()
                 return None
-            ceiling = IMPORT_MAX_ONE_FILE_MB * 1024 * 1024
             data = resp.read(ceiling + 1)
             if not data or len(data) > ceiling:
+                # Over the ceiling the rest of the body is still coming. Closed
+                # rather than drained: draining would read the runaway file to
+                # the end, which is the one thing the ceiling exists to prevent,
+                # and costs a connection that was going to be dropped anyway.
+                resp.close()
                 return None
             return data, ctype
+        finally:
+            # A body read to its end leaves the connection clean, so this hands
+            # it back to the pool for the next file instead of closing it — the
+            # whole point of there being a pool. Every way out above has either
+            # read the body, drained it or closed the connection first, which
+            # is the invariant this line depends on and cannot check: it only
+            # ever returns a clean connection or a dead one. A branch that
+            # closed still passes through here safely — the pool takes the shut
+            # connection back, finds it dropped the next time it is asked for
+            # one, and opens a fresh one in its place.
+            resp.release_conn()
     except Exception:                              # noqa: BLE001 — see the docstring
         return None
 
@@ -11751,11 +12098,17 @@ class _ImportFileWindow:
     which is what the caller does with a failed fetch anyway.
     """
 
-    # Files asked for in one go — four times the pool's width, so every worker
-    # has something queued behind it and no window is one slow file long.
-    CHUNK = 32
+    # How far ahead of the file being waited for the pool is kept loaded, as a
+    # multiple of its width. A chunk of 32 submitted and waited on as a block is
+    # what this replaced, and the block was the problem: it ended when its
+    # slowest file ended, so one link timing out left fifteen workers with
+    # nothing to do for twenty seconds. Work is handed in continuously now and
+    # two deep is enough to keep every worker busy — the file that was slow
+    # holds up nothing but itself, and the memory in flight is the same 32 files
+    # the chunk already risked.
+    AHEAD = 2
 
-    def __init__(self, urls, budget, workers=None):
+    def __init__(self, urls, budget, workers=None, stats=None):
         seen, self.queue = set(), []
         for u in urls:
             if u and u not in seen and _import_fetchable(u):
@@ -11772,7 +12125,28 @@ class _ImportFileWindow:
         self.window = IMPORT_FILE_WINDOW_MB * 1024 * 1024
         self.workers = max(1, workers or IMPORT_FILE_WORKERS)
         self.left = [budget[1]]
-        self.streak = [0]
+        # The run-of-failures guard belongs to the import, not to this window —
+        # see _import_files_given_up. Built without one (a caller with no import
+        # behind it, a test), the window keeps a tally of its own and the rule
+        # is unchanged; what it must not do is keep a SECOND one beside the
+        # walk's.
+        self.stats = stats if stats is not None else {}
+        # The urls this window declined to dial after giving up. A file nobody
+        # asked monday for is not a file monday refused, and the walk cannot
+        # tell them apart from the value: both are None, which is a promise this
+        # class makes and tests pin. Emptied as the walk takes each one, so it
+        # holds a window's worth and not a board's.
+        self.unread = set()
+        # One executor for the window's whole life rather than one per chunk,
+        # so a worker that finishes a file is handed the next one instead of
+        # waiting for its chunk-mates. It is built on the first fetch and not
+        # here, so a board with no files still costs no threads. `sent` is how
+        # far down the queue work has been handed in and `next` how far it has
+        # been collected; between the two sit the futures.
+        self.pool = None
+        self.lock = threading.Lock()
+        self.sent = 0
+        self.futures = {}
 
     def __contains__(self, url):
         if url in self.have:
@@ -11788,57 +12162,148 @@ class _ImportFileWindow:
 
     def __getitem__(self, url):
         got = self.have.pop(url)
+        self.unread.discard(url)
         if got:
             self.held -= len(got[0])
         return got
 
     def _fill(self, target):
-        """Fetch up to the file asked for, and a window's worth past it."""
+        """Fetch up to the file asked for, and a window's worth past it.
+
+        One file is collected per turn and the queue is topped up before each,
+        so a worker that finishes is given the next url rather than the end of
+        a batch to wait at. The files are still collected in the queue's order,
+        which is the order the walk reads them in.
+        """
         while self.next < len(self.queue) and self.left[0] > 0 and (
                 self.next <= target or self.held < self.window):
-            batch = self.queue[self.next:self.next + self.CHUNK]
-            self.next += len(batch)
-            self._fetch(batch)
+            if self.pool is None:
+                self.pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(1, min(self.workers, len(self.queue))),
+                    thread_name_prefix="import-file")
+            self._send(target)
+            u = self.queue[self.next]
+            fut = self.futures.pop(u, None)
+            if fut is None:
+                # The byte budget ran out in a worker between the loop's test
+                # and the handing-in, so this file was never sent and there is
+                # nothing to wait for. The walk asks again and is told no, which
+                # is the same answer it gets for every file past the ceiling.
+                break
+            got = fut.result()
+            self.next += 1
+            self.have[u] = got
+            if got:
+                self.held += len(got[0])
+        # Nothing left to hand in, or no budget to hand it in under: either way
+        # this window will not fetch again, and the threads can go. Stopping
+        # because the window is full is not that — the walk comes back.
+        if self.next >= len(self.queue) or self.left[0] <= 0:
+            self.close()
 
-    def _fetch(self, batch):
-        lock = threading.Lock()
+    def _send(self, target):
+        """Keep the pool loaded, without letting the lookahead run away.
 
-        def one(u):
-            with lock:
-                # the run-of-failures guard, honoured here too: if the first
-                # handful cannot be had the rest cannot either, and the point of
-                # that rule is not to spend a timeout per file proving it. Up to
-                # one pool's worth are already in flight when the run trips —
-                # but in flight together, so it costs one timeout rather than
-                # one each.
-                if self.left[0] <= 0 or self.streak[0] >= IMPORT_FILE_FAIL_STREAK:
-                    return u, None
-            got = _fetch_import_file(u)
-            with lock:
-                if got:
-                    self.streak[0] = 0
-                    self.left[0] -= len(got[0])
-                else:
-                    self.streak[0] += 1
-            return u, got
+        Two deep per worker and no further: past the file being waited for, the
+        byte window is what says whether to fetch at all, and it can only be
+        answered about files that have arrived. Bounding the handing-in is what
+        stops a continuous submission from reading the whole board into memory
+        while the walk is still on its first item.
+        """
+        limit = self.next + max(1, self.workers * self.AHEAD)
+        while (self.sent < len(self.queue) and self.sent < limit
+               and self.left[0] > 0
+               and (self.sent <= target or self.held < self.window)):
+            u = self.queue[self.sent]
+            self.futures[u] = self.pool.submit(self._one, u)
+            self.sent += 1
 
-        n = max(1, min(self.workers, len(batch)))
-        with concurrent.futures.ThreadPoolExecutor(
-                max_workers=n, thread_name_prefix="import-file") as pool:
-            for u, got in pool.map(one, batch):
-                self.have[u] = got
-                if got:
-                    self.held += len(got[0])
+    def _one(self, u):
+        with self.lock:
+            # the run-of-failures guard, honoured here too: if the first
+            # handful of links are dead the rest are dead as well, and the point
+            # of that rule is not to spend a timeout per file proving it. Up to
+            # one pool's worth are already in flight when the run trips —
+            # but in flight together, so it costs one timeout rather than
+            # one each.
+            if self.left[0] <= 0 or _import_files_given_up(self.stats):
+                # Remembered rather than merely refused: this file was never
+                # dialled, and the walk has to be able to report that as the
+                # different thing it is from a file monday would not serve.
+                self.unread.add(u)
+                return None
+        got = _fetch_import_file(u)
+        with self.lock:
+            if got:
+                self.left[0] -= len(got[0])
+            _import_file_outcome(self.stats, got is not None)
+        return got
+
+    def close(self):
+        """Let the pool go. Safe to call twice, and on a window that never ran.
+
+        What has not been started is cancelled; what is already in the air is
+        collected, in the queue's order, and only then let go. Both halves of
+        that matter. Cancelling costs nothing because those files were never
+        dialled. Collecting is how the byte budget gets spent on files that
+        actually arrive: a budget of eight files is passed by every worker in
+        the pool at once, so when it runs out a pool's worth are in flight and
+        paid for, and throwing them away would deliver five. And collecting IN
+        ORDER is what keeps the promise this class makes — they finish in no
+        particular order, so taking them as they land would answer a walk at its
+        eighth file with the eighth, the twentieth and the twenty-first.
+
+        Waiting costs one timeout at worst, for files already dialled, which is
+        what the chunk this replaced paid at the end of every chunk.
+        """
+        if self.pool is None:
+            return
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        while self.next < len(self.queue):
+            u = self.queue[self.next]
+            f = self.futures.pop(u, None)
+            # The cancelled ones are the tail — work is handed in in order, so
+            # what never started is what was last handed in. Stopping at the
+            # first of them leaves the rest unanswered rather than answered
+            # wrongly: the walk asks, is told no, and the import's own ceiling
+            # accounting takes it from there.
+            if f is None or f.cancelled():
+                break
+            got = f.result()
+            self.next += 1
+            self.have[u] = got
+            if got:
+                self.held += len(got[0])
+        self.futures.clear()
+        self.pool = None
 
 
-def _prefetch_import_files(urls, budget, workers=None):
+def _prefetch_import_files(urls, budget, workers=None, stats=None):
     """The attachments of one import, ready to be read in the file's own order.
+
+    `stats` is the import's own tally of what became of its files, handed in so
+    that the run-of-failures guard here and the one in the walk are a single
+    rule over a single pair of counters — see _import_files_given_up.
 
     An empty dict when there is nothing to fetch, so a board with no files costs
     no object and no pool.
     """
-    win = _ImportFileWindow(urls, budget, workers)
+    win = _ImportFileWindow(urls, budget, workers, stats)
     return win if win.queue else {}
+
+
+def _release_import_files(cache):
+    """Done with a prefetch — drop its threads now rather than at a collection.
+
+    A walk that reads every file closes the window on its own, by exhausting the
+    queue. A walk that stops early does not, and an import stopping early is
+    exactly what the file and byte ceilings are for, so the end of the import
+    says so explicitly. Takes the plain dict _prefetch_import_files returns for
+    a board with no files too.
+    """
+    close = getattr(cache, "close", None)
+    if close:
+        close()
 
 
 def _attachment_urls(parsed, columns):
@@ -11919,9 +12384,6 @@ def _import_attachments(db, files, budget, stats, cache=None):
         if _signed_url_expired(url):
             keep("expired")
             continue
-        if stats.get("streak", 0) >= IMPORT_FILE_FAIL_STREAK:
-            keep("failed")
-            continue
         if budget[0] <= 0 or budget[1] <= 0:
             # The ceiling, and the ceiling is not a failure. Counted as one it
             # read in the report as "קבצים לא נענו" — links that were blocked or
@@ -11933,14 +12395,39 @@ def _import_attachments(db, files, budget, stats, cache=None):
             keep("over_budget")
             continue
         if cache is not None and url in cache:
-            got = cache[url]      # already in hand — see _prefetch_import_files
-        else:
-            got = _fetch_import_file(url)
-        if got is None:
-            stats["streak"] = stats.get("streak", 0) + 1
-            keep("failed")
+            # Already in hand — see _prefetch_import_files. The window asked
+            # this file's question and folded the answer into the import's runs
+            # when it did, so nothing is counted here; counting it a second time
+            # is how a window that had given up used to trip the walk as well.
+            # The window is asked BEFORE the guard below, because it is the one
+            # that knows whether this particular file was dialled: when the run
+            # trips, the pool's worth already in flight do come back with real
+            # answers, and calling those "never asked for" would be the same
+            # misreport in the other direction.
+            #
+            # getattr because a board with no files gets the plain dict
+            # _prefetch_import_files hands back, and this class's whole promise
+            # is that the caller cannot tell the two apart.
+            unread = url in getattr(cache, "unread", ())
+            got = cache[url]
+        elif _import_files_given_up(stats):
+            # Abandoned, and abandoned is not unreachable. Counted as a failure
+            # to fetch, it read in the report as "קבצים לא נענו" — monday will
+            # not serve these, nothing anybody here can do — over 367 files of
+            # H3 חוזים that monday was serving perfectly well and that this
+            # import never made a single request for. The two call for opposite
+            # things from the person reading it: one is "the export is stale,
+            # export it again", the other is "run the import again". So they are
+            # counted apart, exactly as the ceiling above is.
+            keep("abandoned")
             continue
-        stats["streak"] = 0
+        else:
+            unread = False
+            got = _fetch_import_file(url)
+            _import_file_outcome(stats, got is not None)
+        if got is None:
+            keep("abandoned" if unread else "failed")
+            continue
         data, ctype = got
         if len(data) > budget[1]:
             keep("over_budget")
@@ -12419,7 +12906,8 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
         # changes: _import_attachments asks the same questions in the same order
         # and gets the same answers — it just does not wait for them one by one.
         files["cache"] = _prefetch_import_files(
-            _attachment_urls(parsed, parsed["columns"]), files["budget"])
+            _attachment_urls(parsed, parsed["columns"]), files["budget"],
+            stats=files["stats"])
         # Identifiers for every row this import writes, minted in one go. Asked
         # per row, each one cost a SELECT ("is this taken on this board?") and
         # the UPDATE that followed the insert — 782 round trips for a board whose
@@ -12522,6 +13010,10 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                         if c["id"] in wanted and c["id"] not in ordered]
             s2["sub_cols"] = ["item"] + ordered
             b.settings = s2
+        # The walk is over, so whatever the prefetch still had in flight is for
+        # nobody. An import that stopped at its ceiling leaves the pool loaded,
+        # and this is the moment that is known.
+        _release_import_files(files.get("cache"))
         db.add(BoardMember(board_id=b.id, user_id=actor_id, role="admin"))
         db.commit()
         db.refresh(b)
@@ -12548,6 +13040,12 @@ def _import_monday_board(raw, filename, name, environment_id, folder_id, actor_i
                            # a link that had already expired, or a host we do not
                            # fetch from: the name is kept, the file is not here
                            "files_unreachable": files["stats"].get("failed", 0),
+                           # and the other half of that: files this import never
+                           # asked monday for, because it had given up. Nothing
+                           # is known about them — they are not unreachable,
+                           # they are unread — and the answer is to run the
+                           # import again, not to export again.
+                           "files_abandoned": files["stats"].get("abandoned", 0),
                            # a link whose own signature says it lapsed before the
                            # import ran — the one failure worth naming separately,
                            # because the fix is "export and import in one go"
@@ -13110,6 +13608,9 @@ def _import_board_file(raw, filename, name, environment_id, folder_id, actor_id)
                            "files_reused": st_files.get("reused", 0),
                            "files_linked": st_files.get("linked", 0),
                            "files_unreachable": st_files.get("failed", 0),
+                           # never asked for: the import gave up before reaching
+                           # them. See files_abandoned in the monday import.
+                           "files_abandoned": st_files.get("abandoned", 0),
                            "files_expired": st_files.get("expired", 0),
                            "files_over_budget": st_files.get("over_budget", 0),
                            "files_gone": st_files.get("gone", 0),
@@ -15094,6 +15595,7 @@ def _env_invitable_ids(db, env_id, users):
 
 @app.post("/api/boards/{board_id}/members")
 def add_board_member(board_id: int, data: dict, request: Request = None,
+                     background: BackgroundTasks = None,
                      actor_id: int = Depends(current_user_id)):
     with Session(engine) as db:
         if not _is_board_admin(db, board_id, actor_id):
@@ -15136,11 +15638,24 @@ def add_board_member(board_id: int, data: dict, request: Request = None,
         if is_new:
             invitee = db.query(User).filter(User.id == uid).first()
             if invitee and invitee.email and board:
-                _send_email(invitee.email,
-                            f'צורפת ללוח "{board.name}" במערכת missions',
-                            _board_invite_html(invitee.name, board.name,
-                                               inviter.name if inviter else "מנהל הלוח",
-                                               board.id, _app_base_url(request)))
+                # After the response, not before it — the same move
+                # _queue_item_mails made for a comment's mentions. _send_email
+                # is a blocking HTTPS call to the provider with a ten-second
+                # timeout, and the admin who pressed "הזמן" was waiting on it:
+                # the dialog could not redraw its list until SendGrid had
+                # answered about a message nothing on screen depends on. The
+                # arguments are built here, while the session is open; only
+                # the send is deferred. TestClient drains the queue before it
+                # returns, so the invitation tests still see the mail at once.
+                mail = (invitee.email,
+                        f'צורפת ללוח "{board.name}" במערכת missions',
+                        _board_invite_html(invitee.name, board.name,
+                                           inviter.name if inviter else "מנהל הלוח",
+                                           board.id, _app_base_url(request)))
+                if background is None:
+                    _send_email(*mail)
+                else:
+                    background.add_task(_send_email, *mail)
         # Everybody with this board open is looking at a stale list of who
         # may be tagged in it. The board payload's "members" is what every
         # picker draws from — a people column, the assignee menu, the
@@ -31472,6 +31987,11 @@ def delete_task(task_id: int, user_id: int = Depends(current_user_id)):
             role = _board_role(db, task.board_id, user_id)
             if _item_perm(task, user_id, role) != "delete":
                 raise HTTPException(403, "אין לך הרשאת מחיקה לפריט זה")
+            # An editor deletes their own items now (see _item_perm), and a
+            # board frozen to view-only freezes that too — before, only an
+            # admin could delete, so the freeze never had to be asked here.
+            if role != "admin" and ((task.board.settings or {}) if task.board else {}).get("view_only"):
+                raise HTTPException(403, "הלוח במצב צפייה בלבד")
         # To the board's recycle bin, not gone. Sub-items follow their parent so
         # restoring the parent brings the whole thing back — and so a sub-item is
         # never left orphaned under an item that is no longer there.

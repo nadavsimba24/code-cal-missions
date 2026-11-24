@@ -20499,7 +20499,14 @@ async function setNumCell(taskId,colId,el){
 function canEdit(){ return canComment(null); }  // board members who aren't view-only — never "this item" (see canComment)
 function itemPerm(t){ return (t&&t.my_perm)||'edit'; }
 function canEditItem(t){ const p=itemPerm(t); return p==='edit'||p==='delete'; }
-function canDeleteItem(t){ return itemPerm(t)==='delete'; }
+/* An editor holds "delete" on the items they created (the server's
+   _item_perm), and a board frozen to view-only freezes that as well — before
+   that grant only an admin could delete at all, so the freeze never had to say. */
+function canDeleteItem(t){
+  const b=(typeof st!=='undefined')&&st.board;
+  if(b&&b.view_only&&b.my_role!=='admin')return false;
+  return itemPerm(t)==='delete';
+}
 /* Why a deletion is refused, or "" when it may go ahead.
 
    Without this the refusal only happened at the server: the menu offered
