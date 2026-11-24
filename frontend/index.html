@@ -14590,8 +14590,23 @@ const SysAdmin = {
     if(!hasCap('manage_system')){ toast('רק מנהל מערכת'); return; }
     closeCellPops();
     this.tab = tab || this.tab || 'users';
-    try{ this.users = await api('/api/users'); }catch(e){ this.users=[]; }
-    if(!st.depts||!st.depts.length){ try{ st.depts = await api('/api/departments'); }catch(e){} }
+    /* The dialog opens on the click and the people arrive into it. It used to
+       ask for the users, then — only once they had landed — for the
+       departments, and draw nothing until both were back: two round trips in
+       a row with the button looking dead, on every opening, including every
+       «ביטול» out of a profile, which comes back through here. The two are
+       asked together now, and a tab that fetches its own rows (guests,
+       environments, history…) does not wait for the people list at all.
+       The marker is how a late answer knows this is still the dialog it was
+       asked for, the same one Members.open keeps. */
+    const seq=(this._seq=(this._seq||0)+1);
+    this.users=this.users||[];
+    this._usersLoading=true;
+    const ready=Promise.all([
+      api('/api/users').catch(()=>[]),
+      (!st.depts||!st.depts.length)
+        ? api('/api/departments').then(d=>{ st.depts=d; }).catch(()=>{}) : null,
+    ]);
     showModal(`<h2><i class="fa-solid fa-users-gear" style="color:var(--primary)"></i> ניהול מערכת</h2>
       <div class="mbody">
         <div class="sa-tabs">
@@ -14606,6 +14621,12 @@ const SysAdmin = {
       </div>`);
     document.getElementById('modal').classList.add('modal-80');
     this.go(this.tab);
+    const [users]=await ready;
+    if(seq!==this._seq)return;
+    this.users=users||[]; this._usersLoading=false;
+    // only the table that was waiting is redrawn: a tab with rows of its own
+    // keeps them, and a dialog closed in the meantime has no #sa-body to fill
+    if(this.tab==='users'&&document.getElementById('sa-body')) this.go('users');
   },
   /* ===== אוטומציות — the organisation's, not one board's =====
      A board admin has always been able to see their own board. Nobody could see
@@ -14802,6 +14823,7 @@ const SysAdmin = {
     else if(tab==='depts'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderDepts(); }
     else if(tab==='envs'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderEnvs(); }
     else if(tab==='autos'){ body.innerHTML='<div class="empty" style="padding:24px">טוען…</div>'; this.renderAutos(); }
+    else if(this._usersLoading){ body.innerHTML='<div class="empty" style="padding:24px" aria-busy="true">טוען…</div>'; }
     else { body.innerHTML=this.usersHTML(); this.syncHeads(); }
   },
   /* ── סביבות — a discoverable place for a system admin to rename or delete an
@@ -15501,7 +15523,7 @@ const Members = {
           <label class="switch"><input type="checkbox" ${st.board.notifications_enabled!==false?'checked':''} onchange="Members.toggleNotif(this.checked)"><span class="slider"></span></label>
         </div>`:''}
         ${this.permColHTML(can)}
-        <div class="mem-sec-h">משתתפי הלוח<span class="perm-badge">${this.data.members.length}</span></div>
+        <div class="mem-sec-h">משתתפי הלוח<span class="perm-badge" id="mem-count">${this.data.members.length}</span></div>
         <div id="mem-list">${this.listHTML()}</div>
         ${can?`<div class="mem-invite-bar">
           <button class="btn btn-primary" id="mem-invite-btn" aria-expanded="false" aria-controls="mem-invite" onclick="Members.toggleInvite()"><i class="fa-solid fa-user-plus"></i> הזמנת משתתפים</button>
@@ -15760,12 +15782,28 @@ const Members = {
       toast((e&&e.status===400&&typeof e.detail==='string'&&e.detail)||'רק מנהל לוח יכול לקבוע את עמודת השיוך');
     }
   },
-  async refresh(){ let d=null; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
+  async refresh(){ let d=null; const seq=(this._refSeq=(this._refSeq||0)+1);
+    try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
     // a failed fetch leaves the list that is on screen alone — see open()
     if(!d) return;
+    /* …and only the latest refresh draws. A removal drops its row at once and
+       refetches without waiting, so two removals in quick succession put two
+       of these in flight — and the first answer, read before the second
+       DELETE landed, would bring the second person's row back. */
+    if(seq!==this._refSeq) return;
     this.data=d;
+    this._redraw();
+  },
+  /* Everything that follows a change to this.data, whether the change came
+     from the server or was applied here because the server had just said yes
+     to it — see setRole and remove, which no longer wait for a second round
+     trip to learn what they already know. */
+  _redraw(){
     this._syncBoardPeople();
     const l=document.getElementById('mem-list'); if(l)l.innerHTML=this.listHTML();
+    // the count over the list was drawn once, at opening, and went on saying
+    // how many there had been after somebody was added or taken off
+    const n=document.getElementById('mem-count'); if(n)n.textContent=String(this.data.members.length);
     /* The picker is redrawn through the search that is on screen, not from
        the raw answer: somebody who typed three letters, invited the name
        they found and went to invite the next one would otherwise watch the
@@ -15791,14 +15829,34 @@ const Members = {
   },
   async setRole(uid,role){
     try{ await api('/api/boards/'+st.board.id+'/members/'+uid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({actor_id:meId(),role})}); toast('ההרשאה עודכנה');
+      /* The server said yes, and a role is the only thing that changed — the
+         same people are on the board and the same people may be invited — so
+         the row is redrawn from what is already here. It used to fetch the
+         whole list again first: a second round trip, on every role change,
+         to be told what the first one had just confirmed. */
+      /* Except one's OWN role: an admin who makes themselves an editor stops
+         being able to manage the board, and only the server's can_manage says
+         so — redrawn locally, every row would keep the pickers whose next
+         click is a 403. */
+      const m=((this.data&&this.data.members)||[]).find(x=>x.user_id===uid);
+      if(m&&uid!==meId()){ m.role=role; this._redraw(); } else await this.refresh();
       // the row is redrawn under the keyboard, so the caret is put back on
       // the picker it was on rather than dropped onto the page behind
-      await this.refresh(); const b=document.getElementById('mem-role-'+uid); if(b)b.focus(); }
+      const b=document.getElementById('mem-role-'+uid); if(b)b.focus(); }
     catch(e){ toast(String(e.message||'').includes('400')?'חייב להישאר מנהל אחד':'רק מנהל לוח יכול לשנות'); this.refresh(); }
   },
   remove(uid){
     askConfirm('להסיר את המשתמש מהלוח? הוא לא יראה יותר את הלוח.',async()=>{
-      try{ await api('/api/boards/'+st.board.id+'/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר מהלוח'); this.refresh(); }
+      try{ await api('/api/boards/'+st.board.id+'/members/'+uid+'?actor_id='+meId(),{method:'DELETE'}); toast('הוסר מהלוח');
+        /* The row goes the moment the server agrees, rather than after a
+           second request comes back. Who may now be invited in their place
+           is the server's to say — the environment rule is not one to guess
+           at here — so the list is still fetched, just not waited on. */
+        if(this.data&&this.data.members){
+          this.data.members=this.data.members.filter(x=>x.user_id!==uid);
+          this._redraw();
+        }
+        this.refresh(); }
       catch(e){ toast('לא ניתן להסיר'); }
     },{title:'הסרת חבר',confirmText:'הסר'});
   },
