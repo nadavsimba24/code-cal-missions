@@ -22561,9 +22561,13 @@ def _automation_label(db, board, a):
     # correctly the moment it is renamed, with nothing re-saved.
     for side in ("t", "a"):
         key = recipes.col_key_of(r, side) if r else ""
-        if not key or recipes.col_kind_of(r, side) != "people":
+        kind = recipes.col_kind_of(r, side) if r else ""
+        if not key or kind not in ("people", "date"):
             continue
-        cid = recipes.people_col_of(cfg, side)
+        # a date rule's column rides under its own key by the same bargain,
+        # and reads back the same way — by the column's title as it is now
+        cid = (recipes.date_col_of(cfg) if kind == "date"
+               else recipes.people_col_of(cfg, side))
         if not cid:
             continue
         pcol = _find_col(db, board.id, cid) if board else None
@@ -25143,6 +25147,14 @@ def _automation_blockers(db, board, a):
                         "text": ("עמודת האנשים שהכלל מאזין לה נמחקה מהלוח"
                                  if _side == "t" else
                                  "עמודת האנשים שהכלל מעדכן נמחקה מהלוח")})
+    # …and the date column a date rule waits for. Deleted, the sweep has no
+    # date to read and the rule would sit there looking active for ever.
+    _did = recipes.date_col_of(cfg) if recipes.col_kind_of(_r, "t") == "date" else ""
+    if _did:
+        _dc = _find_col(db, a.board_id, _did)
+        if not _dc or _dc.get("type") != "date":
+            out.append({"kind": "dependency",
+                        "text": "עמודת התאריך שהכלל ממתין לה נמחקה מהלוח"})
     for one in acts:
         for f in recipes.action_fields(one["key"]):
             v = one["values"].get(f["key"])
@@ -26123,24 +26135,61 @@ def _sweep_due_date_automations(db, board_id, actor_id):
                  if (recipes.recipe(a.recipe_id) or {}).get("trigger") == "due_date_near"],
                 default=0)
     cutoff = now.replace(tzinfo=None) + timedelta(days=ahead + 1)
-    due = db.query(Task).filter(Task.board_id == board_id, Task.is_archived == False,  # noqa: E712
-                                Task.due_date != None,                            # noqa: E711
-                                Task.due_date <= cutoff).all()
-    if not due:
-        return
+    # Which date each rule waits for: "" is the built-in תאריך יעד, anything
+    # else is a date column of the board's own (see recipes.DATE_COL_TEXT).
+    # The items are fetched once per column, however many rules share it.
+    by_col = {}
+
+    def _dated(cid):
+        if cid in by_col:
+            return by_col[cid]
+        if not cid:
+            rows = [(t, t.due_date) for t in db.query(Task).filter(
+                        Task.board_id == board_id, Task.is_archived == False,  # noqa: E712
+                        Task.due_date != None,                            # noqa: E711
+                        Task.due_date <= cutoff).all()]
+        else:
+            # Only the one cell is read for the whole board, and only the items
+            # whose day has come are loaded — the sweep runs on every read of
+            # the board, and a board of thousands should not pay for a column
+            # nobody's date is near. The cell holds an ISO day; read through
+            # _cell_date_iso so an imported "01/12/2026" counts the same.
+            col = _find_col(db, board_id, cid)
+            hits = {}
+            if col and col.get("type") == "date":
+                for tid, raw in (db.query(Task.id, Task.custom_fields[cid])
+                                   .filter(Task.board_id == board_id,
+                                           Task.is_archived == False).all()):  # noqa: E712
+                    iso = _cell_date_iso(raw if isinstance(raw, str) else "")
+                    if not iso:
+                        continue
+                    d = datetime.strptime(iso, "%Y-%m-%d")
+                    if d <= cutoff:
+                        hits[tid] = d
+            tasks = (db.query(Task).filter(Task.id.in_(list(hits))).all()
+                     if hits else [])
+            rows = [(t, hits[t.id]) for t in tasks]
+        by_col[cid] = rows
+        return rows
+
     fired_any = False
     for a in rules:
         trig = (recipes.recipe(a.recipe_id) or {}).get("trigger")
         days = int((a.config or {}).get("t_days") or 0)
+        due = _dated(recipes.date_col_of(a.config))
+        if not due:
+            continue
         state = dict(a.state or {})
         fired = list(state.get("fired") or [])
         seen = set(fired)
         since = _as_utc(a.activated_at, tz)
-        for t in due:
+        for t, day in due:
             # a finished item is not "overdue" in any sense the user cares about
             if _st_of(t) in ("done", "cancelled"):
                 continue
-            when = _due_moment(t.due_date, tz)
+            # a day with no time is read the way the built-in date is — at
+            # DUE_DEFAULT_HOUR in the board's zone — so the two agree
+            when = _due_moment(day, tz)
             if when is None:
                 continue
             # The marker is the item AND the moment it fired for, so moving a
@@ -27936,6 +27985,15 @@ def _check_automation_people_col(db, board_id, recipe_id, cfg):
         col = _find_col(db, board_id, cid)
         if not col or col.get("type") != "people":
             raise HTTPException(400, "עמודת האנשים שנבחרה אינה קיימת בלוח")
+    # The date column a date rule waits for, checked here because every save
+    # path already calls this one — a rule that names a column which is not a
+    # date column would never fire and never say why.
+    if recipes.col_kind_of(r, "t") == "date":
+        did = recipes.date_col_of(cfg or {})
+        if did:
+            dcol = _find_col(db, board_id, did)
+            if not dcol or dcol.get("type") != "date":
+                raise HTTPException(400, "עמודת התאריך שנבחרה אינה קיימת בלוח")
 
 
 def _check_automation_person(db, board_id, cfg):
@@ -29671,9 +29729,21 @@ def _dry_run_automation(db, board, a, task, viewer=None):
     if trig == "item_created":
         trigger["note"] = "מתקיים בכל יצירת פריט"
     elif trig == "due_date_arrives":
-        trigger["matches"] = bool(task.due_date)
-        trigger["note"] = ("תאריך היעד " + task.due_date.strftime("%d/%m/%Y")) if task.due_date \
-            else "לפריט אין תאריך יעד"
+        _dcid = recipes.date_col_of(cfg)
+        if _dcid:
+            # the column the rule waits for, not the built-in date beside it
+            _dcol = _find_col(db, task.board_id, _dcid)
+            _name = (_dcol or {}).get("title") or _dcid
+            _iso = _cell_date_iso((task.custom_fields or {}).get(_dcid)
+                                  if isinstance((task.custom_fields or {}).get(_dcid), str)
+                                  else "")
+            trigger["matches"] = bool(_dcol) and bool(_iso)
+            trigger["note"] = (f"«{_name}» " + datetime.strptime(_iso, "%Y-%m-%d")
+                               .strftime("%d/%m/%Y")) if _iso else f"לפריט אין ערך ב«{_name}»"
+        else:
+            trigger["matches"] = bool(task.due_date)
+            trigger["note"] = ("תאריך היעד " + task.due_date.strftime("%d/%m/%Y")) if task.due_date \
+                else "לפריט אין תאריך יעד"
     elif trig == "status_changes_to":
         # against the column the rule names, not against the board's status —
         # a test that compared the wrong one would say a rule cannot fire when

@@ -1029,14 +1029,38 @@ def people_col_of(values, side):
     return str((values or {}).get(PEOPLE_COL_KEY[side]) or "").strip()
 
 
+# ── …and which DATE column a date rule waits for ────────────────────────────
+# "כאשר מגיע תאריך היעד" could only ever mean the built-in תאריך יעד, so a
+# board that keeps the date that matters in a column of its own — "דד ליין
+# לביצוע (למלאי)", "מועד מסירה" — could not hang a rule on it at all, and the
+# rule people asked for first ("כשמגיע הדד ליין, סמן «בחריגה»") had no way to
+# be said. The same bargain as the two above: the column travels beside the
+# trigger under `t_date_col`, absent means the built-in תאריך יעד, and every
+# rule already stored keeps meaning exactly what it meant.
+#
+# Trigger side only — no action waits for a date.
+DATE_COL_TEXT = {
+    "due_date_arrives": "כאשר מגיע {col}",
+    "due_date_near":    "{days} ימים לפני {col}",
+    "due_date_passed":  "{days} ימים אחרי {col}",
+}
+DATE_COL_KEY = "t_date_col"
+
+
+def date_col_of(values):
+    """The date column a date rule waits for, or "" for the built-in תאריך יעד."""
+    return str((values or {}).get(DATE_COL_KEY) or "").strip()
+
+
 # One table, because one half of a sentence can name at most one column and
 # every reader of these wants the same two answers: is there an alternative
 # wording for this half, and which key holds the column it needs.
-COL_TEXT = {**STATUS_COL_TEXT, **PEOPLE_COL_TEXT}
+COL_TEXT = {**STATUS_COL_TEXT, **PEOPLE_COL_TEXT, **DATE_COL_TEXT}
 # …and what KIND of column each half may name, which is what the picker needs
 # in order to offer the right list. "" for a half that names none.
 COL_KINDS = {k: "status" for k in STATUS_COL_TEXT}
 COL_KINDS.update({k: "people" for k in PEOPLE_COL_TEXT})
+COL_KINDS.update({k: "date" for k in DATE_COL_TEXT})
 
 
 def col_kind_of(r, side):
@@ -1051,6 +1075,8 @@ def col_key_of(r, side):
     kind = col_kind_of(r, side)
     if kind == "people":
         return PEOPLE_COL_KEY[side]
+    if kind == "date":
+        return DATE_COL_KEY if side == "t" else ""
     if kind == "status":
         return status_col_key(side + "_status")
     return ""
@@ -2670,6 +2696,8 @@ def _sentence_parts(r):
         if kind == "status":
             return any(f["key"] == side + "_status" and f["type"] == "status"
                        for f in r["fields"])
+        if kind == "date":
+            return side == "t"
         return kind == "people"
     return {"trigger": trig, "action": act,
             "trigger_col": tcol if can("t") else "",
@@ -2732,6 +2760,10 @@ def validate_partial(recipe_id, config):
             _pc = people_col_of(config, _side)
             if _pc:
                 clean[PEOPLE_COL_KEY[_side]] = _pc
+    # the date column a date rule waits for, by the same bargain: empty is the
+    # built-in תאריך יעד and is not kept
+    if col_kind_of(r, "t") == "date" and date_col_of(config):
+        clean[DATE_COL_KEY] = date_col_of(config)
     for f in r["fields"]:
         # The status column travels beside the value and not inside it, so it
         # has to be carried here by hand — the loop walks the recipe's own
@@ -2858,6 +2890,10 @@ def validate(recipe_id, config):
             _pc = people_col_of(config, _side)
             if _pc:
                 clean[PEOPLE_COL_KEY[_side]] = _pc
+    # the date column a date rule waits for, by the same bargain: empty is the
+    # built-in תאריך יעד and is not kept
+    if col_kind_of(r, "t") == "date" and date_col_of(config):
+        clean[DATE_COL_KEY] = date_col_of(config)
     for f in r["fields"]:
         # see clean(): the column a status blank names rides beside it, under a
         # derived key the recipe's own field list does not mention

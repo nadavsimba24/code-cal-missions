@@ -11643,6 +11643,8 @@ const Automations = {
       const k=side+'_person_col';
       if(cfg[k]) values[k]=this._colCell(cfg[k]);
     });
+    // …and the date column a date rule waits for, by the same reading
+    if(cfg.t_date_col) values.t_date_col=this._colCell(cfg.t_date_col);
     (r.fields||[]).forEach(f=>{
       if(cfg[f.key]!==undefined) values[f.key]=this._cellFor(f,cfg[f.key],cfg,values);
     });
@@ -11833,7 +11835,12 @@ const Automations = {
        somebody says otherwise. Only on a board that HAS people columns: on one
        that does not, "ל«אחראים»" is a choice that cannot be made. */
     const peopleOn=side=>this._colKind(side)==='people'&&this._peopleCols().length>0;
-    const colOn=side=>peopleOn(side)||on(side+'_status');
+    /* A date rule is the same case as a people half: "כאשר מגיע תאריך היעד"
+       has no blank to press, so on a board that has date columns of its own
+       the column reading shows from the start, standing at the built-in
+       תאריך יעד until somebody picks «דד ליין לביצוע» or the like. */
+    const dateOn=side=>side==='t'&&this._colKind('t')==='date'&&this._dateCols().length>0;
+    const colOn=side=>peopleOn(side)||dateOn(side)||on(side+'_status');
     let sent=esc(P
       ? ((P.trigger_col&&colOn('t')?P.trigger_col:P.trigger)+', '
          +(P.action_col&&colOn('a')?P.action_col:P.action))
@@ -11850,6 +11857,9 @@ const Automations = {
       sent=sent.replace('{'+side+'_person_col}',
         this.blankHTML({key:side+'_person_col',type:'people_col',label:'אחראים'}));
     });
+    if(dateOn('t'))
+      sent=sent.replace('{t_date_col}',
+        this.blankHTML({key:'t_date_col',type:'date_col',label:'תאריך היעד'}));
     // a seeded condition still missing its value is as unfinished as a blank
     const condsReady=(this.building.conds||[]).every(c=>{
       const spec=(this.conds||[]).find(x=>x.kind===c.kind)||{};
@@ -12639,6 +12649,7 @@ const Automations = {
     if(key==='t_person_col'||key==='a_person_col'){
       this.pickPeopleSource(anchor,key[0],null); return;
     }
+    if(key==='t_date_col'){ this.pickDateSource(anchor); return; }
     const f=r&&r.fields.find(x=>x.key===key); if(!f)return;
     /* A board with status columns of its own is asked WHICH status first —
        "הסטטוס" is no longer one question there. Asked ONCE: a blank that has
@@ -13785,6 +13796,25 @@ const Automations = {
     (a.values=a.values||{})[key]={v:it.v||'',label:it.label,color:''};
     closeCellPops(); this.render();
   },
+  /* "לאיזה תאריך ממתינים?" — the built-in תאריך יעד, or one of the board's
+     own date columns. Never forced, like the people question: the blank
+     already stands at a real answer. */
+  _dateCols(){ return (customColumns()||[]).filter(c=>c.type==='date'); },
+  pickDateSource(anchor){
+    const items=[{v:'',label:'תאריך היעד',color:''}]
+      .concat(this._dateCols().map(c=>({v:c.id,label:c.title||c.id,color:''})));
+    this._popItems=items;
+    const body=items.map((it,i)=>`<button class="rm-item" onclick="Automations.setDateSource(${i})">
+        <i class="fa-${it.v?'regular':'solid'} ${it.v?'fa-calendar':'fa-calendar-day'}"
+           style="font-size:11px;color:var(--primary)"></i> ${esc(it.label)}</button>`).join('');
+    openCellPop(anchor,`<div class="row-menu" onclick="event.stopPropagation()">
+      <div class="rm-note">לאיזה תאריך ממתינים?</div>${body}</div>`,'row-menu-pop');
+  },
+  setDateSource(idx){
+    const it=(this._popItems||[])[idx]; if(!it)return;
+    this.building.values.t_date_col={v:it.v||'',label:it.label,color:''};
+    closeCellPops(); this.render();
+  },
   setPeopleSource(side,idx){
     const it=(this._popItems||[])[idx]; if(!it)return;
     const key=side+'_person_col';
@@ -13900,6 +13930,10 @@ const Automations = {
       const col=this._peopleColOf(this.building.values,side);
       if(col) config[side+'_person_col']=col;
     });
+    if(this._colKind('t')==='date'){
+      const dcol=((this.building.values||{}).t_date_col||{}).v||'';
+      if(dcol) config.t_date_col=dcol;
+    }
     // a condition still missing its value is refused here rather than sent: the
     // server would reject it, and a draft must not silently save a condition
     // that would widen the rule instead of narrowing it
