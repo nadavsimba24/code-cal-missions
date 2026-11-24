@@ -22,6 +22,11 @@ handled explicitly below rather than carried across to mean something else:
   formula, item_id,   derived — the target recomputes them, and a copied value
   created_at/by       would be a stale answer that never refreshes again
 
+The activity log rides on that second pass too (and can be run alone as
+--history-to, for a board copied before it did): only the rows from before the
+copy, every person re-matched by email, every row stamped with where it came
+from so it offers no undo — see copy_history.
+
 The conversations and the attachments are a second pass, --attach-to, run
 against a board this one has already copied. They are separable because nothing
 else refers to them, and separate because they are the expensive half: the
@@ -296,7 +301,7 @@ def main():
     ap.add_argument("--target", choices=sorted(DEPLOYMENTS), required=True,
                     help="לאן להעתיק")
     ap.add_argument("--board", type=int, required=True, help="מספר הלוח במקור")
-    ap.add_argument("--environment", required=True,
+    ap.add_argument("--environment", default=None,
                     help="שם הסביבה ביעד — חייבת להיות קיימת")
     ap.add_argument("--folder", default=None,
                     help="שם התיקייה ביעד; תיווצר אם אינה קיימת")
@@ -309,6 +314,11 @@ def main():
                     help="להשוות את לוח המקור ללוח ביעד, טבלה מול טבלה")
     ap.add_argument("--attach-to", type=int, metavar="BOARD_ID", default=None,
                     help="לוח שכבר הועתק — להביא אליו את השיחות והקבצים מהמקור")
+    ap.add_argument("--history-to", type=int, metavar="BOARD_ID", default=None,
+                    help="לוח שכבר הועתק — להביא אליו את לוג הפעילות מהמקור "
+                         "(רץ גם אוטומטית בסוף --attach-to)")
+    ap.add_argument("--history-before", default=None, metavar="'YYYY-MM-DD HH:MM:SS'",
+                    help="רגע ההעתקה, אם אין לגזור אותו מהלוג של היעד")
     ap.add_argument("--verify", type=int, metavar="BOARD_ID", default=None,
                     help="לא להעתיק — רק לקרוא לוח ביעד ולדווח מה יש בו בפועל")
     ap.add_argument("--allow-duplicate", action="store_true",
@@ -340,6 +350,32 @@ def main():
             src.close()
             dst.close()
 
+    # Before every pass that writes, not only the full copy: --attach-to and
+    # --history-to with the same deployment on both ends would lay one board's
+    # conversations or history onto another board of the SAME database.
+    if args.source == args.target:
+        sys.exit("source and target are the same deployment")
+
+    if args.history_to and not args.attach_to:
+        src = connect(database_url(args.source))
+        src.set_session(readonly=True)
+        dst = connect(database_url(args.target))
+        if not args.apply:
+            dst.set_session(readonly=True)
+        try:
+            rc = copy_history(src, dst, args)
+            if args.apply:
+                dst.commit()
+            else:
+                print("\n— תוכנית בלבד. להרצה בפועל: הוסיפי --apply —")
+            return rc
+        except Exception:
+            dst.rollback()
+            raise
+        finally:
+            src.close()
+            dst.close()
+
     if args.attach_to:
         src = connect(database_url(args.source))
         src.set_session(readonly=True)
@@ -360,6 +396,11 @@ def main():
 
     if args.source == args.target:
         sys.exit("source and target are the same deployment")
+    # Only the full copy places a NEW board, so only it needs to be told where;
+    # the later passes and the read-only ones work on a board that exists.
+    if not args.environment:
+        sys.exit("--environment is required to copy a board: the new board has to "
+                 "be placed in an environment that exists on the target")
     if args.apply and not args.owner:
         sys.exit("--owner is required with --apply: a board nobody is a member "
                  "of is a board nobody can open")
@@ -413,12 +454,12 @@ def pair_items(src, dst, args):
     wrong.
     """
     s_items = rows(src, """
-        select id, title, parent_id from tasks
+        select id, title, parent_id, created_at from tasks
         where board_id = %s and deleted_at is null
         order by coalesce(parent_id, id), parent_id nulls first, position, id""",
         (args.board,))
     d_items = rows(dst, """
-        select id, title, parent_id from tasks
+        select id, title, parent_id, created_at from tasks
         where board_id = %s and deleted_at is null order by id""", (args.attach_to,))
 
     print(f"  מקור {len(s_items)} פריטים · יעד {len(d_items)} פריטים")
@@ -454,10 +495,25 @@ def pair_items(src, dst, args):
     for d in d_items:
         d_by_title.setdefault(d["title"] or "", []).append(d)
 
+    # A repeated title can still be told apart by when the item was made: the
+    # copy carries created_at across unchanged, so title + created_at picks
+    # out one row on each side where the title alone picks out several.
+    d_by_born = {}
+    for d in d_items:
+        d_by_born.setdefault((d["title"] or "", d["created_at"]), []).append(d)
+    s_born = {}
+    for s in s_items:
+        k = (s["title"] or "", s["created_at"])
+        s_born[k] = s_born.get(k, 0) + 1
+
     tmap, ambiguous, unmatched = {}, [], []
     for s in s_items:
         title = s["title"] or ""
         if s_count[title] > 1 or d_count.get(title, 0) > 1:
+            k = (title, s["created_at"])
+            if s["created_at"] and s_born[k] == 1 and len(d_by_born.get(k, [])) == 1:
+                tmap[s["id"]] = d_by_born[k][0]["id"]
+                continue
             ambiguous.append(title)
             continue
         if title not in d_by_title:
@@ -630,6 +686,7 @@ def attach_content(src, dst, args):
 
     if not args.apply:
         _authors_note(comments, people_map, src_names)
+        _history_too(src, dst, args, tmap)
         print("\n— תוכנית בלבד. להרצה בפועל: הוסיפי --apply —")
         return 0
 
@@ -704,7 +761,17 @@ def attach_content(src, dst, args):
     if orphaned:
         print(f"  {orphaned} תגובות שההודעה שהן עונות לה אינה על הלוח — נכתבו כהודעות עצמאיות")
     _authors_note(comments, people_map, src_names)
+    _history_too(src, dst, args, tmap)
     return 0
+
+
+def _history_too(src, dst, args, tmap):
+    # The history rides on this pass rather than waiting to be remembered: it
+    # was a separate step nobody knew to run, and board 204 went to production
+    # without its log because of exactly that. Same transaction as the
+    # conversations, so the two land together or not at all.
+    args.history_to = args.history_to or args.attach_to
+    copy_history(src, dst, args, tmap)
 
 
 def _authors_note(comments, people_map, src_names):
@@ -713,6 +780,209 @@ def _authors_note(comments, people_map, src_names):
     if lost:
         print("  כותבים ללא חשבון ביעד — ההודעה נרשמת על שמם בלי לשייך משתמש: "
               + ", ".join(lost))
+
+
+# ── the history ──────────────────────────────────────────────────────────
+# The first two passes carried the board and its conversations and left the
+# activity log behind, and nothing said so. Board 204 on production is board 11
+# from QA, copied on 2026-11-10: every item came across with its July
+# created_at, and its log began on the afternoon of the copy — 433 of 545 items
+# with no line of history at all, which on the board reads exactly like a log
+# that lost rows. The 5,623 rows were sitting on QA the whole time.
+
+def _id_list(raw, scalar_ok=False):
+    """The ids in a stored value, as ints — or None if it is not a list of ids.
+
+    The app writes a people cell more loosely than "a list of ints": ids as
+    strings (["12"]) are ordinary, and _ids() in main.py casts every element
+    for exactly that reason. Reading only pure-int lists let a ["12"] line
+    cross untouched and name QA's user 12 — somebody else — on the target.
+    A lone scalar counts only where the column is known to hold people; on a
+    column whose type is gone, a bare 8 is as likely a number as a person.
+    """
+    try:
+        v = json.loads(raw) if raw not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+    if scalar_ok and isinstance(v, (int, str)) and not isinstance(v, bool):
+        v = [v]
+    if not isinstance(v, list) or not v:
+        return None
+    out = []
+    for x in v:
+        if isinstance(x, bool):
+            return None
+        if isinstance(x, int):
+            out.append(x)
+        elif isinstance(x, str) and x.strip().isdigit():
+            out.append(int(x.strip()))
+        else:
+            return None
+    return out
+
+
+def copy_history(src, dst, args, tmap=None):
+    """Carry the source board's activity log onto a board already copied.
+
+    Only rows from BEFORE the copy. The copy's moment is read off the target —
+    its earliest log row, since nobody can have changed an item that did not
+    exist yet — and anything the source logged after it is work done on the
+    leftover QA board, which never happened to the production items.
+    `--history-before` overrides it when the target's own log is no guide.
+
+    Every value is carried as stored except where it names a row by id, because
+    an id means a different row in the other database:
+      changed_by     the person, matched by email; unmatched → no user, and the
+                     source's name is kept in origin.author so the line still
+                     says who did it
+      people column  each id mapped the same way; an unmappable id is dropped
+      a column the board no longer has, holding an id list
+                     skipped — its type is gone with it, so there is no telling
+                     whether [8] was a person or an item, and on the target 8 is
+                     somebody else either way
+    Group moves are stored by group NAME, statuses by key, titles as text —
+    those travel untouched.
+
+    Every row is stamped origin.source = "<source> board <id>". That is what
+    the re-run guard counts, it switches the undo button off (an undo of a
+    change made in August would write that value onto the item today), and it
+    is how this pass could be taken back out without touching the board's own
+    history. The page shows a badge only for a monday origin, so it costs
+    nothing on screen.
+    """
+    target_id = args.history_to
+    target = one(dst, "select id, name, settings from boards where id = %s", (target_id,))
+    if not target:
+        sys.exit(f"board {target_id} does not exist in {args.target}")
+    marker = f"{args.source} board {args.board}"
+    print(f"\n── היסטוריה: {args.source} לוח {args.board} → {args.target} לוח {target_id} "
+          f"({target['name']!r})")
+
+    d_task_ids = [r["id"] for r in rows(dst, "select id from tasks where board_id = %s", (target_id,))]
+    scope = """((a.entity_type = 'task' and a.entity_id = any(%s))
+                or (a.entity_type = 'board' and a.entity_id = %s))"""
+    have = scalar(dst, f"select count(*) from audit_logs a where {scope} "
+                       "and a.origin is not null and a.origin::text <> 'null' "
+                       "and a.origin ->> 'source' = %s",
+                  (d_task_ids or [0], target_id, marker))
+    if have and not args.allow_duplicate:
+        print(f"  ביעד כבר יש {have} שורות לוג שהועתקו מ{marker} — לא מעתיק שוב. "
+              "(אם זו בכל זאת הכוונה: --allow-duplicate)")
+        return 0
+
+    if args.history_before:
+        cutoff = args.history_before
+        print(f"  גבול: {cutoff} (כפי שניתן)")
+    else:
+        cutoff = scalar(dst, f"select min(a.created_at) from audit_logs a where {scope}",
+                        (d_task_ids or [0], target_id))
+        if cutoff is None and tmap is not None:
+            # Called from --attach-to on a board nobody has touched yet — the
+            # usual case, run straight after the copy — so the copy is as
+            # recent as now, and exiting here would throw away the
+            # conversations this same transaction has just written.
+            cutoff = scalar(dst, "select (now() at time zone 'utc')")
+            print(f"  גבול: {cutoff} — אין עדיין לוג ביעד, אז עכשיו")
+        elif cutoff is None:
+            sys.exit("ללוח היעד אין אף שורת לוג, ולכן אין ממנה רמז מתי הועתק. "
+                     "תני את הרגע במפורש: --history-before 'YYYY-MM-DD HH:MM:SS'")
+        else:
+            # The copy writes no log rows, so this is the first EDIT on the
+            # target — the copy happened at or before it, maybe days before,
+            # and any QA work in between would be carried across as if it had
+            # happened here. The range's end below shows the newest row taken;
+            # when the copy moment is known, give it with --history-before.
+            print(f"  גבול: {cutoff} — שורת הלוג הראשונה ביעד. ההעתקה הייתה בו או לפניו; "
+                  "אם הרגע ידוע, עדיף --history-before")
+
+    if tmap is None:
+        tmap = pair_items(src, dst, argparse.Namespace(board=args.board, attach_to=target_id))
+
+    src_people = rows(src, "select id, name, email from users")
+    dst_people = rows(dst, "select id, lower(email) as email from users "
+                           "where email is not null and email <> ''")
+    by_email = {p["email"]: p["id"] for p in dst_people}
+    people_map = {p["id"]: by_email[(p["email"] or "").lower()]
+                  for p in src_people if (p["email"] or "").lower() in by_email}
+    src_names = {p["id"]: (p["name"] or p["email"] or "") for p in src_people}
+
+    d_cols = {c.get("id"): c for c in ((target.get("settings") or {}).get("columns") or [])}
+    people_cols = {cid for cid, c in d_cols.items() if c.get("type") in PEOPLE_TYPES}
+
+    src_task_ids = [r["id"] for r in rows(src, "select id from tasks where board_id = %s",
+                                          (args.board,))]
+    logs = rows(src, f"""
+        select a.* from audit_logs a
+        where {scope}
+          and a.created_at < %s
+        order by a.created_at, a.id""", (src_task_ids or [0], args.board, cutoff))
+
+    shared = table_columns(dst, "audit_logs")
+    out, skip_item, skip_col, unattributed = [], 0, 0, set()
+    for l in logs:
+        row = {k: v for k, v in l.items() if k in shared}
+        row.pop("id", None)
+        if l["entity_type"] == "task":
+            if l["entity_id"] not in tmap:
+                skip_item += 1          # deleted in the source, or not pairable
+                continue
+            row["entity_id"] = tmap[l["entity_id"]]
+        else:
+            row["entity_id"] = target_id
+        f = l.get("field_name") or ""
+        if f.startswith("col:"):
+            cid = f[4:]
+            if cid in people_cols:
+                for k in ("old_value", "new_value"):
+                    ids = _id_list(l.get(k), scalar_ok=True)
+                    if ids is not None:
+                        row[k] = json.dumps([people_map[i] for i in ids if i in people_map])
+            elif cid not in d_cols and not cid.startswith(("status_", "priority_")) \
+                    and (_id_list(l.get("old_value")) or _id_list(l.get("new_value"))):
+                skip_col += 1
+                continue
+        author = l.get("changed_by")
+        og = l.get("origin") if isinstance(l.get("origin"), dict) else {}
+        row["changed_by"] = people_map.get(author) if author else None
+        if author and author not in people_map:
+            unattributed.add(src_names.get(author, str(author)))
+        row["origin"] = psycopg2.extras.Json({
+            "source": marker,
+            # an automation's rule name where the source had one — it is what
+            # the log shows instead of the engine account
+            "author": og.get("author") or src_names.get(author, ""),
+            "external_id": str(l["id"]),
+            **({"was": og.get("source")} if og.get("source") else {})})
+        out.append(row)
+
+    n_task = sum(1 for r in out if r["entity_type"] == "task")
+    print(f"  שורות לוג לפני הגבול במקור: {len(logs)}")
+    print(f"  ייכתבו: {len(out)}  ({n_task} על {len({r['entity_id'] for r in out if r['entity_type'] == 'task'})} "
+          f"פריטים, {len(out) - n_task} ברמת הלוח)")
+    if out:
+        print(f"  טווח: {out[0]['created_at']} … {out[-1]['created_at']}")
+    if skip_item:
+        print(f"  דולגו {skip_item} שורות של פריטים שנמחקו במקור או שלא הותאמו")
+    if skip_col:
+        print(f"  דולגו {skip_col} שורות של עמודות שכבר אינן בלוח ושערכיהן מזהים "
+              "(אדם/פריט) — במסד השני הם מצביעים על מישהו אחר")
+    if unattributed:
+        print("  ללא חשבון ביעד — השורה נרשמת על שמם בלי לשייך משתמש: "
+              + ", ".join(sorted(unattributed)))
+
+    if not args.apply:
+        return 0
+    if not out:
+        return 0
+    _bump_sequence(dst, "audit_logs")
+    cols = sorted({k for r in out for k in r})
+    cur = dst.cursor()
+    psycopg2.extras.execute_values(
+        cur, f"insert into audit_logs ({', '.join(cols)}) values %s",
+        [[r.get(c) for c in cols] for r in out], page_size=500)
+    cur.close()
+    print(f"  ✓ נכתבו {len(out)} שורות לוג")
+    return 0
 
 
 # Everything that belongs to a board, and how to count it. The point of the
