@@ -1082,10 +1082,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group.drag-chosen{box-shadow:var(--shadow);border-radius:8px}
 .group.sortable-drag .group-head .g-name{color:var(--text)!important}
 .group-head .g-count{color:var(--text-light);font-weight:400;font-size:13px}
-/* the "+" that marks a count as a floor, on a board whose rows are still
-   arriving — see groupHTML. Beside the number, not inside it, and quiet
-   enough that it reads as a qualifier rather than as part of the figure */
-.group-head .g-more{color:var(--text-light);font-weight:400;font-size:13px;margin-inline-start:1px;cursor:help}
 /* What a collapsed group says about itself. Closed, the rows and the progress
    bar are both gone, so the header is the only thing left — and a bare "12" is
    not what someone folding a group away wants to still know.
@@ -1099,7 +1095,6 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
 .group-head .g-sum{display:none;color:var(--text-light);font-weight:400;font-size:13px;
                    letter-spacing:.1px;white-space:nowrap}
 .group-head.collapsed .g-count{display:none}
-.group-head.collapsed .g-more{display:none}
 .group-head.collapsed .g-sum{display:block}
 /* the line is a second row inside the header, so the header stops being a
    single line of text and the rows under it must not be pulled up against it */
@@ -7002,13 +6997,21 @@ function importReport(b){
     </div>`:'';
   /* The files are the one part of an import with an expiry date on it: monday's
      links last about an hour. So the report says how many bytes actually crossed
-     and how many are now a name only — and what to do about it. */
+     and how many are now a name only — and what to do about it.
+     files_unreachable and files_abandoned must never share a line, however alike
+     they look from here. Unreachable means monday was asked and would not serve
+     the file; there is nothing to do. Abandoned means the import's give-up guard
+     tripped and stopped asking, so the files are still in monday and a second run
+     brings them. Importing "H3 חוזים" reported 375 as unreachable when 367 of
+     them had simply never been requested, and the links fetched fine minutes
+     later — the reader acted on the wrong one of the two. */
   const mb=n=>n>=1048576?(n/1048576).toFixed(1)+'MB':Math.max(1,Math.round(n/1024))+'KB';
   const fileAny=r.files_imported||r.files_unreachable||r.files_over_budget
+                ||r.files_abandoned
                 ||r.files_reused||r.files_linked||r.files_gone
                 ||(r.files_items_unmatched||[]).length;
   const fileHTML=fileAny?`
-    <div class="imp-sec${(r.files_unreachable||r.files_over_budget||r.files_gone)?' imp-warn':''}"><div class="imp-sec-t">
+    <div class="imp-sec${(r.files_unreachable||r.files_over_budget||r.files_abandoned||r.files_gone)?' imp-warn':''}"><div class="imp-sec-t">
       <i class="fa-solid fa-paperclip"></i> קבצים</div>
       ${r.files_imported?`<div class="imp-why">${r.files_imported} קבצים הועברו לכאן (${esc(mb(r.files_bytes||0))}) — הם נשמרו במערכת וניתן לפתוח אותם, בדיוק כמו קובץ שהועלה כאן ביד.</div>`:''}
       ${r.files_reused?`<div class="imp-why">${r.files_reused} קבצים היו כבר כאן — הלוח יוצא מהמערכת הזאת וחזר אליה, והקבצים עצמם מעולם לא עזבו. התאים מפנים לאותם קבצים; שום דבר לא הועתק פעמיים.</div>`:''}
@@ -7019,6 +7022,7 @@ function importReport(b){
         <div class="imp-cols">${(r.files_items_unmatched||[]).map(n=>`<span class="tag">${esc(n)}</span>`).join('')}</div>`:''}
       ${r.files_expired?`<div class="imp-why">${r.files_expired} קבצים נשארו כשם בלבד — <b>הקישורים בקובץ פגו</b>. מאנדיי חותם אותם לשעה אחת בלבד (הזמן כתוב בקישור עצמו, ולכן לא ניסינו להוריד אותם לחינם). כדי להביא גם את הקבצים: לייצא ולייבא ברצף, בתוך אותה שעה.</div>`:''}
       ${r.files_unreachable?`<div class="imp-why">${r.files_unreachable} קבצים לא נענו — קישור שנחסם, או קובץ שאינו זמין יותר. השם נשמר.</div>`:''}
+      ${r.files_abandoned?`<div class="imp-why"><b>הייבוא הפסיק לבקש</b> ו-${esc(r.files_abandoned)} קבצים מעולם לא נתבקשו ממאנדיי. אלה לא קבצים שנכשלו — הם עדיין שם והקישורים אליהם תקפים; הייבוא ויתר עליהם מראש, בלי לנסות. ייבוא חוזר של אותו קובץ יביא אותם.</div>`:''}
       ${r.files_over_budget?`<div class="imp-why"><b>הייבוא עצר בתקרה שלו</b> ו-${r.files_over_budget} קבצים נשארו כשם בלבד. זו לא תקלה בקבצים — הם עדיין במאנדיי, פשוט נגמר מה שייבוא אחד מביא (IMPORT_MAX_FILES קבצים, IMPORT_MAX_FILE_MB מגה־בייט). הקבצים שלא הגיעו הם אלה שבסוף הקובץ, כלומר הקבוצות התחתונות בלוח. כדי להביא את כולם: להעלות את התקרה ולייבא שוב.</div>`:''}
     </div>`:'';
   /* The formulas.
@@ -11790,7 +11794,13 @@ const Automations = {
        is a decision somebody makes for a particular rule, never the default a
        board of forty people lives with. */
     this.building={recipe:r,values:picks,meta:{name:'',description:'',notifyAll:false},
-                   conds:seeded.length?seeded:carried,acts:[]};
+                   conds:seeded.length?seeded:carried,
+                   /* a template may start with more than its own action —
+                      "צור פריט בלוח אחר והעבר את הפריט לקבוצה" opens with the
+                      move already there, blank, exactly as "+ הוסף פעולה"
+                      would have added it */
+                   acts:((r&&r.then)||[]).filter(k=>this._actSpec(k))
+                          .map(k=>({key:k,values:{}}))};
     this.tab='create'; this.render();
   },
 
@@ -16818,26 +16828,95 @@ function unfoldGroupsAfterDrag(){
 function setGroupCollapsed(gid,shut){
   if(shut)st.collapsedGroups.add(_gKey(gid)); else st.collapsedGroups.delete(_gKey(gid));
 }
+/* ===== how many items a group holds =====
+
+   The board says so itself — group_counts, one number per group, counted in
+   the database at board open through this reader's own permission filter (see
+   _board_group_counts). Past the client threshold the rows arrive a page at a
+   time, so a size counted off what is on screen climbed while somebody
+   scrolled: that is the "+" and the tooltip beside it that all of this
+   replaced, and the number anything on this screen prints now comes from here.
+
+   null means there is no such number to show, and null is the signal to fall
+   back to counting the rows that are drawn. Two cases produce it: a board from
+   a backend old enough not to send the map at all, and a board narrowed by a
+   filter, where the screen is showing a cut and the group's whole size answers
+   a question nobody asked. `whole` is for the one caller that wants it anyway
+   — the delete dialog, which is about the group and not about the cut, and the
+   one place where understating the number is actively dangerous.
+
+   The keys are strings, and the one the board files the "ללא קבוצה" bucket
+   under is "null" — so one lookup serves that bucket and a real group alike,
+   and no group at all and a group id that never arrived are the same thing to
+   it, both being an item with no group, which is what the bucket holds. The
+   key is spelled out in each of the two functions rather than shared: both get
+   pulled out of this file and run on their own by the harnesses, and a helper
+   they would have to be given with them is a trap. */
+function groupCountKnown(gid,whole){
+  const c=st.board&&st.board.group_counts;
+  if(!c||(!whole&&boardIsNarrowed()))return null;
+  const n=c[gid==null?'null':String(gid)];
+  return n==null?null:n;
+}
+/* …and what keeps that number right between one board fetch and the next.
+
+   It was counted when the board was fetched, and the board is deliberately not
+   fetched again after every change: an item created, duplicated, deleted or
+   moved between groups is applied to the rows in hand and re-rendered in
+   place, because a refetch of a board this size is the flash that the paging
+   exists to avoid. So each of those adjusts the figure it has just made wrong,
+   by one, in each direction, and the next change builds on the corrected one
+   rather than on the stale one. Whatever DOES refetch the board — the item
+   drag, the item menu's "העבר לקבוצה" — needs none of this: the board comes
+   back with every group counted again, which overwrites the arithmetic here.
+
+   A key that is not there is left alone on the way down, because there is no
+   base to subtract from and a guess is worse than falling back to the rows.
+   On the way up it is created instead: the board omits the "null" bucket while
+   it is empty, and a group made since the board was opened has no key either,
+   and in both of those "it had none, now it has one" is exactly right. */
+function bumpGroupCount(gid,delta){
+  const c=st.board&&st.board.group_counts; if(!c)return;
+  const k=(gid==null?'null':String(gid)), cur=c[k];
+  if(cur==null){ if(delta>0)c[k]=delta; return; }
+  c[k]=Math.max(0,cur+delta);
+}
 /* The line a collapsed group shows instead of its bare count: how many items
    it holds, and how many sub-items hang off them. The sub-items are counted
    even though they are a level down — folded away, the whole subtree is out of
    sight, and "8 פריטים" alone understates a group holding forty rows of work. A
    group with no sub-items says nothing about them rather than "0". */
-function groupSummaryHTML(tasks){
-  const n=tasks.length;
+function groupSummaryHTML(tasks,known){
+  /* `known` is the group's own size as the board counted it — group_counts,
+     see groupHTML. It arrives undefined on the two paths where the board's
+     number would answer the wrong question: a board narrowed by a filter,
+     where what is being shown is a cut and the rows on screen ARE the answer,
+     and a board from a backend old enough not to send the map. Both then count
+     the rows in hand, which is what this line has always done. */
+  const n=known!=null?known:tasks.length;
   const subs=tasks.reduce((a,t)=>a+((t.subtasks||[]).length),0);
   // Both halves always, including a zero: several collapsed groups stack into a
   // column, and a line that drops a number when it is 0 makes the reader check
   // which number each row is showing. The number always leads, so the lines stay
   // a column — but one is "1 פריט", not "1 פריטים".
-  /* …and on a board the server is paging, both halves are counts of the rows
-     that have ARRIVED, not of the group. Said in the line rather than left to
-     be assumed: a group reading "0 פריטים" over a board of 21,187 is the same
-     untruth as an empty board, only small enough to be believed. The suffix
-     goes at the end so the numbers still lead and the lines still stack into a
-     column. */
+  /* …with one exception, and it is the whole reason this function takes an
+     argument. The sub-item half is counted off the rows on screen and there is
+     no sub-item count in what the board sends, so while the rows are still
+     arriving it is a fragment — and a fragment standing beside an item number
+     that is the group's own is read as part of the same statement. "1033
+     פריטים / 0 תתי־פריטים" says the group has no sub-items, which
+     nobody on this screen knows. So there the line is the item count alone:
+     one number, true, and no suffix to explain it away. A board whose rows are
+     all in hand keeps both halves — both are then complete — and the board
+     with no number of its own keeps the old pair with "נטענו עד כה"
+     after it, which stays true of both of them: a group reading "0 פריטים"
+     over a board of 21,187 is the same untruth as an empty board, only small
+     enough to be believed. The suffix goes at the end so the numbers still
+     lead and the lines still stack into a column. */
   const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
-  return `<span class="g-sum">${n} ${n===1?'פריט':'פריטים'}`
+  const items=`${esc(n)} ${n===1?'פריט':'פריטים'}`;
+  if(known!=null&&part) return `<span class="g-sum">${items}</span>`;
+  return `<span class="g-sum">${items}`
        + ` / ${subs} ${subs===1?'תת־פריט':'תתי־פריטים'}`
        + (part?' · נטענו עד כה':'')+'</span>';
 }
@@ -17120,10 +17199,6 @@ function groupSlot(g){
 function groupHTML(g){
     const col=g.color||'#0073ea';
     const rows=g.tasks.map(t=>itemRow(t,col)).join('');
-    // Counted off the same tasks the group is drawing, so a filtered board says
-    // how much of itself is in this group rather than how much the group holds
-    // somewhere out of sight.
-    const sum=groupSummaryHTML(g.tasks);
     const real=g.id!==null;
     // a collapsed group must survive a re-render (sorting, editing a value,
     // refreshing the board) — otherwise it springs open and the rows below it
@@ -17138,30 +17213,33 @@ function groupHTML(g){
        — the other thing on this screen that is not an orderable group — has
        never had one. Clearing the filter gives it back. */
     const mayDrag=!boardIsNarrowed();
-    /* The chip beside the name counts the rows this group is DRAWING, which
-       past the threshold is the rows that have arrived so far and not the
-       group's own number — the board sends none of them and there is no
-       per-group count in what it does send. A bare "48" there would be read as
-       the group's size, so a "+" is set beside it and the tooltip says what it
-       is: the only honest thing this screen knows is "at least this many". A
-       separate element rather than a character inside the count, so the count
-       itself is still the plain number an open group has always shown. */
-    const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
-    const more=part
-      ? `<span class="g-more" title="זהו מספר הפריטים שנטענו עד כה בקבוצה. הלוח גדול ונטען מהשרת תוך כדי גלילה.">+</span>`
-      : '';
+    /* The chip beside the name is the group's own size as the board counted it
+       — see groupCountKnown, which also says when there is no such number and
+       the rows on screen are all there is. A group that is genuinely empty then
+       says 0, instead of being indistinguishable from a group whose rows have
+       simply not arrived; that ambiguity is what the "+" used to stand for. */
+    const gKnown=groupCountKnown(g.id);
+    const count=gKnown!=null?gKnown:g.tasks.length;
+    /* Collapsed, .g-count is hidden and this line is the only thing the header
+       still says about its size, so it is given the same number rather than
+       being left to count the rows by itself — otherwise closing a group on a
+       paged board turned 1033 into "0 פריטים", which is the complaint
+       again in the other half of the same control. g.tasks goes with it: the
+       sub-item half is still counted off the rows that are drawn, so a filtered
+       board goes on saying how much of itself is in this group. */
+    const sum=groupSummaryHTML(g.tasks,gKnown);
     const head=real
       ? `<div class="group-head${shut?' collapsed':''}" data-gid="${g.id}"><span class="gh-in">
           ${mayDrag?'<i class="fa-solid fa-grip-vertical g-drag g-handle" title="גרור לשינוי סדר הקבוצות"></i>':''}
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-nm"><span class="g-name${mayDrag?' g-handle':''}" style="color:${col}" ${mayDrag?'title="גרור לשינוי סדר"':''}>${esc(g.name)}</span>${sum}</span>
-          <span class="g-count">${g.tasks.length}</span>${more}
+          <span class="g-count">${esc(count)}</span>
           <button class="g-menu-btn" title="עריכת קבוצה" onclick="editGroup(${g.id})"><i class="fa-solid fa-ellipsis"></i></button>
         </span></div>`
       : `<div class="group-head${shut?' collapsed':''}" data-gid=""><span class="gh-in">
           <i class="fa-solid fa-caret-down caret" style="color:${col}" title="כיווץ/הרחבה"></i>
           <span class="g-nm"><span class="g-name" style="color:${col}">${esc(g.name)}</span>${sum}</span>
-          <span class="g-count">${g.tasks.length}</span>${more}
+          <span class="g-count">${esc(count)}</span>
         </span></div>`;
     /* The height this group will turn out to be, so the scrollbar is honest
        before the browser has laid it out (see .group in the CSS). A collapsed
@@ -19872,6 +19950,7 @@ const FILE_DEAD_HE={
   expired:'הקובץ לא יובא — הקישור של מאנדיי פג. הוא נחתם לשעה אחת מרגע הייצוא; ייצוא וייבוא ברצף יביאו גם את הקובץ עצמו',
   failed:'הקובץ לא יובא — הכתובת לא נענתה',
   over_budget:'הקובץ לא יובא — מעבר לתקציב הקבצים של הייבוא',
+  abandoned:'הקובץ לא יובא — הייבוא הפסיק לבקש קבצים לפני שהגיע אליו. הוא עדיין במאנדיי; ייבוא חוזר יביא אותו',
   gone:'הקובץ אינו קיים יותר במערכת — נשמר השם בלבד'};
 const fileDeadWhy=f=>FILE_DEAD_HE[f&&f.why]||'הקובץ לא יובא — נשמר השם בלבד';
 /* The attributes of a link to a file. A file is clicked to be taken, not to
@@ -20301,7 +20380,13 @@ function removeTaskLocal(id){
      are not adjusted here: the next page that arrives carries them. */
   const list=loadedRows();
   const at=list.findIndex(t=>t.id==id);
-  if(at>=0){ list.splice(at,1); return true; }
+  /* The group it was in is one item smaller, and that has to be said here: this
+     is the single place a top-level row leaves the board's local state — a
+     deletion, a bulk deletion, a move to another board — and none of them
+     fetches the board again afterwards. The header would otherwise go on
+     printing the size the group had when the board was opened. A sub-item is
+     not a row of any group, so the branch below adjusts nothing. */
+  if(at>=0){ bumpGroupCount(list[at].group_id,-1); list.splice(at,1); return true; }
   for(const t of list){ if((t.subtasks||[]).some(s=>s.id==id)){ t.subtasks=t.subtasks.filter(s=>s.id!=id); return true; } }
   return false;
 }
@@ -20323,12 +20408,32 @@ function removeRowsLocal(id){
   if(sub){ const pid=sub.dataset.parent; sub.remove(); refreshSubBadge(view,pid); return true; }
   return false;
 }
-/* keep the group's item counter + status battery in sync after a row is dropped */
+/* keep the group's item counter + status battery in sync after a row is dropped
+   out of the table — a deletion, or an item moved away to another board. The
+   row is removed in place rather than by re-rendering the board, so the header
+   above it has to be brought up to date by hand.
+
+   The counter is READ from the board's own figure, never recomputed from the
+   rows: past the client threshold g.tasks is the page that happens to have
+   arrived, and writing its length here replaced a true 1033 with a confident
+   wrong number the first time anything was deleted. The figure itself was made
+   stale by exactly one when the row left, and that is already corrected — see
+   bumpGroupCount in removeTaskLocal, which is the single place a top-level row
+   leaves the board's local state.
+
+   The collapsed line is rewritten from the same number in the same breath. It
+   is the other half of this one control — the header shows one or the other
+   depending on a class — and leaving it behind is how the two came to disagree
+   by one after a deletion. The battery stays counted off the rows: it is a
+   proportion of what can be seen, and there is no per-status count from the
+   board to put in its place. */
 function refreshGroupStats(tbody){
   const grp=tbody&&tbody.closest('.group'); if(!grp)return;
   const raw=tbody.dataset.gid, gid=raw===''?null:+raw;
   const g=groupsOf().find(x=>x.id===gid); if(!g)return;
-  const cnt=grp.querySelector('.g-count'); if(cnt)cnt.textContent=g.tasks.length;
+  const known=groupCountKnown(gid);
+  const cnt=grp.querySelector('.g-count'); if(cnt)cnt.textContent=known!=null?known:g.tasks.length;
+  const sm=grp.querySelector('.g-sum'); if(sm)sm.outerHTML=groupSummaryHTML(g.tasks,known);
   const bat=grp.querySelector('.battery'); const box=bat&&bat.parentElement;
   if(box)box.innerHTML=battery(g.tasks);
 }
@@ -23386,7 +23491,9 @@ async function bulkDuplicate(){
     // the copy is put straight into the list that is on screen, which past the
     // threshold is Paged's and not the board's — appended there, it was pushed
     // into an array nothing draws from and the copies never appeared
-    try{ const nt=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)}); loadedRows().push(nt); ok++; }catch(e){}
+    // …and its group is one item bigger. The copy goes into the list on screen
+    // and nothing refetches the board, so the header is told as well.
+    try{ const nt=await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:withMe(body)}); loadedRows().push(nt); bumpGroupCount(nt.group_id,1); ok++; }catch(e){}
   }
   // A ticked sub-item is copied under its own parent, beside the original.
   // The server takes the board and the group from the parent.
@@ -23451,9 +23558,21 @@ async function bulkMoveToGroup(e,gid){
     const r=await api('/api/boards/'+st.board.id+'/items/move',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:withMe({ids:items.map(t=>t.id),group_id:gid})});
+    const wasIn=new Map(items.map(t=>[t.id,t.group_id]));
     (r.order||[]).forEach(g=>g.ids.forEach((id,i)=>{
       const t=findAnyTask(id); if(t){ t.group_id=g.group_id; t.position=i; }
     }));
+    /* Both headers move, and neither is refetched: the order above is applied
+       to the rows in hand and the board is re-rendered from them. Only the
+       items that actually changed group are counted — the server answers with
+       every group it touched, including the items already sitting in the
+       target, and those were never anywhere else. Guarded the way addItem's
+       is: this function is exercised in isolation by
+       tests/frontend/bulk_move_group.mjs, which hands it the globals it uses
+       and would otherwise see the bookkeeping as an error and report the move
+       as having failed. */
+    if(typeof bumpGroupCount==='function')items.forEach(t=>{ const from=wasIn.get(t.id);
+      if(from!==t.group_id){ bumpGroupCount(from,-1); bumpGroupCount(t.group_id,1); } });
     clearSelection(); renderView();
     const n=(r.moved||[]).length, already=(r.unchanged||[]).length;
     toast(n===items.length ? `${n} פריטים הועברו`
@@ -25993,6 +26112,13 @@ async function openNewItem(group,atTop){
       const rows=(typeof Paged!=='undefined'&&Paged.on)?Paged.rows
                                                        :(st.board.tasks=st.board.tasks||[]);
       rows.push(t);
+      /* …and the group it landed in is one item bigger than the board said it
+         was when it was fetched — nothing refetches it here, so the header
+         would have gone on showing the old size while the new row sat under
+         it. Guarded the way the rows above are, because this function is
+         exercised in isolation by tests/frontend/new_item_visible.mjs with
+         only the globals it uses handed to it. */
+      if(typeof bumpGroupCount==='function')bumpGroupCount(gid,1);
       /* …and the group it went to the top of moved down a row, every item of
          it, which is what the server just did to them (see _place_item). The
          board is ordered by position, so leaving the siblings on the numbers
@@ -26218,22 +26344,28 @@ async function saveGroup(gid){
    cannot be deleted. The server's own reason is shown instead. */
 async function deleteGroup(gid){
   const g=(st.board.groups||[]).find(x=>x.id===gid);
-  const n=(st.board.tasks||[]).filter(t=>t.group_id===gid).length;
+  const known=groupCountKnown(gid,true);
+  const n=known!=null?known:(st.board.tasks||[]).filter(t=>t.group_id===gid).length;
   const dep=await dependentsHTML('group',gid);
   /* What the note may claim, and what it must not.
 
-     The count is taken off the rows this browser holds, and past the client
-     threshold that is a page: nothing it says about a group is the group's own
-     number, and there is no per-group count in what the board sends. "הקבוצה
-     ריקה" is then the dangerous sentence — it is the reassurance somebody
-     reads before pressing מחק, and it would be printed over a group holding
-     three thousand items whose rows have simply not arrived. So on a partly
-     loaded board the number goes and what is left is the part that is true of
-     every group whatever its size: the items move, they are not deleted. */
+     This is the number somebody reads immediately before pressing מחק, so it
+     is the one place where counting the rows this browser happens to hold was
+     actively dangerous: past the client threshold those rows are a page, and
+     "הקבוצה ריקה" would have been printed over a group holding three
+     thousand items that had simply not arrived. The board now sends
+     group_counts — the group's own size, counted in the database through the
+     same permission filter — and that is what the note says, on a paged board
+     exactly as on a small one. Asked for the WHOLE group (the second argument):
+     a filter narrows what is on screen, never what the deletion takes with it.
+
+     Only when the board came from a backend old enough not to send it does the
+     number have to go, and then what is left is the part that is true of every
+     group whatever its size: the items move, they are not deleted. */
   const part=(typeof boardRowsPartial==='function')&&boardRowsPartial();
-  const line=part ? 'הפריטים שבקבוצה יעברו ל״ללא קבוצה״ — הם לא נמחקים. הלוח גדול ונטען בהדרגה, '
-                    +'ולכן לא ניתן להציג כאן את מספרם המדויק.'
-                  : (n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`:'הקבוצה ריקה.');
+  const line=(known==null&&part) ? 'הפריטים שבקבוצה יעברו ל״ללא קבוצה״ — הם לא נמחקים. הלוח גדול ונטען בהדרגה, '
+                                   +'ולכן לא ניתן להציג כאן את מספרם המדויק.'
+                                 : (n?`${n} הפריטים שבה יעברו ל״ללא קבוצה״ — הם לא נמחקים.`:'הקבוצה ריקה.');
   askConfirm('למחוק את הקבוצה'+(g?` "${g.name}"`:'')+'?',async()=>{
     try{
       await api('/api/groups/'+gid+'?actor_id='+meId(),{method:'DELETE'});

@@ -1823,6 +1823,24 @@ RECIPES = [
                 _f("a_board", "board", "לוח היעד"),
                 _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
                 _f("a_text", "text", "שם הפריט החדש")]},
+    # The same hand-off with the step that nearly always follows it: "כאשר
+    # «סטטוס נוהל» משתנה ל«ועדת שלושה חתומה», צור פריט ב«H3 חוזים» והעבר את
+    # הפריט ל«נחתמה ועדת שלושה»". Both halves could already be built — the
+    # second only by finding "+ הוסף פעולה" after the first, which is the step
+    # people did not find, so they asked whether the rule exists at all.
+    #
+    # `then` names the actions the template STARTS with after its own, each
+    # with its blanks open. It is only where the builder starts: what is saved
+    # is the ordinary `actions` list, so a rule built from this is the same row
+    # as one built by hand from status_create_in_board, and runs the same way —
+    # every action on the item that set the rule off, so the move is of THIS
+    # item, not of the one just created on the other board.
+    {"id": "status_create_in_board_and_move", "trigger": "status_changes_to",
+     "action": "create_in_board", "library_only": True, "then": ("move_to_group",),
+     "fields": [_f("t_status", "status", "סטטוס"),
+                _f("a_board", "board", "לוח היעד"),
+                _f("a_target_group", "target_group", "הקבוצה בלוח היעד"),
+                _f("a_text", "text", "שם הפריט החדש")]},
     # The rule the hand-off is actually written as: "כאשר הסטטוס משתנה ל«מוכן
     # לבדיקות», שכפל את הפריט לקבוצה «QA»". Its priority twin is derived rather
     # than written out, like every other status pairing here.
@@ -2403,6 +2421,8 @@ EXTRA_TEMPLATES = [
      "כאשר הסטטוס משתנה, עדכן עמודת תאריך להיום"),
     ("every_days_assign_from_mirror",
      "כל כמה ימים, סנכרן עמודת אנשים בלוח מתוך עמודת מראה"),
+    ("status_create_in_board_and_move",
+     "כאשר סטטוס משתנה, צור פריט בלוח אחר והעבר את הפריט לקבוצה"),
 ]
 
 LIBRARY_TEMPLATES = MVP_TEMPLATES + EXTRA_TEMPLATES
@@ -2440,9 +2460,14 @@ def needs_of(recipe_id):
     r = recipe(recipe_id) or {}
     # …and what one template asks beyond its pair, which is how
     # status_stamp_date says "a date column" where set_column says any
+    # …and what the actions it starts with after its own need: a template
+    # that opens on "העבר את הפריט לקבוצה" is no use on a board with no group
+    then = set()
+    for k in r.get("then") or ():
+        then |= set(_ACTION_NEEDS.get(k, ()))
     return sorted(set(_TRIGGER_NEEDS.get(r.get("trigger"), ()))
                   | set(_ACTION_NEEDS.get(r.get("action"), ()))
-                  | set(r.get("needs") or ()))
+                  | set(r.get("needs") or ()) | then)
 
 
 def recipe(recipe_id):
@@ -2654,6 +2679,9 @@ def catalog():
              # a template that comes with its own conditions says so; one that
              # does not sends an empty list and reads exactly as it always did
              "conditions": recipe_conditions(r["id"]),
+             # the actions it starts with after its own, blanks open — see
+             # status_create_in_board_and_move; empty for every other recipe
+             "then": list(r.get("then") or ()),
              # and what the library needs of it: the name it is listed under,
              # what it is about, what the board must already have, and which
              # version of the template this is
