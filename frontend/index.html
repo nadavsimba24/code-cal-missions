@@ -177,6 +177,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 #modal .log-filters select{flex:0 1 220px}
 #modal .log-filters .btn{margin-inline-start:auto}
 #modal .logs-list{border:1px solid var(--border);border-radius:9px;overflow:hidden}
+/* "טען עוד" under a paged log: centred, and a full-width target on a phone */
+#modal .lg-more-wrap{display:flex;justify-content:center;padding:10px 0 2px}
+@media (max-width:600px){#modal .lg-more-wrap .lg-more{inline-size:100%;justify-content:center}}
 .bh-log{width:30px;height:30px;border-radius:7px;border:1px solid transparent;background:none;color:var(--text-muted);cursor:pointer;display:inline-grid;place-items:center;font-size:14px;vertical-align:middle;margin-inline-start:6px}
 .bh-log:hover{background:var(--row-hover);border-color:var(--border);color:var(--primary)}
 /* The automations mark is drawn here rather than taken from Font Awesome.
@@ -5206,8 +5209,20 @@ const BoardLog = {
       ${never?`<div class="sn-h sn-h-never">לא פתחו את הלוח · ${(d.never||[]).length}</div>${never}`:''}
     </div>`;
   },
+  /* The filters as a query string, shared by the first page and every "load
+     more" after it — a next page fetched without them would splice another
+     person's or another day's lines onto a filtered list. */
+  filterQs(){
+    const qs=[]; if(this.user)qs.push('user_id='+encodeURIComponent(this.user));
+    if(this.date)qs.push('date='+encodeURIComponent(this.date));
+    return qs;
+  },
   async renderActivity(){
-    const qs=[]; if(this.user)qs.push('user_id='+this.user); if(this.date)qs.push('date='+this.date);
+    const qs=this.filterQs();
+    // A render (a new filter, a reopen) starts a new list; a "load more" still
+    // in flight for the old one must not append to it when it lands.
+    const gen=this._gen=(this._gen||0)+1;
+    this._cursor=null;
     showModal(`<h2><i class="fa-solid fa-bolt" style="color:var(--primary)"></i> לוג פעילות — ${esc(st.board.name)}</h2>
       <div class="mbody"><div class="spin"></div></div>`);
     document.getElementById('modal').classList.add('modal-80');
@@ -5218,8 +5233,53 @@ const BoardLog = {
     // plus anyone already in its history. Listing every user in the workspace
     // filled the menu with names that could only ever return an empty list.
     const people=d.people||[];
+    if(gen!==this._gen)return;
+    this._cursor=d.has_more?d.next_cursor:null;
+    const rows=(d.activity||[]).map(a=>this.lineHTML(a)).join('')
+      ||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות בלוח</div></div>';
+    const body=document.querySelector('#modal .mbody'); if(!body)return;
+    body.innerHTML=this.tabsHTML()+`<div class="log-filters">
+        <select onchange="BoardLog.user=this.value;BoardLog.render()"><option value="">כל חברי הלוח</option>${people.map(u=>`<option value="${esc(u.id)}" ${this.user==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
+        <input type="date" value="${esc(this.date)}" onchange="BoardLog.date=this.value;BoardLog.render()">
+        ${this.user||this.date?`<button class="btn btn-ghost" onclick="BoardLog.user='';BoardLog.date='';BoardLog.render()">נקה סינון</button>`:''}
+        <button class="btn btn-ghost" onclick="BoardLog.exportCsv()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא</button>
+      </div><div class="logs-list">${rows}</div>${this.moreHTML()}`;
+  },
+  /* The log is paged: the server sends the newest lines and a cursor for the
+     rest. Before it did, only the newest 400 lines could ever be shown, and on
+     a busy board the history simply ended two days back. */
+  moreHTML(){
+    return this._cursor
+      ? `<div class="lg-more-wrap"><button type="button" class="btn btn-ghost lg-more" onclick="BoardLog.loadMore(this)">
+           <i class="fa-solid fa-angles-down"></i> טען עוד</button></div>`
+      : '';
+  },
+  async loadMore(btn){
+    if(!this._cursor||!st.board)return;
+    const gen=this._gen;
+    const qs=this.filterQs(); qs.push('cursor='+encodeURIComponent(this._cursor));
+    if(btn){ btn.disabled=true; btn.setAttribute('aria-busy','true'); }
+    let d;
+    try{ d=await api('/api/boards/'+st.board.id+'/activity?'+qs.join('&')); }
+    catch(e){
+      toast(e.detail||'טעינת הלוג נכשלה');
+      if(btn&&gen===this._gen){ btn.disabled=false; btn.removeAttribute('aria-busy'); }
+      return;
+    }
+    if(gen!==this._gen)return;            // the filters changed while this was loading
+    this._cursor=d.has_more?d.next_cursor:null;
+    const list=document.querySelector('#modal .logs-list'); if(!list)return;
+    list.insertAdjacentHTML('beforeend',(d.activity||[]).map(a=>this.lineHTML(a)).join(''));
+    const wrap=document.querySelector('#modal .lg-more-wrap');
+    if(wrap)wrap.outerHTML=this.moreHTML();
+    // The pressed button was just replaced; without this a keyboard user's
+    // focus falls back to <body> and the next Tab starts over at the top.
+    const next=document.querySelector('#modal .lg-more');
+    if(next)next.focus();
+  },
+  lineHTML(a){
     const isMgr=st.me&&(st.me.role==='admin'||st.me.role==='manager');
-    const rows=(d.activity||[]).map(a=>`<div class="lg-row">
+    return `<div class="lg-row">
         <span class="lg-when" title="${esc(fdatetime(a.created_at))}"><i class="fa-regular fa-clock"></i> ${esc(this.ago(a.created_at))}</span>
         <span class="av lg-av" title="${esc(a.user_name||'')}">${avatarInner(a)}</span>
         ${a.task_id&&!a.task_deleted
@@ -5245,15 +5305,7 @@ const BoardLog = {
             ? `<button class="lg-undo" onclick="BoardLog.undo(${a.id})">בטל</button>`
             : `<span class="lg-undo-gap"></span>`}
         </span>
-      </div>`).join('')
-      ||'<div class="empty" style="padding:44px"><i class="fa-solid fa-clock-rotate-left"></i><div>אין פעילות בלוח</div></div>';
-    const body=document.querySelector('#modal .mbody'); if(!body)return;
-    body.innerHTML=this.tabsHTML()+`<div class="log-filters">
-        <select onchange="BoardLog.user=this.value;BoardLog.render()"><option value="">כל חברי הלוח</option>${people.map(u=>`<option value="${u.id}" ${this.user==u.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
-        <input type="date" value="${this.date}" onchange="BoardLog.date=this.value;BoardLog.render()">
-        ${this.user||this.date?`<button class="btn btn-ghost" onclick="BoardLog.user='';BoardLog.date='';BoardLog.render()">נקה סינון</button>`:''}
-        <button class="btn btn-ghost" onclick="BoardLog.exportCsv()"><i class="fa-solid fa-file-excel" style="color:var(--green)"></i> ייצוא</button>
-      </div><div class="logs-list">${rows}</div>`;
+      </div>`;
   },
   /* "54m" / "3h" / "5 ימים" — how long ago, which is what you scan a log for.
      The exact timestamp stays in the tooltip for when it matters. */

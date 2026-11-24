@@ -32053,7 +32053,53 @@ def _board_task_ids(db, board_id):
 
 
 def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewer=None):
-    """Every audited change on the board, newest first.
+    """The newest `limit` visible lines of the board log — one page, no cursor.
+
+    Kept for the callers that want a plain list; the log itself pages through
+    _board_activity_page.
+    """
+    return _board_activity_page(db, board_id, user_id, date, limit, viewer)[0]
+
+
+def _log_day_bounds(date):
+    """[start, end) of a YYYY-MM-DD day, for a range filter in SQL.
+
+    The day used to be matched in Python, as str(created_at)[:10], AFTER the
+    query had already been cut to the newest few hundred rows — so picking any
+    day older than the last two or so returned an empty log while the rows sat
+    right there in the table. A range on the column works on SQLite and
+    Postgres alike and lets the index do the narrowing. Raises ValueError on a
+    malformed day; the route turns that into a 400.
+    """
+    start = datetime.strptime(date, "%Y-%m-%d")
+    return start, start + timedelta(days=1)
+
+
+def _log_cursor(row):
+    """The keyset position just after `row`: "<created_at iso>~<id>".
+
+    Both halves, because created_at alone ties — a bulk edit writes many rows
+    in the same instant, and paging on the timestamp alone would either skip
+    or repeat the rest of them. An id alone is not the order either: imported
+    monday history is inserted now with timestamps from a year ago.
+    """
+    return "%s~%d" % (row.created_at.isoformat() if row.created_at else "null", row.id)
+
+
+def _parse_log_cursor(cursor):
+    """(created_at or None, id) from _log_cursor's string; ValueError if bad."""
+    when, _, rid = (cursor or "").rpartition("~")
+    if not when:
+        raise ValueError("bad cursor")
+    return (None if when == "null" else datetime.fromisoformat(when)), int(rid)
+
+
+def _board_activity_page(db, board_id, user_id=None, date=None, limit=400, viewer=None,
+                         cursor=None):
+    """Every audited change on the board, newest first — one page of it.
+
+    Returns (rows, next_cursor). next_cursor is None when the log has nothing
+    older to give; otherwise it is the position to pass back as `cursor`.
 
     Same records the item log reads — AuditLog rows for tasks — only gathered
     across the whole board instead of one item. Each row carries the item it
@@ -32079,6 +32125,9 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
     q = db.query(AuditLog).filter(or_(*scopes))
     if user_id:
         q = q.filter(AuditLog.changed_by == user_id)
+    if date:
+        _d0, _d1 = _log_day_bounds(date)
+        q = q.filter(AuditLog.created_at >= _d0, AuditLog.created_at < _d1)
     _b = db.query(Board).filter(Board.id == board_id).first()
     board_name = (_b.name if _b else None) or "הלוח"
     titles = ({i: t for (i, t) in db.query(Task.id, Task.title)
@@ -32102,49 +32151,81 @@ def _board_activity_rows(db, board_id, user_id=None, date=None, limit=400, viewe
     # after a restore, or once it has aged off the end of the bin, the offer
     # goes away rather than failing when pressed.
     _restorable = {e.get("log_id") for e in _column_bin(_b) if e.get("log_id")}
-    out = []
-    for l in q.order_by(AuditLog.created_at.desc()).limit(max(1, min(2000, limit * 3))).all():
-        if l.field_name in _INTERNAL_LOG_FIELDS:
-            continue
-        if date and (not l.created_at or str(l.created_at)[:10] != date):
-            continue
-        vals = _log_link_row(db, l.field_name, l.old_value, l.new_value, cols, viewer)
-        if vals is None:
-            continue                          # the change was invisible to this viewer
-        og = l.origin if isinstance(l.origin, dict) else None
-        # A board row has no item behind it. task_id None is what tells the
-        # page not to draw the "open the item" button — an id that opens
-        # nothing is worse than no button, and l.entity_id here is a BOARD id
-        # that would happily collide with some unrelated item's.
-        on_board = (l.entity_type == "board")
-        _dead = (not on_board) and l.entity_id in _in_bin
-        out.append({"id": l.id, "action": l.action, "field": l.field_name,
-                    "old": vals[0], "new": vals[1],
-                    "can_restore_column": l.id in _restorable,
-                    # the item is in the bin — nothing to open, and this is
-                    # the line that can bring it back
-                    "task_deleted": _dead,
-                    "can_restore_item": (_dead and _may_restore
-                                         and l.action == "delete"
-                                         and l.field_name == "item"),
-                    "task_id": None if on_board else l.entity_id,
-                    "task_title": board_name if on_board else titles.get(l.entity_id, "—"),
-                    "user_id": l.changed_by,
-                    # an imported row's author may have no account here; the name
-                    # it came with is better than "מערכת"
-                    "user_name": (users.get(l.changed_by)
-                                  or (og or {}).get("author") or "מערכת"),
-                    # Nothing imported offers an undo. The change happened in
-                    # monday, possibly a year ago, and reverting it would write
-                    # that value onto the item now — from a button that looks
-                    # exactly like every other undo on the page.
-                    "origin": (og or {}).get("source") or "",
-                    "can_undo": (not on_board and l.action == "update"
-                                 and (og or {}).get("source") in (None, "", "automation")),
-                    "created_at": l.created_at})
-        if len(out) >= limit:
-            break
-    return out
+    limit = max(1, limit)
+    # Ordered on (created_at, id) so the order is total and a cursor names a
+    # position in it exactly. NULL timestamps go last on both engines: SQLite
+    # and Postgres disagree on where DESC puts them by default, and a cursor
+    # that does not know which side they are on loses them.
+    q = q.order_by(AuditLog.created_at.desc().nullslast(), AuditLog.id.desc())
+    if cursor:
+        c_at, c_id = _parse_log_cursor(cursor)
+        if c_at is None:
+            q = q.filter(AuditLog.created_at == None, AuditLog.id < c_id)   # noqa: E711
+        else:
+            q = q.filter(or_(AuditLog.created_at < c_at,
+                             and_(AuditLog.created_at == c_at, AuditLog.id < c_id),
+                             AuditLog.created_at == None))                  # noqa: E711
+    # Rows are scanned in batches until the page is full, because some are
+    # dropped below (internal fields, links this reader may not see). A single
+    # fetch of limit*3 used to leave the page short and stop there for good,
+    # which is how a busy board's log ended two days back. The work is still
+    # bounded: past max_scan the page goes out as it is, with a cursor at the
+    # last row looked at, and the next request carries on from there.
+    batch = max(200, limit * 2)
+    max_scan = max(5000, limit * 5)
+    out, scanned, last, more = [], 0, None, False
+    while not more:
+        chunk = q.offset(scanned).limit(batch).all()
+        scanned += len(chunk)
+        for l in chunk:
+            vals = (None if l.field_name in _INTERNAL_LOG_FIELDS else
+                    _log_link_row(db, l.field_name, l.old_value, l.new_value, cols, viewer))
+            if vals is None:
+                # invisible to this viewer; consumed only while the page is
+                # still filling, so the cursor never jumps past a row unread
+                if len(out) < limit:
+                    last = l
+                continue
+            if len(out) >= limit:
+                more = True                   # a visible row beyond the page
+                break
+            last = l
+            og = l.origin if isinstance(l.origin, dict) else None
+            # A board row has no item behind it. task_id None is what tells the
+            # page not to draw the "open the item" button — an id that opens
+            # nothing is worse than no button, and l.entity_id here is a BOARD id
+            # that would happily collide with some unrelated item's.
+            on_board = (l.entity_type == "board")
+            _dead = (not on_board) and l.entity_id in _in_bin
+            out.append({"id": l.id, "action": l.action, "field": l.field_name,
+                        "old": vals[0], "new": vals[1],
+                        "can_restore_column": l.id in _restorable,
+                        # the item is in the bin — nothing to open, and this is
+                        # the line that can bring it back
+                        "task_deleted": _dead,
+                        "can_restore_item": (_dead and _may_restore
+                                             and l.action == "delete"
+                                             and l.field_name == "item"),
+                        "task_id": None if on_board else l.entity_id,
+                        "task_title": board_name if on_board else titles.get(l.entity_id, "—"),
+                        "user_id": l.changed_by,
+                        # an imported row's author may have no account here; the name
+                        # it came with is better than "מערכת"
+                        "user_name": (users.get(l.changed_by)
+                                      or (og or {}).get("author") or "מערכת"),
+                        # Nothing imported offers an undo. The change happened in
+                        # monday, possibly a year ago, and reverting it would write
+                        # that value onto the item now — from a button that looks
+                        # exactly like every other undo on the page.
+                        "origin": (og or {}).get("source") or "",
+                        "can_undo": (not on_board and l.action == "update"
+                                     and (og or {}).get("source") in (None, "", "automation")),
+                        "created_at": l.created_at})
+        if len(chunk) < batch:
+            break                             # the table has nothing older
+        if not more and scanned >= max_scan:
+            more = True                       # unscanned rows remain; resume after `last`
+    return out, (_log_cursor(last) if more and last is not None else None)
 
 
 def _board_log_people(db, board_id):
@@ -32179,7 +32260,13 @@ def _board_log_people(db, board_id):
 @app.get("/api/boards/{board_id}/activity")
 def board_activity(board_id: int, actor_id: int = Depends(current_user_id),
                    user_id: Optional[int] = None, date: Optional[str] = None,
-                   limit: int = 400):
+                   limit: int = 400, cursor: Optional[str] = None):
+    """One page of the board log, newest first.
+
+    `cursor` is the `next_cursor` of the previous page. Without paging only the
+    newest 400 lines were ever reachable, and on a busy board that was the last
+    two days of a history that went back months.
+    """
     with Session(engine) as db:
         b = db.query(Board).filter(Board.id == board_id).first()
         if not b or b.deleted_at:
@@ -32187,11 +32274,18 @@ def board_activity(board_id: int, actor_id: int = Depends(current_user_id),
         # seeing the log means seeing the board — the same gate the board itself uses
         if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
-        return {"activity": _board_activity_rows(db, board_id, user_id, date, limit,
-                                                 viewer=actor_id),
+        try:
+            rows, nxt = _board_activity_page(db, board_id, user_id, date,
+                                             max(1, min(limit, 1000)),
+                                             viewer=actor_id, cursor=cursor)
+        except ValueError:
+            raise HTTPException(400, "תאריך או מיקום בלוג אינם תקינים")
+        return {"activity": rows,
                 # sent alongside so the filter's options never depend on what the
                 # current filter happens to have returned
-                "people": _board_log_people(db, board_id)}
+                "people": _board_log_people(db, board_id),
+                "has_more": nxt is not None,
+                "next_cursor": nxt}
 
 
 @app.post("/api/boards/{board_id}/seen")
@@ -32276,7 +32370,11 @@ def export_board_activity(board_id: int, actor_id: int = Depends(current_user_id
             raise HTTPException(404, "board not found")
         if _board_role(db, board_id, actor_id) is None:
             raise HTTPException(403, "אין לך גישה ללוח זה")
-        rows = _board_activity_rows(db, board_id, user_id, date, limit=5000, viewer=actor_id)
+        try:
+            rows = _board_activity_rows(db, board_id, user_id, date, limit=5000,
+                                        viewer=actor_id)
+        except ValueError:
+            raise HTTPException(400, "תאריך אינו תקין")
         buf = io.StringIO()
         buf.write("\ufeff")  # BOM so Excel reads Hebrew UTF-8
         w = _csv_writer(buf)

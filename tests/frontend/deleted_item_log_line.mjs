@@ -22,8 +22,10 @@ const src = fs.readFileSync(path.join(ROOT, 'frontend', 'index.html'), 'utf8');
 let pass = 0, fail = 0;
 const ck = (n, c, x = '') => { c ? (pass++, console.log('  OK   ' + n)) : (fail++, console.log('  FAIL ' + n + (x ? '  → ' + x : ''))); };
 
-const tpl = src.slice(src.indexOf('const rows=(d.activity||[]).map(a=>'),
-                      src.indexOf('const rows=(d.activity||[]).map(a=>') + 2200);
+/* One log line is drawn by BoardLog.lineHTML — shared by the first page and
+   every "טען עוד" page after it, so both draw a deleted item the same way. */
+const tpl = src.slice(src.indexOf('  lineHTML(a){'),
+                      src.indexOf('  lineHTML(a){') + 2200);
 
 // ── the name ──────────────────────────────────────────────────────────────
 ck('a live item is still a button that opens it',
