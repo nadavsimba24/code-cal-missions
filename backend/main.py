@@ -15015,9 +15015,13 @@ def list_board_members(board_id: int, user_id: int = Depends(current_user_id)):
         can_manage = _is_board_admin(db, board_id, user_id)
         ms = db.query(BoardMember).filter(BoardMember.board_id == board_id).all()
         member_ids = {m.user_id for m in ms}
+        # One read of the people involved, not one per member — and the same
+        # map serves the invitation list below, which used to fetch every user
+        # in the system and then ask about each of them on its own.
+        users = {u.id: u for u in db.query(User).all()}
         out = []
         for m in ms:
-            u = db.query(User).filter(User.id == m.user_id).first()
+            u = users.get(m.user_id)
             out.append({"user_id": m.user_id, "name": u.name if u else "—",
                         "email": u.email if u else "", "role": m.role,
                         # a member who was deactivated stays listed: somebody
@@ -15040,11 +15044,53 @@ def list_board_members(board_id: int, user_id: int = Depends(current_user_id)):
         # everyone else this is a directory of colleagues they did not ask
         # for and cannot act on, and the dialog draws no invitation at all,
         # so it is left empty rather than sent and ignored.
-        available = ([{"id": u.id, "name": u.name} for u in db.query(User).all()
-                      if u.id not in member_ids and u.is_active is not False
-                      and not _outside_board_env(db, board, u.id)]
-                     if can_manage else [])
+        available = []
+        if can_manage:
+            cands = [u for u in users.values()
+                     if u.id not in member_ids and u.is_active is not False]
+            ok = _env_invitable_ids(db, getattr(board, "environment_id", None),
+                                    cands)
+            available = [{"id": u.id, "name": u.name} for u in cands if u.id in ok]
         return {"members": out, "available": available, "can_manage": can_manage}
+
+
+def _env_invitable_ids(db, env_id, users):
+    """Which of these users _outside_board_env would let onto a board in env_id.
+
+    The same answer, worked out for everyone at once. Asking _outside_board_env
+    person by person cost five or six queries each — _env_role, which asks
+    _can_admin_envs, which asks _cap, which asks _ws_role — so on production's
+    241 accounts the "משתתפים" button ran some 1,400 queries against a remote
+    database before the dialog could open, and stood there for seconds.
+
+    Kept beside the per-person rule and built from the same parts, in the same
+    order: no environment means nothing to scope by; a system admin
+    (User.role, then the workspace row, then the manage_system capability for
+    their role) belongs to every environment; anyone else needs a membership
+    row. The invitation itself still goes through _outside_board_env, so if the
+    two ever drifted apart the picker could only offer too little or be
+    refused — never let somebody in.
+    """
+    if not env_id:
+        return {u.id for u in users}
+    ids = [u.id for u in users]
+    if not ids:
+        return set()
+    in_env = {r[0] for r in db.query(EnvironmentMember.user_id)
+              .filter(EnvironmentMember.environment_id == env_id,
+                      EnvironmentMember.user_id.in_(ids)).all()}
+    ws = {}
+    for wm in db.query(WorkspaceMember).filter(WorkspaceMember.user_id.in_(ids)).all():
+        ws.setdefault(wm.user_id, wm.role)          # _ws_role reads the first row
+    sys_roles = {r[0] for r in db.query(RolePermission.role)
+                 .filter(RolePermission.capability == "manage_system",
+                         RolePermission.allowed.is_(True)).all()}
+    ok = set()
+    for u in users:
+        if (u.id in in_env or u.role == "admin" or ws.get(u.id) == "admin"
+                or (u.role or "guest") in sys_roles):
+            ok.add(u.id)
+    return ok
 
 @app.post("/api/boards/{board_id}/members")
 def add_board_member(board_id: int, data: dict, request: Request = None,

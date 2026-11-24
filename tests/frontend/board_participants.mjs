@@ -256,5 +256,47 @@ MT.toggleInvite();
 ck('unfolding the invitation puts the caret in the search line, not the picker',
    d2.els['mem-user-q'].focused===true);
 
+/* ── the dialog opens on the click, not when the answer lands ─────────────
+   It used to wait for /members before drawing anything, and on production
+   that request took seconds — the button looked dead. Now the frame (and a
+   spinner) is up at once; the list fills in when the answer arrives. And an
+   answer that arrives after the dialog was closed draws nothing: it must not
+   reopen a dialog she has already left. */
+{
+  const shows=[]; let release;
+  const pending=new Promise(r=>{ release=r; });
+  const modal={open:true, classList:{contains:c=>c==='open'&&modal.open}};
+  const doc={getElementById:id=>id==='modal'?modal
+             :id==='mem-loading'?(shows.length===1?{}:null):null};
+  const MW=new Function('st','esc','api','showModal','meId','avatarInner','BROLE_HE','BROLE_WHAT',
+                        'document','renderBoardHead',
+    grabObj('Members')+'; return Members;')(
+    st, esc, ()=>pending, h=>{shows.push(h);}, ()=>2, m=>esc(m.name),
+    {admin:'ניהול',editor:'עריכה',viewer:'צפייה בלבד'}, {}, doc, ()=>{});
+  const done=MW.open();
+  ck('the dialog is on screen before the members have arrived',
+     shows.length===1 && /aria-busy="true"/.test(shows[0]) && shows[0].includes('חברים והרשאות'),
+     shows.join(' | ').slice(0,200));
+  release({members:MEMBERS, available:[], can_manage:false});
+  await done;
+  ck('...and the answer fills it in', shows.length===2 && MEMBERS.every(m=>shows[1].includes(m.name)));
+
+  // closed before the answer came back
+  shows.length=0; let release2;
+  const pending2=new Promise(r=>{ release2=r; });
+  const MC=new Function('st','esc','api','showModal','meId','avatarInner','BROLE_HE','BROLE_WHAT',
+                        'document','renderBoardHead',
+    grabObj('Members')+'; return Members;')(
+    st, esc, ()=>pending2, h=>{shows.push(h);}, ()=>2, m=>esc(m.name),
+    {admin:'ניהול',editor:'עריכה',viewer:'צפייה בלבד'}, {}, doc, ()=>{});
+  modal.open=true;
+  const done2=MC.open();
+  modal.open=false;                         // she closed it while it was loading
+  release2({members:MEMBERS, available:[], can_manage:false});
+  await done2;
+  ck('an answer that lands after the dialog was closed does not reopen it', shows.length===1,
+     shows.length+' dialogs drawn');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

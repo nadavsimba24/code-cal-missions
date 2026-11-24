@@ -15441,12 +15441,31 @@ const ColPerms = {
 const Members = {
   async open(){
     if(!st.board)return;
+    /* The dialog opens on the click, and fills when the answer lands. It used
+       to wait for the answer before showing anything, so the button looked
+       dead for as long as the request took — seconds on production, where it
+       was asking about all 241 accounts one at a time (see
+       _env_invitable_ids on the server). The marker is how a late answer
+       knows the dialog is still the one it was asked for: closed, or replaced
+       by another dialog, or the board changed under it — then it draws
+       nothing rather than reopening something she has moved on from. */
+    const bid=st.board.id, seq=(this._seq=(this._seq||0)+1);
+    showModal(`<h2><i class="fa-solid fa-user-group" style="color:var(--primary)"></i> חברים והרשאות — ${esc(st.board.name)}</h2>
+      <div class="mbody" id="mem-loading" aria-busy="true"><div class="spin"></div></div>`);
+    // #modal is always in the page; only a harness running this on its own
+    // has none, and there the sequence and the board are the whole question
+    const stillMine=()=>{
+      if(seq!==this._seq || !st.board || st.board.id!==bid) return false;
+      const m=document.getElementById('modal');
+      return !m || (m.classList.contains('open') && !!document.getElementById('mem-loading'));
+    };
     /* `null` when the request failed, and not the empty default: an empty
        member list is never a true answer about a board you are looking at —
        you are on it — so it can only mean the fetch did not land, and
        syncing it would take every person off every picker on the board
        because one request timed out. See _syncBoardPeople. */
-    let d=null; try{ d=await api('/api/boards/'+st.board.id+'/members'); }catch(e){}
+    let d=null; try{ d=await api('/api/boards/'+bid+'/members'); }catch(e){}
+    if(!stillMine())return;
     // the dialog still has to open and say so, so it falls back to the empty
     // shape its own markup reads — what it must NOT do is write that through
     this.data=d||{members:[],available:[],can_manage:false};
