@@ -213,6 +213,10 @@ def _sqrt(n):
     return math.sqrt(x) if x >= 0 else None
 
 
+def _subtract(a, b):
+    return _fnum(a) - _fnum(b)
+
+
 def _format_date(d):
     x = _fdate(d)
     return f"{_pad(x.day)}/{_pad(x.month)}/{x.year}" if x else None
@@ -235,7 +239,11 @@ FUNCS = {
     "MIN": lambda *a: _minmax(a, min),
     "MAX": lambda *a: _minmax(a, max),
     "ADD": lambda a, b: _fnum(a) + _fnum(b),
-    "SUBTRACT": lambda a, b: _fnum(a) - _fnum(b),
+    "SUBTRACT": _subtract,
+    # monday calls the same thing MINUS, and a board that was written there
+    # arrives using it. The same implementation under both names: two of them
+    # would be two places for the next change to the first one to miss.
+    "MINUS": _subtract,
     "MULTIPLY": lambda a, b: _fnum(a) * _fnum(b),
     "DIVIDE": _div,
     # ── logic ──

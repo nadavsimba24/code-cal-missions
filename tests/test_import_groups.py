@@ -356,16 +356,33 @@ def test_a_pretty_printed_export_is_not_rejected_for_its_indentation(client, adm
         assert d["name"] == "לוח" and d["report"]["groups"] == 2
 
 
-def test_a_file_past_the_ceiling_is_told_its_size_and_the_reason(client, admin_id):
+def test_a_file_past_the_ceiling_is_told_its_size_and_the_reason(client, admin_id,
+                                                                 monkeypatch):
+    """Too big says how big, and says the thing the user can act on.
+
+    "The file is too large" over a board the user believes is small is not
+    something anybody can do anything with, so the message carries the file's
+    real size, the ceiling, and the reason a monday export is usually bigger
+    than it looks: saved from Postman's pretty view it is about three times the
+    JSON it holds, all of it indentation.
+
+    The ceiling is lowered for the test rather than fed. It is 128MB now, and a
+    test that builds and posts 128MB of spaces to prove what a number in a
+    comparison does spends a second of every run and a tenth of a gigabyte of
+    memory on it; the route reads the constant when the request arrives, so one
+    megabyte proves exactly the same branch.
+    """
+    monkeypatch.setattr(cityos_main, "IMPORT_MAX_UPLOAD_MB", 1)
     big = b'{"data":{"boards":[{"name":"x","items_page":{"items":[]}}]}}' + b" " * (
-        cityos_main.IMPORT_MAX_UPLOAD_MB * 1024 * 1024)
+        3 * 1024 * 1024 // 2)
     r = client.post(f"/api/boards/import?actor_id={admin_id}",
                     files={"file": ("board.json", big, "application/json")},
                     data={"actor_id": admin_id})
     assert r.status_code == 413
     detail = r.json()["detail"]
-    assert str(cityos_main.IMPORT_MAX_UPLOAD_MB) in detail, "the ceiling is named"
-    assert "MB" in detail and "פוסטמן" in detail, "and the usual reason, which is actionable"
+    assert f"{len(big) / 1048576:.1f}MB" in detail, "the file's own size is not in the message"
+    assert f"{cityos_main.IMPORT_MAX_UPLOAD_MB}MB" in detail, "the ceiling is named"
+    assert "פוסטמן" in detail, "and the usual reason, which is actionable"
 
 
 def test_the_report_says_where_the_name_came_from():

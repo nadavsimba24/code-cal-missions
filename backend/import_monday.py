@@ -466,7 +466,15 @@ LOG_OWNER_EVENTS = {"add_owner", "remove_owner"}
 # Rows are taken in file order, and a merged export is written newest-first, so
 # the ones that survive a lowered ceiling are the most recent — the half of the
 # history anyone actually opens.
-MAX_LOG_ENTRIES = int(os.getenv("IMPORT_MAX_LOG_ENTRIES", "20000"))
+#
+# The default moves now because 20,000 stopped being "most of the history" for
+# ordinary boards rather than for the one enormous one: "H4 הגדלות ושינויים"
+# (2002628922) exported 64,002 log rows and "H3 חוזים" (2284261939) 55,307,
+# so both would have arrived with about half their history and a report that
+# reads as a count rather than as a warning. 200,000 is above the largest board
+# measured here (147,254), which is the point: a ceiling on taste should be
+# reached by a decision, not by a board of ordinary size.
+MAX_LOG_ENTRIES = int(os.getenv("IMPORT_MAX_LOG_ENTRIES", "200000"))
 
 
 def _log_when(raw):
@@ -943,7 +951,12 @@ _FORMULA_STRING = re.compile(r"'[^']*'|\"[^\"]*\"")
 FORMULA_FUNCS = (
     # numbers
     "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "SQRT", "POWER", "SUM", "AVERAGE",
-    "MIN", "MAX", "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE",
+    # MINUS is monday's name for SUBTRACT and nothing else — "H3 חוזים" writes
+    # its יתרה לניצול as MINUS({...},{...}) — so it is the same function under
+    # the other name, not a second one. Without it the report named the
+    # function as the reason a formula could not be computed, over a formula
+    # this engine computes.
+    "MIN", "MAX", "ADD", "SUBTRACT", "MINUS", "MULTIPLY", "DIVIDE",
     # logic
     "IF", "AND", "OR", "NOT", "TRUE", "FALSE",
     # text

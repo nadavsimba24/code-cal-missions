@@ -8,6 +8,20 @@ it.
 
 Nothing here touches the network — the fetcher is replaced, because a test that
 depends on someone's expiring S3 link is a test that fails next week.
+
+Three tests were retired from this file when the attachment fetch moved to a
+pooled urllib3 client. They stood in for the network one level lower, by
+replacing the opener's own `open` (`_IMPORT_OPENER`) or by calling the redirect
+handler (`_NoRedirects`) directly — objects the fetch no longer has, and a test
+written against the client's insides breaks again on the next change of client
+while proving nothing about what the fetch actually does with the answer. What
+they pinned — a body over the per-file ceiling, a redirect that must not be
+followed, and monday's login page served as a 200 — is pinned in
+tests/test_import_attachment_fetching.py instead, against a real HTTP server on
+a real socket and without knowing which client library answers it. Please do
+not reintroduce a stub opener here: replacing `_fetch_import_file`, as the rest
+of this file does, is the right level for testing what the import does with the
+bytes, and that other file is the right level for testing how they are got.
 """
 import json
 
@@ -47,6 +61,32 @@ def _serve(monkeypatch, payloads):
     def fake(url):
         calls.append(url)
         return payloads.get(url)
+    monkeypatch.setattr(cityos_main, "_fetch_import_file", fake)
+    return calls
+
+
+def _serve_with_reasons(monkeypatch, answer, why):
+    """The same stand-in, saying WHY a fetch came back empty.
+
+    The real fetch leaves its verdict on `_IMPORT_FETCH`, a thread-local, and
+    the run-of-failures guard reads it there: "dead" is a 401/403/404/410 or
+    monday's sign-in page, and "transient" is a timeout, a reset, a 5xx or a
+    file over the ceiling. A stand-in that says nothing counts as dead, which is
+    deliberate — see the guard — so a test about a TIMEOUT has to say so, and
+    this is the documented seam for saying it. Nothing else about the fetch is
+    imitated: it still answers bytes-or-None and still never raises.
+    """
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        cityos_main._IMPORT_FETCH.why = why
+        got = answer(url)
+        if got:
+            # A fetch that succeeded leaves the transient verdict it started
+            # with; only the return value says it worked.
+            cityos_main._IMPORT_FETCH.why = "transient"
+        return got
     monkeypatch.setattr(cityos_main, "_fetch_import_file", fake)
     return calls
 
@@ -126,31 +166,10 @@ def test_the_import_stops_fetching_at_its_budget_and_says_so(client, admin_id, m
     assert r["files_unreachable"] == 0, "the ceiling was reported as a failure to fetch"
 
 
-def test_a_file_over_the_per_file_ceiling_is_not_stored(client, admin_id, monkeypatch):
-    """The real fetcher stops reading past the import's own per-file ceiling.
-
-    Its own, and not the UI's: a migration carries files somebody else's system
-    already holds, and the ceiling on what a person may upload here has nothing
-    to say about those. It is still a ceiling — the read stops rather than
-    following a link of unbounded length.
-    """
-    monkeypatch.setattr(cityos_main, "IMPORT_MAX_ONE_FILE_MB", 1)
-    big = b"x" * (1 * 1024 * 1024 + 1)
-
-    class FakeResp:
-        headers = {"Content-Type": "application/zip"}
-
-        def read(self, n=None):
-            return big[:n] if n else big
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(cityos_main._IMPORT_OPENER, "open", lambda *a, **k: FakeResp())
-    assert cityos_main._fetch_import_file(f"{MONDAY_HOST}/huge.zip") is None
+# The per-file ceiling — that a body over it is refused, that a body of exactly
+# it is not, and that the rest of a runaway one is never read — is now
+# tests/test_import_attachment_fetching.py, over a socket. See the note at the
+# top of this file.
 
 
 # ── the guard on what may be fetched at all ─────────────────────────────────
@@ -176,10 +195,9 @@ def test_only_mondays_own_asset_hosts_are_fetched():
         assert not allowed, f"{u} would be fetched"
 
 
-def test_a_redirect_is_refused_rather_than_followed(monkeypatch):
-    """An allowed host that bounces the fetch elsewhere is the same hole."""
-    h = cityos_main._NoRedirects()
-    assert h.redirect_request(None, None, 302, "Found", {}, "https://evil.example.com/x") is None
+# That a redirect is refused rather than followed — to another host and to
+# another path on monday alike — is now tested where a real 302 can be served:
+# tests/test_import_attachment_fetching.py. See the note at the top.
 
 
 def test_a_board_with_no_files_reports_none(client, admin_id, monkeypatch):
@@ -194,7 +212,11 @@ def test_the_report_says_what_became_of_the_files():
     src = (pathlib.Path(__file__).resolve().parent.parent / "frontend" / "index.html"
            ).read_text(encoding="utf-8")
     for marker in ("files_imported", "files_unreachable", "files_over_budget",
-                   "files_expired", "הקישורים בקובץ פגו", "stat(r.files_imported,'קבצים')"):
+                   "files_expired", "הקישורים בקובץ פגו", "stat(r.files_imported,'קבצים')",
+                   # Abandoned reads as the opposite advice from unreachable —
+                   # run the import again, rather than export again — so it has
+                   # a line of its own and never shares one.
+                   "files_abandoned", "מעולם לא נתבקשו"):
         assert marker in src, f"the report says nothing about {marker}"
 
 
@@ -232,8 +254,25 @@ def test_an_expired_export_is_not_fetched_at_all(client, admin_id, monkeypatch):
 
 
 def test_the_import_gives_up_after_a_run_of_failures(client, admin_id, monkeypatch):
-    """Whatever the cause, if the first handful cannot be had the rest cannot
-    either — and an import must not spend a minute per hundred files proving it."""
+    """A run of answers that condemn the export stops the fetching, and every
+    file is still accounted for — as two different things.
+
+    A stand-in fetch says only None, so every failure here counts as a dead
+    link: with nothing recorded on `_IMPORT_FETCH` the guard reads "dead", on
+    purpose, so that replacing `_fetch_import_file` wholesale — which is what
+    `_serve` does and what most of this file is built on — cannot quietly
+    switch the guard off. That makes this the dead case, and the transient one
+    is below.
+
+    What changed when the run learned to tell the two apart is the accounting,
+    not the giving up. It used to call all twenty "לא נענו" — monday would not
+    serve these — when seventeen of them had never been asked for. H3 חוזים is
+    what that sentence was printed over: 367 live attachments reported as
+    unreachable by an import that never dialled one of them. So the twenty are
+    split into the three that were really refused and the seventeen the import
+    abandoned, and the point of the original assertion — that none of them
+    falls between the cracks — is now that the two numbers add up to the whole.
+    """
     monkeypatch.setattr(cityos_main, "IMPORT_FILE_FAIL_STREAK", 3)
     calls = _serve(monkeypatch, {})                     # everything fails
     items = [_item(f"פריט {i}", cols=[_filecol("מסמך", f"f{i}.txt")],
@@ -248,10 +287,78 @@ def test_the_import_gives_up_after_a_run_of_failures(client, admin_id, monkeypat
     assert len(calls) <= 3 + cityos_main.IMPORT_FILE_WORKERS, \
         f"tried {len(calls)} times before giving up"
     assert len(calls) < 20, "it has to stop trying, not work through all of them"
-    assert r["files_unreachable"] == 20, "the ones it stopped trying are still accounted for"
+    assert r["files_unreachable"] == len(calls), \
+        "a file is unreachable only if monday was actually asked about it"
+    assert r["files_abandoned"] == 20 - len(calls), \
+        "the ones it stopped trying are still accounted for — as abandoned"
+    assert r["files_unreachable"] + r["files_abandoned"] == 20, \
+        "a file fell between the two counts"
 
 
-def test_one_success_resets_the_run(client, admin_id, monkeypatch):
+def test_an_abandoned_file_keeps_its_name_and_says_it_was_abandoned(client, admin_id,
+                                                                    monkeypatch):
+    """Per cell, an abandoned attachment is shaped like an over-budget one.
+
+    It is not an unreachable file and must not read as one: the name is worth
+    keeping, the link is worth keeping — it very probably still works — and the
+    chip has to know not to offer monday's expired-looking address as something
+    to click.
+    """
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_FAIL_STREAK", 2)
+    _serve(monkeypatch, {})                             # everything fails, as dead
+    # Comfortably more files than a pool's worth: the run trips at two, but the
+    # sixteen already in flight are real answers and are not abandoned, so a
+    # board of a dozen could in principle be dialled end to end.
+    items = [_item(f"פריט {i}", cols=[_filecol("מסמך", f"f{i}.txt")],
+                   assets=[{"id": str(i), "name": f"f{i}.txt",
+                            "public_url": f"{MONDAY_HOST}/f{i}.txt"}])
+             for i in range(40)]
+    d = _import(client, admin_id, _resp(items)).json()
+    assert d["report"]["files_abandoned"] >= 1, d["report"]
+    cells = [v for cf in _cells(d["id"]) for v in cf.values()
+             if isinstance(v, list) and v]
+    given_up = [c[0] for c in cells if c[0].get("why") == "abandoned"]
+    assert len(given_up) == d["report"]["files_abandoned"], \
+        "the report counts abandoned files the cells do not say are abandoned"
+    one = given_up[0]
+    assert one["name"].endswith(".txt") and one["url"].startswith(MONDAY_HOST)
+    assert one["dead"] is True
+    assert set(one) == {"name", "url", "why", "dead"}, one
+
+
+def test_a_run_of_timeouts_does_not_abandon_the_rest_of_the_board(client, admin_id,
+                                                                  monkeypatch):
+    """The H3 regression, at the level the report is read.
+
+    "H3 חוזים" carried 884 attachments. The import brought 509 and called the
+    other 375 "לא נגישים", and the same links fetched 400-for-400 from this
+    machine twice within the hour. What had happened is that five fetches in a
+    row timed out — a loaded machine, big files, sixteen workers and a long
+    write transaction holding SQLite — and the run-of-failures guard read that
+    as an export whose links had all expired. 367 live files were never
+    requested.
+
+    A timeout says nothing about the export. It leaves the run where it was,
+    every file after the bad patch is still asked for, and nothing is abandoned.
+    """
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_FAIL_STREAK", 3)
+    bad = {f"{MONDAY_HOST}/f{i}.txt" for i in range(6)}
+    calls = _serve_with_reasons(monkeypatch, lambda u: (
+        None if u in bad else (b"the bytes", "text/plain")), why="transient")
+    items = [_item(f"פריט {i}", cols=[_filecol("מסמך", f"f{i}.txt")],
+                   assets=[{"id": str(i), "name": f"f{i}.txt",
+                            "public_url": f"{MONDAY_HOST}/f{i}.txt"}])
+             for i in range(20)]
+    r = _import(client, admin_id, _resp(items)).json()["report"]
+    assert len(calls) == 20, f"only {len(calls)} of 20 files were ever asked for"
+    assert r["files_abandoned"] == 0, "a run of timeouts condemned the rest of the board"
+    assert r["files_imported"] == 14, r
+    assert r["files_unreachable"] == 6, r
+
+
+def test_a_success_clears_the_run_of_dead_answers(client, admin_id, monkeypatch):
+    """The guard is about a wholly stale export, not about a board missing a
+    few files — a live one in between proves the export is not stale."""
     monkeypatch.setattr(cityos_main, "IMPORT_FILE_FAIL_STREAK", 2)
     good = f"{MONDAY_HOST}/good.txt"
     _serve(monkeypatch, {good: (b"hello", "text/plain")})
@@ -263,6 +370,71 @@ def test_one_success_resets_the_run(client, admin_id, monkeypatch):
                    assets=[{"id": "3", "name": "bad2.txt", "public_url": f"{MONDAY_HOST}/bad2.txt"}])]
     r = _import(client, admin_id, _resp(items)).json()["report"]
     assert r["files_imported"] == 1 and r["files_unreachable"] == 2
+    assert r["files_abandoned"] == 0, "the file after the success was never asked for"
+
+
+def test_a_run_that_fails_transiently_is_still_bounded(client, admin_id, monkeypatch):
+    """The backstop. A failure that proves nothing still costs a round trip,
+    and an export of 900 attachments at twenty seconds apiece is eighteen
+    minutes of a request somebody is sitting in front of — so a long enough run
+    of failures of any kind is taken as the network being gone.
+
+    It is deliberately an order of magnitude above anything a bad minute
+    produces, which is why it is turned down here: at its shipped value this
+    test would be a thousand round trips.
+    """
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_FAIL_STREAK", 3)
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_GIVE_UP_STREAK", 6)
+    calls = _serve_with_reasons(monkeypatch, lambda u: None, why="transient")
+    items = [_item(f"פריט {i}", cols=[_filecol("מסמך", f"f{i}.txt")],
+                   assets=[{"id": str(i), "name": f"f{i}.txt",
+                            "public_url": f"{MONDAY_HOST}/f{i}.txt"}])
+             for i in range(40)]
+    r = _import(client, admin_id, _resp(items)).json()["report"]
+    assert len(calls) < 40, "nothing bounded a board whose every file timed out"
+    assert len(calls) <= 6 + cityos_main.IMPORT_FILE_WORKERS, \
+        f"tried {len(calls)} times before the backstop stopped it"
+    assert r["files_abandoned"] >= 40 - (6 + cityos_main.IMPORT_FILE_WORKERS)
+    assert r["files_unreachable"] + r["files_abandoned"] == 40, \
+        "a file fell between the two counts"
+
+
+def test_every_attachment_the_file_named_is_accounted_for(client, admin_id, monkeypatch):
+    """Whatever became of them, the numbers add up to the attachments in hand.
+
+    This is the one assertion that cannot be satisfied by relabelling: a file
+    that stops being "unreachable" and does not become something else has gone
+    missing from the report, and a report that does not add up is how two
+    thirds of a board were quietly lost twice already — once to the memory
+    ceiling and once to this guard.
+    """
+    monkeypatch.setattr(cityos_main, "IMPORT_FILE_FAIL_STREAK", 3)
+    # Everything that is dialled at all answers dead, so the guard trips partway
+    # down and the twenty live-looking links split into dialled and abandoned.
+    _serve_with_reasons(monkeypatch, lambda u: None, why="dead")
+    expired = (f"{MONDAY_HOST}/old.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+               "&X-Amz-Date=20200101T000000Z&X-Amz-Expires=3600&X-Amz-Signature=dead")
+    items = [_item(f"פריט {i}", cols=[_filecol("מסמך", f"f{i}.txt")],
+                   assets=[{"id": str(i), "name": f"f{i}.txt",
+                            "public_url": f"{MONDAY_HOST}/f{i}.txt"}])
+             for i in range(20)]
+    items.append(_item("ישן", cols=[_filecol("מסמך", "old.txt")],
+                       assets=[{"id": "90", "name": "old.txt", "public_url": expired}]))
+    d = _import(client, admin_id, _resp(items)).json()
+    r = d["report"]
+    named = 21
+    became = (r["files_imported"] + r["files_unreachable"] + r["files_abandoned"]
+              + r["files_expired"] + r["files_over_budget"])
+    assert r["files_expired"] == 1, "a link whose signature says it lapsed is its own count"
+    assert r["files_abandoned"] > 0, "nothing was abandoned, so this proves nothing"
+    assert became == named, \
+        f"{named - became} of the attachments this file named are in no count: {r}"
+    # and nothing was invented either: every attachment is one entry on the
+    # board, with its name, whatever became of its bytes
+    cells = [v for cf in _cells(d["id"]) for v in cf.values()
+             if isinstance(v, list) and v]
+    assert sum(len(c) for c in cells) == named, f"{cells} for {named} attachments"
+    assert all(e.get("name") for c in cells for e in c), "an attachment lost its name"
 
 
 # ── the other half of the trip: out of here, and back ───────────────────────
@@ -428,26 +600,10 @@ def test_a_file_sheet_naming_an_item_that_is_not_here_is_reported(client, admin_
     assert d["report"]["files_items_unmatched"] == ["פריט שאינו בקובץ"]
 
 
-def test_the_login_page_monday_answers_with_is_not_stored_as_the_file(client, admin_id,
-                                                                     monkeypatch):
-    """An asset link that needs a session answers 200 with monday's HTML login
-    page. Stored, that is a .docx that opens and is not the file."""
-    import urllib.request
-
-    class _Resp:
-        headers = {"Content-Type": "text/html; charset=utf-8"}
-
-        def read(self, n=None):
-            return b"<!DOCTYPE html><html>login</html>"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(cityos_main._IMPORT_OPENER, "open", lambda *a, **k: _Resp())
-    assert cityos_main._fetch_import_file(MONDAY_HOST + "/spec.docx") is None
+# That monday's login page — HTML, served as 200, where the file should have
+# been — is not stored as the file is now tested against a server that really
+# answers that way: tests/test_import_attachment_fetching.py. See the note at
+# the top.
 
 
 def test_the_report_says_what_became_of_the_files_in_a_sheet():

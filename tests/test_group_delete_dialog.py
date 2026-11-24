@@ -10,6 +10,18 @@ you may not edit read like a group that cannot be deleted.
 
 The harness reads the function out of index.html under node and names the
 failing case.
+
+It also runs it. The note under the question says how many items are about to
+be moved out of the group, and that number used to be the rows this browser
+happened to be holding — `st.board.tasks` filtered by group. Past the paging
+threshold those rows are one page of fifty and can be none at all, so the
+dialog could print "הקבוצה ריקה" over a group holding three thousand items,
+immediately above a red מחק button. It is the one count in the app where being
+wrong is dangerous rather than untidy. The board now sends each group's size,
+counted in the database through the same permission filter as its own total,
+and the harness calls deleteGroup with a board in each state it can be in —
+paged, fully loaded, empty, and from a backend that sends no counts at all —
+and reads the sentence the person would get.
 """
 import pathlib
 import shutil
