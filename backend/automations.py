@@ -1808,7 +1808,13 @@ def validate_actions(raw, recipe_id, primary_values=None, require_values=False):
                 sc = status_col_of(given, f["key"])
                 if sc:
                     values[status_col_key(f["key"])] = sc
+            # An optional blank — the column pairing on "צור פריט" — is held
+            # to its shape when given and asked for nothing when not, in an
+            # extra action exactly as in the rule's own (see field_optional).
+            # Without this an extra "צור פריט" with no pairing was refused
+            # outright, which every rule built before the pairing existed is.
             v, err = _coerce_field(f, (given or {}).get(f["key"]), require_values
+                                   and not field_optional(f)
                                    and not (f["type"] == "fields"
                                             and mapped_instead(action_fields(key), given)))
             if err:
