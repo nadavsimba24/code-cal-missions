@@ -1606,10 +1606,24 @@ def actions_catalog():
     # `text` carries the blanks ("{person}") so the builder can put a chip in
     # each one, the way the rule's own sentence does; `label` is the same line
     # with the blanks shown as "…", for the picker that offers it.
-    return [{"key": k, "label": plain(text), "text": text,
+    #
+    # The builder draws a chip only where `text` has a placeholder, so a
+    # column pairing the wording does not mention (create_in_board's) gets
+    # the " · {map}" slot sentence() gives the rule's own action — without it
+    # the pairing was reachable on "צור פריט בלוח אחר" as the rule's first
+    # action and nowhere at all once it was added as a further one. `label`
+    # stays the bare wording: it is the line the picker offers, before any
+    # blank exists.
+    def _with_map(k, text):
+        if not text:
+            return text
+        tail = [f["key"] for f in action_fields(k)
+                if f["type"] == "map" and "{" + f["key"] + "}" not in text]
+        return text + "".join(" · {" + t + "}" for t in tail)
+    return [{"key": k, "label": plain(text), "text": _with_map(k, text),
              # how it reads once it names a status column of its own; "" when
              # it cannot name one — see STATUS_COL_TEXT
-             "text_col": COL_TEXT.get(k, ""),
+             "text_col": _with_map(k, COL_TEXT.get(k, "")),
              "fields": action_fields(k)} for k, text in ACTIONS.items()]
 
 

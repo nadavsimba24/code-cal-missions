@@ -196,3 +196,17 @@ def test_the_extra_action_s_pairing_must_fit_its_own_board(client, admin_id):
                                                 "text": "y",
                                                 "map": [{"from": num_src, "to": num_dst}]}}]}})
     assert r.status_code == 400, r.text
+
+
+def test_the_pairing_has_a_blank_when_the_action_is_a_further_one():
+    """The builder draws a chip only where the action's `text` has a
+    placeholder. "צור פריט בלוח אחר" says nothing about a pairing in its own
+    words, so added with "+ הוסף פעולה" it had no blank to press — the
+    pairing was reachable on the rule's first action and nowhere else."""
+    c = next(x for x in recipes.actions_catalog() if x["key"] == "create_in_board")
+    assert "{map}" in c["text"], c["text"]
+    # …while the line the picker offers stays the bare wording
+    assert "map" not in c["label"] and "·" not in c["label"], c["label"]
+    # and an action with no pairing gains no slot
+    c2 = next(x for x in recipes.actions_catalog() if x["key"] == "move_to_group")
+    assert "·" not in c2["text"], c2["text"]
