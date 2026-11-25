@@ -261,3 +261,17 @@ def test_create_item_on_this_board_carries_its_pairing(client, admin_id):
                                      "values": {"text": "x", "group": signed,
                                                 "map": [{"from": num_src, "to": "col_nope"}]}}]}})
     assert r.status_code == 400, r.text
+
+
+def test_an_extra_create_in_board_with_no_pairing_saves(client, admin_id):
+    """The pairing is optional on an extra action as it is on the rule's own:
+    "צור פריט בלוח אחר" added with "+ הוסף פעולה" and no pairing was refused
+    as "חסר מיפוי שדות" — the shape every such rule had before it existed."""
+    src, dst, status, _ns, _nd, _c, signed, target = _setup(client, admin_id, "m9")
+    r = client.post(f"/api/boards/{src}/automations?user_id={admin_id}",
+                    json={"recipe_id": "status_move_group", "config": {
+                        "t_status": "o_signed", "t_status_col": status["id"], "a_group": signed,
+                        "actions": [{"key": "create_in_board",
+                                     "values": {"board": dst, "target_group": target,
+                                                "text": "בלי מיפוי"}}]}})
+    assert r.status_code == 200, r.text
