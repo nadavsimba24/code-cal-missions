@@ -672,6 +672,46 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
   .au-map-row{grid-template-columns:1fr 28px;row-gap:5px;
     padding-block-end:8px;border-block-end:1px solid var(--border)}
   .au-map-arrow{display:none}}
+/* "הפריט שייווצר" — the new item as a form of the TARGET board's fields, one
+   row per field: its type icon and name on one side, what fills it on the
+   other. Read top to bottom the way the item will look, which is why it is a
+   form and not the table of pairs above. Two cards — the item's own details,
+   then the board's columns — and a field that has been given a value wears
+   the primary tint, so what is filled reads at a glance before anything is
+   opened. The tints are mixed from the palette's own variables, so the dark
+   theme gets its own shade of the same colour rather than a pasted hex. */
+.au-item .au-item-lead{display:flex;flex-direction:column;gap:6px;
+  font-size:12.5px;color:var(--text-muted);line-height:1.55;margin-bottom:12px}
+.au-item-board{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;
+  font-size:12.5px;font-weight:600;color:var(--primary);padding:3px 10px;border-radius:14px;
+  background:color-mix(in srgb,var(--primary) 10%,transparent)}
+.au-item-card{border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--surface);padding:4px 14px 6px;margin-bottom:12px;box-shadow:var(--shadow-sm)}
+.au-item-sec{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;
+  color:var(--text-muted);padding:10px 0 4px;border-block-end:1px solid var(--border)}
+.au-item-sec>i{color:var(--text-light);font-size:11.5px}
+.au-item-count{margin-inline-start:auto;font-weight:500;font-size:11.5px;color:var(--text-light);
+  background:var(--bg);border-radius:10px;padding:1px 8px}
+.au-item-row{display:grid;grid-template-columns:minmax(130px,34%) 1fr;gap:12px;
+  align-items:center;padding-block:8px;border-block-end:1px solid var(--border)}
+.au-item-row:last-child{border-block-end:none}
+.au-item-row>label{display:flex;align-items:center;gap:9px;min-width:0;
+  font-size:13px;font-weight:500;color:var(--text-strong)}
+.au-item-row>label>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.au-item-ic{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  width:26px;height:26px;border-radius:7px;font-size:12px;color:var(--ic);
+  background:color-mix(in srgb,var(--ic) 14%,transparent)}
+.au-item-row .lm-sel,.au-item-row .au-in{min-width:0;width:100%;max-width:none}
+.au-item-val{transition:background .12s,border-color .12s}
+.au-item-val.on{background:color-mix(in srgb,var(--primary) 9%,var(--surface));
+  border-color:color-mix(in srgb,var(--primary) 45%,var(--border));
+  color:var(--primary);font-weight:500}
+.au-item-row .au-tok{grid-column:2}
+.au-item-empty{padding:16px 0;text-align:center;font-size:12.5px;color:var(--text-light)}
+.au-item-empty>i{margin-inline-end:6px}
+@media(max-width:560px){
+  .au-item-row{grid-template-columns:1fr;row-gap:6px}
+  .au-item-row .au-tok{grid-column:1}}
 .ah-batch{cursor:pointer;border:none;font:inherit}
 .au-imp-lnk{margin-bottom:8px}
 .au-impgrid{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
@@ -11841,11 +11881,16 @@ const Automations = {
        תאריך יעד until somebody picks «דד ליין לביצוע» or the like. */
     const dateOn=side=>side==='t'&&this._colKind('t')==='date'&&this._dateCols().length>0;
     const colOn=side=>peopleOn(side)||dateOn(side)||on(side+'_status');
+    /* An action that makes an item on another board is said as «צור פריט
+       בלוח …», with «פריט» opening the item itself — see ITEM_FORM. */
+    const itemForm=P&&(this.ITEM_FORM[r.action]||{}).text;
     let sent=esc(P
       ? ((P.trigger_col&&colOn('t')?P.trigger_col:P.trigger)+', '
-         +(P.action_col&&colOn('a')?P.action_col:P.action))
+         +(itemForm?itemForm.replace(/\{(\w+)\}/g,'{a_$1}')
+                   :(P.action_col&&colOn('a')?P.action_col:P.action)))
       : r.sentence);
     r.fields.forEach(f=>{ sent=sent.replace('{'+f.key+'}', this.blankHTML(f)); });
+    if(itemForm) sent=sent.replace('{a_item}', this.itemBlankHTML(null));
     (r.status_fields||[]).forEach(k=>{
       sent=sent.replace('{'+k+'_col}',
         this.blankHTML({key:k+'_col',type:'status_col',label:'עמודת הסטטוס'}));
@@ -11966,13 +12011,16 @@ const Automations = {
              data-k="${esc(key)}"
              onclick="Automations.pickActValue(event,${i},'${key}')">${esc(cur?cur.label:label)}</button>`;
       };
-      let body=esc(((scol||pIsCol)&&spec.text_col)||spec.text||spec.label||'');
+      const itemForm=(this.ITEM_FORM[a.key]||{}).text;
+      let body=esc(itemForm||((scol||pIsCol)&&spec.text_col)||spec.text||spec.label||'');
       body=body.replace('{col}', pIsCol
         ? blank('person_col','אחראים',pcol&&pcol.v?pcol:null)
         : blank('status_col','עמודת הסטטוס',scol));
       (spec.fields||[]).forEach(f=>{
         body=body.replace('{'+f.key+'}',blank(f.key,f.label,(a.values||{})[f.key]));
       });
+      // the same single «פריט» blank the sentence's own action gets
+      if(itemForm) body=body.replace('{item}',this.itemBlankHTML({actIdx:i}));
       return `<div class="au-act">
         <span class="au-act-n">${i+2}</span>
         <span class="au-act-t">${body}</span>
@@ -13179,12 +13227,29 @@ const Automations = {
   MAP_UNMAPPABLE:['mirror','connect','formula'],
   _mapSides(cols){
     const out=((((this.caps||{}).map)||{}).builtins||[])
-                .map(b=>({key:b.key,label:b.label,kind:b.kind}));
+                .map(b=>({key:b.key,label:b.label,kind:b.kind,
+                          type:this.MAP_BUILTIN_TYPE[b.key]||b.kind}));
     (cols||[]).forEach(c=>{
       if(!c.kind||this.MAP_UNMAPPABLE.includes(c.type))return;
-      out.push({key:String(c.id),label:c.title||c.id,kind:c.kind});
+      out.push({key:String(c.id),label:c.title||c.id,kind:c.kind,type:c.type});
     });
     return out;
+  },
+  /* What each built-in IS, in the column-type vocabulary, so it wears the
+     same icon a column of that type wears in the board's own header. */
+  MAP_BUILTIN_TYPE:{title:'text',status:'status',priority:'priority',due:'date',
+                    description:'long_text',assignees:'people'},
+  /* The icon and its colour for a field of a given type — the board header's
+     own icon (COLUMN_TYPES), tinted by family the way monday groups them:
+     labels green, dates orange, people blue, text the primary blue. */
+  _typeIcon(type){
+    const ic=type==='priority'?'fa-flag':type==='group'?'fa-layer-group'
+      :((COLUMN_TYPES.find(t=>t.type===type)||{}).ic||'fa-font');
+    const tint={status:'var(--green)',dropdown:'var(--green)',checkbox:'var(--green)',
+      priority:'var(--orange)',date:'var(--orange)',timeline:'var(--orange)',
+      people:'var(--blue)',number:'var(--dark-blue)',rating:'var(--dark-blue)',
+      files:'var(--dark-grey)'}[type]||'var(--primary)';
+    return `<span class="au-item-ic" style="--ic:${tint}" aria-hidden="true"><i class="fa-solid ${ic}"></i></span>`;
   },
   /* The chip in the sentence says HOW MANY and never the pairs themselves:
      they are a table and the sentence is one line. "מיפוי שדות" is what a
@@ -13200,6 +13265,191 @@ const Automations = {
                       +(meId()?'&user_id='+meId():''));
     return (this._mapCols[bid]=d.columns||[]);
   },
+  /* ---- "הפריט שייווצר" — the new item, field by field ----
+
+     "צור פריט בלוח אחר" asked about the item it makes in three blanks strung
+     through the sentence — the name, the group, and a separate "מיפוי
+     עמודות" at the end — and the last of the three was a table of pairs read
+     from the SOURCE side. That is not how anybody thinks about the item they
+     are making. monday asks it the other way round, and so does this: press
+     «פריט», and the target board's own fields are listed as the item will
+     have them — its group, its name, then each column — with what fills each
+     one beside it.
+
+     Nothing about the rule changes underneath. The answers are written into
+     the very blanks they always were — target_group, text and map — so the
+     server, its checks before every firing, and every rule built before this
+     screen read them exactly as they did. Only the way in is different. */
+  /* Every action that makes an item is said this way — "בכל אוטומציה שיש
+     פה יצירת פריט". Per action: the wording, which blank holds the group
+     (`group`; null where the action has none and the item lands in the
+     board's first group), which holds the board (`board`; null for the one
+     that creates on THIS board), and whether a pairing is the action's whole
+     point (create_mapped_and_link) rather than an option.
+
+     Not here, on purpose: a sub-item has a column set of its own that a rule
+     cannot pair into yet, and a duplicate already carries every cell. */
+  ITEM_FORM:{
+    create_in_board:{text:'צור {item} בלוח {board}', group:'target_group', board:'board'},
+    create_and_link:{text:'צור {item} בלוח {board} וקשר אותו לפריט המקור בעמודה {connect}',
+                     group:null, board:'board'},
+    create_in_group_and_link:{text:'צור {item} בלוח {board}, העתק {fields} וקשר אותו לפריט המקור בעמודה {connect}',
+                     group:'target_group', board:'board'},
+    create_mapped_and_link:{text:'צור {item} בלוח {board} וקשר אותו לפריט המקור בעמודה {connect}',
+                     group:'target_group', board:'board', mapRequired:true},
+    create_item:{text:'צור {item}', group:'group', board:null}},
+  _itemAction(into){
+    return into?(((this.building.acts||[])[into.actIdx])||{}).key
+               :((this.building.recipe||{}).action);
+  },
+  // the sentence's own blanks carry the a_ prefix, an extra action's do not
+  _itemKey(into,name){ return into?name:'a_'+name; },
+  _itemVals(into){
+    return into?(((this.building.acts||[])[into.actIdx]||{}).values||{})
+               :this.building.values;
+  },
+  /* The one blank that stands for the whole item. It reads back what was
+     chosen — «פריט "חוזה 41" ב"בתכנון" · 3 שדות» — so the sentence still says
+     what the rule will do without opening anything. */
+  itemBlankHTML(into){
+    const form=this.ITEM_FORM[this._itemAction(into)]||{};
+    const v=this._itemVals(into), k=n=>this._itemKey(into,n);
+    const name=v[k('text')], grp=form.group?v[k(form.group)]:null, map=v[k('map')];
+    const n=((map&&Array.isArray(map.v))?map.v:[]).length;
+    const done=!!(name&&(grp||!form.group)&&(n||!form.mapRequired));
+    const label=done
+      ? `פריט «${name.label}»`+(grp?` ב«${grp.label}»`:'')+(n?' · '+this.mapLabel(map.v):'')
+      : 'פריט';
+    return `<button class="au-blank${done?' filled':''}" data-k="${esc(k('item'))}"
+      title="הפריט שייווצר — קבוצה, שם ושדות"
+      onclick="event.preventDefault();event.stopPropagation();Automations.pickNewItem(${into?into.actIdx:-1})">${esc(label)}</button>`;
+  },
+  async pickNewItem(actIdx){
+    const into=actIdx>=0?{actIdx:actIdx}:null;
+    const form=this.ITEM_FORM[this._itemAction(into)]; if(!form)return;
+    const vals=this._itemVals(into), k=n=>this._itemKey(into,n);
+    // the action that creates on THIS board has no board blank to read
+    const own=!form.board;
+    const bid=own?(st.board&&st.board.id):(vals[k(form.board)]||{}).v;
+    if(!bid){ toast('בחר תחילה את לוח היעד'); return; }
+    let groups=[], cols=[];
+    try{
+      const [d,c]=await Promise.all([
+        // this board's groups are already here; another board's are fetched
+        (!form.group)?null
+          :own?{groups:(st.board.groups||[])}
+          :api('/api/boards/'+bid+(meId()?'?user_id='+meId():'')),
+        this._mapTargetCols(bid)]);
+      groups=((d&&d.groups)||[]).map(g=>({v:g.id,label:g.name}));
+      cols=c||[];
+    }catch(e){ toast('לא ניתן לקרוא את לוח היעד'); return; }
+    this._itemInto={into:into,form:form};
+    this._itemGroups=groups;
+    this._mapFrom=this._mapSides((this.caps||{}).columns);
+    // the name has a row of its own, typed rather than picked, so the
+    // built-in "שם הפריט" is not offered again as one of the columns
+    this._mapTo=this._mapSides(cols).filter(x=>x.key!=='title');
+    const curMap=(vals[k('map')]||{}).v;
+    const fill={};
+    (Array.isArray(curMap)?curMap:[]).forEach(p=>{ if(p&&p.to) fill[String(p.to)]=String(p.from||''); });
+    const gcur=form.group?String((vals[k(form.group)]||{}).v||''):'';
+    const name=(vals[k('text')]||{}).label||'';
+    const gOpts='<option value="">— בחרו קבוצה —</option>'+groups.map(g=>
+      `<option value="${esc(g.v)}"${String(g.v)===gcur?' selected':''}>${esc(g.label)}</option>`).join('');
+    /* Each field offers only what can HOLD it — a date for a date, a status
+       for a status — which is the rule the server applies at the save and
+       before every firing, said here as the shape of the list rather than as
+       a refusal afterwards. A pairing chosen before a column changed type
+       stays selected and is named, so it can be seen and cleared. */
+    const rows=this._mapTo.map((t,i)=>{
+      const fit=this._mapFrom.filter(s=>s.kind===t.kind||s.key===fill[t.key]);
+      const opts='<option value="">— נשאר ריק —</option>'+fit.map(s=>
+        `<option value="${esc(s.key)}"${s.key===fill[t.key]?' selected':''}>${esc(s.label)}</option>`).join('');
+      return `<div class="au-item-row">
+        <label for="au-item-f${i}" title="${esc(t.label)}">${this._typeIcon(t.type)}<span>${esc(t.label)}</span></label>
+        <select id="au-item-f${i}" class="lm-sel au-item-val${fill[t.key]?' on':''}" data-to="${esc(t.key)}"
+                onchange="this.classList.toggle('on',!!this.value);Automations._itemCount()"
+                aria-label="מה ימלא את «${esc(t.label)}»">${opts}</select>
+      </div>`;
+    }).join('');
+    const bname=own?((st.board&&st.board.name)||''):((vals[k(form.board)]||{}).label||'');
+    const nFilled=Object.keys(fill).length;
+    showModal(`<h2><i class="fa-solid fa-square-plus" style="color:var(--primary)"></i> הפריט שייווצר</h2>
+      <div class="mbody au-item">
+        <div class="au-item-lead">
+          <span class="au-item-board"><i class="fa-solid fa-table-cells-large"></i> ${esc(bname)}</span>
+          <span>הגדירו כיצד יתמלאו השדות בפריט החדש מתוך הפריט הנוכחי. מוצעים רק שדות
+            מסוג תואם; שדה שנשאר ריק לא ימולא.</span>
+        </div>
+        <div class="au-item-card">
+          <div class="au-item-sec"><i class="fa-solid fa-circle-dot"></i> פרטי הפריט</div>
+          ${form.group?`<div class="au-item-row">
+            <label for="au-item-group">${this._typeIcon('group')}<span>קבוצה</span></label>
+            <select id="au-item-group" class="lm-sel au-item-val${gcur?' on':''}"
+                    onchange="this.classList.toggle('on',!!this.value)">${gOpts}</select>
+          </div>`:''}
+          <div class="au-item-row">
+            <label for="au-item-name">${this._typeIcon('text')}<span>שם</span></label>
+            <input id="au-item-name" class="au-in" value="${esc(name)}" placeholder="למשל: {{שם הפריט}}">
+            ${this.tokenMenuHTML('au-item-name')}
+          </div>
+        </div>
+        <div class="au-item-card">
+          <div class="au-item-sec"><i class="fa-solid fa-table-columns"></i> עמודות הלוח
+            ${rows?`<span class="au-item-count" id="au-item-count">${nFilled} / ${this._mapTo.length}</span>`:''}</div>
+          ${rows||'<div class="au-item-empty"><i class="fa-regular fa-folder-open"></i> אין בלוח היעד עמודות נוספות למילוי</div>'}
+        </div>
+      </div>
+      <div class="mfoot">
+        <button class="btn btn-primary" onclick="Automations.saveNewItem()"><i class="fa-solid fa-check"></i> סיום</button>
+        <button class="btn btn-ghost" onclick="Automations._itemBack()">ביטול</button>
+      </div>`);
+    // the × leaves this sub-screen, not the half-built rule behind it
+    const x=document.querySelector('#modal .modal-x');
+    if(x) x.setAttribute('onclick','Automations._itemBack()');
+    setTimeout(()=>{ const g=document.getElementById((gcur||!form.group)?'au-item-name':'au-item-group'); if(g)g.focus(); },30);
+  },
+  saveNewItem(){
+    const c=this._itemInto; if(!c)return;
+    const into=c.into, form=c.form||{}, k=n=>this._itemKey(into,n);
+    let g=null;
+    if(form.group){
+      const gsel=document.getElementById('au-item-group');
+      const gid=gsel?gsel.value:'';
+      g=(this._itemGroups||[]).find(x=>String(x.v)===String(gid));
+      if(!g){ toast(form.board?'יש לבחור קבוצה בלוח היעד':'יש לבחור קבוצה');
+              if(gsel)gsel.focus(); return; }
+    }
+    const nameEl=document.getElementById('au-item-name');
+    // the same translation and the same refusal the name blank has always had
+    const cell=this._textCell(nameEl?nameEl.value:'');
+    if(!cell){ if(nameEl)nameEl.focus(); return; }
+    const pairs=[];
+    document.querySelectorAll('#modal select[data-to]').forEach(s=>{
+      if(s.value) pairs.push({from:s.value,to:s.getAttribute('data-to')});
+    });
+    for(const p of pairs){
+      const a=this._mapFrom.find(x=>x.key===p.from), b=this._mapTo.find(x=>x.key===p.to);
+      if(a&&b&&a.kind!==b.kind){ toast('«'+a.label+'» ו«'+b.label+'» אינם מסוג תואם'); return; }
+    }
+    const max=((((this.caps||{}).map)||{}).max_pairs)||20;
+    if(pairs.length>max){ toast('אפשר למלא עד '+max+' שדות'); return; }
+    // the one action whose pairing IS the point says so here, not at the save
+    if(form.mapRequired&&!pairs.length){ toast('יש לבחור לפחות שדה אחד למילוי'); return; }
+    if(g) this._putBlank({key:k(form.group),into:into},{v:g.v,label:g.label,color:''});
+    this._putBlank({key:k('text'),into:into},cell);
+    this._putBlank({key:k('map'),into:into},
+      pairs.length?{v:pairs,label:this.mapLabel(pairs),color:''}:undefined);
+    this._itemBack();
+  },
+  _itemBack(){ this._itemInto=null; this._backToRule(); },
+  // "3 / 12" over the columns — how much of the new item is already spoken for
+  _itemCount(){
+    const el=document.getElementById('au-item-count'); if(!el)return;
+    const all=[...document.querySelectorAll('#modal select[data-to]')];
+    el.textContent=all.filter(x=>x.value).length+' / '+all.length;
+  },
+
   async pickMap(key,into){
     const vals=into?(((this.building.acts||[])[into.actIdx]||{}).values||{})
                    :this.building.values;

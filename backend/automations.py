@@ -1528,7 +1528,10 @@ ACTION_FIELDS = {
                          _f("item", "item", "הפריט לקישור")],
     "create_and_link":  [_f("connect", "connect", "עמודת הקישור"),
                          _f("board", "board", "לוח היעד"),
-                         _f("text", "text", "שם הפריט החדש")],
+                         _f("text", "text", "שם הפריט החדש"),
+                         # the same optional pairing as create_in_board — every
+                         # action that makes an item says what fills it
+                         _f("map", "map", "מיפוי עמודות (לא חובה)", optional=True)],
     "create_in_board":  [_f("board", "board", "לוח היעד"),
                          _f("target_group", "target_group", "הקבוצה בלוח היעד"),
                          _f("text", "text", "שם הפריט החדש"),
@@ -1541,7 +1544,11 @@ ACTION_FIELDS = {
     "clear_column":     [_f("column", "column", "עמודה")],
     "unassign_person":  [_f("person", "person", "אחראי")],
     "create_item":      [_f("text", "text", "שם הפריט"),
-                         _f("group", "group", "קבוצה")],
+                         _f("group", "group", "קבוצה"),
+                         # …onto THIS board, so the pairing is between two
+                         # columns of the same board: the new item starts with
+                         # the values of the one that set the rule off
+                         _f("map", "map", "מיפוי עמודות (לא חובה)", optional=True)],
     # The name is a blank rather than «העתק של …» decided here, because
     # {{item.name}} is already a token, and «QA — {{item.name}}» is the thing
     # most people actually want on the copy — a hard-coded prefix could not
@@ -1990,10 +1997,11 @@ RECIPES = [
      "fields": [_f("a_connect", "connect", "עמודת הקישור"), _f("a_item", "item", "הפריט לקישור")]},
     {"id": "created_create_and_link", "trigger": "item_created", "action": "create_and_link",
      "fields": [_f("a_connect", "connect", "עמודת הקישור"), _f("a_board", "board", "לוח היעד"),
-                _f("a_text", "text", "שם הפריט החדש")]},
+                _f("a_text", "text", "שם הפריט החדש"), CREATE_IN_BOARD_MAP]},
     {"id": "status_create_and_link", "trigger": "status_changes_to", "action": "create_and_link",
      "fields": [_f("t_status", "status", "סטטוס"), _f("a_connect", "connect", "עמודת הקישור"),
-                _f("a_board", "board", "לוח היעד"), _f("a_text", "text", "שם הפריט החדש")]},
+                _f("a_board", "board", "לוח היעד"), _f("a_text", "text", "שם הפריט החדש"),
+                CREATE_IN_BOARD_MAP]},
     {"id": "status_link_item", "trigger": "status_changes_to", "action": "link_to_item",
      "fields": [_f("t_status", "status", "סטטוס"), _f("a_connect", "connect", "עמודת הקישור"),
                 _f("a_item", "item", "הפריט לקישור")]},
@@ -2535,6 +2543,10 @@ TEMPLATE_VERSIONS = {
     # the priority twin is derived from status_create_in_board and gained the
     # same blank with it, so it says so in the same way
     "priority_create_in_board": 2,
+    # …and the same optional pairing on the rule that creates AND links
+    "created_create_and_link": 2,
+    "status_create_and_link": 2,
+    "priority_create_and_link": 2,
 }
 
 

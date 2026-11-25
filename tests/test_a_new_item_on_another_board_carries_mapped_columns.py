@@ -210,3 +210,54 @@ def test_the_pairing_has_a_blank_when_the_action_is_a_further_one():
     # and an action with no pairing gains no slot
     c2 = next(x for x in recipes.actions_catalog() if x["key"] == "move_to_group")
     assert "·" not in c2["text"], c2["text"]
+
+
+# ── every action that makes an item, not only create_in_board ─────────────
+
+def test_create_and_link_carries_its_pairing_too(client, admin_id):
+    """"צור פריט וקשר" — the same optional pairing, onto the board its link
+    column points at, and still linked back."""
+    src, dst, status, num_src, num_dst, _c, _s, _t = _setup(client, admin_id, "m6")
+    client.patch(f"/api/boards/{src}",
+                 json={"actor_id": admin_id, "columns": _cols(client, src) + [
+                     {"type": "connect", "title": "קישור",
+                      "connect": {"board_ids": [dst], "multiple": True, "two_way": True}}]})
+    link = next(x for x in _cols(client, src) if x["type"] == "connect")
+    r = client.post(f"/api/boards/{src}/automations?user_id={admin_id}",
+                    json={"recipe_id": "status_create_and_link", "is_active": True, "config": {
+                        "t_status": "o_signed", "t_status_col": status["id"],
+                        "a_connect": link["id"], "a_board": dst, "a_text": "{{item.name}}",
+                        "a_map": [{"from": num_src, "to": num_dst}]}})
+    assert r.status_code == 200, r.text
+    _fire(client, admin_id, src, status, "נוהל 61", {num_src: "N-61"})
+    made = _made(dst, "נוהל 61")
+    assert len(made) == 1 and (made[0].custom_fields or {}).get(num_dst) == "N-61", \
+        made and made[0].custom_fields
+
+
+def test_create_item_on_this_board_carries_its_pairing(client, admin_id):
+    """"צור פריט" onto THIS board — the pairing is between two columns of the
+    same board, and is held against this board's columns at the save."""
+    src, _d, status, num_src, _n, _c, signed, _t = _setup(client, admin_id, "m7")
+    copy_to = _add_col(client, src, admin_id,
+                       {"id": "col_cp_m7", "type": "text", "title": "מספר מקור"})
+    r = client.post(f"/api/boards/{src}/automations?user_id={admin_id}",
+                    json={"recipe_id": "status_create_subitem", "is_active": True, "config": {
+                        "t_status": "o_signed", "t_status_col": status["id"], "a_text": "תת",
+                        "actions": [{"key": "create_item",
+                                     "values": {"text": "המשך {{item.name}}", "group": signed,
+                                                "map": [{"from": num_src, "to": copy_to}]}}]}})
+    assert r.status_code == 200, r.text
+    _fire(client, admin_id, src, status, "נוהל 71", {num_src: "N-71"})
+    made = _made(src, "המשך נוהל 71")
+    assert len(made) == 1 and (made[0].custom_fields or {}).get(copy_to) == "N-71", \
+        made and made[0].custom_fields
+
+    # a pairing naming a column that is not on THIS board is refused
+    r = client.post(f"/api/boards/{src}/automations?user_id={admin_id}",
+                    json={"recipe_id": "status_create_subitem", "config": {
+                        "t_status": "o_signed", "t_status_col": status["id"], "a_text": "תת",
+                        "actions": [{"key": "create_item",
+                                     "values": {"text": "x", "group": signed,
+                                                "map": [{"from": num_src, "to": "col_nope"}]}}]}})
+    assert r.status_code == 400, r.text
