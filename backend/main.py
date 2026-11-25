@@ -22334,6 +22334,28 @@ def _coerce_cell(db, board_id, col, value):
     # fired, and nothing appeared on the target board. The label is the value.
     if isinstance(value, dict) and "label" in value:
         value = value.get("label")
+    # A dropdown cell is a LIST of words, and a mapped value is read straight
+    # off it — so it arrived here as ['גבעת שמואל - עיריה'] and was str()ed
+    # into "['גבעת שמואל - עיריה']", which no column offers. Every cross-board
+    # rule copying a dropdown was refused and took the item it had just made
+    # back with it (prod rule 70, run 1528), the same way people lists and
+    # status dicts were before. Each word is held to the target's vocabulary
+    # on its own; a dropdown target keeps the list, a status target — one
+    # value — takes it only when there is one word to take.
+    if isinstance(value, list) and kind == "status":
+        words = _dropdown_cell_words(value)
+        if not words:
+            return None, "אין ערך לכתוב"
+        opts = col.get("options") or []
+        labels = [str(o.get("label") if isinstance(o, dict) else o) for o in opts]
+        bad = [w for w in words if labels and w not in labels]
+        if bad:
+            return None, f"'{bad[0]}' אינו ערך מוכר בעמודה — לא נכתב"
+        if col.get("type") == "dropdown":
+            return words, None
+        if len(words) > 1:
+            return None, f"'{', '.join(words)}' הם כמה ערכים, ובעמודה נבחר ערך אחד — לא נכתב"
+        value = words[0]
     raw = "" if value is None else str(value).strip()
     if raw == "":
         return None, "אין ערך לכתוב"
