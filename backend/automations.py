@@ -2651,11 +2651,27 @@ def sentence(recipe_id, cond_phrases=None, action_phrases=None, group_op="and",
     # its blanks — a field nobody can set, and a default nobody was shown.
     # Generic rather than a special case: the next field added to a recipe gets
     # the same treatment without anyone remembering to arrange it.
-    tail = [f["key"] for f in r.get("fields", [])
-            if "{" + f["key"] + "}" not in trig + act]
+    tail = _tail_keys(r, trig + act, config)
     if tail:
         act = act + " · " + " · ".join("{" + k + "}" for k in tail)
     return f"{trig}, {clause + ', ' if clause else ''}{act}"
+
+
+def _tail_keys(r, text, config=None):
+    """The fields the wording does not mention, which sentence() reads on at
+    the end so none of them is invisible.
+
+    Except the optional column pairing of «צור פריט», while it is empty. It is
+    asked inside the «פריט» form, never as a blank of its own, so a tail slot
+    for it only ever read «· מיפוי עמודות (לא חובה)» in the template list — a
+    question the rule, once opened, does not ask. A rule that HAS a pairing
+    still reads it at the end, which is the point of the slot.
+    """
+    cfg = config or {}
+    return [f["key"] for f in r.get("fields", [])
+            if "{" + f["key"] + "}" not in text
+            and not (f["type"] == "map" and field_optional(f)
+                     and not cfg.get(f["key"]))]
 
 
 # What a placeholder reads as when the wording is shown with its blanks empty.
@@ -2753,8 +2769,7 @@ def _sentence_parts(r):
     # the slot sentence() gives a field the wording does not mention goes on
     # the action half, and it has to travel with it — a screen composing from
     # these parts would otherwise drop the one blank nothing else shows
-    tail = [f["key"] for f in r.get("fields", [])
-            if "{" + f["key"] + "}" not in trig + act]
+    tail = _tail_keys(r, trig + act)
     if tail:
         more = " · " + " · ".join("{" + k + "}" for k in tail)
         act, acol = act + more, acol + more
