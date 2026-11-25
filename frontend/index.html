@@ -17427,6 +17427,22 @@ function itemSpot(tbody,row){
   return {gid:tbody.dataset.gid?+tbody.dataset.gid:null, after:i>0?+rows[i-1].dataset.tid:null};
 }
 function sameSpot(a,b){ return !!a && !!b && a.gid===b.gid && a.after===b.after; }
+/* The server's answer to a drop, worked out from the rows already held instead
+   of fetched: _place_item files the item below `after` (or at the top) and
+   numbers its new group 0..n-1, and _renumber_group closes the gap in the one
+   it left. Same order key as the server — position, then id — so the two
+   agree on which neighbour is which. An `after` this client does not hold
+   means last, as it does there. */
+function placeItemLocal(tid,fromGid,spot){
+  const rows=loadedRows(), t=rows.find(x=>x.id===tid); if(!t)return;
+  const siblings=gid=>rows.filter(x=>x.parent_id==null&&!x.is_archived&&(x.group_id??null)===gid&&x.id!==tid).sort(byPosition);
+  t.group_id=spot.gid;
+  const into=siblings(spot.gid);
+  let i=spot.after==null?0:into.findIndex(x=>x.id===spot.after)+1;
+  if(spot.after!=null&&i===0)i=into.length;
+  into.splice(i,0,t); into.forEach((x,n)=>{x.position=n;});
+  if(fromGid!==undefined&&(fromGid??null)!==spot.gid) siblings(fromGid??null).forEach((x,n)=>{x.position=n;});
+}
 /* What a row drag says while it is in the air.
 
    An item can be dragged into another group now, and a group on a long board
@@ -17947,7 +17963,6 @@ function wireTable(el){
             // came back, and the item would appear to snap home — so a manual
             // order wins over one, exactly as it already does for sub-items.
             st.colSort=null;
-            const fresh=await api('/api/boards/'+st.board.id+(meId()?'?user_id='+meId():'')); st.board=fresh;
             const g=crossed&&(st.board.groups||[]).find(x=>x.id===spot.gid);
             const msg=crossed
               ? `הפריט הועבר לקבוצה "${(g&&g.name)||''}"`+(wasSorted?' — המיון לפי עמודה בוטל':'')
@@ -17958,8 +17973,21 @@ function wireTable(el){
                it came from, under a toast saying it had moved. They are pulled
                again instead, as moveItemToGroup already does. */
             if(filterMode()==='server'){ Paged.load(true); toast(msg); return; }
+            /* The whole board used to be fetched again here and redrawn, and
+               the drop read as the page reloading under the hand that made
+               it. The answer holds nothing new: the move is the one the row
+               already shows, and the server's only other change is renumbering
+               the two groups — which placeItemLocal repeats on the rows held
+               here. Anything a rule wrote on the back of the move arrives as
+               automation.ran over the live stream, which still refetches. */
+            placeItemLocal(tid,from&&from.gid,spot);
             toast(msg);
-            renderView();
+            // Inside one group with no sort to undo, the row Sortable left
+            // under the cursor is already the whole picture: same items, same
+            // counts, same summaries. Across groups the headers' counts and
+            // the footers' summaries change, so the board is drawn — from
+            // what is held, without a round trip.
+            if(crossed||wasSorted) renderView();
           }catch(e){ toast((e&&typeof e.detail==='string'&&e.detail)||'שגיאה בעדכון סדר הפריטים'); renderView(); }
         }});
     });

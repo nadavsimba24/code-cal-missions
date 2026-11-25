@@ -134,7 +134,15 @@ ck('nothing moved → no request and no message',
    'guard at '+onEnd.indexOf('sameSpot(from,spot)'));
 ck('a real reorder still says so',
    /\(wasSorted\?'סדר הפריטים עודכן — המיון לפי עמודה בוטל':'סדר הפריטים עודכן'\)/.test(onEnd)
-   && /toast\(msg\);\s*renderView\(\)/.test(onEnd));
+   && /toast\(msg\);/.test(onEnd));
+// The drop used to refetch the whole board and redraw it, which read as the
+// page reloading under the hand that made it. The new order is worked out
+// from the rows already held, and only a cross-group move or an undone sort
+// redraws at all.
+ck('a drop does not fetch the board again',
+   !/api\('\/api\/boards\/'/.test(onEnd) && /placeItemLocal\(tid,/.test(onEnd));
+ck('a reorder inside one group is not redrawn',
+   /if\(crossed\|\|wasSorted\) renderView\(\);/.test(onEnd));
 ck('and the view is never scrolled anywhere on its own',
    !/scrollIntoView/.test(onEnd));
 ck('the move is still sent as a neighbour, not as a row number',
