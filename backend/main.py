@@ -10510,6 +10510,7 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             "title": lambda t: (t.title or ""),
         }
         want_sort = str(data.get("sort") or "")
+
         # ── the board's own order is group by group, sorted or not ───────
         # An item's position is counted inside its group — every group starts
         # again at 0 (see _bottom_position) — so "ORDER BY position" over the
@@ -10524,6 +10525,15 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
         # a page now fills one group before it starts the next.
         gpos = {g.id: (g.position or 0, g.id) for g in
                 db.query(Group).filter(Group.board_id == board_id).all()}
+        def _group_matched(ts):
+            # A row filed under a group the board no longer has is drawn under
+            # "ללא קבוצה" by the browser, so it is counted there too — the same
+            # rule _board_group_counts follows, or the headers stop adding up.
+            counts = {str(gid): 0 for gid in gpos}
+            for t in ts:
+                k = str(t.group_id) if t.group_id in gpos else "null"
+                counts[k] = counts.get(k, 0) + 1
+            return counts
         if want_sort not in _SORTS:
             # a row with no group sorts after the groups, not before them
             hits.sort(key=lambda t: (gpos.get(t.group_id, (10 ** 9, 0)),
@@ -10564,6 +10574,14 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
                "matched_own": len(own),
                "matched_subs": sum(len(v) for v in kids_hit.values()),
                "matched_context": len(context_only) + len(shells),
+               # …and how many of them each GROUP holds, over the whole answer
+               # and not the page. Under a filter the header of a group used to
+               # count the rows that had arrived, so "חוזים פעילים" read 50
+               # over a cut of 78 — or 20, when the groups above it had used up
+               # most of the first page — and nothing said the rest existed.
+               # Keyed the way group_counts is: the id as a string, and "null"
+               # for the rows with no group.
+               "group_matched": _group_matched(hits + shells),
                "sort": want_sort if want_sort in _SORTS else "",
                "conditions": filter_ast.count(tree),
                # the rules that could not be run, so the caller can say why
@@ -10610,9 +10628,16 @@ def query_board_items(board_id: int, data: dict, user_id: int = Depends(current_
             offset = max(0, int(data.get("offset") or 0))
         except (TypeError, ValueError):
             offset = 0
-        # The wrappers sit at the end of the board's own order, which is where
-        # a row with nothing to read belongs: it is scaffolding, not a result.
-        ordered = hits + shells
+        # The wrappers sit at the end of their GROUP, which is where a row with
+        # nothing to read belongs: it is scaffolding, not a result. They used
+        # to sit at the end of the whole board, and once each group's header
+        # counted the whole answer (group_matched counts them) a group holding
+        # one went on reading "78 מתוך 79" until the very last page arrived —
+        # its last row was waiting behind every other group on the board.
+        # hits is already in group order, so a stable sort by group alone
+        # files each wrapper after its group's own rows and moves nothing else.
+        ordered = sorted(hits + shells,
+                         key=lambda t: gpos.get(t.group_id, (10 ** 9, 0)))
         page = ordered[offset:offset + limit]
         _subs = _prefetch_items(db, page)
         # _prefetch_items has just filled _kids_by with EVERY child of every

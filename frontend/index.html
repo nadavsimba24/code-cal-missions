@@ -1278,6 +1278,19 @@ body.sb-collapsed #sb-resizer{display:none}   /* nothing to resize at width 0 */
    pinned cell keeps an opaque background of its own — it is sticky, and the
    board scrolls underneath it. */
 .tbl tr.add-row:hover td{background:transparent}
+/* The end of a group whose rows are still on the server — see groupMoreRowHTML.
+   Built like the add-row under it: the button sits in the pinned item cell, so
+   it stays put while the board scrolls sideways, and may wrap on a phone. */
+.tbl tr.grp-more-row td{padding:8px 12px;white-space:normal}
+.tbl tr.grp-more-row:hover td{background:var(--surface)}
+/* not an item, so not the group's colour bar either — as on the add-row */
+.tbl tr.grp-more-row td.c-item{border-inline-start-color:transparent}
+.grp-wait{color:var(--text-muted);font-size:13px}
+.grp-more{background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;
+  font:inherit;font-size:13px;font-weight:600;color:var(--primary);cursor:pointer}
+.grp-more:hover{background:var(--row-hover)}
+.grp-more:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.grp-more[aria-busy="true"]{color:var(--text-muted);cursor:progress}
 .tbl tr.add-row:hover td.c-item{background:var(--surface)}
 /* "+ הוסף פריט" sits in the pinned column's own cell, so it stays where the
    item names are instead of sliding out of the board with everything else.
@@ -5854,9 +5867,37 @@ const Paged = {
      is a sentence and a button. It is also what stops ensurePagedRows from
      re-asking on every render of a board the server keeps refusing. */
   failed:false,
+  /* How many matching rows each group holds over the WHOLE answer, as the
+     server counted them — {"<group id>": n, …, "null": n}, keyed exactly like
+     st.board.group_counts. Null until an answer carrying it arrives.
+
+     Without it a filtered board could only count the rows it happened to hold:
+     the pages fill the groups in order, fifty rows at a time, so the first
+     group read "50" over a cut of 78 and the groups under it read "0" — or
+     were not drawn at all — until somebody scrolled past every one of them to
+     the very bottom of the board. That read as the board holding fewer items
+     than monday, with the same total printed in the toolbar. See
+     groupCountKnown, groupsOf and groupMoreRowHTML. */
+  group_matched:null,
+  /* Footers that have already asked for a page on their own, as "gid:rows".
+     A footer that is still on screen after its page arrived — because its
+     group's count and its rows disagree, or because the page went to the
+     groups below it — would otherwise ask again on every render and walk the
+     whole board down one page at a time. The same footer with more rows in it
+     is a new key, so following the end of the rows is not held back by this;
+     only asking twice from the same place is. The button always works. */
+  _autoAsked:new Set(),
+  // which group's footer button was pressed, so the keyboard focus that the
+  // re-render throws away lands back on it — see watchMore
+  _refocus:null,
+  // the footers say «טוען…» from the moment a page is asked for until it is
+  // painted; `loading` itself stays on until the finally below, after the paint
+  _footerBusy:false,
   reset(){ this.on=false; this.rows=[]; this.offset=0; this.more=false;
            this.matched=0; this.total=0; this.loading=false; this.pending=false;
            this.failed=false; this._filled=0; this.question=null;
+           this.group_matched=null; this._autoAsked.clear(); this._refocus=null;
+           this._footerBusy=false;
            this.seq++; clearTimeout(_pagedTimer); },
   query(){
     const f=st.filters||{};
@@ -5891,9 +5932,11 @@ const Paged = {
        starting from offset zero itself, and the armed one would do it again a
        quarter-second later over the rows this is about to fetch. */
     if(fresh){ this.rows=[]; this.offset=0; this.more=false; this._filled=0;
+               this.group_matched=null; this._autoAsked.clear(); this._refocus=null;
                this.question=JSON.stringify(this.query()); clearTimeout(_pagedTimer); }
     else if(!this.more) return;
     this.loading=true; this.pending=true; this.failed=false;
+    this.markMoreBusy(true);
     const mine=++this.seq;                 // a slower answer must not overwrite a newer one
     try{
       const r=await api('/api/boards/'+st.board.id+'/items/query',
@@ -5906,7 +5949,8 @@ const Paged = {
       this.offset=r.next_offset||this.rows.length;
       this.more=!!r.has_more;
       this.matched=r.matched||0; this.total=r.total||0;
-      this.pending=false;
+      this.group_matched=(r.group_matched&&typeof r.group_matched==='object')?r.group_matched:null;
+      this.pending=false; this._footerBusy=false;
       renderView(); refreshToolbar();
     }catch(e){
       /* …and the board is redrawn on the way out. Past the threshold a failed
@@ -5914,9 +5958,98 @@ const Paged = {
          rows of its own any more — so without this the toast was the only sign
          anything had happened, over a board that looked empty. */
       if(mine===this.seq){ this.on=false; this.pending=false; this.failed=true;
+                           this._footerBusy=false; this._refocus=null;
                            toast((e&&e.detail)||'הסינון בשרת נכשל');
                            try{ renderView(); }catch(_){} }
-    }finally{ if(mine===this.seq){ this.loading=false; this.fill(); } }
+    }finally{ if(mine===this.seq){ this.loading=false; this._footerBusy=false; this.fill(); } }
+  },
+  /* The group footers' «טוען…», written straight into the buttons already on
+     screen. The answer's render replaces them with fresh ones that say how
+     many rows are now in hand, so nothing has to switch this back off. */
+  markMoreBusy(on){
+    this._footerBusy=!!on;
+    // a cosmetic, and the harnesses run Paged with a stub document: never let
+    // the label stop a page from being asked for
+    try{ document.querySelectorAll('#view .grp-more').forEach(b=>{
+      b.textContent=on?'טוען…':(b.dataset.label||'');
+      b.setAttribute('aria-busy',on?'true':'false');
+    }); }catch(_){}
+  },
+  // the footer button — the same page the scroll would have asked for
+  loadFromFooter(btn){
+    const d=(btn&&btn.dataset)||{};
+    // the group, and how many of its rows were in hand when it was pressed —
+    // the first row past that is the one that arrived, see watchMore
+    this._refocus=d.gid!=null?{gid:d.gid,held:+(String(d.key||'').split(':').pop())||0}:null;
+    this.load(false);
+  },
+  /* Loading follows the end of the rows, not the bottom of the board.
+
+     The scroll handler below only asks once #view is near the bottom of the
+     WHOLE board, and the rows a page brings fill the groups in order. So a
+     group showing its first fifty of 78 had every group under it drawn as a
+     header with nothing beneath, and nothing loaded until somebody scrolled
+     past all of them — a board that looked smaller than it is, which is how it
+     was reported. Each incomplete group now ends in a footer (groupMoreRowHTML)
+     and the page is asked for when that footer comes near the screen, which is
+     where the reader actually runs out of rows.
+
+     Re-attached after every render, because renderView rewrites the DOM and
+     the footers observed a moment ago are gone. A footer in a collapsed group
+     is display:none and never intersects, so a folded group does not pull its
+     rows down by itself — its button, once opened, is the way. */
+  _io:null,
+  watchMore(el){
+    if(this._io){ this._io.disconnect(); this._io=null; }
+    const view=document.getElementById('view');
+    const root=el||view; if(!root)return;
+    const btns=[...root.querySelectorAll('.grp-more')];
+    /* Keyboard focus after a footer press. The render that paints the page
+       rewrites the board, so the button that was pressed is gone and focus
+       falls to <body> — for a keyboard user, back to the top of the page. It
+       goes to the new button if the group is still incomplete; if the page
+       completed it, the footer is gone and the next thing to read is the first
+       row that arrived, or failing that the group's add-item line. Only once
+       the answer has been painted (_footerBusy is cleared just before that
+       render), and then cleared whatever happened — unless the group is in the
+       half of the board that is still a spacer, whose own wireTable comes
+       next. */
+    if(this._refocus!=null && !this._footerBusy){
+      const rf=this._refocus, gid=String(rf.gid);
+      const tb=[...root.querySelectorAll('tbody[data-gid]')].find(x=>x.dataset.gid===gid);
+      if(tb || !root.querySelector('.grp-reserve')){
+        this._refocus=null;
+        const a=document.activeElement;
+        const lost=!a||a===document.body||!document.contains(a);
+        let to=btns.find(x=>x.dataset.gid===gid)||null;
+        if(!to && tb){
+          const row=tb.querySelectorAll(':scope > tr[data-tid]')[rf.held];
+          to=(row&&row.querySelector('input,button,a[href],[tabindex]:not([tabindex="-1"])'))
+             ||tb.querySelector(':scope > tr.add-row .add-item');
+        }
+        if(lost&&to)try{ to.focus({preventScroll:true}); }catch(_){}
+      }
+    }
+    if(!this.on||!this.more||!btns.length||typeof IntersectionObserver==='undefined')return;
+    this._io=new IntersectionObserver(entries=>{
+      for(const en of entries){
+        if(!en.isIntersecting)continue;
+        const key=en.target.dataset.key;
+        if(!this.on||!this.more||this.loading||this._autoAsked.has(key))continue;
+        this._autoAsked.add(key);
+        this.load(false);
+        return;
+      }
+    },{root:view,rootMargin:'0px 0px 600px 0px'});
+    /* Never through a folded group. Its footer is display:none and would not
+       intersect anyway, but that is a property of the CSS and this is a rule:
+       a collapsed group pulls its rows down only when somebody opens it and
+       presses its button (or through fill's bounded top-up). */
+    btns.forEach(b=>{
+      const head=b.closest('.group')&&b.closest('.group').querySelector('.group-head');
+      if(head&&head.classList.contains('collapsed'))return;
+      this._io.observe(b);
+    });
   },
   /* Fold one page's connect-column display text into the board's map.
 
@@ -17313,8 +17446,23 @@ function setGroupCollapsed(gid,shut){
    pulled out of this file and run on their own by the harnesses, and a helper
    they would have to be given with them is a trap. */
 function groupCountKnown(gid,whole){
+  /* …except that past the client threshold a filtered board DOES have a
+     number of its own: the server counts each group's matches over the whole
+     answer and sends it with every page (Paged.group_matched). The rows in
+     hand there are not the answer but the part of it that has arrived, so
+     counting them printed "50" over a cut of 78. Below the threshold the
+     filter runs here, over every row, and the rows in hand are the answer —
+     that path is unchanged. Asked through typeof: the harnesses run this on
+     its own. */
+  if(!whole&&boardIsNarrowed()){
+    const m=(typeof Paged!=='undefined'&&Paged.on&&Paged.group_matched
+             &&typeof filterMode==='function'&&filterMode()==='server')?Paged.group_matched:null;
+    if(!m)return null;
+    const k=m[gid==null?'null':String(gid)];
+    return k==null?null:k;
+  }
   const c=st.board&&st.board.group_counts;
-  if(!c||(!whole&&boardIsNarrowed()))return null;
+  if(!c)return null;
   const n=c[gid==null?'null':String(gid)];
   return n==null?null:n;
 }
@@ -17338,6 +17486,12 @@ function groupCountKnown(gid,whole){
 function bumpGroupCount(gid,delta){
   const c=st.board&&st.board.group_counts; if(!c)return;
   const k=(gid==null?'null':String(gid)), cur=c[k];
+  /* The filtered board's per-group figure is made wrong by the same deletion:
+     a row on screen under a server-side filter is one of the matches, so the
+     group holds one match fewer. Only adjusted where it has a base, like the
+     figure below; the next page that arrives carries the server's own. */
+  const gm=(typeof Paged!=='undefined')&&Paged.group_matched;
+  if(gm&&gm[k]!=null)gm[k]=Math.max(0,gm[k]+delta);
   if(cur==null){ if(delta>0)c[k]=delta; return; }
   c[k]=Math.max(0,cur+delta);
 }
@@ -17393,10 +17547,21 @@ function groupsOf(){
      not work. The empty ones come back the moment the filter is cleared;
      nothing about the board changed, only what is being asked of it. */
   const cut = boardIsNarrowed();
+  /* …but "nothing under it" has to mean nothing in the ANSWER, not nothing
+     arrived yet. Past the client threshold the answer comes fifty rows at a
+     time, group after group, and a group whose matches are all still on the
+     server was dropped here exactly like a group with none — so every
+     matching group below the first page was invisible until it loaded. The
+     server's per-group count says which is which (Paged.group_matched); only
+     while there is more to fetch, since once everything is in hand the rows
+     are the whole truth again. */
+  const gm = (cut && typeof Paged!=='undefined' && Paged.on && Paged.more && Paged.group_matched
+              && typeof filterMode==='function' && filterMode()==='server') ? Paged.group_matched : null;
+  const waiting = id => !!gm && (gm[id==null?'null':String(id)]||0) > 0;
   const out = gs.map(g=>({...g,tasks:tasks.filter(t=>t.group_id===g.id)}))
-                .filter(g=>!cut || g.tasks.length);
+                .filter(g=>!cut || g.tasks.length || waiting(g.id));
   const orphan = tasks.filter(t=>!t.group_id || !gs.some(g=>g.id===t.group_id));
-  if(orphan.length) out.push({id:null,name:'ללא קבוצה',color:'#c4c4c4',tasks:orphan});
+  if(orphan.length || waiting(null)) out.push({id:null,name:'ללא קבוצה',color:'#c4c4c4',tasks:orphan});
   return out;
 }
 
@@ -17659,6 +17824,8 @@ function groupEst(g){
   const tasks=g.tasks||[];
   let h=tasks.length*rowHeightEst()+groupChromeEst();
   if(groupHasSum(g))h+=sumRowEst();
+  // the "still loading" footer is about a row high — see groupRowsMissing
+  if(typeof groupRowsMissing==='function'&&groupRowsMissing(g)>0)h+=rowHeightEst();
   // the walk is skipped outright when nothing is open, which is most of the
   // time and most of the rows: this runs once per group per render, and a
   // board can be ten thousand rows
@@ -17671,6 +17838,75 @@ function groupEst(g){
    their gaps too, or the board is a dozen gaps shorter until they arrive. */
 function groupSlot(g){
   return groupEst(g)+(groupCollapsed(g.id)?0:GROUP_GAP);
+}
+/* The end of a group whose rows have not all arrived: how many are shown out
+   of how many it holds, and a button for the next page.
+
+   Past the client threshold the rows come fifty at a time, group after group,
+   and the only thing that used to ask for more was a scroll to the bottom of
+   the WHOLE board. A group showing 50 of its 78, with the next groups' headers
+   sitting right under it over nothing, said the board was smaller than it is
+   and offered no way to see the rest short of scrolling past all of it. This
+   says where the rows stop and why, and Paged.watchMore asks for the next page
+   as it comes near the screen. A real <button>, so it is reached and pressed
+   from the keyboard like anything else.
+
+   Only where there is a number to compare against (`known` — see
+   groupCountKnown) and only while the server says there is more: a group
+   whose count and rows disagree once everything has arrived would otherwise
+   offer a page that does not exist. */
+/* How many of a group's rows are still on the server — 0 when there is
+   nothing to say (paging off, no more pages, or no count to compare against).
+   groupMoreRowHTML draws a footer exactly when this is above 0, and groupEst
+   reserves the room for one on the same condition, so the two cannot drift. */
+function groupRowsMissing(g,known){
+  if(typeof Paged==='undefined'||!Paged.on||!Paged.more)return 0;
+  if(known===undefined)known=(typeof groupCountKnown==='function')?groupCountKnown(g.id):null;
+  if(known==null)return 0;
+  return Math.max(0,known-(g.tasks||[]).length);
+}
+/* Which group the next page will go to: the first one, in the order the board
+   draws them, still missing rows. As its key ('null' for the «ללא קבוצה»
+   bucket), or null when every group is whole.
+
+   The server fills the groups in that order, so only this group's footer can
+   honestly offer "the next page" — a button under a lower group asked for a
+   page that went somewhere else. Six short groups under one folded group of
+   300 each fired once and pulled 250 rows into the folded one, none of them
+   into the group whose footer had asked. */
+function firstIncompleteGroupKey(groups){
+  for(const g of (groups||[])){
+    if(groupRowsMissing(g)>0) return g.id==null?'null':String(g.id);
+  }
+  return null;
+}
+// the answer for the render in progress — vTable works it out once, over the
+// whole board, because groupHTML is also called for half a board at a time
+let _moreFirst;
+function groupMoreRowHTML(g,known,firstKey){
+  const missing=groupRowsMissing(g,known);
+  if(!missing)return '';
+  const held=g.tasks.length;
+  if(known==null)known=held+missing;
+  const key=g.id==null?'null':String(g.id);
+  if(firstKey===undefined)
+    firstKey=(typeof groupsOf==='function')?firstIncompleteGroupKey(groupsOf()):key;
+  /* A group further down than the one the next page goes to says how much is
+     still to come and offers nothing to press — see firstIncompleteGroupKey. */
+  if(key!==firstKey){
+    const wait=missing===1?'עוד פריט אחד ממתין לטעינה':`עוד ${missing} פריטים ממתינים לטעינה`;
+    return `<tr class="grp-more-row grp-more-wait"><td class="c-item"><span class="grp-wait">${esc(wait)}</span></td><td colspan="${totalCols()}"></td></tr>`;
+  }
+  const gid=g.id===null?'':String(g.id);
+  const label=`מוצגים ${held} מתוך ${known} · טען עוד`;
+  const busy=!!Paged._footerBusy;
+  // the same two cells as the add-row under it: the words in the pinned item
+  // cell, so they stay in view while the board scrolls sideways
+  return `<tr class="grp-more-row"><td class="c-item">
+    <button type="button" class="grp-more" data-gid="${esc(gid)}" data-key="${esc(gid+':'+held)}"
+      data-label="${esc(label)}" aria-busy="${busy?'true':'false'}"
+      aria-label="${esc(`${g.name||''}: ${label}`)}"
+      onclick="Paged.loadFromFooter(this)">${esc(busy?'טוען…':label)}</button></td><td colspan="${totalCols()}"></td></tr>`;
 }
 function groupHTML(g){
     const col=g.color||'#0073ea';
@@ -17736,6 +17972,7 @@ function groupHTML(g){
         ${colgroupHTML()}
         <thead><tr class="col-head-row">${columnHeadersHTML(col,g)}<th class="th-spacer"></th></tr></thead>
         <tbody data-gid="${g.id===null?'':g.id}" style="--gcolor:${col}">${rows}
+          ${(typeof groupMoreRowHTML==='function')?groupMoreRowHTML(g,gKnown,(typeof _moreFirst!=='undefined')?_moreFirst:undefined):''}
           <tr class="add-row"><td class="c-item"><span class="add-item" role="button" tabindex="0" onclick="openNewItem(${g.id===null?'null':g.id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openNewItem(${g.id===null?'null':g.id});}">+ הוסף פריט</span></td><td colspan="${totalCols()}"></td></tr>
         </tbody>
         ${groupSumRowHTML(g.tasks)}
@@ -17783,6 +18020,7 @@ let _vtToken=0;
 let _vtRedraw=false;   // set by renderView for the one vTable call it makes
 function vTable(el){
   const groups=groupsOf();
+  if(typeof firstIncompleteGroupKey==='function') _moreFirst=firstIncompleteGroupKey(groups);
   // filters are active but nothing matches → show the "no match" hint. An empty
   // board still renders its groups + "add group" so the structure stays visible.
   /* Four states that look alike on screen and are not. The order matters:
@@ -17883,6 +18121,8 @@ function vTable(el){
 }
 function wireTable(el){
   syncGroupChecks();                 // indeterminate is a property, not an attribute
+  // the group footers are new elements after every render — see Paged.watchMore
+  if(typeof Paged!=='undefined'&&Paged.watchMore)try{ Paged.watchMore(el); }catch(_){}
   el.querySelectorAll('.group-head').forEach(h=>h.onclick=(e)=>{
     if(!e.target.closest('.caret'))return;   // collapse/expand only from the arrow
     foldGroup(h,!h.classList.contains('collapsed'));   // remembered across re-renders
