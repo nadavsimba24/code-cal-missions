@@ -9987,9 +9987,22 @@ const Automations = {
   /* One row. An unavailable template is still shown — a list that silently
      dropped it would leave somebody hunting for a template that is there —
      but it does not open, and it says what the board is missing. */
-  templateRow(x){
-    const fill=esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
+  /* A template's sentence with its blanks shown as chips, for the lists.
+     The optional column pairing of «צור פריט» is NOT one of them: the server
+     appends it as a " · {map}" tail so the slot is never invisible, and the
+     list then read «… · מיפוי עמודות (לא חובה)» on every such template — a
+     chip naming a question the rule, once opened, does not ask. A wording
+     that says "מפה {map}" in its own words keeps its chip; only the tail goes. */
+  templateFill(x){
+    let s=String(x.sentence||'');
+    (x.fields||[]).forEach(f=>{
+      if(f.type==='map'&&!this._needs(f)) s=s.split(' · {'+f.key+'}').join('');
+    });
+    return esc(s).replace(/\{(\w+)\}/g,(_,k)=>{
       const f=(x.fields||[]).find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';});
+  },
+  templateRow(x){
+    const fill=this.templateFill(x);
     const tags=(x.tags||[]).map(k=>`<span class="au-ttag">${esc(((this.libTags||[]).find(y=>y.key===k)||{}).label||k)}</span>`).join('');
     const head=x.title?`<div class="au-tname">${esc(x.title)}</div>`:'';
     if(!x.available){
@@ -10035,8 +10048,7 @@ const Automations = {
     const condLine=x=>this.condLine(x);
     const blocks=Object.keys(byTrig).map(t=>`<div class="au-group-h">${esc((this.trigLabels||{})[t]||t)}</div>`+
       byTrig[t].map(x=>`<button class="au-recipe" onclick="Automations.pick('${x.id}')">${
-        esc(x.sentence).replace(/\{(\w+)\}/g,(_,k)=>{
-          const f=x.fields.find(y=>y.key===k); return '<span class="ph">'+esc(f?f.label:k)+'</span>';})
+        this.templateFill(x)
       }${condLine(x)}</button>`).join('')).join('');
     return `<div style="font-size:12.5px;color:var(--text-muted);margin:12px 0 2px">בחר תבנית מוכנה והשלם את השדות — ואחר כך אפשר להוסיף תנאים ("רק אם"):</div>${blocks}`;
   },
