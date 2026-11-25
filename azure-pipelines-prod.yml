@@ -32,9 +32,72 @@ variables:
   # Agent VM image
   vmImageName: 'ubuntu-latest'
 
+  # The QA pipeline (Missions-QA, azure-pipelines-qa.yml). The gate below asks
+  # it whether the commit being released has already passed there.
+  qaPipelineId: '273'
+
 stages:
+# Production only ships code that QA has already run, tested and deployed.
+#
+# Until 2026-11-25 this pipeline built whatever branch it was pointed at, and
+# releases were cut as prod-release-* branches of cherry-picked commits. Those
+# commits had different trees from anything on main, so QA — which only ever
+# runs main — had never seen what production was running (release 51768,
+# 48b0227, was one of them). This stage refuses the release unless the commit
+# is on main AND a QA run of that commit, or of an ancestor that differs from
+# it only in this file, finished "succeeded". The QA pipeline path-excludes
+# this file, so a commit that touches nothing else gets no QA run of its own;
+# that is the one difference allowed. There is deliberately no override.
+- stage: QaGate
+  displayName: Only what QA has already passed
+  jobs:
+  - job: QaGate
+    displayName: Has this exact code passed QA?
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - checkout: self
+      fetchDepth: 0
+      persistCredentials: true
+    - bash: |
+        set -euo pipefail
+        SHA="$(Build.SourceVersion)"
+        echo "── releasing $SHA from $(Build.SourceBranch)"
+
+        git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
+        if ! git merge-base --is-ancestor "$SHA" origin/main; then
+          echo "##vso[task.logissue type=error]$SHA is not on main. Production ships only what went through main and QA — merge the change to main, let QA pass, then release that commit."
+          exit 1
+        fi
+
+        # Succeeded QA runs of main, newest first. The build list can lag a
+        # run that finished minutes ago; that only ever refuses, never passes,
+        # so the answer then is to rerun this release a little later.
+        URL="$(System.CollectionUri)$(System.TeamProject)/_apis/build/builds?definitions=$(qaPipelineId)&branchName=refs/heads/main&statusFilter=completed&resultFilter=succeeded&\$top=200&api-version=7.1"
+        curl -fsS -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" "$URL" \
+          | python3 -c 'import json,sys; [print(b["id"], b["sourceVersion"]) for b in json.load(sys.stdin)["value"]]' \
+          > qa_runs.txt
+        echo "── $(wc -l < qa_runs.txt) succeeded QA runs of main to compare against"
+
+        while read -r id qa_sha; do
+          git cat-file -e "$qa_sha^{commit}" 2>/dev/null || continue
+          git merge-base --is-ancestor "$qa_sha" "$SHA" || continue
+          if git diff --quiet "$qa_sha" "$SHA" -- . ':(exclude)azure-pipelines-prod.yml'; then
+            echo "✅ QA run $id passed $qa_sha — the same code as $SHA"
+            exit 0
+          fi
+        done < qa_runs.txt
+
+        echo "##vso[task.logissue type=error]No succeeded QA run covers $SHA. Wait for the QA run of this commit to finish green (a failed or partially succeeded run does not count), then release again."
+        exit 1
+      displayName: Refuse a commit QA has not passed
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
 - stage: Build
   displayName: Security scan, build and push
+  dependsOn: QaGate
+  condition: succeeded()
   jobs:
   - job: Build
     displayName: Scan source, then build image
