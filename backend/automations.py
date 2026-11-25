@@ -1208,9 +1208,16 @@ ACTIONS = {
     # board, and which of the item's own fields travel with it. A separate
     # action rather than three more placeholders on the old one — a rule
     # somebody already built is not re-asked a question it was never asked.
+    #
+    # The sentence does not say "מפה {map}". The optional pairing is still a
+    # field of the action, but the template list showed it as a blank to fill
+    # — «מיפוי עמודות (לא חובה)» — on a rule that, once opened, never asks it,
+    # and she did not want it there (2026-11-25). Left out of the wording, an
+    # empty pairing reads as nothing and a set one reads on at the end as the
+    # " · {map}" tail, like create_in_board's.
     "create_in_group_and_link":
-        "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, העתק {fields}, "
-        "מפה {map} וקשר אותו לפריט המקור בעמודה {connect}",
+        "צור פריט בשם {text} בקבוצה {target_group} בלוח {board}, העתק {fields} "
+        "וקשר אותו לפריט המקור בעמודה {connect}",
     # ── the rest of the MVP table ──
     "set_column":       "עדכן את העמודה {column} ל{text}",
     "clear_column":     "נקה את העמודה {column}",
