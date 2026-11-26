@@ -6106,6 +6106,55 @@ const Paged = {
   },
   // the ceiling on self-filling, in rows — see _filled
   FILL_MAX: 500,
+  /* Everything the current cut matches, pulled down before something that
+     must be whole is built — the Excel export.
+
+     The export is built from the rows on screen, and on a board past the
+     threshold that was the first page: open the board, export straight away,
+     and the file held 50 items of a board of hundreds. It used to stop and
+     ask whether to export only those, telling the person to scroll to the end
+     first — which nobody reads as "your file will be short". The pages are
+     fetched here instead, at the server's largest page size, and the screen
+     is redrawn once at the end rather than after every page.
+
+     A question that changes while this runs (a filter typed, the board left)
+     bumps `seq`, and this stops: the rows it would go on appending belong to
+     an answer nobody is asking for any more. Resolves true only when every
+     matching row is in hand. */
+  async loadAll(onProgress){
+    if(!st.board) return false;
+    const boardId=st.board.id;
+    // a page already in flight is let finish rather than raced
+    for(let i=0; this.loading && i<600; i++) await new Promise(r=>setTimeout(r,50));
+    if(this.loading) return false;
+    if(!this.on){ await this.load(true); if(!this.on) return false; }
+    if(!this.more) return true;
+    this.loading=true; this.pending=true;
+    const mine=++this.seq;
+    try{
+      while(this.more){
+        const r=await api('/api/boards/'+boardId+'/items/query',
+          {method:'POST',headers:{'Content-Type':'application/json'},
+           body:withMe(Object.assign(this.query(),{limit:200,offset:this.offset}))});
+        if(mine!==this.seq || !st.board || st.board.id!==boardId) return false;
+        this.rows=this.rows.concat(r.items||[]);
+        this.mergeLinkDisplay(r.link_display);
+        this.offset=r.next_offset||this.rows.length;
+        this.more=!!r.has_more && (r.items||[]).length>0;
+        this.matched=r.matched||0; this.total=r.total||0;
+        if(r.group_matched&&typeof r.group_matched==='object')this.group_matched=r.group_matched;
+        if(onProgress)try{ onProgress(this.rows.length,this.matched); }catch(_){}
+      }
+      return true;
+    }catch(e){
+      return false;
+    }finally{
+      if(mine===this.seq){
+        this.loading=false; this.pending=false; this._footerBusy=false;
+        try{ renderView(); refreshToolbar(); }catch(_){}
+      }
+    }
+  },
   /* Infinite scroll. Bound once to #view, and deliberately generous about
      "near the bottom": waiting for the very end means the person waits too,
      and a page that arrives before the scroll reaches it reads as a board
@@ -19501,16 +19550,24 @@ async function exportBoardExcel(){
      that reads like a fault. The server is the rule either way. */
   if(!hasCap('export_excel')){ toast('אין לך הרשאה לייצא לוח לאקסל'); return; }
   const btn=document.getElementById('bh-menu');   // export is reached from the board menu
+  /* The sheet is built out of what is on screen, which past the client
+     threshold is a page of the board — opening a board and exporting at once
+     gave a file of 50 items. So the rest of the cut is fetched first (see
+     Paged.loadAll) and the file is built from all of it. A file is kept and
+     re-read later, long after anyone remembers that the board was still
+     loading when it was made, so if the fetch fails the short export is still
+     never made quietly: the two numbers are named and the choice is the
+     person's. */
+  if(boardRowsPartial() && typeof Paged!=='undefined'){
+    if(btn){btn.disabled=true;btn.classList.add('busy');}
+    toast('טוען את כל הפריטים לייצוא…');
+    try{
+      await Paged.loadAll((have,of)=>toast(
+        `טוען פריטים לייצוא… ${have.toLocaleString('he-IL')} מתוך ${of.toLocaleString('he-IL')}`));
+    }finally{ if(btn){btn.disabled=false;btn.classList.remove('busy');} }
+  }
   const grid=exportGrid();
   if(!grid.rows.length){toast('אין פריטים לייצוא');return;}
-  /* The sheet is built out of what is on screen, which past the client
-     threshold is a page of the board. A file is kept and re-read later, long
-     after anyone remembers that the board was still loading when it was made —
-     so a short export is the one thing here that must never happen quietly.
-     The number that will go in and the number the board holds are both named,
-     and the choice is the person's. Scrolling the table to the end is what
-     makes the file whole; the server has no "export the whole board" route to
-     hand this off to. */
   if(boardRowsPartial()){
     const have=applyFilters(loadedRows()).length;   // top-level items, as the board counts them
     const ok=await new Promise(res=>askConfirm(
