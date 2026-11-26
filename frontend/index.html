@@ -13419,8 +13419,14 @@ const Automations = {
      under a rule that was right when it was written. */
   // the three the engine will not write into, whatever kind they report
   MAP_UNMAPPABLE:['mirror','connect','formula'],
-  _mapSides(cols){
+  /* `hidden` is the built-ins that board has taken off itself: a board with
+     no סטטוס column does not offer סטטוס as a field. `keep` is the keys a
+     rule already uses, which stay listed even so — leaving them out would
+     drop the pair without a word the next time the rule is saved. */
+  _mapSides(cols,hidden,keep){
+    const off=new Set((hidden||[]).map(String)), used=new Set((keep||[]).map(String));
     const out=((((this.caps||{}).map)||{}).builtins||[])
+                .filter(b=>!off.has(b.key)||used.has(b.key))
                 .map(b=>({key:b.key,label:b.label,kind:b.kind,
                           type:this.MAP_BUILTIN_TYPE[b.key]||b.kind}));
     (cols||[]).forEach(c=>{
@@ -13457,8 +13463,11 @@ const Automations = {
     if(this._mapCols[bid]) return this._mapCols[bid];
     const d=await api('/api/automation-capabilities?board_id='+bid
                       +(meId()?'&user_id='+meId():''));
+    (this._mapHidden=this._mapHidden||{})[bid]=d.hidden_builtins||[];
     return (this._mapCols[bid]=d.columns||[]);
   },
+  // the built-ins a target board has hidden, once _mapTargetCols has read it
+  _mapTargetHidden(bid){ return ((this._mapHidden||{})[bid])||[]; },
   /* ---- "הפריט שייווצר" — the new item, field by field ----
 
      "צור פריט בלוח אחר" asked about the item it makes in three blanks strung
@@ -13539,11 +13548,14 @@ const Automations = {
     }catch(e){ toast('לא ניתן לקרוא את לוח היעד'); return; }
     this._itemInto={into:into,form:form};
     this._itemGroups=groups;
-    this._mapFrom=this._mapSides((this.caps||{}).columns);
+    const curMap=(vals[k('map')]||{}).v;
+    const usedPairs=Array.isArray(curMap)?curMap.filter(Boolean):[];
+    this._mapFrom=this._mapSides((this.caps||{}).columns,(this.caps||{}).hidden_builtins,
+                                 usedPairs.map(p=>p.from));
     // the name has a row of its own, typed rather than picked, so the
     // built-in "שם הפריט" is not offered again as one of the columns
-    this._mapTo=this._mapSides(cols).filter(x=>x.key!=='title');
-    const curMap=(vals[k('map')]||{}).v;
+    this._mapTo=this._mapSides(cols,this._mapTargetHidden(bid),usedPairs.map(p=>p.to))
+                  .filter(x=>x.key!=='title');
     const fill={};
     (Array.isArray(curMap)?curMap:[]).forEach(p=>{ if(p&&p.to) fill[String(p.to)]=String(p.from||''); });
     const gcur=form.group?String((vals[k(form.group)]||{}).v||''):'';
@@ -13655,9 +13667,11 @@ const Automations = {
     try{ cols=await this._mapTargetCols(bid); }
     catch(e){ toast('לא ניתן לקרוא את העמודות בלוח היעד'); return; }
     this._mapInto={key:key,into:into||null};
-    this._mapFrom=this._mapSides((this.caps||{}).columns);
-    this._mapTo=this._mapSides(cols);
     const cur=(vals[key]||{}).v;
+    const usedPairs=Array.isArray(cur)?cur.filter(Boolean):[];
+    this._mapFrom=this._mapSides((this.caps||{}).columns,(this.caps||{}).hidden_builtins,
+                                 usedPairs.map(p=>p.from));
+    this._mapTo=this._mapSides(cols,this._mapTargetHidden(bid),usedPairs.map(p=>p.to));
     this._mapDraft=(Array.isArray(cur)?cur:[])
       .map(p=>({from:String((p||{}).from||''),to:String((p||{}).to||'')}));
     if(!this._mapDraft.length) this._mapDraft.push({from:'',to:''});

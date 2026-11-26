@@ -27684,7 +27684,13 @@ def automation_capabilities(board_id: int = 0, user_id: int = Depends(current_us
                 # all until somebody decides what it should do
                 "note": "" if m else "סוג שדה שאינו במטריצה — לא זמין עד בדיקת תאימות",
             })
-        return {**out, "board_id": b.id, "columns": cols}
+        # The built-ins this board has taken off itself (a monday import hides
+        # all four). The mapping screen listed סטטוס, עדיפות, תאריך יעד and
+        # אחראים on every board, so a board that has none of them offered them
+        # as fields to fill — columns nobody on that board can see.
+        hidden = sorted({str(k) for k in ((b.settings or {}).get("col_hidden") or [])}
+                        & HIDEABLE_BUILTIN_COLS)
+        return {**out, "board_id": b.id, "columns": cols, "hidden_builtins": hidden}
 
 
 def _org_retention(cfg):

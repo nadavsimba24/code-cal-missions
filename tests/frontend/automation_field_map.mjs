@@ -411,5 +411,35 @@ const last=()=>modals[modals.length-1]||'';
   ck('…and the board itself is the new one', A.building.values.a_board.v===12);
 }
 
+// ── a built-in the board has hidden is not offered ────────────────────────
+/* A monday import hides סטטוס, עדיפות, תאריך יעד and אחראים; the mapping
+   listed them anyway, as fields of a board that has no such columns. */
+{
+  const A=build();
+  const keys=l=>l.map(x=>x.key);
+  const all=A._mapSides(DST_COLS,[]);
+  ck('with nothing hidden every built-in is offered', ['title','status','due'].every(k=>keys(all).includes(k)));
+  const off=A._mapSides(DST_COLS,['status','due']);
+  ck('a built-in the board hid is left out', !keys(off).includes('status') && !keys(off).includes('due'),
+     keys(off));
+  ck('…the item\'s name is never hidden', keys(off).includes('title'));
+  ck('…and the board\'s own columns are still all there', DST_COLS.every(c=>keys(off).includes(c.id)));
+  const kept=A._mapSides(DST_COLS,['status','due'],['status']);
+  ck('a hidden built-in a rule already uses stays, so saving does not drop the pair',
+     keys(kept).includes('status') && !keys(kept).includes('due'), keys(kept));
+}
+{
+  // the window itself, against a target board that hid status
+  const A=build();
+  A._mapCols={}; A._mapHidden={};
+  A._mapTargetCols=async function(bid){ (this._mapHidden=this._mapHidden||{})[bid]=['status'];
+                                        return DST_COLS.slice(); };
+  A.caps.hidden_builtins=['due'];
+  await A.pickField(EV,'a_map');
+  ck('the mapping window leaves out the target board\'s hidden built-in',
+     !A._mapTo.some(x=>x.key==='status'), A._mapTo.map(x=>x.key));
+  ck('…and the source board\'s', !A._mapFrom.some(x=>x.key==='due'), A._mapFrom.map(x=>x.key));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
