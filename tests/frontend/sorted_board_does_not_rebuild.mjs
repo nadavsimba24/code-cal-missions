@@ -86,8 +86,10 @@ const callLines = src.split('\n')
    it every press repainted the board behind the dialog and lost its scroll.
    Five more came from cells that used to rebuild the board for one value — an
    assignee, a star rating, a file added or removed, a link — which on a heavy
-   board was a flash and a jump back to the start after each of them. */
-ck('there are nine callers and no more', callLines.length === 9, JSON.stringify(callLines));
+   board was a flash and a jump back to the start after each of them. The
+   tenth is setCell itself, redrawing the row when a rule wrote another of its
+   columns in the same request (see applyWriteEcho) — it names the column. */
+ck('there are ten callers and no more', callLines.length === 10, JSON.stringify(callLines));
 ck('every one of them names the field or column that changed',
    callLines.every(l => /refreshRow\([^;]*,[^;]*,[^;]*\)/.test(l)),
    JSON.stringify(callLines));

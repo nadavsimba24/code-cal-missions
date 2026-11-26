@@ -20368,6 +20368,31 @@ function applyCellResponse(t,res,colIds){
   });
   t.custom_fields=cf;
 }
+/* What a rule wrote on this item while the edit that set it off was saving.
+
+   "כאשר הסטטוס משתנה, עדכן את «תאריך עדכון» להיום": the date arrives in the
+   PATCH answer, because the rule ran inside the same request — but the grid
+   only ever read the answer's group_id and left the date to the live stream's
+   automation.ran. Whenever that event did not land (a paged board, whose rows
+   a board refetch does not touch; a stream that had dropped; an instance that
+   was not the one serving this tab) the stamp appeared only after F5, which
+   is exactly a rule that "works once and then needs a refresh".
+
+   Only the OTHER columns are taken: `own` is what the person just wrote, and
+   the answer to an older request must not undo a newer keystroke in it.
+   Returns the column ids that moved, or null when nothing did. */
+function applyWriteEcho(t,res,own){
+  const got=res&&res.custom_fields;
+  if(!t||!got||typeof got!=='object')return null;
+  const ownKeys=[].concat(own||[]);
+  const cf=Object.assign({},t.custom_fields||{});
+  const moved=Object.keys(got).filter(k=>!ownKeys.includes(k)
+    && JSON.stringify(got[k])!==JSON.stringify(cf[k]));
+  if(!moved.length)return null;
+  moved.forEach(k=>{ cf[k]=got[k]; });
+  t.custom_fields=cf;
+  return moved;
+}
 /* Taking one link off should not mean opening the picker to untick it. */
 async function unlinkFromCell(e,taskId,colId,linkId){
   e.stopPropagation();
@@ -21249,8 +21274,15 @@ async function setCell(taskId,colId,value){
   const t=findAnyTask(taskId);
   if(t && !canEditCol(t,colId)){ toast('אין לך הרשאת עריכה לעמודה זו'); return; }
   if(t){t.custom_fields=t.custom_fields||{}; if(value==null||value==='')delete t.custom_fields[colId]; else t.custom_fields[colId]=value;}
-  try{await api('/api/tasks/'+taskId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({custom_fields:{[colId]:(value===''?null:value)}})});}
-  catch(e){toast('שגיאה בשמירת הערך');}
+  let res;
+  try{res=await api('/api/tasks/'+taskId,{method:'PATCH',headers:{'Content-Type':'application/json'},body:withMe({custom_fields:{[colId]:(value===''?null:value)}})});}
+  catch(e){toast('שגיאה בשמירת הערך'); return;}
+  // a rule may have written other columns of this row in the same request —
+  // see applyWriteEcho. Redrawn only when nobody is mid-edit: the values are
+  // already in hand, so the next render shows them either way.
+  const moved=applyWriteEcho(findAnyTask(taskId),res,colId);
+  if(moved && !(typeof Live!=='undefined' && Live.busy()))
+    refreshRow(taskId,!!(st.colSort&&moved.includes(st.colSort.key)),colId);
 }
 
 /* An address that is not an address is refused rather than stored.
@@ -21450,6 +21482,10 @@ async function setField(id,field,value){
     // back with the write — the grid follows where the server put it without
     // knowing a thing about which rules the board has.
     if(t && res && res.group_id!=null && res.group_id!==t.group_id){ t.group_id=res.group_id; _wholeView=true; }
+    // …and so may a column: the date a "status changed → stamp today" rule
+    // wrote is in this same answer (see applyWriteEcho)
+    const moved=applyWriteEcho(t,res,extra?Object.keys(extra):[]);
+    if(moved && st.colSort && moved.includes(st.colSort.key)) _wholeView=true;
     refreshRow(id, _wholeView || !!(t && t.group_id!==_group0), field);
   }catch(e){ toast('שגיאה בעדכון'); }
 }
