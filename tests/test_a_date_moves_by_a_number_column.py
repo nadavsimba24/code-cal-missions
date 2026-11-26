@@ -157,3 +157,12 @@ def test_a_rule_from_the_template_runs(client, admin_id):
     _set(client, tid, admin_id, **{num["id"]: 7})
     _set(client, tid, admin_id, **{src["id"]: "2026-12-01"})
     assert _cell(tid, dst["id"]) == "2026-12-08", _runs(client, bid, admin_id)
+
+
+def test_the_date_filter_finds_both_date_templates():
+    """«תאריך» in the library is where somebody looks for a rule about dates,
+    and the filter is read off the trigger and the action — "עמודה משתנה" and
+    "עדכן עמודה" are any column, so it came back without either of these."""
+    for rid in ("date_changed_shift_date", "status_stamp_date"):
+        t = next(x for x in recipes.catalog() if x["id"] == rid)
+        assert "date" in t["tags"], (rid, t["tags"])

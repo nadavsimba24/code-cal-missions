@@ -1993,7 +1993,7 @@ RECIPES = [
     # here is only a start — the status can be one value, the date can be
     # "בעוד 14 ימים" — and the column list offers date columns only.
     {"id": "status_stamp_date", "trigger": "status_changes_to", "action": "set_column",
-     "needs": ("date_column",), "library_only": True,
+     "needs": ("date_column",), "library_only": True, "tags": ("date",),
      "fields": [_f("t_status", "status", "סטטוס", default=ANY_STATUS),
                 _f("a_column", "column", "עמודת התאריך", col_kinds=["date"]),
                 _f("a_text", "text", "התאריך", default="{{now.date}}")]},
@@ -2006,7 +2006,7 @@ RECIPES = [
     # what it is for. Library-only, like status_stamp_date: the same pair
     # built from scratch still lands on the general recipe.
     {"id": "date_changed_shift_date", "trigger": "column_changed", "action": "set_column",
-     "needs": ("date_column", "number_column"), "library_only": True,
+     "needs": ("date_column", "number_column"), "library_only": True, "tags": ("date",),
      "fields": [_f("t_column", "column", "עמודת התאריך", col_kinds=["date"]),
                 _f("a_column", "column", "עמודת התאריך לעדכון", col_kinds=["date"]),
                 _f("a_text", "text", "התאריך החדש")]},
@@ -2614,6 +2614,11 @@ def template_version(recipe_id):
 def tags_of(recipe_id):
     r = recipe(recipe_id) or {}
     out = set(_TRIGGER_TAGS.get(r.get("trigger"), ())) | set(_ACTION_TAGS.get(r.get("action"), ()))
+    # …and what one template is about beyond its pair. "עדכן ערך בעמודה" is
+    # any column, so the pair carries no tag; a template that narrows it to
+    # date columns IS a date rule, and pressing «תאריך» in the library is how
+    # somebody looks for it — the filter came back without it.
+    out |= set(r.get("tags") or ())
     for c in r.get("conds") or []:
         out |= set(_COND_TAGS.get(c, ()))
     return sorted(out)
