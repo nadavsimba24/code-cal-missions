@@ -22984,6 +22984,11 @@ def _resolve_tokens(db, text, task, board, event=None, actor=None, owner=None):
             return (now + timedelta(days=recipes.date_offset(name))).strftime("%d/%m/%Y")
         if name == "now.time":
             return now.strftime("%H:%M")
+        if recipes.date_add_cols(name):
+            # a date of this item moved by the days another of its columns
+            # holds — empty when either is missing, and set_column says which
+            day, _why = _date_add_value(db, board, task, *recipes.date_add_cols(name))
+            return day.strftime("%d/%m/%Y") if day else ""
         if name in ("event.old", "event.new"):
             key = "was" if name.endswith("old") else "now"
             v = (event or {}).get(key)
@@ -23014,6 +23019,38 @@ def _resolve_tokens(db, text, task, board, event=None, actor=None, owner=None):
         return one(code) if code else m.group(0)
 
     return recipes.TOKEN_ANY_RE.sub(_sub, raw)
+
+
+def _date_add_value(db, board, task, date_col, num_col):
+    """(the day, "") for {{date.add.<date>.<number>}} on this item — or
+    (None, why) when there is no day to write.
+
+    The why is the history's sentence. "'' אינו תאריך — לא נכתב לעמודה" is
+    what an empty token would otherwise come out as at the coercion, and it
+    names neither column; the person reading it needs to know whether the
+    date is missing or the number of days is, because those are two different
+    cells to go and fill in.
+
+    The number is rounded to whole days: a date column holds a day, and 2.5
+    days from the 3rd is not a day. Bounded to a century either way, so a
+    stray 99999999 in the cell is refused here instead of overflowing the date
+    arithmetic and failing the rule as a crash."""
+    cols = {c.get("id"): c for c in (_board_columns(db, board.id) if board else []) or []}
+    dc, nc = cols.get(date_col), cols.get(num_col)
+    if not dc or not nc:
+        return None, "עמודת התאריך או עמודת מספר הימים שהכלל קורא מהן אינה קיימת בלוח"
+    cf = task.custom_fields or {}
+    iso = _cell_date_iso(cf.get(date_col))
+    if not iso:
+        return None, f"אין תאריך ב«{dc.get('title') or date_col}»"
+    raw = cf.get(num_col)
+    try:
+        days = round(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return None, f"אין מספר ימים ב«{nc.get('title') or num_col}»"
+    if abs(days) > 36500:
+        return None, f"מספר הימים ב«{nc.get('title') or num_col}» גדול מדי"
+    return date.fromisoformat(iso) + timedelta(days=days), ""
 
 
 def _shown_cell(db, board, v):
@@ -23711,6 +23748,14 @@ def _run_one_action(db, act, cfg, task, actor_id, board, label, event=None,
             cf.pop(col["id"], None)
             now_v = None
         else:
+            # A date counted from two of the item's own cells: when one of them
+            # is empty, say which, rather than the coercion's "'' אינו תאריך"
+            _m = recipes.TOKEN_ANY_RE.fullmatch(str(cfg.get("text") or "").strip())
+            _pair = recipes.date_add_cols(recipes.token_code(_m.group(1))) if _m else None
+            if _pair:
+                _day, _why = _date_add_value(db, board, task, *_pair)
+                if not _day:
+                    raise _Skipped(_why)
             now_v, err = _coerce_cell(db, task.board_id, col, text(cfg.get("text")))
             if err:
                 # "ערך שאינו מתאים לסוג שדה היעד לא יישמר" — and the history

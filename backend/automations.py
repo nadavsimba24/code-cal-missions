@@ -323,6 +323,28 @@ TOKEN_ANY_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 DATE_OFFSET_RE = re.compile(r"now\.date([+-])(\d{1,3})")
 
 
+# ── תאריך מעמודה, ועוד ימים מעמודת מספר ────────────────────────────────────
+# "כשתאריך ההגשה משתנה, קבע את תאריך היעד לתאריך ההגשה ועוד «ימי טיפול»" —
+# the day counted from ANOTHER date of the item, by a number the item itself
+# holds. Neither half could be said: {{now.date+N}} counts from the firing and
+# N is fixed in the rule, and {{field.<date col>}} copies a date without moving
+# it. Each item carries its own number of days, which is why the count is a
+# column and not a figure typed into the rule.
+#
+# One token, both columns in it — date.add.<date col>.<number col> — so it is
+# stored, refused and read exactly as the other date values are, and an older
+# reader that does not know it leaves it alone rather than writing half of it.
+# A negative number counts back. Neither column id can hold a dot: they are
+# generated (col_xxxxxxxx) or imported from monday, which uses none.
+DATE_ADD_RE = re.compile(r"date\.add\.([^.\s{}]+)\.([^.\s{}]+)")
+
+
+def date_add_cols(code):
+    """(date col, number col) of a date.add code, or None if it is not one."""
+    m = DATE_ADD_RE.fullmatch(str(code or "").strip())
+    return (m.group(1), m.group(2)) if m else None
+
+
 def date_offset(code):
     """The days a now.date±N code moves today by, or None if it is not one."""
     m = DATE_OFFSET_RE.fullmatch(str(code or "").strip())
@@ -361,7 +383,7 @@ def token_code(name):
     n = str(name or "").strip()
     if n in TOKENS:
         return n
-    if DATE_OFFSET_RE.fullmatch(n):
+    if DATE_OFFSET_RE.fullmatch(n) or DATE_ADD_RE.fullmatch(n):
         return n
     if n in TOKEN_ALIASES:
         return TOKEN_ALIASES[n]
@@ -425,6 +447,12 @@ def token_phrase(text, col_title=None):
         return str(text or "")
     if code in TOKENS:
         return TOKENS[code]
+    pair = date_add_cols(code)
+    if pair:
+        names = [col_title(c) if col_title else None for c in pair]
+        if not all(names):
+            return str(text or "")
+        return f"«{names[0]}» ועוד מספר הימים שב«{names[1]}»"
     pre = next((p for p in TOKEN_PREFIXES if code.startswith(p)), "")
     name = col_title(code[len(pre):]) if (pre and col_title) else None
     if not name:
@@ -546,7 +574,7 @@ def unknown_tokens(text):
     """
     bad = []
     for name in token_names(text):
-        if name in TOKENS or DATE_OFFSET_RE.fullmatch(name):
+        if name in TOKENS or DATE_OFFSET_RE.fullmatch(name) or DATE_ADD_RE.fullmatch(name):
             continue
         if any(name.startswith(p) and len(name) > len(p) for p in TOKEN_PREFIXES):
             continue

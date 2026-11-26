@@ -13164,6 +13164,14 @@ const Automations = {
     if(!m) return '';
     const code=m[1];
     if(code==='now.date'||code==='now'||code==='תאריך ההפעלה'||code==='זמן ההפעלה') return 'היום';
+    // a date of the item moved by a number of days another column holds —
+    // see recipes.DATE_ADD_RE; a column since deleted keeps the code showing
+    const a=code.match(/^date\.add\.([^.\s{}]+)\.([^.\s{}]+)$/);
+    if(a){
+      const t=id=>{const c=(customColumns()||[]).find(x=>String(x.id)===id); return c&&(c.title||c.id);};
+      const d=t(a[1]), n=t(a[2]);
+      return (d&&n)?('«'+d+'» ועוד מספר הימים שב«'+n+'»'):'';
+    }
     const o=code.match(/^now\.date([+-])(\d{1,3})$/);
     if(!o) return '';
     const n=+o[2];
@@ -13175,6 +13183,7 @@ const Automations = {
     /* `into` is the call that takes (stored, label) — the sentence's blank or
        an extra action's, the menu is the same */
     const others=(customColumns()||[]).filter(c=>c.type==='date');
+    const nums=(customColumns()||[]).filter(c=>c.type==='number');
     const q=v=>"'"+String(v).replace(/\\/g,'\\\\').replace(/'/g,"\\'")+"'";
     const pick=(v,l)=>`${into}(${q(v)},${q(l)})`;
     return `<div class="row-menu au-days" onclick="event.stopPropagation()">
@@ -13198,7 +13207,26 @@ const Automations = {
       ${others.length?`<div class="rm-note">תאריך מעמודה אחרת בפריט</div>`
         +others.map(c=>`<button class="rm-item" onclick="${esc(pick('{{field.'+c.id+'}}','ערך של «'+(c.title||c.id)+'»'))}">
           <i class="fa-regular fa-calendar"></i> ${esc(c.title||c.id)}</button>`).join(''):''}
+      ${(others.length&&nums.length)?`<div class="rm-note" id="au-date-add-h">תאריך מעמודה ועוד ימים מעמודת מספר</div>
+      <div class="au-days-row">
+        <select id="au-date-add-d" class="au-in" aria-label="עמודת התאריך" aria-describedby="au-date-add-h">${
+          others.map(c=>`<option value="${esc(c.id)}">${esc(c.title||c.id)}</option>`).join('')}</select>
+        <span class="au-days-unit">+</span>
+        <select id="au-date-add-n" class="au-in" aria-label="עמודת מספר הימים" aria-describedby="au-date-add-h">${
+          nums.map(c=>`<option value="${esc(c.id)}">${esc(c.title||c.id)}</option>`).join('')}</select>
+        <span class="au-days-unit">ימים</span>
+        <button class="rm-item au-days-ok" aria-label="אישור" onclick="Automations.setDateAdd('${into}')"><i class="fa-solid fa-check"></i></button>
+      </div>`:''}
     </div>`;
+  },
+  /* "קבע את תאריך היעד ל«תאריך הגשה» ועוד «ימי טיפול»" — both columns are
+     the item's own, so each item lands on its own day (recipes.DATE_ADD_RE) */
+  setDateAdd(into){
+    const d=document.getElementById('au-date-add-d'), n=document.getElementById('au-date-add-n');
+    const dv=d&&d.value, nv=n&&n.value;
+    if(!dv||!nv){ toast('יש לבחור עמודת תאריך ועמודת מספר'); return; }
+    const v='{{date.add.'+dv+'.'+nv+'}}';
+    this._dateInto(into,v,this._dateLabel(v));
   },
   setDateOffset(into,sign){
     const el=document.getElementById('au-date-n');
@@ -13849,7 +13877,8 @@ const Automations = {
     String(stored||'').replace(/\{\{\s*([^{}]+?)\s*\}\}/g,(m,name)=>{
       // today moved by N days — see _dateLabel and recipes.DATE_OFFSET_RE
       if(!known.has(name) && !pre.some(p=>name.startsWith(p)&&name.length>p.length)
-         && !/^now\.date[+-]\d{1,3}$/.test(name))
+         && !/^now\.date[+-]\d{1,3}$/.test(name)
+         && !/^date\.add\.[^.\s{}]+\.[^.\s{}]+$/.test(name))
         bad.push(name);
       return m;
     });
