@@ -27113,6 +27113,8 @@ def _board_template_has(db, board):
         # — a plain date column only: a timeline holds a range, and one day
         # written into it is not what anybody stamping a date meant
         "date_column": any(c.get("type") == "date" for c in cols),
+        # …and the days to move it by, for date_changed_shift_date
+        "number_column": any(c.get("type") == "number" for c in cols),
         # a mirror to read a name out of. Checked as the board's structure
         # rather than asked for in the form, like the connect column above it:
         # a board with no mirror cannot build the rule at all.

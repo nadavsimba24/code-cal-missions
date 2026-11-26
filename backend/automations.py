@@ -1998,6 +1998,19 @@ RECIPES = [
                 _f("a_column", "column", "עמודת התאריך", col_kinds=["date"]),
                 _f("a_text", "text", "התאריך", default="{{now.date}}")]},
 
+    # "כשתאריך ההגשה משתנה, קבע את תאריך היעד ל«תאריך הגשה» ועוד «ימי טיפול»".
+    # The general "כאשר ערך עמודה משתנה, עדכן ערך בעמודה אחרת" can already say
+    # it, through the date menu's last section — and that is exactly where
+    # nobody found it: three blanks of "any column" and a value hidden at the
+    # bottom of a menu. Started here, both columns are dates and the name says
+    # what it is for. Library-only, like status_stamp_date: the same pair
+    # built from scratch still lands on the general recipe.
+    {"id": "date_changed_shift_date", "trigger": "column_changed", "action": "set_column",
+     "needs": ("date_column", "number_column"), "library_only": True,
+     "fields": [_f("t_column", "column", "עמודת התאריך", col_kinds=["date"]),
+                _f("a_column", "column", "עמודת התאריך לעדכון", col_kinds=["date"]),
+                _f("a_text", "text", "התאריך החדש")]},
+
     # ── item created ──
     {"id": "created_assign_person", "trigger": "item_created", "action": "assign_person",
      "fields": [_f("a_person", "person", "אחראי")]},
@@ -2448,6 +2461,7 @@ NEEDS_HE = {
     "column":           "עמודה מותאמת בלוח (לא מראה ולא קישור)",
     "writable_column":  "עמודה בלוח שאפשר לכתוב בה",
     "date_column":      "עמודת תאריך בלוח",
+    "number_column":    "עמודת מספר בלוח",
     "connect":          "עמודת קישור בלוח",
     "connect_two_way":  "עמודת קישור דו־כיוונית בלוח",
     "group":            "לפחות קבוצה אחת בלוח",
@@ -2554,6 +2568,8 @@ EXTRA_TEMPLATES = [
      "כאשר הערך בלוח המקור משתנה, עדכן גם את עמודת האנשים בלוח"),
     ("status_stamp_date",
      "כאשר הסטטוס משתנה, עדכן עמודת תאריך להיום"),
+    ("date_changed_shift_date",
+     "כאשר תאריך משתנה, עדכן תאריך אחר לפי מספר הימים שבעמודת מספר"),
     ("every_days_assign_from_mirror",
      "כל כמה ימים, סנכרן עמודת אנשים בלוח מתוך עמודת מראה"),
     ("status_create_in_board_and_move",

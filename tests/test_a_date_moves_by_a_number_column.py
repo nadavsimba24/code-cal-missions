@@ -118,3 +118,42 @@ def test_the_token_is_known_to_the_engine():
     assert recipes.date_add_cols(code) == ("col_a1", "col_b2")
     # a field. token is still a field. token
     assert recipes.date_add_cols("field.col_a1") is None
+
+
+# ── the template, by name ─────────────────────────────────────────────────
+# The general "כאשר ערך עמודה משתנה" could say this from the first day, and
+# that is where it was not found: the value hides at the bottom of the date
+# menu behind three blanks that take any column. The library names it.
+def test_the_library_offers_it_under_its_own_name():
+    t = next(x for x in recipes.catalog() if x["id"] == "date_changed_shift_date")
+    assert t["recommended"], t
+    assert t["title"] == "כאשר תאריך משתנה, עדכן תאריך אחר לפי מספר הימים שבעמודת מספר"
+    by = {f["key"]: f for f in t["fields"]}
+    assert by["t_column"].get("col_kinds") == ["date"]
+    assert by["a_column"].get("col_kinds") == ["date"]
+    assert {"date_column", "number_column"} <= set(t["needs"])
+    assert recipes.NEEDS_HE["number_column"]
+    # library-only: built from scratch, the pair still lands on the general one
+    assert not any(a["recipe_id"] == "date_changed_shift_date"
+                   for g in recipes.blueprint() for a in g["actions"])
+
+
+def test_a_rule_from_the_template_runs(client, admin_id):
+    bid = _board(client, admin_id)
+    src, num, dst = _cols(client, bid, admin_id,
+                          {"type": "date", "title": "תאריך הגשה"},
+                          {"type": "number", "title": "ימי טיפול"},
+                          {"type": "date", "title": "תאריך יעד"})
+    with Session(cityos_main.engine) as db:
+        board = db.query(cityos_main.Board).filter(cityos_main.Board.id == bid).first()
+        assert cityos_main._board_template_has(db, board)["number_column"] is True
+    r = client.post(f"/api/boards/{bid}/automations?user_id={admin_id}",
+                    json={"recipe_id": "date_changed_shift_date",
+                          "config": {"t_column": src["id"], "a_column": dst["id"],
+                                     "a_text": "{{date.add.%s.%s}}" % (src["id"], num["id"])}})
+    assert r.status_code == 200, r.text
+    tid = client.post("/api/tasks", json={"board_id": bid, "title": "מהתבנית",
+                                          "user_id": admin_id}).json()["id"]
+    _set(client, tid, admin_id, **{num["id"]: 7})
+    _set(client, tid, admin_id, **{src["id"]: "2026-12-01"})
+    assert _cell(tid, dst["id"]) == "2026-12-08", _runs(client, bid, admin_id)
